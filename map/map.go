@@ -8,7 +8,6 @@ package hashmap
 
 import (
 	"bytes"
-	//	"sync"
 	"errors"
 	"unsafe"
 
@@ -140,14 +139,14 @@ func (h *HashMap) Remove(key []byte) {
 // resize is responsible for reallocating the buckets and
 // redistributing the hashmap entries.
 func (h *HashMap) resize(nsz uint32) {
-	nmsk := nsz-1
+	nmsk := nsz - 1
 	bkts := make([]*Entry, nsz)
 	ents := make([]Entry, h.used)
 	var ne *Entry
 	var i int
- 	for _, e := range h.bkts {
+	for _, e := range h.bkts {
 		for ; e != nil; e = e.next {
-			ne,i = &ents[i], i+1
+			ne, i = &ents[i], i+1
 			*ne = *e
 			ne.next = bkts[e.hk&nmsk]
 			bkts[e.hk&nmsk] = ne
@@ -159,12 +158,12 @@ func (h *HashMap) resize(nsz uint32) {
 
 // grow the HashMap's buckets by 2
 func (h *HashMap) grow() {
-	h.resize(uint32(2*len(h.bkts)))
+	h.resize(uint32(2 * len(h.bkts)))
 }
 
 // shrink the HashMap's buckets by 2
 func (h *HashMap) shrink() {
-	h.resize(uint32(len(h.bkts)/2))
+	h.resize(uint32(len(h.bkts) / 2))
 }
 
 // Stats will collect general statistics about the HashMap
