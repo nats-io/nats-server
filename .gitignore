@@ -20,3 +20,13 @@ _cgo_export.*
 _testmain.go
 
 *.exe
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Mac
+.DS_Store
+
+# bin

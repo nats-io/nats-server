@@ -1,4 +1,4 @@
 gnatsd
 ======
 
-High Performance NATS Server
+High Performance NATS Server written in Go
