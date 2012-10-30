@@ -94,9 +94,9 @@ func FNV1A(data []byte) uint32 {
 
 // Constants for multiples of sizeof(WORD)
 const (
-	_WSZ = 4           // 4
-	_DWSZ = _WSZ << 1   // 8
-	_DDWSZ = _WSZ << 2  // 16
+	_WSZ    = 4         // 4
+	_DWSZ   = _WSZ << 1 // 8
+	_DDWSZ  = _WSZ << 2 // 16
 	_DDDWSZ = _WSZ << 3 // 32
 )
 
@@ -146,10 +146,10 @@ func Meiyan(data []byte) uint32 {
 	// Cases: 0,1,2,3,4,5,6,7
 	if (dlen & _DWSZ) > 0 {
 		k1 := *(*uint64)(unsafe.Pointer(&data[i]))
-		h32 = uint32(uint64(h32) ^ k1) * _YP32
+		h32 = uint32(uint64(h32)^k1) * _YP32
 		i += _WSZ
 		k1 = *(*uint64)(unsafe.Pointer(&data[i]))
-		h32 = uint32(uint64(h32) ^ k1) * _YP32
+		h32 = uint32(uint64(h32)^k1) * _YP32
 		i += _WSZ
 	}
 	if (dlen & _WSZ) > 0 {
@@ -200,7 +200,7 @@ func Yorikke(data []byte) uint32 {
 		i += _WSZ
 	}
 	if (dlen & 1) > 0 {
-        h32 = (h32 ^ uint32(data[i])) * _YP32;
+		h32 = (h32 ^ uint32(data[i])) * _YP32
 	}
 	h32 = (h32 ^ (h32b<<5 | h32b>>27)) * _YP32
 	return h32 ^ (h32 >> 16)
