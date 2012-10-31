@@ -1,0 +1,10 @@
+language: go
+
+script:
+  - cd hash
+  - go test -v
+  - cd ..
+  - cd hashmap
+  - go test -v
+  - cd ..
+  - go test -v
