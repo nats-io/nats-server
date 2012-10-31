@@ -3,10 +3,8 @@
 package gnatsd
 
 import (
-	//	"bytes"
-	//	"fmt"
+	"sync"
 
-	//	"github.com/apcera/gnatsd/hash"
 	"github.com/apcera/gnatsd/hashmap"
 )
 
@@ -21,8 +19,10 @@ type level struct {
 }
 
 type Sublist struct {
+	lck   sync.RWMutex
 	root  *level
 	count uint32
+	cache *hashmap.HashMap
 }
 
 func newNode() *node {
@@ -34,7 +34,10 @@ func newLevel() *level {
 }
 
 func New() *Sublist {
-	return &Sublist{root: newLevel()}
+	return &Sublist{
+		root:  newLevel(),
+		cache: hashmap.New(),
+	}
 }
 
 var (
@@ -58,6 +61,7 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
 
+	s.lck.Lock()
 	l := s.root
 	var n *node
 
@@ -74,7 +78,6 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) {
 				n = v.(*node)
 			}
 		}
-
 		if n == nil {
 			n = newNode()
 			switch t[0] {
@@ -93,14 +96,38 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) {
 	}
 	n.subs = append(n.subs, sub)
 	s.count++
+	// FIXME: Do something more intelligent here
+	s.cache = hashmap.New()
+	s.lck.Unlock()
 }
 
 func (s *Sublist) Match(subject []byte) []interface{} {
-	tsa := [16][]byte{}
-	toks := split(subject, tsa[:0])
-	// FIXME: Let them pass in?
+
+	s.lck.RLock()
+	r := s.cache.Get(subject)
+	s.lck.RUnlock()
+
+	if r != nil {
+		return r.([]interface{})
+	}
+
+	tsa := [32][]byte{}
+	toks := tsa[:0]
+
+	start := 0
+	for i, b := range subject {
+		if b == _SEP {
+			toks = append(toks, subject[start:i])
+			start = i + 1
+		}
+	}
+	toks = append(toks, subject[start:])
 	results := make([]interface{}, 0, 4)
+
+	s.lck.Lock()
 	matchLevel(s.root, toks, &results)
+	s.cache.Set(subject, results)
+	s.lck.Unlock()
 	return results
 }
 
@@ -145,6 +172,8 @@ type lnt struct {
 func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
+
+	s.lck.Lock()
 	l := s.root
 	var n *node
 
@@ -153,6 +182,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 
 	for _, t := range toks {
 		if l == nil {
+			s.lck.Unlock()
 			return
 		}
 		switch t[0] {
@@ -175,6 +205,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 		}
 	}
 	if !s.removeFromNode(n, sub) {
+		s.lck.Unlock()
 		return
 	}
 	for i := len(levels) - 1; i >= 0; i-- {
@@ -183,6 +214,9 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 			l.pruneNode(n, t)
 		}
 	}
+	// FIXME: Do something more intelligent here
+	s.cache = hashmap.New()
+	s.lck.Unlock()
 }
 
 func (l *level) pruneNode(n *node, t []byte) {

@@ -2,7 +2,10 @@ package gnatsd
 
 import (
 	"bytes"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func verifyCount(s *Sublist, count uint32, t *testing.T) {
@@ -168,4 +171,116 @@ func TestRemoveCleanupWildcards(t *testing.T) {
 	verifyNumLevels(s, 0, t)
 }
 
+func TestCacheBehavior(t *testing.T) {
+	s := New()
+	literal := []byte("a.b.c")
+	fwc := []byte("a.>")
+	a, b := "a", "b"
+	s.Insert(literal, a)
+	r := s.Match(literal)
+	verifyLen(r, 1, t)
+	s.Insert(fwc, b)
+	r = s.Match(literal)
+	verifyLen(r, 2, t)
+	verifyMember(r, a, t)
+	verifyMember(r, b, t)
+	s.Remove(fwc, b)
+	r = s.Match(literal)
+	verifyLen(r, 1, t)
+	verifyMember(r, a, t)
+}
 
+var subs [][]byte
+var toks = []string{"apcera", "continuum", "component", "router", "api", "imgr", "jmgr", "auth"}
+var sl = New()
+var results = make([]interface{}, 0, 64)
+
+func init() {
+	subs = make([][]byte, 0, 256*1024)
+	subsInit("")
+	for i := 0; i < len(subs); i++ {
+		sl.Insert(subs[i], subs[i])
+	}
+	addWildcards()
+	println("Sublist holding ", sl.Count(), " subscriptions")
+}
+
+func subsInit(pre string) {
+	var sub string
+	for _, t := range toks {
+		if len(pre) > 0 {
+			sub = pre + "." + t
+		} else {
+			sub = t
+		}
+		subs = append(subs, []byte(sub))
+		if (len(strings.Split(sub, ".")) < 5) {
+			subsInit(sub)
+		}
+	}
+}
+
+func addWildcards() {
+	sl.Insert([]byte("cloud.>"), "paas")
+	sl.Insert([]byte("cloud.continuum.component.>"), "health")
+	sl.Insert([]byte("cloud.*.*.router.*"), "traffic")
+}
+
+func Benchmark______________________Insert(b *testing.B) {
+	b.SetBytes(1)
+	s := New()
+	for i, l := 0, len(subs); i < b.N; i++ {
+		index := i % l
+		s.Insert(subs[index], subs[index])
+	}
+}
+
+func Benchmark____________MatchSingleToken(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark______________MatchTwoTokens(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera.continuum")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark_MatchFourTokensSingleResult(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera.continuum.component.router")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark_MatchFourTokensMultiResults(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("cloud.continuum.component.router")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark_______MissOnLastTokenOfFive(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera.continuum.component.router.ZZZZ")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func _BenchmarkRSS(b *testing.B) {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	println("HEAP:", m.HeapObjects)
+	println("ALLOC:", m.Alloc)
+	println("TOTAL ALLOC:", m.TotalAlloc)
+	time.Sleep(30 * 1e9)
+}
