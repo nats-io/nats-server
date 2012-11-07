@@ -2,6 +2,7 @@ package gnatsd
 
 import (
 	"bytes"
+	"fmt"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -208,6 +209,25 @@ func TestMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral([]byte("foo.bar"), []byte("bar.>")), false, t)
 }
 
+func TestCacheBounds(t *testing.T) {
+	s := New()
+	s.Insert([]byte("cache.>"), "foo")
+
+	tmpl := "cache.test.%d"
+	loop := s.cmax + 100
+
+	for i := 0; i < loop ; i++ {
+		sub := []byte(fmt.Sprintf(tmpl, i))
+		s.Match(sub)
+	}
+	cs := int(s.cache.Count())
+	if  cs > s.cmax {
+		t.Fatalf("Cache is growing past limit: %d vs %d\n", cs, s.cmax)
+	}
+}
+
+// -- Benchmarks Setup --
+
 var subs [][]byte
 var toks = []string{"apcera", "continuum", "component", "router", "api", "imgr", "jmgr", "auth"}
 var sl = New()
@@ -243,6 +263,9 @@ func addWildcards() {
 	sl.Insert([]byte("cloud.continuum.component.>"), "health")
 	sl.Insert([]byte("cloud.*.*.router.*"), "traffic")
 }
+
+// -- Benchmarks Setup End --
+
 
 func Benchmark______________________Insert(b *testing.B) {
 	b.SetBytes(1)
