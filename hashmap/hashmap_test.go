@@ -114,6 +114,21 @@ func TestHashMapCollisions(t *testing.T) {
 	}
 }
 
+func TestAll(t *testing.T) {
+	h := New()
+	h.Set([]byte("1"), 1)
+	h.Set([]byte("2"), 1)
+	h.Set([]byte("3"), 1)
+	all := h.All()
+	if len(all) != 3 {
+		t.Fatalf("Expected All() to return 3, but got %d\n", len(all))
+	}
+	allkeys := h.AllKeys()
+	if len(allkeys) != 3 {
+		t.Fatalf("Expected All() to return 3, but got %d\n", len(allkeys))
+	}
+}
+
 func TestHashMapStats(t *testing.T) {
 	h := New()
 	h.rsz = false

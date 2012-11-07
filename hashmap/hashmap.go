@@ -76,6 +76,8 @@ func New() *HashMap {
 	return h
 }
 
+// Set will set the key item to data. This will blindly replace any item
+// that may have been at key previous.
 func (h *HashMap) Set(key []byte, data interface{}) {
 	hk := h.Hash(key)
 	ne := &Entry{hk: hk, key: key, data: data}
@@ -88,11 +90,13 @@ func (h *HashMap) Set(key []byte, data interface{}) {
 	}
 }
 
+// Get will return the item at key.
 func (h *HashMap) Get(key []byte) interface{} {
 	hk := h.Hash(key)
 	e := h.bkts[hk&h.msk]
 
 	// FIXME: Reorder on GET if chained?
+	// We unroll and optimize the comparison of keys.
 	for e != nil && len(key) == len(e.key) {
 		// We unroll and optimize the key comparison here.
 		klen := len(key)
@@ -117,6 +121,7 @@ func (h *HashMap) Get(key []byte) interface{} {
 	return nil
 }
 
+// Remove will remove what is associated with key.
 func (h *HashMap) Remove(key []byte) {
 	hk := h.Hash(key)
 	e := &h.bkts[hk&h.msk]
@@ -171,9 +176,20 @@ func (h *HashMap) Count() uint32 {
 	return h.used
 }
 
+// AllKeys will return all the keys stored in the HashMap
+func (h *HashMap) AllKeys() [][]byte {
+	all := make([][]byte, 0, h.used)
+	for _, e := range h.bkts {
+		for ; e != nil; e = e.next {
+			all = append(all, e.key)
+		}
+	}
+	return all
+}
+
 // All returns all the Entries in the map
 func (h *HashMap) All() []interface{} {
-	all := make([]interface{}, h.used)
+	all := make([]interface{}, 0, h.used)
 	for _, e := range h.bkts {
 		for ; e != nil; e = e.next {
 			all = append(all, e.data)
