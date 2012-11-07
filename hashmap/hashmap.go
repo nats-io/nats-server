@@ -14,6 +14,16 @@ import (
 	"github.com/apcera/gnatsd/hash"
 )
 
+// HashMap stores Entry items using a given Hash function.
+// The Hash function can be overridden.
+type HashMap struct {
+	Hash func([]byte) uint32
+	bkts []*Entry
+	msk  uint32
+	used uint32
+	rsz  bool
+}
+
 // Entry represents what the map is actually storing.
 // Uses simple linked list resolution for collisions.
 type Entry struct {
@@ -34,16 +44,6 @@ const (
 
 // DefaultHash to be used unless overridden.
 var DefaultHash = hash.Jesteress
-
-// HashMap stores Entry items using a given Hash function.
-// The Hash function can be overridden.
-type HashMap struct {
-	Hash func([]byte) uint32
-	bkts []*Entry
-	msk  uint32
-	used uint32
-	rsz  bool
-}
 
 // Stats are reported on HashMaps
 type Stats struct {
@@ -154,6 +154,7 @@ func (h *HashMap) Remove(key []byte) {
 
 // resize is responsible for reallocating the buckets and
 // redistributing the hashmap entries.
+// FIXME - can only be max_int big
 func (h *HashMap) resize(nsz uint32) {
 	nmsk := nsz - 1
 	bkts := make([]*Entry, nsz)
