@@ -3,6 +3,7 @@ package gnatsd
 import (
 	"bytes"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,23 @@ func TestCacheBehavior(t *testing.T) {
 	verifyMember(r, a, t)
 }
 
+func checkBool(b, expected bool, t *testing.T) {
+	if b != expected {
+		debug.PrintStack()
+		t.Fatalf("Expected %v, but got %v\n", expected, b)
+	}
+}
+
+func TestMatchLiterals(t *testing.T) {
+	checkBool(matchLiteral([]byte("foo"), []byte("foo")), true, t)
+	checkBool(matchLiteral([]byte("foo"), []byte("bar")), false, t)
+	checkBool(matchLiteral([]byte("foo"), []byte("*")), true, t)
+	checkBool(matchLiteral([]byte("foo"), []byte(">")), true, t)
+	checkBool(matchLiteral([]byte("foo.bar"), []byte(">")), true, t)
+	checkBool(matchLiteral([]byte("foo.bar"), []byte("foo.>")), true, t)
+	checkBool(matchLiteral([]byte("foo.bar"), []byte("bar.>")), false, t)
+}
+
 var subs [][]byte
 var toks = []string{"apcera", "continuum", "component", "router", "api", "imgr", "jmgr", "auth"}
 var sl = New()
@@ -214,7 +232,7 @@ func subsInit(pre string) {
 			sub = t
 		}
 		subs = append(subs, []byte(sub))
-		if (len(strings.Split(sub, ".")) < 5) {
+		if len(strings.Split(sub, ".")) < 5 {
 			subsInit(sub)
 		}
 	}
