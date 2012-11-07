@@ -154,7 +154,6 @@ func (h *HashMap) Remove(key []byte) {
 
 // resize is responsible for reallocating the buckets and
 // redistributing the hashmap entries.
-// FIXME - can only be max_int big
 func (h *HashMap) resize(nsz uint32) {
 	nmsk := nsz - 1
 	bkts := make([]*Entry, nsz)
@@ -173,13 +172,22 @@ func (h *HashMap) resize(nsz uint32) {
 	h.msk = nmsk
 }
 
+const maxBktSize = (1<<31)-1
+
 // grow the HashMap's buckets by 2
 func (h *HashMap) grow() {
+	// Can't grow beyond maxint for now
+	if len(h.bkts) >= maxBktSize {
+		return
+	}
 	h.resize(uint32(2 * len(h.bkts)))
 }
 
 // shrink the HashMap's buckets by 2
 func (h *HashMap) shrink() {
+	if len(h.bkts) <= _BSZ {
+		return
+	}
 	h.resize(uint32(len(h.bkts) / 2))
 }
 
