@@ -35,7 +35,7 @@ func verifyMember(r []interface{}, val string, t *testing.T) {
 }
 
 func verifyNumLevels(s *Sublist, expected int, t *testing.T) {
-	dl := s.DebugNumLevels()
+	dl := s.numLevels()
 	if dl != expected {
 		t.Errorf("NumLevels is %d, should be %d", dl, expected)
 	}

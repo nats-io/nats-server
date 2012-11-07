@@ -10,7 +10,7 @@ import (
 )
 
 // A Sublist stores and efficiently retrieves subscriptions. It uses a
-// trie structure and an efficient LRU cache to achieve quick lookups.
+// tree structure and an efficient RR cache to achieve quick lookups.
 type Sublist struct {
 	mu    sync.RWMutex
 	root  *level
@@ -19,20 +19,26 @@ type Sublist struct {
 	cmax  int
 }
 
+// A node contains subscriptions and a pointer to the next level.
 type node struct {
 	next *level
 	subs []interface{}
 }
 
+// A level represents a group of nodes and special pointers to
+// wildcard nodes.
 type level struct {
 	nodes    *hashmap.HashMap
 	pwc, fwc *node
 }
 
+// Create a new default node.
 func newNode() *node {
 	return &node{subs: make([]interface{}, 0, 4)}
 }
 
+// Create a new default level. We use FNV1A as the hash
+// algortihm for the tokens, which should be short.
 func newLevel() *level {
 	h := hashmap.New()
 	h.Hash = hash.FNV1A
@@ -47,7 +53,7 @@ func New() *Sublist {
 	return &Sublist{
 		root:  newLevel(),
 		cache: hashmap.New(),
-		cmax: defaultCacheMax,
+		cmax:  defaultCacheMax,
 	}
 }
 
@@ -155,7 +161,6 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 // Match will match all entries to the literal subject. It will return a
 // slice of results.
 func (s *Sublist) Match(subject []byte) []interface{} {
-
 	s.mu.RLock()
 	r := s.cache.Get(subject)
 	s.mu.RUnlock()
@@ -287,6 +292,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	s.mu.Unlock()
 }
 
+// pruneNode is used to prune and empty node from the tree.
 func (l *level) pruneNode(n *node, t []byte) {
 	if n == nil {
 		return
@@ -300,6 +306,8 @@ func (l *level) pruneNode(n *node, t []byte) {
 	}
 }
 
+// isEmpty will test if the node has any entries. Used
+// in pruning.
 func (n *node) isEmpty() bool {
 	if len(n.subs) == 0 {
 		if n.next == nil || n.next.numNodes() == 0 {
@@ -343,7 +351,7 @@ func (s *Sublist) removeFromNode(n *node, sub interface{}) bool {
 // wildcards, with a target subject. This is used in the cache layer.
 func matchLiteral(literal, subject []byte) bool {
 	li := 0
-	for _, b := range(subject) {
+	for _, b := range subject {
 		if li >= len(literal) {
 			return false
 		}
@@ -371,12 +379,14 @@ func matchLiteral(literal, subject []byte) bool {
 // Count return the number of stored items in the HashMap.
 func (s *Sublist) Count() uint32 { return s.count }
 
-// DebugNumLevels will return the number of levels contained in
-// the HashMap.
-func (s *Sublist) DebugNumLevels() int {
+// numLevels will return the maximum number of levels
+// contained in the Sublist tree.
+func (s *Sublist) numLevels() int {
 	return visitLevel(s.root, 0)
 }
 
+// visitLevel is used to descend the Sublist tree structure
+// recursively.
 func visitLevel(l *level, depth int) int {
 	if l == nil || l.numNodes() == 0 {
 		return depth
@@ -396,7 +406,6 @@ func visitLevel(l *level, depth int) int {
 			maxDepth = newDepth
 		}
 	}
-
 	if l.pwc != nil {
 		pwcDepth := visitLevel(l.pwc.next, depth)
 		if pwcDepth > maxDepth {
