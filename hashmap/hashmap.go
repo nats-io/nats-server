@@ -99,8 +99,9 @@ func (h *HashMap) Get(key []byte) interface{} {
 	// We unroll and optimize the comparison of keys.
 	for e != nil && len(key) == len(e.key) {
 		// We unroll and optimize the key comparison here.
-		klen := len(key)
-		for i := 0; klen >= _DWSZ; klen -= _DWSZ {
+		// Compare _DWSZ at a time
+		i, klen := 0, len(key)
+		for ; klen >= _DWSZ; klen -= _DWSZ {
 			k1 := *(*uint64)(unsafe.Pointer(&key[i]))
 			k2 := *(*uint64)(unsafe.Pointer(&e.key[i]))
 			if k1 != k2 {
@@ -108,7 +109,17 @@ func (h *HashMap) Get(key []byte) interface{} {
 			}
 			i += _DWSZ
 		}
-		for i := 0; i < klen; i++ {
+		// Check by _WSZ if applicable
+		if (klen & _WSZ) > 0 {
+			k1 := *(*uint32)(unsafe.Pointer(&key[i]))
+			k2 := *(*uint32)(unsafe.Pointer(&e.key[i]))
+			if k1 != k2 {
+				goto next
+			}
+			i += _WSZ
+		}
+		// Compare what is left over, byte by byte
+		for ; i < len(key); i++ {
 			if key[i] != e.key[i] {
 				goto next
 			}

@@ -190,6 +190,22 @@ func TestShrink(t *testing.T) {
 	}
 }
 
+func TestFalseLookup(t *testing.T) {
+	h := New()
+	// DW + W
+	h.Set([]byte("cache.test.0"), "foo")
+	v := h.Get([]byte("cache.test.1"))
+	if v != nil {
+		t.Fatalf("Had a match when did not expect one!\n")
+	}
+	// DW + W + 3
+	h.Set([]byte("cache.test.1234"), "foo")
+	v = h.Get([]byte("cache.test.0000"))
+	if v != nil {
+		t.Fatalf("Had a match when did not expect one!\n")
+	}
+}
+
 func Benchmark_GoMap___GetSmallKey(b *testing.B) {
 	b.StopTimer()
 	b.SetBytes(1)
