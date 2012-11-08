@@ -207,6 +207,8 @@ func TestMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral([]byte("foo.bar"), []byte(">")), true, t)
 	checkBool(matchLiteral([]byte("foo.bar"), []byte("foo.>")), true, t)
 	checkBool(matchLiteral([]byte("foo.bar"), []byte("bar.>")), false, t)
+	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.>")), true, t)
+	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.*.*")), true, t)
 }
 
 func TestCacheBounds(t *testing.T) {
@@ -216,13 +218,64 @@ func TestCacheBounds(t *testing.T) {
 	tmpl := "cache.test.%d"
 	loop := s.cmax + 100
 
-	for i := 0; i < loop ; i++ {
+	for i := 0; i < loop; i++ {
 		sub := []byte(fmt.Sprintf(tmpl, i))
 		s.Match(sub)
 	}
 	cs := int(s.cache.Count())
-	if  cs > s.cmax {
+	if cs > s.cmax {
 		t.Fatalf("Cache is growing past limit: %d vs %d\n", cs, s.cmax)
+	}
+}
+
+func TestStats(t *testing.T) {
+	s := New()
+	s.Insert([]byte("stats.>"), "fwc")
+	tmpl := "stats.test.%d"
+	loop := 255
+	total := uint32(loop+1)
+
+	for i := 0; i < loop ; i++ {
+		sub := []byte(fmt.Sprintf(tmpl, i))
+		s.Insert(sub, "l")
+	}
+
+	stats := s.Stats()
+	if time.Since(stats.StatsTime) > 50*time.Millisecond {
+		t.Fatalf("StatsTime seems incorrect: %+v\n", stats.StatsTime)
+	}
+	if stats.NumSubs != total {
+		t.Fatalf("Wrong stats for NumSubs: %d vs %d\n", stats.NumSubs, total)
+	}
+	if stats.NumInserts != uint64(total) {
+		t.Fatalf("Wrong stats for NumInserts: %d vs %d\n", stats.NumInserts, total)
+	}
+	if stats.NumRemoves != 0 {
+		t.Fatalf("Wrong stats for NumRemoves: %d vs %d\n", stats.NumRemoves, 0)
+	}
+	if stats.NumMatches != 0 {
+		t.Fatalf("Wrong stats for NumMatches: %d vs %d\n", stats.NumMatches, 0)
+	}
+
+	for i := 0; i < loop ; i++ {
+		s.Match([]byte("stats.test.22"))
+	}
+	s.Insert([]byte("stats.*.*"), "pwc")
+	s.Match([]byte("stats.test.22"))
+
+	stats = s.Stats()
+	if stats.NumMatches != uint64(loop+1) {
+		t.Fatalf("Wrong stats for NumMatches: %d vs %d\n", stats.NumMatches, loop+1)
+	}
+	expectedCacheHitRate := 255.0/256.0
+	if stats.CacheHitRate != expectedCacheHitRate {
+		t.Fatalf("Wrong stats for CacheHitRate: %.3g vs %0.3g\n", stats.CacheHitRate, expectedCacheHitRate)
+	}
+	if stats.MaxFanout != 3 {
+		t.Fatalf("Wrong stats for MaxFanout: %d vs %d\n", stats.MaxFanout, 3)
+	}
+	if stats.AvgFanout != 2.5 {
+		t.Fatalf("Wrong stats for MaxFanout: %d vs %d\n", stats.AvgFanout, 2.5)
 	}
 }
 
@@ -265,7 +318,6 @@ func addWildcards() {
 }
 
 // -- Benchmarks Setup End --
-
 
 func Benchmark______________________Insert(b *testing.B) {
 	b.SetBytes(1)

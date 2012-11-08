@@ -4,6 +4,7 @@ package gnatsd
 
 import (
 	"sync"
+	"time"
 
 	"github.com/apcera/gnatsd/hash"
 	"github.com/apcera/gnatsd/hashmap"
@@ -17,6 +18,15 @@ type Sublist struct {
 	count uint32
 	cache *hashmap.HashMap
 	cmax  int
+	stats stats
+}
+
+type stats struct {
+	inserts   uint64
+	removes   uint64
+	matches   uint64
+	cacheHits uint64
+	since     time.Time
 }
 
 // A node contains subscriptions and a pointer to the next level.
@@ -54,6 +64,7 @@ func New() *Sublist {
 		root:  newLevel(),
 		cache: hashmap.New(),
 		cmax:  defaultCacheMax,
+		stats: stats{since: time.Now()},
 	}
 }
 
@@ -115,6 +126,7 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) {
 	}
 	n.subs = append(n.subs, sub)
 	s.count++
+	s.stats.inserts++
 	s.addToCache(subject, sub)
 	s.mu.Unlock()
 }
@@ -162,10 +174,12 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 // slice of results.
 func (s *Sublist) Match(subject []byte) []interface{} {
 	s.mu.RLock()
+	s.stats.matches++
 	r := s.cache.Get(subject)
 	s.mu.RUnlock()
 
 	if r != nil {
+		s.stats.cacheHits++
 		return r.([]interface{})
 	}
 
@@ -282,6 +296,10 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 		s.mu.Unlock()
 		return
 	}
+
+	s.count--
+	s.stats.removes++
+
 	for i := len(levels) - 1; i >= 0; i-- {
 		l, n, t := levels[i].l, levels[i].n, levels[i].t
 		if n.isEmpty() {
@@ -336,7 +354,6 @@ func (s *Sublist) removeFromNode(n *node, sub interface{}) bool {
 	}
 	for i, v := range n.subs {
 		if v == sub {
-			s.count--
 			num := len(n.subs)
 			a := n.subs
 			copy(a[i:num-1], a[i+1:num])
@@ -357,9 +374,11 @@ func matchLiteral(literal, subject []byte) bool {
 		}
 		switch b {
 		case _PWC:
-			// Skip token
+			// Skip token in literal
+			ll := len(literal)
 			for {
-				if li >= len(literal) || literal[li] == _SEP {
+				if li >= ll || literal[li] == _SEP {
+					li -= 1
 					break
 				}
 				li += 1
@@ -378,6 +397,45 @@ func matchLiteral(literal, subject []byte) bool {
 
 // Count return the number of stored items in the HashMap.
 func (s *Sublist) Count() uint32 { return s.count }
+
+// Stats for the sublist
+type Stats struct {
+	NumSubs      uint32
+	NumCache     uint32
+	NumInserts   uint64
+	NumRemoves   uint64
+	NumMatches   uint64
+	CacheHitRate float64
+	MaxFanout    uint32
+	AvgFanout    float64
+	StatsTime    time.Time
+}
+
+// Stats will return a stats structure for the current state.
+func (s *Sublist) Stats() *Stats {
+	st := &Stats{}
+	st.NumSubs = s.count
+	st.NumCache = s.cache.Count()
+	st.NumInserts = s.stats.inserts
+	st.NumRemoves = s.stats.removes
+	st.NumMatches = s.stats.matches
+	st.CacheHitRate = float64(s.stats.cacheHits) / float64(s.stats.matches)
+	// whip through cache for fanout stats
+	// FIXME, creating all each time could be expensive, should do a cb version.
+	tot, max := 0, 0
+	all := s.cache.All()
+	for _, r := range all {
+		l := len(r.([]interface{}))
+		tot += l
+		if l > max {
+			max = l
+		}
+	}
+	st.MaxFanout = uint32(max)
+	st.AvgFanout = float64(tot) / float64(len(all))
+	st.StatsTime = s.stats.since
+	return st
+}
 
 // numLevels will return the maximum number of levels
 // contained in the Sublist tree.
