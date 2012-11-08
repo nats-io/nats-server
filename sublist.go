@@ -4,6 +4,7 @@ package gnatsd
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apcera/gnatsd/hash"
@@ -174,12 +175,12 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 // slice of results.
 func (s *Sublist) Match(subject []byte) []interface{} {
 	s.mu.RLock()
-	s.stats.matches++
+	atomic.AddUint64(&s.stats.matches, 1)
 	r := s.cache.Get(subject)
 	s.mu.RUnlock()
 
 	if r != nil {
-		s.stats.cacheHits++
+		atomic.AddUint64(&s.stats.cacheHits, 1)
 		return r.([]interface{})
 	}
 
@@ -413,6 +414,9 @@ type Stats struct {
 
 // Stats will return a stats structure for the current state.
 func (s *Sublist) Stats() *Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	st := &Stats{}
 	st.NumSubs = s.count
 	st.NumCache = s.cache.Count()
