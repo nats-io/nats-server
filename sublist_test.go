@@ -277,6 +277,24 @@ func TestStats(t *testing.T) {
 	if stats.AvgFanout != 2.5 {
 		t.Fatalf("Wrong stats for MaxFanout: %d vs %d\n", stats.AvgFanout, 2.5)
 	}
+
+	s.ResetStats()
+	stats = s.Stats()
+	if time.Since(stats.StatsTime) > 50*time.Millisecond {
+		t.Fatalf("After Reset: StatsTime seems incorrect: %+v\n", stats.StatsTime)
+	}
+	if stats.NumInserts != 0 {
+		t.Fatalf("After Reset: Wrong stats for NumInserts: %d vs %d\n", stats.NumInserts, 0)
+	}
+	if stats.NumRemoves != 0 {
+		t.Fatalf("After Reset: Wrong stats for NumRemoves: %d vs %d\n", stats.NumRemoves, 0)
+	}
+	if stats.NumMatches != 0 {
+		t.Fatalf("After Reset: Wrong stats for NumMatches: %d vs %d\n", stats.NumMatches, 0)
+	}
+	if stats.CacheHitRate != 0.0 {
+		t.Fatalf("After Reset: Wrong stats for CacheHitRate: %.3g vs %0.3g\n", stats.CacheHitRate, 0.0)
+	}
 }
 
 // -- Benchmarks Setup --

@@ -419,7 +419,9 @@ func (s *Sublist) Stats() *Stats {
 	st.NumInserts = s.stats.inserts
 	st.NumRemoves = s.stats.removes
 	st.NumMatches = s.stats.matches
-	st.CacheHitRate = float64(s.stats.cacheHits) / float64(s.stats.matches)
+	if s.stats.matches > 0 {
+		st.CacheHitRate = float64(s.stats.cacheHits) / float64(s.stats.matches)
+	}
 	// whip through cache for fanout stats
 	// FIXME, creating all each time could be expensive, should do a cb version.
 	tot, max := 0, 0
@@ -435,6 +437,12 @@ func (s *Sublist) Stats() *Stats {
 	st.AvgFanout = float64(tot) / float64(len(all))
 	st.StatsTime = s.stats.since
 	return st
+}
+
+// ResetStats will clear stats and update StatsTime to time.Now()
+func (s *Sublist) ResetStats() {
+	s.stats = stats{}
+	s.stats.since = time.Now()
 }
 
 // numLevels will return the maximum number of levels
