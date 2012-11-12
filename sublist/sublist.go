@@ -1,6 +1,6 @@
 // Copyright 2012 Apcera Inc. All rights reserved.
 
-package gnatsd
+package sublist
 
 import (
 	"sync"

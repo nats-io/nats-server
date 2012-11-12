@@ -1,4 +1,4 @@
-package gnatsd
+package sublist
 
 import (
 	"bytes"
