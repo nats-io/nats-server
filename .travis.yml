@@ -9,5 +9,9 @@ script:
   - go test -i
   - go test -v
   - cd ..
+  - cd server
+  - go test -i
+  - go test -v
+  - cd ..
   - go test -i
   - go test -v
