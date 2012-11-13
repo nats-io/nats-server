@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"sync/atomic"
 
@@ -14,11 +13,20 @@ import (
 	"github.com/apcera/gnatsd/sublist"
 )
 
+type Options struct {
+	Host    string
+	Port    int
+	Trace   bool
+	Debug   bool
+	Logtime bool
+	MaxConn int
+}
+
 type info struct {
 	Id           string `json:"server_id"`
 	Version      string `json:"version"`
 	Host         string `json:"host"`
-	Port         uint   `json:"port"`
+	Port         int    `json:"port"`
 	AuthRequired bool   `json:"auth_required"`
 	SslRequired  bool   `json:"ssl_required"`
 	MaxPayload   int    `json:"max_payload"`
@@ -29,44 +37,61 @@ type Server struct {
 	infoJson []byte
 	sl       *sublist.Sublist
 	gcid     uint64
+	opts     Options
+	trace    bool
+	debug    bool
 }
 
-func New() *Server {
-	s := &Server{
-		info: info{
-			Id:           genId(),
-			Version:      VERSION,
-			Host:         DEFAULT_HOST,
-			Port:         DEFAULT_PORT,
-			AuthRequired: false,
-			SslRequired:  false,
-			MaxPayload:   MAX_PAYLOAD_SIZE,
-		},
-		sl: sublist.New(),
+func optionDefaults(opt *Options) {
+	if opt.MaxConn == 0 {
+		opt.MaxConn = DEFAULT_MAX_CONNECTIONS
 	}
+}
+
+func New(opts Options) *Server {
+	optionDefaults(&opts)
+	inf := info{
+		Id:           genId(),
+		Version:      VERSION,
+		Host:         opts.Host,
+		Port:         opts.Port,
+		AuthRequired: false,
+		SslRequired:  false,
+		MaxPayload:   MAX_PAYLOAD_SIZE,
+	}
+	s := &Server{
+		info:  inf,
+		sl:    sublist.New(),
+		opts:  opts,
+		debug: opts.Debug,
+		trace: opts.Trace,
+	}
+	// Setup logging with flags
+	s.LogInit()
+
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		log.Fatalf("Err marshalling INFO JSON: %+v\n", err)
+		Fatalf("Err marshalling INFO JSON: %+v\n", err)
 	}
 	s.infoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-
 	return s
 }
 
-func (s *Server) AcceptLoop(host string, port int) {
-	hp := fmt.Sprintf("%s:%d", host, port)
+func (s *Server) AcceptLoop() {
+	Logf("Starting nats-server version %s on port %d", VERSION, s.opts.Port)
+
+	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		println(e)
+		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
-	log.Println("Listening on ", l.Addr())
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Printf("Accept error: %v", err)
+				Logf("Accept error: %v", err)
 			}
 			continue
 		}
@@ -74,21 +99,30 @@ func (s *Server) AcceptLoop(host string, port int) {
 	}
 }
 
+func clientConnStr(conn net.Conn) interface{} {
+    if ip, ok := conn.(*net.TCPConn); ok {
+		addr := ip.RemoteAddr().(*net.TCPAddr)
+		return []string{fmt.Sprintf("%v, %d", addr.IP, addr.Port)}
+	}
+	return "N/A"
+}
+
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, conn: conn}
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-//	log.Printf("Creating Client: %+v\n", c)
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
 	c.br = bufio.NewReaderSize(c.conn, defaultBufSize)
 	c.subs = hashmap.New()
-/*
-	if ipc := conn.(*net.TCPConn) ; ipc != nil {
-		ipc.SetReadBuffer(65536)
-	}
-*/
+
+     if ip, ok := conn.(*net.TCPConn); ok {
+	     ip.SetReadBuffer(32768)
+	 }
 
 	s.sendInfo(c)
 	go c.readLoop()
+
+	Debug("Client connection created", clientConnStr(conn), c.cid)
+
 	return c
 }
 

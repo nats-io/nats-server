@@ -10,25 +10,38 @@ import (
 	"github.com/apcera/gnatsd/server"
 )
 
-var port = server.DEFAULT_PORT
-var host = server.DEFAULT_HOST
-
 func main() {
-	// Parse flags
+	// logging setup
+	server.LogSetup()
 
-	flag.IntVar(&port, "port", server.DEFAULT_PORT, "Port to listen on.")
-	flag.IntVar(&port, "p", server.DEFAULT_PORT, "Port to listen on.")
-	flag.StringVar(&host, "host", server.DEFAULT_HOST, "Network host to listen on.")
-	flag.StringVar(&host, "h", server.DEFAULT_HOST, "Network host to listen on.")
+	opts := server.Options{}
+
+	var debugAndTrace bool
+
+	// Parse flags
+	flag.IntVar(&opts.Port, "port", server.DEFAULT_PORT, "Port to listen on.")
+	flag.IntVar(&opts.Port, "p", server.DEFAULT_PORT, "Port to listen on.")
+	flag.StringVar(&opts.Host, "host", server.DEFAULT_HOST, "Network host to listen on.")
+	flag.StringVar(&opts.Host, "h", server.DEFAULT_HOST, "Network host to listen on.")
+	flag.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
+	flag.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
+	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
+	flag.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
+	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
 	flag.Parse()
+
+	if debugAndTrace {
+		opts.Trace, opts.Debug = true, true
+	}
 
 	// Profiler
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6062", nil))
 	}()
-	// Parse config if given
-	log.Println("starting up!")
 
-	s := server.New()
-	s.AcceptLoop(host, port)
+	// Parse config if given
+
+	s := server.New(opts)
+	s.AcceptLoop()
 }
+

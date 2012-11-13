@@ -17,7 +17,7 @@ import (
 
 // The size of the bufio reader/writer on top of the socket.
 //const defaultBufSize = 32768
-const defaultBufSize = 65536
+const defaultBufSize = 32768
 
 type client struct {
 	mu   sync.Mutex
@@ -79,8 +79,24 @@ func (c *client) readLoop() {
 	}
 }
 
+func (c *client) traceMsg(msg []byte) {
+	opa := []interface{}{"Processing msg", string(c.pa.subject), string(c.pa.reply), string(msg)}
+	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
+}
+
+func (c *client) traceOp(op string, arg []byte) {
+	if !trace {
+		return
+	}
+	opa := []interface{}{fmt.Sprintf("%s OP", op)}
+	if arg != nil {
+		opa = append(opa, fmt.Sprintf("%s %s", op, string(arg)))
+	}
+	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
+}
+
 func (c *client) processConnect(arg []byte) error {
-	//	log.Printf("Got connect arg: '%s'\n", arg)
+	c.traceOp("CONNECT", arg)
 	// FIXME, check err
 	return json.Unmarshal(arg, &c.opts)
 }
@@ -88,7 +104,7 @@ func (c *client) processConnect(arg []byte) error {
 var pongResp = []byte(fmt.Sprintf("PONG%s", CR_LF))
 
 func (c *client) processPing() {
-//	log.Printf("Process ping\n")
+	c.traceOp("PING", nil)
 	if c.conn == nil {
 		return
 	}
@@ -99,7 +115,7 @@ func (c *client) processPing() {
 const argsLenMax = 3
 
 func (c *client) processPub(arg []byte) error {
-	//	log.Printf("Got pub arg: '%s'\n", arg)
+	c.traceOp("PUB", arg)
 	args := splitArg(arg)
 	switch len(args) {
 	case 2:
@@ -118,7 +134,6 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
-//	log.Printf("Parsed pubArg: %+v\n", c.pa)
 	return nil
 }
 
@@ -146,10 +161,10 @@ func splitArg(arg []byte) [][]byte {
 }
 
 func (c *client) processSub(argo []byte) error {
+	c.traceOp("SUB", argo)
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
 	copy(arg, argo)
-//	log.Printf("Got sub arg for client[%v]: '%s'\n", c, arg)
 	args := splitArg(arg)
 	sub := &subscription{client: c}
 	switch len(args) {
@@ -189,9 +204,8 @@ func (c *client) unsubscribe(sub *subscription) {
 }
 
 func (c *client) processUnsub(arg []byte) error {
-//	log.Printf("Got unsub arg for client[%v]: '%s'\n", c, arg)
+	c.traceOp("UNSUB", arg)
 	args := splitArg(arg)
-
 	var sid []byte
 	max := -1
 
@@ -204,11 +218,12 @@ func (c *client) processUnsub(arg []byte) error {
 	default:
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
-	sub := (c.subs.Get(sid)).(*subscription)
-	if max > 0 {
-		sub.max = int64(max)
+    if sub, ok := (c.subs.Get(sid)).(*subscription); ok {
+		if max > 0 {
+			sub.max = int64(max)
+		}
+		c.unsubscribe(sub)
 	}
-	c.unsubscribe(sub)
 	return nil
 }
 
@@ -248,6 +263,7 @@ func (sub *subscription) deliverMsg(mh, msg []byte) {
 // go flusher routine. Single for all connections?
 
 func (c *client) processMsg(msg []byte) {
+	c.traceMsg(msg)
 	c.nm++
 	if c.srv == nil {
 		return
@@ -290,7 +306,8 @@ func (c *client) closeConnection() {
 	if c.conn == nil {
 		return
 	}
-	//	log.Printf("Closing Connection: %v\n", c)
+	Debug("Client connection closed", clientConnStr(c.conn), c.cid)
+
 	//	c.bw.Flush()
 	c.conn.Close()
 	c.conn = nil
