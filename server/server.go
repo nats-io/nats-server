@@ -54,8 +54,9 @@ func New() *Server {
 	return s
 }
 
-func (s *Server) AcceptLoop() {
-	l, e := net.Listen("tcp", "0.0.0.0:4222")
+func (s *Server) AcceptLoop(host string, port int) {
+	hp := fmt.Sprintf("%s:%d", host, port)
+	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		println(e)
 		return
