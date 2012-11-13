@@ -43,6 +43,12 @@ type Server struct {
 }
 
 func optionDefaults(opt *Options) {
+	if opt.Host == "" {
+		opt.Host = DEFAULT_HOST
+	}
+	if opt.Port == 0 {
+		opt.Port = DEFAULT_PORT
+	}
 	if opt.MaxConn == 0 {
 		opt.MaxConn = DEFAULT_MAX_CONNECTIONS
 	}
