@@ -129,6 +129,24 @@ func TestAll(t *testing.T) {
 	}
 }
 
+func TestSetDoesReplaceOnExisting(t *testing.T) {
+	h := New()
+	k := []byte("key")
+	h.Set(k, "foo")
+	h.Set(k, "bar")
+	all := h.All()
+	if len(all) != 1 {
+		t.Fatalf("Set should replace, expected 1 vs %d\n", len(all))
+	}
+	s, ok := all[0].(string)
+	if !ok {
+		t.Fatalf("Value is incorrect: %v\n", all[0].(string))
+	}
+	if s != "bar" {
+		t.Fatalf("Value is incorrect, expected 'bar' vs '%s'\n", s)
+	}
+}
+
 func TestHashMapStats(t *testing.T) {
 	h := New()
 	h.rsz = false

@@ -80,6 +80,16 @@ func New() *HashMap {
 // that may have been at key previous.
 func (h *HashMap) Set(key []byte, data interface{}) {
 	hk := h.Hash(key)
+	e := h.bkts[hk&h.msk]
+	for e != nil {
+		if len(key) == len(e.key) && bytes.Equal(key, e.key) {
+			// Success, replace data field
+			e.data = data
+			return
+		}
+		e = e.next
+	}
+	// We have a new entry here
 	ne := &Entry{hk: hk, key: key, data: data}
 	ne.next = h.bkts[hk&h.msk]
 	h.bkts[hk&h.msk] = ne
