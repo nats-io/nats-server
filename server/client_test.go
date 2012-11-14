@@ -238,7 +238,7 @@ func TestClientUnSub(t *testing.T) {
 
 	num := 1
 
-	// Queue SUB/PUB
+	// SUB/PUB
 	subs := []byte("SUB foo 1\r\nSUB foo 2\r\n")
 	unsub := []byte("UNSUB 1\r\n")
 	pub := []byte("PUB foo bar 5\r\nhello\r\n")
@@ -276,7 +276,7 @@ func TestClientUnSubMax(t *testing.T) {
 	num := 10
 	exp := 5
 
-	// Queue SUB/PUB
+	// SUB/PUB
 	subs := []byte("SUB foo 1\r\n")
 	unsub := []byte("UNSUB 1 5\r\n")
 	pub := []byte("PUB foo bar 5\r\nhello\r\n")
