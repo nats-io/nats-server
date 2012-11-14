@@ -147,6 +147,21 @@ func TestSetDoesReplaceOnExisting(t *testing.T) {
 	}
 }
 
+func TestCollision(t *testing.T) {
+	h := New()
+	k1 := []byte("999")
+	k2 := []byte("1000")
+	h.Set(k1, "foo")
+	h.Set(k2, "bar")
+	all := h.All()
+	if len(all) != 2 {
+		t.Fatalf("Expected 2 vs %d\n", len(all))
+	}
+	if h.Get(k1) == nil {
+		t.Fatalf("Failed to get '999'\n")
+	}
+}
+
 func TestHashMapStats(t *testing.T) {
 	h := New()
 	h.rsz = false

@@ -104,13 +104,15 @@ func (h *HashMap) Set(key []byte, data interface{}) {
 func (h *HashMap) Get(key []byte) interface{} {
 	hk := h.Hash(key)
 	e := h.bkts[hk&h.msk]
-
 	// FIXME: Reorder on GET if chained?
 	// We unroll and optimize the comparison of keys.
-	for e != nil && len(key) == len(e.key) {
+	for e != nil {
+		i, klen := 0, len(key)
+		if klen != len(e.key) {
+			goto next
+		}
 		// We unroll and optimize the key comparison here.
 		// Compare _DWSZ at a time
-		i, klen := 0, len(key)
 		for ; klen >= _DWSZ; klen -= _DWSZ {
 			k1 := *(*uint64)(unsafe.Pointer(&key[i]))
 			k2 := *(*uint64)(unsafe.Pointer(&e.key[i]))
@@ -182,7 +184,7 @@ func (h *HashMap) resize(nsz uint32) {
 	h.msk = nmsk
 }
 
-const maxBktSize = (1<<31)-1
+const maxBktSize = (1 << 31) - 1
 
 // grow the HashMap's buckets by 2
 func (h *HashMap) grow() {
