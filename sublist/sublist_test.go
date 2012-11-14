@@ -274,10 +274,9 @@ func TestStats(t *testing.T) {
 	if stats.MaxFanout != 3 {
 		t.Fatalf("Wrong stats for MaxFanout: %d vs %d\n", stats.MaxFanout, 3)
 	}
-	if stats.AvgFanout != 2.5 {
-		t.Fatalf("Wrong stats for MaxFanout: %d vs %d\n", stats.AvgFanout, 2.5)
+	if stats.AvgFanout != 3.0 {
+		t.Fatalf("Wrong stats for AvgFanout: %g vs %g\n", stats.AvgFanout, 3.0)
 	}
-
 	s.ResetStats()
 	stats = s.Stats()
 	if time.Since(stats.StatsTime) > 50*time.Millisecond {

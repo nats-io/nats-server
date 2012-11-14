@@ -163,10 +163,9 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 		if !matchLiteral(k, subject) {
 			continue
 		}
-		r := s.cache.Get(k)
-		if r == nil {
-			continue
-		}
+		// FIXME, right now just remove all matching cache
+		// entries. Should be smarter and walk small result
+		// lists and delete
 		s.cache.Remove(k)
 	}
 }
@@ -209,7 +208,10 @@ func (s *Sublist) Match(subject []byte) []interface{} {
 	if int(s.cache.Count()) >= s.cmax {
 		s.cache.RemoveRandom()
 	}
-	s.cache.Set(subject, results)
+	// Make sure we copy the subject key here
+	scopy := make([]byte, len(subject))
+	copy(scopy, subject)
+	s.cache.Set(scopy, results)
 	s.mu.Unlock()
 
 	return results
