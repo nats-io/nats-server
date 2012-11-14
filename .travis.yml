@@ -1,17 +1,5 @@
 language: go
 
 script:
-  - cd hashmap
-  - go test -i
-  - go test -v
-  - cd ..
-  - cd sublist
-  - go test -i
-  - go test -v
-  - cd ..
-  - cd server
-  - go test -i
-  - go test -v
-  - cd ..
-  - go test -i
-  - go test -v
+  - go test -i ./...
+  - go test ./...
