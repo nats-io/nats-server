@@ -5,12 +5,14 @@ package server
 import (
 	"bytes"
 	"testing"
+
+	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
 )
 
 func TestSplitBufferSubOp(t *testing.T) {
 	s := &Server{ sl: sublist.New() }
-	c := &client{srv:s}
+	c := &client{srv:s, subs: hashmap.New()}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -45,7 +47,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp(t *testing.T) {
-	c := &client{}
+	c := &client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	pub1 := pub[:2]
 	pub2 := pub[2:9]
@@ -111,7 +113,7 @@ func TestSplitBufferPubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp2(t *testing.T) {
-	c := &client{}
+	c := &client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
 	pub1 := pub[:30]
 	pub2 := pub[30:]
