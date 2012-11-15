@@ -266,7 +266,9 @@ func (sub *subscription) deliverMsg(mh, msg []byte) {
 
 func (c *client) processMsg(msg []byte) {
 	c.nm++
-	c.traceMsg(msg)
+	if trace {
+		c.traceMsg(msg)
+	}
 	if c.srv == nil {
 		return
 	}
