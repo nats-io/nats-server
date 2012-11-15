@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+
 	"github.com/apcera/gnatsd/server"
 )
 
