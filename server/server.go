@@ -22,7 +22,7 @@ type Options struct {
 	MaxConn int
 }
 
-type info struct {
+type Info struct {
 	Id           string `json:"server_id"`
 	Version      string `json:"version"`
 	Host         string `json:"host"`
@@ -33,7 +33,7 @@ type info struct {
 }
 
 type Server struct {
-	info     info
+	info     Info
 	infoJson []byte
 	sl       *sublist.Sublist
 	gcid     uint64
@@ -56,7 +56,7 @@ func optionDefaults(opt *Options) {
 
 func New(opts Options) *Server {
 	optionDefaults(&opts)
-	inf := info{
+	inf := Info{
 		Id:           genId(),
 		Version:      VERSION,
 		Host:         opts.Host,
