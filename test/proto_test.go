@@ -52,7 +52,7 @@ var expBuf = make([]byte, 32768)
 // Test result from server against regexp
 func expectResult(t *testing.T, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	defer c.SetReadDeadline(time.Time{})
 
