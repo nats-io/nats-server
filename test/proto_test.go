@@ -22,21 +22,21 @@ type sendFun func(string)
 type expectFun func(*regexp.Regexp) []byte
 
 // Closure version for easier reading
-func sendCommand(t *testing.T, c net.Conn) sendFun {
+func sendCommand(t tLogger, c net.Conn) sendFun {
 	return func(op string) {
 		sendProto(t, c, op)
 	}
 }
 
 // Closure version for easier reading
-func expectCommand(t *testing.T, c net.Conn) expectFun {
+func expectCommand(t tLogger, c net.Conn) expectFun {
 	return func(re *regexp.Regexp)([]byte) {
 		return expectResult(t, c, re)
 	}
 }
 
 // Send the protocol command to the server.
-func sendProto(t *testing.T, c net.Conn, op string) {
+func sendProto(t tLogger, c net.Conn, op string) {
 	n, err := c.Write([]byte(op))
 	if err != nil {
 		t.Fatalf("Error writing command to conn: %v\n", err)
@@ -50,7 +50,7 @@ func sendProto(t *testing.T, c net.Conn, op string) {
 var expBuf = make([]byte, 32768)
 
 // Test result from server against regexp
-func expectResult(t *testing.T, c net.Conn, re *regexp.Regexp) []byte {
+func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
 	time.Sleep(50 * time.Millisecond)
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
@@ -68,7 +68,7 @@ func expectResult(t *testing.T, c net.Conn, re *regexp.Regexp) []byte {
 }
 
 // This will check that we got what we expected.
-func checkMsg(t *testing.T, m [][]byte, subject, sid, reply, len, msg string) {
+func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
 	if string(m[SUB_INDEX]) != subject {
 		t.Fatalf("Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
 	}
@@ -87,7 +87,7 @@ func checkMsg(t *testing.T, m [][]byte, subject, sid, reply, len, msg string) {
 }
 
 // Closure for expectMsgs
-func expectMsgsCommand(t *testing.T, ef expectFun) func(int) [][][]byte {
+func expectMsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 	return func(expected int) [][][]byte {
 		buf := ef(msgRe)
 		matches := msgRe.FindAllSubmatch(buf, -1)
@@ -110,7 +110,7 @@ const (
 	MSG_INDEX   = 6
 )
 
-func doDefaultConnect(t *testing.T, c net.Conn) {
+func doDefaultConnect(t tLogger, c net.Conn) {
 	// Basic Connect
 	sendProto(t, c, "CONNECT {\"verbose\":false,\"pedantic\":false,\"ssl_required\":false}\r\n")
 	buf := expectResult(t, c, infoRe)
@@ -122,7 +122,7 @@ func doDefaultConnect(t *testing.T, c net.Conn) {
 	}
 }
 
-func setupConn(t *testing.T, c net.Conn) (sendFun, expectFun) {
+func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 	doDefaultConnect(t, c)
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
