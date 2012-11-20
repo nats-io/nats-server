@@ -111,10 +111,10 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 				if err := c.processPub(arg); err != nil {
 					return err
 				}
+				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -130,7 +130,7 @@ func (c *client) parse(buf []byte) error {
 				}
 			} else if i-c.as >= c.pa.size {
 				c.processMsg(buf[c.as:i])
-				c.state = MSG_END
+				c.argBuf, c.msgBuf, c.state = nil, nil, MSG_END
 			}
 		case MSG_END:
 			switch b {
@@ -356,6 +356,8 @@ func (c *client) clonePubArg() {
 	c.argBuf = append(c.argBuf, c.pa.reply...)
 	c.argBuf = append(c.argBuf, c.pa.szb...)
 	c.pa.subject = c.argBuf[:len(c.pa.subject)]
-	c.pa.reply = c.argBuf[len(c.pa.subject) : len(c.pa.subject)+len(c.pa.reply)]
+	if c.pa.reply != nil {
+		c.pa.reply = c.argBuf[len(c.pa.subject) : len(c.pa.subject)+len(c.pa.reply)]
+	}
 	c.pa.szb = c.argBuf[len(c.pa.subject)+len(c.pa.reply):]
 }
