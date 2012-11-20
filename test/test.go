@@ -62,7 +62,7 @@ func (s *natsServer) stopServer() {
 
 func createClientConn(t tLogger, host string, port int) net.Conn {
 	addr := fmt.Sprintf("%s:%d", host, port)
-	c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	c, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
 		t.Fatalf("Could not connect to server: %v\n", err)
 	}
