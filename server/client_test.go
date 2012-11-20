@@ -140,7 +140,7 @@ func checkPayload(cr *bufio.Reader, expected []byte, t *testing.T) {
 func TestClientSimplePubSub(t *testing.T) {
 	_, c, cr := setupClient()
 	// SUB/PUB
-	go c.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\n"))
+	go c.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
 	l, err := cr.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving msg from server: %v\n", err)
@@ -165,7 +165,7 @@ func TestClientSimplePubSubWithReply(t *testing.T) {
 	_, c, cr := setupClient()
 
 	// SUB/PUB
-	go c.parse([]byte("SUB foo 1\r\nPUB foo bar 5\r\nhello\r\n"))
+	go c.parse([]byte("SUB foo 1\r\nPUB foo bar 5\r\nhello\r\nPING\r\n"))
 	l, err := cr.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving msg from server: %v\n", err)
