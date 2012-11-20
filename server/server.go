@@ -117,8 +117,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, conn: conn}
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
-	c.br = bufio.NewReaderSize(c.conn, defaultBufSize)
 	c.subs = hashmap.New()
+
+	// This is to track pending clients that have data to be flushed
+	// after we process inbound msgs from our own connection.
+	c.pcd = make(map[*client]struct{})
 
      if ip, ok := conn.(*net.TCPConn); ok {
 	     ip.SetReadBuffer(32768)
