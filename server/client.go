@@ -313,10 +313,6 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	c.pcd[sub.client] = needFlush
 }
 
-// TODO
-// Block pub goroutine on bufio locked write buffer with
-// go flusher routine. Single for all connections?
-
 func (c *client) processMsg(msg []byte) {
 	c.nm++
 	if trace {
