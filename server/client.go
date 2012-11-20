@@ -10,7 +10,6 @@ import (
 	"net"
 	"sync"
 	"time"
-//	"unsafe"
 
 	"github.com/apcera/gnatsd/hashmap"
 )
@@ -344,6 +343,7 @@ func (c *client) processMsg(msg []byte) {
 	for _, v := range r {
 		sub := v.(*subscription)
 		if sub.queue != nil {
+			// FIXME, this can be more efficient
 			if qmap == nil {
 				qmap = make(map[string][]*subscription)
 			}
