@@ -52,8 +52,8 @@ var expBuf = make([]byte, 32768)
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
-	time.Sleep(50 * time.Millisecond)
-	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	time.Sleep(100 * time.Millisecond)
+	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	defer c.SetReadDeadline(time.Time{})
 
 	n, err := c.Read(expBuf)
@@ -186,6 +186,36 @@ func TestQueueSub(t *testing.T) {
 	}
 	if len(sids) != 2 {
 		t.Fatalf("Expected only 2 sids, got %d\n", len(sids))
+	}
+	for k, c := range sids {
+		if c < 35 {
+			t.Fatalf("Expected ~50 (+-15) msgs for '%s', got %d\n", k, c)
+		}
+	}
+}
+
+func TestMultipleQueueSub(t *testing.T) {
+	c := createClientConn(t, "localhost", server.DEFAULT_PORT)
+	send, expect := setupConn(t, c)
+	expectMsgs := expectMsgsCommand(t, expect)
+	defer c.Close()
+
+	sent := 100
+	send("SUB foo g1 1\r\n")
+	send("SUB foo g1 2\r\n")
+	send("SUB foo g2 3\r\n")
+	send("SUB foo g2 4\r\n")
+
+	for i := 0; i < sent; i++ {
+		send("PUB foo 2\r\nok\r\n")
+	}
+	matches := expectMsgs(sent*2)
+	sids := make(map[string]int)
+	for _, m := range matches {
+		sids[string(m[SID_INDEX])]++
+	}
+	if len(sids) != 4 {
+		t.Fatalf("Expected 4 sids, got %d\n", len(sids))
 	}
 	for k, c := range sids {
 		if c < 35 {
