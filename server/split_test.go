@@ -46,6 +46,40 @@ func TestSplitBufferSubOp(t *testing.T) {
 	}
 }
 
+func TestSplitBufferUnsubOp(t *testing.T) {
+	s := &Server{ sl: sublist.New() }
+	c := &client{srv:s, subs: hashmap.New()}
+
+	subop := []byte("SUB foo 1024\r\n")
+	if err := c.parse(subop) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected OP_START state vs %d\n", c.state)
+	}
+
+	unsubop := []byte("UNSUB 1024\r\n")
+	unsubop1 := unsubop[:8]
+	unsubop2 := unsubop[8:]
+
+	if err := c.parse(unsubop1) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != UNSUB_ARG {
+		t.Fatalf("Expected UNSUB_ARG state vs %d\n", c.state)
+	}
+	if err := c.parse(unsubop2) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected OP_START state vs %d\n", c.state)
+	}
+	r := s.sl.Match([]byte("foo"))
+	if r != nil && len(r) != 0 {
+		t.Fatalf("Should be no subscriptions in results: %+v\n", r)
+	}
+}
+
 func TestSplitBufferPubOp(t *testing.T) {
 	c := &client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
@@ -129,5 +163,57 @@ func TestSplitBufferPubOp2(t *testing.T) {
 	}
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
+	}
+}
+
+func TestSplitBufferPubOp3(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
+	pub := pubAll[:16]
+
+	if err := c.parse(pub); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Unexpected subject: '%s' vs '%s'\n", c.pa.subject, "foo")
+	}
+
+	// Simulate next read of network, make sure pub state is saved
+	// until msg payload has cleared.
+	copy(pubAll, "XXXXXXXXXXXXXXXX")
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Unexpected subject: '%s' vs '%s'\n", c.pa.subject, "foo")
+	}
+	if !bytes.Equal(c.pa.reply, []byte("bar")) {
+		t.Fatalf("Unexpected reply: '%s' vs '%s'\n", c.pa.reply, "bar")
+	}
+	if !bytes.Equal(c.pa.szb, []byte("11")) {
+		t.Fatalf("Unexpected size bytes: '%s' vs '%s'\n", c.pa.szb, "11")
+	}
+}
+
+func TestSplitBufferPubOp4(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
+	pub := pubAll[:12]
+
+	if err := c.parse(pub); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Unexpected subject: '%s' vs '%s'\n", c.pa.subject, "foo")
+	}
+
+	// Simulate next read of network, make sure pub state is saved
+	// until msg payload has cleared.
+	copy(pubAll, "XXXXXXXXXXXX")
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Unexpected subject: '%s' vs '%s'\n", c.pa.subject, "foo")
+	}
+	if !bytes.Equal(c.pa.reply, []byte("")) {
+		t.Fatalf("Unexpected reply: '%s' vs '%s'\n", c.pa.reply, "")
+	}
+	if !bytes.Equal(c.pa.szb, []byte("11")) {
+		t.Fatalf("Unexpected size bytes: '%s' vs '%s'\n", c.pa.szb, "11")
 	}
 }
