@@ -23,7 +23,7 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
-func startServer(t tLogger, port uint, other string) *natsServer {
+func startServer(t tLogger, port int, other string) *natsServer {
 	var s natsServer
 	args := fmt.Sprintf("-p %d %s", port, other)
 	s.args = strings.Split(args, " ")

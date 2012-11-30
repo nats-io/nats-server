@@ -26,6 +26,8 @@ type serverInfo struct {
 func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	go func() {
 		c := s.createClient(cli)
+		// Must be here to suppress +OK
+		c.opts.Verbose = false
 		ch <- c
 	}()
 }
@@ -84,7 +86,7 @@ func TestClientCreateAndInfo(t *testing.T) {
 func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
-	// Basic Connect
+	// Basic Connect setting flags
 	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
 	err := c.parse(connectOp)
 	if err != nil {

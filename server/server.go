@@ -106,7 +106,7 @@ func (s *Server) AcceptLoop() {
 }
 
 func clientConnStr(conn net.Conn) interface{} {
-    if ip, ok := conn.(*net.TCPConn); ok {
+	if ip, ok := conn.(*net.TCPConn); ok {
 		addr := ip.RemoteAddr().(*net.TCPAddr)
 		return []string{fmt.Sprintf("%v, %d", addr.IP, addr.Port)}
 	}
@@ -114,7 +114,7 @@ func clientConnStr(conn net.Conn) interface{} {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, conn: conn}
+	c := &client{srv: s, conn: conn, opts: defaultOpts}
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
 	c.subs = hashmap.New()
@@ -123,15 +123,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// after we process inbound msgs from our own connection.
 	c.pcd = make(map[*client]struct{})
 
-     if ip, ok := conn.(*net.TCPConn); ok {
-	     ip.SetReadBuffer(32768)
-	 }
+	Debug("Client connection created", clientConnStr(conn), c.cid)
+
+	if ip, ok := conn.(*net.TCPConn); ok {
+		ip.SetReadBuffer(32768)
+	}
 
 	s.sendInfo(c)
 	go c.readLoop()
-
-	Debug("Client connection created", clientConnStr(conn), c.cid)
-
 	return c
 }
 

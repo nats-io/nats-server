@@ -4,6 +4,7 @@ package test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"regexp"
 	"testing"
@@ -14,8 +15,10 @@ import (
 
 var s *natsServer
 
+const PROTO_TEST_PORT = 9922
+
 func TestStartup(t *testing.T) {
-	s = startServer(t, server.DEFAULT_PORT, "")
+	s = startServer(t, PROTO_TEST_PORT, "")
 }
 
 type sendFun func(string)
@@ -30,7 +33,7 @@ func sendCommand(t tLogger, c net.Conn) sendFun {
 
 // Closure version for easier reading
 func expectCommand(t tLogger, c net.Conn) expectFun {
-	return func(re *regexp.Regexp)([]byte) {
+	return func(re *regexp.Regexp) []byte {
 		return expectResult(t, c, re)
 	}
 }
@@ -98,9 +101,12 @@ func expectMsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 	}
 }
 
-var infoRe = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
-var pongRe = regexp.MustCompile(`\APONG\r\n`)
-var msgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
+var (
+	infoRe = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
+	pongRe = regexp.MustCompile(`\APONG\r\n`)
+	msgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
+	okRe   = regexp.MustCompile(`\A\+OK\r\n`)
+)
 
 const (
 	SUB_INDEX   = 1
@@ -110,9 +116,9 @@ const (
 	MSG_INDEX   = 6
 )
 
-func doDefaultConnect(t tLogger, c net.Conn) {
-	// Basic Connect
-	sendProto(t, c, "CONNECT {\"verbose\":false,\"pedantic\":false,\"ssl_required\":false}\r\n")
+func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
+	sendProto(t, c, cs)
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
 	var sinfo server.Info
@@ -120,6 +126,11 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	if err != nil {
 		t.Fatalf("Could not unmarshal INFO json: %v\n", err)
 	}
+}
+
+func doDefaultConnect(t tLogger, c net.Conn) {
+	// Basic Connect
+	doConnect(t, c, false, false, false)
 }
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
@@ -130,7 +141,7 @@ func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 }
 
 func TestProtoBasics(t *testing.T) {
-	c := createClientConn(t, "localhost", server.DEFAULT_PORT)
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
 	defer c.Close()
@@ -152,7 +163,7 @@ func TestProtoBasics(t *testing.T) {
 }
 
 func TestUnsubMax(t *testing.T) {
-	c := createClientConn(t, "localhost", server.DEFAULT_PORT)
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
 	defer c.Close()
@@ -168,7 +179,7 @@ func TestUnsubMax(t *testing.T) {
 }
 
 func TestQueueSub(t *testing.T) {
-	c := createClientConn(t, "localhost", server.DEFAULT_PORT)
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
 	defer c.Close()
@@ -195,7 +206,7 @@ func TestQueueSub(t *testing.T) {
 }
 
 func TestMultipleQueueSub(t *testing.T) {
-	c := createClientConn(t, "localhost", server.DEFAULT_PORT)
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
 	defer c.Close()
@@ -209,7 +220,7 @@ func TestMultipleQueueSub(t *testing.T) {
 	for i := 0; i < sent; i++ {
 		send("PUB foo 2\r\nok\r\n")
 	}
-	matches := expectMsgs(sent*2)
+	matches := expectMsgs(sent * 2)
 	sids := make(map[string]int)
 	for _, m := range matches {
 		sids[string(m[SID_INDEX])]++

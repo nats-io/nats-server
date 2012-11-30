@@ -61,7 +61,7 @@ func TestParsePing(t *testing.T) {
 
 func TestParseConnect(t *testing.T) {
 	c := dummyClient()
-	connect := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	connect := []byte("CONNECT {\"verbose\":false,\"pedantic\":true,\"ssl_required\":false}\r\n")
 	err := c.parse(connect)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)

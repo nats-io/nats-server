@@ -56,13 +56,14 @@ type clientOpts struct {
 	SslRequired bool `json:"ssl_required"`
 }
 
+var defaultOpts = clientOpts{true, true, false}
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
 func (c *client) readLoop() {
 	b := make([]byte, defaultBufSize)
-	//	log.Printf("b len = %d, cap = %d\n", len(b), cap(b))
 	for {
 		n, err := c.conn.Read(b)
 		if err != nil {
@@ -109,10 +110,19 @@ func (c *client) traceOp(op string, arg []byte) {
 func (c *client) processConnect(arg []byte) error {
 	c.traceOp("CONNECT", arg)
 	// FIXME, check err
-	return json.Unmarshal(arg, &c.opts)
+	err := json.Unmarshal(arg, &c.opts)
+	if c.opts.Verbose {
+		c.sendOK()
+	}
+	return err
 }
 
-var pongResp = []byte(fmt.Sprintf("PONG%s", CR_LF))
+func (c *client) sendOK() {
+	c.mu.Lock()
+	c.bw.WriteString("+OK\r\n")
+	c.pcd[c] = needFlush
+	c.mu.Unlock()
+}
 
 func (c *client) processPing() {
 	c.traceOp("PING", nil)
@@ -120,7 +130,7 @@ func (c *client) processPing() {
 		return
 	}
 	c.mu.Lock()
-	c.bw.Write(pongResp)
+	c.bw.WriteString("PONG\r\n")
 	err := c.bw.Flush()
 	c.mu.Unlock()
 	if err != nil {
@@ -221,11 +231,13 @@ func (c *client) processSub(argo []byte) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.subs.Set(sub.sid, sub)
 	if c.srv != nil {
 		c.srv.sl.Insert(sub.subject, sub)
+	}
+	c.mu.Unlock()
+	if c.opts.Verbose {
+		c.sendOK()
 	}
 	return nil
 }
@@ -264,6 +276,9 @@ func (c *client) processUnsub(arg []byte) error {
 		}
 		c.unsubscribe(sub)
 	}
+	if c.opts.Verbose {
+		c.sendOK()
+	}
 	return nil
 }
 
@@ -281,6 +296,7 @@ func (c *client) msgHeader(mh []byte, sub *subscription) []byte {
 
 // Used to treat map as efficient set
 type empty struct{}
+
 var needFlush = empty{}
 
 func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
@@ -320,6 +336,9 @@ func (c *client) processMsg(msg []byte) {
 	}
 	if c.srv == nil {
 		return
+	}
+	if c.opts.Verbose {
+		c.sendOK()
 	}
 
 	scratch := [512]byte{}
