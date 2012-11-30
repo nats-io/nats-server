@@ -16,7 +16,6 @@ import (
 )
 
 // The size of the bufio reader/writer on top of the socket.
-//const defaultBufSize = 32768
 const defaultBufSize = 32768
 
 type client struct {
@@ -52,12 +51,15 @@ type subscription struct {
 }
 
 type clientOpts struct {
-	Verbose     bool `json:"verbose"`
-	Pedantic    bool `json:"pedantic"`
-	SslRequired bool `json:"ssl_required"`
+	Verbose     bool   `json:"verbose"`
+	Pedantic    bool   `json:"pedantic"`
+	SslRequired bool   `json:"ssl_required"`
+	Username    string `json:"user"`
+	Password    string `json:"pass"`
+	Name        string `json:"name"`
 }
 
-var defaultOpts = clientOpts{true, true, false}
+var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
@@ -247,7 +249,7 @@ func (c *client) processSub(argo []byte) (err error) {
 		err = c.srv.sl.Insert(sub.subject, sub)
 	}
 	c.mu.Unlock()
-	if err != nil{
+	if err != nil {
 		c.sendErr("Invalid Subject")
 	} else if c.opts.Verbose {
 		c.sendOK()
