@@ -106,6 +106,7 @@ var (
 	pongRe = regexp.MustCompile(`\APONG\r\n`)
 	msgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
 	okRe   = regexp.MustCompile(`\A\+OK\r\n`)
+	errRe  = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
 )
 
 const (

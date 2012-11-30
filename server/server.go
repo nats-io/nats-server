@@ -126,7 +126,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	Debug("Client connection created", clientConnStr(conn), c.cid)
 
 	if ip, ok := conn.(*net.TCPConn); ok {
-		ip.SetReadBuffer(32768)
+		ip.SetReadBuffer(defaultBufSize)
 	}
 
 	s.sendInfo(c)

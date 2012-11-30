@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/hashmap"
+	"github.com/apcera/gnatsd/sublist"
 )
 
 // The size of the bufio reader/writer on top of the socket.
@@ -117,6 +118,13 @@ func (c *client) processConnect(arg []byte) error {
 	return err
 }
 
+func (c *client) sendErr(err string) {
+	c.mu.Lock()
+	c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
+	c.pcd[c] = needFlush
+	c.mu.Unlock()
+}
+
 func (c *client) sendOK() {
 	c.mu.Lock()
 	c.bw.WriteString("+OK\r\n")
@@ -184,6 +192,9 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
+	if c.opts.Pedantic && !sublist.IsValidLiteralSubject(c.pa.subject) {
+		c.sendErr("Invalid Subject")
+	}
 	return nil
 }
 
@@ -210,7 +221,7 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte) error {
+func (c *client) processSub(argo []byte) (err error) {
 	c.traceOp("SUB", argo)
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
@@ -233,10 +244,12 @@ func (c *client) processSub(argo []byte) error {
 	c.mu.Lock()
 	c.subs.Set(sub.sid, sub)
 	if c.srv != nil {
-		c.srv.sl.Insert(sub.subject, sub)
+		err = c.srv.sl.Insert(sub.subject, sub)
 	}
 	c.mu.Unlock()
-	if c.opts.Verbose {
+	if err != nil{
+		c.sendErr("Invalid Subject")
+	} else if c.opts.Verbose {
 		c.sendOK()
 	}
 	return nil
