@@ -173,6 +173,33 @@ func TestRemoveCleanupWildcards(t *testing.T) {
 	verifyNumLevels(s, 0, t)
 }
 
+func TestMalformedSubjects(t *testing.T) {
+	s := New()
+
+	// beginning empty token
+	if err := s.Insert([]byte(".foo"), '@'); err != ErrInvalidSubject {
+		t.Fatal("Expected invalid subject error")
+	}
+
+	// trailing empty token
+	if err := s.Insert([]byte("foo."), '@'); err != ErrInvalidSubject {
+		t.Fatal("Expected invalid subject error")
+	}
+	// empty middle token
+	if err := s.Insert([]byte("foo..bar"), '@'); err != ErrInvalidSubject {
+		t.Fatal("Expected invalid subject error")
+	}
+	// empty middle token #2
+	if err := s.Insert([]byte("foo.bar..baz"), '@'); err != ErrInvalidSubject {
+		t.Fatal("Expected invalid subject error")
+	}
+	// fwc not terminal
+	if err := s.Insert([]byte("foo.>.bar"), '@'); err != ErrInvalidSubject {
+		t.Fatal("Expected invalid subject error")
+	}
+}
+
+
 func TestCacheBehavior(t *testing.T) {
 	s := New()
 	literal := []byte("a.b.c")

@@ -3,6 +3,7 @@
 package sublist
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -76,6 +77,10 @@ var (
 	_SEP = byte('.')
 )
 
+var (
+	ErrInvalidSubject = errors.New("Invalid Subject")
+)
+
 // split will split a subject into tokens
 func split(subject []byte, tokens [][]byte) [][]byte {
 	start := 0
@@ -88,20 +93,26 @@ func split(subject []byte, tokens [][]byte) [][]byte {
 	return append(tokens, subject[start:])
 }
 
-func (s *Sublist) Insert(subject []byte, sub interface{}) {
+func (s *Sublist) Insert(subject []byte, sub interface{}) error {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
 
 	s.mu.Lock()
+	sfwc := false
 	l := s.root
 	var n *node
 
 	for _, t := range toks {
+		if len(t) == 0 || sfwc {
+			s.mu.Unlock()
+			return ErrInvalidSubject
+		}
 		switch t[0] {
 		case _PWC:
 			n = l.pwc
 		case _FWC:
 			n = l.fwc
+			sfwc = true
 		default:
 			if v := l.nodes.Get(t); v == nil {
 				n = nil
@@ -130,6 +141,7 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) {
 	s.stats.inserts++
 	s.addToCache(subject, sub)
 	s.mu.Unlock()
+	return nil
 }
 
 // addToCache will add the new entry to existing cache
