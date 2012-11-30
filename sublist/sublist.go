@@ -410,6 +410,25 @@ func matchLiteral(literal, subject []byte) bool {
 	return true
 }
 
+func IsValidLiteralSubject(subject []byte) bool {
+	tsa := [16][]byte{}
+	toks := split(subject, tsa[:0])
+
+	for _, t := range toks {
+		if len(t) == 0 {
+			return false
+		}
+		if len(t) > 1 {
+			continue
+		}
+		switch t[0] {
+		case _PWC, _FWC:
+			return false
+		}
+	}
+	return true
+}
+
 // Count return the number of stored items in the HashMap.
 func (s *Sublist) Count() uint32 { return s.count }
 

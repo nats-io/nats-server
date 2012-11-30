@@ -173,8 +173,11 @@ func TestRemoveCleanupWildcards(t *testing.T) {
 	verifyNumLevels(s, 0, t)
 }
 
-func TestMalformedSubjects(t *testing.T) {
+func TestInvalidSubjectsInsert(t *testing.T) {
 	s := New()
+
+	// Insert, or subscribtions, can have wildcards, but not empty tokens,
+	// and can not have a FWC that is not terminal
 
 	// beginning empty token
 	if err := s.Insert([]byte(".foo"), '@'); err != ErrInvalidSubject {
@@ -198,7 +201,6 @@ func TestMalformedSubjects(t *testing.T) {
 		t.Fatal("Expected invalid subject error")
 	}
 }
-
 
 func TestCacheBehavior(t *testing.T) {
 	s := New()
@@ -224,6 +226,17 @@ func checkBool(b, expected bool, t *testing.T) {
 		debug.PrintStack()
 		t.Fatalf("Expected %v, but got %v\n", expected, b)
 	}
+}
+
+func TestValidLiteralSubjects(t *testing.T) {
+	checkBool(IsValidLiteralSubject([]byte("foo")), true, t)
+	checkBool(IsValidLiteralSubject([]byte(".foo")), false, t)
+	checkBool(IsValidLiteralSubject([]byte("foo.")), false, t)
+	checkBool(IsValidLiteralSubject([]byte("foo..bar")), false, t)
+	checkBool(IsValidLiteralSubject([]byte("foo.bar.*")), false, t)
+	checkBool(IsValidLiteralSubject([]byte("foo.bar.>")), false, t)
+	checkBool(IsValidLiteralSubject([]byte("*")), false, t)
+	checkBool(IsValidLiteralSubject([]byte(">")), false, t)
 }
 
 func TestMatchLiterals(t *testing.T) {
