@@ -101,6 +101,7 @@ func TestClientConnect(t *testing.T) {
 
 	// Test that we can capture user/pass
 	connectOp = []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\"}\r\n")
+	c.opts = defaultOpts
 	err = c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -114,6 +115,7 @@ func TestClientConnect(t *testing.T) {
 
 	// Test that we can capture client name
 	connectOp = []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\",\"name\":\"router\"}\r\n")
+	c.opts = defaultOpts
 	err = c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -126,6 +128,20 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
+	// Test that we correctly capture auth tokens
+	connectOp = []byte("CONNECT {\"auth_token\":\"YZZ222\",\"name\":\"router\"}\r\n")
+	c.opts = defaultOpts
+	err = c.parse(connectOp)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
+	}
+
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Authorization:"YZZ222", Name:"router"}) {
+		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
+	}
 }
 
 func TestClientPing(t *testing.T) {

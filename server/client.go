@@ -51,12 +51,13 @@ type subscription struct {
 }
 
 type clientOpts struct {
-	Verbose     bool   `json:"verbose"`
-	Pedantic    bool   `json:"pedantic"`
-	SslRequired bool   `json:"ssl_required"`
-	Username    string `json:"user"`
-	Password    string `json:"pass"`
-	Name        string `json:"name"`
+	Verbose       bool   `json:"verbose"`
+	Pedantic      bool   `json:"pedantic"`
+	SslRequired   bool   `json:"ssl_required"`
+	Authorization string `json:"auth_token"`
+	Username      string `json:"user"`
+	Password      string `json:"pass"`
+	Name          string `json:"name"`
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
