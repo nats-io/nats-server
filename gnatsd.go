@@ -29,6 +29,10 @@ func main() {
 	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
 	flag.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
 	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
+	flag.StringVar(&opts.Username, "user", "", "Username required for connection.")
+	flag.StringVar(&opts.Password, "pass", "", "Password required for connection.")
+	flag.StringVar(&opts.Password, "auth", "", "Authorization token required for connection.")
+
 	flag.Parse()
 
 	if debugAndTrace {
@@ -40,7 +44,7 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6062", nil))
 	}()
 
-	// Parse config if given
+	// TBD: Parse config if given
 
 	s := server.New(opts)
 	s.AcceptLoop()
