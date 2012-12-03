@@ -31,7 +31,7 @@ func main() {
 	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
 	flag.StringVar(&opts.Username, "user", "", "Username required for connection.")
 	flag.StringVar(&opts.Password, "pass", "", "Password required for connection.")
-	flag.StringVar(&opts.Password, "auth", "", "Authorization token required for connection.")
+	flag.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
 
 	flag.Parse()
 

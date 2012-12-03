@@ -14,12 +14,15 @@ import (
 )
 
 type Options struct {
-	Host    string
-	Port    int
-	Trace   bool
-	Debug   bool
-	Logtime bool
-	MaxConn int
+	Host          string
+	Port          int
+	Trace         bool
+	Debug         bool
+	Logtime       bool
+	MaxConn       int
+	Username      string
+	Password      string
+	Authorization string
 }
 
 type Info struct {
@@ -74,6 +77,11 @@ func New(opts Options) *Server {
 	}
 	// Setup logging with flags
 	s.LogInit()
+
+	if opts.Debug {
+		b, _ := json.Marshal(opts)
+		Debug(fmt.Sprintf("[%s]", b))
+	}
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
