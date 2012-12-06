@@ -25,7 +25,7 @@ const (
 	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
 
 	// TLS/SSL wait time
-	SSL_TIMEOUT = 500 * time.Millisecond
+	SSL_TIMEOUT = 250 * time.Millisecond
 
 	// Authorization wait time
 	AUTH_TIMEOUT = 2 * SSL_TIMEOUT

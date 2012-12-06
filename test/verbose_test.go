@@ -13,8 +13,12 @@ func TestStartupVerbose(t *testing.T) {
 func TestVerbosePing(t *testing.T) {
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	doConnect(t, c, true, false, false)
+	defer c.Close()
+
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
+
+	expect(okRe)
 
 	// Ping should still be same
 	send("PING\r\n")
@@ -24,8 +28,12 @@ func TestVerbosePing(t *testing.T) {
 func TestVerboseConnect(t *testing.T) {
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	doConnect(t, c, true, false, false)
+	defer c.Close()
+
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
+
+	expect(okRe)
 
 	// Connect
 	send("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
@@ -37,6 +45,8 @@ func TestVerbosePubSub(t *testing.T) {
 	doConnect(t, c, true, false, false)
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
+
+	expect(okRe)
 
 	// Pub
 	send("PUB foo 2\r\nok\r\n")

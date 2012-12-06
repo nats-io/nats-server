@@ -12,9 +12,11 @@ func TestStartupPedantic(t *testing.T) {
 
 func TestPedanticSub(t *testing.T) {
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	doConnect(t, c, true, true, false)
+	defer c.Close()
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
+	doConnect(t, c, true, true, false)
+	expect(okRe)
 
 	// Ping should still be same
 	send("PING\r\n")
@@ -53,9 +55,15 @@ func TestPedanticSub(t *testing.T) {
 
 func TestPedanticPub(t *testing.T) {
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	doConnect(t, c, true, true, false)
+	defer c.Close()
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
+	doConnect(t, c, true, true, false)
+	expect(okRe)
+
+	// Ping should still be same
+	send("PING\r\n")
+	expect(pongRe)
 
 	// Test malformed subjects for PUB
 	// PUB subjects can not have wildcards

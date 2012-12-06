@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
@@ -45,7 +46,8 @@ type Server struct {
 	debug    bool
 }
 
-func optionDefaults(opt *Options) {
+func processOptions(opt *Options) {
+	// Setup non-standard Go defaults
 	if opt.Host == "" {
 		opt.Host = DEFAULT_HOST
 	}
@@ -58,8 +60,8 @@ func optionDefaults(opt *Options) {
 }
 
 func New(opts Options) *Server {
-	optionDefaults(&opts)
-	inf := Info{
+	processOptions(&opts)
+	info := Info{
 		Id:           genId(),
 		Version:      VERSION,
 		Host:         opts.Host,
@@ -68,8 +70,12 @@ func New(opts Options) *Server {
 		SslRequired:  false,
 		MaxPayload:   MAX_PAYLOAD_SIZE,
 	}
+	// Check for Auth items
+	if opts.Username != "" || opts.Authorization != "" {
+		info.AuthRequired = true
+	}
 	s := &Server{
-		info:  inf,
+		info:  info,
 		sl:    sublist.New(),
 		opts:  opts,
 		debug: opts.Debug,
@@ -78,10 +84,13 @@ func New(opts Options) *Server {
 	// Setup logging with flags
 	s.LogInit()
 
+	/*
 	if opts.Debug {
 		b, _ := json.Marshal(opts)
 		Debug(fmt.Sprintf("[%s]", b))
 	}
+	 */
+
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
@@ -139,10 +148,29 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	s.sendInfo(c)
 	go c.readLoop()
+	if s.info.AuthRequired {
+		c.atmr = time.AfterFunc(AUTH_TIMEOUT, func() { c.authViolation() })
+	}
 	return c
 }
 
 func (s *Server) sendInfo(c *client) {
 	// FIXME, err
 	c.conn.Write(s.infoJson)
+}
+
+// Check auth and return boolean indicating if client is ok
+func (s *Server) checkAuth(c *client) bool {
+	if !s.info.AuthRequired {
+		return true
+	}
+	// We require auth here, check the client
+	// Authorization tokens trump username/password
+	if s.opts.Authorization != "" {
+		return s.opts.Authorization == c.opts.Authorization
+	} else if s.opts.Username != c.opts.Username ||
+		s.opts.Password != c.opts.Password {
+		return false
+	}
+	return true
 }

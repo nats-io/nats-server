@@ -21,7 +21,7 @@ func (s *Server) LogInit() {
 	if s.opts.Logtime {
 		log.SetFlags(log.LstdFlags)
 	}
-	if s.opts.Trace {
+	if s.opts.Debug {
 		Log(s.opts)
 	}
 	if s.opts.Debug {

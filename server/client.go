@@ -27,6 +27,7 @@ type client struct {
 	srv  *Server
 	subs *hashmap.HashMap
 	pcd  map[*client]struct{}
+	atmr *time.Timer
 	cstats
 	parseState
 }
@@ -75,7 +76,7 @@ func (c *client) readLoop() {
 			return
 		}
 		if err := c.parse(b[:n]); err != nil {
-			Logf("Parse Error: %v\n", err)
+			Log(err.Error(), clientConnStr(c.conn), c.cid)
 			c.closeConnection()
 			return
 		}
@@ -113,12 +114,35 @@ func (c *client) traceOp(op string, arg []byte) {
 
 func (c *client) processConnect(arg []byte) error {
 	c.traceOp("CONNECT", arg)
+
+	// This will be resolved regardless before we exit this func,
+	// so we can just clear it here.
+	if c.atmr != nil {
+		c.atmr.Stop()
+		c.atmr = nil
+	}
+
 	// FIXME, check err
-	err := json.Unmarshal(arg, &c.opts)
+	if err := json.Unmarshal(arg, &c.opts); err != nil {
+		return err
+	}
+	// Check for Auth
+	if c.srv != nil {
+		if ok := c.srv.checkAuth(c); !ok {
+			c.sendErr("Authorization is Required")
+			return fmt.Errorf("Authorization Error")
+		}
+	}
 	if c.opts.Verbose {
 		c.sendOK()
 	}
-	return err
+	return nil
+}
+
+func (c *client) authViolation() {
+	c.sendErr("Authorization is Required")
+	fmt.Printf("AUTH TIMER EXPIRED!!\n")
+	c.closeConnection()
 }
 
 func (c *client) sendErr(err string) {
@@ -405,6 +429,25 @@ func (c *client) processMsg(msg []byte) {
 	}
 }
 
+// Lock should be held
+func (c *client) clearAuthTimer() {
+	if c.atmr == nil {
+		return
+	}
+	c.atmr.Stop()
+	c.atmr = nil
+}
+
+// Lock should be held
+func (c *client) clearConnection() {
+	if c.conn == nil {
+		return
+	}
+	c.bw.Flush()
+	c.conn.Close()
+	c.conn = nil
+}
+
 func (c *client) closeConnection() {
 	if c.conn == nil {
 		return
@@ -412,9 +455,8 @@ func (c *client) closeConnection() {
 	Debug("Client connection closed", clientConnStr(c.conn), c.cid)
 
 	c.mu.Lock()
-	c.bw.Flush()
-	c.conn.Close()
-	c.conn = nil
+	c.clearAuthTimer()
+	c.clearConnection()
 	subs := c.subs.All()
 	c.mu.Unlock()
 

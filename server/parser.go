@@ -64,6 +64,9 @@ func (c *client) parse(buf []byte) error {
 	for i, b = range buf {
 		switch c.state {
 		case OP_START:
+			if c.atmr != nil && b != 'C' && b != 'c' {
+				goto authErr
+			}
 			switch b {
 			case 'C', 'c':
 				c.state = OP_C
@@ -345,6 +348,10 @@ func (c *client) parse(buf []byte) error {
 
 parseErr:
 	return fmt.Errorf("Parse Error [%d]: '%s'", c.state, buf[i:])
+
+authErr:
+	c.authViolation()
+	return fmt.Errorf("Authorization Error")
 }
 
 

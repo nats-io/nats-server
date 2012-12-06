@@ -47,27 +47,27 @@ func benchPub(b *testing.B, subject, payload string) {
 	s.stopServer()
 }
 
-func BenchmarkPubNoPayload(b *testing.B) {
+func Benchmark____PubNoPayload(b *testing.B) {
 	benchPub(b, "a", "")
 }
 
-func BenchmarkPubMinPayload(b *testing.B) {
+func Benchmark___PubMinPayload(b *testing.B) {
 	benchPub(b, "a", "b")
 }
 
-func BenchmarkPubTinyPayload(b *testing.B) {
+func Benchmark__PubTinyPayload(b *testing.B) {
 	benchPub(b, "foo", "ok")
 }
 
-func BenchmarkPubSmallPayload(b *testing.B) {
+func Benchmark_PubSmallPayload(b *testing.B) {
 	benchPub(b, "foo", "hello world")
 }
 
-func BenchmarkPubMedPayload(b *testing.B) {
+func Benchmark___PubMedPayload(b *testing.B) {
 	benchPub(b, "foo", "The quick brown fox jumps over the lazy dog")
 }
 
-func BenchmarkPubLrgPayload(b *testing.B) {
+func Benchmark_PubLargePayload(b *testing.B) {
 	b.StopTimer()
 	var p string
 	for i := 0 ; i < 200 ; i++ {
@@ -98,7 +98,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	ch <- true
 }
 
-func BenchmarkPubSub(b *testing.B) {
+func Benchmark__________PubSub(b *testing.B) {
 	b.StopTimer()
 	s = startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -130,7 +130,7 @@ func BenchmarkPubSub(b *testing.B) {
 	s.stopServer()
 }
 
-func BenchmarkPubSubMultipleConnections(b *testing.B) {
+func Benchmark__PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	s = startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -165,7 +165,7 @@ func BenchmarkPubSubMultipleConnections(b *testing.B) {
 	s.stopServer()
 }
 
-func BenchmarkPubTwoQueueSub(b *testing.B) {
+func Benchmark__PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s = startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -198,7 +198,7 @@ func BenchmarkPubTwoQueueSub(b *testing.B) {
 	s.stopServer()
 }
 
-func BenchmarkPubFourQueueSub(b *testing.B) {
+func Benchmark_PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
 	s = startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
