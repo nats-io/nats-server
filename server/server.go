@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"os/signal"
 	"sync/atomic"
 	"time"
 
@@ -91,14 +93,28 @@ func New(opts Options) *Server {
 	}
 	 */
 
-
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatalf("Err marshalling INFO JSON: %+v\n", err)
 	}
 	s.infoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
+
+	s.handleSignals()
+
 	return s
+}
+
+// Signal Handling
+func (s *Server) handleSignals() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func(){
+		for sig := range c {
+			Debugf("Trapped Signal; %v", sig)
+			Log("Server Exiting..")
+		}
+	}()
 }
 
 func (s *Server) AcceptLoop() {
