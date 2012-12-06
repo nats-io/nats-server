@@ -78,7 +78,7 @@ func Debug(v ...interface{}) {
 	}
 }
 
-func DebugF(format string, v ...interface{}) {
+func Debugf(format string, v ...interface{}) {
 	if debug {
 		Debug(fmt.Sprintf(format, v...))
 	}
@@ -90,7 +90,7 @@ func Trace(v ...interface{}) {
 	}
 }
 
-func TraceF(format string, v ...interface{}) {
+func Tracef(format string, v ...interface{}) {
 	if trace {
 		Trace(fmt.Sprintf(format, v...))
 	}
