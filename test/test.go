@@ -36,7 +36,7 @@ func startServer(t tLogger, port int, other string) *natsServer {
 	err := s.cmd.Start()
 	if err != nil {
 		s.cmd = nil
-		t.Errorf("Could not start <%s>, is NATS installed and in path?", natsServerExe)
+		t.Errorf("Could not start <%s> [%s], is NATS installed and in path?", natsServerExe, err)
 		return &s
 	}
 	// Give it time to start up
