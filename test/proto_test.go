@@ -37,6 +37,16 @@ func TestProtoBasics(t *testing.T) {
 	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
 }
 
+func TestProtoErr(t *testing.T) {
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	send, expect := setupConn(t, c)
+	defer c.Close()
+
+	// Make sure we get an error on bad proto
+	send("ZZZ")
+	expect(errRe)
+}
+
 func TestUnsubMax(t *testing.T) {
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
@@ -114,6 +124,22 @@ func TestMultipleQueueSub(t *testing.T) {
 			t.Fatalf("Expected ~50 (+-15) msgs for '%s', got %d\n", k, c)
 		}
 	}
+}
+
+func TestPubToArgState(t *testing.T) {
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	send, expect := setupConn(t, c)
+	defer c.Close()
+	send("PUBS foo 2\r\nok\r\n")
+	expect(errRe)
+}
+
+func TestSubToArgState(t *testing.T) {
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	send, expect := setupConn(t, c)
+	defer c.Close()
+	send("SUBZZZ foo 1\r\n")
+	expect(errRe)
 }
 
 func TestStopServer(t *testing.T) {

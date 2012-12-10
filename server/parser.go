@@ -36,6 +36,7 @@ const (
 	OP_P
 	OP_PU
 	OP_PUB
+	OP_PUB_SPC
 	PUB_ARG
 	OP_PI
 	OP_PIN
@@ -45,6 +46,7 @@ const (
 	OP_S
 	OP_SU
 	OP_SUB
+	OP_SUB_SPC
 	SUB_ARG
 	OP_U
 	OP_UN
@@ -96,6 +98,13 @@ func (c *client) parse(buf []byte) error {
 				goto parseErr
 			}
 		case OP_PUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_PUB_SPC
+			default:
+				goto parseErr
+			}
+        case OP_PUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
@@ -157,6 +166,13 @@ func (c *client) parse(buf []byte) error {
 				goto parseErr
 			}
 		case OP_SUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_SUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_SUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
@@ -347,6 +363,7 @@ func (c *client) parse(buf []byte) error {
 	return nil
 
 parseErr:
+	c.sendErr("Unknown Protocol Operation")
 	return fmt.Errorf("Parse Error [%d]: '%s'", c.state, buf[i:])
 
 authErr:
