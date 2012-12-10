@@ -112,7 +112,7 @@ func (s *Server) handleSignals() {
 	go func(){
 		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
-			Log("Server Exiting..")
+			Fatal("Server Exiting..")
 		}
 	}()
 }
