@@ -147,8 +147,10 @@ func (c *client) authViolation() {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
-	c.pcd[c] = needFlush
+	if c.bw != nil {
+		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
+		c.pcd[c] = needFlush
+	}
 	c.mu.Unlock()
 }
 
