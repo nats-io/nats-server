@@ -12,6 +12,7 @@ import (
 
 var trace bool
 var debug bool
+var nolog bool
 
 func LogSetup() {
 	log.SetFlags(0)
@@ -21,10 +22,11 @@ func (s *Server) LogInit() {
 	if s.opts.Logtime {
 		log.SetFlags(log.LstdFlags)
 	}
-	if s.opts.Debug {
-		Log(s.opts)
+	if s.opts.NoLog {
+		nolog = true
 	}
 	if s.opts.Debug {
+		Log(s.opts)
 		debug = true
 		Log("DEBUG is on")
 	}
@@ -57,7 +59,9 @@ func logStr(v []interface{}) string {
 }
 
 func Log(v ...interface{}) {
-	log.Print(logStr(v))
+	if !nolog {
+		log.Print(logStr(v))
+	}
 }
 
 func Logf(format string, v ...interface{}) {
