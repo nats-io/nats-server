@@ -21,6 +21,7 @@ type Options struct {
 	Port          int
 	Trace         bool
 	Debug         bool
+	NoLog         bool
 	Logtime       bool
 	MaxConn       int
 	Username      string
