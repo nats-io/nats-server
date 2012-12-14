@@ -73,6 +73,7 @@ func Benchmark_PubLargePayload(b *testing.B) {
 	for i := 0 ; i < 200 ; i++ {
 		p = p + "hello world "
 	}
+	b.StartTimer()
 	benchPub(b, "foo", p)
 }
 
