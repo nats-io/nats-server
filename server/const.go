@@ -35,4 +35,7 @@ const (
 	DEFAULT_PING_MAX      = 2
 
 	CR_LF = "\r\n"
+
+	// Write/Flush Deadlines
+	DEFAULT_FLUSH_DEADLINE = 500 * time.Millisecond
 )
