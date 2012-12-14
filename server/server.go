@@ -87,13 +87,6 @@ func New(opts Options) *Server {
 	// Setup logging with flags
 	s.LogInit()
 
-	/*
-	if opts.Debug {
-		b, _ := json.Marshal(opts)
-		Debug(fmt.Sprintf("[%s]", b))
-	}
-	 */
-
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
