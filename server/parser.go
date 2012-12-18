@@ -362,13 +362,17 @@ func (c *client) parse(buf []byte) error {
 	}
 	return nil
 
-parseErr:
-	c.sendErr("Unknown Protocol Operation")
-	return fmt.Errorf("Parse Error [%d]: '%s'", c.state, buf[i:])
-
 authErr:
 	c.authViolation()
 	return fmt.Errorf("Authorization Error")
+
+parseErr:
+	c.sendErr("Unknown Protocol Operation")
+	stop := i + 32
+	if stop > len(buf) {
+		stop = len(buf)-1
+	}
+	return fmt.Errorf("Parse Error, state=%d,i=%d: '%s'", c.state, i, buf[i:stop])
 }
 
 
