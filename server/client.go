@@ -84,12 +84,16 @@ func (c *client) readLoop() {
 		for cp, _ := range c.pcd {
 			// Flush those in the set
 			cp.mu.Lock()
-			err := cp.bw.Flush()
-			cp.mu.Unlock()
-			if err != nil {
-				// FIXME, close connection?
-				Debugf("Error flushing: %v", err)
+			if cp.conn != nil {
+				cp.conn.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+				err := cp.bw.Flush()
+				cp.conn.SetWriteDeadline(time.Time{})
+				if err != nil {
+					Debugf("Error flushing: %v", err)
+					cp.closeConnection()
+				}
 			}
+			cp.mu.Unlock()
 			delete(c.pcd, cp)
 		}
 		// Check to see if we got closed, e.g. slow consumer
