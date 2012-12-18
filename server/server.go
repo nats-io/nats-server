@@ -144,6 +144,8 @@ func clientConnStr(conn net.Conn) interface{} {
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, conn: conn, opts: defaultOpts}
 	c.cid = atomic.AddUint64(&s.gcid, 1)
+
+	// FIXME, should write be double?
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
 	c.subs = hashmap.New()
 
