@@ -35,7 +35,7 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 func rawSetup() (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
 	cr := bufio.NewReaderSize(cli, defaultBufSize)
-	s := New(Options{})
+	s := New(&Options{})
 	ch := make(chan *client)
 	createClientAsync(ch, s, srv)
 	l, _ := cr.ReadString('\n')

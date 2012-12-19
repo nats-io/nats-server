@@ -22,6 +22,7 @@ type Options struct {
 	Trace         bool
 	Debug         bool
 	NoLog         bool
+	NoSigs        bool
 	Logtime       bool
 	MaxConn       int
 	Username      string
@@ -44,9 +45,12 @@ type Server struct {
 	infoJson []byte
 	sl       *sublist.Sublist
 	gcid     uint64
-	opts     Options
+	opts     *Options
 	trace    bool
 	debug    bool
+	running  bool
+	listener net.Listener
+	clients  map[uint64]*client
 }
 
 func processOptions(opt *Options) {
@@ -62,8 +66,8 @@ func processOptions(opt *Options) {
 	}
 }
 
-func New(opts Options) *Server {
-	processOptions(&opts)
+func New(opts *Options) *Server {
+	processOptions(opts)
 	info := Info{
 		Id:           genId(),
 		Version:      VERSION,
@@ -87,6 +91,9 @@ func New(opts Options) *Server {
 	// Setup logging with flags
 	s.LogInit()
 
+	// For tracing clients
+	s.clients = make(map[uint64]*client)
+
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
@@ -101,15 +108,36 @@ func New(opts Options) *Server {
 
 // Signal Handling
 func (s *Server) handleSignals() {
+	if s.opts.NoSigs {
+		return
+	}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
-	go func(){
+	go func() {
 		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
+			// FIXME, trip running?
 			Log("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
+}
+
+// Shutdown will shutdown the server instance by kicking out the AcceptLoop
+// and closing all associated clients.
+func (s *Server) Shutdown() {
+	s.running = false
+
+	// Close client connections
+	for _, c := range s.clients {
+		c.closeConnection()
+	}
+
+	// Kick AcceptLoop()
+	if s.listener != nil {
+		s.listener.Close()
+		s.listener = nil
+	}
 }
 
 func (s *Server) AcceptLoop() {
@@ -121,8 +149,13 @@ func (s *Server) AcceptLoop() {
 		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
-	for {
-		conn, err := l.Accept()
+
+	// Setup state that can enable shutdown
+	s.listener = l
+	s.running = true
+
+	for s.running {
+		conn, err := s.listener.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				Logf("Accept error: %v", err)
@@ -131,6 +164,8 @@ func (s *Server) AcceptLoop() {
 		}
 		s.createClient(conn)
 	}
+	Log("Server Exiting..")
+	os.Exit(0)
 }
 
 func clientConnStr(conn net.Conn) interface{} {
@@ -145,7 +180,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, conn: conn, opts: defaultOpts}
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 
-	// FIXME, should write be double?
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
 	c.subs = hashmap.New()
 
@@ -164,6 +198,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 	if s.info.AuthRequired {
 		c.atmr = time.AfterFunc(AUTH_TIMEOUT, func() { c.authViolation() })
 	}
+	// Register with the server.
+	s.clients[c.cid] = c
 	return c
 }
 
@@ -186,4 +222,8 @@ func (s *Server) checkAuth(c *client) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Server) removeClient(c *client) {
+	delete(s.clients, c.cid)
 }

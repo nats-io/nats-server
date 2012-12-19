@@ -28,6 +28,49 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
+var defaultServerOptions = server.Options{
+	Host:   "localhost",
+	Port:   4222,
+	Trace:  false,
+	Debug:  false,
+	NoLog:  true,
+	NoSigs: true,
+}
+
+func runDefaultServer() *server.Server {
+	return runServer(&defaultServerOptions)
+}
+
+// New Go Routine based server
+func runServer(opts *server.Options) *server.Server {
+	if opts == nil {
+		opts = &defaultServerOptions
+	}
+	s := server.New(opts)
+	if s == nil {
+		panic("No nats server object returned.")
+	}
+
+	go s.AcceptLoop()
+
+	// Make sure we are running and can bind before returning.
+	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	end := time.Now().Add(time.Second * 10)
+	for time.Now().Before(end) {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			// Retry
+			continue
+		}
+		conn.Close()
+		return s
+	}
+
+	panic("Unable to start NATs")
+	return nil
+}
+
 func startServer(t tLogger, port int, other string) *natsServer {
 	var s natsServer
 	args := fmt.Sprintf("-p %d %s", port, other)

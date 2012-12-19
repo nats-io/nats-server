@@ -504,6 +504,10 @@ func (c *client) closeConnection() {
 	c.mu.Unlock()
 
 	if c.srv != nil {
+		// Unregister
+		c.srv.removeClient(c)
+
+		// Remove subscriptions.
 		for _, s := range subs {
 			if sub, ok := s.(*subscription); ok {
 				c.srv.sl.Remove(sub.subject, sub)

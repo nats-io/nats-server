@@ -46,7 +46,7 @@ func main() {
 
 	// TBD: Parse config if given
 
-	s := server.New(opts)
+	s := server.New(&opts)
 	s.AcceptLoop()
 }
 
