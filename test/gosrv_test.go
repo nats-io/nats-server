@@ -3,7 +3,6 @@
 package test
 
 import (
-	"fmt"
 	"testing"
 	"runtime"
 	"time"
@@ -21,7 +20,6 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 }
 
 func TestGoServerShutdownWithClients(t *testing.T) {
-	fmt.Printf("before: %d go routines\n", runtime.NumGoroutine())
 	s := runDefaultServer()
 	for i := 0 ; i < 10 ; i++ {
 		createClientConn(t, "localhost", 4222)
@@ -34,5 +32,4 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }
-
 

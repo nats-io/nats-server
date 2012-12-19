@@ -55,7 +55,7 @@ func runServer(opts *server.Options) *server.Server {
 
 	// Make sure we are running and can bind before returning.
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
-	end := time.Now().Add(time.Second * 10)
+	end := time.Now().Add(10 * time.Second)
 	for time.Now().Before(end) {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
