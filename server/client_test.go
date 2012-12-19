@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 type serverInfo struct {
@@ -373,5 +374,19 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	c.closeConnection()
 	if s.sl.Count() != 0 {
 		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	}
+}
+
+func TestClientMapRemoval(t *testing.T) {
+	s, c, _ := setupClient()
+	c.conn.Close()
+	end := time.Now().Add(1 * time.Second)
+	for time.Now().Before(end) {
+		if len(s.clients) > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if len(s.clients) > 0 {
+		t.Fatal("Client still in server map")
 	}
 }
