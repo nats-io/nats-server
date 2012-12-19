@@ -149,7 +149,6 @@ func (c *client) processConnect(arg []byte) error {
 
 func (c *client) authViolation() {
 	c.sendErr("Authorization is Required")
-	fmt.Printf("AUTH TIMER EXPIRED!!\n")
 	c.closeConnection()
 }
 
