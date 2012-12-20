@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go 0.2.2.alpha.1"
+	VERSION = "go 0.2.4.alpha.1"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
@@ -32,7 +32,7 @@ const (
 
 	// Ping intervals
 	DEFAULT_PING_INTERVAL = 2 * time.Minute
-	DEFAULT_PING_MAX      = 2
+	DEFAULT_PING_MAX_OUT  = 2
 
 	CR_LF = "\r\n"
 

@@ -28,6 +28,8 @@ type Options struct {
 	Username      string
 	Password      string
 	Authorization string
+	PingInterval  time.Duration
+	MaxPingsOut   int
 }
 
 type Info struct {
@@ -54,16 +56,22 @@ type Server struct {
 	done     chan bool
 }
 
-func processOptions(opt *Options) {
+func processOptions(opts *Options) {
 	// Setup non-standard Go defaults
-	if opt.Host == "" {
-		opt.Host = DEFAULT_HOST
+	if opts.Host == "" {
+		opts.Host = DEFAULT_HOST
 	}
-	if opt.Port == 0 {
-		opt.Port = DEFAULT_PORT
+	if opts.Port == 0 {
+		opts.Port = DEFAULT_PORT
 	}
-	if opt.MaxConn == 0 {
-		opt.MaxConn = DEFAULT_MAX_CONNECTIONS
+	if opts.MaxConn == 0 {
+		opts.MaxConn = DEFAULT_MAX_CONNECTIONS
+	}
+	if opts.PingInterval == 0 {
+		opts.PingInterval = DEFAULT_PING_INTERVAL
+	}
+	if opts.MaxPingsOut == 0 {
+		opts.MaxPingsOut = DEFAULT_PING_MAX_OUT
 	}
 }
 
@@ -196,9 +204,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	s.sendInfo(c)
 	go c.readLoop()
+
+	// Check for Auth
 	if s.info.AuthRequired {
-		c.atmr = time.AfterFunc(AUTH_TIMEOUT, func() { c.authViolation() })
+		c.setAuthTimer(AUTH_TIMEOUT) // FIXME(dlc): Make option
 	}
+	// Set the Ping timer
+	c.setPingTimer()
+
 	// Register with the server.
 	s.clients[c.cid] = c
 	return c

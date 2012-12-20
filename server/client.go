@@ -28,6 +28,8 @@ type client struct {
 	subs *hashmap.HashMap
 	pcd  map[*client]struct{}
 	atmr *time.Timer
+	ptmr *time.Timer
+	pout int
 	cstats
 	parseState
 }
@@ -77,6 +79,7 @@ func (c *client) readLoop() {
 		}
 		if err := c.parse(b[:n]); err != nil {
 			Log(err.Error(), clientConnStr(c.conn), c.cid)
+			c.sendErr("Parser Error")
 			c.closeConnection()
 			return
 		}
@@ -125,10 +128,7 @@ func (c *client) processConnect(arg []byte) error {
 
 	// This will be resolved regardless before we exit this func,
 	// so we can just clear it here.
-	if c.atmr != nil {
-		c.atmr.Stop()
-		c.atmr = nil
-	}
+	c.clearAuthTimer()
 
 	// FIXME, check err
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
@@ -176,11 +176,11 @@ func (c *client) processPing() {
 	c.mu.Lock()
 	c.bw.WriteString("PONG\r\n")
 	err := c.bw.Flush()
-	c.mu.Unlock()
 	if err != nil {
-		// FIXME, close connection?
-		Logf("Error flushing client connection [PING]: %v\n", err)
+		c.clearConnection()
+		Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
 	}
+	c.mu.Unlock()
 }
 
 const argsLenMax = 3
@@ -471,6 +471,62 @@ func (c *client) processMsg(msg []byte) {
 	}
 }
 
+func (c *client) processPingTimer() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ptmr = nil
+	// Check if we are ready yet..
+	if _, ok := c.conn.(*net.TCPConn); !ok {
+		return
+	}
+
+	Debug("Ping Timer", clientConnStr(c.conn), c.cid)
+
+	// Check for violation
+	c.pout += 1
+	if c.pout > c.srv.opts.MaxPingsOut {
+		Debug("Stale Connection - Closing", clientConnStr(c.conn), c.cid)
+		if c.bw != nil {
+			c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection"))
+			c.bw.Flush()
+		}
+		c.clearConnection()
+		return
+	}
+
+	// Send PING
+	c.bw.WriteString("PING\r\n")
+	err := c.bw.Flush()
+	if err != nil {
+		Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
+		c.clearConnection()
+	} else {
+		// Reset to fire again if all OK.
+		c.setPingTimer()
+	}
+}
+
+func (c *client) setPingTimer() {
+	if c.srv == nil {
+		return
+	}
+	d := c.srv.opts.PingInterval
+	c.ptmr = time.AfterFunc(d, func() { c.processPingTimer() })
+}
+
+// Lock should be held
+func (c *client) clearPingTimer() {
+	if c.ptmr == nil {
+		return
+	}
+	c.ptmr.Stop()
+	c.ptmr = nil
+}
+
+func (c *client) setAuthTimer(d time.Duration) {
+	c.atmr = time.AfterFunc(d, func() { c.authViolation() })
+}
+
 // Lock should be held
 func (c *client) clearAuthTimer() {
 	if c.atmr == nil {
@@ -498,6 +554,7 @@ func (c *client) closeConnection() {
 
 	c.mu.Lock()
 	c.clearAuthTimer()
+	c.clearPingTimer()
 	c.clearConnection()
 	subs := c.subs.All()
 	c.mu.Unlock()
