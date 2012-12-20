@@ -6,4 +6,5 @@ import "errors"
 
 var (
 	ErrConnectionClosed = errors.New("Connection closed")
+	ErrAuthorization    = errors.New("Authorization Error")
 )
