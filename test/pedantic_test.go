@@ -4,13 +4,19 @@ package test
 
 import (
 	"testing"
+
+	"github.com/apcera/gnatsd/server"
 )
 
-func TestStartupPedantic(t *testing.T) {
-	s = startServer(t, PROTO_TEST_PORT, "")
+func runPedanticServer() *server.Server {
+	opts := defaultServerOptions
+	opts.Port = PROTO_TEST_PORT
+	return runServer(&opts)
 }
 
 func TestPedanticSub(t *testing.T) {
+	s := runPedanticServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	defer c.Close()
 	send := sendCommand(t, c)
@@ -54,6 +60,8 @@ func TestPedanticSub(t *testing.T) {
 }
 
 func TestPedanticPub(t *testing.T) {
+	s := runPedanticServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	defer c.Close()
 	send := sendCommand(t, c)
@@ -82,8 +90,4 @@ func TestPedanticPub(t *testing.T) {
 
 	send("PUB foo..* 2\r\nok\r\n")
 	expect(errRe)
-}
-
-func TestStopServerPedantic(t *testing.T) {
-	s.stopServer()
 }

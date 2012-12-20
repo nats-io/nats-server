@@ -12,8 +12,6 @@ import (
 	"github.com/apcera/gnatsd/server"
 )
 
-const AUTH_PORT=10422
-
 func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {
 	cs := fmt.Sprintf("CONNECT {\"verbose\":true,\"auth_token\":\"%s\",\"user\":\"%s\",\"pass\":\"%s\"}\r\n", token, user, pass)
 	sendProto(t, c, cs)
@@ -36,13 +34,23 @@ func expectAuthRequired(t tLogger, c net.Conn) {
 	}
 }
 
+////////////////////////////////////////////////////////////
+// The authorization token version
+////////////////////////////////////////////////////////////
+
+const AUTH_PORT=10422
 const AUTH_TOKEN = "_YZZ22_"
 
-func TestStartupAuthToken(t *testing.T) {
-	s = startServer(t, AUTH_PORT, fmt.Sprintf("--auth=%s", AUTH_TOKEN))
+func runAuthServerWithToken() *server.Server {
+	opts := defaultServerOptions
+	opts.Port = AUTH_PORT
+	opts.Authorization = AUTH_TOKEN
+	return runServer(&opts)
 }
 
 func TestNoAuthClient(t *testing.T) {
+	s := runAuthServerWithToken()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -51,6 +59,8 @@ func TestNoAuthClient(t *testing.T) {
 }
 
 func TestAuthClientBadToken(t *testing.T) {
+	s := runAuthServerWithToken()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -59,6 +69,8 @@ func TestAuthClientBadToken(t *testing.T) {
 }
 
 func TestAuthClientNoConnect(t *testing.T) {
+	s := runAuthServerWithToken()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -68,6 +80,8 @@ func TestAuthClientNoConnect(t *testing.T) {
 }
 
 func TestAuthClientGoodConnect(t *testing.T) {
+	s := runAuthServerWithToken()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -76,6 +90,8 @@ func TestAuthClientGoodConnect(t *testing.T) {
 }
 
 func TestAuthClientFailOnEverythingElse(t *testing.T) {
+	s := runAuthServerWithToken()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -83,19 +99,24 @@ func TestAuthClientFailOnEverythingElse(t *testing.T) {
 	expectResult(t, c, errRe)
 }
 
-func TestStopServerAuthToken(t *testing.T) {
-	s.stopServer()
-}
+////////////////////////////////////////////////////////////
+// The username/password version
+////////////////////////////////////////////////////////////
 
 const AUTH_USER = "derek"
 const AUTH_PASS = "foobar"
 
-// The username/password versions
-func TestStartupAuthPassword(t *testing.T) {
-	s = startServer(t, AUTH_PORT, fmt.Sprintf("--user=%s --pass=%s", AUTH_USER, AUTH_PASS))
+func runAuthServerWithUserPass() *server.Server {
+	opts := defaultServerOptions
+	opts.Port = AUTH_PORT
+	opts.Username = AUTH_USER
+	opts.Password = AUTH_PASS
+	return runServer(&opts)
 }
 
 func TestNoUserOrPasswordClient(t *testing.T) {
+	s := runAuthServerWithUserPass()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -104,6 +125,8 @@ func TestNoUserOrPasswordClient(t *testing.T) {
 }
 
 func TestBadUserClient(t *testing.T) {
+	s := runAuthServerWithUserPass()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -112,6 +135,8 @@ func TestBadUserClient(t *testing.T) {
 }
 
 func TestBadPasswordClient(t *testing.T) {
+	s := runAuthServerWithUserPass()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
@@ -120,13 +145,11 @@ func TestBadPasswordClient(t *testing.T) {
 }
 
 func TestPasswordClientGoodConnect(t *testing.T) {
+	s := runAuthServerWithUserPass()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
 	doAuthConnect(t, c, "", AUTH_USER, AUTH_PASS)
 	expectResult(t, c, okRe)
-}
-
-func TestStopServerAuthPassword(t *testing.T) {
-	s.stopServer()
 }

@@ -66,7 +66,6 @@ func runServer(opts *server.Options) *server.Server {
 		conn.Close()
 		return s
 	}
-
 	panic("Unable to start NATs")
 	return nil
 }
@@ -118,8 +117,6 @@ func createClientConn(t tLogger, host string, port int) net.Conn {
 }
 
 func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
-	sendProto(t, c, cs)
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
 	var sinfo server.Info
@@ -127,6 +124,8 @@ func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
 	if err != nil {
 		t.Fatalf("Could not unmarshal INFO json: %v\n", err)
 	}
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
+	sendProto(t, c, cs)
 }
 
 func doDefaultConnect(t tLogger, c net.Conn) {
@@ -191,7 +190,7 @@ var expBuf = make([]byte, 32768)
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
-	//	time.Sleep(50 * time.Millisecond)
+	// time.Sleep(10 * time.Millisecond)
 	c.SetReadDeadline(time.Now().Add(1 * time.Second))
 	defer c.SetReadDeadline(time.Time{})
 

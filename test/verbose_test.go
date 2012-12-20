@@ -6,11 +6,9 @@ import (
 	"testing"
 )
 
-func TestStartupVerbose(t *testing.T) {
-	s = startServer(t, PROTO_TEST_PORT, "")
-}
-
 func TestVerbosePing(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	doConnect(t, c, true, false, false)
 	defer c.Close()
@@ -26,6 +24,8 @@ func TestVerbosePing(t *testing.T) {
 }
 
 func TestVerboseConnect(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	doConnect(t, c, true, false, false)
 	defer c.Close()
@@ -41,6 +41,8 @@ func TestVerboseConnect(t *testing.T) {
 }
 
 func TestVerbosePubSub(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	doConnect(t, c, true, false, false)
 	send := sendCommand(t, c)
@@ -59,8 +61,4 @@ func TestVerbosePubSub(t *testing.T) {
 	// UnSub
 	send("UNSUB 1\r\n")
 	expect(okRe)
-}
-
-func TestStopServerVerbose(t *testing.T) {
-	s.stopServer()
 }

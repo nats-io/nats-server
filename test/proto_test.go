@@ -5,17 +5,21 @@ package test
 import (
 	"testing"
 	"time"
-)
 
-var s *natsServer
+	"github.com/apcera/gnatsd/server"
+)
 
 const PROTO_TEST_PORT = 9922
 
-func TestStartup(t *testing.T) {
-	s = startServer(t, PROTO_TEST_PORT, "")
+func runProtoServer() *server.Server {
+	opts := defaultServerOptions
+	opts.Port = PROTO_TEST_PORT
+	return runServer(&opts)
 }
 
 func TestProtoBasics(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
@@ -38,6 +42,8 @@ func TestProtoBasics(t *testing.T) {
 }
 
 func TestProtoErr(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	defer c.Close()
@@ -48,6 +54,8 @@ func TestProtoErr(t *testing.T) {
 }
 
 func TestUnsubMax(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
@@ -64,6 +72,8 @@ func TestUnsubMax(t *testing.T) {
 }
 
 func TestQueueSub(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
@@ -94,6 +104,8 @@ func TestQueueSub(t *testing.T) {
 }
 
 func TestMultipleQueueSub(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
@@ -127,6 +139,8 @@ func TestMultipleQueueSub(t *testing.T) {
 }
 
 func TestPubToArgState(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	defer c.Close()
@@ -135,13 +149,11 @@ func TestPubToArgState(t *testing.T) {
 }
 
 func TestSubToArgState(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	send, expect := setupConn(t, c)
 	defer c.Close()
 	send("SUBZZZ foo 1\r\n")
 	expect(errRe)
-}
-
-func TestStopServer(t *testing.T) {
-	s.stopServer()
 }
