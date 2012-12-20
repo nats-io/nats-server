@@ -51,6 +51,7 @@ type Server struct {
 	running  bool
 	listener net.Listener
 	clients  map[uint64]*client
+	done     chan bool
 }
 
 func processOptions(opt *Options) {
@@ -87,6 +88,7 @@ func New(opts *Options) *Server {
 		opts:  opts,
 		debug: opts.Debug,
 		trace: opts.Trace,
+		done:  make(chan bool, 1),
 	}
 	// Setup logging with flags
 	s.LogInit()
@@ -136,6 +138,7 @@ func (s *Server) Shutdown() {
 		s.listener.Close()
 		s.listener = nil
 	}
+	<-s.done
 }
 
 func (s *Server) AcceptLoop() {
@@ -162,6 +165,7 @@ func (s *Server) AcceptLoop() {
 		}
 		s.createClient(conn)
 	}
+	s.done <- true
 	Log("Server Exiting..")
 }
 
