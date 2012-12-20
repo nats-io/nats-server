@@ -127,12 +127,10 @@ func (s *Server) handleSignals() {
 // and closing all associated clients.
 func (s *Server) Shutdown() {
 	s.running = false
-
 	// Close client connections
 	for _, c := range s.clients {
 		c.closeConnection()
 	}
-
 	// Kick AcceptLoop()
 	if s.listener != nil {
 		s.listener.Close()
@@ -165,7 +163,6 @@ func (s *Server) AcceptLoop() {
 		s.createClient(conn)
 	}
 	Log("Server Exiting..")
-	os.Exit(0)
 }
 
 func clientConnStr(conn net.Conn) interface{} {
