@@ -364,7 +364,7 @@ func (c *client) parse(buf []byte) error {
 
 authErr:
 	c.authViolation()
-	return fmt.Errorf("Authorization Error")
+	return ErrAuthorization
 
 parseErr:
 	c.sendErr("Unknown Protocol Operation")
