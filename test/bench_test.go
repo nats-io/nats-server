@@ -4,13 +4,25 @@ package test
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/apcera/gnatsd/server"
 )
 
-const PERF_PORT=8422
+const PERF_PORT = 8422
+
+// For Go routine based server.
+func runBenchServer() *server.Server {
+	opts := defaultServerOptions
+	opts.Port = PERF_PORT
+	return runServer(&opts)
+}
 
 const defaultRecBufSize = 32768
 const defaultSendBufSize = 16384
@@ -29,7 +41,7 @@ func flushConnection(b *testing.B, c net.Conn, buf []byte) {
 
 func benchPub(b *testing.B, subject, payload string) {
 	b.StopTimer()
-	s = startServer(b, PERF_PORT, "")
+	s := startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -47,34 +59,44 @@ func benchPub(b *testing.B, subject, payload string) {
 	s.stopServer()
 }
 
-func Benchmark____PubNoPayload(b *testing.B) {
+func sizedString(sz int) string {
+	u := make([]byte, sz)
+	io.ReadFull(rand.Reader, u)
+	return hex.EncodeToString(u)
+}
+
+func Benchmark___PubNo_Payload(b *testing.B) {
 	benchPub(b, "a", "")
 }
 
-func Benchmark___PubMinPayload(b *testing.B) {
-	benchPub(b, "a", "b")
-}
-
-func Benchmark__PubTinyPayload(b *testing.B) {
-	benchPub(b, "foo", "ok")
-}
-
-func Benchmark_PubSmallPayload(b *testing.B) {
-	benchPub(b, "foo", "hello world")
-}
-
-func Benchmark___PubMedPayload(b *testing.B) {
-	benchPub(b, "foo", "The quick brown fox jumps over the lazy dog")
-}
-
-func Benchmark_PubLargePayload(b *testing.B) {
+func Benchmark___Pub8b_Payload(b *testing.B) {
 	b.StopTimer()
-	var p string
-	for i := 0 ; i < 200 ; i++ {
-		p = p + "hello world "
-	}
-	b.StartTimer()
-	benchPub(b, "foo", p)
+	s := sizedString(8)
+	benchPub(b, "a", s)
+}
+
+func Benchmark__Pub32b_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(32)
+	benchPub(b, "a", s)
+}
+
+func Benchmark_Pub256B_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(256)
+	benchPub(b, "a", s)
+}
+
+func Benchmark___Pub1K_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(1024)
+	benchPub(b, "a", s)
+}
+
+func Benchmark___Pub4K_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(4*1024)
+	benchPub(b, "a", s)
 }
 
 func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
@@ -101,7 +123,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 
 func Benchmark__________PubSub(b *testing.B) {
 	b.StopTimer()
-	s = startServer(b, PERF_PORT, "")
+	s := startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo 1\r\n")
@@ -133,7 +155,7 @@ func Benchmark__________PubSub(b *testing.B) {
 
 func Benchmark__PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
-	s = startServer(b, PERF_PORT, "")
+	s := startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -168,7 +190,7 @@ func Benchmark__PubSubTwoConns(b *testing.B) {
 
 func Benchmark__PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
-	s = startServer(b, PERF_PORT, "")
+	s := startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
@@ -201,7 +223,7 @@ func Benchmark__PubTwoQueueSub(b *testing.B) {
 
 func Benchmark_PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
-	s = startServer(b, PERF_PORT, "")
+	s := startServer(b, PERF_PORT, "")
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
@@ -233,6 +255,3 @@ func Benchmark_PubFourQueueSub(b *testing.B) {
 	c.Close()
 	s.stopServer()
 }
-
-
-
