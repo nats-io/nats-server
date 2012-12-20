@@ -235,6 +235,33 @@ func TestClientSimplePubSubWithReply(t *testing.T) {
 	}
 }
 
+func TestClientNoBodyPubSubWithReply(t *testing.T) {
+	_, c, cr := setupClient()
+
+	// SUB/PUB
+	go c.parse([]byte("SUB foo 1\r\nPUB foo bar 0\r\n\r\nPING\r\n"))
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	matches := msgPat.FindAllStringSubmatch(l, -1)[0]
+	if len(matches) != 6 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 6)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[REPLY_INDEX] != "bar" {
+		t.Fatalf("Did not get correct reply subject: '%s'\n", matches[REPLY_INDEX])
+	}
+	if matches[LEN_INDEX] != "0" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
+	}
+}
+
 func TestClientPubWithQueueSub(t *testing.T) {
 	_, c, cr := setupClient()
 
