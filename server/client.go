@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apcera/gnatsd/hashmap"
@@ -30,18 +31,12 @@ type client struct {
 	atmr *time.Timer
 	ptmr *time.Timer
 	pout int
-	cstats
 	parseState
+	stats
 }
 
 func (c *client) String() string {
 	return fmt.Sprintf("cid:%d", c.cid)
-}
-
-type cstats struct {
-	nr int
-	nb int
-	nm int
 }
 
 type subscription struct {
@@ -107,7 +102,7 @@ func (c *client) readLoop() {
 }
 
 func (c *client) traceMsg(msg []byte) {
-	pm := fmt.Sprintf("Processing msg: %d", c.nm)
+	pm := fmt.Sprintf("Processing msg: %d", c.inMsgs)
 	opa := []interface{}{pm, string(c.pa.subject), string(c.pa.reply), string(msg)}
 	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
 }
@@ -361,6 +356,13 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		return
 	}
 
+	// Update statistics
+	client.outMsgs++
+	client.outBytes += int64(len(msg))
+
+	atomic.AddInt64(&c.srv.outMsgs, 1)
+	atomic.AddInt64(&c.srv.outBytes, int64(len(msg)))
+
 	// Check to see if our writes will cause a flush
 	// in the underlying bufio. If so limit time we
 	// will wait for flush to complete.
@@ -412,7 +414,12 @@ writeErr:
 }
 
 func (c *client) processMsg(msg []byte) {
-	c.nm++
+	c.inMsgs++
+	c.inBytes += int64(len(msg))
+
+	atomic.AddInt64(&c.srv.inMsgs, 1)
+	atomic.AddInt64(&c.srv.inBytes, int64(len(msg)))
+
 	if trace {
 		c.traceMsg(msg)
 	}
@@ -570,13 +577,4 @@ func (c *client) closeConnection() {
 			}
 		}
 	}
-
-	/*
-		log.Printf("Sublist Stats: %+v\n", c.srv.sl.Stats())
-		if c.nr > 0 {
-			log.Printf("stats: %d %d %d\n", c.nr, c.nb, c.nm)
-			log.Printf("bytes per read: %d\n", c.nb/c.nr)
-			log.Printf("msgs per read: %d\n", c.nm/c.nr)
-		}
-	*/
 }

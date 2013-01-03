@@ -60,9 +60,6 @@ func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
 
-	c.nr++
-	c.nb += len(buf)
-
 	for i, b = range buf {
 		switch c.state {
 		case OP_START:

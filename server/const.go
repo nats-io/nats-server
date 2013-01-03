@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go 0.2.4.alpha.1"
+	VERSION = "go-0.2.6.alpha.1"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
@@ -25,7 +25,7 @@ const (
 	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
 
 	// TLS/SSL wait time
-	SSL_TIMEOUT = 250 * time.Millisecond
+	SSL_TIMEOUT = 500 * time.Millisecond
 
 	// Authorization wait time
 	AUTH_TIMEOUT = 2 * SSL_TIMEOUT
@@ -38,4 +38,6 @@ const (
 
 	// Write/Flush Deadlines
 	DEFAULT_FLUSH_DEADLINE = 500 * time.Millisecond
+
+	DEFAULT_HTTP_PORT = 8333
 )

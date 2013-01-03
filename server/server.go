@@ -17,19 +17,24 @@ import (
 )
 
 type Options struct {
-	Host          string
-	Port          int
-	Trace         bool
-	Debug         bool
-	NoLog         bool
-	NoSigs        bool
-	Logtime       bool
-	MaxConn       int
-	Username      string
-	Password      string
-	Authorization string
-	PingInterval  time.Duration
-	MaxPingsOut   int
+	Host           string        `json:"addr"`
+	Port           int           `json:"port"`
+	Trace          bool          `json:"-"`
+	Debug          bool          `json:"-"`
+	NoLog          bool          `json:"-"`
+	NoSigs         bool          `json:"-"`
+	Logtime        bool          `json:"-"`
+	MaxConn        int           `json:"max_connections"`
+	Username       string        `json:"user,omitempty"`
+	Password       string        `json:"-"`
+	Authorization  string        `json:"-"`
+	PingInterval   time.Duration `json:"ping_interval"`
+	MaxPingsOut    int           `json:"ping_max"`
+	HttpPort       int           `json:"http_port"`
+	SslTimeout     float64       `json:"ssl_timeout"`
+	AuthTimeout    float64       `json:"auth_timeout"`
+	MaxControlLine int           `json:"max_control_line"`
+	MaxPayload     int           `json:"max_payload"`
 }
 
 type Info struct {
@@ -54,6 +59,15 @@ type Server struct {
 	listener net.Listener
 	clients  map[uint64]*client
 	done     chan bool
+	start    time.Time
+	stats
+}
+
+type stats struct {
+	inMsgs int64
+	outMsgs int64
+	inBytes int64
+	outBytes int64
 }
 
 func processOptions(opts *Options) {
@@ -72,6 +86,18 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxPingsOut == 0 {
 		opts.MaxPingsOut = DEFAULT_PING_MAX_OUT
+	}
+	if opts.SslTimeout == 0 {
+		opts.SslTimeout = float64(SSL_TIMEOUT) / float64(time.Second)
+	}
+	if opts.AuthTimeout == 0 {
+		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	}
+	if opts.MaxControlLine == 0 {
+		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE
+	}
+	if opts.MaxPayload == 0 {
+		opts.MaxPayload = MAX_PAYLOAD_SIZE
 	}
 }
 
@@ -97,6 +123,7 @@ func New(opts *Options) *Server {
 		debug: opts.Debug,
 		trace: opts.Trace,
 		done:  make(chan bool, 1),
+		start: time.Now(),
 	}
 	// Setup logging with flags
 	s.LogInit()
