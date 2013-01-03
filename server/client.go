@@ -417,8 +417,10 @@ func (c *client) processMsg(msg []byte) {
 	c.inMsgs++
 	c.inBytes += int64(len(msg))
 
-	atomic.AddInt64(&c.srv.inMsgs, 1)
-	atomic.AddInt64(&c.srv.inBytes, int64(len(msg)))
+	if c.srv != nil {
+		atomic.AddInt64(&c.srv.inMsgs, 1)
+		atomic.AddInt64(&c.srv.inBytes, int64(len(msg)))
+	}
 
 	if trace {
 		c.traceMsg(msg)
