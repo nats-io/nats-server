@@ -1,6 +1,7 @@
 language: go
 
 script:
+  - go -v
   - go build
   - go vet ./...
   - go test -i ./...

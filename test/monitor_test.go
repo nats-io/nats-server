@@ -95,7 +95,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
 	}
 	if c.Conns == nil || len(c.Conns) != 0 {
-		t.Fatalf("Expected 0 connections in array, got %+p\n", c.Conns)
+		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
 
 	// Create a connection to test ConnInfo
@@ -127,7 +127,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %+p\n", c.Conns)
+		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
 	}
 
 	// Test inside details of each connection
