@@ -63,7 +63,49 @@ func TestVarz(t *testing.T) {
 	if v.Mem > 8192 {
 		t.Fatalf("Did not expect memory to be so high: %d\n", v.Mem)
 	}
-	// TODO(dlc): Add checks for connections, etc..
+
+	// Create a connection to test ConnInfo
+	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	send := sendCommand(t, cl)
+	send, expect := setupConn(t, cl)
+	expectMsgs := expectMsgsCommand(t, expect)
+
+	send("SUB foo 1\r\nPUB foo 5\r\nhello\r\n")
+	expectMsgs(1)
+
+	resp, err = http.Get(url + "varz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	v = server.Varz{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if v.Connections != 1 {
+		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+	}
+	if v.InMsgs != 1 {
+		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
+	}
+	if v.OutMsgs != 1 {
+		t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
+	}
+	if v.InBytes != 5 {
+		t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
+	}
+	if v.OutBytes != 5 {
+		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+	}
 }
 
 func TestConnz(t *testing.T) {
