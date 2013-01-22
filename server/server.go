@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +50,7 @@ type Info struct {
 }
 
 type Server struct {
+	mu       sync.Mutex
 	info     Info
 	infoJson []byte
 	sl       *sublist.Sublist
@@ -165,6 +168,7 @@ func (s *Server) handleSignals() {
 func (s *Server) Shutdown() {
 	s.running = false
 	// Close client connections
+	// FIXME(dlc) lock? will call back into remove..
 	for _, c := range s.clients {
 		c.closeConnection()
 	}
@@ -204,12 +208,24 @@ func (s *Server) AcceptLoop() {
 	Log("Server Exiting..")
 }
 
-func clientConnStr(conn net.Conn) interface{} {
-	if ip, ok := conn.(*net.TCPConn); ok {
-		addr := ip.RemoteAddr().(*net.TCPAddr)
-		return []string{fmt.Sprintf("%v, %d", addr.IP, addr.Port)}
-	}
-	return "N/A"
+func (s *Server) StartHTTPMonitoring() {
+	go func() {
+		// FIXME(dlc): port config
+		lm := fmt.Sprintf("Starting http monitor on port %d", s.opts.HttpPort)
+		Log(lm)
+		// Varz
+		http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {
+			s.HandleVarz(w, r)
+		})
+		// Connz
+		http.HandleFunc("/connz", func(w http.ResponseWriter, r *http.Request) {
+			s.HandleConnz(w, r)
+		})
+
+		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HttpPort)
+		Fatal(http.ListenAndServe(hp, nil))
+	}()
+
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
@@ -240,7 +256,10 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.setPingTimer()
 
 	// Register with the server.
+	s.mu.Lock()
 	s.clients[c.cid] = c
+	s.mu.Unlock()
+
 	return c
 }
 
@@ -266,5 +285,7 @@ func (s *Server) checkAuth(c *client) bool {
 }
 
 func (s *Server) removeClient(c *client) {
+	s.mu.Lock()
 	delete(s.clients, c.cid)
+	s.mu.Unlock()
 }

@@ -64,6 +64,14 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+func clientConnStr(conn net.Conn) interface{} {
+	if ip, ok := conn.(*net.TCPConn); ok {
+		addr := ip.RemoteAddr().(*net.TCPAddr)
+		return []string{fmt.Sprintf("%v, %d", addr.IP, addr.Port)}
+	}
+	return "N/A"
+}
+
 func (c *client) readLoop() {
 	b := make([]byte, defaultBufSize)
 	for {

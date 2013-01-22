@@ -15,7 +15,6 @@ import (
 
 const MONITOR_PORT=11422
 
-
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
 	s := startServer(t, MONITOR_PORT, "")
@@ -56,6 +55,7 @@ func TestVarz(t *testing.T) {
 	if err := json.Unmarshal(body, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
+
 	// Do some sanity checks on values
 	if time.Since(v.Start) > 10*time.Second {
 		t.Fatal("Expected start time to be within 10 seconds.")
@@ -64,4 +64,97 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Did not expect memory to be so high: %d\n", v.Mem)
 	}
 	// TODO(dlc): Add checks for connections, etc..
+}
+
+func TestConnz(t *testing.T) {
+	args := fmt.Sprintf("-m %d", server.DEFAULT_HTTP_PORT)
+	s := startServer(t, MONITOR_PORT, args)
+	defer s.stopServer()
+
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := server.Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Test contents..
+	if c.NumConns != 0 {
+		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+	}
+	if c.Conns == nil || len(c.Conns) != 0 {
+		t.Fatalf("Expected 0 connections in array, got %+p\n", c.Conns)
+	}
+
+	// Create a connection to test ConnInfo
+	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	send := sendCommand(t, cl)
+	send, expect := setupConn(t, cl)
+	expectMsgs := expectMsgsCommand(t, expect)
+
+	send("SUB foo 1\r\nPUB foo 5\r\nhello\r\n")
+	expectMsgs(1)
+
+	resp, err = http.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.NumConns != 1 {
+		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+	}
+	if c.Conns == nil || len(c.Conns) != 1 {
+		t.Fatalf("Expected 1 connections in array, got %+p\n", c.Conns)
+	}
+
+	// Test inside details of each connection
+	ci := c.Conns[0]
+
+	if ci.Cid == 0 {
+		t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
+	}
+	if ci.Ip != "127.0.0.1" {
+		t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.Ip)
+	}
+	if ci.Port == 0 {
+		t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
+	}
+	if ci.Subs != 1 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	}
+	if ci.InMsgs != 1 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.InMsgs)
+	}
+	if ci.OutMsgs != 1 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.OutMsgs)
+	}
+	if ci.InBytes != 5 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.InBytes)
+	}
+	if ci.OutBytes != 5 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.OutBytes)
+	}
 }

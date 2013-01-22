@@ -4,7 +4,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -45,29 +44,19 @@ func main() {
 
 	// TBD: Parse config if given
 
-	// Profiler
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6062", nil))
-	}()
-
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
 	// Start up the http server if needed.
 	if opts.HttpPort != 0 {
-		go func() {
-			// FIXME(dlc): port config
-			lm := fmt.Sprintf("Starting http monitor on port %d", opts.HttpPort)
-			server.Log(lm)
-			http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {
-				s.HandleVarz(w, r)
-			})
-			hp := fmt.Sprintf("%s:%d", opts.Host, opts.HttpPort)
-			log.Fatal(http.ListenAndServe(hp, nil))
-		}()
+		s.StartHTTPMonitoring()
 	}
+
+	// Profiler
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6062", nil))
+	}()
 
 	// Wait for clients.
 	s.AcceptLoop()
 }
-
