@@ -1,7 +1,7 @@
 language: go
 
 script:
-  - go -v
+  - go version
   - go build
   - go vet ./...
   - go test -i ./...
