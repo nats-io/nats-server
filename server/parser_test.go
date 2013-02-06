@@ -59,6 +59,66 @@ func TestParsePing(t *testing.T) {
 	}
 }
 
+func TestParsePong(t *testing.T) {
+	c := dummyClient()
+	if c.state != OP_START {
+		t.Fatalf("Expected OP_START vs %d\n", c.state)
+	}
+	pong := []byte("PONG\r\n")
+	err := c.parse(pong[:1])
+	if err != nil || c.state != OP_P {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong[1:2])
+	if err != nil || c.state != OP_PO {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong[2:3])
+	if err != nil || c.state != OP_PON {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong[3:4])
+	if err != nil || c.state != OP_PONG {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong[4:5])
+	if err != nil || c.state != OP_PONG {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong[5:6])
+	if err != nil || c.state != OP_START {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(pong)
+	if err != nil || c.state != OP_START {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	// Should tolerate spaces
+	pong = []byte("PONG  \r")
+	err = c.parse(pong)
+	if err != nil || c.state != OP_PONG {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	c.state = OP_START
+	pong = []byte("PONG  \r  \n")
+	err = c.parse(pong)
+	if err != nil || c.state != OP_START {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+
+	// Should be adjusting c.pout, Pings Outstanding
+	c.state = OP_START
+	c.pout = 10
+	pong = []byte("PONG\r\n")
+	err = c.parse(pong)
+	if err != nil || c.state != OP_START {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if c.pout != 9 {
+		t.Fatalf("Unexpected pout: %d vs %d\n", c.pout, 9)
+	}
+}
+
 func TestParseConnect(t *testing.T) {
 	c := dummyClient()
 	connect := []byte("CONNECT {\"verbose\":false,\"pedantic\":true,\"ssl_required\":false}\r\n")

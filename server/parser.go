@@ -41,6 +41,9 @@ const (
 	OP_PI
 	OP_PIN
 	OP_PING
+	OP_PO
+	OP_PON
+	OP_PONG
 	MSG_PAYLOAD
 	MSG_END
 	OP_S
@@ -84,6 +87,8 @@ func (c *client) parse(buf []byte) error {
 				c.state = OP_PU
 			case 'I', 'i':
 				c.state = OP_PI
+			case 'O', 'o':
+				c.state = OP_PO
 			default:
 				goto parseErr
 			}
@@ -273,6 +278,26 @@ func (c *client) parse(buf []byte) error {
 			switch b {
 			case '\n':
 				c.processPing()
+				c.drop, c.state = 0, OP_START
+			}
+		case OP_PO:
+			switch b {
+			case 'N', 'n':
+				c.state = OP_PON
+			default:
+				goto parseErr
+			}
+		case OP_PON:
+			switch b {
+			case 'G', 'g':
+				c.state = OP_PONG
+			default:
+				goto parseErr
+			}
+		case OP_PONG:
+			switch b {
+			case '\n':
+				c.processPong()
 				c.drop, c.state = 0, OP_START
 			}
 		case OP_C:

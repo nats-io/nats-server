@@ -186,6 +186,13 @@ func (c *client) processPing() {
 	c.mu.Unlock()
 }
 
+func (c *client) processPong() {
+	c.traceOp("PONG", nil)
+	c.mu.Lock()
+	c.pout -= 1
+	c.mu.Unlock()
+}
+
 const argsLenMax = 3
 
 func (c *client) processPub(arg []byte) error {
