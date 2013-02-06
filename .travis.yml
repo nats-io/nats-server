@@ -1,6 +1,6 @@
 language: go
 
-before_script:
+install:
   - go version
   - mkdir -p $GOPATH/src/github.com/apcera
   - ln -s /home/travis/build/apcera/gnatsd $GOPATH/src/github.com/apcera/gnatsd
