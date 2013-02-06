@@ -233,7 +233,7 @@ func TestShouldFail(t *testing.T) {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("Po")) ; err == nil {
+	if err := c.parse([]byte("POO")) ; err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
