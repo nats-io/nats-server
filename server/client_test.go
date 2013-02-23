@@ -33,10 +33,17 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	}()
 }
 
+var defaultServerOptions = Options{
+	Trace:  false,
+	Debug:  false,
+	NoLog:  true,
+	NoSigs: true,
+}
+
 func rawSetup() (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
 	cr := bufio.NewReaderSize(cli, defaultBufSize)
-	s := New(&Options{})
+	s := New(&defaultServerOptions)
 	ch := make(chan *client)
 	createClientAsync(ch, s, srv)
 	l, _ := cr.ReadString('\n')
@@ -283,6 +290,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 
 	var n1, n2, received int
 	for ; ; received += 1 {
+		time.Sleep(10*time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -329,6 +337,7 @@ func TestClientUnSub(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
+		time.Sleep(10*time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -369,6 +378,7 @@ func TestClientUnSubMax(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
+		time.Sleep(10*time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
