@@ -190,6 +190,8 @@ func (s *Server) AcceptLoop() {
 		return
 	}
 
+	Logf("nats-server is ready")
+
 	// Setup state that can enable shutdown
 	s.listener = l
 	s.running = true
