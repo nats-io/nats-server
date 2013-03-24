@@ -1,7 +1,6 @@
 package conf
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -9,7 +8,6 @@ import (
 func expect(t *testing.T, lx *lexer, items []item) {
 	for i := 0; i < len(items); i++ {
 		item := lx.nextItem()
-		fmt.Printf("Item is %+v\n", item)
 		if item.typ == itemEOF {
 			break
 		} else if item.typ == itemError {
@@ -153,6 +151,35 @@ func TestMultilineArrays(t *testing.T) {
 		{itemEOF, "", 9},
 	}
 	lx := lex(mlArray)
+	expect(t, lx, expectedItems)
+}
+
+var mlArrayNoSep = `
+# top level comment
+foo = [
+ 1
+ 2
+ 3
+ 'bar'
+ "bar"
+]
+`
+func TestMultilineArraysNoSep(t *testing.T) {
+	expectedItems := []item{
+		{itemCommentStart, "", 2},
+		{itemText, " top level comment", 2},
+		{itemKeyStart, "", 3},
+		{itemText, "foo", 3},
+		{itemArrayStart, "", 3},
+		{itemInteger, "1", 4},
+		{itemInteger, "2", 5},
+		{itemInteger, "3", 6},
+		{itemString, "bar", 7},
+		{itemString, "bar", 8},
+		{itemArrayEnd, "", 9},
+		{itemEOF, "", 9},
+	}
+	lx := lex(mlArrayNoSep)
 	expect(t, lx, expectedItems)
 }
 
