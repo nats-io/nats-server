@@ -367,7 +367,7 @@ func lexArrayValue(lx *lexer) stateFn {
 func lexArrayValueEnd(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isWhitespace(r) || isNL(r):
+	case isWhitespace(r):
 		return lexSkip(lx, lexArrayValueEnd)
 	case r == commentHashStart:
 		lx.push(lexArrayValueEnd)
@@ -380,7 +380,7 @@ func lexArrayValueEnd(lx *lexer) stateFn {
 		}
 		lx.backup()
 		fallthrough
-	case r == arrayValTerm:
+	case r == arrayValTerm || isNL(r):
 		return lexSkip(lx, lexArrayValue) // Move onto next
 	case r == arrayEnd:
 		return lexArrayEnd
