@@ -14,15 +14,15 @@ func expect(t *testing.T, lx *lexer, items []item) {
 			t.Fatal(item.val)
 		}
 		if item != items[i] {
-			t.Fatalf("Testing: '%s'\nExpected %+v, received %+v\n", lx.input, items[i], item)
+			t.Fatalf("Testing: '%s'\nExpected %+v, received %+v\n",
+				lx.input, items[i], item)
 		}
 	}
 }
 
 func TestSimpleKeyStringValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemString, "bar", 1},
 		{itemEOF, "", 1},
 	}
@@ -42,8 +42,7 @@ func TestSimpleKeyStringValues(t *testing.T) {
 
 func TestSimpleKeyIntegerValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
 		{itemEOF, "", 1},
 	}
@@ -57,8 +56,7 @@ func TestSimpleKeyIntegerValues(t *testing.T) {
 
 func TestSimpleKeyFloatValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemFloat, "22.2", 1},
 		{itemEOF, "", 1},
 	}
@@ -72,8 +70,7 @@ func TestSimpleKeyFloatValues(t *testing.T) {
 
 func TestSimpleKeyBoolValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemBool, "true", 1},
 		{itemEOF, "", 1},
 	}
@@ -101,8 +98,7 @@ func TestComments(t *testing.T) {
 
 func TestArrays(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemArrayStart, "", 1},
 		{itemInteger, "1", 1},
 		{itemInteger, "2", 1},
@@ -133,8 +129,7 @@ func TestMultilineArrays(t *testing.T) {
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
 		{itemText, " top level comment", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "foo", 3},
+		{itemKey, "foo", 3},
 		{itemArrayStart, "", 3},
 		{itemInteger, "1", 4},
 		{itemCommentStart, "", 4},
@@ -168,8 +163,7 @@ func TestMultilineArraysNoSep(t *testing.T) {
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
 		{itemText, " top level comment", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "foo", 3},
+		{itemKey, "foo", 3},
 		{itemArrayStart, "", 3},
 		{itemInteger, "1", 4},
 		{itemInteger, "2", 5},
@@ -185,14 +179,11 @@ func TestMultilineArraysNoSep(t *testing.T) {
 
 func TestSimpleMap(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemMapStart, "", 1},
-		{itemKeyStart, "", 1},
-		{itemText, "ip", 1},
+		{itemKey, "ip", 1},
 		{itemString, "127.0.0.1", 1},
-		{itemKeyStart, "", 1},
-		{itemText, "port", 1},
+		{itemKey, "port", 1},
 		{itemInteger, "4242", 1},
 		{itemMapEnd, "", 1},
 		{itemEOF, "", 1},
@@ -211,14 +202,11 @@ foo = {
 
 func TestMultilineMap(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 2},
-		{itemText, "foo", 2},
+		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "ip", 3},
+		{itemKey, "ip", 3},
 		{itemString, "127.0.0.1", 3},
-		{itemKeyStart, "", 4},
-		{itemText, "port", 4},
+		{itemKey, "port", 4},
 		{itemInteger, "4242", 4},
 		{itemMapEnd, "", 5},
 		{itemEOF, "", 5},
@@ -239,17 +227,13 @@ foo = {
 
 func TestNestedMaps(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 2},
-		{itemText, "foo", 2},
+		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "host", 3},
+		{itemKey, "host", 3},
 		{itemMapStart, "", 3},
-		{itemKeyStart, "", 4},
-		{itemText, "ip", 4},
+		{itemKey, "ip", 4},
 		{itemString, "127.0.0.1", 4},
-		{itemKeyStart, "", 5},
-		{itemText, "port", 5},
+		{itemKey, "port", 5},
 		{itemInteger, "4242", 5},
 		{itemMapEnd, "", 6},
 		{itemMapEnd, "", 7},
@@ -262,8 +246,7 @@ func TestNestedMaps(t *testing.T) {
 
 func TestColonKeySep(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
 		{itemEOF, "", 1},
 	}
@@ -279,8 +262,7 @@ func TestColonKeySep(t *testing.T) {
 
 func TestWhitespaceKeySep(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 1},
-		{itemText, "foo", 1},
+		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
 		{itemEOF, "", 1},
 	}
@@ -305,17 +287,13 @@ foo  {
 
 func TestNestedWhitespaceMaps(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 2},
-		{itemText, "foo", 2},
+		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "host", 3},
+		{itemKey, "host", 3},
 		{itemMapStart, "", 3},
-		{itemKeyStart, "", 4},
-		{itemText, "ip", 4},
+		{itemKey, "ip", 4},
 		{itemString, "127.0.0.1", 4},
-		{itemKeyStart, "", 5},
-		{itemText, "port", 5},
+		{itemKey, "port", 5},
 		{itemInteger, "4242", 5},
 		{itemMapEnd, "", 6},
 		{itemMapEnd, "", 7},
@@ -336,20 +314,15 @@ map {
 `
 func TestOptionalSemicolons(t *testing.T) {
 	expectedItems := []item{
-		{itemKeyStart, "", 2},
-		{itemText, "foo", 2},
+		{itemKey, "foo", 2},
 		{itemInteger, "123", 2},
-		{itemKeyStart, "", 3},
-		{itemText, "bar", 3},
+		{itemKey, "bar", 3},
 		{itemString, "baz", 3},
-		{itemKeyStart, "", 4},
-		{itemText, "baz", 4},
+		{itemKey, "baz", 4},
 		{itemString, "boo", 4},
-		{itemKeyStart, "", 5},
-		{itemText, "map", 5},
+		{itemKey, "map", 5},
 		{itemMapStart, "", 5},
-		{itemKeyStart, "", 6},
-		{itemText, "id", 6},
+		{itemKey, "id", 6},
 		{itemInteger, "1", 6},
 		{itemMapEnd, "", 7},
 		{itemEOF, "", 5},

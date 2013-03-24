@@ -25,6 +25,7 @@ const (
 	itemError itemType = iota
 	itemNIL            // used in the parser to indicate no type
 	itemEOF
+	itemKey
 	itemText
 	itemString
 	itemBool
@@ -35,7 +36,6 @@ const (
 	itemArrayEnd
 	itemMapStart
 	itemMapEnd
-	itemKeyStart
 	itemCommentStart
 )
 
@@ -261,7 +261,6 @@ func lexKeyStart(lx *lexer) stateFn {
 		return lexSkip(lx, lexKeyStart)
 	}
 	lx.ignore()
-	lx.emit(itemKeyStart)
 	lx.next()
 	return lexKey
 }
@@ -271,7 +270,7 @@ func lexKeyStart(lx *lexer) stateFn {
 func lexKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if isWhitespace(r) || isNL(r) || isKeySeparator(r) {
-		lx.emit(itemText)
+		lx.emit(itemKey)
 		return lexKeyEnd
 	}
 	lx.next()
@@ -397,8 +396,6 @@ func lexArrayEnd(lx *lexer) stateFn {
 	return lx.pop()
 }
 
-// =======================
-
 // lexMapKeyStart consumes a key name up until the first non-whitespace character.
 // lexMapKeyStart will ignore whitespace.
 func lexMapKeyStart(lx *lexer) stateFn {
@@ -414,7 +411,6 @@ func lexMapKeyStart(lx *lexer) stateFn {
 		return lexSkip(lx, lexMapEnd)
 	}
 	lx.ignore()
-	lx.emit(itemKeyStart)
 	lx.next()
 	return lexMapKey
 }
@@ -424,7 +420,7 @@ func lexMapKeyStart(lx *lexer) stateFn {
 func lexMapKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if isWhitespace(r) || isNL(r) || isKeySeparator(r) {
-		lx.emit(itemText)
+		lx.emit(itemKey)
 		return lexMapKeyEnd
 	}
 	lx.next()
@@ -795,8 +791,8 @@ func (itype itemType) String() string {
 		return "Float"
 	case itemDatetime:
 		return "DateTime"
-	case itemKeyStart:
-		return "KeyStart"
+	case itemKey:
+		return "Key"
 	case itemArrayStart:
 		return "ArrayStart"
 	case itemArrayEnd:
