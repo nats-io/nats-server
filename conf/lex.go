@@ -236,12 +236,9 @@ func lexTopValueEnd(lx *lexer) stateFn {
 		}
 		lx.backup()
 		fallthrough
-	case isWhitespace(r) || r == optValTerm:
+	case isWhitespace(r):
 		return lexTopValueEnd
-	case isNL(r):
-		lx.ignore()
-		return lexTop
-	case r == eof:
+	case isNL(r) || r == eof || r == optValTerm:
 		lx.ignore()
 		return lexTop
 	}

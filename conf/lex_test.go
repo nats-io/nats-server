@@ -332,6 +332,21 @@ func TestOptionalSemicolons(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestSemicolonChaining(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "1", 1},
+		{itemKey, "bar", 1},
+		{itemFloat, "2.2", 1},
+		{itemKey, "baz", 1},
+		{itemBool, "true", 1},
+		{itemEOF, "", 1},
+	}
+
+	lx := lex("foo='1'; bar=2.2; baz=true;")
+	expect(t, lx, expectedItems)
+}
+
 
 
 
