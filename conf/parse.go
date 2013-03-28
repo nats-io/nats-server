@@ -5,7 +5,7 @@
 // Arrays and nested Maps are also supported.
 
 // The format supported is less restrictive than today's formats.
-// Supports mixed Arrays [], nexted Maps {}, multiple comment types (# and //)
+// Supports mixed Arrays [], nested Maps {}, multiple comment types (# and //)
 // Also supports key value assigments using '=' or ':' or whiteSpace()
 //   e.g. foo = 2, foo : 2, foo 2
 // maps can be assigned with no key separator as well
@@ -145,7 +145,8 @@ func (p *parser) processItem(it item) error {
 	case itemDatetime:
 		dt, err := time.Parse("2006-01-02T15:04:05Z", it.val)
 		if err != nil {
-			return fmt.Errorf("Expected Zulu formatted DateTime, but got '%s'.", it.val)
+			return fmt.Errorf(
+				"Expected Zulu formatted DateTime, but got '%s'.", it.val)
 		}
 		p.setValue(dt)
 	case itemArrayStart:
