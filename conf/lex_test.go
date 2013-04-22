@@ -125,6 +125,7 @@ foo = [
  "bar"
 ]
 `
+
 func TestMultilineArrays(t *testing.T) {
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
@@ -312,6 +313,7 @@ map {
  id = 1;
 }
 `
+
 func TestOptionalSemicolons(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 2},
@@ -347,9 +349,48 @@ func TestSemicolonChaining(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+var noquotes = `
+foo = 123
+bar = baz
+baz=boo
+map {
+ id:one
+ id2 : onetwo
+}
+t true
+f false
+tstr "true"
+tkey = two
+fkey = five
+`
 
-
-
-
-
-
+func TestNonQuotedStrings(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 2},
+		{itemInteger, "123", 2},
+		{itemKey, "bar", 3},
+		{itemString, "baz", 3},
+		{itemKey, "baz", 4},
+		{itemString, "boo", 4},
+		{itemKey, "map", 5},
+		{itemMapStart, "", 5},
+		{itemKey, "id", 6},
+		{itemString, "one", 6},
+		{itemKey, "id2", 7},
+		{itemString, "onetwo", 7},
+		{itemMapEnd, "", 8},
+		{itemKey, "t", 9},
+		{itemBool, "true", 9},
+		{itemKey, "f", 10},
+		{itemBool, "false", 10},
+		{itemKey, "tstr", 11},
+		{itemString, "true", 11},
+		{itemKey, "tkey", 12},
+		{itemString, "two", 12},
+		{itemKey, "fkey", 13},
+		{itemString, "five", 13},
+		{itemEOF, "", 14},
+	}
+	lx := lex(noquotes)
+	expect(t, lx, expectedItems)
+}

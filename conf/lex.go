@@ -114,8 +114,9 @@ func (lx *lexer) pop() stateFn {
 	if len(lx.stack) == 0 {
 		return lx.errorf("BUG in lexer: no states to pop.")
 	}
-	last := lx.stack[len(lx.stack)-1]
-	lx.stack = lx.stack[0 : len(lx.stack)-1]
+	li := len(lx.stack) - 1
+	last := lx.stack[li]
+	lx.stack = lx.stack[0:li]
 	return last
 }
 
@@ -313,10 +314,6 @@ func lexValue(lx *lexer) stateFn {
 	case r == dqStringStart || r == sqStringStart:
 		lx.ignore() // ignore the " or '
 		return lexString
-	case r == 't':
-		return lexTrue
-	case r == 'f':
-		return lexFalse
 	case r == '-':
 		return lexNumberStart
 	case isDigit(r):
@@ -324,8 +321,11 @@ func lexValue(lx *lexer) stateFn {
 		return lexNumberOrDateStart
 	case r == '.': // special error case, be kind to users
 		return lx.errorf("Floats must start with a digit, not '.'.")
+	case isNL(r):
+		return lx.errorf("Expected value but found new line")
 	}
-	return lx.errorf("Expected value but found '%s' instead.", r)
+	return lexString
+	//return lx.errorf("Expected value but found '%s' instead.", r)
 }
 
 // lexArrayValue consumes one value in an array. It assumes that '[' or ','
@@ -505,15 +505,27 @@ func lexMapEnd(lx *lexer) stateFn {
 	return lx.pop()
 }
 
+// Checks if the unquoted string was actually a boolean
+func (lx *lexer) isBool() bool {
+	str := lx.input[lx.start:lx.pos]
+	return  str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+}
+
 // lexString consumes the inner contents of a string. It assumes that the
 // beginning '"' has already been consumed and ignored.
 func lexString(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isNL(r):
-		return lx.errorf("Strings cannot contain new lines.")
 	case r == '\\':
 		return lexStringEscape
+	case isNL(r) || r == eof || r == optValTerm:
+		lx.backup()
+		if lx.isBool() {
+			lx.emit(itemBool)
+		} else {
+			lx.emit(itemString)
+		}
+		return lx.pop()
 	case r == dqStringEnd || r == sqStringEnd:
 		lx.backup()
 		lx.emit(itemString)
@@ -676,41 +688,6 @@ func lexFloat(lx *lexer) stateFn {
 
 	lx.backup()
 	lx.emit(itemFloat)
-	return lx.pop()
-}
-
-// lexTrue consumes the "rue" in "true". It assumes that 't' has already
-// been consumed.
-func lexTrue(lx *lexer) stateFn {
-	if r := lx.next(); r != 'r' {
-		return lx.errorf("Expected 'tr', but found 't%s' instead.", r)
-	}
-	if r := lx.next(); r != 'u' {
-		return lx.errorf("Expected 'tru', but found 'tr%s' instead.", r)
-	}
-	if r := lx.next(); r != 'e' {
-		return lx.errorf("Expected 'true', but found 'tru%s' instead.", r)
-	}
-	lx.emit(itemBool)
-	return lx.pop()
-}
-
-// lexFalse consumes the "alse" in "false". It assumes that 'f' has already
-// been consumed.
-func lexFalse(lx *lexer) stateFn {
-	if r := lx.next(); r != 'a' {
-		return lx.errorf("Expected 'fa', but found 'f%s' instead.", r)
-	}
-	if r := lx.next(); r != 'l' {
-		return lx.errorf("Expected 'fal', but found 'fa%s' instead.", r)
-	}
-	if r := lx.next(); r != 's' {
-		return lx.errorf("Expected 'fals', but found 'fal%s' instead.", r)
-	}
-	if r := lx.next(); r != 'e' {
-		return lx.errorf("Expected 'false', but found 'fals%s' instead.", r)
-	}
-	lx.emit(itemBool)
 	return lx.pop()
 }
 

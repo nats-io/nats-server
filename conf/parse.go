@@ -58,7 +58,9 @@ func parse(data string) (p *parser, err error) {
 		if it.typ == itemEOF {
 			break
 		}
-		p.processItem(it)
+	    if err := p.processItem(it); err != nil {
+			return nil, err
+		}
 	}
 
 	return p, nil
