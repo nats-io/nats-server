@@ -6,14 +6,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/apcera/gnatsd/conf"
 	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
 )
@@ -67,10 +70,101 @@ type Server struct {
 }
 
 type stats struct {
-	inMsgs int64
-	outMsgs int64
-	inBytes int64
+	inMsgs   int64
+	outMsgs  int64
+	inBytes  int64
 	outBytes int64
+}
+
+// FIXME(dlc): Hacky
+func processConfigFile(configFile string) (*Options, error) {
+	opts := &Options{}
+
+	if configFile == "" {
+		return opts, nil
+	}
+
+	data, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		return nil, err
+	}
+
+	m, err := conf.Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range m {
+		switch strings.ToLower(k) {
+		case "port":
+			opts.Port = int(v.(int64))
+		case "host", "net":
+			opts.Host = v.(string)
+		case "debug":
+			opts.Debug = v.(bool)
+		case "trace":
+			opts.Trace = v.(bool)
+		case "logtime":
+			opts.Logtime = v.(bool)
+		case "authorization":
+			am := v.(map[string]interface{})
+			for mk, mv := range am {
+				switch strings.ToLower(mk) {
+				case "user", "username":
+					opts.Username = mv.(string)
+				case "pass", "password":
+					opts.Password = mv.(string)
+				case "timeout":
+					at := float64(1)
+					switch mv.(type) {
+					case int64:
+						at = float64(mv.(int64))
+					case float64:
+						at = mv.(float64)
+					}
+					opts.AuthTimeout = at / float64(time.Second)
+				}
+			}
+		}
+	}
+	return opts, nil
+}
+
+// Will merge two options giving preference to the flagOpts if the item is present.
+func mergeOptions(fileOpts, flagOpts *Options) *Options {
+	if fileOpts == nil {
+		return flagOpts
+	}
+	if flagOpts == nil {
+		return fileOpts
+	}
+	// Merge the two, flagOpts override
+	opts := *fileOpts
+	if flagOpts.Port != 0 {
+		opts.Port = flagOpts.Port
+	}
+	if flagOpts.Host != "" {
+		opts.Host = flagOpts.Host
+	}
+	if flagOpts.Username != "" {
+		opts.Username = flagOpts.Username
+	}
+	if flagOpts.Password != "" {
+		opts.Password = flagOpts.Password
+	}
+	if flagOpts.Authorization != "" {
+		opts.Authorization = flagOpts.Authorization
+	}
+	if flagOpts.HttpPort != 0 {
+		opts.HttpPort = flagOpts.HttpPort
+	}
+	if flagOpts.Debug {
+		opts.Debug = true
+	}
+	if flagOpts.Trace {
+		opts.Trace = true
+	}
+	return &opts
 }
 
 func processOptions(opts *Options) {

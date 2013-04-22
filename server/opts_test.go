@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -26,5 +26,55 @@ func TestDefaultOptions(t *testing.T) {
 
 	if !reflect.DeepEqual(golden, opts) {
 		t.Fatal("Default options are incorrect")
+	}
+}
+
+func TestConfigFile(t *testing.T) {
+	golden := &Options{
+		Host:        "apcera.me",
+		Port:        4242,
+		Username:    "derek",
+		Password:    "bella",
+		AuthTimeout: 1.0 / float64(time.Second),
+		Debug:       false,
+		Trace:       true,
+		Logtime:     false,
+	}
+
+	opts, err := processConfigFile("./configs/test.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	if !reflect.DeepEqual(golden, opts) {
+		t.Fatal("Options are incorrect from config file")
+	}
+}
+
+func TestMergeOverrides(t *testing.T) {
+	golden := &Options{
+		Host:        "apcera.me",
+		Port:        2222,
+		Username:    "derek",
+		Password:    "spooky",
+		AuthTimeout: 1.0 / float64(time.Second),
+		Debug:       true,
+		Trace:       true,
+		Logtime:     false,
+	}
+	fopts, err := processConfigFile("./configs/test.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	// Overrides via flags
+	opts := &Options{
+		Port:        2222,
+		Password:    "spooky",
+		Debug:       true,
+	}
+	merged := mergeOptions(fopts, opts)
+	if !reflect.DeepEqual(golden, merged) {
+		t.Fatal("Options are incorrect from config file")
 	}
 }
