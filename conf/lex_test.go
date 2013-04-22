@@ -361,7 +361,7 @@ t true
 f false
 tstr "true"
 tkey = two
-fkey = five
+fkey = five # This should be a string
 `
 
 func TestNonQuotedStrings(t *testing.T) {
@@ -389,6 +389,9 @@ func TestNonQuotedStrings(t *testing.T) {
 		{itemString, "two", 12},
 		{itemKey, "fkey", 13},
 		{itemString, "five", 13},
+		{itemCommentStart, "", 13},
+		{itemText, " This should be a string", 13},
+
 		{itemEOF, "", 14},
 	}
 	lx := lex(noquotes)

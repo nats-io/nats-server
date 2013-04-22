@@ -508,7 +508,7 @@ func lexMapEnd(lx *lexer) stateFn {
 // Checks if the unquoted string was actually a boolean
 func (lx *lexer) isBool() bool {
 	str := lx.input[lx.start:lx.pos]
-	return  str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
 }
 
 // lexString consumes the inner contents of a string. It assumes that the
@@ -518,7 +518,8 @@ func lexString(lx *lexer) stateFn {
 	switch {
 	case r == '\\':
 		return lexStringEscape
-	case isNL(r) || r == eof || r == optValTerm:
+	// Termination of non-quoted strings
+	case isNL(r) || r == eof || r == optValTerm || isWhitespace(r):
 		lx.backup()
 		if lx.isBool() {
 			lx.emit(itemBool)
