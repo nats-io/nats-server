@@ -32,7 +32,7 @@ type Options struct {
 }
 
 // FIXME(dlc): Hacky
-func processConfigFile(configFile string) (*Options, error) {
+func ProcessConfigFile(configFile string) (*Options, error) {
 	opts := &Options{}
 
 	if configFile == "" {
@@ -86,7 +86,7 @@ func processConfigFile(configFile string) (*Options, error) {
 }
 
 // Will merge two options giving preference to the flagOpts if the item is present.
-func mergeOptions(fileOpts, flagOpts *Options) *Options {
+func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if fileOpts == nil {
 		return flagOpts
 	}

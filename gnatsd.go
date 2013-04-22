@@ -45,15 +45,19 @@ func main() {
 		opts.Trace, opts.Debug = true, true
 	}
 
-	var fileOpts *Options
+	var fileOpts *server.Options
+	var err error
 
 	// Parse config if given
 	if configFile != "" {
-		fileOpts = server.processConfigFile(configFile)
+		fileOpts, err = server.ProcessConfigFile(configFile)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// Create the server with appropriate options.
-	s := server.New(server.mergeOptions(fileOpts, &opts))
+	s := server.New(server.MergeOptions(fileOpts, &opts))
 
 	// Start up the http server if needed.
 	if opts.HttpPort != 0 {

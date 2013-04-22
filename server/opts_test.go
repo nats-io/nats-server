@@ -41,7 +41,7 @@ func TestConfigFile(t *testing.T) {
 		Logtime:     false,
 	}
 
-	opts, err := processConfigFile("./configs/test.conf")
+	opts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -62,7 +62,7 @@ func TestMergeOverrides(t *testing.T) {
 		Trace:       true,
 		Logtime:     false,
 	}
-	fopts, err := processConfigFile("./configs/test.conf")
+	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -73,7 +73,7 @@ func TestMergeOverrides(t *testing.T) {
 		Password:    "spooky",
 		Debug:       true,
 	}
-	merged := mergeOptions(fopts, opts)
+	merged := MergeOptions(fopts, opts)
 	if !reflect.DeepEqual(golden, merged) {
 		t.Fatal("Options are incorrect from config file")
 	}
