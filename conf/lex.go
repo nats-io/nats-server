@@ -1,6 +1,7 @@
 // Copyright 2013 Apcera Inc. All rights reserved.
 
-// Customized heavily from https://github.com/BurntSushi/toml/blob/master/lex.go, which is based on
+// Customized heavily from
+// https://github.com/BurntSushi/toml/blob/master/lex.go, which is based on
 // Rob Pike's talk: http://cuddle.googlecode.com/hg/talk/lex.html
 
 // The format supported is less restrictive than today's formats.
@@ -393,7 +394,8 @@ func lexArrayEnd(lx *lexer) stateFn {
 	return lx.pop()
 }
 
-// lexMapKeyStart consumes a key name up until the first non-whitespace character.
+// lexMapKeyStart consumes a key name up until the first non-whitespace
+// character.
 // lexMapKeyStart will ignore whitespace.
 func lexMapKeyStart(lx *lexer) stateFn {
 	r := lx.peek()
