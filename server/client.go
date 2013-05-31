@@ -73,9 +73,16 @@ func clientConnStr(conn net.Conn) interface{} {
 }
 
 func (c *client) readLoop() {
+	// Grab the connection off the client, it will be cleared on a close.
+	// We check for that after the loop, but want to avoid a nil dereference
+	conn := c.conn
+	if conn == nil {
+		return
+	}
 	b := make([]byte, defaultBufSize)
+
 	for {
-		n, err := c.conn.Read(b)
+		n, err := conn.Read(b)
 		if err != nil {
 			c.closeConnection()
 			return
