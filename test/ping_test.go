@@ -44,8 +44,10 @@ func TestPingInterval(t *testing.T) {
 	expect(errRe)
 
 	// Server should close the connection at this point..
-	var err error
+	time.Sleep(PING_INTERVAL)
 	c.SetWriteDeadline(time.Now().Add(PING_INTERVAL))
+
+	var err error
 	for {
 		_, err = c.Write([]byte("PING\r\n"))
 		if err != nil {
