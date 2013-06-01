@@ -189,7 +189,7 @@ func TestHashMapStats(t *testing.T) {
 	if s.AvgChain > 13 || s.AvgChain < 12 {
 		t.Fatalf("AvgChain out of bounds: %f vs %f\n", s.AvgChain, 12.5)
 	}
-	if s.LongChain > 22 {
+	if s.LongChain > 25 {
 		t.Fatalf("LongChain out of bounds: %d vs %d\n", s.LongChain, 22)
 	}
 }
