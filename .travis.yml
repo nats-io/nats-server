@@ -1,7 +1,7 @@
 language: go
 
 script:
-  - cd src/github.com/apcera/gnatsd
+#  - cd src/github.com/apcera/gnatsd
   - go build
   - go vet ./...
   - go test -i ./...
