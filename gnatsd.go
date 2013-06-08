@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"strings"
 
 	"github.com/apcera/gnatsd/server"
 )
@@ -17,6 +18,7 @@ func main() {
 
 	opts := server.Options{}
 
+	var showVersion bool
 	var debugAndTrace bool
 	var configFile string
 
@@ -38,11 +40,26 @@ func main() {
 	flag.IntVar(&opts.HttpPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
 	flag.StringVar(&configFile, "c", "", "Configuration file.")
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
+	flag.BoolVar(&showVersion, "version", false, "Print version information.")
+	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 
 	flag.Parse()
 
+	// Show version and exit
+	if showVersion {
+		server.PrintServerAndExit()
+	}
+
 	if debugAndTrace {
 		opts.Trace, opts.Debug = true, true
+	}
+
+	// Process args, version only for now
+	for _, arg := range flag.Args() {
+		arg = strings.ToLower(arg)
+		if arg == "version" {
+			server.PrintServerAndExit()
+		}
 	}
 
 	var fileOpts *server.Options

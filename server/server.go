@@ -94,6 +94,12 @@ func New(opts *Options) *Server {
 	return s
 }
 
+// Print our version and exit
+func PrintServerAndExit() {
+	fmt.Printf("%s\n", VERSION)
+	os.Exit(0)
+}
+
 // Signal Handling
 func (s *Server) handleSignals() {
 	if s.opts.NoSigs {
