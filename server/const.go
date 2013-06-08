@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012,2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go-0.2.8.alpha.2"
+	VERSION = "go-0.2.10.alpha.1"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
