@@ -336,6 +336,27 @@ func TestStats(t *testing.T) {
 	}
 }
 
+func TestResultSetSnapshots(t *testing.T) {
+	// Make sure result sets do not change out from underneath of us.
+
+	literal := []byte("a.b.c.d.e.f")
+	wc := []byte("a.b.c.>")
+	value := "xxx"
+
+	s := New()
+	s.Insert(literal, value)
+
+	r := s.Match(literal)
+	verifyLen(r, 1, t)
+
+	s.Insert(wc, value)
+	s.Insert(wc, value)
+	verifyLen(r, 1, t)
+
+	s.Remove(wc, value)
+	verifyLen(r, 1, t)
+}
+
 // -- Benchmarks Setup --
 
 var subs [][]byte
@@ -350,7 +371,7 @@ func init() {
 		sl.Insert(subs[i], subs[i])
 	}
 	addWildcards()
-	println("Sublist holding ", sl.Count(), " subscriptions")
+//	println("Sublist holding ", sl.Count(), " subscriptions")
 }
 
 func subsInit(pre string) {
