@@ -145,11 +145,13 @@ func (s *Sublist) Insert(subject []byte, sub interface{}) error {
 }
 
 // addToCache will add the new entry to existing cache
-// entries if needed.
+// entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject []byte, sub interface{}) {
 	if s.cache.Count() == 0 {
 		return
 	}
+
+	// FIXME(dlc) avoid allocation?
 	all := s.cache.AllKeys()
 	for _, k := range all {
 		if !matchLiteral(k, subject) {
@@ -165,7 +167,8 @@ func (s *Sublist) addToCache(subject []byte, sub interface{}) {
 	}
 }
 
-// removeFromCache will remove the sub from any active cache entries
+// removeFromCache will remove the sub from any active cache entries.
+// Assumes write lock is held.
 func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 	if s.cache.Count() == 0 {
 		return
@@ -175,9 +178,9 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 		if !matchLiteral(k, subject) {
 			continue
 		}
-		// FIXME, right now just remove all matching cache
-		// entries. Should be smarter and walk small result
-		// lists and delete
+		// FIXME(dlc), right now just remove all matching cache
+		// entries. This could be smarter and walk small result
+		// lists and delete the individual sub.
 		s.cache.Remove(k)
 	}
 }
@@ -185,6 +188,8 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 // Match will match all entries to the literal subject. It will return a
 // slice of results.
 func (s *Sublist) Match(subject []byte) []interface{} {
+	// Fastpath match on cache
+
 	s.mu.RLock()
 	atomic.AddUint64(&s.stats.matches, 1)
 	r := s.cache.Get(subject)
@@ -196,6 +201,7 @@ func (s *Sublist) Match(subject []byte) []interface{} {
 	}
 
 	// Cache miss
+
 	// Process subject into tokens, this is performed
 	// unlocked, so can be parallel.
 	tsa := [32][]byte{}
@@ -211,7 +217,7 @@ func (s *Sublist) Match(subject []byte) []interface{} {
 	toks = append(toks, subject[start:])
 	results := make([]interface{}, 0, 4)
 
-	// Lookup and add entry to hash.
+	// Lock the sublist and lookup and add entry to cache.
 	s.mu.Lock()
 	matchLevel(s.root, toks, &results)
 
