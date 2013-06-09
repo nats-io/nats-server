@@ -24,6 +24,7 @@ func TestMapWithBkts(t *testing.T) {
 var foo = []byte("foo")
 var bar = []byte("bar")
 var baz = []byte("baz")
+var med = []byte("foo.bar.baz")
 var sub = []byte("apcera.continuum.router.foo.bar.baz")
 
 func TestHashMapBasics(t *testing.T) {
@@ -266,7 +267,7 @@ func Benchmark_HashMap_GetSmallKey(b *testing.B) {
 func Benchmark_GoMap____GetMedKey(b *testing.B) {
 	b.StopTimer()
 	b.SetBytes(1)
-	ts := string(sub)
+	ts := string(med)
 	m := make(map[string][]byte)
 	m[ts] = bar
 	b.StartTimer()
@@ -284,7 +285,32 @@ func Benchmark_HashMap__GetMedKey(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		m.Get(sub)
+		_ = m.Get(med)
+	}
+}
+
+func Benchmark_GoMap____GetLrgKey(b *testing.B) {
+	b.StopTimer()
+	b.SetBytes(1)
+	ts := string(sub)
+	m := make(map[string][]byte)
+	m[ts] = bar
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		_ = m[ts]
+	}
+}
+
+func Benchmark_HashMap__GetLrgKey(b *testing.B) {
+	b.StopTimer()
+	b.SetBytes(1)
+	m := New()
+	m.Set(sub, bar)
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		_ = m.Get(sub)
 	}
 }
 

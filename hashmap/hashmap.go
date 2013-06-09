@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 // HashMap defines a high performance hashmap based on
 // fast hashing and fast key comparison. Simple chaining

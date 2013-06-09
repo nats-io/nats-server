@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package hashmap
 
@@ -13,7 +13,7 @@ func init() {
 }
 
 // RemoveRandom can be used for a random policy eviction.
-// This is stochastic but very fast and does not impedede
+// This is stochastic but very fast and does not impede
 // performance like LRU, LFU or even ARC based implementations.
 func (h *HashMap) RemoveRandom() {
 	if h.used == 0 {
