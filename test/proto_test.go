@@ -86,7 +86,7 @@ func TestQueueSub(t *testing.T) {
 		send("PUB foo 2\r\nok\r\n")
 	}
 	// Wait for responses
-	time.Sleep(250*time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	matches := expectMsgs(sent)
 	sids := make(map[string]int)
@@ -121,7 +121,7 @@ func TestMultipleQueueSub(t *testing.T) {
 		send("PUB foo 2\r\nok\r\n")
 	}
 	// Wait for responses
-	time.Sleep(250*time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	matches := expectMsgs(sent * 2)
 	sids := make(map[string]int)

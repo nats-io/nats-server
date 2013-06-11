@@ -273,9 +273,9 @@ func TestStats(t *testing.T) {
 	s.Insert([]byte("stats.>"), "fwc")
 	tmpl := "stats.test.%d"
 	loop := 255
-	total := uint32(loop+1)
+	total := uint32(loop + 1)
 
-	for i := 0; i < loop ; i++ {
+	for i := 0; i < loop; i++ {
 		sub := []byte(fmt.Sprintf(tmpl, i))
 		s.Insert(sub, "l")
 	}
@@ -297,7 +297,7 @@ func TestStats(t *testing.T) {
 		t.Fatalf("Wrong stats for NumMatches: %d vs %d\n", stats.NumMatches, 0)
 	}
 
-	for i := 0; i < loop ; i++ {
+	for i := 0; i < loop; i++ {
 		s.Match([]byte("stats.test.22"))
 	}
 	s.Insert([]byte("stats.*.*"), "pwc")
@@ -307,7 +307,7 @@ func TestStats(t *testing.T) {
 	if stats.NumMatches != uint64(loop+1) {
 		t.Fatalf("Wrong stats for NumMatches: %d vs %d\n", stats.NumMatches, loop+1)
 	}
-	expectedCacheHitRate := 255.0/256.0
+	expectedCacheHitRate := 255.0 / 256.0
 	if stats.CacheHitRate != expectedCacheHitRate {
 		t.Fatalf("Wrong stats for CacheHitRate: %.3g vs %0.3g\n", stats.CacheHitRate, expectedCacheHitRate)
 	}
@@ -371,7 +371,7 @@ func init() {
 		sl.Insert(subs[i], subs[i])
 	}
 	addWildcards()
-//	println("Sublist holding ", sl.Count(), " subscriptions")
+	//	println("Sublist holding ", sl.Count(), " subscriptions")
 }
 
 func subsInit(pre string) {

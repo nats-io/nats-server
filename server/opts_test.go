@@ -69,9 +69,9 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:        2222,
-		Password:    "spooky",
-		Debug:       true,
+		Port:     2222,
+		Password: "spooky",
+		Debug:    true,
 	}
 	merged := MergeOptions(fopts, opts)
 	if !reflect.DeepEqual(golden, merged) {

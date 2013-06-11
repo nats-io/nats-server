@@ -22,11 +22,11 @@ func test(t *testing.T, data string, ex map[string]interface{}) {
 }
 
 func TestSimpleTopLevel(t *testing.T) {
-	ex := map[string]interface{} {
-		"foo":"1",
-		"bar":float64(2.2),
-		"baz":true,
-		"boo":int64(22),
+	ex := map[string]interface{}{
+		"foo": "1",
+		"bar": float64(2.2),
+		"baz": true,
+		"boo": int64(22),
 	}
 	test(t, "foo='1'; bar=2.2; baz=true; boo=22", ex)
 }
@@ -42,13 +42,13 @@ foo  {
 `
 
 func TestSample1(t *testing.T) {
-	ex := map[string]interface{} {
-		"foo": map[string]interface{} {
-			"host": map[string]interface{} {
-				"ip": "127.0.0.1",
+	ex := map[string]interface{}{
+		"foo": map[string]interface{}{
+			"host": map[string]interface{}{
+				"ip":   "127.0.0.1",
 				"port": int64(4242),
 			},
-			"servers": []interface{} {"a.com", "b.com", "c.com"},
+			"servers": []interface{}{"a.com", "b.com", "c.com"},
 		},
 	}
 	test(t, sample1, ex)

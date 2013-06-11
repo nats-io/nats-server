@@ -93,7 +93,6 @@ func (lx *lexer) nextItem() item {
 			lx.state = lx.state(lx)
 		}
 	}
-	panic("not reached")
 }
 
 func lex(input string) *lexer {

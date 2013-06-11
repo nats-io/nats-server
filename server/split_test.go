@@ -11,20 +11,20 @@ import (
 )
 
 func TestSplitBufferSubOp(t *testing.T) {
-	s := &Server{ sl: sublist.New() }
-	c := &client{srv:s, subs: hashmap.New()}
+	s := &Server{sl: sublist.New()}
+	c := &client{srv: s, subs: hashmap.New()}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
 	subop2 := subop[6:]
 
-	if err := c.parse(subop1) ; err != nil {
+	if err := c.parse(subop1); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != SUB_ARG {
 		t.Fatalf("Expected SUB_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(subop2) ; err != nil {
+	if err := c.parse(subop2); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -47,11 +47,11 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferUnsubOp(t *testing.T) {
-	s := &Server{ sl: sublist.New() }
-	c := &client{srv:s, subs: hashmap.New()}
+	s := &Server{sl: sublist.New()}
+	c := &client{srv: s, subs: hashmap.New()}
 
 	subop := []byte("SUB foo 1024\r\n")
-	if err := c.parse(subop) ; err != nil {
+	if err := c.parse(subop); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -62,13 +62,13 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 	unsubop1 := unsubop[:8]
 	unsubop2 := unsubop[8:]
 
-	if err := c.parse(unsubop1) ; err != nil {
+	if err := c.parse(unsubop1); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != UNSUB_ARG {
 		t.Fatalf("Expected UNSUB_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(unsubop2) ; err != nil {
+	if err := c.parse(unsubop2); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {

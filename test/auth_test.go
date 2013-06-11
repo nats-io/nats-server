@@ -38,7 +38,7 @@ func expectAuthRequired(t tLogger, c net.Conn) {
 // The authorization token version
 ////////////////////////////////////////////////////////////
 
-const AUTH_PORT=10422
+const AUTH_PORT = 10422
 const AUTH_TOKEN = "_YZZ22_"
 
 func runAuthServerWithToken() *server.Server {

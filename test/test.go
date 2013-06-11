@@ -67,7 +67,6 @@ func runServer(opts *server.Options) *server.Server {
 		return s
 	}
 	panic("Unable to start NATs Server in Go Routine")
-	return nil
 }
 
 func startServer(t tLogger, port int, other string) *natsServer {

@@ -103,7 +103,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -117,7 +117,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Username:"derek", Password:"foo"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -132,7 +132,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Username:"derek", Password:"foo", Name:"router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -147,7 +147,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Authorization:"YZZ222", Name:"router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 }
@@ -290,12 +290,12 @@ func TestClientPubWithQueueSub(t *testing.T) {
 
 	var n1, n2, received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
 		}
-		matches := msgPat.FindAllStringSubmatch(l,-1)[0]
+		matches := msgPat.FindAllStringSubmatch(l, -1)[0]
 
 		// Count which sub
 		switch matches[SID_INDEX] {
@@ -337,7 +337,7 @@ func TestClientUnSub(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -378,7 +378,7 @@ func TestClientUnSubMax(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
