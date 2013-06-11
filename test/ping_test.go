@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 const (
@@ -25,6 +27,9 @@ func runPingServer() *server.Server {
 }
 
 func TestPingInterval(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runPingServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PING_TEST_PORT)

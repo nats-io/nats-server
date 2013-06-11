@@ -11,12 +11,17 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 const MONITOR_PORT = 11422
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := startServer(t, MONITOR_PORT, "")
 	defer s.stopServer()
 
@@ -33,6 +38,9 @@ func TestNoMonitorPort(t *testing.T) {
 }
 
 func TestVarz(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	args := fmt.Sprintf("-m %d", server.DEFAULT_HTTP_PORT)
 	s := startServer(t, MONITOR_PORT, args)
 	defer s.stopServer()
@@ -109,6 +117,9 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	args := fmt.Sprintf("-m %d", server.DEFAULT_HTTP_PORT)
 	s := startServer(t, MONITOR_PORT, args)
 	defer s.stopServer()

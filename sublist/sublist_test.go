@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func verifyCount(s *Sublist, count uint32, t *testing.T) {
@@ -42,11 +44,17 @@ func verifyNumLevels(s *Sublist, expected int, t *testing.T) {
 }
 
 func TestInit(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	verifyCount(s, 0, t)
 }
 
 func TestInsertCount(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	s.Insert([]byte("foo"), "a")
 	s.Insert([]byte("bar"), "b")
@@ -55,6 +63,9 @@ func TestInsertCount(t *testing.T) {
 }
 
 func TestSimple(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	val := "a"
 	sub := []byte("foo")
@@ -65,6 +76,9 @@ func TestSimple(t *testing.T) {
 }
 
 func TestSimpleMultiTokens(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	val := "a"
 	sub := []byte("foo.bar.baz")
@@ -75,6 +89,9 @@ func TestSimpleMultiTokens(t *testing.T) {
 }
 
 func TestPartialWildcard(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c")
 	pwc := []byte("a.*.c")
@@ -88,6 +105,9 @@ func TestPartialWildcard(t *testing.T) {
 }
 
 func TestPartialWildcardAtEnd(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c")
 	pwc := []byte("a.b.*")
@@ -101,6 +121,9 @@ func TestPartialWildcardAtEnd(t *testing.T) {
 }
 
 func TestFullWildcard(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c")
 	fwc := []byte("a.>")
@@ -114,6 +137,9 @@ func TestFullWildcard(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c.d")
 	value := "foo"
@@ -130,6 +156,9 @@ func TestRemove(t *testing.T) {
 }
 
 func TestRemoveWildcard(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c.d")
 	pwc := []byte("a.b.*.d")
@@ -150,6 +179,9 @@ func TestRemoveWildcard(t *testing.T) {
 }
 
 func TestRemoveCleanup(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c.d.e.f")
 	depth := len(bytes.Split(literal, []byte(".")))
@@ -162,6 +194,9 @@ func TestRemoveCleanup(t *testing.T) {
 }
 
 func TestRemoveCleanupWildcards(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.*.d.e.>")
 	depth := len(bytes.Split(literal, []byte(".")))
@@ -174,6 +209,9 @@ func TestRemoveCleanupWildcards(t *testing.T) {
 }
 
 func TestInvalidSubjectsInsert(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 
 	// Insert, or subscribtions, can have wildcards, but not empty tokens,
@@ -203,6 +241,9 @@ func TestInvalidSubjectsInsert(t *testing.T) {
 }
 
 func TestCacheBehavior(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	literal := []byte("a.b.c")
 	fwc := []byte("a.>")
@@ -229,6 +270,9 @@ func checkBool(b, expected bool, t *testing.T) {
 }
 
 func TestValidLiteralSubjects(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	checkBool(IsValidLiteralSubject([]byte("foo")), true, t)
 	checkBool(IsValidLiteralSubject([]byte(".foo")), false, t)
 	checkBool(IsValidLiteralSubject([]byte("foo.")), false, t)
@@ -240,6 +284,9 @@ func TestValidLiteralSubjects(t *testing.T) {
 }
 
 func TestMatchLiterals(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	checkBool(matchLiteral([]byte("foo"), []byte("foo")), true, t)
 	checkBool(matchLiteral([]byte("foo"), []byte("bar")), false, t)
 	checkBool(matchLiteral([]byte("foo"), []byte("*")), true, t)
@@ -252,6 +299,9 @@ func TestMatchLiterals(t *testing.T) {
 }
 
 func TestCacheBounds(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	s.Insert([]byte("cache.>"), "foo")
 
@@ -269,6 +319,9 @@ func TestCacheBounds(t *testing.T) {
 }
 
 func TestStats(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := New()
 	s.Insert([]byte("stats.>"), "fwc")
 	tmpl := "stats.test.%d"
@@ -337,6 +390,9 @@ func TestStats(t *testing.T) {
 }
 
 func TestResultSetSnapshots(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	// Make sure result sets do not change out from underneath of us.
 
 	literal := []byte("a.b.c.d.e.f")

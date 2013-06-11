@@ -31,9 +31,6 @@ type tLogger interface {
 var defaultServerOptions = server.Options{
 	Host:   "localhost",
 	Port:   4222,
-	Trace:  false,
-	Debug:  false,
-	NoLog:  true,
 	NoSigs: true,
 }
 

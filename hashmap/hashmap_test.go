@@ -6,9 +6,14 @@ import (
 	"encoding/hex"
 	"io"
 	"testing"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func TestMapWithBkts(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	bkts := make([]*Entry, 3, 3)
 	_, err := NewWithBkts(bkts)
 	if err == nil {
@@ -28,6 +33,9 @@ var med = []byte("foo.bar.baz")
 var sub = []byte("apcera.continuum.router.foo.bar.baz")
 
 func TestHashMapBasics(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 
 	if h.used != 0 {
@@ -57,6 +65,9 @@ const (
 )
 
 func TestGrowing(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 
 	if len(h.bkts) != _BSZ {
@@ -80,6 +91,9 @@ func TestGrowing(t *testing.T) {
 }
 
 func TestHashMapCollisions(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	h.rsz = false
 
@@ -116,6 +130,9 @@ func TestHashMapCollisions(t *testing.T) {
 }
 
 func TestAll(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	h.Set([]byte("1"), 1)
 	h.Set([]byte("2"), 1)
@@ -131,6 +148,9 @@ func TestAll(t *testing.T) {
 }
 
 func TestSetDoesReplaceOnExisting(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	k := []byte("key")
 	h.Set(k, "foo")
@@ -149,6 +169,9 @@ func TestSetDoesReplaceOnExisting(t *testing.T) {
 }
 
 func TestCollision(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	k1 := []byte("999")
 	k2 := []byte("1000")
@@ -164,6 +187,9 @@ func TestCollision(t *testing.T) {
 }
 
 func TestHashMapStats(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	h.rsz = false
 
@@ -196,6 +222,9 @@ func TestHashMapStats(t *testing.T) {
 }
 
 func TestShrink(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 
 	if len(h.bkts) != _BSZ {
@@ -225,6 +254,9 @@ func TestShrink(t *testing.T) {
 }
 
 func TestFalseLookup(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	h := New()
 	// DW + W
 	h.Set([]byte("cache.test.0"), "foo")

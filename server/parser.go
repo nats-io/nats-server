@@ -394,7 +394,7 @@ parseErr:
 	if stop > len(buf) {
 		stop = len(buf) - 1
 	}
-	return fmt.Errorf("Parse Error, state=%d,i=%d: '%s'", c.state, i, buf[i:stop])
+	return fmt.Errorf("Parse Error, state=%d,i=%d: %q", c.state, i, buf[i:stop])
 }
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but

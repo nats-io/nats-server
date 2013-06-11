@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 const PROTO_TEST_PORT = 9922
@@ -18,6 +20,9 @@ func runProtoServer() *server.Server {
 }
 
 func TestProtoBasics(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -42,6 +47,9 @@ func TestProtoBasics(t *testing.T) {
 }
 
 func TestProtoErr(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -54,6 +62,9 @@ func TestProtoErr(t *testing.T) {
 }
 
 func TestUnsubMax(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -72,6 +83,9 @@ func TestUnsubMax(t *testing.T) {
 }
 
 func TestQueueSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -104,6 +118,9 @@ func TestQueueSub(t *testing.T) {
 }
 
 func TestMultipleQueueSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -139,6 +156,9 @@ func TestMultipleQueueSub(t *testing.T) {
 }
 
 func TestPubToArgState(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -149,6 +169,9 @@ func TestPubToArgState(t *testing.T) {
 }
 
 func TestSubToArgState(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)

@@ -8,9 +8,14 @@ import (
 
 	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func TestSplitBufferSubOp(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := &Server{sl: sublist.New()}
 	c := &client{srv: s, subs: hashmap.New()}
 
@@ -47,6 +52,9 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferUnsubOp(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := &Server{sl: sublist.New()}
 	c := &client{srv: s, subs: hashmap.New()}
 
@@ -81,6 +89,9 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := &client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	pub1 := pub[:2]
@@ -147,6 +158,9 @@ func TestSplitBufferPubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp2(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := &client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
 	pub1 := pub[:30]
@@ -167,6 +181,9 @@ func TestSplitBufferPubOp2(t *testing.T) {
 }
 
 func TestSplitBufferPubOp3(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := &client{subs: hashmap.New()}
 	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
 	pub := pubAll[:16]
@@ -193,6 +210,9 @@ func TestSplitBufferPubOp3(t *testing.T) {
 }
 
 func TestSplitBufferPubOp4(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := &client{subs: hashmap.New()}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 	pub := pubAll[:12]

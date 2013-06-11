@@ -3,6 +3,8 @@ package conf
 import (
 	"reflect"
 	"testing"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 // Test to make sure we get what we expect.
@@ -22,6 +24,9 @@ func test(t *testing.T, data string, ex map[string]interface{}) {
 }
 
 func TestSimpleTopLevel(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	ex := map[string]interface{}{
 		"foo": "1",
 		"bar": float64(2.2),
@@ -42,6 +47,9 @@ foo  {
 `
 
 func TestSample1(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	ex := map[string]interface{}{
 		"foo": map[string]interface{}{
 			"host": map[string]interface{}{

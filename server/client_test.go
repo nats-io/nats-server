@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 type serverInfo struct {
@@ -34,9 +36,6 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 }
 
 var defaultServerOptions = Options{
-	Trace:  false,
-	Debug:  false,
-	NoLog:  true,
 	NoSigs: true,
 }
 
@@ -64,6 +63,9 @@ func setupClient() (*Server, *client, *bufio.Reader) {
 }
 
 func TestClientCreateAndInfo(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c, l := setUpClientWithResponse()
 
 	if c.cid != 1 {
@@ -92,6 +94,9 @@ func TestClientCreateAndInfo(t *testing.T) {
 }
 
 func TestClientConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, _ := setupClient()
 
 	// Basic Connect setting flags
@@ -153,6 +158,9 @@ func TestClientConnect(t *testing.T) {
 }
 
 func TestClientPing(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// PING
@@ -192,6 +200,9 @@ func checkPayload(cr *bufio.Reader, expected []byte, t *testing.T) {
 }
 
 func TestClientSimplePubSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 	// SUB/PUB
 	go c.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
@@ -216,6 +227,9 @@ func TestClientSimplePubSub(t *testing.T) {
 }
 
 func TestClientSimplePubSubWithReply(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// SUB/PUB
@@ -243,6 +257,9 @@ func TestClientSimplePubSubWithReply(t *testing.T) {
 }
 
 func TestClientNoBodyPubSubWithReply(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// SUB/PUB
@@ -270,6 +287,9 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 }
 
 func TestClientPubWithQueueSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 10
@@ -316,6 +336,9 @@ func TestClientPubWithQueueSub(t *testing.T) {
 }
 
 func TestClientUnSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 1
@@ -354,6 +377,9 @@ func TestClientUnSub(t *testing.T) {
 }
 
 func TestClientUnSubMax(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 10
@@ -395,6 +421,9 @@ func TestClientUnSubMax(t *testing.T) {
 }
 
 func TestClientRemoveSubsOnDisconnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s, c, _ := setupClient()
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
@@ -415,6 +444,9 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 }
 
 func TestClientMapRemoval(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s, c, _ := setupClient()
 	c.conn.Close()
 	end := time.Now().Add(1 * time.Second)
