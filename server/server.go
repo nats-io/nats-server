@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -76,6 +76,10 @@ func New(opts *Options) *Server {
 		done:  make(chan bool, 1),
 		start: time.Now(),
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Setup logging with flags
 	s.LogInit()
 
@@ -117,20 +121,37 @@ func (s *Server) handleSignals() {
 	}()
 }
 
+// Protected check on running state
+func (s *Server) isRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
+
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
+	s.mu.Lock()
 	s.running = false
-	// Close client connections
-	// FIXME(dlc) lock? will call back into remove..
-	for _, c := range s.clients {
-		c.closeConnection()
+
+	// Copy off the clients
+	clients := make(map[uint64]*client)
+	for i, c := range s.clients {
+		clients[i] = c
 	}
+
 	// Kick AcceptLoop()
 	if s.listener != nil {
 		s.listener.Close()
 		s.listener = nil
 	}
+	s.mu.Unlock()
+
+	// Close client connections
+	for _, c := range clients {
+		c.closeConnection()
+	}
+
 	<-s.done
 }
 
@@ -147,11 +168,13 @@ func (s *Server) AcceptLoop() {
 	Logf("nats-server is ready")
 
 	// Setup state that can enable shutdown
+	s.mu.Lock()
 	s.listener = l
 	s.running = true
+	s.mu.Unlock()
 
-	for s.running {
-		conn, err := s.listener.Accept()
+	for s.isRunning() {
+		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				Logf("Accept error: %v", err)
@@ -186,6 +209,8 @@ func (s *Server) StartHTTPMonitoring() {
 
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, conn: conn, opts: defaultOpts}
+
+	c.mu.Lock()
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 
 	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
@@ -210,6 +235,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 	// Set the Ping timer
 	c.setPingTimer()
+	c.mu.Unlock()
 
 	// Register with the server.
 	s.mu.Lock()

@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 )
 
 // logging functionality, compatible with original nats-server
 
-var trace bool
-var debug bool
-var nolog bool
+var trace int32
+var debug int32
+var nolog int32
 
 func LogSetup() {
 	log.SetFlags(0)
@@ -23,15 +24,15 @@ func (s *Server) LogInit() {
 		log.SetFlags(log.LstdFlags)
 	}
 	if s.opts.NoLog {
-		nolog = true
+		atomic.StoreInt32(&nolog, 1)
 	}
 	if s.opts.Debug {
 		Log(s.opts)
-		debug = true
+		atomic.StoreInt32(&debug, 1)
 		Log("DEBUG is on")
 	}
 	if s.opts.Trace {
-		trace = true
+		atomic.StoreInt32(&trace, 1)
 		Log("TRACE is on")
 	}
 }
@@ -59,7 +60,7 @@ func logStr(v []interface{}) string {
 }
 
 func Log(v ...interface{}) {
-	if !nolog {
+	if nolog == 0 {
 		log.Print(logStr(v))
 	}
 }
@@ -77,25 +78,25 @@ func Fatalf(format string, v ...interface{}) {
 }
 
 func Debug(v ...interface{}) {
-	if debug {
+	if debug > 0 {
 		Log(v...)
 	}
 }
 
 func Debugf(format string, v ...interface{}) {
-	if debug {
+	if debug > 0 {
 		Debug(fmt.Sprintf(format, v...))
 	}
 }
 
 func Trace(v ...interface{}) {
-	if trace {
+	if trace > 0 {
 		Log(v...)
 	}
 }
 
 func Tracef(format string, v ...interface{}) {
-	if trace {
+	if trace > 0 {
 		Trace(fmt.Sprintf(format, v...))
 	}
 }

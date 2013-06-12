@@ -66,7 +66,7 @@ func (c *client) parse(buf []byte) error {
 	for i, b = range buf {
 		switch c.state {
 		case OP_START:
-			if c.atmr != nil && b != 'C' && b != 'c' {
+			if c.isAuthTimerSet() && b != 'C' && b != 'c' {
 				goto authErr
 			}
 			switch b {

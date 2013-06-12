@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -123,7 +123,7 @@ func (c *client) traceMsg(msg []byte) {
 }
 
 func (c *client) traceOp(op string, arg []byte) {
-	if !trace {
+	if trace == 0 {
 		return
 	}
 	opa := []interface{}{fmt.Sprintf("%s OP", op)}
@@ -203,7 +203,7 @@ func (c *client) processPong() {
 const argsLenMax = 3
 
 func (c *client) processPub(arg []byte) error {
-	if trace {
+	if trace > 0 {
 		c.traceOp("PUB", arg)
 	}
 
@@ -444,7 +444,7 @@ func (c *client) processMsg(msg []byte) {
 		atomic.AddInt64(&c.srv.inBytes, int64(len(msg)))
 	}
 
-	if trace {
+	if trace > 0 {
 		c.traceMsg(msg)
 	}
 	if c.srv == nil {
@@ -554,6 +554,7 @@ func (c *client) clearPingTimer() {
 	c.ptmr = nil
 }
 
+// Lock should be held
 func (c *client) setAuthTimer(d time.Duration) {
 	c.atmr = time.AfterFunc(d, func() { c.authViolation() })
 }
@@ -565,6 +566,12 @@ func (c *client) clearAuthTimer() {
 	}
 	c.atmr.Stop()
 	c.atmr = nil
+}
+
+func (c *client) isAuthTimerSet() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.atmr != nil
 }
 
 // Lock should be held
@@ -590,16 +597,17 @@ func (c *client) closeConnection() {
 	c.clearPingTimer()
 	c.clearConnection()
 	subs := c.subs.All()
+	srv := c.srv
 	c.mu.Unlock()
 
-	if c.srv != nil {
+	if srv != nil {
 		// Unregister
-		c.srv.removeClient(c)
+		srv.removeClient(c)
 
 		// Remove subscriptions.
 		for _, s := range subs {
 			if sub, ok := s.(*subscription); ok {
-				c.srv.sl.Remove(sub.subject, sub)
+				srv.sl.Remove(sub.subject, sub)
 			}
 		}
 	}
