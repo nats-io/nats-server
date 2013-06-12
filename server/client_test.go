@@ -418,12 +418,19 @@ func TestClientMapRemoval(t *testing.T) {
 	s, c, _ := setupClient()
 	c.conn.Close()
 	end := time.Now().Add(1 * time.Second)
+
 	for time.Now().Before(end) {
-		if len(s.clients) > 0 {
+		s.mu.Lock()
+		lsc := len(s.clients)
+		s.mu.Unlock()
+		if lsc > 0 {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	if len(s.clients) > 0 {
+	s.mu.Lock()
+	lsc := len(s.clients)
+	s.mu.Unlock()
+	if lsc > 0 {
 		t.Fatal("Client still in server map")
 	}
 }

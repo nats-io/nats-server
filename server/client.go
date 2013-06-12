@@ -578,12 +578,14 @@ func (c *client) clearConnection() {
 }
 
 func (c *client) closeConnection() {
+	c.mu.Lock()
 	if c.conn == nil {
+		c.mu.Unlock()
 		return
 	}
+
 	Debug("Client connection closed", clientConnStr(c.conn), c.cid)
 
-	c.mu.Lock()
 	c.clearAuthTimer()
 	c.clearPingTimer()
 	c.clearConnection()
