@@ -103,7 +103,9 @@ func (c *client) readLoop() {
 				cp.conn.SetWriteDeadline(time.Time{})
 				if err != nil {
 					Debugf("Error flushing: %v", err)
+					cp.mu.Unlock()
 					cp.closeConnection()
+					cp.mu.Lock()
 				}
 			}
 			cp.mu.Unlock()
