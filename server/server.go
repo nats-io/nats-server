@@ -173,14 +173,25 @@ func (s *Server) AcceptLoop() {
 	s.running = true
 	s.mu.Unlock()
 
+	tmpDelay := ACCEPT_MIN_SLEEP
+
 	for s.isRunning() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				Debug("Temporary Accept Error(%v), sleeping %dms",
+					ne, tmpDelay/time.Millisecond)
+				time.Sleep(tmpDelay)
+				tmpDelay *= 2
+				if tmpDelay > ACCEPT_MAX_SLEEP {
+					tmpDelay = ACCEPT_MAX_SLEEP
+				}
+			} else {
 				Logf("Accept error: %v", err)
 			}
 			continue
 		}
+		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
 	s.done <- true

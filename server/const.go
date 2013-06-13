@@ -40,4 +40,8 @@ const (
 	DEFAULT_FLUSH_DEADLINE = 500 * time.Millisecond
 
 	DEFAULT_HTTP_PORT = 8333
+
+	// Accept sleep times on temporary errors
+	ACCEPT_MIN_SLEEP = 10 * time.Millisecond
+	ACCEPT_MAX_SLEEP = 1 * time.Second
 )
