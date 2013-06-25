@@ -420,6 +420,66 @@ func TestClientUnSubMax(t *testing.T) {
 	}
 }
 
+func TestClientAutoUnsubExactReceived(t *testing.T) {
+	_, c, _ := setupClient()
+	defer c.conn.Close()
+
+	// SUB/PUB
+	subs := []byte("SUB foo 1\r\n")
+	unsub := []byte("UNSUB 1 1\r\n")
+	pub := []byte("PUB foo bar 2\r\nok\r\n")
+
+	op := []byte{}
+	op = append(op, subs...)
+	op = append(op, unsub...)
+	op = append(op, pub...)
+
+	ch := make(chan bool)
+	go func() {
+		c.parse(op)
+		ch <- true
+	}()
+
+	// Wait for processing
+	<-ch
+
+	// We should not have any subscriptions in place here.
+	if c.subs.Count() != 0 {
+		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n",
+			c.subs.Count())
+	}
+}
+
+func TestClientUnsubAfterAutoUnsub(t *testing.T) {
+	_, c, _ := setupClient()
+	defer c.conn.Close()
+
+	// SUB/UNSUB/UNSUB
+	subs := []byte("SUB foo 1\r\n")
+	asub := []byte("UNSUB 1 1\r\n")
+	unsub := []byte("UNSUB 1\r\n")
+
+	op := []byte{}
+	op = append(op, subs...)
+	op = append(op, asub...)
+	op = append(op, unsub...)
+
+	ch := make(chan bool)
+	go func() {
+		c.parse(op)
+		ch <- true
+	}()
+
+	// Wait for processing
+	<-ch
+
+	// We should not have any subscriptions in place here.
+	if c.subs.Count() != 0 {
+		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n",
+			c.subs.Count())
+	}
+}
+
 func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	StartTest(t)
 	defer FinishTest(t)
