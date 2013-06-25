@@ -314,7 +314,7 @@ func (c *client) unsubscribe(sub *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if sub.max > 0 && sub.nm < sub.max {
-		Debugf("Deferring actual UNSUB(%s): %d max, %d received\n",
+		log.Debugf("Deferring actual UNSUB(%s): %d max, %d received\n",
 			string(sub.subject), sub.max, sub.nm)
 		return
 	}
