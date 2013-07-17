@@ -28,20 +28,20 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
-var defaultServerOptions = server.Options{
+var DefaultTestOptions = server.Options{
 	Host:   "localhost",
 	Port:   4222,
 	NoSigs: true,
 }
 
 func runDefaultServer() *server.Server {
-	return runServer(&defaultServerOptions)
+	return RunServer(&DefaultTestOptions)
 }
 
 // New Go Routine based server
-func runServer(opts *server.Options) *server.Server {
+func RunServer(opts *server.Options) *server.Server {
 	if opts == nil {
-		opts = &defaultServerOptions
+		opts = &DefaultTestOptions
 	}
 	s := server.New(opts)
 	if s == nil {
