@@ -42,10 +42,10 @@ const AUTH_PORT=10422
 const AUTH_TOKEN = "_YZZ22_"
 
 func runAuthServerWithToken() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Authorization = AUTH_TOKEN
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 func TestNoAuthClient(t *testing.T) {
@@ -107,11 +107,11 @@ const AUTH_USER = "derek"
 const AUTH_PASS = "foobar"
 
 func runAuthServerWithUserPass() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Username = AUTH_USER
 	opts.Password = AUTH_PASS
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 func TestNoUserOrPasswordClient(t *testing.T) {

@@ -19,9 +19,9 @@ const PERF_PORT = 8422
 
 // For Go routine based server.
 func runBenchServer() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = PERF_PORT
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 const defaultRecBufSize = 32768

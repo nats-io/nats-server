@@ -17,11 +17,11 @@ const (
 )
 
 func runPingServer() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = PING_TEST_PORT
 	opts.PingInterval = PING_INTERVAL
 	opts.MaxPingsOut = PING_MAX
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 func TestPingInterval(t *testing.T) {

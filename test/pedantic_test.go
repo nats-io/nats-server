@@ -9,9 +9,9 @@ import (
 )
 
 func runPedanticServer() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = PROTO_TEST_PORT
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 func TestPedanticSub(t *testing.T) {

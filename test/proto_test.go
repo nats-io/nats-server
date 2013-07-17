@@ -12,9 +12,9 @@ import (
 const PROTO_TEST_PORT = 9922
 
 func runProtoServer() *server.Server {
-	opts := defaultServerOptions
+	opts := DefaultTestOptions
 	opts.Port = PROTO_TEST_PORT
-	return runServer(&opts)
+	return RunServer(&opts)
 }
 
 func TestProtoBasics(t *testing.T) {
