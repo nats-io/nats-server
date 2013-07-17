@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 const (
@@ -25,6 +27,9 @@ func runPingServer() *server.Server {
 }
 
 func TestPingInterval(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runPingServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PING_TEST_PORT)
@@ -34,8 +39,8 @@ func TestPingInterval(t *testing.T) {
 	expect := expectCommand(t, c)
 
 	// Expect the max to be delivered correctly..
-	for i := 0 ; i < PING_MAX; i++ {
-		time.Sleep(PING_INTERVAL/2)
+	for i := 0; i < PING_MAX; i++ {
+		time.Sleep(PING_INTERVAL / 2)
 		expect(pingRe)
 	}
 

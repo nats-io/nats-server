@@ -5,6 +5,8 @@ package server
 import (
 	"bytes"
 	"testing"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func dummyClient() *client {
@@ -12,6 +14,9 @@ func dummyClient() *client {
 }
 
 func TestParsePing(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START vs %d\n", c.state)
@@ -60,6 +65,9 @@ func TestParsePing(t *testing.T) {
 }
 
 func TestParsePong(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START vs %d\n", c.state)
@@ -120,6 +128,9 @@ func TestParsePong(t *testing.T) {
 }
 
 func TestParseConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 	connect := []byte("CONNECT {\"verbose\":false,\"pedantic\":true,\"ssl_required\":false}\r\n")
 	err := c.parse(connect)
@@ -133,6 +144,9 @@ func TestParseConnect(t *testing.T) {
 }
 
 func TestParseSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 	sub := []byte("SUB foo 1\r")
 	err := c.parse(sub)
@@ -152,6 +166,9 @@ func TestParseSub(t *testing.T) {
 }
 
 func TestParsePub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 
 	pub := []byte("PUB foo 5\r\nhello\r")
@@ -200,68 +217,74 @@ func testPubArg(c *client, t *testing.T) {
 }
 
 func TestParsePubArg(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
-	if err := c.processPub([]byte("foo 22")) ; err != nil {
+	if err := c.processPub([]byte("foo 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22")) ; err != nil {
+	if err := c.processPub([]byte(" foo 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22 ")) ; err != nil {
+	if err := c.processPub([]byte(" foo 22 ")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte("foo   22")) ; err != nil {
+	if err := c.processPub([]byte("foo   22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if err := c.processPub([]byte("foo   22\r")) ; err != nil {
+	if err := c.processPub([]byte("foo   22\r")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
 }
 
 func TestShouldFail(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c := dummyClient()
 
-	if err := c.parse([]byte(" PING")) ; err == nil {
+	if err := c.parse([]byte(" PING")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("CONNECT \r\n")) ; err == nil {
+	if err := c.parse([]byte("CONNECT \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("POO")) ; err == nil {
+	if err := c.parse([]byte("POO")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB foo\r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB foo\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB \r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB foo bar       \r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB foo bar       \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB \r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB foo\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB foo\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB foo bar baz 22\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB foo bar baz 22\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 }

@@ -56,7 +56,7 @@ func Jesteress(data []byte) uint32 {
 	// Cases: 0,1,2,3,4,5,6,7
 	if (dlen & _DWSZ) > 0 {
 		k1 := *(*uint64)(unsafe.Pointer(&data[i]))
-		h32 = uint32(uint64(h32) ^ k1) * _YP32
+		h32 = uint32(uint64(h32)^k1) * _YP32
 		i += _DWSZ
 	}
 	if (dlen & _WSZ) > 0 {
@@ -111,10 +111,10 @@ func Yorikke(data []byte) uint32 {
 	for ; dlen >= _DDDWSZ; dlen -= _DDDWSZ {
 		k1 := *(*uint64)(unsafe.Pointer(&data[i]))
 		k2 := *(*uint64)(unsafe.Pointer(&data[i+4]))
-		h32 = uint32((uint64(h32) ^ (((k1<<5 | k1>>27)) ^ k2)) * _YP32)
+		h32 = uint32((uint64(h32) ^ ((k1<<5 | k1>>27) ^ k2)) * _YP32)
 		k1 = *(*uint64)(unsafe.Pointer(&data[i+8]))
 		k2 = *(*uint64)(unsafe.Pointer(&data[i+12]))
-		h32b = uint32((uint64(h32b) ^ (((k1<<5 | k1>>27)) ^ k2)) * _YP32)
+		h32b = uint32((uint64(h32b) ^ ((k1<<5 | k1>>27) ^ k2)) * _YP32)
 		i += _DDDWSZ
 	}
 	if (dlen & _DDWSZ) > 0 {

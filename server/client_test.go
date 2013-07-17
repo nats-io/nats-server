@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 type serverInfo struct {
@@ -34,9 +36,6 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 }
 
 var defaultServerOptions = Options{
-	Trace:  false,
-	Debug:  false,
-	NoLog:  true,
 	NoSigs: true,
 }
 
@@ -64,6 +63,9 @@ func setupClient() (*Server, *client, *bufio.Reader) {
 }
 
 func TestClientCreateAndInfo(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	c, l := setUpClientWithResponse()
 
 	if c.cid != 1 {
@@ -92,6 +94,9 @@ func TestClientCreateAndInfo(t *testing.T) {
 }
 
 func TestClientConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, _ := setupClient()
 
 	// Basic Connect setting flags
@@ -103,7 +108,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -117,7 +122,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Username:"derek", Password:"foo"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -132,7 +137,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Username:"derek", Password:"foo", Name:"router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -147,12 +152,15 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose:true, Pedantic:true, Authorization:"YZZ222", Name:"router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 }
 
 func TestClientPing(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// PING
@@ -192,6 +200,9 @@ func checkPayload(cr *bufio.Reader, expected []byte, t *testing.T) {
 }
 
 func TestClientSimplePubSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 	// SUB/PUB
 	go c.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
@@ -216,6 +227,9 @@ func TestClientSimplePubSub(t *testing.T) {
 }
 
 func TestClientSimplePubSubWithReply(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// SUB/PUB
@@ -243,6 +257,9 @@ func TestClientSimplePubSubWithReply(t *testing.T) {
 }
 
 func TestClientNoBodyPubSubWithReply(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	// SUB/PUB
@@ -270,6 +287,9 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 }
 
 func TestClientPubWithQueueSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 10
@@ -290,12 +310,12 @@ func TestClientPubWithQueueSub(t *testing.T) {
 
 	var n1, n2, received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
 		}
-		matches := msgPat.FindAllStringSubmatch(l,-1)[0]
+		matches := msgPat.FindAllStringSubmatch(l, -1)[0]
 
 		// Count which sub
 		switch matches[SID_INDEX] {
@@ -316,6 +336,9 @@ func TestClientPubWithQueueSub(t *testing.T) {
 }
 
 func TestClientUnSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 1
@@ -337,7 +360,7 @@ func TestClientUnSub(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -354,6 +377,9 @@ func TestClientUnSub(t *testing.T) {
 }
 
 func TestClientUnSubMax(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	_, c, cr := setupClient()
 
 	num := 10
@@ -378,7 +404,7 @@ func TestClientUnSubMax(t *testing.T) {
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -455,6 +481,9 @@ func TestClientUnsubAfterAutoUnsub(t *testing.T) {
 }
 
 func TestClientRemoveSubsOnDisconnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s, c, _ := setupClient()
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
@@ -475,6 +504,9 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 }
 
 func TestClientMapRemoval(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s, c, _ := setupClient()
 	c.conn.Close()
 	end := time.Now().Add(1 * time.Second)

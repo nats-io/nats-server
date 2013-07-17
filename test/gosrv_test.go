@@ -3,12 +3,17 @@
 package test
 
 import (
-	"testing"
 	"runtime"
+	"testing"
 	"time"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func TestSimpleGoServerShutdown(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runDefaultServer()
 	base := runtime.NumGoroutine()
 	s.Shutdown()
@@ -20,8 +25,11 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 }
 
 func TestGoServerShutdownWithClients(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runDefaultServer()
-	for i := 0 ; i < 10 ; i++ {
+	for i := 0; i < 10; i++ {
 		createClientConn(t, "localhost", 4222)
 	}
 	base := runtime.NumGoroutine()
@@ -32,4 +40,3 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }
-

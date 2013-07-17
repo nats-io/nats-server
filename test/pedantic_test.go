@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func runPedanticServer() *server.Server {
@@ -15,6 +17,9 @@ func runPedanticServer() *server.Server {
 }
 
 func TestPedanticSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runPedanticServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -60,6 +65,9 @@ func TestPedanticSub(t *testing.T) {
 }
 
 func TestPedanticPub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runPedanticServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)

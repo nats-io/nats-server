@@ -88,7 +88,7 @@ func (c *client) readLoop() {
 			return
 		}
 		if err := c.parse(b[:n]); err != nil {
-			Log(err.Error(), clientConnStr(c.conn), c.cid)
+			log.Info(err.Error(), clientConnStr(c.conn), c.cid)
 			c.sendErr("Parser Error")
 			c.closeConnection()
 			return
@@ -102,7 +102,7 @@ func (c *client) readLoop() {
 				err := cp.bw.Flush()
 				cp.conn.SetWriteDeadline(time.Time{})
 				if err != nil {
-					Debugf("Error flushing: %v", err)
+					log.Debugf("Error flushing: %v", err)
 					cp.mu.Unlock()
 					cp.closeConnection()
 					cp.mu.Lock()
@@ -121,18 +121,18 @@ func (c *client) readLoop() {
 func (c *client) traceMsg(msg []byte) {
 	pm := fmt.Sprintf("Processing msg: %d", c.inMsgs)
 	opa := []interface{}{pm, string(c.pa.subject), string(c.pa.reply), string(msg)}
-	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
+	log.Trace(opa, fmt.Sprintf("c: %d", c.cid))
 }
 
 func (c *client) traceOp(op string, arg []byte) {
-	if trace == 0 {
+	if !log.TraceExported() {
 		return
 	}
 	opa := []interface{}{fmt.Sprintf("%s OP", op)}
 	if arg != nil {
 		opa = append(opa, fmt.Sprintf("%s %s", op, string(arg)))
 	}
-	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
+	log.Trace(opa, fmt.Sprintf("c: %d", c.cid))
 }
 
 func (c *client) processConnect(arg []byte) error {
@@ -190,7 +190,7 @@ func (c *client) processPing() {
 	err := c.bw.Flush()
 	if err != nil {
 		c.clearConnection()
-		Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
+		log.Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
 	}
 	c.mu.Unlock()
 }
@@ -205,7 +205,7 @@ func (c *client) processPong() {
 const argsLenMax = 3
 
 func (c *client) processPub(arg []byte) error {
-	if trace > 0 {
+	if log.TraceExported() {
 		c.traceOp("PUB", arg)
 	}
 
@@ -314,7 +314,7 @@ func (c *client) unsubscribe(sub *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if sub.max > 0 && sub.nm < sub.max {
-		Debugf("Deferring actual UNSUB(%s): %d max, %d received\n",
+		log.Debugf("Deferring actual UNSUB(%s): %d max, %d received\n",
 			string(sub.subject), sub.max, sub.nm)
 		return
 	}
@@ -448,10 +448,10 @@ writeErr:
 
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		// FIXME: SlowConsumer logic
-		Log("Slow Consumer Detected", clientConnStr(client.conn), client.cid)
+		log.Info("Slow Consumer Detected", clientConnStr(client.conn), client.cid)
 		client.closeConnection()
 	} else {
-		Debugf("Error writing msg: %v", err)
+		log.Debugf("Error writing msg: %v", err)
 	}
 }
 
@@ -464,7 +464,7 @@ func (c *client) processMsg(msg []byte) {
 		atomic.AddInt64(&c.srv.inBytes, int64(len(msg)))
 	}
 
-	if trace > 0 {
+	if log.TraceExported() {
 		c.traceMsg(msg)
 	}
 	if c.srv == nil {
@@ -531,12 +531,12 @@ func (c *client) processPingTimer() {
 		return
 	}
 
-	Debug("Ping Timer", clientConnStr(c.conn), c.cid)
+	log.Debug("Ping Timer", clientConnStr(c.conn), c.cid)
 
 	// Check for violation
 	c.pout += 1
 	if c.pout > c.srv.opts.MaxPingsOut {
-		Debug("Stale Connection - Closing", clientConnStr(c.conn), c.cid)
+		log.Debug("Stale Connection - Closing", clientConnStr(c.conn), c.cid)
 		if c.bw != nil {
 			c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection"))
 			c.bw.Flush()
@@ -549,7 +549,7 @@ func (c *client) processPingTimer() {
 	c.bw.WriteString("PING\r\n")
 	err := c.bw.Flush()
 	if err != nil {
-		Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
+		log.Debug("Error on Flush", err, clientConnStr(c.conn), c.cid)
 		c.clearConnection()
 	} else {
 		// Reset to fire again if all OK.
@@ -610,8 +610,7 @@ func (c *client) closeConnection() {
 		c.mu.Unlock()
 		return
 	}
-
-	Debug("Client connection closed", clientConnStr(c.conn), c.cid)
+	log.Debug("Client connection closed", clientConnStr(c.conn), c.cid)
 
 	c.clearAuthTimer()
 	c.clearPingTimer()

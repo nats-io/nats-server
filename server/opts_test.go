@@ -6,9 +6,14 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func TestDefaultOptions(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	golden := &Options{
 		Host:           DEFAULT_HOST,
 		Port:           DEFAULT_PORT,
@@ -30,6 +35,9 @@ func TestDefaultOptions(t *testing.T) {
 }
 
 func TestConfigFile(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	golden := &Options{
 		Host:        "apcera.me",
 		Port:        4242,
@@ -52,6 +60,9 @@ func TestConfigFile(t *testing.T) {
 }
 
 func TestMergeOverrides(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	golden := &Options{
 		Host:        "apcera.me",
 		Port:        2222,
@@ -69,9 +80,9 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:        2222,
-		Password:    "spooky",
-		Debug:       true,
+		Port:     2222,
+		Password: "spooky",
+		Debug:    true,
 	}
 	merged := MergeOptions(fopts, opts)
 	if !reflect.DeepEqual(golden, merged) {

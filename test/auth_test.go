@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {
@@ -38,7 +40,7 @@ func expectAuthRequired(t tLogger, c net.Conn) {
 // The authorization token version
 ////////////////////////////////////////////////////////////
 
-const AUTH_PORT=10422
+const AUTH_PORT = 10422
 const AUTH_TOKEN = "_YZZ22_"
 
 func runAuthServerWithToken() *server.Server {
@@ -49,6 +51,9 @@ func runAuthServerWithToken() *server.Server {
 }
 
 func TestNoAuthClient(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithToken()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -59,6 +64,9 @@ func TestNoAuthClient(t *testing.T) {
 }
 
 func TestAuthClientBadToken(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithToken()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -69,6 +77,9 @@ func TestAuthClientBadToken(t *testing.T) {
 }
 
 func TestAuthClientNoConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithToken()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -80,6 +91,9 @@ func TestAuthClientNoConnect(t *testing.T) {
 }
 
 func TestAuthClientGoodConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithToken()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -90,6 +104,9 @@ func TestAuthClientGoodConnect(t *testing.T) {
 }
 
 func TestAuthClientFailOnEverythingElse(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithToken()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -115,6 +132,9 @@ func runAuthServerWithUserPass() *server.Server {
 }
 
 func TestNoUserOrPasswordClient(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithUserPass()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -125,6 +145,9 @@ func TestNoUserOrPasswordClient(t *testing.T) {
 }
 
 func TestBadUserClient(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithUserPass()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -135,6 +158,9 @@ func TestBadUserClient(t *testing.T) {
 }
 
 func TestBadPasswordClient(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithUserPass()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)
@@ -145,6 +171,9 @@ func TestBadPasswordClient(t *testing.T) {
 }
 
 func TestPasswordClientGoodConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runAuthServerWithUserPass()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", AUTH_PORT)

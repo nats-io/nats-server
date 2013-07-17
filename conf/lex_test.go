@@ -2,6 +2,8 @@ package conf
 
 import (
 	"testing"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 // Test to make sure we get what we expect.
@@ -21,6 +23,9 @@ func expect(t *testing.T, lx *lexer, items []item) {
 }
 
 func TestSimpleKeyStringValues(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemString, "bar", 1},
@@ -41,6 +46,9 @@ func TestSimpleKeyStringValues(t *testing.T) {
 }
 
 func TestSimpleKeyIntegerValues(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
@@ -55,6 +63,9 @@ func TestSimpleKeyIntegerValues(t *testing.T) {
 }
 
 func TestSimpleKeyFloatValues(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemFloat, "22.2", 1},
@@ -69,6 +80,9 @@ func TestSimpleKeyFloatValues(t *testing.T) {
 }
 
 func TestSimpleKeyBoolValues(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemBool, "true", 1},
@@ -83,6 +97,9 @@ func TestSimpleKeyBoolValues(t *testing.T) {
 }
 
 func TestComments(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemCommentStart, "", 1},
 		{itemText, " This is a comment", 1},
@@ -97,6 +114,9 @@ func TestComments(t *testing.T) {
 }
 
 func TestArrays(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemArrayStart, "", 1},
@@ -127,6 +147,9 @@ foo = [
 `
 
 func TestMultilineArrays(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
 		{itemText, " top level comment", 2},
@@ -160,7 +183,11 @@ foo = [
  "bar"
 ]
 `
+
 func TestMultilineArraysNoSep(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
 		{itemText, " top level comment", 2},
@@ -179,6 +206,9 @@ func TestMultilineArraysNoSep(t *testing.T) {
 }
 
 func TestSimpleMap(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemMapStart, "", 1},
@@ -202,6 +232,9 @@ foo = {
 `
 
 func TestMultilineMap(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
@@ -227,6 +260,9 @@ foo = {
 `
 
 func TestNestedMaps(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
@@ -246,6 +282,9 @@ func TestNestedMaps(t *testing.T) {
 }
 
 func TestColonKeySep(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
@@ -262,6 +301,9 @@ func TestColonKeySep(t *testing.T) {
 }
 
 func TestWhitespaceKeySep(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemInteger, "123", 1},
@@ -287,6 +329,9 @@ foo  {
 `
 
 func TestNestedWhitespaceMaps(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 2},
 		{itemMapStart, "", 2},
@@ -315,6 +360,9 @@ map {
 `
 
 func TestOptionalSemicolons(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 2},
 		{itemInteger, "123", 2},
@@ -335,6 +383,9 @@ func TestOptionalSemicolons(t *testing.T) {
 }
 
 func TestSemicolonChaining(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 1},
 		{itemString, "1", 1},
@@ -365,6 +416,9 @@ fkey = five # This should be a string
 `
 
 func TestNonQuotedStrings(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	expectedItems := []item{
 		{itemKey, "foo", 2},
 		{itemInteger, "123", 2},

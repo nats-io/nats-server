@@ -16,6 +16,7 @@ import (
 
 	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
+	"github.com/apcera/logging"
 )
 
 type Info struct {
@@ -42,6 +43,7 @@ type Server struct {
 	clients  map[uint64]*client
 	done     chan bool
 	start    time.Time
+	log      *logging.Category
 	stats
 }
 
@@ -80,16 +82,13 @@ func New(opts *Options) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Setup logging with flags
-	s.LogInit()
-
 	// For tracing clients
 	s.clients = make(map[uint64]*client)
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		Fatalf("Err marshalling INFO JSON: %+v\n", err)
+		log.Fatalf("Err marshalling INFO JSON: %+v\n", err)
 	}
 	s.infoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
@@ -113,9 +112,9 @@ func (s *Server) handleSignals() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for sig := range c {
-			Debugf("Trapped Signal; %v", sig)
+			log.Debugf("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			Log("Server Exiting..")
+			log.Info("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -156,16 +155,16 @@ func (s *Server) Shutdown() {
 }
 
 func (s *Server) AcceptLoop() {
-	Logf("Starting nats-server version %s on port %d", VERSION, s.opts.Port)
+	log.Infof("Starting nats-server version %s on port %d", VERSION, s.opts.Port)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
+		log.Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
 
-	Logf("nats-server is ready")
+	log.Infof("nats-server is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -179,7 +178,7 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Accept Error(%v), sleeping %dms",
+				log.Debugf("Temporary Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -187,7 +186,7 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else {
-				Logf("Accept error: %v", err)
+				log.Infof("Accept error: %v", err)
 			}
 			continue
 		}
@@ -195,14 +194,13 @@ func (s *Server) AcceptLoop() {
 		s.createClient(conn)
 	}
 	s.done <- true
-	Log("Server Exiting..")
+	log.Info("Server Exiting..")
 }
 
 func (s *Server) StartHTTPMonitoring() {
 	go func() {
 		// FIXME(dlc): port config
-		lm := fmt.Sprintf("Starting http monitor on port %d", s.opts.HttpPort)
-		Log(lm)
+		log.Infof("Starting http monitor on port %d", s.opts.HttpPort)
 		// Varz
 		http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {
 			s.HandleVarz(w, r)
@@ -213,7 +211,9 @@ func (s *Server) StartHTTPMonitoring() {
 		})
 
 		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HttpPort)
-		Fatal(http.ListenAndServe(hp, nil))
+		if err := http.ListenAndServe(hp, nil); err != nil {
+			log.Fatal("Error starting HTTP monitoring: %v", err)
+		}
 	}()
 
 }
@@ -231,7 +231,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// after we process inbound msgs from our own connection.
 	c.pcd = make(map[*client]struct{})
 
-	Debug("Client connection created", clientConnStr(conn), c.cid)
+	log.Debug("Client connection created", clientConnStr(conn), c.cid)
 
 	if ip, ok := conn.(*net.TCPConn); ok {
 		ip.SetReadBuffer(defaultBufSize)

@@ -4,9 +4,14 @@ package test
 
 import (
 	"testing"
+
+	. "github.com/apcera/gnatsd/test/unittest"
 )
 
 func TestVerbosePing(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -24,6 +29,9 @@ func TestVerbosePing(t *testing.T) {
 }
 
 func TestVerboseConnect(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
@@ -41,6 +49,9 @@ func TestVerboseConnect(t *testing.T) {
 }
 
 func TestVerbosePubSub(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
 	s := runProtoServer()
 	defer s.Shutdown()
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)

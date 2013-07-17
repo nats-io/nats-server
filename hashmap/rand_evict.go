@@ -19,9 +19,9 @@ func (h *HashMap) RemoveRandom() {
 	if h.used == 0 {
 		return
 	}
-	index := (rand.Int())&int(h.msk)
+	index := (rand.Int()) & int(h.msk)
 	// Walk forward til we find an entry
-	for i := index ; i < len(h.bkts) ; i++ {
+	for i := index; i < len(h.bkts); i++ {
 		e := &h.bkts[i]
 		if *e != nil {
 			*e = (*e).next
@@ -31,7 +31,7 @@ func (h *HashMap) RemoveRandom() {
 	}
 	// If we are here we hit end and did not remove anything,
 	// use the index and walk backwards.
-	for i := index ; i >= 0 ; i-- {
+	for i := index; i >= 0; i-- {
 		e := &h.bkts[i]
 		if *e != nil {
 			*e = (*e).next

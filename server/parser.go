@@ -106,7 +106,7 @@ func (c *client) parse(buf []byte) error {
 			default:
 				goto parseErr
 			}
-        case OP_PUB_SPC:
+		case OP_PUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
@@ -392,11 +392,10 @@ parseErr:
 	c.sendErr("Unknown Protocol Operation")
 	stop := i + 32
 	if stop > len(buf) {
-		stop = len(buf)-1
+		stop = len(buf) - 1
 	}
-	return fmt.Errorf("Parse Error, state=%d,i=%d: '%s'", c.state, i, buf[i:stop])
+	return fmt.Errorf("Parse Error, state=%d,i=%d: %q", c.state, i, buf[i:stop])
 }
-
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.

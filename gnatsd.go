@@ -4,18 +4,15 @@ package main
 
 import (
 	"flag"
-	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"strings"
 
 	"github.com/apcera/gnatsd/server"
+	"github.com/apcera/logging"
 )
 
 func main() {
-	// logging setup
-	server.LogSetup()
-
 	opts := server.Options{}
 
 	var showVersion bool
@@ -73,6 +70,8 @@ func main() {
 		}
 	}
 
+	LogSetup(&opts)
+
 	// Create the server with appropriate options.
 	s := server.New(server.MergeOptions(fileOpts, &opts))
 
@@ -83,9 +82,23 @@ func main() {
 
 	// Profiler
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6062", nil))
+		logging.Info(http.ListenAndServe("localhost:6062", nil))
 	}()
 
 	// Wait for clients.
 	s.AcceptLoop()
+}
+
+// Sets up standalone logging
+func LogSetup(opts *server.Options) {
+	logging.ReplacePrependFunc("default",
+		func(l *logging.PrependLineData) string { return "" })
+	logging.ConfigReplaceOutput("^default$", "IWEF", "stdout://")
+	if opts.Debug {
+		logging.ConfigReplaceOutput("^default$", "@DIWEF", "stdout://")
+	}
+	if opts.Trace {
+		logging.ConfigReplaceOutput("^default$", "@TDIWEF", "stdout://")
+	}
+	logging.Info("Logging configured.")
 }
