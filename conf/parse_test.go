@@ -53,3 +53,46 @@ func TestSample1(t *testing.T) {
 	}
 	test(t, sample1, ex)
 }
+
+var cluster = `
+cluster {
+  port: 4244
+
+  authorization {
+    user: route_user
+    password: top_secret
+    timeout: 1
+  }
+
+  # Routes are actively solicited and connected to from this server.
+  # Other servers can connect to us if they supply the correct credentials
+  # in their routes definitions from above.
+
+  // Test both styles of comments
+
+  routes = [
+    nats-route://foo:bar@apcera.me:4245
+    nats-route://foo:bar@apcera.me:4246
+  ]
+}
+`
+
+func TestSample2(t *testing.T) {
+	ex := map[string]interface{} {
+		"cluster": map[string]interface{} {
+			"port": int64(4244),
+			"authorization": map[string]interface{} {
+				"user": "route_user",
+				"password": "top_secret",
+				"timeout": int64(1),
+			},
+			"routes": []interface{} {
+				"nats-route://foo:bar@apcera.me:4245",
+				"nats-route://foo:bar@apcera.me:4246",
+			},
+		},
+	}
+
+	test(t, cluster, ex)
+}
+

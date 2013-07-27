@@ -174,7 +174,7 @@ func (p *parser) setValue(val interface{}) {
 	// Map processing
 	if ctx, ok := p.ctx.(map[string]interface{}); ok {
 		key := p.popKey()
-		// FIXME(dlc), make sure error if redefining same key?
+		// FIXME(dlc), make sure to error if redefining same key?
 		ctx[key] = val
 	}
 }

@@ -408,6 +408,18 @@ func lexMapKeyStart(lx *lexer) stateFn {
 	case r == mapEnd:
 		lx.next()
 		return lexSkip(lx, lexMapEnd)
+	case r == commentHashStart:
+		lx.next()
+		lx.push(lexMapKeyStart)
+		return lexCommentStart
+	case r == commentSlashStart:
+		lx.next()
+		rn := lx.next()
+		if rn == commentSlashStart {
+			lx.push(lexMapKeyStart)
+			return lexCommentStart
+		}
+		lx.backup()
 	}
 	lx.ignore()
 	lx.next()
@@ -462,8 +474,7 @@ func lexMapValue(lx *lexer) stateFn {
 		lx.backup()
 		fallthrough
 	case r == mapValTerm:
-		return lx.errorf("Unexpected map value terminator '%s'.",
-			mapValTerm)
+		return lx.errorf("Unexpected map value terminator '%s'.", mapValTerm)
 	case r == mapEnd:
 		return lexSkip(lx, lexMapEnd)
 	}
