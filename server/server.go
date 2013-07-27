@@ -186,7 +186,7 @@ func (s *Server) AcceptLoop() {
 				if tmpDelay > ACCEPT_MAX_SLEEP {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
-			} else {
+			} else if s.isRunning() {
 				Logf("Accept error: %v", err)
 			}
 			continue
