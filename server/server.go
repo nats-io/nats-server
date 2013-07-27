@@ -43,6 +43,9 @@ type Server struct {
 	done     chan bool
 	start    time.Time
 	stats
+
+	routeListener net.Listener
+	grid          uint64
 }
 
 type stats struct {
@@ -95,6 +98,10 @@ func New(opts *Options) *Server {
 
 	s.handleSignals()
 
+	Logf("Starting nats-server version %s", VERSION)
+
+	s.running = true
+
 	return s
 }
 
@@ -140,11 +147,22 @@ func (s *Server) Shutdown() {
 		clients[i] = c
 	}
 
-	// Kick AcceptLoop()
+	// Number of done channel responses we expect.
+	doneExpected := 0
+
+	// Kick client AcceptLoop()
 	if s.listener != nil {
+		doneExpected++
 		s.listener.Close()
 		s.listener = nil
 	}
+
+	if s.routeListener != nil {
+		doneExpected++
+		s.routeListener.Close()
+		s.routeListener = nil
+	}
+
 	s.mu.Unlock()
 
 	// Close client connections
@@ -152,13 +170,16 @@ func (s *Server) Shutdown() {
 		c.closeConnection()
 	}
 
-	<-s.done
+	// Block until the accept loops exit
+	for doneExpected > 0 {
+		<-s.done
+		doneExpected--
+	}
 }
 
 func (s *Server) AcceptLoop() {
-	Logf("Starting nats-server version %s on port %d", VERSION, s.opts.Port)
-
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
+	Logf("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
@@ -170,7 +191,6 @@ func (s *Server) AcceptLoop() {
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.listener = l
-	s.running = true
 	s.mu.Unlock()
 
 	tmpDelay := ACCEPT_MIN_SLEEP
@@ -179,7 +199,7 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Accept Error(%v), sleeping %dms",
+				Debug("Temporary Client Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -194,8 +214,53 @@ func (s *Server) AcceptLoop() {
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	s.done <- true
 	Log("Server Exiting..")
+	s.done <- true
+}
+
+func (s *Server) routeAcceptLoop() {
+	hp := fmt.Sprintf("%s:%d", s.opts.ClusterHost, s.opts.ClusterPort)
+	Logf("Listening for route connections on %s", hp)
+	l, e := net.Listen("tcp", hp)
+	if e != nil {
+		Fatalf("Error listening on router port: %d - %v", s.opts.Port, e)
+		return
+	}
+
+	// Setup state that can enable shutdown
+	s.mu.Lock()
+	s.routeListener = l
+	s.mu.Unlock()
+
+	tmpDelay := ACCEPT_MIN_SLEEP
+
+	for s.isRunning() {
+		_, err := l.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				Debug("Temporary Route Accept Error(%v), sleeping %dms",
+					ne, tmpDelay/time.Millisecond)
+				time.Sleep(tmpDelay)
+				tmpDelay *= 2
+				if tmpDelay > ACCEPT_MAX_SLEEP {
+					tmpDelay = ACCEPT_MAX_SLEEP
+				}
+			} else if s.isRunning() {
+				Logf("Accept error: %v", err)
+			}
+			continue
+		}
+		tmpDelay = ACCEPT_MIN_SLEEP
+		//		s.createRoute(conn)
+	}
+	Debug("Router accept loop exiting..")
+	s.done <- true
+}
+
+// StartCluster will start the accept loop on the cluster host:port
+// and will actively try to connect to listed routes.
+func (s *Server) StartCluster() {
+	go s.routeAcceptLoop()
 }
 
 func (s *Server) StartHTTPMonitoring() {

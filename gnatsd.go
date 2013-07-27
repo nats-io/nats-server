@@ -81,6 +81,11 @@ func main() {
 		s.StartHTTPMonitoring()
 	}
 
+	// Start up clustering as well if needed.
+	if opts.ClusterPort != 0 {
+		s.StartCluster()
+	}
+
 	// Profiler
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6062", nil))

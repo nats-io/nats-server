@@ -46,7 +46,12 @@ func RunServer(opts *server.Options) *server.Server {
 	}
 	s := server.New(opts)
 	if s == nil {
-		panic("No nats server object returned.")
+		panic("No NATS Server object returned.")
+	}
+
+	// Start up clustering as well if needed.
+	if opts.ClusterPort != 0 {
+		s.StartCluster()
 	}
 
 	go s.AcceptLoop()
@@ -64,7 +69,7 @@ func RunServer(opts *server.Options) *server.Server {
 		conn.Close()
 		return s
 	}
-	panic("Unable to start NATs Server in Go Routine")
+	panic("Unable to start NATS Server in Go Routine")
 }
 
 func startServer(t tLogger, port int, other string) *natsServer {

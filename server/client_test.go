@@ -88,7 +88,6 @@ func TestClientCreateAndInfo(t *testing.T) {
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
 	}
-
 }
 
 func TestClientConnect(t *testing.T) {

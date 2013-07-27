@@ -37,7 +37,7 @@ type Options struct {
 	ClusterUsername    string        `json:"-"`
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
-	Routes             []*route      `json:"-"`
+	Routes             []*url.URL    `json:"-"`
 }
 
 type authorization struct {
@@ -108,15 +108,14 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.ClusterAuthTimeout = auth.timeout
 		case "routes":
 			ra := mv.([]interface{})
-			opts.Routes = make([]*route, 0, len(ra))
+			opts.Routes = make([]*url.URL, 0, len(ra))
 			for _, r := range ra {
 				routeUrl := r.(string)
 				url, err := url.Parse(routeUrl)
 				if err != nil {
 					return fmt.Errorf("Error parsing route url [%q]", routeUrl)
 				}
-				route := &route{url: url}
-				opts.Routes = append(opts.Routes, route)
+				opts.Routes = append(opts.Routes, url)
 			}
 		}
 	}
