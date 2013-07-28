@@ -298,10 +298,6 @@ func (s *Server) checkRouterAuth(c *client) bool {
 	if !s.routeInfo.AuthRequired {
 		return true
 	}
-
-	fmt.Printf("s.opts: %+v\n", s.opts)
-	fmt.Printf("c.opts: %+v\n", c.opts)
-
 	if s.opts.ClusterUsername != c.opts.Username ||
 		s.opts.ClusterPassword != c.opts.Password {
 		return false

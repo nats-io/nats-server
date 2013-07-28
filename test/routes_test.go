@@ -145,7 +145,8 @@ func TestSendRouteSolicit(t *testing.T) {
 	// We should receive a connect message right away due to auth.
 	buf := expectResult(t, conn, connectRe)
 
-	// Check INFO follows.
+	// Check INFO follows. Could be inline, with first result, if not
+	// check again.
 	if !inlineInfoRe.Match(buf) {
 		expectResult(t, conn, infoRe)
 	}
