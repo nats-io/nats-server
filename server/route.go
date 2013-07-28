@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"time"
 )
 
@@ -13,22 +14,64 @@ type route struct {
 	remoteId   string
 	didSolicit bool
 	sid        uint64
+	url        *url.URL
 }
 
-func (s *Server) createRoute(conn net.Conn, didSolicit bool) *client {
+type connectInfo struct {
+	Verbose  bool   `json:"verbose"`
+	Pedantic bool   `json:"pedantic"`
+	User     string `json:"user,omitempty"`
+	Pass     string `json:"pass,omitempty"`
+	Ssl      bool   `json:"ssl_required"`
+	Name     string `json:"name"`
+}
+
+const conProto = "CONNECT %s" + _CRLF_
+
+func (c *client) sendConnect() {
+	var user, pass string
+	if userInfo := c.route.url.User; userInfo != nil {
+		user = userInfo.Username()
+		pass, _ = userInfo.Password()
+	}
+	cinfo := connectInfo{
+		Verbose:  false,
+		Pedantic: false,
+		User:     user,
+		Pass:     pass,
+		Ssl:      false,
+		Name:     c.srv.info.Id,
+	}
+	b, err := json.Marshal(cinfo)
+	if err != nil {
+		Logf("Error marshalling CONNECT to route: %v\n", err)
+		c.closeConnection()
+	}
+	c.bw.WriteString(fmt.Sprintf(conProto, b))
+	c.bw.Flush()
+}
+
+func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
+	didSolicit := rUrl != nil
 	r := &route{didSolicit: didSolicit}
 	c := &client{srv: s, nc: conn, opts: defaultOpts, typ: ROUTER, route: r}
 
 	// Initialize
 	c.initClient()
 
-	// FIXME(dlc) Check for auth, queue up if solicited.
+	Debug("Route connection created", clientConnStr(c.nc), c.cid)
+
+	// Queue Connect proto if we solicited the connection.
+	if didSolicit {
+		r.url = rUrl
+		c.sendConnect()
+	}
 
 	// Send our info to the other side.
 	s.sendInfo(c)
 
 	// Check for Auth
-	if s.routeInfo.AuthRequired {
+	if s.routeInfo.AuthRequired && !didSolicit {
 		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
 		c.setAuthTimer(ttl)
 	}
@@ -40,7 +83,6 @@ func (s *Server) createRoute(conn net.Conn, didSolicit bool) *client {
 
 	return c
 }
-
 
 const (
 	_CRLF_  = "\r\n"
@@ -123,15 +165,15 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		s.createRoute(conn, false)
+		s.createRoute(conn, nil)
 	}
 	Debug("Router accept loop exiting..")
 	s.done <- true
 }
 
-// StartCluster will start the accept loop on the cluster host:port
+// StartRouting will start the accept loop on the cluster host:port
 // and will actively try to connect to listed routes.
-func (s *Server) StartCluster() {
+func (s *Server) StartRouting() {
 	info := Info{
 		Id:           s.info.Id,
 		Version:      s.info.Version,
@@ -157,4 +199,31 @@ func (s *Server) StartCluster() {
 	ch := make(chan struct{})
 	go s.routeAcceptLoop(ch)
 	<-ch
+
+	// Solicit Routes if needed.
+	s.solicitRoutes()
+}
+
+// FIXME(dlc): Need to shutdown when exiting
+func (s *Server) connectToRoute(rUrl *url.URL) {
+	for s.isRunning() {
+		Debugf("Trying to connect to route on %s", rUrl.Host)
+		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
+		if err != nil {
+			Debugf("Error trying to connect to route: %v", err)
+			// FIXME(dlc): wait on kick out
+			time.Sleep(DEFAULT_ROUTE_CONNECT)
+			continue
+		}
+		// We have a connection here. Go ahead and create it and
+		// exit this func.
+		s.createRoute(conn, rUrl)
+		return
+	}
+}
+
+func (s *Server) solicitRoutes() {
+	for _, r := range s.opts.Routes {
+		go s.connectToRoute(r)
+	}
 }

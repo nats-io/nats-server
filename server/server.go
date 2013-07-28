@@ -279,8 +279,7 @@ func (s *Server) sendInfo(c *client) {
 	}
 }
 
-// Check auth and return boolean indicating if client is ok
-func (s *Server) checkAuth(c *client) bool {
+func (s *Server) checkClientAuth(c *client) bool {
 	if !s.info.AuthRequired {
 		return true
 	}
@@ -293,6 +292,33 @@ func (s *Server) checkAuth(c *client) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Server) checkRouterAuth(c *client) bool {
+	if !s.routeInfo.AuthRequired {
+		return true
+	}
+
+	fmt.Printf("s.opts: %+v\n", s.opts)
+	fmt.Printf("c.opts: %+v\n", c.opts)
+
+	if s.opts.ClusterUsername != c.opts.Username ||
+		s.opts.ClusterPassword != c.opts.Password {
+		return false
+	}
+	return true
+}
+
+// Check auth and return boolean indicating if client is ok
+func (s *Server) checkAuth(c *client) bool {
+	switch c.typ {
+	case CLIENT:
+		return s.checkClientAuth(c)
+	case ROUTER:
+		return s.checkRouterAuth(c)
+	default:
+		return false
+	}
 }
 
 func (s *Server) removeClient(c *client) {

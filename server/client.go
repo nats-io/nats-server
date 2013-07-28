@@ -667,7 +667,7 @@ func (c *client) closeConnection() {
 	}
 
 	dbgString := fmt.Sprintf("%s connection closed", c.typeString())
-	Debugf(dbgString, clientConnStr(c.nc), c.cid)
+	Debug(dbgString, clientConnStr(c.nc), c.cid)
 
 	c.clearAuthTimer()
 	c.clearPingTimer()

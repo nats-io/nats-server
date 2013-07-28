@@ -44,4 +44,11 @@ const (
 	// Accept sleep times on temporary errors
 	ACCEPT_MIN_SLEEP = 10 * time.Millisecond
 	ACCEPT_MAX_SLEEP = 1 * time.Second
+
+	// Route solicitation intervals.
+	DEFAULT_ROUTE_CONNECT = 1 * time.Second
+
+	// Route dial timeout
+	DEFAULT_ROUTE_DIAL = 2 * time.Second
+
 )

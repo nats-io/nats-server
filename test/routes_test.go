@@ -118,7 +118,35 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	}
 }
 
-func doRouteAuthConnect(t *testing.T, c net.Conn, user, pass string) {
-	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", user, pass)
-	sendProto(t, c, cs)
+func TestSendRouteSolicit(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	// Listen for a connection from the server on the first route.
+	if len(opts.Routes) <= 0 {
+		t.Fatalf("Need an outbound solicted route for this test")
+	}
+	rUrl := opts.Routes[0]
+	hp := rUrl.Host
+
+	l, e := net.Listen("tcp", hp)
+	if e != nil {
+		t.Fatalf("Error listening on %v", hp)
+	}
+	tl := l.(*net.TCPListener)
+	tl.SetDeadline(time.Now().Add(2 * server.DEFAULT_ROUTE_CONNECT))
+
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("Did not receive a connection request: %v", err)
+	}
+	defer conn.Close()
+
+	// We should receive a connect message right away due to auth.
+	buf := expectResult(t, conn, connectRe)
+
+	// Check INFO follows.
+	if !inlineInfoRe.Match(buf) {
+		expectResult(t, conn, infoRe)
+	}
 }

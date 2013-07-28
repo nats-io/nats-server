@@ -51,7 +51,7 @@ func RunServer(opts *server.Options) *server.Server {
 
 	// Start up clustering as well if needed.
 	if opts.ClusterPort != 0 {
-		s.StartCluster()
+		s.StartRouting()
 	}
 
 	go s.AcceptLoop()
@@ -139,6 +139,11 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
+func doRouteAuthConnect(t tLogger, c net.Conn, user, pass string) {
+	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", user, pass)
+	sendProto(t, c, cs)
+}
+
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 	doDefaultConnect(t, c)
 	send := sendCommand(t, c)
@@ -175,14 +180,16 @@ func sendProto(t tLogger, c net.Conn, op string) {
 }
 
 var (
-	infoRe  = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
-	pingRe  = regexp.MustCompile(`\APING\r\n`)
-	pongRe  = regexp.MustCompile(`\APONG\r\n`)
-	msgRe   = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
-	okRe    = regexp.MustCompile(`\A\+OK\r\n`)
-	errRe   = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
-	subRe   = regexp.MustCompile(`\ASUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
-	unsubRe = regexp.MustCompile(`\AUNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
+	infoRe       = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
+	pingRe       = regexp.MustCompile(`\APING\r\n`)
+	pongRe       = regexp.MustCompile(`\APONG\r\n`)
+	msgRe        = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
+	okRe         = regexp.MustCompile(`\A\+OK\r\n`)
+	errRe        = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
+	subRe        = regexp.MustCompile(`\ASUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
+	unsubRe      = regexp.MustCompile(`\AUNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
+	connectRe    = regexp.MustCompile(`\ACONNECT\s+([^\r\n]+)\r\n`)
+	inlineInfoRe = regexp.MustCompile(`\r\nINFO\s+([^\r\n]+)\r\n`)
 )
 
 const (
