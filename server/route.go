@@ -29,7 +29,8 @@ func (s *Server) createRoute(conn net.Conn, didSolicit bool) *client {
 
 	// Check for Auth
 	if s.routeInfo.AuthRequired {
-		c.setAuthTimer(AUTH_TIMEOUT)
+		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
+		c.setAuthTimer(ttl)
 	}
 
 	// Register with the server.

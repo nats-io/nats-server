@@ -256,7 +256,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Check for Auth
 	if s.info.AuthRequired {
-		c.setAuthTimer(AUTH_TIMEOUT) // FIXME(dlc): Make option
+		ttl := secondsToDuration(s.opts.AuthTimeout)
+		c.setAuthTimer(ttl)
 	}
 
 	c.mu.Unlock()

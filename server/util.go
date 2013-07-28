@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"time"
 )
 
 func genId() string {
@@ -33,4 +34,9 @@ func parseSize(d []byte) (n int) {
 		n = n*10 + (int(dec) - ascii_0)
 	}
 	return n
+}
+
+func secondsToDuration(seconds float64) time.Duration {
+	ttl := seconds * float64(time.Second)
+	return time.Duration(ttl)
 }

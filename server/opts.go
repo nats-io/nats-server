@@ -139,7 +139,7 @@ func parseAuthorization(am map[string]interface{}) authorization {
 			case float64:
 				at = mv.(float64)
 			}
-			auth.timeout = at / float64(time.Second)
+			auth.timeout = at
 		}
 	}
 	return auth

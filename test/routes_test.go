@@ -19,8 +19,8 @@ func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 
 	// Override for running in Go routine.
 	opts.NoSigs = true
-	//	opts.Debug  = true
-	//	opts.Trace  = true
+	// opts.Debug  = true
+	// opts.Trace  = true
 	opts.NoLog = true
 
 	if err != nil {
@@ -64,11 +64,16 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	doRouteAuthConnect(t, rc, opts.ClusterUsername, opts.ClusterPassword)
 	buf := expectResult(t, rc, infoRe)
 
 	info := server.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
 		t.Fatalf("Could not unmarshal route info: %v", err)
+	}
+
+	if !info.AuthRequired {
+		t.Fatal("Expected to see AuthRequired")
 	}
 	if info.Port != opts.ClusterPort {
 		t.Fatalf("Received wrong information for port, expected %d, got %d",
@@ -86,7 +91,8 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	send, _ := setupConn(t, c)
 
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
-	doDefaultConnect(t, rc)
+	expectAuthRequired(t, rc)
+	doRouteAuthConnect(t, rc, opts.ClusterUsername, opts.ClusterPassword)
 
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")
@@ -95,7 +101,6 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	buf := expectResult(t, rc, subRe)
 	matches := subRe.FindAllSubmatch(buf, -1)
 	rsid := string(matches[0][5])
-	fmt.Printf("Received rsid for SUB of %s\n", rsid)
 	if !strings.HasPrefix(rsid, "RSID:") {
 		t.Fatalf("Got wrong RSID: %s\n", rsid)
 	}
@@ -111,4 +116,9 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	if rsid2 != rsid {
 		t.Fatalf("Expected rsid's to match. %q vs %q\n", rsid, rsid2)
 	}
+}
+
+func doRouteAuthConnect(t *testing.T, c net.Conn, user, pass string) {
+	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", user, pass)
+	sendProto(t, c, cs)
 }
