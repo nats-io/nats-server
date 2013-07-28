@@ -20,8 +20,8 @@ func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 	// Override for running in Go routine.
 	opts.NoSigs = true
 	//	opts.Debug  = true
-		opts.Trace  = true
-//	opts.NoLog = true
+	//	opts.Trace  = true
+	opts.NoLog = true
 
 	if err != nil {
 		t.Fatalf("Error parsing config file: %v\n", err)
@@ -112,4 +112,3 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 		t.Fatalf("Expected rsid's to match. %q vs %q\n", rsid, rsid2)
 	}
 }
-
