@@ -109,6 +109,10 @@ func (s *natsServer) stopServer() {
 	}
 }
 
+func createRouteConn(t tLogger, host string, port int) net.Conn {
+	return createClientConn(t, host, port)
+}
+
 func createClientConn(t tLogger, host string, port int) net.Conn {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	c, err := net.DialTimeout("tcp", addr, 1*time.Second)
@@ -171,12 +175,14 @@ func sendProto(t tLogger, c net.Conn, op string) {
 }
 
 var (
-	infoRe = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
-	pingRe = regexp.MustCompile(`\APING\r\n`)
-	pongRe = regexp.MustCompile(`\APONG\r\n`)
-	msgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
-	okRe   = regexp.MustCompile(`\A\+OK\r\n`)
-	errRe  = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
+	infoRe  = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
+	pingRe  = regexp.MustCompile(`\APING\r\n`)
+	pongRe  = regexp.MustCompile(`\APONG\r\n`)
+	msgRe   = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
+	okRe    = regexp.MustCompile(`\A\+OK\r\n`)
+	errRe   = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
+	subRe   = regexp.MustCompile(`\ASUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
+	unsubRe = regexp.MustCompile(`\AUNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
 )
 
 const (

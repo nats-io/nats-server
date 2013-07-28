@@ -32,9 +32,7 @@ func TestRouteConfig(t *testing.T) {
 	r1, _ := url.Parse("nats-route://foo:bar@apcera.me:4245")
 	r2, _ := url.Parse("nats-route://foo:bar@apcera.me:4246")
 
-	golden.Routes = []*route{
-		&route{url: r1}, &route{url: r2},
-	}
+	golden.Routes = []*url.URL{r1, r2}
 
 	if !reflect.DeepEqual(golden, opts) {
 		t.Fatalf("Options are incorrect from config file.\nexpected: %+v\ngot: %+v",

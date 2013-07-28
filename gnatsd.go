@@ -74,15 +74,16 @@ func main() {
 	}
 
 	// Create the server with appropriate options.
-	s := server.New(server.MergeOptions(fileOpts, &opts))
+	mOpts := server.MergeOptions(fileOpts, &opts)
+	s := server.New(mOpts)
 
 	// Start up the http server if needed.
-	if opts.HttpPort != 0 {
+	if mOpts.HttpPort != 0 {
 		s.StartHTTPMonitoring()
 	}
 
 	// Start up clustering as well if needed.
-	if opts.ClusterPort != 0 {
+	if mOpts.ClusterPort != 0 {
 		s.StartCluster()
 	}
 

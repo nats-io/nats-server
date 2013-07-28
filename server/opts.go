@@ -155,6 +155,7 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	// Merge the two, flagOpts override
 	opts := *fileOpts
+
 	if flagOpts.Port != 0 {
 		opts.Port = flagOpts.Port
 	}
