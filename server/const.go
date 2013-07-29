@@ -51,4 +51,12 @@ const (
 	// Route dial timeout
 	DEFAULT_ROUTE_DIAL = 2 * time.Second
 
+	// Default size of proto to print on parse errors
+	PROTO_SNIPPET_SIZE = 32
+
+	// Maximum number of arguments from MSG proto
+	MAX_MSG_ARGS = 4
+
+	// Maximum number of arguments from PUB proto
+	MAX_PUB_ARGS = 3
 )

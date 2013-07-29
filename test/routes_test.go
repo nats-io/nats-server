@@ -5,7 +5,6 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"runtime"
 	"strings"
 	"testing"
@@ -35,18 +34,7 @@ func TestRouterListeningSocket(t *testing.T) {
 
 	// Check that the cluster socket is able to be connected.
 	addr := fmt.Sprintf("%s:%d", opts.ClusterHost, opts.ClusterPort)
-	end := time.Now().Add(2 * time.Second)
-	for time.Now().Before(end) {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			// Retry
-			continue
-		}
-		conn.Close()
-		return
-	}
-	t.Fatalf("Failed to connect to the cluster port: %q", addr)
+	checkSocket(t, addr, 2*time.Second)
 }
 
 func TestRouteGoServerShutdown(t *testing.T) {
@@ -64,8 +52,8 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
-	doRouteAuthConnect(t, rc, opts.ClusterUsername, opts.ClusterPassword)
-	buf := expectResult(t, rc, infoRe)
+	_, expect := setupRoute(t, rc, opts)
+	buf := expect(infoRe)
 
 	info := server.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
@@ -90,9 +78,10 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 
 	send, _ := setupConn(t, c)
 
+	// We connect to the route.
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, rc)
-	doRouteAuthConnect(t, rc, opts.ClusterUsername, opts.ClusterPassword)
+	setupRoute(t, rc, opts)
 
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")
@@ -127,27 +116,75 @@ func TestSendRouteSolicit(t *testing.T) {
 		t.Fatalf("Need an outbound solicted route for this test")
 	}
 	rUrl := opts.Routes[0]
-	hp := rUrl.Host
 
-	l, e := net.Listen("tcp", hp)
-	if e != nil {
-		t.Fatalf("Error listening on %v", hp)
-	}
-	tl := l.(*net.TCPListener)
-	tl.SetDeadline(time.Now().Add(2 * server.DEFAULT_ROUTE_CONNECT))
-
-	conn, err := l.Accept()
-	if err != nil {
-		t.Fatalf("Did not receive a connection request: %v", err)
-	}
+	conn := acceptRouteConn(t, rUrl.Host, server.DEFAULT_ROUTE_CONNECT)
 	defer conn.Close()
 
 	// We should receive a connect message right away due to auth.
 	buf := expectResult(t, conn, connectRe)
 
 	// Check INFO follows. Could be inline, with first result, if not
-	// check again.
+	// check followon buffer.
 	if !inlineInfoRe.Match(buf) {
 		expectResult(t, conn, infoRe)
 	}
+}
+
+func TestRouteForwardsMsgFromClients(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	client := createClientConn(t, opts.Host, opts.Port)
+	defer client.Close()
+
+	clientSend, _ := setupConn(t, client)
+
+	route := acceptRouteConn(t, opts.Routes[0].Host, server.DEFAULT_ROUTE_CONNECT)
+	defer route.Close()
+
+	routeSend, routeExpect := setupRoute(t, route, opts)
+	expectMsgs := expectMsgsCommand(t, routeExpect)
+
+	// Eat the CONNECT and INFO protos
+	buf := routeExpect(connectRe)
+	if !inlineInfoRe.Match(buf) {
+		fmt.Printf("Looking for separate INFO\n")
+		routeExpect(infoRe)
+	}
+
+	// Send SUB via route connection
+	routeSend("SUB foo RSID:2:22\r\n")
+
+	// Send PUB via client connection
+	clientSend("PUB foo 2\r\nok\r\n")
+
+	matches := expectMsgs(1)
+	checkMsg(t, matches[0], "foo", "RSID:2:22", "", "2", "ok")
+}
+
+func TestRouteForwardsMsgToClients(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	client := createClientConn(t, opts.Host, opts.Port)
+	defer client.Close()
+
+	clientSend, clientExpect := setupConn(t, client)
+	expectMsgs := expectMsgsCommand(t, clientExpect)
+
+	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route)
+	routeSend, _ := setupRoute(t, route, opts)
+
+	// Subscribe to foo
+	clientSend("SUB foo 1\r\n")
+	// Use ping roundtrip to make sure its processed.
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	// Send MSG via route connection
+	routeSend("MSG foo 1 2\r\nok\r\n")
+
+	matches := expectMsgs(1)
+	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
 }

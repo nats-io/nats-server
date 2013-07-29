@@ -241,7 +241,48 @@ func (c *client) processPong() {
 	c.mu.Unlock()
 }
 
-const argsLenMax = 3
+func (c *client) processMsgArgs(arg []byte) error {
+
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_MSG_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	switch len(args) {
+	case 3:
+		c.pa.subject = args[0]
+		c.pa.reply = nil
+		c.pa.szb = args[2]
+		c.pa.size = parseSize(args[2])
+	case 4:
+		c.pa.subject = args[0]
+		c.pa.reply = args[2]
+		c.pa.szb = args[3]
+		c.pa.size = parseSize(args[3])
+	default:
+		return fmt.Errorf("processMsgArgs Parse Error: '%s'", arg)
+	}
+	if c.pa.size < 0 {
+		return fmt.Errorf("processMsgArgs Bad or Missing Size: '%s'", arg)
+	}
+	return nil
+}
 
 func (c *client) processPub(arg []byte) error {
 	if trace > 0 {
@@ -249,7 +290,7 @@ func (c *client) processPub(arg []byte) error {
 	}
 
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [argsLenMax][]byte{}
+	a := [MAX_PUB_ARGS][]byte{}
 	args := a[:0]
 	start := -1
 	for i, b := range arg {
@@ -293,7 +334,7 @@ func (c *client) processPub(arg []byte) error {
 }
 
 func splitArg(arg []byte) [][]byte {
-	a := [argsLenMax][]byte{}
+	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
 	start := -1
 	for i, b := range arg {
@@ -414,6 +455,7 @@ func (c *client) msgHeader(mh []byte, sub *subscription) []byte {
 	return mh
 }
 
+// FIXME(dlc) extra type might negate..
 // Used to treat map as efficient set
 type empty struct{}
 
@@ -653,8 +695,10 @@ func (c *client) clearConnection() {
 
 func (c *client) typeString() string {
 	switch c.typ {
-	case CLIENT: return "Client"
-	case ROUTER: return "Router"
+	case CLIENT:
+		return "Client"
+	case ROUTER:
+		return "Router"
 	}
 	return "Unknown Type"
 }

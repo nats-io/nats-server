@@ -3,12 +3,12 @@
 package test
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -109,6 +109,45 @@ func (s *natsServer) stopServer() {
 	}
 }
 
+func stackFatalf(t tLogger, f string, args ...interface{}) {
+	lines := make([]string, 0, 32)
+	msg := fmt.Sprintf(f, args...)
+	lines = append(lines, msg)
+
+	// Ignore ourselves
+	_, testFile, _, _ := runtime.Caller(0)
+
+	// Generate the Stack of callers:
+	for i := 0; true; i++ {
+		_, file, line, ok := runtime.Caller(i)
+		if ok == false {
+			break
+		}
+		if file == testFile {
+			continue
+		}
+		msg := fmt.Sprintf("%d - %s:%d", i, file, line)
+		lines = append(lines, msg)
+	}
+
+	t.Fatalf("%s", strings.Join(lines, "\n"))
+}
+
+func acceptRouteConn(t tLogger, host string, timeout time.Duration) net.Conn {
+	l, e := net.Listen("tcp", host)
+	if e != nil {
+		stackFatalf(t, "Error listening for route connection on %v", host)
+	}
+	tl := l.(*net.TCPListener)
+	tl.SetDeadline(time.Now().Add(timeout))
+
+	conn, err := l.Accept()
+	if err != nil {
+		stackFatalf(t, "Did not receive a route connection request: %v", err)
+	}
+	return conn
+}
+
 func createRouteConn(t tLogger, host string, port int) net.Conn {
 	return createClientConn(t, host, port)
 }
@@ -117,7 +156,7 @@ func createClientConn(t tLogger, host string, port int) net.Conn {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	c, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
-		t.Fatalf("Could not connect to server: %v\n", err)
+		stackFatalf(t, "Could not connect to server: %v\n", err)
 	}
 	return c
 }
@@ -128,7 +167,7 @@ func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
 	var sinfo server.Info
 	err := json.Unmarshal(js, &sinfo)
 	if err != nil {
-		t.Fatalf("Could not unmarshal INFO json: %v\n", err)
+		stackFatalf(t, "Could not unmarshal INFO json: %v\n", err)
 	}
 	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
 	sendProto(t, c, cs)
@@ -139,9 +178,35 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
+func checkSocket(t tLogger, addr string, wait time.Duration) {
+	end := time.Now().Add(wait)
+	for time.Now().Before(end) {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			// Retry
+			continue
+		}
+		// We bound to the addr, so close and return success.
+		conn.Close()
+		return
+	}
+	// We have failed to bind the socket in the time allowed.
+	t.Fatalf("Failed to connect to the socket: %q", addr)
+}
+
 func doRouteAuthConnect(t tLogger, c net.Conn, user, pass string) {
 	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", user, pass)
 	sendProto(t, c, cs)
+}
+
+func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
+	user := opts.ClusterUsername
+	pass := opts.ClusterPassword
+	doRouteAuthConnect(t, c, user, pass)
+	send := sendCommand(t, c)
+	expect := expectCommand(t, c)
+	return send, expect
 }
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
@@ -172,10 +237,10 @@ func expectCommand(t tLogger, c net.Conn) expectFun {
 func sendProto(t tLogger, c net.Conn, op string) {
 	n, err := c.Write([]byte(op))
 	if err != nil {
-		t.Fatalf("Error writing command to conn: %v\n", err)
+		stackFatalf(t, "Error writing command to conn: %v\n", err)
 	}
 	if n != len(op) {
-		t.Fatalf("Partial write: %d vs %d\n", n, len(op))
+		stackFatalf(t, "Partial write: %d vs %d\n", n, len(op))
 	}
 }
 
@@ -183,7 +248,7 @@ var (
 	infoRe       = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
 	pingRe       = regexp.MustCompile(`\APING\r\n`)
 	pongRe       = regexp.MustCompile(`\APONG\r\n`)
-	msgRe        = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n([^\\r\\n]*?)\r\n)+?)`)
+	msgRe        = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	okRe         = regexp.MustCompile(`\A\+OK\r\n`)
 	errRe        = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
 	subRe        = regexp.MustCompile(`\ASUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
@@ -212,13 +277,12 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 
 	n, err := c.Read(expBuf)
 	if n <= 0 && err != nil {
-		t.Fatalf("Error reading from conn: %v\n", err)
+		stackFatalf(t, "Error reading from conn: %v\n", err)
 	}
 	buf := expBuf[:n]
 
 	if !re.Match(buf) {
-		buf = bytes.Replace(buf, []byte("\r\n"), []byte("\\r\\n"), -1)
-		t.Fatalf("Response did not match expected: \n\tReceived:'%s'\n\tExpected:'%s'\n", buf, re)
+		stackFatalf(t, "Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", buf, re)
 	}
 	return buf
 }
@@ -226,19 +290,19 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 // This will check that we got what we expected.
 func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
 	if string(m[SUB_INDEX]) != subject {
-		t.Fatalf("Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
 	}
 	if string(m[SID_INDEX]) != sid {
-		t.Fatalf("Did not get correct sid: exepected '%s' got '%s'\n", sid, m[SID_INDEX])
+		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[SID_INDEX])
 	}
 	if string(m[REPLY_INDEX]) != reply {
-		t.Fatalf("Did not get correct reply: exepected '%s' got '%s'\n", reply, m[REPLY_INDEX])
+		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[REPLY_INDEX])
 	}
 	if string(m[LEN_INDEX]) != len {
-		t.Fatalf("Did not get correct msg length: expected '%s' got '%s'\n", len, m[LEN_INDEX])
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[LEN_INDEX])
 	}
 	if string(m[MSG_INDEX]) != msg {
-		t.Fatalf("Did not get correct msg: expected '%s' got '%s'\n", msg, m[MSG_INDEX])
+		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[MSG_INDEX])
 	}
 }
 
@@ -248,7 +312,7 @@ func expectMsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 		buf := ef(msgRe)
 		matches := msgRe.FindAllSubmatch(buf, -1)
 		if len(matches) != expected {
-			t.Fatalf("Did not get correct # msgs: %d vs %d\n", len(matches), expected)
+			stackFatalf(t, "Did not get correct # msgs: %d vs %d\n", len(matches), expected)
 		}
 		return matches
 	}
