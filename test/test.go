@@ -207,18 +207,20 @@ func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
 	sendProto(t, c, cs)
 }
 
-func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
+func setupRouteEx(t tLogger, c net.Conn, opts *server.Options, id string) (sendFun, expectFun) {
 	user := opts.ClusterUsername
 	pass := opts.ClusterPassword
-
-	u := make([]byte, 16)
-	io.ReadFull(rand.Reader, u)
-	id := fmt.Sprintf("ROUTER:%s", hex.EncodeToString(u))
-
 	doRouteAuthConnect(t, c, user, pass, id)
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
 	return send, expect
+}
+
+func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
+	u := make([]byte, 16)
+	io.ReadFull(rand.Reader, u)
+	id := fmt.Sprintf("ROUTER:%s", hex.EncodeToString(u))
+	return setupRouteEx(t, c, opts, id)
 }
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {

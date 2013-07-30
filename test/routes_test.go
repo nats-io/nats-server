@@ -236,9 +236,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 	defer s.Shutdown()
 
 	client := createClientConn(t, opts.Host, opts.Port)
-	defer client.Close()
-
 	clientSend, clientExpect := setupConn(t, client)
+	defer client.Close()
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route)
@@ -281,7 +280,6 @@ func TestRouteQueueSemantics(t *testing.T) {
 	expectMsgs(1)
 
 	// We could get one on client
-
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {
@@ -297,4 +295,44 @@ func TestSolicitRouteReconnect(t *testing.T) {
 
 	// We expect to get called back..
 	route = acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+}
+
+func TestMultipleRoutesSameId(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	route1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route1)
+	route1Send, route1Expect := setupRouteEx(t, route1, opts, "ROUTE:2222")
+	route1ExpectMsgs := expectMsgsCommand(t, route1Expect)
+
+	route2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route2)
+	route2Send, _ := setupRouteEx(t, route2, opts, "ROUTE:2222")
+
+	// Send SUB via route connections
+	sub := "SUB foo RSID:2:22\r\n"
+	route1Send(sub)
+	route2Send(sub)
+
+	// Make sure we do not get anything on a MSG send to a router.
+	// Send MSG proto via route connection
+	route1Send("MSG foo 1 2\r\nok\r\n")
+
+	expectNothing(t, route1)
+	expectNothing(t, route2)
+
+	// Setup a client
+	client := createClientConn(t, opts.Host, opts.Port)
+	clientSend, _ := setupConn(t, client)
+	defer client.Close()
+
+	// Send PUB via client connection
+	clientSend("PUB foo 2\r\nok\r\n")
+
+	// We should only receive on the first route.
+	route1ExpectMsgs(1)
+
+	// Nothing on the second.
+	expectNothing(t, route2)
 }
