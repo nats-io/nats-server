@@ -206,3 +206,28 @@ func TestRouteOneHopSemantics(t *testing.T) {
 	// Make sure it does not come back!
 	expectNothing(t, route)
 }
+
+func TestRouteOnlySendOnce(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	client := createClientConn(t, opts.Host, opts.Port)
+	defer client.Close()
+
+	clientSend, _ := setupConn(t, client)
+
+	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route)
+	routeSend, routeExpect := setupRoute(t, route, opts)
+	expectMsgs := expectMsgsCommand(t, routeExpect)
+
+	// Express multiple interest on this route for foo.
+	routeSend("SUB foo RSID:2:1\r\n")
+	routeSend("SUB foo RSID:2:2\r\n")
+
+	// Send PUB via client connection
+	clientSend("PUB foo 2\r\nok\r\n")
+
+	matches := expectMsgs(1)
+	checkMsg(t, matches[0], "foo", "RSID:2:1", "", "2", "ok")
+}

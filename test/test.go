@@ -3,8 +3,11 @@
 package test
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os/exec"
 	"regexp"
@@ -195,15 +198,22 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 	t.Fatalf("Failed to connect to the socket: %q", addr)
 }
 
-func doRouteAuthConnect(t tLogger, c net.Conn, user, pass string) {
-	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", user, pass)
+const CONNECT_F = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
+
+func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
+	cs := fmt.Sprintf(CONNECT_F, user, pass, id)
 	sendProto(t, c, cs)
 }
 
 func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
 	user := opts.ClusterUsername
 	pass := opts.ClusterPassword
-	doRouteAuthConnect(t, c, user, pass)
+
+	u := make([]byte, 16)
+	io.ReadFull(rand.Reader, u)
+	id := fmt.Sprintf("ROUTER:%s", hex.EncodeToString(u))
+
+	doRouteAuthConnect(t, c, user, pass, id)
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
 	return send, expect
