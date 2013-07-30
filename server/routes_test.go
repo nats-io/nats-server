@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"reflect"
 	"testing"
-	"time"
 )
 
 func TestRouteConfig(t *testing.T) {
@@ -20,12 +19,12 @@ func TestRouteConfig(t *testing.T) {
 		Port:               4242,
 		Username:           "derek",
 		Password:           "bella",
-		AuthTimeout:        1.0 / float64(time.Second),
+		AuthTimeout:        1.0,
 		ClusterHost:        "127.0.0.1",
 		ClusterPort:        4244,
 		ClusterUsername:    "route_user",
 		ClusterPassword:    "top_secret",
-		ClusterAuthTimeout: 1.0 / float64(time.Second),
+		ClusterAuthTimeout: 1.0,
 	}
 
 	// Setup URLs
