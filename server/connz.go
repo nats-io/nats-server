@@ -39,7 +39,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			InBytes:  client.inBytes,
 			OutBytes: client.outBytes,
 		}
-		if ip, ok := client.conn.(*net.TCPConn); ok {
+		if ip, ok := client.nc.(*net.TCPConn); ok {
 			addr := ip.RemoteAddr().(*net.TCPAddr)
 			ci.Port = addr.Port
 			ci.Ip = addr.IP.String()

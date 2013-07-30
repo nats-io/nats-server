@@ -3,7 +3,6 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,10 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/apcera/gnatsd/hashmap"
 	"github.com/apcera/gnatsd/sublist"
 )
 
@@ -40,9 +37,16 @@ type Server struct {
 	running  bool
 	listener net.Listener
 	clients  map[uint64]*client
+	routes   map[uint64]*client
 	done     chan bool
 	start    time.Time
 	stats
+
+	routeListener net.Listener
+	grid          uint64
+	routeInfo     Info
+	routeInfoJson []byte
+	rcQuit        chan bool
 }
 
 type stats struct {
@@ -83,17 +87,28 @@ func New(opts *Options) *Server {
 	// Setup logging with flags
 	s.LogInit()
 
-	// For tracing clients
+	// For tracking clients
 	s.clients = make(map[uint64]*client)
+
+	// For tracking routes
+	s.routes = make(map[uint64]*client)
+
+	// Used to kick out all of the route
+	// connect Go routines.
+	s.rcQuit = make(chan bool)
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		Fatalf("Err marshalling INFO JSON: %+v\n", err)
+		Fatalf("Error marshalling INFO JSON: %+v\n", err)
 	}
 	s.infoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
 	s.handleSignals()
+
+	Logf("Starting nats-server version %s", VERSION)
+
+	s.running = true
 
 	return s
 }
@@ -140,11 +155,26 @@ func (s *Server) Shutdown() {
 		clients[i] = c
 	}
 
-	// Kick AcceptLoop()
+	// Number of done channel responses we expect.
+	doneExpected := 0
+
+	// Kick client AcceptLoop()
 	if s.listener != nil {
+		doneExpected++
 		s.listener.Close()
 		s.listener = nil
 	}
+
+	// Kick route AcceptLoop()
+	if s.routeListener != nil {
+		doneExpected++
+		s.routeListener.Close()
+		s.routeListener = nil
+	}
+
+	// Release the solicited routes connect go routines.
+	close(s.rcQuit)
+
 	s.mu.Unlock()
 
 	// Close client connections
@@ -152,13 +182,16 @@ func (s *Server) Shutdown() {
 		c.closeConnection()
 	}
 
-	<-s.done
+	// Block until the accept loops exit
+	for doneExpected > 0 {
+		<-s.done
+		doneExpected--
+	}
 }
 
 func (s *Server) AcceptLoop() {
-	Logf("Starting nats-server version %s on port %d", VERSION, s.opts.Port)
-
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
+	Logf("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
@@ -170,7 +203,6 @@ func (s *Server) AcceptLoop() {
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.listener = l
-	s.running = true
 	s.mu.Unlock()
 
 	tmpDelay := ACCEPT_MIN_SLEEP
@@ -179,14 +211,14 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Accept Error(%v), sleeping %dms",
+				Debug("Temporary Client Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
 				if tmpDelay > ACCEPT_MAX_SLEEP {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
-			} else {
+			} else if s.isRunning() {
 				Logf("Accept error: %v", err)
 			}
 			continue
@@ -194,8 +226,8 @@ func (s *Server) AcceptLoop() {
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	s.done <- true
 	Log("Server Exiting..")
+	s.done <- true
 }
 
 func (s *Server) StartHTTPMonitoring() {
@@ -219,33 +251,24 @@ func (s *Server) StartHTTPMonitoring() {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, conn: conn, opts: defaultOpts}
+	c := &client{srv: s, nc: conn, opts: defaultOpts}
+
+	// Initialize
+	c.initClient()
+
+	Debug("Client connection created", clientConnStr(c.nc), c.cid)
 
 	c.mu.Lock()
-	c.cid = atomic.AddUint64(&s.gcid, 1)
 
-	c.bw = bufio.NewWriterSize(c.conn, defaultBufSize)
-	c.subs = hashmap.New()
-
-	// This is to track pending clients that have data to be flushed
-	// after we process inbound msgs from our own connection.
-	c.pcd = make(map[*client]struct{})
-
-	Debug("Client connection created", clientConnStr(conn), c.cid)
-
-	if ip, ok := conn.(*net.TCPConn); ok {
-		ip.SetReadBuffer(defaultBufSize)
-	}
-
+	// Send our information.
 	s.sendInfo(c)
-	go c.readLoop()
 
 	// Check for Auth
 	if s.info.AuthRequired {
-		c.setAuthTimer(AUTH_TIMEOUT) // FIXME(dlc): Make option
+		ttl := secondsToDuration(s.opts.AuthTimeout)
+		c.setAuthTimer(ttl)
 	}
-	// Set the Ping timer
-	c.setPingTimer()
+
 	c.mu.Unlock()
 
 	// Register with the server.
@@ -257,12 +280,15 @@ func (s *Server) createClient(conn net.Conn) *client {
 }
 
 func (s *Server) sendInfo(c *client) {
-	// FIXME, err
-	c.conn.Write(s.infoJson)
+	switch c.typ {
+	case CLIENT:
+		c.nc.Write(s.infoJson)
+	case ROUTER:
+		c.nc.Write(s.routeInfoJson)
+	}
 }
 
-// Check auth and return boolean indicating if client is ok
-func (s *Server) checkAuth(c *client) bool {
+func (s *Server) checkClientAuth(c *client) bool {
 	if !s.info.AuthRequired {
 		return true
 	}
@@ -277,8 +303,41 @@ func (s *Server) checkAuth(c *client) bool {
 	return true
 }
 
+func (s *Server) checkRouterAuth(c *client) bool {
+	if !s.routeInfo.AuthRequired {
+		return true
+	}
+	if s.opts.ClusterUsername != c.opts.Username ||
+		s.opts.ClusterPassword != c.opts.Password {
+		return false
+	}
+	return true
+}
+
+// Check auth and return boolean indicating if client is ok
+func (s *Server) checkAuth(c *client) bool {
+	switch c.typ {
+	case CLIENT:
+		return s.checkClientAuth(c)
+	case ROUTER:
+		return s.checkRouterAuth(c)
+	default:
+		return false
+	}
+}
+
 func (s *Server) removeClient(c *client) {
+	c.mu.Lock()
+	cid := c.cid
+	typ := c.typ
+	c.mu.Unlock()
+
 	s.mu.Lock()
-	delete(s.clients, c.cid)
+	switch typ {
+	case CLIENT:
+		delete(s.clients, cid)
+	case ROUTER:
+		delete(s.routes, cid)
+	}
 	s.mu.Unlock()
 }

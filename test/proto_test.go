@@ -98,7 +98,7 @@ func TestQueueSub(t *testing.T) {
 	}
 	for k, c := range sids {
 		if c < 35 {
-			t.Fatalf("Expected ~50 (+-15) msgs for '%s', got %d\n", k, c)
+			t.Fatalf("Expected ~50 (+-15) msgs for sid:'%s', got %d\n", k, c)
 		}
 	}
 }

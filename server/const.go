@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go-0.2.12.alpha.1"
+	VERSION = "go-0.3.0.alpha.2"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
@@ -44,4 +44,19 @@ const (
 	// Accept sleep times on temporary errors
 	ACCEPT_MIN_SLEEP = 10 * time.Millisecond
 	ACCEPT_MAX_SLEEP = 1 * time.Second
+
+	// Route solicitation intervals.
+	DEFAULT_ROUTE_CONNECT = 1 * time.Second
+
+	// Route dial timeout
+	DEFAULT_ROUTE_DIAL = 1 * time.Second
+
+	// Default size of proto to print on parse errors
+	PROTO_SNIPPET_SIZE = 32
+
+	// Maximum number of arguments from MSG proto
+	MAX_MSG_ARGS = 4
+
+	// Maximum number of arguments from PUB proto
+	MAX_PUB_ARGS = 3
 )

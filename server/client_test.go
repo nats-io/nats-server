@@ -88,7 +88,6 @@ func TestClientCreateAndInfo(t *testing.T) {
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
 	}
-
 }
 
 func TestClientConnect(t *testing.T) {
@@ -285,7 +284,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 
 	go func() {
 		c.parse(op)
-		c.conn.Close()
+		c.nc.Close()
 	}()
 
 	var n1, n2, received int
@@ -332,7 +331,7 @@ func TestClientUnSub(t *testing.T) {
 
 	go func() {
 		c.parse(op)
-		c.conn.Close()
+		c.nc.Close()
 	}()
 
 	var received int
@@ -373,7 +372,7 @@ func TestClientUnSubMax(t *testing.T) {
 
 	go func() {
 		c.parse(op)
-		c.conn.Close()
+		c.nc.Close()
 	}()
 
 	var received int
@@ -396,7 +395,7 @@ func TestClientUnSubMax(t *testing.T) {
 
 func TestClientAutoUnsubExactReceived(t *testing.T) {
 	_, c, _ := setupClient()
-	defer c.conn.Close()
+	defer c.nc.Close()
 
 	// SUB/PUB
 	subs := []byte("SUB foo 1\r\n")
@@ -426,7 +425,7 @@ func TestClientAutoUnsubExactReceived(t *testing.T) {
 
 func TestClientUnsubAfterAutoUnsub(t *testing.T) {
 	_, c, _ := setupClient()
-	defer c.conn.Close()
+	defer c.nc.Close()
 
 	// SUB/UNSUB/UNSUB
 	subs := []byte("SUB foo 1\r\n")
@@ -476,7 +475,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 
 func TestClientMapRemoval(t *testing.T) {
 	s, c, _ := setupClient()
-	c.conn.Close()
+	c.nc.Close()
 	end := time.Now().Add(1 * time.Second)
 
 	for time.Now().Before(end) {
