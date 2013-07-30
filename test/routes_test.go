@@ -139,7 +139,7 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 	client := createClientConn(t, opts.Host, opts.Port)
 	defer client.Close()
 
-	clientSend, _ := setupConn(t, client)
+	clientSend, clientExpect := setupConn(t, client)
 
 	route := acceptRouteConn(t, opts.Routes[0].Host, server.DEFAULT_ROUTE_CONNECT)
 	defer route.Close()
@@ -152,9 +152,13 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 
 	// Send SUB via route connection
 	routeSend("SUB foo RSID:2:22\r\n")
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 
 	// Send PUB via client connection
 	clientSend("PUB foo 2\r\nok\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "RSID:2:22", "", "2", "ok")
@@ -346,12 +350,10 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	route1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route1)
 	route1Send, _ := setupRouteEx(t, route1, opts, "ROUTE:2222")
-//	route1ExpectMsgs := expectMsgsCommand(t, route1Expect)
 
 	route2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route2)
 	route2Send, _ := setupRouteEx(t, route2, opts, "ROUTE:2222")
-//	route2ExpectMsgs := expectMsgsCommand(t, route1Expect)
 
 	// Send SUB via route connections
 	sub := "SUB foo RSID:2:22\r\n"
