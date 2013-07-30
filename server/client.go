@@ -264,14 +264,15 @@ func (c *client) processMsgArgs(arg []byte) error {
 		args = append(args, arg[start:])
 	}
 
+	c.pa.subject = args[0]
+	c.pa.sid = args[1]
+
 	switch len(args) {
 	case 3:
-		c.pa.subject = args[0]
 		c.pa.reply = nil
 		c.pa.szb = args[2]
 		c.pa.size = parseSize(args[2])
 	case 4:
-		c.pa.subject = args[0]
 		c.pa.reply = args[2]
 		c.pa.szb = args[3]
 		c.pa.size = parseSize(args[3])
@@ -563,8 +564,10 @@ func (c *client) processMsg(msg []byte) {
 		c.sendOK()
 	}
 
-	scratch := [512]byte{}
-	msgh := scratch[:0]
+	// The msg header starts with "MSG ",
+	// in bytes that is [77 83 71 32].
+	scratch := [512]byte{77, 83, 71, 32}
+	msgh := scratch[:4]
 
 	r := c.srv.sl.Match(c.pa.subject)
 	if len(r) <= 0 {
@@ -572,8 +575,6 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	// msg header
-	// FIXME, put MSG into initializer
-	msgh = append(msgh, "MSG "...)
 	msgh = append(msgh, c.pa.subject...)
 	msgh = append(msgh, ' ')
 	si := len(msgh)
