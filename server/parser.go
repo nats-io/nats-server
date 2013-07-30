@@ -9,6 +9,7 @@ import (
 type pubArg struct {
 	subject []byte
 	reply   []byte
+	sid     []byte
 	szb     []byte
 	size    int
 }

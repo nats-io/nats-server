@@ -582,8 +582,17 @@ func (c *client) processMsg(msg []byte) {
 	var qmap map[string][]*subscription
 	var qsubs []*subscription
 
+	isRoute := c.typ == ROUTER
+
 	for _, v := range r {
 		sub := v.(*subscription)
+
+		// Skip if sourced from a ROUTER and going to another ROUYTER.
+		// This is one-hop semantics for ROUTERs.
+		if isRoute && sub.client.typ == ROUTER {
+			continue
+		}
+
 		if sub.queue != nil {
 			// FIXME(dlc), this can be more efficient
 			if qmap == nil {

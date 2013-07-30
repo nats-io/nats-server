@@ -1,5 +1,5 @@
 
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
 
@@ -221,6 +221,83 @@ func TestParsePubArg(t *testing.T) {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
+}
+
+func TestParseMsg(t *testing.T) {
+	c := dummyClient()
+
+	pub := []byte("MSG foo RSID:1:2 5\r\nhello\r")
+	err := c.parse(pub)
+	if err != nil || c.state != MSG_END {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if c.pa.reply != nil {
+		t.Fatalf("Did not parse reply correctly: 'nil' vs '%s'\n", c.pa.reply)
+	}
+	if c.pa.size != 5 {
+		t.Fatalf("Did not parse msg size correctly: 5 vs %d\n", c.pa.size)
+	}
+	if !bytes.Equal(c.pa.sid, []byte("RSID:1:2")) {
+		t.Fatalf("Did not parse sid correctly: 'RSID:1:2' vs '%s'\n", c.pa.sid)
+	}
+
+	c.state = OP_START
+
+	pub = []byte("MSG foo.bar RSID:1:2 INBOX.22 11\r\nhello world\r")
+	err = c.parse(pub)
+	if err != nil || c.state != MSG_END {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.reply, []byte("INBOX.22")) {
+		t.Fatalf("Did not parse reply correctly: 'INBOX.22' vs '%s'\n", c.pa.reply)
+	}
+	if c.pa.size != 11 {
+		t.Fatalf("Did not parse msg size correctly: 11 vs %d\n", c.pa.size)
+	}
+}
+
+func testMsgArg(c *client, t *testing.T) {
+	if !bytes.Equal(c.pa.subject, []byte("foobar")) {
+		t.Fatalf("Mismatched subject: '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.szb, []byte("22")) {
+		t.Fatalf("Bad size buf: '%s'\n", c.pa.szb)
+	}
+	if c.pa.size != 22 {
+		t.Fatalf("Bad size: %d\n", c.pa.size)
+	}
+	if !bytes.Equal(c.pa.sid, []byte("RSID:22:1")) {
+		t.Fatalf("Bad sid: '%s'\n", c.pa.sid)
+	}
+}
+
+func TestParseMsgArg(t *testing.T) {
+	c := dummyClient()
+	if err := c.processMsgArgs([]byte("foobar RSID:22:1 22")) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	testMsgArg(c, t)
+	if err := c.processMsgArgs([]byte(" foobar RSID:22:1 22")) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	testMsgArg(c, t)
+	if err := c.processMsgArgs([]byte(" foobar   RSID:22:1 22 ")) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	testMsgArg(c, t)
+	if err := c.processMsgArgs([]byte("foobar   RSID:22:1  \t22")) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if err := c.processMsgArgs([]byte("foobar\t\tRSID:22:1\t22\r")) ; err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	testMsgArg(c, t)
 }
 
 func TestShouldFail(t *testing.T) {

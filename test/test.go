@@ -271,7 +271,6 @@ var expBuf = make([]byte, 32768)
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
-	// time.Sleep(10 * time.Millisecond)
 	c.SetReadDeadline(time.Now().Add(1 * time.Second))
 	defer c.SetReadDeadline(time.Time{})
 
@@ -285,6 +284,16 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 		stackFatalf(t, "Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", buf, re)
 	}
 	return buf
+}
+
+func expectNothing(t tLogger, c net.Conn) {
+	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	defer c.SetReadDeadline(time.Time{})
+
+	n, err := c.Read(expBuf)
+	if err == nil && n > 0 {
+		stackFatalf(t, "Expected nothing, received: '%q'\n", expBuf[:n])
+	}
 }
 
 // This will check that we got what we expected.

@@ -182,9 +182,27 @@ func TestRouteForwardsMsgToClients(t *testing.T) {
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	// Send MSG via route connection
+	// Send MSG proto via route connection
 	routeSend("MSG foo 1 2\r\nok\r\n")
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
+}
+
+func TestRouteOneHopSemantics(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route)
+	routeSend, _ := setupRoute(t, route, opts)
+
+	// Express interest on this route for foo.
+	routeSend("SUB foo RSID:2:2\r\n")
+
+	// Send MSG proto via route connection
+	routeSend("MSG foo 1 2\r\nok\r\n")
+
+	// Make sure it does not come back!
+	expectNothing(t, route)
 }
