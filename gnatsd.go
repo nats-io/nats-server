@@ -82,9 +82,9 @@ func main() {
 		s.StartHTTPMonitoring()
 	}
 
-	// Start up clustering as well if needed.
+	// Start up routing as well if needed.
 	if mOpts.ClusterPort != 0 {
-		s.StartCluster()
+		s.StartRouting()
 	}
 
 	// Profiler
