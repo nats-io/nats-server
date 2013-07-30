@@ -9,6 +9,7 @@ import (
 type pubArg struct {
 	subject []byte
 	reply   []byte
+	sid     []byte
 	szb     []byte
 	size    int
 }
@@ -57,6 +58,11 @@ const (
 	OP_UNSU
 	OP_UNSUB
 	UNSUB_ARG
+	OP_M
+	OP_MS
+	OP_MSG
+	OP_MSG_SPC
+	MSG_ARG
 )
 
 func (c *client) parse(buf []byte) error {
@@ -78,6 +84,8 @@ func (c *client) parse(buf []byte) error {
 				c.state = OP_S
 			case 'U', 'u':
 				c.state = OP_U
+			case 'M', 'm':
+				c.state = OP_M
 			default:
 				goto parseErr
 			}
@@ -106,7 +114,7 @@ func (c *client) parse(buf []byte) error {
 			default:
 				goto parseErr
 			}
-        case OP_PUB_SPC:
+		case OP_PUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
@@ -360,6 +368,55 @@ func (c *client) parse(buf []byte) error {
 				}
 				c.drop, c.state = 0, OP_START
 			}
+		case OP_M:
+			switch b {
+			case 'S', 's':
+				c.state = OP_MS
+			default:
+				goto parseErr
+			}
+		case OP_MS:
+			switch b {
+			case 'G', 'g':
+				c.state = OP_MSG
+			default:
+				goto parseErr
+			}
+		case OP_MSG:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_MSG_SPC
+			default:
+				goto parseErr
+			}
+		case OP_MSG_SPC:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = MSG_ARG
+				c.as = i
+			}
+		case MSG_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processMsgArgs(arg); err != nil {
+					return err
+				}
+				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
+			}
 		default:
 			goto parseErr
 		}
@@ -390,13 +447,19 @@ authErr:
 
 parseErr:
 	c.sendErr("Unknown Protocol Operation")
-	stop := i + 32
-	if stop > len(buf) {
-		stop = len(buf)-1
-	}
-	return fmt.Errorf("Parse Error, state=%d,i=%d: '%s'", c.state, i, buf[i:stop])
+	snip := protoSnippet(i, buf)
+	err := fmt.Errorf("%s Parser ERROR, state=%d, i=%d: proto='%s...'",
+		c.typeString(), c.state, i, snip)
+	return err
 }
 
+func protoSnippet(start int, buf []byte) string {
+	stop := start + PROTO_SNIPPET_SIZE
+	if stop > len(buf) {
+		stop = len(buf) - 1
+	}
+	return fmt.Sprintf("%q", buf[start:stop])
+}
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
