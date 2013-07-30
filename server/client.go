@@ -752,6 +752,7 @@ func (c *client) closeConnection() {
 	c.clearPingTimer()
 	c.clearConnection()
 
+	// Snapshot for use.
 	subs := c.subs.All()
 	srv := c.srv
 
@@ -761,11 +762,16 @@ func (c *client) closeConnection() {
 		// Unregister
 		srv.removeClient(c)
 
-		// Remove subscriptions.
+		// Remove clients subscriptions.
 		for _, s := range subs {
 			if sub, ok := s.(*subscription); ok {
 				srv.sl.Remove(sub.subject, sub)
 			}
 		}
+	}
+
+	// Check for a solicited route. If it was, start up a reconnect.
+	if c.isSolicitedRoute() {
+		go srv.connectToRoute(c.route.url)
 	}
 }

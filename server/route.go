@@ -13,7 +13,6 @@ import (
 type route struct {
 	remoteId   string
 	didSolicit bool
-	sid        uint64
 	url        *url.URL
 }
 
@@ -220,6 +219,12 @@ func (s *Server) connectToRoute(rUrl *url.URL) {
 		s.createRoute(conn, rUrl)
 		return
 	}
+}
+
+func (c *client) isSolicitedRoute() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.typ == ROUTER && c.route != nil && c.route.didSolicit
 }
 
 func (s *Server) solicitRoutes() {

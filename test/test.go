@@ -139,8 +139,10 @@ func stackFatalf(t tLogger, f string, args ...interface{}) {
 func acceptRouteConn(t tLogger, host string, timeout time.Duration) net.Conn {
 	l, e := net.Listen("tcp", host)
 	if e != nil {
-		stackFatalf(t, "Error listening for route connection on %v", host)
+		stackFatalf(t, "Error listening for route connection on %v: %v", host, e)
 	}
+	defer l.Close()
+
 	tl := l.(*net.TCPListener)
 	tl.SetDeadline(time.Now().Add(timeout))
 
