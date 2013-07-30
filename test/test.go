@@ -285,7 +285,7 @@ var expBuf = make([]byte, 32768)
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(1 * time.Second))
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	defer c.SetReadDeadline(time.Time{})
 
 	n, err := c.Read(expBuf)
@@ -315,7 +315,7 @@ func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
 	if string(m[SUB_INDEX]) != subject {
 		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
 	}
-	if string(m[SID_INDEX]) != sid {
+	if sid != "" && string(m[SID_INDEX]) != sid {
 		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[SID_INDEX])
 	}
 	if string(m[REPLY_INDEX]) != reply {

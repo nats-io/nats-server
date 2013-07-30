@@ -36,6 +36,21 @@ func parseSize(d []byte) (n int) {
 	return n
 }
 
+// parseInt64 expects decimal positive numbers. We
+// return -1 to signal error
+func parseInt64(d []byte) (n int64) {
+	if len(d) == 0 {
+		return -1
+	}
+	for _, dec := range d {
+		if dec < ascii_0 || dec > ascii_9 {
+			return -1
+		}
+		n = n*10 + (int64(dec) - ascii_0)
+	}
+	return n
+}
+
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
 	return time.Duration(ttl)

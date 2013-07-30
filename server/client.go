@@ -158,7 +158,7 @@ func (c *client) readLoop() {
 }
 
 func (c *client) traceMsg(msg []byte) {
-	pm := fmt.Sprintf("Processing msg: %d", c.inMsgs)
+	pm := fmt.Sprintf("Processing %s msg: %d", c.typeString(), c.inMsgs)
 	opa := []interface{}{pm, string(c.pa.subject), string(c.pa.reply), string(msg)}
 	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
 }
@@ -248,6 +248,9 @@ func (c *client) processPong() {
 }
 
 func (c *client) processMsgArgs(arg []byte) error {
+	if trace > 0 {
+		c.traceOp("MSG", arg)
+	}
 
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
@@ -592,8 +595,44 @@ func (c *client) processMsg(msg []byte) {
 	isRoute := c.typ == ROUTER
 	var rmap map[string]struct{}
 
+	// If we are a route and we have a queue subscription, deliver direct
+	// since they are sent direct via L2 semantics.
+	if isRoute {
+		if sub := c.srv.routeSidQueueSubscriber(c.pa.sid); sub != nil {
+			mh := c.msgHeader(msgh[:si], sub)
+			c.deliverMsg(sub, mh, msg)
+			return
+		}
+	}
+
+	// Loop over all subscriptions that match.
+
 	for _, v := range r {
 		sub := v.(*subscription)
+
+		// Process queue group subscriptions by gathering them all up
+		// here. We will pick the winners when we are done processing
+		// all of the subscriptions.
+		if sub.queue != nil {
+			// Queue subscriptions handled from routes directly above.
+			if isRoute {
+				continue
+			}
+			// FIXME(dlc), this can be more efficient
+			if qmap == nil {
+				qmap = make(map[string][]*subscription)
+			}
+			qname := string(sub.queue)
+			qsubs = qmap[qname]
+			if qsubs == nil {
+				qsubs = make([]*subscription, 0, 4)
+			}
+			qsubs = append(qsubs, sub)
+			qmap[qname] = qsubs
+			continue
+		}
+
+		// Process normal, non-queue group subscriptions.
 
 		// If this is a send to a ROUTER, make sure we only send it
 		// once. The other side will handle the appropriate re-processing.
@@ -619,23 +658,10 @@ func (c *client) processMsg(msg []byte) {
 			rmap[sub.client.route.remoteId] = routeSeen
 		}
 
-		if sub.queue != nil {
-			// FIXME(dlc), this can be more efficient
-			if qmap == nil {
-				qmap = make(map[string][]*subscription)
-			}
-			qname := string(sub.queue)
-			qsubs = qmap[qname]
-			if qsubs == nil {
-				qsubs = make([]*subscription, 0, 4)
-			}
-			qsubs = append(qsubs, sub)
-			qmap[qname] = qsubs
-			continue
-		}
 		mh := c.msgHeader(msgh[:si], sub)
 		c.deliverMsg(sub, mh, msg)
 	}
+
 	if qmap != nil {
 		for _, qsubs := range qmap {
 			index := rand.Int() % len(qsubs)

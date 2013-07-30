@@ -3,10 +3,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"time"
 )
 
@@ -94,10 +96,46 @@ const (
 	unsubProto = "UNSUB %s%s" + _CRLF_
 )
 
-const RSID = "RSID"
+// FIXME(dlc) - Make these reserved and reject if they come in as a sid
+// from a client connection.
+
+const (
+	RSID             = "RSID"
+	QRSID            = "QRSID"
+	RSID_CID_INDEX   = 1
+	RSID_SID_INDEX   = 2
+	EXPECTED_MATCHES = 3
+)
+
+// FIXME(dlc) - This may be too slow, check at later date.
+var qrsidRe = regexp.MustCompile(`QRSID:(\d+):([^\s]+)`)
+
+func (s *Server) routeSidQueueSubscriber(rsid []byte) *subscription {
+	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
+		return nil
+	}
+	matches := qrsidRe.FindSubmatch(rsid)
+	if matches == nil || len(matches) != EXPECTED_MATCHES {
+		return nil
+	}
+	cid := uint64(parseInt64(matches[RSID_CID_INDEX]))
+	client := s.clients[cid]
+	if client == nil {
+		return nil
+	}
+	sid := matches[RSID_SID_INDEX]
+	if sub, ok := (client.subs.Get(sid)).(*subscription); ok {
+		return sub
+	}
+	return nil
+}
 
 func routeSid(sub *subscription) string {
-	return fmt.Sprintf("%s:%d:%s", RSID, sub.client.cid, sub.sid)
+	var qi string
+	if len(sub.queue) > 0 {
+		qi = "Q"
+	}
+	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
 func (s *Server) broadcastToRoutes(proto string) {

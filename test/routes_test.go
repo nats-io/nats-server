@@ -237,6 +237,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	client := createClientConn(t, opts.Host, opts.Port)
 	clientSend, clientExpect := setupConn(t, client)
+	clientExpectMsgs := expectMsgsCommand(t, clientExpect)
+
 	defer client.Close()
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
@@ -245,41 +247,78 @@ func TestRouteQueueSemantics(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
-	routeSend("SUB foo bar RSID:2:1\r\n")
-	routeSend("SUB foo bar RSID:2:2\r\n")
+	qrsid1 := "RSID:2:1"
+	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid1))
+	qrsid2 := "RSID:2:2"
+	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid2))
+
+	// Use ping roundtrip to make sure its processed.
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 
 	// Send PUB via client connection
 	clientSend("PUB foo 2\r\nok\r\n")
-
-	// Only 1
-	matches := expectMsgs(1)
-	checkMsg(t, matches[0], "foo", "RSID:2:1", "", "2", "ok")
-
-	// Normal Interest as well.
-	routeSend("SUB foo RSID:2:1\r\n")
-
-	// Send PUB via client connection
-	clientSend("PUB foo 2\r\nok\r\n")
-
-	// Still only 1
-	expectMsgs(1)
-
-	// Subscribe to foo on client
-	clientSend("SUB foo bar 1\r\n")
 	// Use ping roundtrip to make sure its processed.
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	// Receive notification on route
-	routeExpect(subRe)
+	// Only 1
+	matches := expectMsgs(1)
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+
+	// Add normal Interest as well to route interest.
+	routeSend("SUB foo RSID:2:4\r\n")
+
+	// Use ping roundtrip to make sure its processed.
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 
 	// Send PUB via client connection
 	clientSend("PUB foo 2\r\nok\r\n")
+	// Use ping roundtrip to make sure its processed.
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
 
-	// Still only 1 for route
-	expectMsgs(1)
+	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
+	matches = expectMsgs(2)
 
-	// We could get one on client
+	// Expect first to be the normal subscriber, next will be the queue one.
+	checkMsg(t, matches[0], "foo", "RSID:2:4", "", "2", "ok")
+	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
+
+	// Check the rsid to verify it is one of the queue group subscribers.
+	rsid := string(matches[1][SID_INDEX])
+	if rsid != qrsid1 && rsid != qrsid2 {
+		t.Fatalf("Expected a queue group rsid, got %s\n", rsid)
+	}
+
+	// Now create a queue subscription for the client as well as a normal one.
+	clientSend("SUB foo 1\r\n")
+	// Use ping roundtrip to make sure its processed.
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+	routeExpect(subRe)
+
+	clientSend("SUB foo bar 2\r\n")
+	// Use ping roundtrip to make sure its processed.
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+	routeExpect(subRe)
+
+	// Deliver a MSG from the route itself, make sure the client receives both.
+	routeSend("MSG foo RSID:2:1 2\r\nok\r\n")
+	// Queue group one.
+	routeSend("MSG foo QRSID:2:2 2\r\nok\r\n")
+
+	// Use ping roundtrip to make sure its processed.
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
+
+	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
+	matches = clientExpectMsgs(2)
+	// Expect first to be the normal subscriber, next will be the queue one.
+	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
+	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {
