@@ -18,9 +18,9 @@ func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 
 	// Override for running in Go routine.
 	opts.NoSigs = true
-	//opts.Debug  = true
-	//opts.Trace  = true
-	opts.NoLog = true
+	opts.Debug  = true
+	opts.Trace  = true
+	//opts.NoLog = true
 
 	if err != nil {
 		t.Fatalf("Error parsing config file: %v\n", err)
@@ -124,8 +124,8 @@ func TestSendRouteSolicit(t *testing.T) {
 	buf := expectResult(t, conn, connectRe)
 
 	// Check INFO follows. Could be inline, with first result, if not
-	// check followon buffer.
-	if !inlineInfoRe.Match(buf) {
+	// check follow-on buffer.
+	if !infoRe.Match(buf) {
 		expectResult(t, conn, infoRe)
 	}
 }
@@ -146,10 +146,7 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Eat the CONNECT and INFO protos
-	buf := routeExpect(connectRe)
-	if !inlineInfoRe.Match(buf) {
-		routeExpect(infoRe)
-	}
+	routeExpect(infoRe)
 
 	// Send SUB via route connection
 	routeSend("SUB foo RSID:2:22\r\n")
@@ -374,4 +371,32 @@ func TestMultipleRoutesSameId(t *testing.T) {
 
 	// Nothing on the second.
 	expectNothing(t, route2)
+}
+
+func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	client := createClientConn(t, opts.Host, opts.Port)
+	clientSend, clientExpect := setupConn(t, client)
+
+	// Setup a local subscription
+	clientSend("SUB foo 1\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	_, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
+
+	// Expect to see the local sub echoed through.
+	routeExpect(subRe)
+
+	// Close and re-open
+	route.Close()
+
+	route = createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	_, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
+
+	// Expect to see the local sub echoed through.
+	routeExpect(subRe)
 }

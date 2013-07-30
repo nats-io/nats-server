@@ -259,16 +259,15 @@ func sendProto(t tLogger, c net.Conn, op string) {
 }
 
 var (
-	infoRe       = regexp.MustCompile(`\AINFO\s+([^\r\n]+)\r\n`)
-	pingRe       = regexp.MustCompile(`\APING\r\n`)
-	pongRe       = regexp.MustCompile(`\APONG\r\n`)
+	infoRe       = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
+	pingRe       = regexp.MustCompile(`PING\r\n`)
+	pongRe       = regexp.MustCompile(`PONG\r\n`)
 	msgRe        = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	okRe         = regexp.MustCompile(`\A\+OK\r\n`)
 	errRe        = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
-	subRe        = regexp.MustCompile(`\ASUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
-	unsubRe      = regexp.MustCompile(`\AUNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
-	connectRe    = regexp.MustCompile(`\ACONNECT\s+([^\r\n]+)\r\n`)
-	inlineInfoRe = regexp.MustCompile(`\r\nINFO\s+([^\r\n]+)\r\n`)
+	subRe        = regexp.MustCompile(`SUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
+	unsubRe      = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
+	connectRe    = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
 )
 
 const (
@@ -280,6 +279,8 @@ const (
 )
 
 // Reuse expect buffer
+// TODO(dlc) - This may be too simplistic in the long run, may need
+// to consider holding onto data from previous reads matched by conn.
 var expBuf = make([]byte, 32768)
 
 // Test result from server against regexp

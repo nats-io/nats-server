@@ -52,6 +52,20 @@ func (c *client) sendConnect() {
 	c.bw.Flush()
 }
 
+func (s *Server) sendLocalSubsToRoute(route *client) {
+	for _, client := range s.clients {
+		for _, s := range client.subs.All() {
+			if sub, ok := s.(*subscription); ok {
+				rsid := routeSid(sub)
+				proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+				route.bw.WriteString(proto)
+			}
+		}
+	}
+	route.bw.Flush()
+	Debug("Route sent local subscriptions", clientConnStr(route.nc), route.cid)
+}
+
 func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 	didSolicit := rUrl != nil
 	r := &route{didSolicit: didSolicit}
@@ -65,13 +79,14 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rUrl
+		Debug("Route connect msg sent", clientConnStr(c.nc), c.cid)
 		c.sendConnect()
 	}
 
 	// Send our info to the other side.
 	s.sendInfo(c)
 
-	// Check for Auth
+	// Check for Auth required state for incoming connections.
 	if s.routeInfo.AuthRequired && !didSolicit {
 		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
 		c.setAuthTimer(ttl)
@@ -81,6 +96,9 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 	s.mu.Lock()
 	s.routes[c.cid] = c
 	s.mu.Unlock()
+
+	// Send our local subscriptions to this route.
+	s.sendLocalSubsToRoute(c)
 
 	return c
 }
@@ -100,8 +118,9 @@ const (
 // from a client connection.
 
 const (
-	RSID             = "RSID"
-	QRSID            = "QRSID"
+	RSID  = "RSID"
+	QRSID = "QRSID"
+
 	RSID_CID_INDEX   = 1
 	RSID_SID_INDEX   = 2
 	EXPECTED_MATCHES = 3
