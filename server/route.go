@@ -76,6 +76,8 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 
 	Debug("Route connection created", clientConnStr(c.nc), c.cid)
 
+	c.mu.Lock()
+
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rUrl
@@ -91,6 +93,7 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
 		c.setAuthTimer(ttl)
 	}
+	c.mu.Unlock()
 
 	// Register with the server.
 	s.mu.Lock()
@@ -260,19 +263,21 @@ func (s *Server) StartRouting() {
 	s.solicitRoutes()
 }
 
-// FIXME(dlc): Need to shutdown when exiting
 func (s *Server) connectToRoute(rUrl *url.URL) {
 	for s.isRunning() {
 		Debugf("Trying to connect to route on %s", rUrl.Host)
 		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
-			// FIXME(dlc): wait on kick out
-			time.Sleep(DEFAULT_ROUTE_CONNECT)
-			continue
+			select {
+			case <-s.rcQuit:
+				return
+			case <-time.After(DEFAULT_ROUTE_CONNECT):
+				continue
+			}
 		}
-		// We have a connection here. Go ahead and create it and
-		// exit this func.
+		// We have a route connection here.
+		// Go ahead and create it and exit this func.
 		s.createRoute(conn, rUrl)
 		return
 	}

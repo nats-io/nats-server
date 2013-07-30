@@ -5,6 +5,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,9 +19,9 @@ func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 
 	// Override for running in Go routine.
 	opts.NoSigs = true
-	opts.Debug  = true
-	opts.Trace  = true
-	//opts.NoLog = true
+	opts.Debug = true
+	opts.Trace = true
+	opts.NoLog = true
 
 	if err != nil {
 		t.Fatalf("Error parsing config file: %v\n", err)
@@ -44,6 +45,7 @@ func TestRouteGoServerShutdown(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 1 {
+		panic("foo")
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }
@@ -210,7 +212,7 @@ func TestRouteOnlySendOnce(t *testing.T) {
 	client := createClientConn(t, opts.Host, opts.Port)
 	defer client.Close()
 
-	clientSend, _ := setupConn(t, client)
+	clientSend, clientExpect := setupConn(t, client)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route)
@@ -220,9 +222,13 @@ func TestRouteOnlySendOnce(t *testing.T) {
 	// Express multiple interest on this route for foo.
 	routeSend("SUB foo RSID:2:1\r\n")
 	routeSend("SUB foo RSID:2:2\r\n")
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 
 	// Send PUB via client connection
 	clientSend("PUB foo 2\r\nok\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "RSID:2:1", "", "2", "ok")
@@ -339,12 +345,13 @@ func TestMultipleRoutesSameId(t *testing.T) {
 
 	route1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route1)
-	route1Send, route1Expect := setupRouteEx(t, route1, opts, "ROUTE:2222")
-	route1ExpectMsgs := expectMsgsCommand(t, route1Expect)
+	route1Send, _ := setupRouteEx(t, route1, opts, "ROUTE:2222")
+//	route1ExpectMsgs := expectMsgsCommand(t, route1Expect)
 
 	route2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	expectAuthRequired(t, route2)
 	route2Send, _ := setupRouteEx(t, route2, opts, "ROUTE:2222")
+//	route2ExpectMsgs := expectMsgsCommand(t, route1Expect)
 
 	// Send SUB via route connections
 	sub := "SUB foo RSID:2:22\r\n"
@@ -360,17 +367,33 @@ func TestMultipleRoutesSameId(t *testing.T) {
 
 	// Setup a client
 	client := createClientConn(t, opts.Host, opts.Port)
-	clientSend, _ := setupConn(t, client)
+	clientSend, clientExpect := setupConn(t, client)
 	defer client.Close()
 
 	// Send PUB via client connection
 	clientSend("PUB foo 2\r\nok\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
 
-	// We should only receive on the first route.
-	route1ExpectMsgs(1)
+	// We should only receive on one route, not both.
+	// Check both manually.
+	route1.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf, _ := ioutil.ReadAll(route1)
+	route1.SetReadDeadline(time.Time{})
+	if len(buf) <= 0 {
+		route2.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		buf, _ = ioutil.ReadAll(route2)
+		route2.SetReadDeadline(time.Time{})
+		if len(buf) <= 0 {
+			t.Fatal("Expected to get one message on a route, received none.")
+		}
+	}
 
-	// Nothing on the second.
-	expectNothing(t, route2)
+	matches := msgRe.FindAllSubmatch(buf, -1)
+	if len(matches) != 1 {
+		t.Fatalf("Expected 1 msg, got %d\n", len(matches))
+	}
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
 }
 
 func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {

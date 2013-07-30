@@ -46,6 +46,7 @@ type Server struct {
 	grid          uint64
 	routeInfo     Info
 	routeInfoJson []byte
+	rcQuit        chan bool
 }
 
 type stats struct {
@@ -91,6 +92,10 @@ func New(opts *Options) *Server {
 
 	// For tracking routes
 	s.routes = make(map[uint64]*client)
+
+	// Used to kick out all of the route
+	// connect Go routines.
+	s.rcQuit = make(chan bool)
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
@@ -160,11 +165,15 @@ func (s *Server) Shutdown() {
 		s.listener = nil
 	}
 
+	// Kick route AcceptLoop()
 	if s.routeListener != nil {
 		doneExpected++
 		s.routeListener.Close()
 		s.routeListener = nil
 	}
+
+	// Release the solicited routes connect go routines.
+	close(s.rcQuit)
 
 	s.mu.Unlock()
 

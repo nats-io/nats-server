@@ -49,7 +49,7 @@ const (
 	DEFAULT_ROUTE_CONNECT = 1 * time.Second
 
 	// Route dial timeout
-	DEFAULT_ROUTE_DIAL = 2 * time.Second
+	DEFAULT_ROUTE_DIAL = 1 * time.Second
 
 	// Default size of proto to print on parse errors
 	PROTO_SNIPPET_SIZE = 32
