@@ -52,12 +52,8 @@ func RunServer(opts *server.Options) *server.Server {
 		panic("No NATS Server object returned.")
 	}
 
-	// Start up clustering as well if needed.
-	if opts.ClusterPort != 0 {
-		s.StartRouting()
-	}
-
-	go s.AcceptLoop()
+	// Run server in Go routine.
+	go s.Start()
 
 	// Make sure we are running and can bind before returning.
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)

@@ -5,8 +5,6 @@ package main
 import (
 	"flag"
 	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"strings"
 
@@ -79,21 +77,6 @@ func main() {
 	mOpts := server.MergeOptions(fileOpts, &opts)
 	s := server.New(mOpts)
 
-	// Start up the http server if needed.
-	if mOpts.HttpPort != 0 {
-		s.StartHTTPMonitoring()
-	}
-
-	// Start up routing as well if needed.
-	if mOpts.ClusterPort != 0 {
-		s.StartRouting()
-	}
-
-	// Pprof http endpoint for the profiler.
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6062", nil))
-	}()
-
-	// Wait for clients.
-	s.AcceptLoop()
+	// Start things up. Block here til done.
+	s.Start()
 }

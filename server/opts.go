@@ -38,6 +38,7 @@ type Options struct {
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
 	Routes             []*url.URL    `json:"-"`
+	ProfPort           int           `json:"-"`
 }
 
 type authorization struct {

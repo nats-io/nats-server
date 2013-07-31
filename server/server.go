@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/apcera/gnatsd/sublist"
 )
 
@@ -143,6 +145,29 @@ func (s *Server) isRunning() bool {
 	return s.running
 }
 
+// Start up the server, this will block.
+// Start via a Go routine if needed.
+func (s *Server) Start() {
+
+	// Start up the http server if needed.
+	if s.opts.HttpPort != 0 {
+		s.StartHTTPMonitoring()
+	}
+
+	// Start up routing as well if needed.
+	if s.opts.ClusterPort != 0 {
+		s.StartRouting()
+	}
+
+	// Pprof http endpoint for the profiler.
+	if s.opts.ProfPort != 0 {
+		s.StartProfiler()
+	}
+
+	// Wait for clients.
+	s.AcceptLoop()
+}
+
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
@@ -230,11 +255,17 @@ func (s *Server) AcceptLoop() {
 	s.done <- true
 }
 
+func (s *Server) StartProfiler() {
+	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
+	go func() {
+		Log(http.ListenAndServe(hp, nil))
+	}()
+}
+
 func (s *Server) StartHTTPMonitoring() {
 	go func() {
-		// FIXME(dlc): port config
-		lm := fmt.Sprintf("Starting http monitor on port %d", s.opts.HttpPort)
-		Log(lm)
+		Log(fmt.Sprintf("Starting http monitor on port %d", s.opts.HttpPort))
+
 		// Varz
 		http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {
 			s.HandleVarz(w, r)
