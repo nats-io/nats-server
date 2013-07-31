@@ -34,7 +34,7 @@ func TestRouteConfig(t *testing.T) {
 	golden.Routes = []*url.URL{r1, r2}
 
 	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Options are incorrect from config file.\nexpected: %+v\ngot: %+v",
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
 }

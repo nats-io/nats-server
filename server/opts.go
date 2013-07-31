@@ -82,6 +82,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Username = auth.user
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
+		case "http_port", "monitor_port":
+			opts.HttpPort = int(v.(int64))
 		case "cluster":
 			cm := v.(map[string]interface{})
 			if err := parseCluster(cm, opts); err != nil {

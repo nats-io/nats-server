@@ -39,6 +39,7 @@ func TestConfigFile(t *testing.T) {
 		Debug:       false,
 		Trace:       true,
 		Logtime:     false,
+		HttpPort:    8222,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -47,7 +48,8 @@ func TestConfigFile(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(golden, opts) {
-		t.Fatal("Options are incorrect from config file")
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, opts)
 	}
 }
 
@@ -61,6 +63,7 @@ func TestMergeOverrides(t *testing.T) {
 		Debug:       true,
 		Trace:       true,
 		Logtime:     false,
+		HttpPort:    DEFAULT_HTTP_PORT,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -69,12 +72,15 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:        2222,
-		Password:    "spooky",
-		Debug:       true,
+		Port:     2222,
+		Password: "spooky",
+		Debug:    true,
+		HttpPort: DEFAULT_HTTP_PORT,
 	}
 	merged := MergeOptions(fopts, opts)
+
 	if !reflect.DeepEqual(golden, merged) {
-		t.Fatal("Options are incorrect from config file")
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, merged)
 	}
 }
