@@ -114,10 +114,14 @@ func (c *client) initClient() {
 func (c *client) readLoop() {
 	// Grab the connection off the client, it will be cleared on a close.
 	// We check for that after the loop, but want to avoid a nil dereference
+	c.mu.Lock()
 	nc := c.nc
+	c.mu.Unlock()
+
 	if nc == nil {
 		return
 	}
+
 	b := make([]byte, defaultBufSize)
 
 	for {
