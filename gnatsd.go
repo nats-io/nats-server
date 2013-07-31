@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"strings"
 
 	"github.com/apcera/gnatsd/server"
@@ -69,7 +70,8 @@ func main() {
 	if configFile != "" {
 		fileOpts, err = server.ProcessConfigFile(configFile)
 		if err != nil {
-			panic(err)
+			log.Printf("%v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -87,7 +89,7 @@ func main() {
 		s.StartRouting()
 	}
 
-	// Profiler
+	// Pprof http endpoint for the profiler.
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6062", nil))
 	}()
