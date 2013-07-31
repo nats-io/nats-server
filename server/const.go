@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go-0.3.0.alpha.2"
+	VERSION = "go-0.3.1"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
@@ -34,6 +34,7 @@ const (
 	DEFAULT_PING_INTERVAL = 2 * time.Minute
 	DEFAULT_PING_MAX_OUT  = 2
 
+	// CRLF string
 	CR_LF = "\r\n"
 
 	// Write/Flush Deadlines
