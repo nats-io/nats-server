@@ -87,7 +87,7 @@ func main() {
 		s.StartRouting()
 	}
 
-	// Profiler
+	// Pprof http endpoint for the profiler.
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6062", nil))
 	}()
