@@ -39,6 +39,10 @@ func main() {
 	flag.IntVar(&opts.HttpPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
 	flag.StringVar(&configFile, "c", "", "Configuration file.")
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
+	flag.StringVar(&configFile, "P", "", "File to store process pid.")
+	flag.StringVar(&configFile, "pid", "", "File to store process pid.")
+	flag.StringVar(&configFile, "l", "", "File to store logging output.")
+	flag.StringVar(&configFile, "log", "", "File to store logging output.")
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 

@@ -40,6 +40,8 @@ func TestConfigFile(t *testing.T) {
 		Trace:       true,
 		Logtime:     false,
 		HttpPort:    8222,
+		LogFile:     "/tmp/gnatsd.log",
+		PidFile:     "/tmp/gnatsd.pid",
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")

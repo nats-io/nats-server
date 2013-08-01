@@ -39,6 +39,8 @@ type Options struct {
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
 	Routes             []*url.URL    `json:"-"`
 	ProfPort           int           `json:"-"`
+	PidFile            string        `json:"-"`
+	LogFile            string        `json:"-"`
 }
 
 type authorization struct {
@@ -90,6 +92,10 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			if err := parseCluster(cm, opts); err != nil {
 				return nil, err
 			}
+		case "logfile", "log_file":
+			opts.LogFile = v.(string)
+		case "pidfile", "pid_file":
+			opts.PidFile = v.(string)
 		}
 	}
 	return opts, nil
@@ -183,6 +189,12 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Trace {
 		opts.Trace = true
 	}
+	if flagOpts.LogFile != "" {
+		opts.LogFile = flagOpts.LogFile
+	}
+	if flagOpts.PidFile != "" {
+		opts.PidFile = flagOpts.PidFile
+	}
 	return &opts
 }
 
@@ -208,6 +220,9 @@ func processOptions(opts *Options) {
 	}
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	}
+	if opts.ClusterAuthTimeout == 0 {
+		opts.ClusterAuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE

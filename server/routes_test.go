@@ -25,6 +25,8 @@ func TestRouteConfig(t *testing.T) {
 		ClusterUsername:    "route_user",
 		ClusterPassword:    "top_secret",
 		ClusterAuthTimeout: 1.0,
+		LogFile:            "/tmp/nats_cluster_test.log",
+		PidFile:            "/tmp/nats_cluster_test.pid",
 	}
 
 	// Setup URLs
