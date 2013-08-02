@@ -10,22 +10,24 @@ import (
 
 func TestDefaultOptions(t *testing.T) {
 	golden := &Options{
-		Host:           DEFAULT_HOST,
-		Port:           DEFAULT_PORT,
-		MaxConn:        DEFAULT_MAX_CONNECTIONS,
-		PingInterval:   DEFAULT_PING_INTERVAL,
-		MaxPingsOut:    DEFAULT_PING_MAX_OUT,
-		SslTimeout:     float64(SSL_TIMEOUT) / float64(time.Second),
-		AuthTimeout:    float64(AUTH_TIMEOUT) / float64(time.Second),
-		MaxControlLine: MAX_CONTROL_LINE_SIZE,
-		MaxPayload:     MAX_PAYLOAD_SIZE,
+		Host:               DEFAULT_HOST,
+		Port:               DEFAULT_PORT,
+		MaxConn:            DEFAULT_MAX_CONNECTIONS,
+		PingInterval:       DEFAULT_PING_INTERVAL,
+		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
+		SslTimeout:         float64(SSL_TIMEOUT) / float64(time.Second),
+		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
+		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
+		MaxPayload:         MAX_PAYLOAD_SIZE,
+		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
 	}
 
 	opts := &Options{}
 	processOptions(opts)
 
 	if !reflect.DeepEqual(golden, opts) {
-		t.Fatal("Default options are incorrect")
+		t.Fatalf("Default Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, opts)
 	}
 }
 
@@ -66,6 +68,8 @@ func TestMergeOverrides(t *testing.T) {
 		Trace:       true,
 		Logtime:     false,
 		HttpPort:    DEFAULT_HTTP_PORT,
+		LogFile:     "/tmp/gnatsd.log",
+		PidFile:     "/tmp/gnatsd.pid",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

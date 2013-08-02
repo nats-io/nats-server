@@ -95,7 +95,7 @@ func Benchmark___Pub1K_Payload(b *testing.B) {
 
 func Benchmark___Pub4K_Payload(b *testing.B) {
 	b.StopTimer()
-	s := sizedString(4*1024)
+	s := sizedString(4 * 1024)
 	benchPub(b, "a", s)
 }
 

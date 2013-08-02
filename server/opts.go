@@ -59,7 +59,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 
 	data, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error opening config file: %v", err)
 	}
 
 	m, err := conf.Parse(string(data))

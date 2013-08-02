@@ -45,7 +45,6 @@ func TestRouteGoServerShutdown(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 1 {
-		panic("foo")
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }

@@ -1,4 +1,3 @@
-
 // Copyright 2012-2013 Apcera Inc. All rights reserved.
 
 package server
@@ -202,22 +201,22 @@ func testPubArg(c *client, t *testing.T) {
 
 func TestParsePubArg(t *testing.T) {
 	c := dummyClient()
-	if err := c.processPub([]byte("foo 22")) ; err != nil {
+	if err := c.processPub([]byte("foo 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22")) ; err != nil {
+	if err := c.processPub([]byte(" foo 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22 ")) ; err != nil {
+	if err := c.processPub([]byte(" foo 22 ")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
-	if err := c.processPub([]byte("foo   22")) ; err != nil {
+	if err := c.processPub([]byte("foo   22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if err := c.processPub([]byte("foo   22\r")) ; err != nil {
+	if err := c.processPub([]byte("foo   22\r")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testPubArg(c, t)
@@ -279,22 +278,22 @@ func testMsgArg(c *client, t *testing.T) {
 
 func TestParseMsgArg(t *testing.T) {
 	c := dummyClient()
-	if err := c.processMsgArgs([]byte("foobar RSID:22:1 22")) ; err != nil {
+	if err := c.processMsgArgs([]byte("foobar RSID:22:1 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testMsgArg(c, t)
-	if err := c.processMsgArgs([]byte(" foobar RSID:22:1 22")) ; err != nil {
+	if err := c.processMsgArgs([]byte(" foobar RSID:22:1 22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testMsgArg(c, t)
-	if err := c.processMsgArgs([]byte(" foobar   RSID:22:1 22 ")) ; err != nil {
+	if err := c.processMsgArgs([]byte(" foobar   RSID:22:1 22 ")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testMsgArg(c, t)
-	if err := c.processMsgArgs([]byte("foobar   RSID:22:1  \t22")) ; err != nil {
+	if err := c.processMsgArgs([]byte("foobar   RSID:22:1  \t22")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if err := c.processMsgArgs([]byte("foobar\t\tRSID:22:1\t22\r")) ; err != nil {
+	if err := c.processMsgArgs([]byte("foobar\t\tRSID:22:1\t22\r")); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testMsgArg(c, t)
@@ -303,43 +302,43 @@ func TestParseMsgArg(t *testing.T) {
 func TestShouldFail(t *testing.T) {
 	c := dummyClient()
 
-	if err := c.parse([]byte(" PING")) ; err == nil {
+	if err := c.parse([]byte(" PING")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("CONNECT \r\n")) ; err == nil {
+	if err := c.parse([]byte("CONNECT \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("POO")) ; err == nil {
+	if err := c.parse([]byte("POO")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB foo\r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB foo\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB \r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("PUB foo bar       \r\n")) ; err == nil {
+	if err := c.parse([]byte("PUB foo bar       \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB \r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB \r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB foo\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB foo\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 	c.state = OP_START
-	if err := c.parse([]byte("SUB foo bar baz 22\r\n")) ; err == nil {
+	if err := c.parse([]byte("SUB foo bar baz 22\r\n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 }

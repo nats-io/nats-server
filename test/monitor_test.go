@@ -13,7 +13,7 @@ import (
 	"github.com/apcera/gnatsd/server"
 )
 
-const MONITOR_PORT=11422
+const MONITOR_PORT = 11422
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {

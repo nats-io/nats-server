@@ -34,8 +34,8 @@ func TestPingInterval(t *testing.T) {
 	expect := expectCommand(t, c)
 
 	// Expect the max to be delivered correctly..
-	for i := 0 ; i < PING_MAX; i++ {
-		time.Sleep(PING_INTERVAL/2)
+	for i := 0; i < PING_MAX; i++ {
+		time.Sleep(PING_INTERVAL / 2)
 		expect(pingRe)
 	}
 

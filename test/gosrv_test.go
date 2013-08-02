@@ -3,8 +3,8 @@
 package test
 
 import (
-	"testing"
 	"runtime"
+	"testing"
 	"time"
 )
 
@@ -22,7 +22,7 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 func TestGoServerShutdownWithClients(t *testing.T) {
 	base := runtime.NumGoroutine()
 	s := runDefaultServer()
-	for i := 0 ; i < 10 ; i++ {
+	for i := 0; i < 10; i++ {
 		createClientConn(t, "localhost", 4222)
 	}
 	s.Shutdown()
@@ -33,4 +33,3 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }
-

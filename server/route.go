@@ -53,17 +53,27 @@ func (c *client) sendConnect() {
 }
 
 func (s *Server) sendLocalSubsToRoute(route *client) {
+	b := bytes.Buffer{}
+
 	for _, client := range s.clients {
-		for _, s := range client.subs.All() {
+		client.mu.Lock()
+		subs := client.subs.All()
+		client.mu.Unlock()
+		for _, s := range subs {
 			if sub, ok := s.(*subscription); ok {
 				rsid := routeSid(sub)
 				proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-				route.bw.WriteString(proto)
+				b.WriteString(proto)
 			}
 		}
 	}
+
+	route.mu.Lock()
+	defer route.mu.Unlock()
+	route.bw.Write(b.Bytes())
 	route.bw.Flush()
-	Debug("Route sent local subscriptions", clientConnStr(route.nc), route.cid)
+
+	Debug("Route sent local subscriptions", route.cid)
 }
 
 func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
@@ -163,8 +173,10 @@ func routeSid(sub *subscription) string {
 func (s *Server) broadcastToRoutes(proto string) {
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
+		route.mu.Lock()
 		route.bw.WriteString(proto)
 		route.bw.Flush()
+		route.mu.Unlock()
 	}
 }
 
@@ -293,4 +305,10 @@ func (s *Server) solicitRoutes() {
 	for _, r := range s.opts.Routes {
 		go s.connectToRoute(r)
 	}
+}
+
+func (s *Server) numRoutes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.routes)
 }

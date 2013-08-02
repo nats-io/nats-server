@@ -115,6 +115,11 @@ func New(opts *Options) *Server {
 	return s
 }
 
+func PrintAndDie(msg string) {
+	fmt.Fprintf(os.Stderr, "%s\n", msg)
+	os.Exit(1)
+}
+
 // Print our version and exit
 func PrintServerAndExit() {
 	fmt.Printf("%s\n", VERSION)

@@ -5,6 +5,7 @@ package server
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync/atomic"
 )
@@ -17,14 +18,28 @@ var nolog int32
 
 func LogSetup() {
 	log.SetFlags(0)
+	atomic.StoreInt32(&nolog, 0)
+	atomic.StoreInt32(&debug, 0)
+	atomic.StoreInt32(&trace, 0)
 }
 
 func (s *Server) LogInit() {
+	// Reset
+	LogSetup()
+
 	if s.opts.Logtime {
 		log.SetFlags(log.LstdFlags)
 	}
 	if s.opts.NoLog {
 		atomic.StoreInt32(&nolog, 1)
+	}
+	if s.opts.LogFile != "" {
+		flags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
+		file, err := os.OpenFile(s.opts.LogFile, flags, 0660)
+		if err != nil {
+			PrintAndDie(fmt.Sprintf("Error opening logfile: %q", s.opts.LogFile))
+		}
+		log.SetOutput(file)
 	}
 	if s.opts.Debug {
 		Log(s.opts)
@@ -56,7 +71,7 @@ func logStr(v []interface{}) string {
 			args = append(args, fmt.Sprintf("%+v", vt))
 		}
 	}
-	return fmt.Sprintf("[%s]", strings.Join(args,", "))
+	return fmt.Sprintf("[%s]", strings.Join(args, ", "))
 }
 
 func Log(v ...interface{}) {
@@ -100,4 +115,3 @@ func Tracef(format string, v ...interface{}) {
 		Trace(fmt.Sprintf(format, v...))
 	}
 }
-

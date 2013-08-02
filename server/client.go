@@ -649,7 +649,7 @@ func (c *client) processMsg(msg []byte) {
 			}
 			// Check to see if we have already sent it here.
 			if rmap == nil {
-				rmap = make(map[string]struct{}, len(srv.routes))
+				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
 
 			if sub.client == nil || sub.client.route == nil || sub.client.route.remoteId == "" {
