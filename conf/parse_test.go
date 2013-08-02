@@ -22,11 +22,11 @@ func test(t *testing.T, data string, ex map[string]interface{}) {
 }
 
 func TestSimpleTopLevel(t *testing.T) {
-	ex := map[string]interface{} {
-		"foo":"1",
-		"bar":float64(2.2),
-		"baz":true,
-		"boo":int64(22),
+	ex := map[string]interface{}{
+		"foo": "1",
+		"bar": float64(2.2),
+		"baz": true,
+		"boo": int64(22),
 	}
 	test(t, "foo='1'; bar=2.2; baz=true; boo=22", ex)
 }
@@ -42,13 +42,13 @@ foo  {
 `
 
 func TestSample1(t *testing.T) {
-	ex := map[string]interface{} {
-		"foo": map[string]interface{} {
-			"host": map[string]interface{} {
-				"ip": "127.0.0.1",
+	ex := map[string]interface{}{
+		"foo": map[string]interface{}{
+			"host": map[string]interface{}{
+				"ip":   "127.0.0.1",
 				"port": int64(4242),
 			},
-			"servers": []interface{} {"a.com", "b.com", "c.com"},
+			"servers": []interface{}{"a.com", "b.com", "c.com"},
 		},
 	}
 	test(t, sample1, ex)
@@ -78,15 +78,15 @@ cluster {
 `
 
 func TestSample2(t *testing.T) {
-	ex := map[string]interface{} {
-		"cluster": map[string]interface{} {
+	ex := map[string]interface{}{
+		"cluster": map[string]interface{}{
 			"port": int64(4244),
-			"authorization": map[string]interface{} {
-				"user": "route_user",
+			"authorization": map[string]interface{}{
+				"user":     "route_user",
 				"password": "top_secret",
-				"timeout": int64(1),
+				"timeout":  int64(1),
 			},
-			"routes": []interface{} {
+			"routes": []interface{}{
 				"nats-route://foo:bar@apcera.me:4245",
 				"nats-route://foo:bar@apcera.me:4246",
 			},
@@ -95,4 +95,3 @@ func TestSample2(t *testing.T) {
 
 	test(t, cluster, ex)
 }
-

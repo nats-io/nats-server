@@ -160,6 +160,7 @@ foo = [
  "bar"
 ]
 `
+
 func TestMultilineArraysNoSep(t *testing.T) {
 	expectedItems := []item{
 		{itemCommentStart, "", 2},
