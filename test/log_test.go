@@ -7,9 +7,6 @@ import (
 	"os"
 	"regexp"
 	"testing"
-//	"time"
-
-//	"github.com/apcera/gnatsd/server"
 )
 
 var startRe = regexp.MustCompile(`\["Starting nats-server version\s+([^\s]+)"\]\n`)
