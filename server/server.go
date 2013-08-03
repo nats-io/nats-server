@@ -304,19 +304,13 @@ func (s *Server) StartHTTPMonitoring() {
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, nc: conn, opts: defaultOpts}
 
+	// Grab lock
+	c.mu.Lock()
+
 	// Initialize
 	c.initClient()
 
 	Debug("Client connection created", clientConnStr(c.nc), c.cid)
-
-	c.mu.Lock()
-
-	// After reaquiring the lock, check to see if we have been
-	// closed already via a bad read in the readLoop()
-	if c.nc == nil {
-		c.mu.Unlock()
-		return nil
-	}
 
 	// Send our information.
 	s.sendInfo(c)
@@ -327,6 +321,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.setAuthTimer(ttl)
 	}
 
+	// Unlock to register
 	c.mu.Unlock()
 
 	// Register with the server.
@@ -339,9 +334,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 // Assume the lock is held upon entry.
 func (s *Server) sendInfo(c *client) {
-	if c.nc == nil {
-		return
-	}
 	switch c.typ {
 	case CLIENT:
 		c.nc.Write(s.infoJson)

@@ -86,10 +86,8 @@ func clientConnStr(conn net.Conn) interface{} {
 	return "N/A"
 }
 
+// Lock should be held
 func (c *client) initClient() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 

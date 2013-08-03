@@ -29,6 +29,7 @@ type connectInfo struct {
 
 const conProto = "CONNECT %s" + _CRLF_
 
+// Lock should be held entering here.
 func (c *client) sendConnect() {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
@@ -81,12 +82,13 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 	r := &route{didSolicit: didSolicit}
 	c := &client{srv: s, nc: conn, opts: defaultOpts, typ: ROUTER, route: r}
 
+	// Grab lock
+	c.mu.Lock()
+
 	// Initialize
 	c.initClient()
 
 	Debug("Route connection created", clientConnStr(c.nc), c.cid)
-
-	c.mu.Lock()
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
@@ -103,6 +105,8 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
 		c.setAuthTimer(ttl)
 	}
+
+	// Unlock to register.
 	c.mu.Unlock()
 
 	// Register with the server.
