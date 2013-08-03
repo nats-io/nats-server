@@ -311,6 +311,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	c.mu.Lock()
 
+	// After reaquiring the lock, check to see if we have been
+	// closed already via a bad read in the readLoop()
+	if c.nc == nil {
+		c.mu.Unlock()
+		return nil
+	}
+
 	// Send our information.
 	s.sendInfo(c)
 
@@ -330,7 +337,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 	return c
 }
 
+// Assume the lock is held upon entry.
 func (s *Server) sendInfo(c *client) {
+	if c.nc == nil {
+		return
+	}
 	switch c.typ {
 	case CLIENT:
 		c.nc.Write(s.infoJson)
