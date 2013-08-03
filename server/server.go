@@ -5,10 +5,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"time"
 
@@ -150,9 +152,22 @@ func (s *Server) isRunning() bool {
 	return s.running
 }
 
+func (s *Server) logPid() {
+	pidStr := strconv.Itoa(os.Getpid())
+	err := ioutil.WriteFile(s.opts.PidFile, []byte(pidStr), 0660)
+	if err != nil {
+		PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
+	}
+}
+
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
+
+	// Log the pid to a file
+	if s.opts.PidFile != _EMPTY_ {
+		s.logPid()
+	}
 
 	// Start up the http server if needed.
 	if s.opts.HttpPort != 0 {
