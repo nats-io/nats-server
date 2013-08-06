@@ -61,7 +61,7 @@ func main() {
 		opts.Trace, opts.Debug = true, true
 	}
 
-	// Process args looking for non-flaf options,
+	// Process args looking for non-flag options,
 	// 'version' and 'help' only for now
 	for _, arg := range flag.Args() {
 		switch strings.ToLower(arg) {
