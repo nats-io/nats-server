@@ -457,3 +457,29 @@ func TestSpecialCharsMapQuotedKeys(t *testing.T) {
 	lx = lex("foo = {\"bar-1.2.3\" = { port:4242 }}")
 	expect(t, lx, expectedItems)
 }
+
+var mlnestedmap = `
+systems {
+  allinone {
+    description: "This is a description."
+  }
+}
+`
+
+func TestDoubleNestedMapsNewLines(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "systems", 2},
+		{itemMapStart, "", 2},
+		{itemKey, "allinone", 3},
+		{itemMapStart, "", 3},
+		{itemKey, "description", 4},
+		{itemString, "This is a description.", 4},
+		{itemMapEnd, "", 5},
+		{itemMapEnd, "", 6},
+		{itemEOF, "", 7},
+	}
+	lx := lex(mlnestedmap)
+	expect(t, lx, expectedItems)
+}
+
+

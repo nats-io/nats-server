@@ -328,7 +328,7 @@ func lexValue(lx *lexer) stateFn {
 		return lexMapKeyStart
 	case r == dqStringStart || r == sqStringStart:
 		lx.ignore() // ignore the " or '
-		return lexString
+		return lexQuotedString
 	case r == '-':
 		return lexNumberStart
 	case isDigit(r):
@@ -551,6 +551,22 @@ func lexMapEnd(lx *lexer) stateFn {
 func (lx *lexer) isBool() bool {
 	str := lx.input[lx.start:lx.pos]
 	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+}
+
+// lexQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == dqStringEnd || r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemString)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexQuotedString
 }
 
 // lexString consumes the inner contents of a string. It assumes that the
