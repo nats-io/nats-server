@@ -424,3 +424,18 @@ func TestNonQuotedStrings(t *testing.T) {
 	lx := lex(noquotes)
 	expect(t, lx, expectedItems)
 }
+
+func TestMapQuotedKeys(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemMapStart, "", 1},
+		{itemKey, "bar", 1},
+		{itemInteger, "4242", 1},
+		{itemMapEnd, "", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = {'bar' = 4242}")
+	expect(t, lx, expectedItems)
+	lx = lex("foo = {\"bar\" = 4242}")
+	expect(t, lx, expectedItems)
+}

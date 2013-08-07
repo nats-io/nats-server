@@ -434,13 +434,28 @@ func lexMapKeyStart(lx *lexer) stateFn {
 			return lexCommentStart
 		}
 		lx.backup()
+	case r == sqStringStart || r == dqStringStart:
+		lx.next()
+		return lexSkip(lx, lexMapQuotedKey)
 	}
 	lx.ignore()
 	lx.next()
 	return lexMapKey
 }
 
-// lexKey consumes the text of a key. Assumes that the first character (which
+// lexMapQuotedKey consumes the text of a key between quotes.
+func lexMapQuotedKey(lx *lexer) stateFn {
+	r := lx.peek()
+	if r == sqStringEnd || r == dqStringEnd {
+		lx.emit(itemKey)
+		lx.next()
+		return lexSkip(lx, lexMapKeyEnd)
+	}
+	lx.next()
+	return lexMapQuotedKey
+}
+
+// lexMapKey consumes the text of a key. Assumes that the first character (which
 // is not whitespace) has already been consumed.
 func lexMapKey(lx *lexer) stateFn {
 	r := lx.peek()
