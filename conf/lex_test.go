@@ -246,6 +246,32 @@ func TestNestedMaps(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestQuotedKeys(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "123", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo : 123")
+	expect(t, lx, expectedItems)
+	lx = lex("'foo' : 123")
+	expect(t, lx, expectedItems)
+	lx = lex("\"foo\" : 123")
+	expect(t, lx, expectedItems)
+}
+
+func TestQuotedKeysWithSpace(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, " foo", 1},
+		{itemInteger, "123", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("' foo' : 123")
+	expect(t, lx, expectedItems)
+	lx = lex("\" foo\" : 123")
+	expect(t, lx, expectedItems)
+}
+
 func TestColonKeySep(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},

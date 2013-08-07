@@ -248,7 +248,7 @@ func lexTopValueEnd(lx *lexer) stateFn {
 }
 
 // lexKeyStart consumes a key name up until the first non-whitespace character.
-// lexKeyStart will ignore whitespace.
+// lexKeyStart will ignore whitespace. It will also eat enclosing quotes.
 func lexKeyStart(lx *lexer) stateFn {
 	r := lx.peek()
 	switch {
@@ -257,10 +257,25 @@ func lexKeyStart(lx *lexer) stateFn {
 	case isWhitespace(r) || isNL(r):
 		lx.next()
 		return lexSkip(lx, lexKeyStart)
+	case r == sqStringStart || r == dqStringStart:
+		lx.next()
+		return lexSkip(lx, lexQuotedKey)
 	}
 	lx.ignore()
 	lx.next()
 	return lexKey
+}
+
+// lexQuotedKey consumes the text of a key between quotes.
+func lexQuotedKey(lx *lexer) stateFn {
+	r := lx.peek()
+	if r == sqStringEnd || r == dqStringEnd {
+		lx.emit(itemKey)
+		lx.next()
+		return lexSkip(lx, lexKeyEnd)
+	}
+	lx.next()
+	return lexQuotedKey
 }
 
 // lexKey consumes the text of a key. Assumes that the first character (which
