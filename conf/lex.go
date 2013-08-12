@@ -57,6 +57,8 @@ const (
 	sqStringStart     = '\''
 	sqStringEnd       = '\''
 	optValTerm        = ';'
+	blockStart        = '('
+	blockEnd          = ')'
 )
 
 type stateFn func(lx *lexer) stateFn
@@ -257,7 +259,10 @@ func lexKeyStart(lx *lexer) stateFn {
 	case isWhitespace(r) || isNL(r):
 		lx.next()
 		return lexSkip(lx, lexKeyStart)
-	case r == sqStringStart || r == dqStringStart:
+	case r == dqStringStart:
+		lx.next()
+		return lexSkip(lx, lexDubQuotedKey)
+	case r == sqStringStart:
 		lx.next()
 		return lexSkip(lx, lexQuotedKey)
 	}
@@ -266,10 +271,22 @@ func lexKeyStart(lx *lexer) stateFn {
 	return lexKey
 }
 
+// lexDubQuotedKey consumes the text of a key between quotes.
+func lexDubQuotedKey(lx *lexer) stateFn {
+	r := lx.peek()
+	if r == dqStringEnd {
+		lx.emit(itemKey)
+		lx.next()
+		return lexSkip(lx, lexKeyEnd)
+	}
+	lx.next()
+	return lexDubQuotedKey
+}
+
 // lexQuotedKey consumes the text of a key between quotes.
 func lexQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if r == sqStringEnd || r == dqStringEnd {
+	if r == sqStringEnd {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexKeyEnd)
@@ -326,11 +343,17 @@ func lexValue(lx *lexer) stateFn {
 		lx.ignore()
 		lx.emit(itemMapStart)
 		return lexMapKeyStart
-	case r == dqStringStart || r == sqStringStart:
+	case r == sqStringStart:
 		lx.ignore() // ignore the " or '
 		return lexQuotedString
+	case r == dqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexDubQuotedString
 	case r == '-':
 		return lexNumberStart
+	case r == blockStart:
+		lx.ignore()
+		return lexBlock
 	case isDigit(r):
 		lx.backup() // avoid an extra state and use the same as above
 		return lexNumberOrDateStart
@@ -434,9 +457,12 @@ func lexMapKeyStart(lx *lexer) stateFn {
 			return lexCommentStart
 		}
 		lx.backup()
-	case r == sqStringStart || r == dqStringStart:
+	case r == sqStringStart:
 		lx.next()
 		return lexSkip(lx, lexMapQuotedKey)
+	case r == dqStringStart:
+		lx.next()
+		return lexSkip(lx, lexMapDubQuotedKey)
 	}
 	lx.ignore()
 	lx.next()
@@ -446,13 +472,25 @@ func lexMapKeyStart(lx *lexer) stateFn {
 // lexMapQuotedKey consumes the text of a key between quotes.
 func lexMapQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if r == sqStringEnd || r == dqStringEnd {
+	if r == sqStringEnd {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexMapKeyEnd)
 	}
 	lx.next()
 	return lexMapQuotedKey
+}
+
+// lexMapQuotedKey consumes the text of a key between quotes.
+func lexMapDubQuotedKey(lx *lexer) stateFn {
+	r := lx.peek()
+	if r == dqStringEnd {
+		lx.emit(itemKey)
+		lx.next()
+		return lexSkip(lx, lexMapKeyEnd)
+	}
+	lx.next()
+	return lexMapDubQuotedKey
 }
 
 // lexMapKey consumes the text of a key. Assumes that the first character (which
@@ -559,7 +597,7 @@ func (lx *lexer) isBool() bool {
 func lexQuotedString(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case r == dqStringEnd || r == sqStringEnd:
+	case r == sqStringEnd:
 		lx.backup()
 		lx.emit(itemString)
 		lx.next()
@@ -567,6 +605,22 @@ func lexQuotedString(lx *lexer) stateFn {
 		return lx.pop()
 	}
 	return lexQuotedString
+}
+
+// lexDubQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexDubQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == dqStringEnd:
+		lx.backup()
+		lx.emit(itemString)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexDubQuotedString
 }
 
 // lexString consumes the inner contents of a string. It assumes that the
@@ -585,7 +639,7 @@ func lexString(lx *lexer) stateFn {
 			lx.emit(itemString)
 		}
 		return lx.pop()
-	case r == dqStringEnd || r == sqStringEnd:
+	case r == sqStringEnd:
 		lx.backup()
 		lx.emit(itemString)
 		lx.next()
@@ -593,6 +647,66 @@ func lexString(lx *lexer) stateFn {
 		return lx.pop()
 	}
 	return lexString
+}
+
+// lexDubString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored.
+func lexDubString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == '\\':
+		return lexStringEscape
+	// Termination of non-quoted strings
+	case isNL(r) || r == eof || r == optValTerm || isWhitespace(r):
+		lx.backup()
+		if lx.isBool() {
+			lx.emit(itemBool)
+		} else {
+			lx.emit(itemString)
+		}
+		return lx.pop()
+	case r == dqStringEnd:
+		lx.backup()
+		lx.emit(itemString)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexDubString
+}
+
+// lexBlock consumes the inner contents as a string. It assumes that the
+// beginning '(' has already been consumed and ignored. It will continue
+// processing until it finds a ')' on a new line by itself.
+func lexBlock(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == blockEnd:
+		lx.backup()
+		lx.backup()
+
+		// Looking for a ')' character on a line by itself, if the previous
+		// character isn't a new line, then break so we keep processing the block.
+		if lx.next() != '\n' {
+			lx.next()
+			break
+		}
+		lx.next()
+
+		// Make sure the next character is a new line or an eof. We want a ')' on a
+		// bare line by itself.
+		switch lx.next() {
+		case '\n', eof:
+			lx.backup()
+			lx.backup()
+			lx.emit(itemString)
+			lx.next()
+			lx.ignore()
+			return lx.pop()
+		}
+		lx.backup()
+	}
+	return lexBlock
 }
 
 // lexStringEscape consumes an escaped character. It assumes that the preceding

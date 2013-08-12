@@ -14,7 +14,7 @@ func expect(t *testing.T, lx *lexer, items []item) {
 			t.Fatal(item.val)
 		}
 		if item != items[i] {
-			t.Fatalf("Testing: '%s'\nExpected %+v, received %+v\n",
+			t.Fatalf("Testing: '%s'\nExpected %q, received %q\n",
 				lx.input, items[i], item)
 		}
 	}
@@ -482,4 +482,46 @@ func TestDoubleNestedMapsNewLines(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+var blockexample = `
+numbers (
+1234567890
+)
+`
 
+func TestBlockString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "numbers", 2},
+		{itemString, "\n1234567890\n", 4},
+	}
+	lx := lex(blockexample)
+	expect(t, lx, expectedItems)
+}
+
+func TestBlockStringEOF(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "numbers", 2},
+		{itemString, "\n1234567890\n", 4},
+	}
+	blockbytes := []byte(blockexample[0 : len(blockexample)-1])
+	blockbytes = append(blockbytes, 0)
+	lx := lex(string(blockbytes))
+	expect(t, lx, expectedItems)
+}
+
+var mlblockexample = `
+numbers (
+  12(34)56
+  (
+    7890
+  )
+)
+`
+
+func TestBlockStringMultiLine(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "numbers", 2},
+		{itemString, "\n  12(34)56\n  (\n    7890\n  )\n", 7},
+	}
+	lx := lex(mlblockexample)
+	expect(t, lx, expectedItems)
+}

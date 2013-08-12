@@ -95,3 +95,21 @@ func TestSample2(t *testing.T) {
 
 	test(t, cluster, ex)
 }
+
+var sample3 = `
+foo  {
+  expr = '(true == "false")'
+  text = 'This is a multi-line
+text block.'
+}
+`
+
+func TestSample3(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": map[string]interface{}{
+			"expr": "(true == \"false\")",
+			"text": "This is a multi-line\ntext block.",
+		},
+	}
+	test(t, sample3, ex)
+}
