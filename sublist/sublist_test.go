@@ -362,8 +362,18 @@ func TestBadSubjectOnRemove(t *testing.T) {
 	value := "bad"
 
 	s := New()
-	s.Insert(bad, value)
-	s.Remove(bad, value)
+	if err := s.Insert(bad, value); err != ErrInvalidSubject {
+		t.Fatalf("Expected ErrInvalidSubject, got %v\n", err)
+	}
+
+	if err := s.Remove(bad, value); err != ErrInvalidSubject {
+		t.Fatalf("Expected ErrInvalidSubject, got %v\n", err)
+	}
+
+	badfwc := []byte("a.>.b")
+	if err := s.Remove(badfwc, value); err != ErrInvalidSubject {
+		t.Fatalf("Expected ErrInvalidSubject, got %v\n", err)
+	}
 }
 
 // -- Benchmarks Setup --

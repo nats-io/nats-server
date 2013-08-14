@@ -79,6 +79,7 @@ var (
 
 var (
 	ErrInvalidSubject = errors.New("Invalid Subject")
+	ErrNotFound = errors.New("No Matches Found")
 )
 
 // split will split a subject into tokens
@@ -278,11 +279,12 @@ type lnt struct {
 
 // Remove will remove any item associated with key. It will track descent
 // into the trie and prune upon successful removal.
-func (s *Sublist) Remove(subject []byte, sub interface{}) {
+func (s *Sublist) Remove(subject []byte, sub interface{}) error {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
 
 	s.mu.Lock()
+	sfwc := false
 	l := s.root
 	var n *node
 
@@ -290,15 +292,20 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	levels := lnts[:0]
 
 	for _, t := range toks {
-		if l == nil || len(t) == 0 {
+		if len(t) == 0 || sfwc {
 			s.mu.Unlock()
-			return
+			return ErrInvalidSubject
+		}
+		if l == nil {
+			s.mu.Unlock()
+			return ErrNotFound
 		}
 		switch t[0] {
 		case _PWC:
 			n = l.pwc
 		case _FWC:
 			n = l.fwc
+			sfwc = true
 		default:
 			if v := l.nodes.Get(t); v == nil {
 				n = nil
@@ -315,7 +322,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	}
 	if !s.removeFromNode(n, sub) {
 		s.mu.Unlock()
-		return
+		return ErrNotFound
 	}
 
 	s.count--
@@ -329,6 +336,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	}
 	s.removeFromCache(subject, sub)
 	s.mu.Unlock()
+	return nil
 }
 
 // pruneNode is used to prune and empty node from the tree.
