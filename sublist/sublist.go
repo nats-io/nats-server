@@ -290,7 +290,7 @@ func (s *Sublist) Remove(subject []byte, sub interface{}) {
 	levels := lnts[:0]
 
 	for _, t := range toks {
-		if l == nil {
+		if l == nil || len(t) == 0 {
 			s.mu.Unlock()
 			return
 		}

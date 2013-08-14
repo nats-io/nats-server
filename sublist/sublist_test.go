@@ -357,6 +357,15 @@ func TestResultSetSnapshots(t *testing.T) {
 	verifyLen(r, 1, t)
 }
 
+func TestBadSubjectOnRemove(t *testing.T) {
+	bad := []byte("a.b..d")
+	value := "bad"
+
+	s := New()
+	s.Insert(bad, value)
+	s.Remove(bad, value)
+}
+
 // -- Benchmarks Setup --
 
 var subs [][]byte
