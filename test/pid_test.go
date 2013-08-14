@@ -2,13 +2,11 @@
 
 package test
 
-
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
-
-	"fmt"
 )
 
 func TestPidFile(t *testing.T) {
