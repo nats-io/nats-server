@@ -751,8 +751,9 @@ func (c *client) clearAuthTimer() {
 
 func (c *client) isAuthTimerSet() bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.atmr != nil
+	isSet := c.atmr != nil
+	c.mu.Unlock()
+	return isSet
 }
 
 // Lock should be held

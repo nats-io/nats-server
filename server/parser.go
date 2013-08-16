@@ -68,11 +68,12 @@ const (
 func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
+	authSet := c.isAuthTimerSet()
 
 	for i, b = range buf {
 		switch c.state {
 		case OP_START:
-			if c.isAuthTimerSet() && b != 'C' && b != 'c' {
+			if b != 'C' && b != 'c' && authSet {
 				goto authErr
 			}
 			switch b {
