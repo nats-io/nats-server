@@ -276,6 +276,8 @@ func (s *Server) AcceptLoop() {
 }
 
 func (s *Server) StartProfiler() {
+	Logf("Starting profiling on http port %d", s.opts.ProfPort)
+
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
 		Log(http.ListenAndServe(hp, nil))
@@ -284,7 +286,7 @@ func (s *Server) StartProfiler() {
 
 func (s *Server) StartHTTPMonitoring() {
 	go func() {
-		Log(fmt.Sprintf("Starting http monitor on port %d", s.opts.HttpPort))
+		Logf("Starting http monitor on port %d", s.opts.HttpPort)
 
 		// Varz
 		http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {

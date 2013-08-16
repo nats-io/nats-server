@@ -16,8 +16,13 @@ import (
 	"github.com/apcera/gnatsd/sublist"
 )
 
-// The size of the bufio reader/writer on top of the socket.
-const defaultBufSize = 32768
+const (
+	// The size of the bufio reader/writer on top of the socket.
+	defaultBufSize = 32768
+	// Scratch buffer size for the processMsg() calls.
+	msgScratchSize = 512
+	msgHeadProto = "MSG "
+)
 
 const (
 	CLIENT = iota
@@ -37,6 +42,7 @@ type client struct {
 	atmr *time.Timer
 	ptmr *time.Timer
 	pout int
+	msgb [msgScratchSize]byte
 	parseState
 	stats
 
@@ -93,6 +99,11 @@ func (c *client) initClient() {
 
 	c.bw = bufio.NewWriterSize(c.nc, defaultBufSize)
 	c.subs = hashmap.New()
+
+	// This is a scratch buffer used for processMsg()
+	// The msg header starts with "MSG ",
+	// in bytes that is [77 83 71 32].
+	c.msgb = [msgScratchSize]byte{77, 83, 71, 32}
 
 	// This is to track pending clients that have data to be flushed
 	// after we process inbound msgs from our own connection.
@@ -576,10 +587,8 @@ func (c *client) processMsg(msg []byte) {
 		c.sendOK()
 	}
 
-	// The msg header starts with "MSG ",
-	// in bytes that is [77 83 71 32].
-	scratch := [512]byte{77, 83, 71, 32}
-	msgh := scratch[:4]
+	// Scratch buffer..
+	msgh := c.msgb[:len(msgHeadProto)]
 
 	r := c.srv.sl.Match(c.pa.subject)
 	if len(r) <= 0 {
