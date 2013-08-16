@@ -41,7 +41,7 @@ func flushConnection(b *testing.B, c net.Conn, buf []byte) {
 
 func benchPub(b *testing.B, subject, payload string) {
 	b.StopTimer()
-	s := startServer(b, PERF_PORT, "")
+	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -56,7 +56,7 @@ func benchPub(b *testing.B, subject, payload string) {
 	flushConnection(b, c, buf)
 	b.StopTimer()
 	c.Close()
-	s.stopServer()
+	s.Shutdown()
 }
 
 func sizedString(sz int) string {
