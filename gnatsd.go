@@ -46,6 +46,7 @@ func main() {
 	flag.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
+	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
 
 	flag.Usage = server.Usage
 
