@@ -123,7 +123,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 
 func Benchmark__________PubSub(b *testing.B) {
 	b.StopTimer()
-	s := startServer(b, PERF_PORT, "")
+	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo 1\r\n")
@@ -150,12 +150,12 @@ func Benchmark__________PubSub(b *testing.B) {
 
 	b.StopTimer()
 	c.Close()
-	s.stopServer()
+	s.Shutdown()
 }
 
 func Benchmark__PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
-	s := startServer(b, PERF_PORT, "")
+	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -185,12 +185,12 @@ func Benchmark__PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	c.Close()
 	c2.Close()
-	s.stopServer()
+	s.Shutdown()
 }
 
 func Benchmark__PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
-	s := startServer(b, PERF_PORT, "")
+	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
@@ -218,12 +218,12 @@ func Benchmark__PubTwoQueueSub(b *testing.B) {
 
 	b.StopTimer()
 	c.Close()
-	s.stopServer()
+	s.Shutdown()
 }
 
 func Benchmark_PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
-	s := startServer(b, PERF_PORT, "")
+	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
@@ -253,5 +253,5 @@ func Benchmark_PubFourQueueSub(b *testing.B) {
 
 	b.StopTimer()
 	c.Close()
-	s.stopServer()
+	s.Shutdown()
 }
