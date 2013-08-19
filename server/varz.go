@@ -37,11 +37,14 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v.Uptime = time.Since(s.start).String()
 
 	updateUsage(&v)
+
+	s.mu.Lock()
 	v.Connections = len(s.clients)
 	v.InMsgs = s.inMsgs
 	v.InBytes = s.inBytes
 	v.OutMsgs = s.outMsgs
 	v.OutBytes = s.outBytes
+	s.mu.Unlock()
 
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

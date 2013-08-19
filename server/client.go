@@ -96,7 +96,6 @@ func clientConnStr(conn net.Conn) interface{} {
 func (c *client) initClient() {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-
 	c.bw = bufio.NewWriterSize(c.nc, defaultBufSize)
 	c.subs = hashmap.New()
 
@@ -509,11 +508,15 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	}
 
 	// Update statistics
+
+	// The msg includes the CR_LF, so pull back out for accounting.
+	msgSize := int64(len(msg) - LEN_CR_LF)
+
 	client.outMsgs++
-	client.outBytes += int64(len(msg))
+	client.outBytes += msgSize
 
 	atomic.AddInt64(&c.srv.outMsgs, 1)
-	atomic.AddInt64(&c.srv.outBytes, int64(len(msg)))
+	atomic.AddInt64(&c.srv.outBytes, msgSize)
 
 	// Check to see if our writes will cause a flush
 	// in the underlying bufio. If so limit time we
@@ -559,22 +562,29 @@ writeErr:
 	}
 }
 
+// processMsg is called to process an inbound msg from a client.
 func (c *client) processMsg(msg []byte) {
+
+	// Update statistics
+
+	// The msg includes the CR_LF, so pull back out for accounting.
+	msgSize := int64(len(msg) - LEN_CR_LF)
+
 	c.inMsgs++
-	c.inBytes += int64(len(msg))
+	c.inBytes += msgSize
 
 	// Snapshot server.
 	srv := c.srv
 
 	if srv != nil {
 		atomic.AddInt64(&srv.inMsgs, 1)
-		atomic.AddInt64(&srv.inBytes, int64(len(msg)))
+		atomic.AddInt64(&srv.inBytes, msgSize)
 	}
 
 	if trace > 0 {
 		c.traceMsg(msg)
 	}
-	if c.srv == nil {
+	if srv == nil {
 		return
 	}
 	if c.opts.Verbose {
@@ -584,7 +594,7 @@ func (c *client) processMsg(msg []byte) {
 	// Scratch buffer..
 	msgh := c.msgb[:len(msgHeadProto)]
 
-	r := c.srv.sl.Match(c.pa.subject)
+	r := srv.sl.Match(c.pa.subject)
 	if len(r) <= 0 {
 		return
 	}
@@ -603,7 +613,7 @@ func (c *client) processMsg(msg []byte) {
 	// If we are a route and we have a queue subscription, deliver direct
 	// since they are sent direct via L2 semantics.
 	if isRoute {
-		if sub := c.srv.routeSidQueueSubscriber(c.pa.sid); sub != nil {
+		if sub := srv.routeSidQueueSubscriber(c.pa.sid); sub != nil {
 			mh := c.msgHeader(msgh[:si], sub)
 			c.deliverMsg(sub, mh, msg)
 			return

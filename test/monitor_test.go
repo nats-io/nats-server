@@ -15,10 +15,17 @@ import (
 
 const MONITOR_PORT = 11422
 
+func runMonitorServer(monitorPort int) *server.Server {
+	opts := DefaultTestOptions
+	opts.Port = MONITOR_PORT
+	opts.HttpPort = monitorPort
+	return RunServer(&opts)
+}
+
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
-	s := startServer(t, MONITOR_PORT, "")
-	defer s.stopServer()
+	s := runMonitorServer(0)
+	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
 	if resp, err := http.Get(url + "varz"); err == nil {
@@ -33,9 +40,8 @@ func TestNoMonitorPort(t *testing.T) {
 }
 
 func TestVarz(t *testing.T) {
-	args := fmt.Sprintf("-m %d", server.DEFAULT_HTTP_PORT)
-	s := startServer(t, MONITOR_PORT, args)
-	defer s.stopServer()
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
 	resp, err := http.Get(url + "varz")
@@ -59,9 +65,6 @@ func TestVarz(t *testing.T) {
 	// Do some sanity checks on values
 	if time.Since(v.Start) > 10*time.Second {
 		t.Fatal("Expected start time to be within 10 seconds.")
-	}
-	if v.Mem > 8192 {
-		t.Fatalf("Did not expect memory to be so high: %d\n", v.Mem)
 	}
 
 	// Create a connection to test ConnInfo
@@ -109,11 +112,10 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	args := fmt.Sprintf("-m %d", server.DEFAULT_HTTP_PORT)
-	s := startServer(t, MONITOR_PORT, args)
-	defer s.stopServer()
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT+1)
+	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)

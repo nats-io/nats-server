@@ -44,6 +44,7 @@ type Server struct {
 	routes   map[uint64]*client
 	done     chan bool
 	start    time.Time
+	http     net.Listener
 	stats
 
 	routeListener net.Listener
@@ -217,6 +218,13 @@ func (s *Server) Shutdown() {
 		s.routeListener = nil
 	}
 
+	// Kick HTTP monitoring if its running
+	if s.http != nil {
+		doneExpected++
+		s.http.Close()
+		s.http = nil
+	}
+
 	// Release the solicited routes connect go routines.
 	close(s.rcQuit)
 
@@ -285,22 +293,38 @@ func (s *Server) StartProfiler() {
 }
 
 func (s *Server) StartHTTPMonitoring() {
+	Logf("Starting http monitor on port %d", s.opts.HttpPort)
+
+	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HttpPort)
+
+	l, err := net.Listen("tcp", hp)
+	if err != nil {
+		Fatalf("Can't listen to the monitor port: %v", err)
+	}
+
+	mux := http.NewServeMux()
+
+	// Varz
+	mux.HandleFunc("/varz", s.HandleVarz)
+
+	// Connz
+	mux.HandleFunc("/connz", s.HandleConnz)
+
+	srv := &http.Server{
+		Addr:           hp,
+		Handler:        mux,
+		ReadTimeout:    2 * time.Second,
+		WriteTimeout:   2 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
+	s.http = l
+
 	go func() {
-		Logf("Starting http monitor on port %d", s.opts.HttpPort)
-
-		// Varz
-		http.HandleFunc("/varz", func(w http.ResponseWriter, r *http.Request) {
-			s.HandleVarz(w, r)
-		})
-		// Connz
-		http.HandleFunc("/connz", func(w http.ResponseWriter, r *http.Request) {
-			s.HandleConnz(w, r)
-		})
-
-		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HttpPort)
-		Fatal(http.ListenAndServe(hp, nil))
+		srv.Serve(s.http)
+		srv.Handler = nil
+		s.done <- true
 	}()
-
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
