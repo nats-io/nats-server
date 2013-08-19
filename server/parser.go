@@ -68,6 +68,9 @@ const (
 func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
+
+	// snapshot this, and reset when we receive a
+	// proper CONNECT if needed.
 	authSet := c.isAuthTimerSet()
 
 	for i, b = range buf {
@@ -145,21 +148,32 @@ func (c *client) parse(buf []byte) error {
 			}
 		case MSG_PAYLOAD:
 			if c.msgBuf != nil {
+				c.msgBuf = append(c.msgBuf, b)
 				if len(c.msgBuf) >= c.pa.size {
-					c.processMsg(c.msgBuf)
-					c.argBuf, c.msgBuf, c.state = nil, nil, MSG_END
-				} else {
-					c.msgBuf = append(c.msgBuf, b)
+					c.state = MSG_END
 				}
 			} else if i-c.as >= c.pa.size {
-				c.processMsg(buf[c.as:i])
-				c.argBuf, c.msgBuf, c.state = nil, nil, MSG_END
+				c.state = MSG_END
 			}
 		case MSG_END:
 			switch b {
 			case '\n':
+				if c.msgBuf != nil {
+					c.msgBuf = append(c.msgBuf, b)
+				} else {
+					c.msgBuf = buf[c.as:i+1]
+				}
+				// strict check for proto
+				if len(c.msgBuf) != c.pa.size + LEN_CR_LF {
+					goto parseErr
+				}
+				c.processMsg(c.msgBuf)
+				c.argBuf, c.msgBuf = nil, nil
 				c.drop, c.as, c.state = 0, i+1, OP_START
 			default:
+				if c.msgBuf != nil {
+					c.msgBuf = append(c.msgBuf, b)
+				}
 				continue
 			}
 		case OP_S:
@@ -368,6 +382,8 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.state = 0, OP_START
+				// Reset notion on authSet
+				authSet = c.isAuthTimerSet()
 			}
 		case OP_M:
 			switch b {
@@ -429,7 +445,7 @@ func (c *client) parse(buf []byte) error {
 		// FIXME, check max len
 	}
 	// Check for split msg
-	if c.state == MSG_PAYLOAD && c.msgBuf == nil {
+	if (c.state == MSG_PAYLOAD || c.state == MSG_END) && c.msgBuf == nil {
 		// We need to clone the pubArg if it is still referencing the
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {

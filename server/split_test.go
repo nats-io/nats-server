@@ -217,3 +217,22 @@ func TestSplitBufferPubOp4(t *testing.T) {
 		t.Fatalf("Unexpected size bytes: '%s' vs '%s'\n", c.pa.szb, "11")
 	}
 }
+
+func TestSplitBufferPubOp5(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
+
+	// Splits need to be on MSG_END now too, so make sure we check that.
+	// Split between \r and \n
+	pub := pubAll[:len(pubAll)-1]
+
+	if err := c.parse(pub); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.msgBuf == nil {
+		t.Fatalf("msgBuf should not be nil!\n")
+	}
+	if !bytes.Equal(c.msgBuf, []byte("hello world\r")) {
+		t.Fatalf("c.msgBuf did not snaphot the msg")
+	}
+}

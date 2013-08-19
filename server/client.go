@@ -536,12 +536,6 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		goto writeErr
 	}
 
-	// FIXME, this is already attached to original message
-	_, err = client.bw.WriteString(CR_LF)
-	if err != nil {
-		goto writeErr
-	}
-
 	if deadlineSet {
 		client.nc.SetWriteDeadline(time.Time{})
 	}

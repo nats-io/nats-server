@@ -169,7 +169,8 @@ func TestParsePub(t *testing.T) {
 		t.Fatalf("Did not parse msg size correctly: 5 vs %d\n", c.pa.size)
 	}
 
-	c.state = OP_START
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state  = nil, nil, OP_START
 
 	pub = []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)
@@ -243,7 +244,8 @@ func TestParseMsg(t *testing.T) {
 		t.Fatalf("Did not parse sid correctly: 'RSID:1:2' vs '%s'\n", c.pa.sid)
 	}
 
-	c.state = OP_START
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state  = nil, nil, OP_START
 
 	pub = []byte("MSG foo.bar RSID:1:2 INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)
@@ -339,6 +341,14 @@ func TestShouldFail(t *testing.T) {
 	}
 	c.state = OP_START
 	if err := c.parse([]byte("SUB foo bar baz 22\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("PUB foo 2\r\nok \r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("PUB foo 2\r\nok\r \n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
 }

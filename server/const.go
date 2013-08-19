@@ -36,6 +36,7 @@ const (
 
 	// CRLF string
 	CR_LF = "\r\n"
+	LEN_CR_LF = len(CR_LF)
 
 	// Write/Flush Deadlines
 	DEFAULT_FLUSH_DEADLINE = 500 * time.Millisecond
