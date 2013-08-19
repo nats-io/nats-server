@@ -79,7 +79,7 @@ var (
 
 var (
 	ErrInvalidSubject = errors.New("Invalid Subject")
-	ErrNotFound = errors.New("No Matches Found")
+	ErrNotFound       = errors.New("No Matches Found")
 )
 
 // split will split a subject into tokens

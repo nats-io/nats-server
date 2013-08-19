@@ -21,7 +21,7 @@ const (
 	defaultBufSize = 32768
 	// Scratch buffer size for the processMsg() calls.
 	msgScratchSize = 512
-	msgHeadProto = "MSG "
+	msgHeadProto   = "MSG "
 )
 
 const (

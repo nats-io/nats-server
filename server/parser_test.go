@@ -170,7 +170,7 @@ func TestParsePub(t *testing.T) {
 	}
 
 	// Clear snapshots
-	c.argBuf, c.msgBuf, c.state  = nil, nil, OP_START
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)
@@ -245,7 +245,7 @@ func TestParseMsg(t *testing.T) {
 	}
 
 	// Clear snapshots
-	c.argBuf, c.msgBuf, c.state  = nil, nil, OP_START
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("MSG foo.bar RSID:1:2 INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)

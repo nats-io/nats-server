@@ -161,10 +161,10 @@ func (c *client) parse(buf []byte) error {
 				if c.msgBuf != nil {
 					c.msgBuf = append(c.msgBuf, b)
 				} else {
-					c.msgBuf = buf[c.as:i+1]
+					c.msgBuf = buf[c.as : i+1]
 				}
 				// strict check for proto
-				if len(c.msgBuf) != c.pa.size + LEN_CR_LF {
+				if len(c.msgBuf) != c.pa.size+LEN_CR_LF {
 					goto parseErr
 				}
 				c.processMsg(c.msgBuf)

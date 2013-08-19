@@ -35,7 +35,7 @@ const (
 	DEFAULT_PING_MAX_OUT  = 2
 
 	// CRLF string
-	CR_LF = "\r\n"
+	CR_LF     = "\r\n"
 	LEN_CR_LF = len(CR_LF)
 
 	// Write/Flush Deadlines
