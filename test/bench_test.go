@@ -104,7 +104,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	bytes := 0
 
 	for {
-		c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := c.Read(buf)
 		if err != nil {
 			b.Errorf("Error on read: %v\n", err)
@@ -205,12 +205,12 @@ func Benchmark__PubTwoQueueSub(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, err := bw.Write(sendOp)
 		if err != nil {
-			b.Errorf("Received error on PUB write: %v\n", err)
+			b.Fatalf("Received error on PUB write: %v\n", err)
 		}
 	}
 	err := bw.Flush()
 	if err != nil {
-		b.Errorf("Received error on FLUSH write: %v\n", err)
+		b.Fatalf("Received error on FLUSH write: %v\n", err)
 	}
 
 	// Wait for connection to be drained
@@ -240,12 +240,12 @@ func Benchmark_PubFourQueueSub(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, err := bw.Write(sendOp)
 		if err != nil {
-			b.Errorf("Received error on PUB write: %v\n", err)
+			b.Fatalf("Received error on PUB write: %v\n", err)
 		}
 	}
 	err := bw.Flush()
 	if err != nil {
-		b.Errorf("Received error on FLUSH write: %v\n", err)
+		b.Fatalf("Received error on FLUSH write: %v\n", err)
 	}
 
 	// Wait for connection to be drained
