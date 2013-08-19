@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	VERSION = "go-0.3.6"
+	VERSION = "go-0.3.7"
 
 	DEFAULT_PORT = 4222
 	DEFAULT_HOST = "0.0.0.0"
