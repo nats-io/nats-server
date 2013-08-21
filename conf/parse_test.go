@@ -113,3 +113,20 @@ func TestSample3(t *testing.T) {
 	}
 	test(t, sample3, ex)
 }
+
+var sample4 = `
+  array [
+    { abc: 123 }
+    { xyz: "word" }
+  ]
+`
+
+func TestSample4(t *testing.T) {
+	ex := map[string]interface{}{
+		"array": []interface{}{
+			map[string]interface{}{"abc": int64(123)},
+			map[string]interface{}{"xyz": "word"},
+		},
+	}
+	test(t, sample4, ex)
+}

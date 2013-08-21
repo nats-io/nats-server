@@ -169,6 +169,7 @@ func (p *parser) setValue(val interface{}) {
 	// Array processing
 	if ctx, ok := p.ctx.([]interface{}); ok {
 		p.ctx = append(ctx, val)
+		p.ctxs[len(p.ctxs)-1] = p.ctx
 	}
 
 	// Map processing
