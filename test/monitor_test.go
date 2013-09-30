@@ -1,5 +1,3 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
-
 package test
 
 import (
@@ -112,7 +110,7 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT+1)
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 1)
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)

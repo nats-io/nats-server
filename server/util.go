@@ -51,6 +51,7 @@ func parseInt64(d []byte) (n int64) {
 	return n
 }
 
+// Helper to move from float seconds to time.Duration
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
 	return time.Duration(ttl)

@@ -1,5 +1,3 @@
-// Copyright 2013 Apcera Inc. All rights reserved.
-
 package test
 
 import (
