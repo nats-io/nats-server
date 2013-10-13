@@ -13,7 +13,7 @@ import (
 )
 
 type route struct {
-	remoteId   string
+	remoteID   string
 	didSolicit bool
 	url        *url.URL
 }
@@ -42,7 +42,7 @@ func (c *client) sendConnect() {
 		User:     user,
 		Pass:     pass,
 		Ssl:      false,
-		Name:     c.srv.info.Id,
+		Name:     c.srv.info.ID,
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
@@ -77,8 +77,8 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	Debug("Route sent local subscriptions", route.cid)
 }
 
-func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
-	didSolicit := rUrl != nil
+func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
+	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
 	c := &client{srv: s, nc: conn, opts: defaultOpts, typ: ROUTER, route: r}
 
@@ -92,7 +92,7 @@ func (s *Server) createRoute(conn net.Conn, rUrl *url.URL) *client {
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
-		r.url = rUrl
+		r.url = rURL
 		Debug("Route connect msg sent", clientConnStr(c.nc), c.cid)
 		c.sendConnect()
 	}
@@ -250,7 +250,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 // and will actively try to connect to listed routes.
 func (s *Server) StartRouting() {
 	info := Info{
-		Id:           s.info.Id,
+		ID:           s.info.ID,
 		Version:      s.info.Version,
 		Host:         s.opts.ClusterHost,
 		Port:         s.opts.ClusterPort,
@@ -268,7 +268,7 @@ func (s *Server) StartRouting() {
 	if err != nil {
 		Fatalf("Error marshalling Route INFO JSON: %+v\n", err)
 	}
-	s.routeInfoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
+	s.routeInfoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
 	// Spin up the accept loop
 	ch := make(chan struct{})

@@ -39,7 +39,7 @@ func TestConfigFile(t *testing.T) {
 		Debug:       false,
 		Trace:       true,
 		Logtime:     false,
-		HttpPort:    8222,
+		HTTPPort:    8222,
 		LogFile:     "/tmp/gnatsd.log",
 		PidFile:     "/tmp/gnatsd.pid",
 	}
@@ -65,7 +65,7 @@ func TestMergeOverrides(t *testing.T) {
 		Debug:       true,
 		Trace:       true,
 		Logtime:     false,
-		HttpPort:    DEFAULT_HTTP_PORT,
+		HTTPPort:    DEFAULT_HTTP_PORT,
 		LogFile:     "/tmp/gnatsd.log",
 		PidFile:     "/tmp/gnatsd.pid",
 	}
@@ -79,7 +79,7 @@ func TestMergeOverrides(t *testing.T) {
 		Port:     2222,
 		Password: "spooky",
 		Debug:    true,
-		HttpPort: DEFAULT_HTTP_PORT,
+		HTTPPort: DEFAULT_HTTP_PORT,
 	}
 	merged := MergeOptions(fopts, opts)
 

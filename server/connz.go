@@ -8,14 +8,16 @@ import (
 	"net/http"
 )
 
+// Connz represents detail information on current connections.
 type Connz struct {
 	NumConns int         `json:"num_connections"`
 	Conns    []*ConnInfo `json:"connections"`
 }
 
+// ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
 	Cid      uint64 `json:"cid"`
-	Ip       string `json:"ip"`
+	IP       string `json:"ip"`
 	Port     int    `json:"port"`
 	Subs     uint32 `json:"subscriptions"`
 	Pending  int    `json:"pending_size"`
@@ -25,6 +27,7 @@ type ConnInfo struct {
 	OutBytes int64  `json:"out_bytes"`
 }
 
+// HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c := Connz{Conns: []*ConnInfo{}}
 
@@ -42,7 +45,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		if ip, ok := client.nc.(*net.TCPConn); ok {
 			addr := ip.RemoteAddr().(*net.TCPAddr)
 			ci.Port = addr.Port
-			ci.Ip = addr.IP.String()
+			ci.IP = addr.IP.String()
 		}
 		c.Conns = append(c.Conns, ci)
 	}

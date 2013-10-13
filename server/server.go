@@ -14,13 +14,16 @@ import (
 	"sync"
 	"time"
 
+	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
 	"github.com/apcera/gnatsd/sublist"
 )
 
+// Info is the information sent to clients to help them understand information
+// about this server.
 type Info struct {
-	Id           string `json:"server_id"`
+	ID           string `json:"server_id"`
 	Version      string `json:"version"`
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
@@ -29,10 +32,11 @@ type Info struct {
 	MaxPayload   int    `json:"max_payload"`
 }
 
+// Server is our main struct.
 type Server struct {
 	mu       sync.Mutex
 	info     Info
-	infoJson []byte
+	infoJSON []byte
 	sl       *sublist.Sublist
 	gcid     uint64
 	opts     *Options
@@ -50,7 +54,7 @@ type Server struct {
 	routeListener net.Listener
 	grid          uint64
 	routeInfo     Info
-	routeInfoJson []byte
+	routeInfoJSON []byte
 	rcQuit        chan bool
 }
 
@@ -61,10 +65,11 @@ type stats struct {
 	outBytes int64
 }
 
+// New will setup a new server struct after parsing the options.
 func New(opts *Options) *Server {
 	processOptions(opts)
 	info := Info{
-		Id:           genId(),
+		ID:           genID(),
 		Version:      VERSION,
 		Host:         opts.Host,
 		Port:         opts.Port,
@@ -107,7 +112,7 @@ func New(opts *Options) *Server {
 	if err != nil {
 		Fatalf("Error marshalling INFO JSON: %+v\n", err)
 	}
-	s.infoJson = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
+	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
 	s.handleSignals()
 
@@ -118,12 +123,13 @@ func New(opts *Options) *Server {
 	return s
 }
 
+// PrintAndDie is exported for access in other packages.
 func PrintAndDie(msg string) {
 	fmt.Fprintf(os.Stderr, "%s\n", msg)
 	os.Exit(1)
 }
 
-// Print our version and exit
+// PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
 	fmt.Printf("%s\n", VERSION)
 	os.Exit(0)
@@ -171,7 +177,7 @@ func (s *Server) Start() {
 	}
 
 	// Start up the http server if needed.
-	if s.opts.HttpPort != 0 {
+	if s.opts.HTTPPort != 0 {
 		s.StartHTTPMonitoring()
 	}
 
@@ -242,6 +248,7 @@ func (s *Server) Shutdown() {
 	}
 }
 
+// AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
 	Logf("Listening for client connections on %s", hp)
@@ -283,6 +290,7 @@ func (s *Server) AcceptLoop() {
 	s.done <- true
 }
 
+// StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
 	Logf("Starting profiling on http port %d", s.opts.ProfPort)
 
@@ -292,10 +300,11 @@ func (s *Server) StartProfiler() {
 	}()
 }
 
+// StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Logf("Starting http monitor on port %d", s.opts.HttpPort)
+	Logf("Starting http monitor on port %d", s.opts.HTTPPort)
 
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HttpPort)
+	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 
 	l, err := net.Listen("tcp", hp)
 	if err != nil {
@@ -362,9 +371,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 func (s *Server) sendInfo(c *client) {
 	switch c.typ {
 	case CLIENT:
-		c.nc.Write(s.infoJson)
+		c.nc.Write(s.infoJSON)
 	case ROUTER:
-		c.nc.Write(s.routeInfoJson)
+		c.nc.Write(s.routeInfoJSON)
 	}
 }
 

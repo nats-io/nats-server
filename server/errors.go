@@ -5,6 +5,9 @@ package server
 import "errors"
 
 var (
+	// ErrConnectionClosed represents error condition on a closed connection.
 	ErrConnectionClosed = errors.New("Connection closed")
-	ErrAuthorization    = errors.New("Authorization Error")
+
+	// ErrAuthorization represents error condition on failed authorization.
+	ErrAuthorization = errors.New("Authorization Error")
 )

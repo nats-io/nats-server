@@ -10,12 +10,13 @@ import (
 	"sync/atomic"
 )
 
-// logging functionality, compatible with original nats-server
+// logging functionality, compatible with the original nats-server.
 
 var trace int32
 var debug int32
 var nolog int32
 
+// LogSetup will properly setup logging and the logging flags.
 func LogSetup() {
 	log.SetFlags(0)
 	atomic.StoreInt32(&nolog, 0)
@@ -23,6 +24,7 @@ func LogSetup() {
 	atomic.StoreInt32(&trace, 0)
 }
 
+// LogInit parses option flags and sets up logging.
 func (s *Server) LogInit() {
 	// Reset
 	LogSetup()

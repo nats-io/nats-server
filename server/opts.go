@@ -13,6 +13,7 @@ import (
 	"github.com/apcera/gnatsd/conf"
 )
 
+// Options block for gnatsd server.
 type Options struct {
 	Host               string        `json:"addr"`
 	Port               int           `json:"port"`
@@ -27,7 +28,7 @@ type Options struct {
 	Authorization      string        `json:"-"`
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
-	HttpPort           int           `json:"http_port"`
+	HTTPPort           int           `json:"http_port"`
 	SslTimeout         float64       `json:"ssl_timeout"`
 	AuthTimeout        float64       `json:"auth_timeout"`
 	MaxControlLine     int           `json:"max_control_line"`
@@ -49,6 +50,7 @@ type authorization struct {
 	timeout float64
 }
 
+// ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
 	opts := &Options{}
@@ -59,7 +61,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 
 	data, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		return nil, fmt.Errorf("Error opening config file: %v", err)
+		return nil, fmt.Errorf("error opening config file: %v", err)
 	}
 
 	m, err := conf.Parse(string(data))
@@ -86,7 +88,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
 		case "http_port", "monitor_port":
-			opts.HttpPort = int(v.(int64))
+			opts.HTTPPort = int(v.(int64))
 		case "cluster":
 			cm := v.(map[string]interface{})
 			if err := parseCluster(cm, opts); err != nil {
@@ -119,10 +121,10 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			ra := mv.([]interface{})
 			opts.Routes = make([]*url.URL, 0, len(ra))
 			for _, r := range ra {
-				routeUrl := r.(string)
-				url, err := url.Parse(routeUrl)
+				routeURL := r.(string)
+				url, err := url.Parse(routeURL)
 				if err != nil {
-					return fmt.Errorf("Error parsing route url [%q]", routeUrl)
+					return fmt.Errorf("error parsing route url [%q]", routeURL)
 				}
 				opts.Routes = append(opts.Routes, url)
 			}
@@ -154,7 +156,8 @@ func parseAuthorization(am map[string]interface{}) authorization {
 	return auth
 }
 
-// Will merge two options giving preference to the flagOpts if the item is present.
+// MergeOptions will merge two options giving preference to the flagOpts
+// if the item is present.
 func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if fileOpts == nil {
 		return flagOpts
@@ -180,8 +183,8 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Authorization != "" {
 		opts.Authorization = flagOpts.Authorization
 	}
-	if flagOpts.HttpPort != 0 {
-		opts.HttpPort = flagOpts.HttpPort
+	if flagOpts.HTTPPort != 0 {
+		opts.HTTPPort = flagOpts.HTTPPort
 	}
 	if flagOpts.Debug {
 		opts.Debug = true

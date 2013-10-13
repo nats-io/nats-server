@@ -30,6 +30,7 @@ Common options:
     -v, --version                    Show version
 `
 
+// Usage will print out the flag options for the server.
 func Usage() {
 	fmt.Printf("%s\n", usageStr)
 	os.Exit(0)

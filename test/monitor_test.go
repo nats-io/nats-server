@@ -16,7 +16,7 @@ const MONITOR_PORT = 11422
 func runMonitorServer(monitorPort int) *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = MONITOR_PORT
-	opts.HttpPort = monitorPort
+	opts.HTTPPort = monitorPort
 	return RunServer(&opts)
 }
 
@@ -178,8 +178,8 @@ func TestConnz(t *testing.T) {
 	if ci.Cid == 0 {
 		t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
 	}
-	if ci.Ip != "127.0.0.1" {
-		t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.Ip)
+	if ci.IP != "127.0.0.1" {
+		t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.IP)
 	}
 	if ci.Port == 0 {
 		t.Fatalf("Expected non-zero port, got %v\n", ci.Port)

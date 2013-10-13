@@ -12,12 +12,13 @@ import (
 	"time"
 )
 
+// Varz will output server information on the monitoring port at /varz.
 type Varz struct {
 	Start       time.Time `json:"start"`
 	Options     *Options  `json:"options"`
 	Mem         int64     `json:"mem"`
 	Cores       int       `json:"cores"`
-	Cpu         float64   `json:"cpu"`
+	CPU         float64   `json:"cpu"`
 	Connections int       `json:"connections"`
 	InMsgs      int64     `json:"in_msgs"`
 	OutMsgs     int64     `json:"out_msgs"`
@@ -27,11 +28,12 @@ type Varz struct {
 }
 
 type usage struct {
-	Cpu   float32
+	CPU   float32
 	Cores int
 	Mem   int64
 }
 
+// HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v := Varz{Start: s.start, Options: s.opts}
 	v.Uptime = time.Since(s.start).String()
@@ -62,5 +64,5 @@ func updateUsage(v *Varz) {
 		// FIXME(dlc): Log?
 		return
 	}
-	fmt.Sscanf(string(out), "%f %d", &v.Cpu, &v.Mem)
+	fmt.Sscanf(string(out), "%f %d", &v.CPU, &v.Mem)
 }

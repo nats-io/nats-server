@@ -24,8 +24,11 @@ const (
 	msgHeadProto   = "MSG "
 )
 
+// Type of client
 const (
+	// CLIENT is an end user.
 	CLIENT = iota
+	// ROUTER is another routers in the cluster.
 	ROUTER
 )
 
@@ -145,7 +148,7 @@ func (c *client) readLoop() {
 			return
 		}
 		// Check pending clients for flush.
-		for cp, _ := range c.pcd {
+		for cp := range c.pcd {
 			// Flush those in the set
 			cp.mu.Lock()
 			if cp.nc != nil {
@@ -201,13 +204,13 @@ func (c *client) processConnect(arg []byte) error {
 		// Check for Auth
 		if ok := c.srv.checkAuth(c); !ok {
 			c.sendErr("Authorization is Required")
-			return fmt.Errorf("Authorization Error")
+			return fmt.Errorf("authorization error")
 		}
 	}
 
 	// Copy over name if router.
 	if c.typ == ROUTER && c.route != nil {
-		c.route.remoteId = c.opts.Name
+		c.route.remoteID = c.opts.Name
 	}
 
 	if c.opts.Verbose {
@@ -663,14 +666,16 @@ func (c *client) processMsg(msg []byte) {
 				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
 
-			if sub.client == nil || sub.client.route == nil || sub.client.route.remoteId == "" {
-				Debug("Bad or Missing ROUTER Identity, not processing msg", clientConnStr(c.nc), c.cid)
+			if sub.client == nil || sub.client.route == nil ||
+				sub.client.route.remoteID == "" {
+				Debug("Bad or Missing ROUTER Identity, not processing msg",
+					clientConnStr(c.nc), c.cid)
 				continue
 			}
-			if _, ok := rmap[sub.client.route.remoteId]; ok {
+			if _, ok := rmap[sub.client.route.remoteID]; ok {
 				continue
 			}
-			rmap[sub.client.route.remoteId] = routeSeen
+			rmap[sub.client.route.remoteID] = routeSeen
 		}
 
 		mh := c.msgHeader(msgh[:si], sub)

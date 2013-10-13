@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func genId() string {
+func genID() string {
 	u := make([]byte, 16)
 	io.ReadFull(rand.Reader, u)
 	return hex.EncodeToString(u)
