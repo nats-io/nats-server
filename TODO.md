@@ -8,3 +8,4 @@
 - [ ] Pedantic state
 - [ ] Daemon mode?
 - [ ] Connz report routes
+- [ ] Info updates contain other implicit route servers
