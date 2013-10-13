@@ -3,7 +3,8 @@
 # General
 
 - [ ] Syslog support
-- [ ] TLS
+- [ ] SSL/TLS
 - [ ] nats-top equivalent
 - [ ] Pedantic state
 - [ ] Daemon mode?
+- [ ] Connz report routes
