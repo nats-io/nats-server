@@ -199,6 +199,13 @@ func (s *Server) Start() {
 // and closing all associated clients.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
+
+	// Prevent issues with multiple calls.
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
+
 	s.running = false
 
 	// Copy off the clients

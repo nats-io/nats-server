@@ -31,3 +31,9 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
 	}
 }
+
+func TestGoServerMultiShutdown(t *testing.T) {
+	s := runDefaultServer()
+	s.Shutdown()
+	s.Shutdown()
+}
