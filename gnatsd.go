@@ -21,11 +21,11 @@ func main() {
 	var configFile string
 
 	// Parse flags
-	flag.IntVar(&opts.Port, "port", server.DEFAULT_PORT, "Port to listen on.")
-	flag.IntVar(&opts.Port, "p", server.DEFAULT_PORT, "Port to listen on.")
-	flag.StringVar(&opts.Host, "addr", server.DEFAULT_HOST, "Network host to listen on.")
-	flag.StringVar(&opts.Host, "a", server.DEFAULT_HOST, "Network host to listen on.")
-	flag.StringVar(&opts.Host, "net", server.DEFAULT_HOST, "Network host to listen on.")
+	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
+	flag.IntVar(&opts.Port, "p", 0, "Port to listen on.")
+	flag.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
+	flag.StringVar(&opts.Host, "a", "", "Network host to listen on.")
+	flag.StringVar(&opts.Host, "net", "", "Network host to listen on.")
 	flag.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	flag.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
@@ -73,20 +73,18 @@ func main() {
 		}
 	}
 
-	var fileOpts *server.Options
-	var err error
-
 	// Parse config if given
 	if configFile != "" {
-		fileOpts, err = server.ProcessConfigFile(configFile)
+		fileOpts, err := server.ProcessConfigFile(configFile)
 		if err != nil {
 			server.PrintAndDie(err.Error())
 		}
+		opts = *server.MergeOptions(fileOpts, &opts)
 	}
 
 	// Create the server with appropriate options.
-	s := server.New(server.MergeOptions(fileOpts, &opts))
+	s := server.New(&opts)
 
-	// Start things up. Block here til done.
+	// Start things up. Block here until done.
 	s.Start()
 }
