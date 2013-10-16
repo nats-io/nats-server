@@ -8,7 +8,7 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "go-0.3.8"
+	VERSION = "go-0.4.0"
 
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
