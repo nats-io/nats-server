@@ -63,6 +63,11 @@ const (
 	OP_MSG
 	OP_MSG_SPC
 	MSG_ARG
+	OP_I
+	OP_IN
+	OP_INF
+	OP_INFO
+	INFO_ARG
 )
 
 func (c *client) parse(buf []byte) error {
@@ -90,6 +95,8 @@ func (c *client) parse(buf []byte) error {
 				c.state = OP_U
 			case 'M', 'm':
 				c.state = OP_M
+			case 'I', 'i':
+				c.state = OP_I
 			default:
 				goto parseErr
 			}
@@ -433,6 +440,45 @@ func (c *client) parse(buf []byte) error {
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
 				}
+			}
+		case OP_I:
+			switch b {
+			case 'N', 'n':
+				c.state = OP_IN
+			default:
+				goto parseErr
+			}
+		case OP_IN:
+			switch b {
+			case 'F', 'f':
+				c.state = OP_INF
+			default:
+				goto parseErr
+			}
+		case OP_INF:
+			switch b {
+			case 'O', 'o':
+				c.state = OP_INFO
+			default:
+				goto parseErr
+			}
+		case OP_INFO:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = INFO_ARG
+				c.as = i
+			}
+		case INFO_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				if err := c.processInfo(buf[c.as : i-c.drop]); err != nil {
+					return err
+				}
+				c.drop, c.state = 0, OP_START
 			}
 		default:
 			goto parseErr

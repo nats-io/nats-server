@@ -189,6 +189,11 @@ func (c *client) traceOp(op string, arg []byte) {
 	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
 }
 
+func (c *client) processInfo(arg []byte) error {
+	// TODO(dlc) - process INFO
+	return nil
+}
+
 func (c *client) processConnect(arg []byte) error {
 	c.traceOp("CONNECT", arg)
 

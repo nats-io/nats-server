@@ -51,8 +51,8 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
-	_, expect := setupRoute(t, rc, opts)
-	buf := expect(infoRe)
+	routeSend, routeExpect := setupRoute(t, rc, opts)
+	buf := routeExpect(infoRe)
 
 	info := server.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
@@ -66,6 +66,11 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 		t.Fatalf("Received wrong information for port, expected %d, got %d",
 			info.Port, opts.ClusterPort)
 	}
+
+	// Now send it back and make sure it is processed correctly inbound.
+	routeSend(string(buf))
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 }
 
 func TestSendRouteSubAndUnsub(t *testing.T) {
