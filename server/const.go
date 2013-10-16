@@ -63,6 +63,9 @@ const (
 	// DEFAULT_ROUTE_CONNECT Route solicitation intervals.
 	DEFAULT_ROUTE_CONNECT = 1 * time.Second
 
+	// DEFAULT_ROUTE_RECONNECT Route reconnect intervals.
+	DEFAULT_ROUTE_RECONNECT = 1 * time.Second
+
 	// DEFAULT_ROUTE_DIAL Route dial timeout.
 	DEFAULT_ROUTE_DIAL = 1 * time.Second
 

@@ -26,6 +26,15 @@ type parseState struct {
 
 const (
 	OP_START = iota
+	OP_PLUS
+	OP_PLUS_O
+	OP_PLUS_OK
+	OP_MINUS
+	OP_MINUS_E
+	OP_MINUS_ER
+	OP_MINUS_ERR
+	OP_MINUS_ERR_SPC
+	MINUS_ERR_ARG
 	OP_C
 	OP_CO
 	OP_CON
@@ -85,8 +94,6 @@ func (c *client) parse(buf []byte) error {
 				goto authErr
 			}
 			switch b {
-			case 'C', 'c':
-				c.state = OP_C
 			case 'P', 'p':
 				c.state = OP_P
 			case 'S', 's':
@@ -95,8 +102,14 @@ func (c *client) parse(buf []byte) error {
 				c.state = OP_U
 			case 'M', 'm':
 				c.state = OP_M
+			case 'C', 'c':
+				c.state = OP_C
 			case 'I', 'i':
 				c.state = OP_I
+			case '+':
+				c.state = OP_PLUS
+			case '-':
+				c.state = OP_MINUS
 			default:
 				goto parseErr
 			}
@@ -480,12 +493,86 @@ func (c *client) parse(buf []byte) error {
 				}
 				c.drop, c.state = 0, OP_START
 			}
+		case OP_PLUS:
+			switch b {
+			case 'O', 'o':
+				c.state = OP_PLUS_O
+			default:
+				goto parseErr
+			}
+		case OP_PLUS_O:
+			switch b {
+			case 'K', 'k':
+				c.state = OP_PLUS_OK
+			default:
+				goto parseErr
+			}
+		case OP_PLUS_OK:
+			switch b {
+			case '\n':
+				c.drop, c.state = 0, OP_START
+			}
+		case OP_MINUS:
+			switch b {
+			case 'E', 'e':
+				c.state = OP_MINUS_E
+			default:
+				goto parseErr
+			}
+		case OP_MINUS_E:
+			switch b {
+			case 'R', 'r':
+				c.state = OP_MINUS_ER
+			default:
+				goto parseErr
+			}
+		case OP_MINUS_ER:
+			switch b {
+			case 'R', 'r':
+				c.state = OP_MINUS_ERR
+			default:
+				goto parseErr
+			}
+		case OP_MINUS_ERR:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_MINUS_ERR_SPC
+			default:
+				goto parseErr
+			}
+		case OP_MINUS_ERR_SPC:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = MINUS_ERR_ARG
+				c.as = i
+			}
+		case MINUS_ERR_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				c.processErr(string(arg))
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
+			}
 		default:
 			goto parseErr
 		}
 	}
 	// Check for split buffer scenarios for SUB and UNSUB and PUB
-	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG) && c.argBuf == nil {
+	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG || c.state == MINUS_ERR_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:(i+1)-c.drop]...)
 		// FIXME, check max len

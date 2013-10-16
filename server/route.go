@@ -80,7 +80,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
-	c := &client{srv: s, nc: conn, opts: defaultOpts, typ: ROUTER, route: r}
+	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
 	// Grab lock
 	c.mu.Lock()
@@ -277,6 +277,11 @@ func (s *Server) StartRouting() {
 
 	// Solicit Routes if needed.
 	s.solicitRoutes()
+}
+
+func (s *Server) reConnectToRoute(rUrl *url.URL) {
+	time.Sleep(DEFAULT_ROUTE_RECONNECT)
+	s.connectToRoute(rUrl)
 }
 
 func (s *Server) connectToRoute(rUrl *url.URL) {

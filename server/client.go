@@ -142,9 +142,12 @@ func (c *client) readLoop() {
 			return
 		}
 		if err := c.parse(b[:n]); err != nil {
-			Log(err.Error(), clientConnStr(c.nc), c.cid)
-			c.sendErr("Parser Error")
-			c.closeConnection()
+			Log(err, clientConnStr(c.nc), c.cid)
+			// Auth was handled inline
+			if err != ErrAuthorization {
+				c.sendErr("Parser Error")
+				c.closeConnection()
+			}
 			return
 		}
 		// Check pending clients for flush.
@@ -194,6 +197,11 @@ func (c *client) processInfo(arg []byte) error {
 	return nil
 }
 
+func (c *client) processErr(errStr string) {
+	Log(errStr, clientConnStr(c.nc), c.cid)
+	c.closeConnection()
+}
+
 func (c *client) processConnect(arg []byte) error {
 	c.traceOp("CONNECT", arg)
 
@@ -208,11 +216,10 @@ func (c *client) processConnect(arg []byte) error {
 	if c.srv != nil {
 		// Check for Auth
 		if ok := c.srv.checkAuth(c); !ok {
-			c.sendErr("Authorization is Required")
-			return fmt.Errorf("authorization error")
+			c.authViolation()
+			return ErrAuthorization
 		}
 	}
-
 	// Copy over name if router.
 	if c.typ == ROUTER && c.route != nil {
 		c.route.remoteID = c.opts.Name
@@ -225,7 +232,7 @@ func (c *client) processConnect(arg []byte) error {
 }
 
 func (c *client) authViolation() {
-	c.sendErr("Authorization is Required")
+	c.sendErr("Authorization Violation")
 	c.closeConnection()
 }
 
@@ -824,6 +831,6 @@ func (c *client) closeConnection() {
 
 	// Check for a solicited route. If it was, start up a reconnect.
 	if c.isSolicitedRoute() {
-		go srv.connectToRoute(c.route.url)
+		go srv.reConnectToRoute(c.route.url)
 	}
 }
