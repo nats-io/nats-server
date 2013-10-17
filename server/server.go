@@ -131,7 +131,7 @@ func PrintAndDie(msg string) {
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("%s\n", VERSION)
+	fmt.Printf("gnatsd version %s\n", VERSION)
 	os.Exit(0)
 }
 
