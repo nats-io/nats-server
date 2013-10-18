@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var startRe = regexp.MustCompile(`\["Starting nats-server version\s+([^\s]+)"\]\n`)
+var startRe = regexp.MustCompile(`\["Starting gnatsd version\s+([^\s]+)"\]\n`)
 
 func TestLogFile(t *testing.T) {
 	opts := DefaultTestOptions

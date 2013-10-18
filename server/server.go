@@ -118,7 +118,7 @@ func New(opts *Options) *Server {
 
 	s.handleSignals()
 
-	Logf("Starting nats-server version %s", VERSION)
+	Logf("Starting gnatsd version %s", VERSION)
 
 	s.running = true
 
@@ -267,7 +267,7 @@ func (s *Server) AcceptLoop() {
 		return
 	}
 
-	Logf("nats-server is ready")
+	Logf("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
