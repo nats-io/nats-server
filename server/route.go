@@ -60,13 +60,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	b := bytes.Buffer{}
 
 	s.mu.Lock()
-	clients := make(map[uint64]*client)
-	for i, c := range s.clients {
-		clients[i] = c
-	}
-	s.mu.Unlock()
-
-	for _, client := range clients {
+	for _, client := range s.clients {
 		client.mu.Lock()
 		subs := client.subs.All()
 		client.mu.Unlock()
@@ -78,6 +72,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 			}
 		}
 	}
+	s.mu.Unlock()
 
 	route.mu.Lock()
 	defer route.mu.Unlock()
