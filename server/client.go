@@ -177,7 +177,7 @@ func (c *client) readLoop() {
 
 func (c *client) traceMsg(msg []byte) {
 	pm := fmt.Sprintf("Processing %s msg: %d", c.typeString(), c.inMsgs)
-	opa := []interface{}{pm, string(c.pa.subject), string(c.pa.reply), string(msg)}
+	opa := []interface{}{pm, string(c.pa.subject), string(c.pa.reply), string(msg[:len(msg)-LEN_CR_LF])}
 	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
 }
 
