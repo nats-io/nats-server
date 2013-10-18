@@ -192,8 +192,35 @@ func (c *client) traceOp(op string, arg []byte) {
 	Trace(logStr(opa), fmt.Sprintf("c: %d", c.cid))
 }
 
+// Process the info message if we are a route.
+func (c *client) processRouteInfo(info *Info) {
+	if c.route == nil {
+		return
+	}
+	c.route.remoteID = info.ID
+	// Check to see if we have this remote already registered.
+	// This can happen when both servers have routes to each other.
+	if c.srv.isDuplicateRemote(info.ID) {
+		Debug("Detected duplicate remote route", info.ID, clientConnStr(c.nc), c.cid)
+		c.closeConnection()
+	} else {
+		s := c.srv
+		s.mu.Lock()
+		s.remotes[info.ID] = c
+		s.mu.Unlock()
+		Debug("Registering remote route", info.ID)
+	}
+}
+
+// Process the information messages from clients and other routes.
 func (c *client) processInfo(arg []byte) error {
-	// TODO(dlc) - process INFO
+	info := Info{}
+	if err := json.Unmarshal(arg, &info); err != nil {
+		return err
+	}
+	if c.typ == ROUTER {
+		c.processRouteInfo(&info)
+	}
 	return nil
 }
 
@@ -220,7 +247,8 @@ func (c *client) processConnect(arg []byte) error {
 			return ErrAuthorization
 		}
 	}
-	// Copy over name if router.
+
+	// Grab connection name of remote route.
 	if c.typ == ROUTER && c.route != nil {
 		c.route.remoteID = c.opts.Name
 	}
@@ -677,7 +705,6 @@ func (c *client) processMsg(msg []byte) {
 			if rmap == nil {
 				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
-
 			if sub.client == nil || sub.client.route == nil ||
 				sub.client.route.remoteID == "" {
 				Debug("Bad or Missing ROUTER Identity, not processing msg",
@@ -685,6 +712,7 @@ func (c *client) processMsg(msg []byte) {
 				continue
 			}
 			if _, ok := rmap[sub.client.route.remoteID]; ok {
+				Debug("Ignoring route, already processed", c.cid)
 				continue
 			}
 			rmap[sub.client.route.remoteID] = routeSeen
@@ -804,6 +832,7 @@ func (c *client) closeConnection() {
 		return
 	}
 
+	// FIXME(dlc) - This creates garbage for no reason.
 	dbgString := fmt.Sprintf("%s connection closed", c.typeString())
 	Debug(dbgString, clientConnStr(c.nc), c.cid)
 
@@ -829,8 +858,16 @@ func (c *client) closeConnection() {
 		}
 	}
 
-	// Check for a solicited route. If it was, start up a reconnect.
+	// Check for a solicited route. If it was, start up a reconnect unless
+	// we are already connected to the other end.
 	if c.isSolicitedRoute() {
-		go srv.reConnectToRoute(c.route.url)
+		rid := c.route.remoteID
+		if rid != "" && c.srv.remotes[rid] != nil {
+			Debug("Not attempting reconnect for solicited route, already connected.", rid)
+			return
+		} else {
+			Debug("Attempting reconnect for solicited route", c.cid)
+			go srv.reConnectToRoute(c.route.url)
+		}
 	}
 }

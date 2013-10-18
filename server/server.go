@@ -46,6 +46,7 @@ type Server struct {
 	listener net.Listener
 	clients  map[uint64]*client
 	routes   map[uint64]*client
+	remotes  map[string]*client
 	done     chan bool
 	start    time.Time
 	http     net.Listener
@@ -100,8 +101,9 @@ func New(opts *Options) *Server {
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
-	// For tracking routes
+	// For tracking routes and their remote ids
 	s.routes = make(map[uint64]*client)
+	s.remotes = make(map[string]*client)
 
 	// Used to kick out all of the route
 	// connect Go routines.
@@ -422,6 +424,7 @@ func (s *Server) checkAuth(c *client) bool {
 	}
 }
 
+// Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
 	c.mu.Lock()
 	cid := c.cid
@@ -434,6 +437,34 @@ func (s *Server) removeClient(c *client) {
 		delete(s.clients, cid)
 	case ROUTER:
 		delete(s.routes, cid)
+		if c.route != nil {
+			delete(s.remotes, c.route.remoteID)
+		}
 	}
 	s.mu.Unlock()
+}
+
+/////////////////////////////////////////////////////////////////
+// These are some helpers for accounting in functional tests.
+/////////////////////////////////////////////////////////////////
+
+// NumRoutes will report the number of registered routes.
+func (s *Server) NumRoutes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.routes)
+}
+
+// NumRemotes will report number of registered remotes.
+func (s *Server) NumRemotes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.remotes)
+}
+
+// NumClients will report the number of registered clients.
+func (s *Server) NumClients() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.clients)
 }

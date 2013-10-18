@@ -53,10 +53,20 @@ func (c *client) sendConnect() {
 	c.bw.Flush()
 }
 
+// This will send local subscription state to a new route connection.
+// FIXME(dlc) - This could be a DOS or perf issue with many clients
+// and large subscription space. Plus buffering in place not a good idea.
 func (s *Server) sendLocalSubsToRoute(route *client) {
 	b := bytes.Buffer{}
 
-	for _, client := range s.clients {
+	s.mu.Lock()
+	clients := make(map[uint64]*client)
+	for i, c := range s.clients {
+		clients[i] = c
+	}
+	s.mu.Unlock()
+
+	for _, client := range clients {
 		client.mu.Lock()
 		subs := client.subs.All()
 		client.mu.Unlock()
@@ -174,7 +184,15 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
+func (s *Server) isDuplicateRemote(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.remotes[id]
+	return ok
+}
+
 func (s *Server) broadcastToRoutes(proto string) {
+	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
 		route.mu.Lock()
@@ -182,6 +200,7 @@ func (s *Server) broadcastToRoutes(proto string) {
 		route.bw.Flush()
 		route.mu.Unlock()
 	}
+	s.mu.Unlock()
 }
 
 // broadcastSubscribe will forward a client subscription
