@@ -78,6 +78,16 @@ pid_file: "/tmp/gnatsd.pid"
 ```
 
 
+## Nats client libraries
+
+There are several client language bindings.
+- [Go](https://github.com/apcera/nats)
+- [Java](https://github.com/tyagihas/java_nats)
+- [Java - Spring](https://github.com/mheath/jnats)
+- [Node.js](https://github.com/derekcollison/node_nats)
+- [Ruby](https://github.com/derekcollison/nats)
+
+
 ## License
 
 (The MIT License)
