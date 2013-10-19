@@ -2,7 +2,7 @@
 
 A High Performance [NATS](https://github.com/derekcollison/nats) Server written in [Go.](http://golang.org)
 
-[![Build Status](https://secure.travis-ci.org/apcera/gnatsd.png)](http://travis-ci.org/apcera/gnatsd)
+[![Build Status](https://secure.travis-ci.org/apcera/gnatsd.png?branch=master)](http://travis-ci.org/apcera/gnatsd)
 
 ## Usage
 
