@@ -65,4 +65,5 @@ func updateUsage(v *Varz) {
 		return
 	}
 	fmt.Sscanf(string(out), "%f %d", &v.CPU, &v.Mem)
+	v.Mem *= 1024 // 1k blocks, want bytes.
 }
