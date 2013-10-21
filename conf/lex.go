@@ -5,7 +5,7 @@
 // Rob Pike's talk: http://cuddle.googlecode.com/hg/talk/lex.html
 
 // The format supported is less restrictive than today's formats.
-// Supports mixed Arrays [], nexted Maps {}, multiple comment types (# and //)
+// Supports mixed Arrays [], nested Maps {}, multiple comment types (# and //)
 // Also supports key value assigments using '=' or ':' or whiteSpace()
 //   e.g. foo = 2, foo : 2, foo 2
 // maps can be assigned with no key separator as well
