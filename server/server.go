@@ -39,6 +39,7 @@ type Server struct {
 	info     Info
 	infoJSON []byte
 	sl       *sublist.Sublist
+	_	 uint32
 	gcid     uint64
 	opts     *Options
 	trace    bool
@@ -95,8 +96,8 @@ func New(opts *Options) *Server {
 
         // Make sure gcid is properly aligned (on 32bit machines)
         offs := unsafe.Offsetof(s.gcid)
-        if offs % 0x7 != 0x0 {
-            PrintAndDie(fmt.Sprintf("can't run on this machine - gcid not properly aligned (%02x)\n", offs))
+        if offs & 0x7 != 0x0 {
+            PrintAndDie(fmt.Sprintf("can't run on this machine - gcid not properly aligned (offset %02x/%02x)\n", offs, offs & 0x7))
         }
 
 	s.mu.Lock()
