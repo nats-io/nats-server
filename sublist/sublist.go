@@ -1,5 +1,8 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2013 Apcera Inc. All rights reserved.
 
+// Sublist is a subject distribution data structure that can match subjects to
+// interested subscribers. Subscribers can have wildcard subjects to match
+// multiple published subjects.
 package sublist
 
 import (

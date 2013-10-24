@@ -1,8 +1,9 @@
 // Copyright 2013 Apcera Inc. All rights reserved.
 
-// Parser will return a map of keys to interface{}, although concrete types
-// underly them. The values supported are string, bool, int64, float64, DateTime.
-// Arrays and nested Maps are also supported.
+// Conf is a configuration file format used by gnatsd. It is
+// a flexible format that combines the best of traditional
+// configuration formats and newer styles such as JSON and YAML.
+package conf
 
 // The format supported is less restrictive than today's formats.
 // Supports mixed Arrays [], nested Maps {}, multiple comment types (# and //)
@@ -13,14 +14,15 @@
 //
 // see parse_test.go for more examples.
 
-package conf
-
 import (
 	"fmt"
 	"strconv"
 	"time"
 )
 
+// Parser will return a map of keys to interface{}, although concrete types
+// underly them. The values supported are string, bool, int64, float64, DateTime.
+// Arrays and nested Maps are also supported.
 type parser struct {
 	mapping map[string]interface{}
 	lx      *lexer
