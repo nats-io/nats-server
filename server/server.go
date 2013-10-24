@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+        "unsafe"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -91,6 +92,12 @@ func New(opts *Options) *Server {
 		done:  make(chan bool, 1),
 		start: time.Now(),
 	}
+
+        // Make sure gcid is properly aligned (on 32bit machines)
+        offs := unsafe.Offsetof(s.gcid)
+        if offs % 0x7 != 0x0 {
+            PrintAndDie(fmt.Sprintf("can't run on this machine - gcid not properly aligned (%02x)\n", offs))
+        }
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
