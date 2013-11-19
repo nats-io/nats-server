@@ -545,7 +545,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		}
 	}
 
-	if sub.client.nc == nil {
+	if client.nc == nil {
 		client.mu.Unlock()
 		return
 	}
