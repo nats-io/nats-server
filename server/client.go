@@ -111,9 +111,12 @@ func (c *client) initClient() {
 	// after we process inbound msgs from our own connection.
 	c.pcd = make(map[*client]struct{})
 
-	if ip, ok := c.nc.(*net.TCPConn); ok {
-		ip.SetReadBuffer(defaultBufSize)
-	}
+	// No clue why, but this stalls and kills performance on Mac (Mavericks).
+	//
+	//	if ip, ok := c.nc.(*net.TCPConn); ok {
+	//		ip.SetReadBuffer(defaultBufSize)
+	//		ip.SetWriteBuffer(2*defaultBufSize)
+	//	}
 
 	// Set the Ping timer
 	c.setPingTimer()
