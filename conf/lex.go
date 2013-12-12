@@ -246,7 +246,7 @@ func lexTopValueEnd(lx *lexer) stateFn {
 		return lexTop
 	}
 	return lx.errorf("Expected a top-level value to end with a new line, "+
-		"comment or EOF, but got '%s' instead.", r)
+		"comment or EOF, but got '%v' instead.", r)
 }
 
 // lexKeyStart consumes a key name up until the first non-whitespace character.
@@ -255,7 +255,7 @@ func lexKeyStart(lx *lexer) stateFn {
 	r := lx.peek()
 	switch {
 	case isKeySeparator(r):
-		return lx.errorf("Unexpected key separator '%s'.", r)
+		return lx.errorf("Unexpected key separator '%v'.", r)
 	case isWhitespace(r) || isNL(r):
 		lx.next()
 		return lexSkip(lx, lexKeyStart)
@@ -385,7 +385,7 @@ func lexArrayValue(lx *lexer) stateFn {
 		lx.backup()
 		fallthrough
 	case r == arrayValTerm:
-		return lx.errorf("Unexpected array value terminator '%s'.",
+		return lx.errorf("Unexpected array value terminator '%v'.",
 			arrayValTerm)
 	case r == arrayEnd:
 		return lexArrayEnd
@@ -419,8 +419,8 @@ func lexArrayValueEnd(lx *lexer) stateFn {
 	case r == arrayEnd:
 		return lexArrayEnd
 	}
-	return lx.errorf("Expected an array value terminator '%s' or an array "+
-		"terminator '%s', but got '%s' instead.", arrayValTerm, arrayEnd, r)
+	return lx.errorf("Expected an array value terminator %q or an array "+
+		"terminator %q, but got '%v' instead.", arrayValTerm, arrayEnd, r)
 }
 
 // lexArrayEnd finishes the lexing of an array. It assumes that a ']' has
@@ -438,7 +438,7 @@ func lexMapKeyStart(lx *lexer) stateFn {
 	r := lx.peek()
 	switch {
 	case isKeySeparator(r):
-		return lx.errorf("Unexpected key separator '%s'.", r)
+		return lx.errorf("Unexpected key separator '%v'.", r)
 	case isWhitespace(r) || isNL(r):
 		lx.next()
 		return lexSkip(lx, lexMapKeyStart)
@@ -541,7 +541,7 @@ func lexMapValue(lx *lexer) stateFn {
 		lx.backup()
 		fallthrough
 	case r == mapValTerm:
-		return lx.errorf("Unexpected map value terminator '%s'.", mapValTerm)
+		return lx.errorf("Unexpected map value terminator %q.", mapValTerm)
 	case r == mapEnd:
 		return lexSkip(lx, lexMapEnd)
 	}
@@ -573,8 +573,8 @@ func lexMapValueEnd(lx *lexer) stateFn {
 	case r == mapEnd:
 		return lexSkip(lx, lexMapEnd)
 	}
-	return lx.errorf("Expected a map value terminator '%s' or a map "+
-		"terminator '%s', but got '%s' instead.", mapValTerm, mapEnd, r)
+	return lx.errorf("Expected a map value terminator %q or a map "+
+		"terminator %q, but got '%v' instead.", mapValTerm, mapEnd, r)
 }
 
 // lexMapEnd finishes the lexing of a map. It assumes that a '}' has
@@ -727,7 +727,7 @@ func lexStringEscape(lx *lexer) stateFn {
 	case '\\':
 		return lexString
 	}
-	return lx.errorf("Invalid escape character '%s'. Only the following "+
+	return lx.errorf("Invalid escape character '%v'. Only the following "+
 		"escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", r)
 }
 
@@ -737,13 +737,13 @@ func lexStringBinary(lx *lexer) stateFn {
 	r := lx.next()
 	if !isHexadecimal(r) {
 		return lx.errorf("Expected two hexadecimal digits after '\\x', but "+
-			"got '%s' instead.", r)
+			"got '%v' instead.", r)
 	}
 
 	r = lx.next()
 	if !isHexadecimal(r) {
 		return lx.errorf("Expected two hexadecimal digits after '\\x', but "+
-			"got '%s' instead.", r)
+			"got '%v' instead.", r)
 	}
 	return lexString
 }
@@ -756,7 +756,7 @@ func lexNumberOrDateStart(lx *lexer) stateFn {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
 		} else {
-			return lx.errorf("Expected a digit but got '%s'.", r)
+			return lx.errorf("Expected a digit but got '%v'.", r)
 		}
 	}
 	return lexNumberOrDate
@@ -798,11 +798,11 @@ func lexDateAfterYear(lx *lexer) stateFn {
 		if f == '0' {
 			if !isDigit(r) {
 				return lx.errorf("Expected digit in ISO8601 datetime, "+
-					"but found '%s' instead.", r)
+					"but found '%v' instead.", r)
 			}
 		} else if f != r {
-			return lx.errorf("Expected '%s' in ISO8601 datetime, "+
-				"but found '%s' instead.", f, r)
+			return lx.errorf("Expected '%v' in ISO8601 datetime, "+
+				"but found '%v' instead.", f, r)
 		}
 	}
 	lx.emit(itemDatetime)
@@ -819,7 +819,7 @@ func lexNumberStart(lx *lexer) stateFn {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
 		} else {
-			return lx.errorf("Expected a digit but got '%s'.", r)
+			return lx.errorf("Expected a digit but got '%v'.", r)
 		}
 	}
 	return lexNumber
@@ -846,7 +846,7 @@ func lexFloatStart(lx *lexer) stateFn {
 	r := lx.next()
 	if !isDigit(r) {
 		return lx.errorf("Floats must have a digit after the '.', but got "+
-			"'%s' instead.", r)
+			"'%v' instead.", r)
 	}
 	return lexFloat
 }
@@ -951,7 +951,7 @@ func (itype itemType) String() string {
 	case itemCommentStart:
 		return "CommentStart"
 	}
-	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype))
+	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype.String()))
 }
 
 func (item item) String() string {
