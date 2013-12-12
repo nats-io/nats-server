@@ -5,6 +5,7 @@ package test
 import (
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,16 +29,16 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	opts.ReconnectWait = (50 * time.Millisecond)
 	opts.MaxReconnect = 1000
 
-	reconnects := 0
+	reconnects := int32(0)
 	reconnectsDone := make(chan bool)
 	opts.ReconnectedCB = func(nc *nats.Conn) {
-		reconnects++
+		atomic.AddInt32(&reconnects, 1)
 		reconnectsDone <- true
 	}
 
 	// Create 20 random clients.
 	// Half connected to A and half to B..
-	numClients := 50
+	numClients := 20
 	for i := 0; i < numClients; i++ {
 		opts.Url = servers[i%2]
 		nc, err := opts.Connect()
@@ -57,7 +58,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 			for i := 1; 1 <= 100; i++ {
 				nc.Publish(subject, msg)
-				if i % 20 == 0 {
+				if i % 10 == 0 {
 					time.Sleep(time.Millisecond)
 				}
 			}
