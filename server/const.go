@@ -8,7 +8,7 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "0.4.3"
+	VERSION = "0.4.4"
 
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
@@ -49,7 +49,7 @@ const (
 	LEN_CR_LF = len(CR_LF)
 
 	// DEFAULT_FLUSH_DEADLINE is the write/flush deadlines.
-	DEFAULT_FLUSH_DEADLINE = 500 * time.Millisecond
+	DEFAULT_FLUSH_DEADLINE = 2 * time.Second
 
 	// DEFAULT_HTTP_PORT is the default monitoring port.
 	DEFAULT_HTTP_PORT = 8333

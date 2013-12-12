@@ -571,8 +571,9 @@ func (c *client) parse(buf []byte) error {
 			goto parseErr
 		}
 	}
-	// Check for split buffer scenarios for SUB and UNSUB and PUB
-	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG || c.state == MINUS_ERR_ARG) && c.argBuf == nil {
+	// Check for split buffer scenarios for any ARG state.
+	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
+		c.state == MSG_ARG || c.state == MINUS_ERR_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:(i+1)-c.drop]...)
 		// FIXME, check max len

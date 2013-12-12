@@ -31,6 +31,7 @@ func flushConnection(b *testing.B, c net.Conn, buf []byte) {
 	c.Write([]byte("PING\r\n"))
 	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	n, err := c.Read(buf)
+	c.SetReadDeadline(time.Time{})
 	if err != nil {
 		b.Fatalf("Failed read: %v\n", err)
 	}

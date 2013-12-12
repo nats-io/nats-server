@@ -600,7 +600,6 @@ writeErr:
 	client.mu.Unlock()
 
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		// FIXME: SlowConsumer logic
 		Log("Slow Consumer Detected", clientConnStr(client.nc), client.cid)
 		client.closeConnection()
 	} else {
