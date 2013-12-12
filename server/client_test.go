@@ -282,12 +282,14 @@ func TestClientPubWithQueueSub(t *testing.T) {
 
 	go func() {
 		c.parse(op)
+		for cp := range c.pcd {
+			cp.bw.Flush()
+		}
 		c.nc.Close()
 	}()
 
 	var n1, n2, received int
 	for ; ; received += 1 {
-		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -329,12 +331,14 @@ func TestClientUnSub(t *testing.T) {
 
 	go func() {
 		c.parse(op)
+		for cp := range c.pcd {
+			cp.bw.Flush()
+		}
 		c.nc.Close()
 	}()
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -370,12 +374,14 @@ func TestClientUnSubMax(t *testing.T) {
 
 	go func() {
 		c.parse(op)
+		for cp := range c.pcd {
+			cp.bw.Flush()
+		}
 		c.nc.Close()
 	}()
 
 	var received int
 	for ; ; received += 1 {
-		time.Sleep(10 * time.Millisecond)
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
