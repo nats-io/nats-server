@@ -60,7 +60,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 			for i := 1; 1 <= 100; i++ {
 				nc.Publish(subject, msg)
-				if i % 10 == 0 {
+				if i%10 == 0 {
 					time.Sleep(time.Millisecond)
 				}
 			}
