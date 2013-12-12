@@ -42,6 +42,8 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	for i := 0; i < numClients; i++ {
 		opts.Url = servers[i%2]
 		nc, err := opts.Connect()
+		defer nc.Close()
+
 		if err != nil {
 			t.Fatalf("Failed to create connection: %v\n", err)
 		}
@@ -71,6 +73,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	// Restart SrvB
 	srvB.Shutdown()
 	srvB = RunServer(optsB)
+	defer srvB.Shutdown()
 
 	select {
 	case <-reconnectsDone:
