@@ -10,7 +10,7 @@ branches:
 install:
   - DST=~/gopath/src/github.com/apcera
   - mkdir -p "$DST"
-  - git clone --depth=1 --quiet git@github.com:apcera/nats.git "$DST"/nats
+  - git clone --depth=1 --quiet https://github.com/apcera/nats.git "$DST"/nats
 
 script:
   - go build
