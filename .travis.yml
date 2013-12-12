@@ -11,6 +11,7 @@ install:
   - DST=~/gopath/src/github.com/apcera
   - mkdir -p "$DST"
   - git clone --depth=1 --quiet https://github.com/apcera/nats.git "$DST"/nats
+  - go get code.google.com/p/go.tools/cmd/vet
 
 script:
   - go build
