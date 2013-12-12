@@ -1,14 +1,18 @@
 language: go
 go:
-  - 1.1
-  - 1.1.1
+  - 1.1.2
+  - 1.2
 
 branches:
   only:
     - master
 
+install:
+  - DST=~/gopath/src/github.com/apcera
+  - mkdir -p "$DST"
+  - git clone --depth=1 --quiet git@github.com:apcera/nats.git "$DST"/nats
+
 script:
-  - go get -d ./...
   - go build
   - go fmt ./...
   - go vet ./...
