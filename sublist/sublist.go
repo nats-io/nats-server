@@ -400,8 +400,9 @@ func (s *Sublist) removeFromNode(n *node, sub interface{}) bool {
 // wildcards, with a target subject. This is used in the cache layer.
 func matchLiteral(literal, subject []byte) bool {
 	li := 0
+	ll := len(literal)
 	for _, b := range subject {
-		if li >= len(literal) {
+		if li >= ll {
 			return false
 		}
 		switch b {
@@ -423,6 +424,10 @@ func matchLiteral(literal, subject []byte) bool {
 			}
 		}
 		li += 1
+	}
+	// Make sure we have processed all of the literal's chars..
+	if li < (ll - 1) {
+		return false
 	}
 	return true
 }

@@ -249,6 +249,7 @@ func TestMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral([]byte("foo.bar"), []byte("bar.>")), false, t)
 	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.>")), true, t)
 	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.*.*")), true, t)
+	checkBool(matchLiteral([]byte("foo.bar"), []byte("foo")), false, t)
 }
 
 func TestCacheBounds(t *testing.T) {
@@ -374,6 +375,19 @@ func TestBadSubjectOnRemove(t *testing.T) {
 	if err := s.Remove(badfwc, value); err != ErrInvalidSubject {
 		t.Fatalf("Expected ErrInvalidSubject, got %v\n", err)
 	}
+}
+
+// This is from bug report #18
+func TestTwoTokenPubMatchSingleTokenSub(t *testing.T) {
+	s := New()
+	val := "a"
+	sub := []byte("foo")
+	s.Insert(sub, val)
+	r := s.Match(sub)
+	verifyLen(r, 1, t)
+	verifyMember(r, val, t)
+	r = s.Match([]byte("foo.bar"))
+	verifyLen(r, 0, t)
 }
 
 // -- Benchmarks Setup --
