@@ -23,7 +23,7 @@ const (
 	_YP32  = 709607
 )
 
-// Generates an FNV1A Hash [http://en.wikipedia.org/wiki/Fowle-Noll-Vo_hash_function]
+// Generates an FNV1A Hash [http://en.wikipedia.org/wiki/Fowler-Noll-Vo_hash_function]
 func FNV1A(data []byte) uint32 {
 	var hash uint32 = _OFF32
 	for _, c := range data {
