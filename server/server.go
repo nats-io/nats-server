@@ -438,7 +438,11 @@ func (s *Server) removeClient(c *client) {
 	case ROUTER:
 		delete(s.routes, cid)
 		if c.route != nil {
-			delete(s.remotes, c.route.remoteID)
+			rc, ok := s.remotes[c.route.remoteID]
+			// Only delete it if it is us..
+			if ok && c == rc {
+				delete(s.remotes, c.route.remoteID)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -467,4 +471,12 @@ func (s *Server) NumClients() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.clients)
+}
+
+// NumSubscriptions will report how many subscriptions are active.
+func (s *Server) NumSubscriptions() uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := s.sl.Stats()
+	return stats.NumSubs
 }

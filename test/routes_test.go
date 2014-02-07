@@ -415,17 +415,34 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	clientExpect(pongRe)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
-	_, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
+	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
 
 	// Expect to see the local sub echoed through.
+	buf := routeExpect(infoRe)
+
+	// Generate our own so we can send one to trigger the local subs.
+	info := server.Info{}
+	if err := json.Unmarshal(buf[4:], &info); err != nil {
+		t.Fatalf("Could not unmarshal route info: %v", err)
+	}
+	info.ID = "ROUTE:4222"
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+	infoJson := fmt.Sprintf("INFO %s\r\n", b)
+
+	routeSend(infoJson)
 	routeExpect(subRe)
 
 	// Close and re-open
 	route.Close()
 
 	route = createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
-	_, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
+	routeSend, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
 
-	// Expect to see the local sub echoed through.
+	// Expect to see the local sub echoed through after info.
+	routeExpect(infoRe)
+	routeSend(infoJson)
 	routeExpect(subRe)
 }

@@ -337,3 +337,48 @@ func expectMsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 		return matches
 	}
 }
+
+// This will check that the matches include at least one of the sids. Useful for checking
+// that we received messages on a certain queue group.
+func checkForQueueSid(t tLogger, matches [][][]byte, sids []string) {
+	seen := make(map[string]int, len(sids))
+	for _, sid := range sids {
+		seen[sid] = 0
+	}
+	for _, m := range matches {
+		sid := string(m[SID_INDEX])
+		if _, ok := seen[sid]; ok {
+			seen[sid] += 1
+		}
+	}
+	// Make sure we only see one and exactly one.
+	total := 0
+	for _, n := range seen {
+		total += n
+	}
+	if total != 1 {
+		stackFatalf(t, "Did not get a msg for queue sids group: expected 1 got %d\n", total)
+	}
+}
+
+// This will check that the matches include all of the sids. Useful for checking
+// that we received messages on all subscribers.
+func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
+	seen := make(map[string]int, len(sids))
+	for _, sid := range sids {
+		seen[sid] = 0
+	}
+	for _, m := range matches {
+		sid := string(m[SID_INDEX])
+		if _, ok := seen[sid]; ok {
+			seen[sid] += 1
+		}
+	}
+	// Make sure we only see one and exactly one for each sid.
+	for sid, n := range seen {
+		if n != 1 {
+			stackFatalf(t, "Did not get a msg for sid[%s]: expected 1 got %d\n", sid, n)
+
+		}
+	}
+}

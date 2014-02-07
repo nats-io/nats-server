@@ -212,6 +212,8 @@ func (c *client) processRouteInfo(info *Info) {
 		s.remotes[info.ID] = c
 		s.mu.Unlock()
 		Debug("Registering remote route", info.ID)
+		// Send our local subscriptions to this route.
+		s.sendLocalSubsToRoute(c)
 	}
 }
 
@@ -656,17 +658,19 @@ func (c *client) processMsg(msg []byte) {
 	var rmap map[string]struct{}
 
 	// If we are a route and we have a queue subscription, deliver direct
-	// since they are sent direct via L2 semantics.
+	// since they are sent direct via L2 semantics. If the match is a queue
+	// subscription, we will return from here regardless if we find a sub.
 	if isRoute {
-		if sub := srv.routeSidQueueSubscriber(c.pa.sid); sub != nil {
-			mh := c.msgHeader(msgh[:si], sub)
-			c.deliverMsg(sub, mh, msg)
+		if sub, ok := srv.routeSidQueueSubscriber(c.pa.sid); ok {
+			if sub != nil {
+				mh := c.msgHeader(msgh[:si], sub)
+				c.deliverMsg(sub, mh, msg)
+			}
 			return
 		}
 	}
 
 	// Loop over all subscriptions that match.
-
 	for _, v := range r {
 		sub := v.(*subscription)
 
@@ -856,6 +860,11 @@ func (c *client) closeConnection() {
 		for _, s := range subs {
 			if sub, ok := s.(*subscription); ok {
 				srv.sl.Remove(sub.subject, sub)
+				// Forward on unsubscribes if we are not
+				// a router ourselves.
+				if c.typ != ROUTER {
+					srv.broadcastUnSubscribe(sub)
+				}
 			}
 		}
 	}

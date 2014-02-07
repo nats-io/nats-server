@@ -119,9 +119,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	s.routes[c.cid] = c
 	s.mu.Unlock()
 
-	// Send our local subscriptions to this route.
-	s.sendLocalSubsToRoute(c)
-
 	return c
 }
 
@@ -151,24 +148,24 @@ const (
 // FIXME(dlc) - This may be too slow, check at later date.
 var qrsidRe = regexp.MustCompile(`QRSID:(\d+):([^\s]+)`)
 
-func (s *Server) routeSidQueueSubscriber(rsid []byte) *subscription {
+func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
-		return nil
+		return nil, false
 	}
 	matches := qrsidRe.FindSubmatch(rsid)
 	if matches == nil || len(matches) != EXPECTED_MATCHES {
-		return nil
+		return nil, false
 	}
 	cid := uint64(parseInt64(matches[RSID_CID_INDEX]))
 	client := s.clients[cid]
 	if client == nil {
-		return nil
+		return nil, true
 	}
 	sid := matches[RSID_SID_INDEX]
 	if sub, ok := (client.subs.Get(sid)).(*subscription); ok {
-		return sub
+		return sub, true
 	}
-	return nil
+	return nil, true
 }
 
 func routeSid(sub *subscription) string {
