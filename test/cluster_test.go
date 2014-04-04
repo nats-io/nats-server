@@ -3,7 +3,7 @@
 package test
 
 import (
-"fmt"
+	"fmt"
 	"testing"
 	"time"
 
@@ -161,6 +161,11 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
+
+	// Should receive 1 from B.
+	matches = expectMsgsB(1)
+	checkForQueueSid(t, matches, qg2Sids_b)
+
 	sendB("PING\r\n")
 	expectB(pongRe)
 
@@ -238,8 +243,6 @@ func TestClusterDoubleMsgs(t *testing.T) {
 
 	// Close ClientA1
 	clientA1.Close()
-
-//	time.Sleep(time.Second)
 
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
