@@ -1,5 +1,27 @@
 NOTE: I used SetBytes(1) to give quick estimate of ops/sec
 
+2013 MacbookAir 11" i7 1.7Ghz Haswell
+
+================
+OSX - Mavericks 10.9.2
+Go version go1.2.1
+================
+
+Benchmark_Bernstein_SmallKey	500000000	         5.13 ns/op	 195.10 MB/s
+Benchmark_Murmur3___SmallKey	200000000	         8.11 ns/op	 123.26 MB/s
+Benchmark_FNV1A_____SmallKey	500000000	         5.07 ns/op	 197.36 MB/s
+Benchmark_Meiyan____SmallKey	500000000	         4.24 ns/op	 236.02 MB/s
+Benchmark_Jesteress_SmallKey	500000000	         5.32 ns/op	 188.08 MB/s
+Benchmark_Yorikke___SmallKey	500000000	         5.52 ns/op	 181.20 MB/s
+Benchmark_Bernstein___MedKey	50000000	        34.9 ns/op	  28.65 MB/s
+Benchmark_Murmur3_____MedKey	100000000	        17.9 ns/op	  55.94 MB/s
+Benchmark_FNV1A_______MedKey	50000000	        31.9 ns/op	  31.37 MB/s
+Benchmark_Meiyan______MedKey	200000000	         9.28 ns/op	 107.76 MB/s
+Benchmark_Jesteress___MedKey	200000000	         8.15 ns/op	 122.65 MB/s
+Benchmark_Yorikke_____MedKey	200000000	         9.19 ns/op
+108.83 MB/s
+
+
 2012 MacbookAir 11" i7 2Ghz
 
 ================
