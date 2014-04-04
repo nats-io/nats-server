@@ -404,7 +404,6 @@ func init() {
 		sl.Insert(subs[i], subs[i])
 	}
 	addWildcards()
-	//	println("Sublist holding ", sl.Count(), " subscriptions")
 }
 
 func subsInit(pre string) {
@@ -450,6 +449,22 @@ func Benchmark____________MatchSingleToken(b *testing.B) {
 func Benchmark______________MatchTwoTokens(b *testing.B) {
 	b.SetBytes(1)
 	s := []byte("apcera.continuum")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark______________MatchThreeTokens(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera.continuum.component")
+	for i := 0; i < b.N; i++ {
+		sl.Match(s)
+	}
+}
+
+func Benchmark______________MatchFourTokens(b *testing.B) {
+	b.SetBytes(1)
+	s := []byte("apcera.continuum.component.router")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
 	}
