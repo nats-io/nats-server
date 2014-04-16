@@ -28,7 +28,7 @@ const (
 const (
 	// CLIENT is an end user.
 	CLIENT = iota
-	// ROUTER is another routers in the cluster.
+	// ROUTER is another router in the cluster.
 	ROUTER
 )
 
