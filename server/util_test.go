@@ -4,8 +4,8 @@ package server
 
 import (
 	"strconv"
-	"testing"
 	"sync"
+	"testing"
 )
 
 func BenchmarkParseInt(b *testing.B) {
@@ -24,16 +24,28 @@ func BenchmarkParseSize(b *testing.B) {
 	}
 }
 
-func deferUnlock() {
-	mu sync.Mutex
+func deferUnlock(mu sync.Mutex) {
 	mu.Lock()
 	defer mu.Unlock()
 }
 
 func BenchmarkDeferMutex(b *testing.B) {
+	var mu sync.Mutex
+	b.SetBytes(1)
 	for i := 0; i < b.N; i++ {
-		deferUnlock()
+		deferUnlock(mu)
 	}
 }
 
+func noDeferUnlock(mu sync.Mutex) {
+	mu.Lock()
+	mu.Unlock()
+}
 
+func BenchmarkNoDeferMutex(b *testing.B) {
+	var mu sync.Mutex
+	b.SetBytes(1)
+	for i := 0; i < b.N; i++ {
+		noDeferUnlock(mu)
+	}
+}
