@@ -44,6 +44,7 @@ func TestConfigFile(t *testing.T) {
 		HTTPPort:    8222,
 		LogFile:     "/tmp/gnatsd.log",
 		PidFile:     "/tmp/gnatsd.pid",
+		ProfPort:    6543,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -70,6 +71,7 @@ func TestMergeOverrides(t *testing.T) {
 		HTTPPort:    DEFAULT_HTTP_PORT,
 		LogFile:     "/tmp/gnatsd.log",
 		PidFile:     "/tmp/gnatsd.pid",
+		ProfPort:    6789,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -82,6 +84,7 @@ func TestMergeOverrides(t *testing.T) {
 		Password: "spooky",
 		Debug:    true,
 		HTTPPort: DEFAULT_HTTP_PORT,
+		ProfPort: 6789,
 	}
 	merged := MergeOptions(fopts, opts)
 

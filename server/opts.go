@@ -98,6 +98,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.LogFile = v.(string)
 		case "pidfile", "pid_file":
 			opts.PidFile = v.(string)
+		case "prof_port":
+			opts.ProfPort = int(v.(int64))
 		}
 	}
 	return opts, nil
@@ -197,6 +199,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.PidFile != "" {
 		opts.PidFile = flagOpts.PidFile
+	}
+	if flagOpts.ProfPort != 0 {
+		opts.ProfPort = flagOpts.ProfPort
 	}
 	return &opts
 }
