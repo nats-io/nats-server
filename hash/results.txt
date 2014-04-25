@@ -18,8 +18,8 @@ Benchmark_Murmur3_____MedKey	100000000	        17.9 ns/op	  55.94 MB/s
 Benchmark_FNV1A_______MedKey	50000000	        31.9 ns/op	  31.37 MB/s
 Benchmark_Meiyan______MedKey	200000000	         9.28 ns/op	 107.76 MB/s
 Benchmark_Jesteress___MedKey	200000000	         8.15 ns/op	 122.65 MB/s
-Benchmark_Yorikke_____MedKey	200000000	         9.19 ns/op
-108.83 MB/s
+Benchmark_Yorikke_____MedKey	200000000	         9.19 ns/op  108.83 MB/s
+
 
 
 2012 MacbookAir 11" i7 2Ghz

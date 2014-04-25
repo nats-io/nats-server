@@ -1,0 +1,38 @@
+2013 MacbookAir 11" i7 1.7Ghz Haswell
+Linux mint15 3.8.0-19
+
+================
+Go version go1.2.1
+================
+
+Benchmark_GoMap___GetSmallKey	500000000	         7.57 ns/op	 132.05 mops/s
+Benchmark_HashMap_GetSmallKey	100000000	        14.30 ns/op	  70.08 mops/s
+Benchmark_GoMap____GetMedKey	500000000	         4.83 ns/op	 207.01 mops/s
+Benchmark_HashMap__GetMedKey	200000000	         9.54 ns/op	 104.82 mops/s
+Benchmark_GoMap____GetLrgKey	500000000	         4.39 ns/op	 227.79 mops/s
+Benchmark_HashMap__GetLrgKey	100000000	        24.50 ns/op	  40.77 mops/s
+
+================
+Go version go1.2.1
+================
+
+Benchmark_GoMap___GetSmallKey	200000000	         8.77 ns/op	 114.02 mops/s
+Benchmark_HashMap_GetSmallKey	100000000	        14.80 ns/op	  67.53 mops/s
+Benchmark_GoMap____GetMedKey	500000000	         6.21 ns/op	 161.05 mops/s
+Benchmark_HashMap__GetMedKey	200000000	         9.51 ns/op	 105.15 mops/s
+Benchmark_GoMap____GetLrgKey	100000000	        18.30 ns/op	  54.68 mops/s
+Benchmark_HashMap__GetLrgKey	100000000	        24.80 ns/op	  40.36 mops/s
+
+================
+Go version go1.0.3
+================
+
+Benchmark_GoMap___GetSmallKey	50000000	        52.20 ns/op	  19.17 mops/s
+Benchmark_HashMap_GetSmallKey	100000000	        15.50 ns/op	  64.34 mops/s
+Benchmark_GoMap____GetMedKey	50000000	        61.60 ns/op	  16.24 mops/s
+Benchmark_HashMap__GetMedKey	200000000	         8.91 ns/op	 112.20 mops/s
+Benchmark_GoMap____GetLrgKey	20000000	        86.90 ns/op	  11.51 mops/s
+Benchmark_HashMap__GetLrgKey	100000000	        25.40 ns/op	  39.44 mops/s
+
+
+
