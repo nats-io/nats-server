@@ -321,3 +321,36 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 		t.Fatalf("Expected no subscriptions for srvB, got %d\n", sc)
 	}
 }
+
+// This will test that we drop remote sids correctly.
+func TestAutoUnsubscribePropogation(t *testing.T) {
+	srvA, srvB, optsA, _ := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	sendA, expectA := setupConn(t, clientA)
+	expectMsgs := expectMsgsCommand(t, expectA)
+
+	// We will create subscriptions that will auto-unsubscribe and make sure
+	// we are not accumulating orphan subscriptions on the other side.
+	for i := 1; i <= 100; i++ {
+		sub := fmt.Sprintf("SUB foo %d\r\n", i)
+		auto := fmt.Sprintf("UNSUB %d 1\r\n", i)
+		sendA(sub)
+		sendA(auto)
+		// This will trip the auto-unsubscribe
+		sendA("PUB foo 2\r\nok\r\n")
+		expectMsgs(1)
+	}
+
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	// Make sure number of subscriptions on B is correct
+	if subs := srvB.NumSubscriptions(); subs != 0 {
+		t.Fatalf("Expected no subscriptions on remote server, got %d\n", subs)
+	}
+}

@@ -208,10 +208,11 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	rsid := routeSid(sub)
 	maxStr := _EMPTY_
-	if sub.max > 0 {
-		maxStr = fmt.Sprintf("%d ", sub.max)
+	// Set max if we have it set and have not tripped auto-unsubscribe
+	if sub.max > 0 && sub.nm < sub.max {
+		maxStr = fmt.Sprintf(" %d", sub.max)
 	}
-	proto := fmt.Sprintf(unsubProto, maxStr, rsid)
+	proto := fmt.Sprintf(unsubProto, rsid, maxStr)
 	s.broadcastToRoutes(proto)
 }
 

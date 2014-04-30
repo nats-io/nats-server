@@ -538,14 +538,22 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	sub.nm++
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
+		// For routing..
+		shouldForward := client.typ != ROUTER && client.srv != nil
 		// If we are at the exact number, unsubscribe but
 		// still process the message in hand, otherwise
 		// unsubscribe and drop message on the floor.
 		if sub.nm == sub.max {
 			defer client.unsubscribe(sub)
+			if shouldForward {
+				defer client.srv.broadcastUnSubscribe(sub)
+			}
 		} else if sub.nm > sub.max {
 			client.mu.Unlock()
 			client.unsubscribe(sub)
+			if shouldForward {
+				client.srv.broadcastUnSubscribe(sub)
+			}
 			return
 		}
 	}
@@ -873,7 +881,7 @@ func (c *client) closeConnection() {
 	// we are already connected to the other end.
 	if c.isSolicitedRoute() {
 		rid := c.route.remoteID
-		if rid != "" && c.srv.remotes[rid] != nil {
+		if rid != "" && srv.remotes[rid] != nil {
 			Debug("Not attempting reconnect for solicited route, already connected.", rid)
 			return
 		} else {

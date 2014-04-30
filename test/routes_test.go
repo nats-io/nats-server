@@ -446,3 +446,38 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeSend(infoJson)
 	routeExpect(subRe)
 }
+
+func TestAutoUnsubPropogation(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	client := createClientConn(t, opts.Host, opts.Port)
+	clientSend, clientExpect := setupConn(t, client)
+
+	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	expectAuthRequired(t, route)
+	_, routeExpect := setupRoute(t, route, opts)
+
+	// Setup a local subscription
+	clientSend("SUB foo 2\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	routeExpect(subRe)
+
+	clientSend("UNSUB 2 1\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	routeExpect(unsubmaxRe)
+
+	clientSend("PUB foo 2\r\nok\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	clientSend("UNSUB 2\r\n")
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
+	routeExpect(unsubnomaxRe)
+}
