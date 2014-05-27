@@ -480,3 +480,13 @@ func (s *Server) NumSubscriptions() uint32 {
 	stats := s.sl.Stats()
 	return stats.NumSubs
 }
+
+// Addr will return the net.Addr object for the current listener.
+func (s *Server) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
