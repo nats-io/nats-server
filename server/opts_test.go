@@ -32,9 +32,7 @@ func TestDefaultOptions(t *testing.T) {
 }
 
 func TestOptions_RandomPort(t *testing.T) {
-	opts := &Options{
-		Port: RANDOM_PORT,
-	}
+	opts := &Options{Port: RANDOM_PORT}
 	processOptions(opts)
 
 	if opts.Port != 0 {
