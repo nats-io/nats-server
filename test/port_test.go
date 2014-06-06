@@ -33,4 +33,9 @@ func TestResolveRandomPort(t *testing.T) {
 	if portNum == server.RANDOM_PORT {
 		t.Fatalf("Expected server to choose a random port\nGot: %d", server.RANDOM_PORT)
 	}
+
+	if opts.Port != portNum {
+		t.Fatalf("Options port (%d) should have been overridden by chosen random port (%d)",
+			opts.Port, portNum)
+	}
 }
