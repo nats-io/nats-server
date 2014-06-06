@@ -13,6 +13,11 @@ const (
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
 
+	// RANDOM_PORT is the value for port that, when supplied, will cause the
+	// server to listen on a randomly-chosen available port. The resolved port
+	// is available via the Addr() method.
+	RANDOM_PORT = -1
+
 	// DEFAULT_HOST defaults to all interfaces.
 	DEFAULT_HOST = "0.0.0.0"
 

@@ -56,10 +56,16 @@ func RunServer(opts *server.Options) *server.Server {
 	go s.Start()
 
 	// Make sure we are running and can bind before returning.
-	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 	end := time.Now().Add(10 * time.Second)
 	for time.Now().Before(end) {
-		conn, err := net.Dial("tcp", addr)
+		addr := s.Addr()
+		if addr == nil {
+			time.Sleep(10 * time.Millisecond)
+			// Retry. We might take a little while to open a connection.
+			continue
+		}
+
+		conn, err := net.Dial("tcp", addr.String())
 		if err != nil {
 			time.Sleep(50 * time.Millisecond)
 			// Retry

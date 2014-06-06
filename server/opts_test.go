@@ -31,6 +31,18 @@ func TestDefaultOptions(t *testing.T) {
 	}
 }
 
+func TestOptions_RandomPort(t *testing.T) {
+	opts := &Options{
+		Port: RANDOM_PORT,
+	}
+	processOptions(opts)
+
+	if opts.Port != 0 {
+		t.Fatalf("Process of options should have resolved random port to "+
+			"zero.\nexpected: %d\ngot: %d\n", 0, opts.Port)
+	}
+}
+
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
 		Host:        "apcera.me",
