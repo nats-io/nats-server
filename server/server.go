@@ -274,6 +274,19 @@ func (s *Server) AcceptLoop() {
 	s.listener = l
 	s.mu.Unlock()
 
+	// Write resolved port back to options.
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	if err != nil {
+		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+		return
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+		return
+	}
+	s.opts.Port = portNum
+
 	tmpDelay := ACCEPT_MIN_SLEEP
 
 	for s.isRunning() {

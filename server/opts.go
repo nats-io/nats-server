@@ -213,6 +213,9 @@ func processOptions(opts *Options) {
 	}
 	if opts.Port == 0 {
 		opts.Port = DEFAULT_PORT
+	} else if opts.Port == RANDOM_PORT {
+		// Choose randomly inside of net.Listen
+		opts.Port = 0
 	}
 	if opts.MaxConn == 0 {
 		opts.MaxConn = DEFAULT_MAX_CONNECTIONS
