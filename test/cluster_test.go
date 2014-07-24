@@ -4,6 +4,7 @@ package test
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,6 +21,23 @@ func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.O
 	srvA = RunServer(optsA)
 	srvB = RunServer(optsB)
 	return
+}
+
+func TestProperServerWithRoutesShutdown(t *testing.T) {
+	before := runtime.NumGoroutine()
+	srvA, srvB, _, _ := runServers(t)
+	time.Sleep(100 * time.Millisecond)
+	srvA.Shutdown()
+	srvB.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	delta := after - before
+	// There may be some finalizers or IO, but in general more than
+	// 2 as a delta represents a problem.
+	if delta > 2 {
+		t.Fatalf("Expected same number of goroutines, %d vs %d\n", before, after)
+	}
 }
 
 func TestDoubleRouteConfig(t *testing.T) {
@@ -270,7 +288,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	expectA(pongRe)
 
 	// Wait for propogation.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
 		t.Fatalf("Expected one subscription for srvA, got %d\n", sc)
@@ -285,7 +303,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	expectA(pongRe)
 
 	// Wait for propogation.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 2 {
 		t.Fatalf("Expected two subscriptions for srvA, got %d\n", sc)
@@ -300,7 +318,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	expectA(pongRe)
 
 	// Wait for propogation.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
 		t.Fatalf("Expected one subscription for srvA, got %d\n", sc)
@@ -313,7 +331,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	clientA.Close()
 
 	// Wait for propogation.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if sc := srvA.NumSubscriptions(); sc != 0 {
 		t.Fatalf("Expected no subscriptions for srvA, got %d\n", sc)
 	}

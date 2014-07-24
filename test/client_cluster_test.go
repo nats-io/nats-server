@@ -135,7 +135,9 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	}
 
 	c1, _ := nats.NewEncodedConn(nc1, "json")
+	defer c1.Close()
 	c2, _ := nats.NewEncodedConn(nc2, "json")
+	defer c2.Close()
 
 	// Flusher helper function.
 	flush := func() {

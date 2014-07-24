@@ -472,6 +472,8 @@ func TestAutoUnsubPropogation(t *testing.T) {
 	routeExpect(unsubmaxRe)
 
 	clientSend("PUB foo 2\r\nok\r\n")
+	clientExpect(msgRe)
+
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
