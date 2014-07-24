@@ -210,10 +210,15 @@ func (s *Server) Shutdown() {
 
 	s.running = false
 
+	conns := make(map[uint64]*client)
+
 	// Copy off the clients
-	clients := make(map[uint64]*client)
 	for i, c := range s.clients {
-		clients[i] = c
+		conns[i] = c
+	}
+	// Copy off the routes
+	for i, r := range s.routes {
+		conns[i] = r
 	}
 
 	// Number of done channel responses we expect.
@@ -245,8 +250,8 @@ func (s *Server) Shutdown() {
 
 	s.mu.Unlock()
 
-	// Close client connections
-	for _, c := range clients {
+	// Close client and route connections
+	for _, c := range conns {
 		c.closeConnection()
 	}
 
