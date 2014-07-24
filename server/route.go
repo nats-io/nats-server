@@ -157,7 +157,11 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 		return nil, false
 	}
 	cid := uint64(parseInt64(matches[RSID_CID_INDEX]))
+
+	s.mu.Lock()
 	client := s.clients[cid]
+	s.mu.Unlock()
+
 	if client == nil {
 		return nil, true
 	}

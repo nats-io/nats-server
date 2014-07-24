@@ -880,6 +880,8 @@ func (c *client) closeConnection() {
 	// Check for a solicited route. If it was, start up a reconnect unless
 	// we are already connected to the other end.
 	if c.isSolicitedRoute() {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
 		rid := c.route.remoteID
 		if rid != "" && srv.remotes[rid] != nil {
 			Debug("Not attempting reconnect for solicited route, already connected.", rid)
