@@ -1,20 +1,23 @@
 language: go
 go:
-  - 1.3
-
+- 1.3
 branches:
   only:
-    - master
-
+  - master
 install:
-  - DST=~/gopath/src/github.com/apcera
-  - mkdir -p "$DST"
-  - git clone --depth=1 --quiet https://github.com/apcera/nats.git "$DST"/nats
-  - go get code.google.com/p/go.tools/cmd/vet
-
+- DST=~/gopath/src/github.com/apcera
+- mkdir -p "$DST"
+- git clone --depth=1 --quiet https://github.com/apcera/nats.git "$DST"/nats
+- go get code.google.com/p/go.tools/cmd/vet
+- go get code.google.com/p/go.tools/cmd/cover
+- go get github.com/mattn/goveralls
 script:
-  - go build
-  - go fmt ./...
-  - go vet ./...
-  - go test -i -race ./...
-  - go test -v -race ./...
+- go build
+- go fmt ./...
+- go vet ./...
+- go test -i -race ./...
+- go test -v -race ./...
+- ./travis/coveralls-script.sh
+env:
+  global:
+    secure: fi/zxSp5eF6Mt8yrgJakBVinDpCDFy3zPZ4Jy7jsyoKWgF7CdSFmh0WBcN932KOLCRaVm7ZqD2RwO9SifIsBcDtZqML4RKg3Q+T+Uqt4LpskVobMYkPKDcA5i3c3ifhJu/wzl7Y/jnysvjxCwQrH/nGAc4+AwyH6x2TjKF7UFoY=

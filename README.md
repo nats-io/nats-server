@@ -1,4 +1,4 @@
-# Gnatsd [![Build Status](https://secure.travis-ci.org/apcera/gnatsd.svg?branch=master)](http://travis-ci.org/apcera/gnatsd)
+# Gnatsd [![Build Status](https://secure.travis-ci.org/apcera/gnatsd.svg?branch=master)](http://travis-ci.org/apcera/gnatsd) [![Coverage Status](https://img.shields.io/coveralls/apcera/gnatsd.svg)](https://coveralls.io/r/apcera/gnatsd)
 
 A High Performance [NATS](https://github.com/derekcollison/nats) Server written in [Go.](http://golang.org)
 
