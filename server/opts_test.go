@@ -3,6 +3,7 @@
 package server
 
 import (
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -101,5 +102,25 @@ func TestMergeOverrides(t *testing.T) {
 	if !reflect.DeepEqual(golden, merged) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, merged)
+	}
+}
+
+func TestRemoveSelfReference(t *testing.T) {
+	url1, _ := url.Parse("nats-route://user:password@10.4.5.6:4223")
+	url2, _ := url.Parse("nats-route://user:password@localhost:4223")
+	url3, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
+
+	opts := &Options{
+		Routes: []*url.URL{url1, url2, url3},
+	}
+
+	opts.Routes = RemoveSelfReference(opts.Routes)
+
+	if len(opts.Routes) != 1 {
+		t.Fatalf("Self reference IP address exists in Routes ")
+	}
+
+	if opts.Routes[0].String() != "nats-route://user:password@10.4.5.6:4223" {
+		t.Fatalf("Self reference IP address %s in Routes", opts.Routes[0])
 	}
 }

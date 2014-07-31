@@ -82,6 +82,9 @@ func main() {
 		opts = *server.MergeOptions(fileOpts, &opts)
 	}
 
+	// Remove any host/ip that points to itself in Route
+	opts.Routes = server.RemoveSelfReference(opts.Routes)
+
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
