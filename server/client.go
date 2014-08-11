@@ -264,6 +264,11 @@ func (c *client) processConnect(arg []byte) error {
 	return nil
 }
 
+func (c *client) authTimeout() {
+        c.sendErr("Authorization Timeout")
+        c.closeConnection()
+}
+
 func (c *client) authViolation() {
 	c.sendErr("Authorization Violation")
 	c.closeConnection()
@@ -800,7 +805,7 @@ func (c *client) clearPingTimer() {
 
 // Lock should be held
 func (c *client) setAuthTimer(d time.Duration) {
-	c.atmr = time.AfterFunc(d, func() { c.authViolation() })
+	c.atmr = time.AfterFunc(d, func() { c.authTimeout() })
 }
 
 // Lock should be held

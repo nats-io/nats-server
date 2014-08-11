@@ -38,10 +38,10 @@ var defaultServerOptions = Options{
 	NoSigs: true,
 }
 
-func rawSetup() (*Server, *client, *bufio.Reader, string) {
+func rawSetup(serverOption Options) (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
 	cr := bufio.NewReaderSize(cli, defaultBufSize)
-	s := New(&defaultServerOptions)
+	s := New(&serverOption)
 	ch := make(chan *client)
 	createClientAsync(ch, s, srv)
 	l, _ := cr.ReadString('\n')
@@ -52,12 +52,12 @@ func rawSetup() (*Server, *client, *bufio.Reader, string) {
 }
 
 func setUpClientWithResponse() (*client, string) {
-	_, c, _, l := rawSetup()
+	_, c, _, l := rawSetup(defaultServerOptions)
 	return c, l
 }
 
 func setupClient() (*Server, *client, *bufio.Reader) {
-	s, c, cr, _ := rawSetup()
+	s, c, cr, _ := rawSetup(defaultServerOptions)
 	return s, c, cr
 }
 
@@ -495,6 +495,22 @@ func TestClientMapRemoval(t *testing.T) {
 	s.mu.Unlock()
 	if lsc > 0 {
 		t.Fatal("Client still in server map")
+	}
+}
+
+func TestAuthorizationTimeout(t *testing.T) {
+	serverOptions := defaultServerOptions
+	serverOptions.Authorization = "my_token"
+	serverOptions.AuthTimeout = 1
+	_, _, cr, _ := rawSetup(serverOptions)
+
+	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	if !strings.Contains (l, "Authorization Timeout") {
+		t.Fatalf("Authorization Timeout response incorrect: %q\n", l)
 	}
 }
 
