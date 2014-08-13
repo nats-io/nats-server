@@ -265,8 +265,8 @@ func (c *client) processConnect(arg []byte) error {
 }
 
 func (c *client) authTimeout() {
-        c.sendErr("Authorization Timeout")
-        c.closeConnection()
+	c.sendErr("Authorization Timeout")
+	c.closeConnection()
 }
 
 func (c *client) authViolation() {

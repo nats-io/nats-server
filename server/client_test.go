@@ -509,7 +509,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
 	}
-	if !strings.Contains (l, "Authorization Timeout") {
+	if !strings.Contains(l, "Authorization Timeout") {
 		t.Fatalf("Authorization Timeout response incorrect: %q\n", l)
 	}
 }
