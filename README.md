@@ -1,6 +1,6 @@
 # Gnatsd [![Build Status](https://travis-ci.org/apcera/gnatsd.svg?branch=master)](http://travis-ci.org/apcera/gnatsd) [![Coverage Status](https://img.shields.io/coveralls/apcera/gnatsd.svg)](https://coveralls.io/r/apcera/gnatsd)
 
-A High Performance [NATS](https://github.com/derekcollison/nats) Server written in [Go.](http://golang.org)
+A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
 
 ## Usage
 
@@ -100,9 +100,9 @@ Run `go help` for more guidance, and visit <http://golang.org/> for tutorials,
 presentations, references and more.
 
 
-## Nats client libraries
+## Client libraries
 
-There are several client language bindings.
+There are several client language bindings for NATS.
 - [Go](https://github.com/apcera/nats)
 - [Java](https://github.com/tyagihas/java_nats)
 - [Java - Spring](https://github.com/mheath/jnats)
