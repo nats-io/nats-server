@@ -20,6 +20,8 @@ type Varz struct {
 	Cores       int       `json:"cores"`
 	CPU         float64   `json:"cpu"`
 	Connections int       `json:"connections"`
+	Routes      int       `json:"routes"`
+	Remotes     int       `json:"remotes"`
 	InMsgs      int64     `json:"in_msgs"`
 	OutMsgs     int64     `json:"out_msgs"`
 	InBytes     int64     `json:"in_bytes"`
@@ -42,6 +44,8 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	v.Connections = len(s.clients)
+	v.Routes = len(s.routes)
+	v.Remotes = len(s.remotes)
 	v.InMsgs = s.inMsgs
 	v.InBytes = s.inBytes
 	v.OutMsgs = s.outMsgs
