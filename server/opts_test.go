@@ -110,17 +110,32 @@ func TestRemoveSelfReference(t *testing.T) {
 	url2, _ := url.Parse("nats-route://user:password@localhost:4223")
 	url3, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
 
-	opts := &Options{
-		Routes: []*url.URL{url1, url2, url3},
+	routes := []*url.URL{url1, url2, url3}
+
+	newroutes, err := RemoveSelfReference(4223, routes)
+	if err != nil {
+		t.Fatalf("Error during RemoveSelfReference: %v", err)
 	}
 
-	opts.Routes = RemoveSelfReference(opts.Routes)
-
-	if len(opts.Routes) != 1 {
-		t.Fatalf("Self reference IP address exists in Routes ")
+	if len(newroutes) != 1 {
+		t.Fatalf("Wrong number of routes: %d", len(newroutes))
 	}
 
-	if opts.Routes[0].String() != "nats-route://user:password@10.4.5.6:4223" {
-		t.Fatalf("Self reference IP address %s in Routes", opts.Routes[0])
+	if newroutes[0] != routes[0] {
+		t.Fatalf("Self reference IP address %s in Routes", routes[0])
+	}
+}
+
+func TestAllowRouteWithDifferentPort(t *testing.T) {
+	url1, _ := url.Parse("nats-route://user:password@127.0.0.1:4224")
+	routes := []*url.URL{url1}
+
+	newroutes, err := RemoveSelfReference(4223, routes)
+	if err != nil {
+		t.Fatalf("Error during RemoveSelfReference: %v", err)
+	}
+
+	if len(newroutes) != 1 {
+		t.Fatalf("Wrong number of routes: %d", len(newroutes))
 	}
 }
