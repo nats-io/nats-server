@@ -180,11 +180,23 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
-func (s *Server) isDuplicateRemote(id string) bool {
+func (s *Server) addRoute(c *client) bool {
+	id := c.route.remoteID
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.remotes[id]
-	return ok
+	remote, exists := s.remotes[id]
+	if !exists {
+		s.remotes[id] = c
+	}
+	s.mu.Unlock()
+
+	if exists && c.route.didSolicit {
+		// upgrade to solicited?
+		remote.mu.Lock()
+		remote.route = c.route
+		remote.mu.Unlock()
+	}
+
+	return !exists
 }
 
 func (s *Server) broadcastToRoutes(proto string) {

@@ -197,23 +197,24 @@ func (c *client) traceOp(op string, arg []byte) {
 
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
+	c.mu.Lock()
 	if c.route == nil {
+		c.mu.Unlock()
 		return
 	}
 	c.route.remoteID = info.ID
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
-	if c.srv.isDuplicateRemote(info.ID) {
-		Debug("Detected duplicate remote route", info.ID, clientConnStr(c.nc), c.cid)
-		c.closeConnection()
-	} else {
-		s := c.srv
-		s.mu.Lock()
-		s.remotes[info.ID] = c
-		s.mu.Unlock()
+	s := c.srv
+	c.mu.Unlock()
+
+	if s.addRoute(c) {
 		Debug("Registering remote route", info.ID)
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
+	} else {
+		Debug("Detected duplicate remote route", info.ID, clientConnStr(c.nc), c.cid)
+		c.closeConnection()
 	}
 }
 
