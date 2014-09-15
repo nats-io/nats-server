@@ -832,7 +832,6 @@ func (c *client) clearConnection() {
 	}
 	c.bw.Flush()
 	c.nc.Close()
-	c.nc = nil
 }
 
 func (c *client) typeString() string {
@@ -859,6 +858,7 @@ func (c *client) closeConnection() {
 	c.clearAuthTimer()
 	c.clearPingTimer()
 	c.clearConnection()
+	c.nc = nil
 
 	// Snapshot for use.
 	subs := c.subs.All()
