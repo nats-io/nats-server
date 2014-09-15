@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,54 +207,56 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	return &opts
 }
 
-func RemoveSelfReference(routes []*url.URL) []*url.URL {
+func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error) {
 	var cleanRoutes []*url.URL
+	cport := strconv.Itoa(clusterPort)
 
 	selfIPs := getInterfaceIPs()
-	for i := 0; i < len(routes); i++ {
-		for _, routeIP := range getUrlIp(routes[i]) {
-			if !isIpInList(selfIPs, routeIP) {
-				cleanRoutes = append(cleanRoutes, routes[i])
-			} else {
-				Log("Self referencing IP found: ", routes[i])
-			}
+	for _, r := range routes {
+		host, port, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			return nil, err
 		}
+
+		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
+			Log("Self referencing IP found: ", r)
+			continue
+		}
+		cleanRoutes = append(cleanRoutes, r)
 	}
 
-	return cleanRoutes
+	return cleanRoutes, nil
 }
 
-func isIpInList(list []net.IP, ip net.IP) bool {
-	for _, selfIP := range list {
-		if selfIP.Equal(ip) {
-			return true
+func isIpInList(list1 []net.IP, list2 []net.IP) bool {
+	for _, ip1 := range list1 {
+		for _, ip2 := range list2 {
+			if ip1.Equal(ip2) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func getUrlIp(u *url.URL) []net.IP {
-	var ipList []net.IP
-	ipStr, _, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		Log("Error splitting host/port in route address: ", err)
-		return ipList
-	}
+func getUrlIp(ipStr string) []net.IP {
+	ipList := []net.IP{}
 
 	ip := net.ParseIP(ipStr)
 	if ip != nil {
 		ipList = append(ipList, ip)
-	} else {
-		hostAddr, err := net.LookupHost(ipStr)
-		if err != nil {
-			Log("Error looking up host with route hostname: ", err)
-			return ipList
-		}
-		for _, addr := range hostAddr {
-			ip = net.ParseIP(addr)
-			if ip != nil {
-				ipList = append(ipList, ip)
-			}
+		return ipList
+	}
+
+	hostAddr, err := net.LookupHost(ipStr)
+	if err != nil {
+		Log("Error looking up host with route hostname: ", err)
+		return ipList
+	}
+	for _, addr := range hostAddr {
+		ip = net.ParseIP(addr)
+		if ip != nil {
+			ipList = append(ipList, ip)
 		}
 	}
 	return ipList

@@ -83,7 +83,11 @@ func main() {
 	}
 
 	// Remove any host/ip that points to itself in Route
-	opts.Routes = server.RemoveSelfReference(opts.Routes)
+	newroutes, err := server.RemoveSelfReference(opts.ClusterPort, opts.Routes)
+	if err != nil {
+		server.PrintAndDie(err.Error())
+	}
+	opts.Routes = newroutes
 
 	// Create the server with appropriate options.
 	s := server.New(&opts)
