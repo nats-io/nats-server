@@ -453,6 +453,10 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	c.mu.Lock()
+	if c.nc == nil {
+		c.mu.Unlock()
+		return nil
+	}
 	c.subs.Set(sub.sid, sub)
 	if c.srv != nil {
 		err = c.srv.sl.Insert(sub.subject, sub)
@@ -725,7 +729,7 @@ func (c *client) processMsg(msg []byte) {
 			if rmap == nil {
 				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
-			if sub.client == nil || sub.client.route == nil ||
+			if sub.client == nil || sub.client.nc == nil || sub.client.route == nil ||
 				sub.client.route.remoteID == "" {
 				Debug("Bad or Missing ROUTER Identity, not processing msg",
 					clientConnStr(c.nc), c.cid)
