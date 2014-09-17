@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"net"
 	"testing"
 
 	"github.com/apcera/gnatsd/hashmap"
@@ -11,8 +12,12 @@ import (
 )
 
 func TestSplitBufferSubOp(t *testing.T) {
+	cli, trash := net.Pipe()
+	defer cli.Close()
+	defer trash.Close()
+
 	s := &Server{sl: sublist.New()}
-	c := &client{srv: s, subs: hashmap.New()}
+	c := &client{srv: s, subs: hashmap.New(), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]

@@ -477,6 +477,23 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
+	s, c, _ := setupClient()
+	c.closeConnection()
+	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
+
+	ch := make(chan bool)
+	go func() {
+		c.parse(subs)
+		ch <- true
+	}()
+	<-ch
+
+	if s.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	}
+}
+
 func TestClientMapRemoval(t *testing.T) {
 	s, c, _ := setupClient()
 	c.nc.Close()
