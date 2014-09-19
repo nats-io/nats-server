@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -42,7 +42,7 @@ func TestRouteGoServerShutdown(t *testing.T) {
 	base := runtime.NumGoroutine()
 	s, _ := runRouteServer(t)
 	s.Shutdown()
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 1 {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
@@ -52,7 +52,10 @@ func TestRouteGoServerShutdown(t *testing.T) {
 func TestSendRouteInfoOnConnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
+
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer rc.Close()
+
 	routeSend, routeExpect := setupRoute(t, rc, opts)
 	buf := routeExpect(infoRe)
 
@@ -86,6 +89,8 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 
 	// We connect to the route.
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer rc.Close()
+
 	expectAuthRequired(t, rc)
 	setupRoute(t, rc, opts)
 
@@ -200,6 +205,8 @@ func TestRouteOneHopSemantics(t *testing.T) {
 	defer s.Shutdown()
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
+
 	expectAuthRequired(t, route)
 	routeSend, _ := setupRoute(t, route, opts)
 
@@ -223,6 +230,8 @@ func TestRouteOnlySendOnce(t *testing.T) {
 	clientSend, clientExpect := setupConn(t, client)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
+
 	expectAuthRequired(t, route)
 	routeSend, routeExpect := setupRoute(t, route, opts)
 	expectMsgs := expectMsgsCommand(t, routeExpect)
@@ -253,6 +262,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 	defer client.Close()
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
+
 	expectAuthRequired(t, route)
 	routeSend, routeExpect := setupRoute(t, route, opts)
 	expectMsgs := expectMsgsCommand(t, routeExpect)
@@ -345,6 +356,7 @@ func TestSolicitRouteReconnect(t *testing.T) {
 
 	// We expect to get called back..
 	route = acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+	defer route.Close()
 }
 
 func TestMultipleRoutesSameId(t *testing.T) {
@@ -352,10 +364,14 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	defer s.Shutdown()
 
 	route1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route1.Close()
+
 	expectAuthRequired(t, route1)
 	route1Send, _ := setupRouteEx(t, route1, opts, "ROUTE:2222")
 
 	route2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route2.Close()
+
 	expectAuthRequired(t, route2)
 	route2Send, _ := setupRouteEx(t, route2, opts, "ROUTE:2222")
 
@@ -407,9 +423,11 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	defer s.Shutdown()
 
 	client := createClientConn(t, opts.Host, opts.Port)
+	defer client.Close()
+
 	clientSend, clientExpect := setupConn(t, client)
 
-	// Setup a local subscription
+	// Setup a local subscription, make sure it reaches.
 	clientSend("SUB foo 1\r\n")
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
@@ -417,10 +435,10 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
 
-	// Expect to see the local sub echoed through.
+	// Expect to see the local sub echoed through after we send our INFO.
 	buf := routeExpect(infoRe)
 
-	// Generate our own so we can send one to trigger the local subs.
+	// Generate our own INFO so we can send one to trigger the local subs.
 	info := server.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
 		t.Fatalf("Could not unmarshal route info: %v", err)
@@ -432,17 +450,21 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	}
 	infoJson := fmt.Sprintf("INFO %s\r\n", b)
 
+	// Trigger the send of local subs.
 	routeSend(infoJson)
+
 	routeExpect(subRe)
 
-	// Close and re-open
+	// Close and then re-open
 	route.Close()
 
 	route = createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
+
 	routeSend, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
 
-	// Expect to see the local sub echoed through after info.
 	routeExpect(infoRe)
+
 	routeSend(infoJson)
 	routeExpect(subRe)
 }
@@ -452,9 +474,13 @@ func TestAutoUnsubPropogation(t *testing.T) {
 	defer s.Shutdown()
 
 	client := createClientConn(t, opts.Host, opts.Port)
+	defer client.Close()
+
 	clientSend, clientExpect := setupConn(t, client)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
+
 	expectAuthRequired(t, route)
 	_, routeExpect := setupRoute(t, route, opts)
 

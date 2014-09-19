@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -9,9 +9,11 @@ import (
 func TestVerbosePing(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	doConnect(t, c, true, false, false)
 	defer c.Close()
+
+	doConnect(t, c, true, false, false)
 
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
@@ -26,9 +28,11 @@ func TestVerbosePing(t *testing.T) {
 func TestVerboseConnect(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	doConnect(t, c, true, false, false)
 	defer c.Close()
+
+	doConnect(t, c, true, false, false)
 
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
@@ -43,7 +47,10 @@ func TestVerboseConnect(t *testing.T) {
 func TestVerbosePubSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
 	doConnect(t, c, true, false, false)
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)

@@ -55,7 +55,6 @@ func RunServer(opts *server.Options) *server.Server {
 	// Run server in Go routine.
 	go s.Start()
 
-	// Make sure we are running and can bind before returning.
 	end := time.Now().Add(10 * time.Second)
 	for time.Now().Before(end) {
 		addr := s.Addr()
@@ -64,11 +63,10 @@ func RunServer(opts *server.Options) *server.Server {
 			// Retry. We might take a little while to open a connection.
 			continue
 		}
-
 		conn, err := net.Dial("tcp", addr.String())
 		if err != nil {
+			// Retry after 50ms
 			time.Sleep(50 * time.Millisecond)
-			// Retry
 			continue
 		}
 		conn.Close()
@@ -147,8 +145,9 @@ func acceptRouteConn(t tLogger, host string, timeout time.Duration) net.Conn {
 
 	tl := l.(*net.TCPListener)
 	tl.SetDeadline(time.Now().Add(timeout))
-
 	conn, err := l.Accept()
+	tl.SetDeadline(time.Time{})
+
 	if err != nil {
 		stackFatalf(t, "Did not receive a route connection request: %v", err)
 	}
@@ -168,6 +167,23 @@ func createClientConn(t tLogger, host string, port int) net.Conn {
 	return c
 }
 
+func checkSocket(t tLogger, addr string, wait time.Duration) {
+	end := time.Now().Add(wait)
+	for time.Now().Before(end) {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			// Retry after 50ms
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		// We bound to the addr, so close and return.
+		conn.Close()
+		return
+	}
+	// We have failed to bind the socket in the time allowed.
+	t.Fatalf("Failed to connect to the socket: %q", addr)
+}
+
 func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
@@ -185,23 +201,6 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
-func checkSocket(t tLogger, addr string, wait time.Duration) {
-	end := time.Now().Add(wait)
-	for time.Now().Before(end) {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			// Retry
-			continue
-		}
-		// We bound to the addr, so close and return success.
-		conn.Close()
-		return
-	}
-	// We have failed to bind the socket in the time allowed.
-	t.Fatalf("Failed to connect to the socket: %q", addr)
-}
-
 const CONNECT_F = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
 
 func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
@@ -213,9 +212,7 @@ func setupRouteEx(t tLogger, c net.Conn, opts *server.Options, id string) (sendF
 	user := opts.ClusterUsername
 	pass := opts.ClusterPassword
 	doRouteAuthConnect(t, c, user, pass, id)
-	send := sendCommand(t, c)
-	expect := expectCommand(t, c)
-	return send, expect
+	return sendCommand(t, c), expectCommand(t, c)
 }
 
 func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
@@ -227,9 +224,7 @@ func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 	doDefaultConnect(t, c)
-	send := sendCommand(t, c)
-	expect := expectCommand(t, c)
-	return send, expect
+	return sendCommand(t, c), expectCommand(t, c)
 }
 
 type sendFun func(string)
@@ -292,9 +287,9 @@ var expBuf = make([]byte, 32768)
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	// Wait for commands to be processed and results queued for read
 	c.SetReadDeadline(time.Now().Add(1 * time.Second))
-	defer c.SetReadDeadline(time.Time{})
-
 	n, err := c.Read(expBuf)
+	c.SetReadDeadline(time.Time{})
+
 	if n <= 0 && err != nil {
 		stackFatalf(t, "Error reading from conn: %v\n", err)
 	}
@@ -308,9 +303,8 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 
 func expectNothing(t tLogger, c net.Conn) {
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	defer c.SetReadDeadline(time.Time{})
-
 	n, err := c.Read(expBuf)
+	c.SetReadDeadline(time.Time{})
 	if err == nil && n > 0 {
 		stackFatalf(t, "Expected nothing, received: '%q'\n", expBuf[:n])
 	}

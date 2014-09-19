@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -69,6 +69,8 @@ func TestVarz(t *testing.T) {
 
 	// Create a connection to test ConnInfo
 	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	defer cl.Close()
+
 	send := sendCommand(t, cl)
 	send, expect := setupConn(t, cl)
 	expectMsgs := expectMsgsCommand(t, expect)
@@ -144,6 +146,8 @@ func TestConnz(t *testing.T) {
 
 	// Create a connection to test ConnInfo
 	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	defer cl.Close()
+
 	send := sendCommand(t, cl)
 	send, expect := setupConn(t, cl)
 	expectMsgs := expectMsgsCommand(t, expect)

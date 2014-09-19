@@ -54,7 +54,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.NumConns = len(c.Conns)
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		Log("Error marshalling response go /connzz request: %v", err)
+		Logf("Error marshalling response to /connz request: %v", err)
 	}
 	w.Write(b)
 }
