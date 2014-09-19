@@ -14,3 +14,4 @@
 - [ ] Switch to 1.3 and use maps vs hashmaps
 - [ ] Buffer pools?
 - [ ] Add ability to reload config on signal
+- [ ] NewSource on Rand do lower lock contention on QueueSubs
