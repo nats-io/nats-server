@@ -601,6 +601,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		goto writeErr
 	}
 
+	// TODO(dlc) - Do we need this or can we just call always?
 	if deadlineSet {
 		client.nc.SetWriteDeadline(time.Time{})
 	}
@@ -792,7 +793,7 @@ func (c *client) setPingTimer() {
 		return
 	}
 	d := c.srv.opts.PingInterval
-	c.ptmr = time.AfterFunc(d, func() { c.processPingTimer() })
+	c.ptmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 // Lock should be held
