@@ -54,7 +54,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		Log("Error marshalling response go /varz request: %v", err)
+		Logf("Error marshalling response to /varz request: %v", err)
 	}
 	w.Write(b)
 }
