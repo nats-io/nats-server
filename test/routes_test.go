@@ -349,7 +349,7 @@ func TestSolicitRouteReconnect(t *testing.T) {
 
 	rUrl := opts.Routes[0]
 
-	route := acceptRouteConn(t, rUrl.Host, server.DEFAULT_ROUTE_CONNECT)
+	route := acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
 
 	// Go ahead and close the Route.
 	route.Close()
