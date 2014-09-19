@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -20,10 +20,12 @@ func runProtoServer() *server.Server {
 func TestProtoBasics(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
-	defer c.Close()
 
 	// Ping
 	send("PING\r\n")
@@ -44,9 +46,11 @@ func TestProtoBasics(t *testing.T) {
 func TestProtoErr(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	send, expect := setupConn(t, c)
 	defer c.Close()
+
+	send, expect := setupConn(t, c)
 
 	// Make sure we get an error on bad proto
 	send("ZZZ")
@@ -56,10 +60,12 @@ func TestProtoErr(t *testing.T) {
 func TestUnsubMax(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
-	defer c.Close()
 
 	send("SUB foo 22\r\n")
 	send("UNSUB 22 2\r\n")
@@ -74,10 +80,12 @@ func TestUnsubMax(t *testing.T) {
 func TestQueueSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
-	defer c.Close()
 
 	sent := 100
 	send("SUB foo qgroup1 22\r\n")
@@ -106,10 +114,12 @@ func TestQueueSub(t *testing.T) {
 func TestMultipleQueueSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
 	send, expect := setupConn(t, c)
 	expectMsgs := expectMsgsCommand(t, expect)
-	defer c.Close()
 
 	sent := 100
 	send("SUB foo g1 1\r\n")
@@ -141,9 +151,12 @@ func TestMultipleQueueSub(t *testing.T) {
 func TestPubToArgState(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	send, expect := setupConn(t, c)
 	defer c.Close()
+
+	send, expect := setupConn(t, c)
+
 	send("PUBS foo 2\r\nok\r\n")
 	expect(errRe)
 }
@@ -151,9 +164,12 @@ func TestPubToArgState(t *testing.T) {
 func TestSubToArgState(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
-	send, expect := setupConn(t, c)
 	defer c.Close()
+
+	send, expect := setupConn(t, c)
+
 	send("SUBZZZ foo 1\r\n")
 	expect(errRe)
 }

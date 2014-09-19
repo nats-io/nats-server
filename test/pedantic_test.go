@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -17,8 +17,10 @@ func runPedanticServer() *server.Server {
 func TestPedanticSub(t *testing.T) {
 	s := runPedanticServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	defer c.Close()
+
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
 	doConnect(t, c, true, true, false)
@@ -56,14 +58,15 @@ func TestPedanticSub(t *testing.T) {
 	if string(matches[0][1]) != "'Invalid Subject'" {
 		t.Fatalf("Expected 'Invalid Subject', got %s", string(matches[0][1]))
 	}
-
 }
 
 func TestPedanticPub(t *testing.T) {
 	s := runPedanticServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
 	defer c.Close()
+
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
 	doConnect(t, c, true, true, false)

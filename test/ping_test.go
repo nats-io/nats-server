@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package test
 
@@ -27,9 +27,11 @@ func runPingServer() *server.Server {
 func TestPingInterval(t *testing.T) {
 	s := runPingServer()
 	defer s.Shutdown()
+
 	c := createClientConn(t, "localhost", PING_TEST_PORT)
-	doConnect(t, c, false, false, false)
 	defer c.Close()
+
+	doConnect(t, c, false, false, false)
 
 	expect := expectCommand(t, c)
 
