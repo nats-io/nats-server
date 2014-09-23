@@ -346,6 +346,9 @@ func (s *Server) StartHTTPMonitoring() {
 	// Connz
 	mux.HandleFunc("/connz", s.HandleConnz)
 
+	// Routez
+	mux.HandleFunc("/routez", s.HandleRoutez)
+
 	srv := &http.Server{
 		Addr:           hp,
 		Handler:        mux,
