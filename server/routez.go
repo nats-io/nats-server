@@ -42,13 +42,17 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 			ri := &RouteInfo{
 				Cid:       route.cid,
 				Subs:      route.subs.Count(),
-				URL:       route.route.url.String(),
 				Solicited: route.route.didSolicit,
 				InMsgs:    route.inMsgs,
 				OutMsgs:   route.outMsgs,
 				InBytes:   route.inBytes,
 				OutBytes:  route.outBytes,
 			}
+
+			if route.route.url != nil {
+				ri.URL = route.route.url.String()
+			}
+
 			if ip, ok := route.nc.(*net.TCPConn); ok {
 				addr := ip.RemoteAddr().(*net.TCPAddr)
 				ri.Port = addr.Port
@@ -81,6 +85,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 		req.Body.Read(body)
 		url := strings.Trim(string(body), "\x00")
 
+		s.mu.Lock()
 		for _, route := range s.routes {
 			if route.route.url.String() == url {
 				route.mu.Lock()
@@ -92,6 +97,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
+		s.mu.Unlock()
 		w.WriteHeader(404)
 		w.Write([]byte(`{"error": "could not find matching route"}`))
 	}
