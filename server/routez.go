@@ -16,15 +16,16 @@ type Routez struct {
 
 // RouteInfo has detailed information on a per connection basis.
 type RouteInfo struct {
-	Cid      uint64 `json:"cid"`
-	IP       string `json:"ip"`
-	Port     int    `json:"port"`
-	Subs     uint32 `json:"subscriptions"`
-	Pending  int    `json:"pending_size"`
-	InMsgs   int64  `json:"in_msgs"`
-	OutMsgs  int64  `json:"out_msgs"`
-	InBytes  int64  `json:"in_bytes"`
-	OutBytes int64  `json:"out_bytes"`
+	Cid       uint64 `json:"cid"`
+	IP        string `json:"ip"`
+	Port      int    `json:"port"`
+	Solicited bool   `json:"solicited"`
+	Subs      uint32 `json:"subscriptions"`
+	Pending   int    `json:"pending_size"`
+	InMsgs    int64  `json:"in_msgs"`
+	OutMsgs   int64  `json:"out_msgs"`
+	InBytes   int64  `json:"in_bytes"`
+	OutBytes  int64  `json:"out_bytes"`
 }
 
 // HandleConnz process HTTP requests for connection information.
@@ -37,12 +38,13 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 		s.mu.Lock()
 		for _, route := range s.routes {
 			ri := &RouteInfo{
-				Cid:      route.cid,
-				Subs:     route.subs.Count(),
-				InMsgs:   route.inMsgs,
-				OutMsgs:  route.outMsgs,
-				InBytes:  route.inBytes,
-				OutBytes: route.outBytes,
+				Cid:       route.cid,
+				Subs:      route.subs.Count(),
+				Solicited: route.route.didSolicit,
+				InMsgs:    route.inMsgs,
+				OutMsgs:   route.outMsgs,
+				InBytes:   route.inBytes,
+				OutBytes:  route.outBytes,
 			}
 			if ip, ok := route.nc.(*net.TCPConn); ok {
 				addr := ip.RemoteAddr().(*net.TCPAddr)
