@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Routez represents detail information on current routes
@@ -66,7 +67,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 	} else if req.Method == "PUT" {
 		body := make([]byte, 1024)
 		req.Body.Read(body)
-		routeURL, err := url.Parse(string(body))
+		routeURL, err := url.Parse(strings.Trim(string(body), "\x00"))
 		if err != nil {
 			w.WriteHeader(400)
 			w.Write([]byte(fmt.Sprintf(`{"error": "could not parse URL: %v"}`, err)))
@@ -78,29 +79,17 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 	} else if req.Method == "DELETE" {
 		body := make([]byte, 1024)
 		req.Body.Read(body)
-		routeURL, err := url.Parse(string(body))
-
-		routeIP, err := net.ResolveTCPAddr("tcp", routeURL.Host)
-
-		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf(`{"error": "could not resolve url: %v"}`, err)))
-			return
-		}
+		url := strings.Trim(string(body), "\x00")
 
 		for _, route := range s.routes {
-			if ipConn, ok := route.nc.(*net.TCPConn); ok {
-				addr := ipConn.RemoteAddr().(*net.TCPAddr)
-				if addr.String() == routeIP.String() {
-					route.mu.Lock()
-					route.route.didSolicit = false // don't reconnect
-					route.mu.Unlock()
-					route.closeConnection()
-					w.WriteHeader(200)
-					w.Write([]byte(`{"status": "ok"}`))
-					return
-				}
-
+			if route.route.url.String() == url {
+				route.mu.Lock()
+				route.route.didSolicit = false // don't reconnect
+				route.mu.Unlock()
+				route.closeConnection()
+				w.WriteHeader(200)
+				w.Write([]byte(`{"status": "ok"}`))
+				return
 			}
 		}
 		w.WriteHeader(404)
