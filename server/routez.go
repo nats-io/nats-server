@@ -78,29 +78,16 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 	} else if req.Method == "DELETE" {
 		body := make([]byte, 1024)
 		req.Body.Read(body)
-		routeURL, err := url.Parse(string(body))
-
-		routeIP, err := net.ResolveTCPAddr("tcp", routeURL.Host)
-
-		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf(`{"error": "could not resolve url: %v"}`, err)))
-			return
-		}
 
 		for _, route := range s.routes {
-			if ipConn, ok := route.nc.(*net.TCPConn); ok {
-				addr := ipConn.RemoteAddr().(*net.TCPAddr)
-				if addr.String() == routeIP.String() {
-					route.mu.Lock()
-					route.route.didSolicit = false // don't reconnect
-					route.mu.Unlock()
-					route.closeConnection()
-					w.WriteHeader(200)
-					w.Write([]byte(`{"status": "ok"}`))
-					return
-				}
-
+			if route.route.url.String() == body {
+				route.mu.Lock()
+				route.route.didSolicit = false // don't reconnect
+				route.mu.Unlock()
+				route.closeConnection()
+				w.WriteHeader(200)
+				w.Write([]byte(`{"status": "ok"}`))
+				return
 			}
 		}
 		w.WriteHeader(404)
