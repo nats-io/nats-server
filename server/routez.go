@@ -17,6 +17,7 @@ type Routez struct {
 // RouteInfo has detailed information on a per connection basis.
 type RouteInfo struct {
 	Cid       uint64 `json:"cid"`
+	URL       string `json:"url"`
 	IP        string `json:"ip"`
 	Port      int    `json:"port"`
 	Solicited bool   `json:"solicited"`
@@ -40,6 +41,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 			ri := &RouteInfo{
 				Cid:       route.cid,
 				Subs:      route.subs.Count(),
+				URL:       route.route.url.String(),
 				Solicited: route.route.didSolicit,
 				InMsgs:    route.inMsgs,
 				OutMsgs:   route.outMsgs,
