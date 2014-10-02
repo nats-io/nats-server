@@ -177,6 +177,9 @@ func TestConnz(t *testing.T) {
 	if c.Conns == nil || len(c.Conns) != 1 {
 		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
 	}
+	if c.SubjectStats == nil || c.SubjectStats.NumSubs != 1 {
+		t.Fatalf("Expected 1 subscription in stats, got %v\n", c.SubjectStats)
+	}
 
 	// Test inside details of each connection
 	ci := c.Conns[0]
@@ -190,19 +193,22 @@ func TestConnz(t *testing.T) {
 	if ci.Port == 0 {
 		t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
 	}
-	if ci.Subs != 1 {
+	if ci.NumSubs != 1 {
+		t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
+	}
+	if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
 		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
 	}
 	if ci.InMsgs != 1 {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.InMsgs)
+		t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
 	}
 	if ci.OutMsgs != 1 {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.OutMsgs)
+		t.Fatalf("Expected OutMsgs of 1, got %v\n", ci.OutMsgs)
 	}
 	if ci.InBytes != 5 {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.InBytes)
+		t.Fatalf("Expected InBytes of 1, got %v\n", ci.InBytes)
 	}
 	if ci.OutBytes != 5 {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.OutBytes)
+		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
 	}
 }
