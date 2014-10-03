@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -67,16 +68,8 @@ func TestVarz(t *testing.T) {
 		t.Fatal("Expected start time to be within 10 seconds.")
 	}
 
-	// Create a connection to test ConnInfo
-	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
-
-	send := sendCommand(t, cl)
-	send, expect := setupConn(t, cl)
-	expectMsgs := expectMsgsCommand(t, expect)
-
-	send("SUB foo 1\r\nPUB foo 5\r\nhello\r\n")
-	expectMsgs(1)
 
 	resp, err = http.Get(url + "varz")
 	if err != nil {
@@ -114,10 +107,10 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 1)
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT - 1)
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT-1)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -144,16 +137,8 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
 
-	// Create a connection to test ConnInfo
-	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
-
-	send := sendCommand(t, cl)
-	send, expect := setupConn(t, cl)
-	expectMsgs := expectMsgsCommand(t, expect)
-
-	send("SUB foo 1\r\nPUB foo 5\r\nhello\r\n")
-	expectMsgs(1)
 
 	resp, err = http.Get(url + "connz")
 	if err != nil {
@@ -177,9 +162,6 @@ func TestConnz(t *testing.T) {
 	if c.Conns == nil || len(c.Conns) != 1 {
 		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
 	}
-	if c.SubjectStats == nil || c.SubjectStats.NumSubs != 1 {
-		t.Fatalf("Expected 1 subscription in stats, got %v\n", c.SubjectStats)
-	}
 
 	// Test inside details of each connection
 	ci := c.Conns[0]
@@ -196,8 +178,8 @@ func TestConnz(t *testing.T) {
 	if ci.NumSubs != 1 {
 		t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
 	}
-	if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	if len(ci.Subs) != 0 {
+		t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
 	}
 	if ci.InMsgs != 1 {
 		t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
@@ -211,4 +193,83 @@ func TestConnz(t *testing.T) {
 	if ci.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
 	}
+}
+
+func TestConnzWithSubs(t *testing.T) {
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 1)
+	defer s.Shutdown()
+
+	cl := createClientConnSubscribeAndPublish(t)
+	defer cl.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)
+	resp, err := http.Get(url + "connz?subs=1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := server.Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Test inside details of each connection
+	ci := c.Conns[0]
+	if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	}
+}
+
+func TestSubsz(t *testing.T) {
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 3)
+	defer s.Shutdown()
+
+	cl := createClientConnSubscribeAndPublish(t)
+	defer cl.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+3)
+	resp, err := http.Get(url + "subsz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	su := server.Subsz{}
+	if err := json.Unmarshal(body, &su); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Do some sanity checks on values
+	if su.SubjectStats.NumSubs != 1 {
+		t.Fatalf("Expected num_subs of 1, got %v\n", su.SubjectStats.NumSubs)
+	}
+}
+
+// Create a connection to test ConnInfo
+func createClientConnSubscribeAndPublish(t *testing.T) net.Conn {
+	cl := createClientConn(t, "localhost", MONITOR_PORT)
+
+	send := sendCommand(t, cl)
+	send, expect := setupConn(t, cl)
+	expectMsgs := expectMsgsCommand(t, expect)
+
+	send("SUB foo 1\r\nPUB foo 5\r\nhello\r\n")
+	expectMsgs(1)
+
+	return cl
 }
