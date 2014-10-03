@@ -87,7 +87,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 
 		s.mu.Lock()
 		for _, route := range s.routes {
-			if route.route.url.String() == url {
+			if route.route.url != nil && route.route.url.String() == url {
 				route.mu.Lock()
 				route.route.didSolicit = false // don't reconnect
 				route.mu.Unlock()
