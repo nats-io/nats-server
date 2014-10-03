@@ -38,6 +38,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 
 		// Walk the list
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		for _, route := range s.routes {
 			ri := &RouteInfo{
 				Cid:       route.cid,
@@ -60,7 +61,6 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 			}
 			r.Routes = append(r.Routes, ri)
 		}
-		s.mu.Unlock()
 
 		r.NumRoutes = len(r.Routes)
 		b, err := json.MarshalIndent(r, "", "  ")
@@ -86,6 +86,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 		url := strings.Trim(string(body), "\x00")
 
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		for _, route := range s.routes {
 			if route.route.url != nil && route.route.url.String() == url {
 				route.mu.Lock()
@@ -97,7 +98,6 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
-		s.mu.Unlock()
 		w.WriteHeader(404)
 		w.Write([]byte(`{"error": "could not find matching route"}`))
 	}
