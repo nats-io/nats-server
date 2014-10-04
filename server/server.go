@@ -347,7 +347,7 @@ func (s *Server) StartHTTPMonitoring() {
 	mux.HandleFunc("/connz", s.HandleConnz)
 
 	// Subz
-	mux.HandleFunc("/subsz", s.HandleSubsz)
+	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
 
 	srv := &http.Server{
 		Addr:           hp,

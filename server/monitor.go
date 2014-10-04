@@ -1,4 +1,4 @@
-// Copyright 2013 Apcera Inc. All rights reserved.
+// Copyright 2013-2014 Apcera Inc. All rights reserved.
 
 package server
 
@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/apcera/gnatsd/sublist"
@@ -18,6 +19,8 @@ import (
 // Connz represents detail information on current connections.
 type Connz struct {
 	NumConns int         `json:"num_connections"`
+	Offset   int         `json:"offset"`
+	Limit    int         `json:"limit"`
 	Conns    []*ConnInfo `json:"connections"`
 }
 
@@ -37,11 +40,30 @@ type ConnInfo struct {
 
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
-	c := Connz{Conns: []*ConnInfo{}}
+	c := &Connz{Conns: []*ConnInfo{}}
+
+	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
+	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	if c.Limit == 0 {
+		c.Limit = 100
+	}
 
 	// Walk the list
 	s.mu.Lock()
+	c.NumConns = len(s.clients)
+
+	i := 0
 	for _, client := range s.clients {
+		if i >= c.Offset+c.Limit {
+			break
+		}
+
+		i++
+		if i <= c.Offset {
+			continue
+		}
+
 		ci := &ConnInfo{
 			Cid:      client.cid,
 			InMsgs:   client.inMsgs,
@@ -51,7 +73,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			NumSubs:  client.subs.Count(),
 		}
 
-		if subs := r.URL.Query().Get("subs"); subs == "1" {
+		if subs == 1 {
 			ci.Subs = castToSliceString(client.subs.All())
 		}
 
@@ -64,8 +86,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	c.NumConns = len(c.Conns)
-
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		Logf("Error marshalling response to /connz request: %v", err)
@@ -74,6 +94,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 }
 
 func castToSliceString(input []interface{}) []string {
+
 	output := make([]string, 0, len(input))
 	for _, line := range input {
 		output = append(output, string(line.(*subscription).subject))
@@ -89,11 +110,11 @@ type Subsz struct {
 
 // HandleStats process HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
-	st := Subsz{SubjectStats: s.sl.Stats()}
+	st := &Subsz{SubjectStats: s.sl.Stats()}
 
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
-		Logf("Error marshalling response to /stats request: %v", err)
+		Logf("Error marshalling response to /subscriptionsz request: %v", err)
 	}
 	w.Write(b)
 }
@@ -123,10 +144,10 @@ type usage struct {
 
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
-	v := Varz{Start: s.start, Options: s.opts}
+	v := &Varz{Start: s.start, Options: s.opts}
 	v.Uptime = time.Since(s.start).String()
 
-	updateUsage(&v)
+	updateUsage(v)
 
 	s.mu.Lock()
 	v.Connections = len(s.clients)

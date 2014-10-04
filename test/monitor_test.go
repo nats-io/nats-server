@@ -41,10 +41,10 @@ func TestNoMonitorPort(t *testing.T) {
 }
 
 func TestVarz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 5)
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+5)
 	resp, err := http.Get(url + "varz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -107,10 +107,10 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT - 1)
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 1)
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT-1)
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -163,6 +163,14 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
 	}
 
+	if c.Limit != 100 {
+		t.Fatalf("Expected limit of 100, got %v\n", c.Limit)
+	}
+
+	if c.Offset != 0 {
+		t.Fatalf("Expected offset of 0, got %v\n", c.Offset)
+	}
+
 	// Test inside details of each connection
 	ci := c.Conns[0]
 
@@ -196,13 +204,13 @@ func TestConnz(t *testing.T) {
 }
 
 func TestConnzWithSubs(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 1)
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 2)
 	defer s.Shutdown()
 
 	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+1)
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+2)
 	resp, err := http.Get(url + "connz?subs=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -228,15 +236,57 @@ func TestConnzWithSubs(t *testing.T) {
 	}
 }
 
-func TestSubsz(t *testing.T) {
+func TestConnzWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 3)
+	defer s.Shutdown()
+
+	cl1 := createClientConnSubscribeAndPublish(t)
+	defer cl1.Close()
+
+	cl2 := createClientConnSubscribeAndPublish(t)
+	defer cl2.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+3)
+	resp, err := http.Get(url + "connz?offset=1&limit=1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := server.Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.Limit != 1 {
+		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
+	}
+
+	if c.Offset != 1 {
+		t.Fatalf("Expected offset of 1, got %v\n", c.Offset)
+	}
+
+	if len(c.Conns) != 1 {
+		t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
+	}
+}
+
+func TestSubsz(t *testing.T) {
+	s := runMonitorServer(server.DEFAULT_HTTP_PORT + 4)
 	defer s.Shutdown()
 
 	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+3)
-	resp, err := http.Get(url + "subsz")
+	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT+4)
+	resp, err := http.Get(url + "subscriptionsz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
