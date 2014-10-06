@@ -456,15 +456,15 @@ func (s *Sublist) Count() uint32 { return s.count }
 
 // Stats for the sublist
 type Stats struct {
-	NumSubs      uint32
-	NumCache     uint32
-	NumInserts   uint64
-	NumRemoves   uint64
-	NumMatches   uint64
-	CacheHitRate float64
-	MaxFanout    uint32
-	AvgFanout    float64
-	StatsTime    time.Time
+	NumSubs      uint32    `json:"num_subscriptions"`
+	NumCache     uint32    `json:"num_cache"`
+	NumInserts   uint64    `json:"num_inserts"`
+	NumRemoves   uint64    `json:"num_removes"`
+	NumMatches   uint64    `json:"num_matches"`
+	CacheHitRate float64   `json:"cache_hit_rate"`
+	MaxFanout    uint32    `json:"max_fanout"`
+	AvgFanout    float64   `json:"avg_fanout"`
+	StatsTime    time.Time `json:"stats_time"`
 }
 
 // Stats will return a stats structure for the current state.
@@ -493,7 +493,9 @@ func (s *Sublist) Stats() *Stats {
 		}
 	}
 	st.MaxFanout = uint32(max)
-	st.AvgFanout = float64(tot) / float64(len(all))
+	if tot > 0 {
+		st.AvgFanout = float64(tot) / float64(len(all))
+	}
 	st.StatsTime = s.stats.since
 	return st
 }
