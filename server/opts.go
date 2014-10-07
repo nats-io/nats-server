@@ -43,6 +43,7 @@ type Options struct {
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
+	Syslog             bool          `json:"-"`
 }
 
 type authorization struct {
@@ -219,7 +220,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 		}
 
 		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
-			Log("Self referencing IP found: ", r)
+			log.Log("Self referencing IP found: ", r)
 			continue
 		}
 		cleanRoutes = append(cleanRoutes, r)
@@ -250,7 +251,7 @@ func getUrlIp(ipStr string) []net.IP {
 
 	hostAddr, err := net.LookupHost(ipStr)
 	if err != nil {
-		Log("Error looking up host with route hostname: ", err)
+		log.Log("Error looking up host with route hostname: ", err)
 		return ipList
 	}
 	for _, addr := range hostAddr {
@@ -267,7 +268,7 @@ func getInterfaceIPs() []net.IP {
 
 	interfaceAddr, err := net.InterfaceAddrs()
 	if err != nil {
-		Log("Error getting self referencing address: ", err)
+		log.Log("Error getting self referencing address: ", err)
 		return localIPs
 	}
 
@@ -276,7 +277,7 @@ func getInterfaceIPs() []net.IP {
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
-			Log("Error parsing self referencing address: ", err)
+			log.Log("Error parsing self referencing address: ", err)
 		}
 	}
 	return localIPs

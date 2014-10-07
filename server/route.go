@@ -46,7 +46,7 @@ func (c *client) sendConnect() {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		Logf("Error marshalling CONNECT to route: %v\n", err)
+		log.Log("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
 	}
 	c.bw.WriteString(fmt.Sprintf(conProto, b))
@@ -79,7 +79,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	route.bw.Write(b.Bytes())
 	route.bw.Flush()
 
-	Debug("Route sent local subscriptions", route.cid)
+	log.Debug("Route sent local subscriptions", route.cid)
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
@@ -93,12 +93,12 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	Debug("Route connection created", clientConnStr(c.nc), c.cid)
+	log.Debug("Route connection created", clientConnStr(c.nc), c.cid)
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rURL
-		Debug("Route connect msg sent", clientConnStr(c.nc), c.cid)
+		log.Debug("Route connect msg sent", clientConnStr(c.nc), c.cid)
 		c.sendConnect()
 	}
 
@@ -234,10 +234,10 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	hp := fmt.Sprintf("%s:%d", s.opts.ClusterHost, s.opts.ClusterPort)
-	Logf("Listening for route connections on %s", hp)
+	log.Log("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatalf("Error listening on router port: %d - %v", s.opts.Port, e)
+		log.Fatal("Error listening on router port: %d - %v", s.opts.Port, e)
 		return
 	}
 
@@ -255,7 +255,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Route Accept Error(%v), sleeping %dms",
+				log.Debug("Temporary Route Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -263,14 +263,14 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Logf("Accept error: %v", err)
+				log.Log("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createRoute(conn, nil)
 	}
-	Debug("Router accept loop exiting..")
+	log.Debug("Router accept loop exiting..")
 	s.done <- true
 }
 
@@ -294,7 +294,7 @@ func (s *Server) StartRouting() {
 	// Generate the info json
 	b, err := json.Marshal(info)
 	if err != nil {
-		Fatalf("Error marshalling Route INFO JSON: %+v\n", err)
+		log.Fatal("Error marshalling Route INFO JSON: %+v\n", err)
 	}
 	s.routeInfoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
@@ -314,10 +314,10 @@ func (s *Server) reConnectToRoute(rUrl *url.URL) {
 
 func (s *Server) connectToRoute(rUrl *url.URL) {
 	for s.isRunning() {
-		Debugf("Trying to connect to route on %s", rUrl.Host)
+		log.Debug("Trying to connect to route on %s", rUrl.Host)
 		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
-			Debugf("Error trying to connect to route: %v", err)
+			log.Debug("Error trying to connect to route: %v", err)
 			select {
 			case <-s.rcQuit:
 				return

@@ -6,13 +6,11 @@ import (
 	"flag"
 	"strings"
 
+	"github.com/apcera/gnatsd/logger"
 	"github.com/apcera/gnatsd/server"
 )
 
 func main() {
-	// logging setup
-	server.LogSetup()
-
 	// Server Options
 	opts := server.Options{}
 
@@ -44,6 +42,7 @@ func main() {
 	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	flag.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
+	flag.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
@@ -92,6 +91,22 @@ func main() {
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
+	// Builds and set the logger based on the flags
+	s.SetLogger(buildLogger(&opts))
+
 	// Start things up. Block here until done.
 	s.Start()
+}
+
+func buildLogger(opts *server.Options) server.Logger {
+	if opts.Syslog {
+		return logger.NewSysLogger(opts.Debug, opts.Trace)
+	}
+
+	if opts.LogFile != "" {
+		return logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
+	}
+
+	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace)
+
 }
