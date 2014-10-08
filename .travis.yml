@@ -1,9 +1,6 @@
 language: go
 go:
 - 1.3
-branches:
-  only:
-  - master
 install:
 - DST=~/gopath/src/github.com/apcera
 - mkdir -p "$DST"
