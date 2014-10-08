@@ -111,7 +111,7 @@ func New(opts *Options) *Server {
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		log.Fatal("Error marshalling INFO JSON: %+v\n", err)
+		Fatal("Error marshalling INFO JSON: %+v\n", err)
 	}
 
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
@@ -140,9 +140,9 @@ func (s *Server) handleSignals() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for sig := range c {
-			log.Debug("Trapped Signal; %v", sig)
+			Debug("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			log.Log("Server Exiting..")
+			Log("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -166,7 +166,7 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	log.Log("Starting gnatsd version %s", VERSION)
+	Log("Starting gnatsd version %s", VERSION)
 	s.running = true
 
 	// Log the pid to a file
@@ -261,14 +261,14 @@ func (s *Server) Shutdown() {
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
-	log.Log("Listening for client connections on %s", hp)
+	Log("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		log.Fatal("Error listening on port: %d - %v", s.opts.Port, e)
+		Fatal("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
 
-	log.Log("gnatsd is ready")
+	Log("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -278,12 +278,12 @@ func (s *Server) AcceptLoop() {
 	// Write resolved port back to options.
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
-		log.Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		log.Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	s.opts.Port = portNum
@@ -294,7 +294,7 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Debug("Temporary Client Accept Error(%v), sleeping %dms",
+				Debug("Temporary Client Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -302,39 +302,39 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				log.Log("Accept error: %v", err)
+				Log("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	log.Log("Server Exiting..")
+	Log("Server Exiting..")
 	s.done <- true
 }
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	log.Log("Starting profiling on http port %d", s.opts.ProfPort)
+	Log("Starting profiling on http port %d", s.opts.ProfPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
 		err := http.ListenAndServe(hp, nil)
 		if err != nil {
-			log.Fatal("error starting monitor server: %s", err)
+			Fatal("error starting monitor server: %s", err)
 		}
 	}()
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	log.Log("Starting http monitor on port %d", s.opts.HTTPPort)
+	Log("Starting http monitor on port %d", s.opts.HTTPPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 
 	l, err := net.Listen("tcp", hp)
 	if err != nil {
-		log.Fatal("Can't listen to the monitor port: %v", err)
+		Fatal("Can't listen to the monitor port: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -366,7 +366,7 @@ func (s *Server) StartHTTPMonitoring() {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, trace: s.opts.Trace, opts: defaultOpts}
+	c := &client{srv: s, nc: conn, opts: defaultOpts}
 
 	// Grab lock
 	c.mu.Lock()
@@ -374,7 +374,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Initialize
 	c.initClient()
 
-	log.Debug("[cid: %d] Client connection created: %s", c.cid, clientConnStr(c.nc))
+	Debug("Client connection created", c)
 
 	// Send our information.
 	s.sendInfo(c)

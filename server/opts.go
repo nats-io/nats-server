@@ -220,7 +220,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 		}
 
 		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
-			log.Log("Self referencing IP found: ", r)
+			Log("Self referencing IP found: ", r)
 			continue
 		}
 		cleanRoutes = append(cleanRoutes, r)
@@ -251,7 +251,7 @@ func getUrlIp(ipStr string) []net.IP {
 
 	hostAddr, err := net.LookupHost(ipStr)
 	if err != nil {
-		log.Log("Error looking up host with route hostname: ", err)
+		Log("Error looking up host with route hostname: ", err)
 		return ipList
 	}
 	for _, addr := range hostAddr {
@@ -268,7 +268,7 @@ func getInterfaceIPs() []net.IP {
 
 	interfaceAddr, err := net.InterfaceAddrs()
 	if err != nil {
-		log.Log("Error getting self referencing address: ", err)
+		Log("Error getting self referencing address: ", err)
 		return localIPs
 	}
 
@@ -277,7 +277,7 @@ func getInterfaceIPs() []net.IP {
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
-			log.Log("Error parsing self referencing address: ", err)
+			Log("Error parsing self referencing address: ", err)
 		}
 	}
 	return localIPs

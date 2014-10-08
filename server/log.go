@@ -2,7 +2,18 @@
 
 package server
 
-var log Logger = &NilLogger{}
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+var trace int32
+var debug int32
+var log = struct {
+	logger Logger
+	sync.Mutex
+}{}
 
 type Logger interface {
 	Log(format string, v ...interface{})
@@ -11,13 +22,66 @@ type Logger interface {
 	Trace(format string, v ...interface{})
 }
 
-func (s *Server) SetLogger(logger Logger) {
-	log = logger
+func (s *Server) SetLogger(logger Logger, d, t bool) {
+	if d {
+		atomic.StoreInt32(&debug, 1)
+	}
+
+	if t {
+		atomic.StoreInt32(&trace, 1)
+	}
+
+	log.Lock()
+	defer log.Unlock()
+	log.logger = logger
 }
 
-type NilLogger struct{}
+func Log(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Log(format, v...)
+	}, format, v...)
+}
 
-func (l *NilLogger) Log(format string, v ...interface{})   {}
-func (l *NilLogger) Fatal(format string, v ...interface{}) {}
-func (l *NilLogger) Debug(format string, v ...interface{}) {}
-func (l *NilLogger) Trace(format string, v ...interface{}) {}
+func Fatal(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Fatal(format, v...)
+	}, format, v...)
+}
+
+func Debug(format string, v ...interface{}) {
+	if debug == 0 {
+		return
+	}
+
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Debug(format, v...)
+	}, format, v...)
+}
+
+func Trace(format string, v ...interface{}) {
+	if trace == 0 {
+		return
+	}
+
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Trace(format, v...)
+	}, format, v...)
+}
+
+func executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
+	log.Lock()
+	defer log.Unlock()
+	if log.logger == nil {
+		return
+	}
+
+	argc := len(args)
+	if argc != 0 {
+		if client, ok := args[argc-1].(*client); ok {
+			args = args[:argc-1]
+			format = fmt.Sprintf("%s - %s", client, format)
+		}
+	}
+
+	f(log.logger, format, args...)
+}

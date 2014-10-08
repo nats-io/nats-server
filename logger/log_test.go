@@ -10,7 +10,7 @@ import (
 )
 
 func TestStdLogger(t *testing.T) {
-	logger := NewStdLogger(false, false, false)
+	logger := NewStdLogger(false, false, false, false)
 
 	flags := logger.logger.Flags()
 	if flags != 0 {
@@ -27,7 +27,7 @@ func TestStdLogger(t *testing.T) {
 }
 
 func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
-	logger := NewStdLogger(true, true, true)
+	logger := NewStdLogger(true, true, true, false)
 
 	flags := logger.logger.Flags()
 	if flags != log.LstdFlags {
@@ -45,35 +45,42 @@ func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
 
 func TestStdLoggerLog(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false)
+		logger := NewStdLogger(false, false, false, false)
 		logger.Log("foo")
-	}, "foo\n")
+	}, "[LOG] foo\n")
+}
+
+func TestStdLoggerLogWithColor(t *testing.T) {
+	expectOutput(t, func() {
+		logger := NewStdLogger(false, false, false, true)
+		logger.Log("foo")
+	}, "[\x1b[32mLOG\x1b[0m] foo\n")
 }
 
 func TestStdLoggerDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, true, false)
+		logger := NewStdLogger(false, true, false, false)
 		logger.Debug("foo %s", "bar")
-	}, "foo bar\n")
+	}, "[DBG] foo bar\n")
 }
 
 func TestStdLoggerDebugWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false)
+		logger := NewStdLogger(false, false, false, false)
 		logger.Debug("foo")
 	}, "")
 }
 
 func TestStdLoggerTrace(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, true)
+		logger := NewStdLogger(false, false, true, false)
 		logger.Trace("foo")
-	}, "foo\n")
+	}, "[TRA] foo\n")
 }
 
 func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false)
+		logger := NewStdLogger(false, false, false, false)
 		logger.Trace("foo")
 	}, "")
 }
@@ -99,13 +106,13 @@ func TestFileLogger(t *testing.T) {
 		t.Fatal("Expected a non-zero length logfile")
 	}
 
-	if string(buf) != "foo\n" {
-		t.Fatalf("Expected '%s', received '%s'\n", "foo", string(buf))
+	if string(buf) != "[LOG] foo\n" {
+		t.Fatalf("Expected '%s', received '%s'\n", "[LOG] foo", string(buf))
 	}
 }
 
-func expectOutput(t *testing.T, f func(), expect string) {
-	old := os.Stdout // keep backup of the real stdout
+func expectOutput(t *testing.T, f func(), expected string) {
+	old := os.Stderr // keep backup of the real stdout
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
@@ -122,7 +129,7 @@ func expectOutput(t *testing.T, f func(), expect string) {
 	os.Stderr.Close()
 	os.Stderr = old // restoring the real stdout
 	out := <-outC
-	if out != expect {
-		t.Fatalf("Expected '%s', received '%s'\n", expect, out)
+	if out != expected {
+		t.Fatalf("Expected '%s', received '%s'\n", expected, out)
 	}
 }

@@ -88,7 +88,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		log.Log("Error marshalling response to /connz request: %v", err)
+		Log("Error marshalling response to /connz request: %v", err)
 	}
 	w.Write(b)
 }
@@ -114,7 +114,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
-		log.Log("Error marshalling response to /subscriptionsz request: %v", err)
+		Log("Error marshalling response to /subscriptionsz request: %v", err)
 	}
 	w.Write(b)
 }
@@ -161,7 +161,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		log.Log("Error marshalling response to /varz request: %v", err)
+		Log("Error marshalling response to /varz request: %v", err)
 	}
 	w.Write(b)
 }

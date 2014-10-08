@@ -48,13 +48,13 @@ func (l *SysLogger) Fatal(format string, v ...interface{}) {
 }
 
 func (l *SysLogger) Debug(format string, v ...interface{}) {
-	if l.debug == true {
+	if l.debug {
 		l.writer.Debug(fmt.Sprintf(format, v...))
 	}
 }
 
 func (l *SysLogger) Trace(format string, v ...interface{}) {
-	if l.trace == true {
+	if l.trace {
 		l.writer.Info(fmt.Sprintf(format, v...))
 	}
 }

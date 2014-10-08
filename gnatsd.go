@@ -92,7 +92,7 @@ func main() {
 	s := server.New(&opts)
 
 	// Builds and set the logger based on the flags
-	s.SetLogger(buildLogger(&opts))
+	s.SetLogger(buildLogger(&opts), opts.Debug, opts.Trace)
 
 	// Start things up. Block here until done.
 	s.Start()
@@ -107,6 +107,6 @@ func buildLogger(opts *server.Options) server.Logger {
 		return logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
 	}
 
-	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace)
+	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
 
 }

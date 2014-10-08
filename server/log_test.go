@@ -7,14 +7,19 @@ import (
 )
 
 func TestSetLogger(t *testing.T) {
-	// We assert that the default logger is the NilLogger
-	_ = log.(*NilLogger)
-
 	server := &Server{}
-	server.SetLogger(&DummyLogger{})
+	server.SetLogger(&DummyLogger{}, true, true)
 
 	// We assert that the logger has change to the DummyLogger
-	_ = log.(*DummyLogger)
+	_ = log.logger.(*DummyLogger)
+
+	if debug != 1 {
+		t.Fatalf("Expected debug 1, received value %d\n", debug)
+	}
+
+	if trace != 1 {
+		t.Fatalf("Expected trace 1, received value %d\n", trace)
+	}
 }
 
 type DummyLogger struct{}
