@@ -42,7 +42,10 @@ func main() {
 	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	flag.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
-	flag.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
+	flag.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
+	flag.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
+	flag.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://localhost:514).")
+	flag.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://localhost:514).")
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
@@ -99,14 +102,17 @@ func main() {
 }
 
 func buildLogger(opts *server.Options) server.Logger {
-	if opts.Syslog {
-		return logger.NewSysLogger(opts.Debug, opts.Trace)
-	}
-
 	if opts.LogFile != "" {
 		return logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
 	}
 
-	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
+	if opts.RemoteSyslog != "" {
+		return logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
+	}
 
+	if opts.Syslog {
+		return logger.NewSysLogger(opts.Debug, opts.Trace)
+	}
+
+	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
 }

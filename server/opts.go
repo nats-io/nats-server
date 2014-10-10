@@ -44,6 +44,7 @@ type Options struct {
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
 	Syslog             bool          `json:"-"`
+	RemoteSyslog       string        `json:"-"`
 }
 
 type authorization struct {
@@ -98,6 +99,10 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			}
 		case "logfile", "log_file":
 			opts.LogFile = v.(string)
+		case "syslog":
+			opts.Syslog = v.(bool)
+		case "remote_syslog":
+			opts.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
 			opts.PidFile = v.(string)
 		case "prof_port":

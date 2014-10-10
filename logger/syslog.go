@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/syslog"
+	"net/url"
 )
 
 type SysLogger struct {
@@ -16,7 +17,7 @@ type SysLogger struct {
 func NewSysLogger(debug, trace bool) *SysLogger {
 	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "gnatsd")
 	if err != nil {
-		log.Fatal("error connecting to syslog: %v", err)
+		log.Fatalf("error connecting to syslog: %q", err.Error())
 	}
 
 	return &SysLogger{
@@ -26,10 +27,11 @@ func NewSysLogger(debug, trace bool) *SysLogger {
 	}
 }
 
-func NewRemoteSysLogger(network, raddr string, debug, trace bool) *SysLogger {
-	w, err := syslog.Dial(network, raddr, syslog.LOG_DEBUG, "gnatsd")
+func NewRemoteSysLogger(fqn string, debug, trace bool) *SysLogger {
+	network, addr := getNetworkAndAddr(fqn)
+	w, err := syslog.Dial(network, addr, syslog.LOG_DEBUG, "gnatsd")
 	if err != nil {
-		log.Fatal("error connecting to syslog: %v", err)
+		log.Fatalf("error connecting to syslog: %q", err.Error())
 	}
 
 	return &SysLogger{
@@ -37,6 +39,24 @@ func NewRemoteSysLogger(network, raddr string, debug, trace bool) *SysLogger {
 		debug:  debug,
 		trace:  trace,
 	}
+}
+
+func getNetworkAndAddr(fqn string) (network, addr string) {
+	u, err := url.Parse(fqn)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	network = u.Scheme
+	if network == "udp" || network == "tcp" {
+		addr = u.Host
+	} else if network == "unix" {
+		addr = u.Path
+	} else {
+		log.Fatalf("error invalid network type: %q", u.Scheme)
+	}
+
+	return
 }
 
 func (l *SysLogger) Log(format string, v ...interface{}) {

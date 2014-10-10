@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"strings"
@@ -8,50 +9,50 @@ import (
 	"time"
 )
 
-var serverAddr string
+var serverFQN string
 
 func TestSysLogger(t *testing.T) {
 	logger := NewSysLogger(false, false)
 
-	if logger.debug != false {
-		t.Fatalf("Expected %b, received %b\n", false, logger.debug)
+	if logger.debug {
+		t.Fatalf("Expected %t, received %t\n", false, logger.debug)
 	}
 
-	if logger.trace != false {
-		t.Fatalf("Expected %b, received %b\n", false, logger.trace)
+	if logger.trace {
+		t.Fatalf("Expected %t, received %t\n", false, logger.trace)
 	}
 }
 
 func TestSysLoggerWithDebugAndTrace(t *testing.T) {
 	logger := NewSysLogger(true, true)
 
-	if logger.debug != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.debug)
+	if !logger.debug {
+		t.Fatalf("Expected %t, received %t\n", true, logger.debug)
 	}
 
-	if logger.trace != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.trace)
+	if !logger.trace {
+		t.Fatalf("Expected %t, received %t\n", true, logger.trace)
 	}
 }
 
 func TestRemoteSysLogger(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, true, true)
+	logger := NewRemoteSysLogger(serverFQN, true, true)
 
-	if logger.debug != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.debug)
+	if !logger.debug {
+		t.Fatalf("Expected %t, received %t\n", true, logger.debug)
 	}
 
-	if logger.trace != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.trace)
+	if !logger.trace {
+		t.Fatalf("Expected %t, received %t\n", true, logger.trace)
 	}
 }
 
 func TestRemoteSysLoggerLog(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, true, true)
+	logger := NewRemoteSysLogger(serverFQN, true, true)
 
 	logger.Log("foo %s", "bar")
 	expectSyslogOutput(t, <-done, "foo bar\n")
@@ -60,7 +61,7 @@ func TestRemoteSysLoggerLog(t *testing.T) {
 func TestRemoteSysLoggerDebug(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, true, true)
+	logger := NewRemoteSysLogger(serverFQN, true, true)
 
 	logger.Debug("foo %s", "qux")
 	expectSyslogOutput(t, <-done, "foo qux\n")
@@ -69,7 +70,7 @@ func TestRemoteSysLoggerDebug(t *testing.T) {
 func TestRemoteSysLoggerDebugDisabled(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, false, false)
+	logger := NewRemoteSysLogger(serverFQN, false, false)
 
 	logger.Debug("foo %s", "qux")
 	rcvd := <-done
@@ -81,7 +82,7 @@ func TestRemoteSysLoggerDebugDisabled(t *testing.T) {
 func TestRemoteSysLoggerTrace(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, true, true)
+	logger := NewRemoteSysLogger(serverFQN, true, true)
 
 	logger.Trace("foo %s", "qux")
 	expectSyslogOutput(t, <-done, "foo qux\n")
@@ -90,7 +91,7 @@ func TestRemoteSysLoggerTrace(t *testing.T) {
 func TestRemoteSysLoggerTraceDisabled(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
-	logger := NewRemoteSysLogger("udp", serverAddr, true, false)
+	logger := NewRemoteSysLogger(serverFQN, true, false)
 
 	logger.Trace("foo %s", "qux")
 	rcvd := <-done
@@ -99,6 +100,41 @@ func TestRemoteSysLoggerTraceDisabled(t *testing.T) {
 	}
 }
 
+func TestGetNetworkAndAddrUDP(t *testing.T) {
+	n, a := getNetworkAndAddr("udp://foo.com:1000")
+
+	if n != "udp" {
+		t.Fatalf("Unexpected network %s\n", n)
+	}
+
+	if a != "foo.com:1000" {
+		t.Fatalf("Unexpected addr %s\n", a)
+	}
+}
+
+func TestGetNetworkAndAddrTCP(t *testing.T) {
+	n, a := getNetworkAndAddr("tcp://foo.com:1000")
+
+	if n != "tcp" {
+		t.Fatalf("Unexpected network %s\n", n)
+	}
+
+	if a != "foo.com:1000" {
+		t.Fatalf("Unexpected addr %s\n", a)
+	}
+}
+
+func TestGetNetworkAndAddrUnix(t *testing.T) {
+	n, a := getNetworkAndAddr("unix:///foo.sock")
+
+	if n != "unix" {
+		t.Fatalf("Unexpected network %s\n", n)
+	}
+
+	if a != "/foo.sock" {
+		t.Fatalf("Unexpected addr %s\n", a)
+	}
+}
 func expectSyslogOutput(t *testing.T, line string, expected string) {
 	data := strings.Split(line, "]: ")
 	if len(data) != 2 {
@@ -129,7 +165,7 @@ func startServer(done chan<- string) {
 		log.Fatalf("net.ListenPacket failed udp :0 %v", e)
 	}
 
-	serverAddr = c.LocalAddr().String()
+	serverFQN = fmt.Sprintf("udp://%s", c.LocalAddr().String())
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	go runSyslog(c, done)
 }

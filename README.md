@@ -16,6 +16,8 @@ Server options:
 Logging options:
     -l, --log FILE                   File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
+    -s, --syslog                     Enable syslog as log method.
+    -r, --remote_syslog              Syslog server addr (udp://localhost:514).
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
 

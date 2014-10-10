@@ -44,18 +44,20 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
-		Host:        "apcera.me",
-		Port:        4242,
-		Username:    "derek",
-		Password:    "bella",
-		AuthTimeout: 1.0,
-		Debug:       false,
-		Trace:       true,
-		Logtime:     false,
-		HTTPPort:    8222,
-		LogFile:     "/tmp/gnatsd.log",
-		PidFile:     "/tmp/gnatsd.pid",
-		ProfPort:    6543,
+		Host:         "apcera.me",
+		Port:         4242,
+		Username:     "derek",
+		Password:     "bella",
+		AuthTimeout:  1.0,
+		Debug:        false,
+		Trace:        true,
+		Logtime:      false,
+		HTTPPort:     8222,
+		LogFile:      "/tmp/gnatsd.log",
+		PidFile:      "/tmp/gnatsd.pid",
+		ProfPort:     6543,
+		Syslog:       true,
+		RemoteSyslog: "udp://foo.com:33",
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -71,18 +73,20 @@ func TestConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
-		Host:        "apcera.me",
-		Port:        2222,
-		Username:    "derek",
-		Password:    "spooky",
-		AuthTimeout: 1.0,
-		Debug:       true,
-		Trace:       true,
-		Logtime:     false,
-		HTTPPort:    DEFAULT_HTTP_PORT,
-		LogFile:     "/tmp/gnatsd.log",
-		PidFile:     "/tmp/gnatsd.pid",
-		ProfPort:    6789,
+		Host:         "apcera.me",
+		Port:         2222,
+		Username:     "derek",
+		Password:     "spooky",
+		AuthTimeout:  1.0,
+		Debug:        true,
+		Trace:        true,
+		Logtime:      false,
+		HTTPPort:     DEFAULT_HTTP_PORT,
+		LogFile:      "/tmp/gnatsd.log",
+		PidFile:      "/tmp/gnatsd.pid",
+		ProfPort:     6789,
+		Syslog:       true,
+		RemoteSyslog: "udp://foo.com:33",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

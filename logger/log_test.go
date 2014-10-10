@@ -17,12 +17,12 @@ func TestStdLogger(t *testing.T) {
 		t.Fatalf("Expected %q, received %q\n", 0, flags)
 	}
 
-	if logger.debug != false {
-		t.Fatalf("Expected %b, received %b\n", false, logger.debug)
+	if logger.debug {
+		t.Fatalf("Expected %t, received %t\n", false, logger.debug)
 	}
 
-	if logger.trace != false {
-		t.Fatalf("Expected %b, received %b\n", false, logger.trace)
+	if logger.trace {
+		t.Fatalf("Expected %t, received %t\n", false, logger.trace)
 	}
 }
 
@@ -34,12 +34,12 @@ func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
 		t.Fatalf("Expected %d, received %d\n", log.LstdFlags, flags)
 	}
 
-	if logger.debug != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.debug)
+	if !logger.debug {
+		t.Fatalf("Expected %t, received %t\n", true, logger.debug)
 	}
 
-	if logger.trace != true {
-		t.Fatalf("Expected %b, received %b\n", true, logger.trace)
+	if !logger.trace {
+		t.Fatalf("Expected %t, received %t\n", true, logger.trace)
 	}
 }
 
