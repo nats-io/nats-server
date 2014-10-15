@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -e
 
 # run go vet and exit non-zero if it detected anything
 T=$(mktemp -t govet.XXXXX)
