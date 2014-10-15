@@ -24,7 +24,8 @@ func TestSetLogger(t *testing.T) {
 
 type DummyLogger struct{}
 
-func (l *DummyLogger) Log(format string, v ...interface{})   {}
-func (l *DummyLogger) Fatal(format string, v ...interface{}) {}
-func (l *DummyLogger) Debug(format string, v ...interface{}) {}
-func (l *DummyLogger) Trace(format string, v ...interface{}) {}
+func (l *DummyLogger) Notice(format string, v ...interface{}) {}
+func (l *DummyLogger) Error(format string, v ...interface{})  {}
+func (l *DummyLogger) Fatal(format string, v ...interface{})  {}
+func (l *DummyLogger) Debug(format string, v ...interface{})  {}
+func (l *DummyLogger) Trace(format string, v ...interface{})  {}

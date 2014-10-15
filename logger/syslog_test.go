@@ -49,12 +49,12 @@ func TestRemoteSysLogger(t *testing.T) {
 	}
 }
 
-func TestRemoteSysLoggerLog(t *testing.T) {
+func TestRemoteSysLoggerNotice(t *testing.T) {
 	done := make(chan string)
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, true, true)
 
-	logger.Log("foo %s", "bar")
+	logger.Notice("foo %s", "bar")
 	expectSyslogOutput(t, <-done, "foo bar\n")
 }
 

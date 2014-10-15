@@ -142,7 +142,7 @@ func (s *Server) handleSignals() {
 		for sig := range c {
 			Debug("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			Log("Server Exiting..")
+			Notice("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -166,7 +166,7 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	Log("Starting gnatsd version %s", VERSION)
+	Notice("Starting gnatsd version %s", VERSION)
 	s.running = true
 
 	// Log the pid to a file
@@ -261,14 +261,14 @@ func (s *Server) Shutdown() {
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
-	Log("Listening for client connections on %s", hp)
+	Notice("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		Fatal("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
 
-	Log("gnatsd is ready")
+	Notice("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -302,20 +302,20 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Log("Accept error: %v", err)
+				Notice("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	Log("Server Exiting..")
+	Notice("Server Exiting..")
 	s.done <- true
 }
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	Log("Starting profiling on http port %d", s.opts.ProfPort)
+	Notice("Starting profiling on http port %d", s.opts.ProfPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
@@ -328,7 +328,7 @@ func (s *Server) StartProfiler() {
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Log("Starting http monitor on port %d", s.opts.HTTPPort)
+	Notice("Starting http monitor on port %d", s.opts.HTTPPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 

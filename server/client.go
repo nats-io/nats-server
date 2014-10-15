@@ -144,7 +144,7 @@ func (c *client) readLoop() {
 			return
 		}
 		if err := c.parse(b[:n]); err != nil {
-			Log("Error reading from client: %s", err.Error(), c)
+			Error("Error reading from client: %s", err.Error(), c)
 			// Auth was handled inline
 			if err != ErrAuthorization {
 				c.sendErr("Parser Error")
@@ -236,7 +236,7 @@ func (c *client) processInfo(arg []byte) error {
 }
 
 func (c *client) processErr(errStr string) {
-	Log("Client error %s", errStr, c)
+	Error("Client error %s", errStr, c)
 	c.closeConnection()
 }
 
@@ -628,7 +628,7 @@ writeErr:
 	client.mu.Unlock()
 
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		Log("Slow Consumer Detected", c)
+		Notice("Slow Consumer Detected", c)
 		client.closeConnection()
 	} else {
 		Debug("Error writing msg: %v", err, c)

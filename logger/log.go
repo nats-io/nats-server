@@ -11,7 +11,8 @@ type Logger struct {
 	logger     *log.Logger
 	debug      bool
 	trace      bool
-	logLabel   string
+	infoLabel  string
+	errorLabel string
 	fatalLabel string
 	debugLabel string
 	traceLabel string
@@ -61,22 +62,28 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 }
 
 func setPlainLabelFormats(l *Logger) {
-	l.logLabel = "[LOG] "
-	l.debugLabel = "[DBG] "
-	l.fatalLabel = "[ERR] "
-	l.traceLabel = "[TRA] "
+	l.infoLabel = "[INFO] "
+	l.debugLabel = "[DEBUG] "
+	l.errorLabel = "[ERROR] "
+	l.fatalLabel = "[FATAL] "
+	l.traceLabel = "[TRACE] "
 }
 
 func setColoredLabelFormats(l *Logger) {
 	colorFormat := "[\x1b[%dm%s\x1b[0m] "
-	l.logLabel = fmt.Sprintf(colorFormat, 32, "LOG")
-	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DBG")
-	l.fatalLabel = fmt.Sprintf(colorFormat, 31, "ERR")
-	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRA")
+	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INFO")
+	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DEBUG")
+	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERROR")
+	l.fatalLabel = fmt.Sprintf(colorFormat, 35, "FATAL")
+	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRACE")
 }
 
-func (l *Logger) Log(format string, v ...interface{}) {
-	l.logger.Printf(l.logLabel+format, v...)
+func (l *Logger) Notice(format string, v ...interface{}) {
+	l.logger.Printf(l.infoLabel+format, v...)
+}
+
+func (l *Logger) Error(format string, v ...interface{}) {
+	l.logger.Printf(l.errorLabel+format, v...)
 }
 
 func (l *Logger) Fatal(format string, v ...interface{}) {

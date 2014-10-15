@@ -16,8 +16,9 @@ var log = struct {
 }{}
 
 type Logger interface {
-	Log(format string, v ...interface{})
+	Notice(format string, v ...interface{})
 	Fatal(format string, v ...interface{})
+	Error(format string, v ...interface{})
 	Debug(format string, v ...interface{})
 	Trace(format string, v ...interface{})
 }
@@ -36,9 +37,15 @@ func (s *Server) SetLogger(logger Logger, d, t bool) {
 	log.logger = logger
 }
 
-func Log(format string, v ...interface{}) {
+func Notice(format string, v ...interface{}) {
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Log(format, v...)
+		logger.Notice(format, v...)
+	}, format, v...)
+}
+
+func Error(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Error(format, v...)
 	}, format, v...)
 }
 

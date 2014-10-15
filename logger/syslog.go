@@ -59,12 +59,16 @@ func getNetworkAndAddr(fqn string) (network, addr string) {
 	return
 }
 
-func (l *SysLogger) Log(format string, v ...interface{}) {
+func (l *SysLogger) Notice(format string, v ...interface{}) {
 	l.writer.Notice(fmt.Sprintf(format, v...))
 }
 
 func (l *SysLogger) Fatal(format string, v ...interface{}) {
 	l.writer.Crit(fmt.Sprintf(format, v...))
+}
+
+func (l *SysLogger) Error(format string, v ...interface{}) {
+	l.writer.Err(fmt.Sprintf(format, v...))
 }
 
 func (l *SysLogger) Debug(format string, v ...interface{}) {
@@ -75,6 +79,6 @@ func (l *SysLogger) Debug(format string, v ...interface{}) {
 
 func (l *SysLogger) Trace(format string, v ...interface{}) {
 	if l.trace {
-		l.writer.Info(fmt.Sprintf(format, v...))
+		l.writer.Notice(fmt.Sprintf(format, v...))
 	}
 }

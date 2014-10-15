@@ -43,25 +43,25 @@ func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
 	}
 }
 
-func TestStdLoggerLog(t *testing.T) {
+func TestStdLoggerNotice(t *testing.T) {
 	expectOutput(t, func() {
 		logger := NewStdLogger(false, false, false, false)
-		logger.Log("foo")
-	}, "[LOG] foo\n")
+		logger.Notice("foo")
+	}, "[INFO] foo\n")
 }
 
-func TestStdLoggerLogWithColor(t *testing.T) {
+func TestStdLoggerNoticeWithColor(t *testing.T) {
 	expectOutput(t, func() {
 		logger := NewStdLogger(false, false, false, true)
-		logger.Log("foo")
-	}, "[\x1b[32mLOG\x1b[0m] foo\n")
+		logger.Notice("foo")
+	}, "[\x1b[32mINFO\x1b[0m] foo\n")
 }
 
 func TestStdLoggerDebug(t *testing.T) {
 	expectOutput(t, func() {
 		logger := NewStdLogger(false, true, false, false)
 		logger.Debug("foo %s", "bar")
-	}, "[DBG] foo bar\n")
+	}, "[DEBUG] foo bar\n")
 }
 
 func TestStdLoggerDebugWithOutDebug(t *testing.T) {
@@ -75,7 +75,7 @@ func TestStdLoggerTrace(t *testing.T) {
 	expectOutput(t, func() {
 		logger := NewStdLogger(false, false, true, false)
 		logger.Trace("foo")
-	}, "[TRA] foo\n")
+	}, "[TRACE] foo\n")
 }
 
 func TestStdLoggerTraceWithOutDebug(t *testing.T) {
@@ -96,7 +96,7 @@ func TestFileLogger(t *testing.T) {
 	file.Close()
 
 	logger := NewFileLogger(file.Name(), false, false, false)
-	logger.Log("foo")
+	logger.Notice("foo")
 
 	buf, err := ioutil.ReadFile(file.Name())
 	if err != nil {
@@ -106,8 +106,8 @@ func TestFileLogger(t *testing.T) {
 		t.Fatal("Expected a non-zero length logfile")
 	}
 
-	if string(buf) != "[LOG] foo\n" {
-		t.Fatalf("Expected '%s', received '%s'\n", "[LOG] foo", string(buf))
+	if string(buf) != "[INFO] foo\n" {
+		t.Fatalf("Expected '%s', received '%s'\n", "[INFO] foo", string(buf))
 	}
 }
 

@@ -46,7 +46,7 @@ func (c *client) sendConnect() {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		Log("Error marshalling CONNECT to route: %v\n", err)
+		Error("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
 	}
 	c.bw.WriteString(fmt.Sprintf(conProto, b))
@@ -234,7 +234,7 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	hp := fmt.Sprintf("%s:%d", s.opts.ClusterHost, s.opts.ClusterPort)
-	Log("Listening for route connections on %s", hp)
+	Notice("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		Fatal("Error listening on router port: %d - %v", s.opts.Port, e)
@@ -263,7 +263,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Log("Accept error: %v", err)
+				Notice("Accept error: %v", err)
 			}
 			continue
 		}
