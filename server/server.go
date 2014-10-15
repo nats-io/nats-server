@@ -82,6 +82,7 @@ func New(opts *Options) *Server {
 	if opts.Username != "" || opts.Authorization != "" {
 		info.AuthRequired = true
 	}
+
 	s := &Server{
 		info:  info,
 		sl:    sublist.New(),
@@ -95,9 +96,6 @@ func New(opts *Options) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Setup logging with flags
-	s.LogInit()
-
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -108,19 +106,15 @@ func New(opts *Options) *Server {
 	// Used to kick out all of the route
 	// connect Go routines.
 	s.rcQuit = make(chan bool)
+	s.handleSignals()
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		Fatalf("Error marshalling INFO JSON: %+v\n", err)
+		Fatal("Error marshalling INFO JSON: %+v\n", err)
 	}
+
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-
-	s.handleSignals()
-
-	Logf("Starting gnatsd version %s", VERSION)
-
-	s.running = true
 
 	return s
 }
@@ -146,9 +140,9 @@ func (s *Server) handleSignals() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for sig := range c {
-			Debugf("Trapped Signal; %v", sig)
+			Debug("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			Log("Server Exiting..")
+			Notice("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -172,6 +166,8 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
+	Notice("Starting gnatsd version %s", VERSION)
+	s.running = true
 
 	// Log the pid to a file
 	if s.opts.PidFile != _EMPTY_ {
@@ -265,14 +261,14 @@ func (s *Server) Shutdown() {
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
-	Logf("Listening for client connections on %s", hp)
+	Notice("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
+		Fatal("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
 
-	Logf("gnatsd is ready")
+	Notice("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -282,12 +278,12 @@ func (s *Server) AcceptLoop() {
 	// Write resolved port back to options.
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	s.opts.Port = portNum
@@ -306,36 +302,39 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Logf("Accept error: %v", err)
+				Notice("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	Log("Server Exiting..")
+	Notice("Server Exiting..")
 	s.done <- true
 }
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	Logf("Starting profiling on http port %d", s.opts.ProfPort)
+	Notice("Starting profiling on http port %d", s.opts.ProfPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
-		Log(http.ListenAndServe(hp, nil))
+		err := http.ListenAndServe(hp, nil)
+		if err != nil {
+			Fatal("error starting monitor server: %s", err)
+		}
 	}()
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Logf("Starting http monitor on port %d", s.opts.HTTPPort)
+	Notice("Starting http monitor on port %d", s.opts.HTTPPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 
 	l, err := net.Listen("tcp", hp)
 	if err != nil {
-		Fatalf("Can't listen to the monitor port: %v", err)
+		Fatal("Can't listen to the monitor port: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -375,7 +374,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Initialize
 	c.initClient()
 
-	Debug("Client connection created", clientConnStr(c.nc), c.cid)
+	Debug("Client connection created", c)
 
 	// Send our information.
 	s.sendInfo(c)

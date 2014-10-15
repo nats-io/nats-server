@@ -43,6 +43,8 @@ type Options struct {
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
+	Syslog             bool          `json:"-"`
+	RemoteSyslog       string        `json:"-"`
 }
 
 type authorization struct {
@@ -97,6 +99,10 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			}
 		case "logfile", "log_file":
 			opts.LogFile = v.(string)
+		case "syslog":
+			opts.Syslog = v.(bool)
+		case "remote_syslog":
+			opts.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
 			opts.PidFile = v.(string)
 		case "prof_port":
@@ -219,7 +225,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 		}
 
 		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
-			Log("Self referencing IP found: ", r)
+			Notice("Self referencing IP found: ", r)
 			continue
 		}
 		cleanRoutes = append(cleanRoutes, r)
@@ -250,7 +256,7 @@ func getUrlIp(ipStr string) []net.IP {
 
 	hostAddr, err := net.LookupHost(ipStr)
 	if err != nil {
-		Log("Error looking up host with route hostname: ", err)
+		Error("Error looking up host with route hostname: ", err)
 		return ipList
 	}
 	for _, addr := range hostAddr {
@@ -267,7 +273,7 @@ func getInterfaceIPs() []net.IP {
 
 	interfaceAddr, err := net.InterfaceAddrs()
 	if err != nil {
-		Log("Error getting self referencing address: ", err)
+		Error("Error getting self referencing address: ", err)
 		return localIPs
 	}
 
@@ -276,7 +282,7 @@ func getInterfaceIPs() []net.IP {
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
-			Log("Error parsing self referencing address: ", err)
+			Error("Error parsing self referencing address: ", err)
 		}
 	}
 	return localIPs
