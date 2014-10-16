@@ -43,7 +43,7 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	f, err := os.OpenFile(filename, fileflags, 0660)
 	if err != nil {
-		log.Fatal("error opening file: %v", err)
+		log.Fatalf("error opening file: %v", err)
 	}
 
 	flags := 0
@@ -78,25 +78,25 @@ func setColoredLabelFormats(l *Logger) {
 	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRACE")
 }
 
-func (l *Logger) Notice(format string, v ...interface{}) {
+func (l *Logger) Noticef(format string, v ...interface{}) {
 	l.logger.Printf(l.infoLabel+format, v...)
 }
 
-func (l *Logger) Error(format string, v ...interface{}) {
+func (l *Logger) Errorf(format string, v ...interface{}) {
 	l.logger.Printf(l.errorLabel+format, v...)
 }
 
-func (l *Logger) Fatal(format string, v ...interface{}) {
+func (l *Logger) Fatalf(format string, v ...interface{}) {
 	l.logger.Fatalf(l.fatalLabel+format, v)
 }
 
-func (l *Logger) Debug(format string, v ...interface{}) {
+func (l *Logger) Debugf(format string, v ...interface{}) {
 	if l.debug == true {
 		l.logger.Printf(l.debugLabel+format, v...)
 	}
 }
 
-func (l *Logger) Trace(format string, v ...interface{}) {
+func (l *Logger) Tracef(format string, v ...interface{}) {
 	if l.trace == true {
 		l.logger.Printf(l.traceLabel+format, v...)
 	}

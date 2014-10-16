@@ -54,7 +54,7 @@ func TestRemoteSysLoggerNotice(t *testing.T) {
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, true, true)
 
-	logger.Notice("foo %s", "bar")
+	logger.Noticef("foo %s", "bar")
 	expectSyslogOutput(t, <-done, "foo bar\n")
 }
 
@@ -63,7 +63,7 @@ func TestRemoteSysLoggerDebug(t *testing.T) {
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, true, true)
 
-	logger.Debug("foo %s", "qux")
+	logger.Debugf("foo %s", "qux")
 	expectSyslogOutput(t, <-done, "foo qux\n")
 }
 
@@ -72,7 +72,7 @@ func TestRemoteSysLoggerDebugDisabled(t *testing.T) {
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, false, false)
 
-	logger.Debug("foo %s", "qux")
+	logger.Debugf("foo %s", "qux")
 	rcvd := <-done
 	if rcvd != "" {
 		t.Fatalf("Unexpected syslog response %s\n", rcvd)
@@ -84,7 +84,7 @@ func TestRemoteSysLoggerTrace(t *testing.T) {
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, true, true)
 
-	logger.Trace("foo %s", "qux")
+	logger.Tracef("foo %s", "qux")
 	expectSyslogOutput(t, <-done, "foo qux\n")
 }
 
@@ -93,7 +93,7 @@ func TestRemoteSysLoggerTraceDisabled(t *testing.T) {
 	startServer(done)
 	logger := NewRemoteSysLogger(serverFQN, true, false)
 
-	logger.Trace("foo %s", "qux")
+	logger.Tracef("foo %s", "qux")
 	rcvd := <-done
 	if rcvd != "" {
 		t.Fatalf("Unexpected syslog response %s\n", rcvd)

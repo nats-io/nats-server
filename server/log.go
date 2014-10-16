@@ -3,7 +3,6 @@
 package server
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -16,11 +15,11 @@ var log = struct {
 }{}
 
 type Logger interface {
-	Notice(format string, v ...interface{})
-	Fatal(format string, v ...interface{})
-	Error(format string, v ...interface{})
-	Debug(format string, v ...interface{})
-	Trace(format string, v ...interface{})
+	Noticef(format string, v ...interface{})
+	Fatalf(format string, v ...interface{})
+	Errorf(format string, v ...interface{})
+	Debugf(format string, v ...interface{})
+	Tracef(format string, v ...interface{})
 }
 
 func (s *Server) SetLogger(logger Logger, d, t bool) {
@@ -37,41 +36,41 @@ func (s *Server) SetLogger(logger Logger, d, t bool) {
 	log.logger = logger
 }
 
-func Notice(format string, v ...interface{}) {
+func Noticef(format string, v ...interface{}) {
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Notice(format, v...)
+		logger.Noticef(format, v...)
 	}, format, v...)
 }
 
-func Error(format string, v ...interface{}) {
+func Errorf(format string, v ...interface{}) {
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Error(format, v...)
+		logger.Errorf(format, v...)
 	}, format, v...)
 }
 
-func Fatal(format string, v ...interface{}) {
+func Fatalf(format string, v ...interface{}) {
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Fatal(format, v...)
+		logger.Fatalf(format, v...)
 	}, format, v...)
 }
 
-func Debug(format string, v ...interface{}) {
+func Debugf(format string, v ...interface{}) {
 	if debug == 0 {
 		return
 	}
 
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Debug(format, v...)
+		logger.Debugf(format, v...)
 	}, format, v...)
 }
 
-func Trace(format string, v ...interface{}) {
+func Tracef(format string, v ...interface{}) {
 	if trace == 0 {
 		return
 	}
 
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Trace(format, v...)
+		logger.Tracef(format, v...)
 	}, format, v...)
 }
 
@@ -81,14 +80,5 @@ func executeLogCall(f func(logger Logger, format string, v ...interface{}), form
 	if log.logger == nil {
 		return
 	}
-
-	argc := len(args)
-	if argc != 0 {
-		if client, ok := args[argc-1].(*client); ok {
-			args = args[:argc-1]
-			format = fmt.Sprintf("%s - %s", client, format)
-		}
-	}
-
 	f(log.logger, format, args...)
 }
