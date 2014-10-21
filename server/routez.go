@@ -86,19 +86,25 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 		url := strings.Trim(string(body), "\x00")
 
 		s.mu.Lock()
-		defer s.mu.Unlock()
+		var routeToDelete *client
 		for _, route := range s.routes {
 			if route.route.url != nil && route.route.url.String() == url {
-				route.mu.Lock()
-				route.route.didSolicit = false // don't reconnect
-				route.mu.Unlock()
-				route.closeConnection()
-				w.WriteHeader(200)
-				w.Write([]byte(`{"status": "ok"}`))
-				return
+				routeToDelete = route
+				break
 			}
 		}
-		w.WriteHeader(404)
-		w.Write([]byte(`{"error": "could not find matching route"}`))
+		s.mu.Unlock()
+
+		if routeToDelete != nil {
+			routeToDelete.mu.Lock()
+			routeToDelete.route.didSolicit = false // don't reconnect
+			routeToDelete.mu.Unlock()
+			routeToDelete.closeConnection()
+			w.WriteHeader(200)
+			w.Write([]byte(`{"status": "ok"}`))
+		} else {
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error": "could not find matching route"}`))
+		}
 	}
 }
