@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-func dummyClient() *client {
-	return &client{}
+func dummyClient() *Client {
+	return &Client{}
 }
 
 func TestParsePing(t *testing.T) {
@@ -188,7 +188,7 @@ func TestParsePub(t *testing.T) {
 	}
 }
 
-func testPubArg(c *client, t *testing.T) {
+func testPubArg(c *Client, t *testing.T) {
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
 		t.Fatalf("Mismatched subject: '%s'\n", c.pa.subject)
 	}
@@ -263,7 +263,7 @@ func TestParseMsg(t *testing.T) {
 	}
 }
 
-func testMsgArg(c *client, t *testing.T) {
+func testMsgArg(c *Client, t *testing.T) {
 	if !bytes.Equal(c.pa.subject, []byte("foobar")) {
 		t.Fatalf("Mismatched subject: '%s'\n", c.pa.subject)
 	}

@@ -79,7 +79,7 @@ const (
 	INFO_ARG
 )
 
-func (c *client) parse(buf []byte) error {
+func (c *Client) parse(buf []byte) error {
 	var i int
 	var b byte
 
@@ -614,7 +614,7 @@ func protoSnippet(start int, buf []byte) string {
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
-func (c *client) clonePubArg() {
+func (c *Client) clonePubArg() {
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.subject...)
 	c.argBuf = append(c.argBuf, c.pa.reply...)

@@ -30,7 +30,7 @@ type connectInfo struct {
 const conProto = "CONNECT %s" + _CRLF_
 
 // Lock should be held entering here.
-func (c *client) sendConnect() {
+func (c *Client) sendConnect() {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
 		user = userInfo.Username()
@@ -56,7 +56,7 @@ func (c *client) sendConnect() {
 // This will send local subscription state to a new route connection.
 // FIXME(dlc) - This could be a DOS or perf issue with many clients
 // and large subscription space. Plus buffering in place not a good idea.
-func (s *Server) sendLocalSubsToRoute(route *client) {
+func (s *Server) sendLocalSubsToRoute(route *Client) {
 	b := bytes.Buffer{}
 
 	s.mu.Lock()
@@ -82,10 +82,10 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	Debug("Route sent local subscriptions", route)
 }
 
-func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
+func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *Client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
-	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
+	c := &Client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
 	// Grab lock
 	c.mu.Lock()
@@ -180,7 +180,7 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
-func (s *Server) addRoute(c *client) bool {
+func (s *Server) addRoute(c *Client) bool {
 	id := c.route.remoteID
 	s.mu.Lock()
 	remote, exists := s.remotes[id]
@@ -332,7 +332,7 @@ func (s *Server) connectToRoute(rUrl *url.URL) {
 	}
 }
 
-func (c *client) isSolicitedRoute() bool {
+func (c *Client) isSolicitedRoute() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.typ == ROUTER && c.route != nil && c.route.didSolicit

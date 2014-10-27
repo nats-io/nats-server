@@ -40,13 +40,14 @@ type Server struct {
 	sl       *sublist.Sublist
 	gcid     uint64
 	opts     *Options
+	auth     Auth
 	trace    bool
 	debug    bool
 	running  bool
 	listener net.Listener
-	clients  map[uint64]*client
-	routes   map[uint64]*client
-	remotes  map[string]*client
+	clients  map[uint64]*Client
+	routes   map[uint64]*Client
+	remotes  map[string]*Client
 	done     chan bool
 	start    time.Time
 	http     net.Listener
@@ -78,10 +79,6 @@ func New(opts *Options) *Server {
 		SslRequired:  false,
 		MaxPayload:   MAX_PAYLOAD_SIZE,
 	}
-	// Check for Auth items
-	if opts.Username != "" || opts.Authorization != "" {
-		info.AuthRequired = true
-	}
 
 	s := &Server{
 		info:  info,
@@ -97,26 +94,36 @@ func New(opts *Options) *Server {
 	defer s.mu.Unlock()
 
 	// For tracking clients
-	s.clients = make(map[uint64]*client)
+	s.clients = make(map[uint64]*Client)
 
 	// For tracking routes and their remote ids
-	s.routes = make(map[uint64]*client)
-	s.remotes = make(map[string]*client)
+	s.routes = make(map[uint64]*Client)
+	s.remotes = make(map[string]*Client)
 
 	// Used to kick out all of the route
 	// connect Go routines.
 	s.rcQuit = make(chan bool)
+	s.generateServerInfoJSON()
 	s.handleSignals()
 
+	return s
+}
+
+// Sets the authentication method
+func (s *Server) SetAuthMethod(authMethod Auth) {
+	s.info.AuthRequired = true
+	s.auth = authMethod
+
+	s.generateServerInfoJSON()
+}
+
+func (s *Server) generateServerInfoJSON() {
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatal("Error marshalling INFO JSON: %+v\n", err)
 	}
-
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-
-	return s
 }
 
 // PrintAndDie is exported for access in other packages.
@@ -206,7 +213,7 @@ func (s *Server) Shutdown() {
 
 	s.running = false
 
-	conns := make(map[uint64]*client)
+	conns := make(map[uint64]*Client)
 
 	// Copy off the clients
 	for i, c := range s.clients {
@@ -365,8 +372,8 @@ func (s *Server) StartHTTPMonitoring() {
 	}()
 }
 
-func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, opts: defaultOpts}
+func (s *Server) createClient(conn net.Conn) *Client {
+	c := &Client{srv: s, nc: conn, opts: defaultOpts}
 
 	// Grab lock
 	c.mu.Lock()
@@ -397,7 +404,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 }
 
 // Assume the lock is held upon entry.
-func (s *Server) sendInfo(c *client) {
+func (s *Server) sendInfo(c *Client) {
 	switch c.typ {
 	case CLIENT:
 		c.nc.Write(s.infoJSON)
@@ -406,22 +413,15 @@ func (s *Server) sendInfo(c *client) {
 	}
 }
 
-func (s *Server) checkClientAuth(c *client) bool {
-	if !s.info.AuthRequired {
+func (s *Server) checkClientAuth(c *Client) bool {
+	if s.auth == nil {
 		return true
 	}
-	// We require auth here, check the client
-	// Authorization tokens trump username/password
-	if s.opts.Authorization != "" {
-		return s.opts.Authorization == c.opts.Authorization
-	} else if s.opts.Username != c.opts.Username ||
-		s.opts.Password != c.opts.Password {
-		return false
-	}
-	return true
+
+	return s.auth.Check(c)
 }
 
-func (s *Server) checkRouterAuth(c *client) bool {
+func (s *Server) checkRouterAuth(c *Client) bool {
 	if !s.routeInfo.AuthRequired {
 		return true
 	}
@@ -433,7 +433,7 @@ func (s *Server) checkRouterAuth(c *client) bool {
 }
 
 // Check auth and return boolean indicating if client is ok
-func (s *Server) checkAuth(c *client) bool {
+func (s *Server) checkAuth(c *Client) bool {
 	switch c.typ {
 	case CLIENT:
 		return s.checkClientAuth(c)
@@ -445,7 +445,7 @@ func (s *Server) checkAuth(c *client) bool {
 }
 
 // Remove a client or route from our internal accounting.
-func (s *Server) removeClient(c *client) {
+func (s *Server) removeClient(c *Client) {
 	c.mu.Lock()
 	cid := c.cid
 	typ := c.typ

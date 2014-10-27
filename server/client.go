@@ -32,7 +32,7 @@ const (
 	ROUTER
 )
 
-type client struct {
+type Client struct {
 	mu   sync.Mutex
 	typ  int
 	cid  uint64
@@ -41,7 +41,7 @@ type client struct {
 	bw   *bufio.Writer
 	srv  *Server
 	subs *hashmap.HashMap
-	pcd  map[*client]struct{}
+	pcd  map[*Client]struct{}
 	atmr *time.Timer
 	ptmr *time.Timer
 	pout int
@@ -52,7 +52,7 @@ type client struct {
 	route *route
 }
 
-func (c *client) String() (id string) {
+func (c *Client) String() (id string) {
 	conn := "-"
 	if ip, ok := c.nc.(*net.TCPConn); ok {
 		addr := ip.RemoteAddr().(*net.TCPAddr)
@@ -69,8 +69,12 @@ func (c *client) String() (id string) {
 	return id
 }
 
+func (c *Client) GetOpts() *clientOpts {
+	return &c.opts
+}
+
 type subscription struct {
-	client  *client
+	client  *Client
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -95,7 +99,7 @@ func init() {
 }
 
 // Lock should be held
-func (c *client) initClient() {
+func (c *Client) initClient() {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, defaultBufSize)
@@ -108,7 +112,7 @@ func (c *client) initClient() {
 
 	// This is to track pending clients that have data to be flushed
 	// after we process inbound msgs from our own connection.
-	c.pcd = make(map[*client]struct{})
+	c.pcd = make(map[*Client]struct{})
 
 	// No clue why, but this stalls and kills performance on Mac (Mavericks).
 	//
@@ -124,7 +128,7 @@ func (c *client) initClient() {
 	go c.readLoop()
 }
 
-func (c *client) readLoop() {
+func (c *Client) readLoop() {
 	// Grab the connection off the client, it will be cleared on a close.
 	// We check for that after the loop, but want to avoid a nil dereference
 	c.mu.Lock()
@@ -177,7 +181,7 @@ func (c *client) readLoop() {
 	}
 }
 
-func (c *client) traceMsg(msg []byte) {
+func (c *Client) traceMsg(msg []byte) {
 	if trace == 0 {
 		return
 	}
@@ -187,7 +191,7 @@ func (c *client) traceMsg(msg []byte) {
 	Trace("MSG: %s", opa, c)
 }
 
-func (c *client) traceOp(op string, arg []byte) {
+func (c *Client) traceOp(op string, arg []byte) {
 	if trace == 0 {
 		return
 	}
@@ -200,7 +204,7 @@ func (c *client) traceOp(op string, arg []byte) {
 }
 
 // Process the info message if we are a route.
-func (c *client) processRouteInfo(info *Info) {
+func (c *Client) processRouteInfo(info *Info) {
 	c.mu.Lock()
 	if c.route == nil {
 		c.mu.Unlock()
@@ -223,8 +227,8 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 }
 
-// Process the information messages from clients and other routes.
-func (c *client) processInfo(arg []byte) error {
+// Process the information messages from Clients and other routes.
+func (c *Client) processInfo(arg []byte) error {
 	info := Info{}
 	if err := json.Unmarshal(arg, &info); err != nil {
 		return err
@@ -235,12 +239,12 @@ func (c *client) processInfo(arg []byte) error {
 	return nil
 }
 
-func (c *client) processErr(errStr string) {
+func (c *Client) processErr(errStr string) {
 	Error("Client error %s", errStr, c)
 	c.closeConnection()
 }
 
-func (c *client) processConnect(arg []byte) error {
+func (c *Client) processConnect(arg []byte) error {
 	c.traceOp("CONNECT", arg)
 
 	// This will be resolved regardless before we exit this func,
@@ -270,17 +274,17 @@ func (c *client) processConnect(arg []byte) error {
 	return nil
 }
 
-func (c *client) authTimeout() {
+func (c *Client) authTimeout() {
 	c.sendErr("Authorization Timeout")
 	c.closeConnection()
 }
 
-func (c *client) authViolation() {
+func (c *Client) authViolation() {
 	c.sendErr("Authorization Violation")
 	c.closeConnection()
 }
 
-func (c *client) sendErr(err string) {
+func (c *Client) sendErr(err string) {
 	c.mu.Lock()
 	if c.bw != nil {
 		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
@@ -289,14 +293,14 @@ func (c *client) sendErr(err string) {
 	c.mu.Unlock()
 }
 
-func (c *client) sendOK() {
+func (c *Client) sendOK() {
 	c.mu.Lock()
 	c.bw.WriteString("+OK\r\n")
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
 
-func (c *client) processPing() {
+func (c *Client) processPing() {
 	c.traceOp("PING", nil)
 	if c.nc == nil {
 		return
@@ -311,14 +315,14 @@ func (c *client) processPing() {
 	c.mu.Unlock()
 }
 
-func (c *client) processPong() {
+func (c *Client) processPong() {
 	c.traceOp("PONG", nil)
 	c.mu.Lock()
 	c.pout -= 1
 	c.mu.Unlock()
 }
 
-func (c *client) processMsgArgs(arg []byte) error {
+func (c *Client) processMsgArgs(arg []byte) error {
 	if trace == 0 {
 		c.traceOp("MSG", arg)
 	}
@@ -365,7 +369,7 @@ func (c *client) processMsgArgs(arg []byte) error {
 	return nil
 }
 
-func (c *client) processPub(arg []byte) error {
+func (c *Client) processPub(arg []byte) error {
 	if trace == 0 {
 		c.traceOp("PUB", arg)
 	}
@@ -437,7 +441,7 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte) (err error) {
+func (c *Client) processSub(argo []byte) (err error) {
 	c.traceOp("SUB", argo)
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
@@ -479,7 +483,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	return nil
 }
 
-func (c *client) unsubscribe(sub *subscription) {
+func (c *Client) unsubscribe(sub *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if sub.max > 0 && sub.nm < sub.max {
@@ -496,7 +500,7 @@ func (c *client) unsubscribe(sub *subscription) {
 	}
 }
 
-func (c *client) processUnsub(arg []byte) error {
+func (c *Client) processUnsub(arg []byte) error {
 	c.traceOp("UNSUB", arg)
 	args := splitArg(arg)
 	var sid []byte
@@ -530,7 +534,7 @@ func (c *client) processUnsub(arg []byte) error {
 	return nil
 }
 
-func (c *client) msgHeader(mh []byte, sub *subscription) []byte {
+func (c *Client) msgHeader(mh []byte, sub *subscription) []byte {
 	mh = append(mh, sub.sid...)
 	mh = append(mh, ' ')
 	if c.pa.reply != nil {
@@ -546,7 +550,7 @@ func (c *client) msgHeader(mh []byte, sub *subscription) []byte {
 var needFlush = struct{}{}
 var routeSeen = struct{}{}
 
-func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
+func (c *Client) deliverMsg(sub *subscription, mh, msg []byte) {
 	if sub.client == nil {
 		return
 	}
@@ -636,7 +640,7 @@ writeErr:
 }
 
 // processMsg is called to process an inbound msg from a client.
-func (c *client) processMsg(msg []byte) {
+func (c *Client) processMsg(msg []byte) {
 
 	// Update statistics
 
@@ -763,7 +767,7 @@ func (c *client) processMsg(msg []byte) {
 	}
 }
 
-func (c *client) processPingTimer() {
+func (c *Client) processPingTimer() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ptmr = nil
@@ -798,7 +802,7 @@ func (c *client) processPingTimer() {
 	}
 }
 
-func (c *client) setPingTimer() {
+func (c *Client) setPingTimer() {
 	if c.srv == nil {
 		return
 	}
@@ -807,7 +811,7 @@ func (c *client) setPingTimer() {
 }
 
 // Lock should be held
-func (c *client) clearPingTimer() {
+func (c *Client) clearPingTimer() {
 	if c.ptmr == nil {
 		return
 	}
@@ -816,12 +820,12 @@ func (c *client) clearPingTimer() {
 }
 
 // Lock should be held
-func (c *client) setAuthTimer(d time.Duration) {
+func (c *Client) setAuthTimer(d time.Duration) {
 	c.atmr = time.AfterFunc(d, func() { c.authTimeout() })
 }
 
 // Lock should be held
-func (c *client) clearAuthTimer() {
+func (c *Client) clearAuthTimer() {
 	if c.atmr == nil {
 		return
 	}
@@ -829,7 +833,7 @@ func (c *client) clearAuthTimer() {
 	c.atmr = nil
 }
 
-func (c *client) isAuthTimerSet() bool {
+func (c *Client) isAuthTimerSet() bool {
 	c.mu.Lock()
 	isSet := c.atmr != nil
 	c.mu.Unlock()
@@ -837,7 +841,7 @@ func (c *client) isAuthTimerSet() bool {
 }
 
 // Lock should be held
-func (c *client) clearConnection() {
+func (c *Client) clearConnection() {
 	if c.nc == nil {
 		return
 	}
@@ -845,7 +849,7 @@ func (c *client) clearConnection() {
 	c.nc.Close()
 }
 
-func (c *client) typeString() string {
+func (c *Client) typeString() string {
 	switch c.typ {
 	case CLIENT:
 		return "Client"
@@ -855,7 +859,7 @@ func (c *client) typeString() string {
 	return "Unknown Type"
 }
 
-func (c *client) closeConnection() {
+func (c *Client) closeConnection() {
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()

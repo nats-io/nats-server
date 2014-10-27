@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apcera/gnatsd/auth"
 	"github.com/apcera/gnatsd/server"
 )
 
@@ -45,7 +46,7 @@ func runAuthServerWithToken() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Authorization = AUTH_TOKEN
-	return RunServer(&opts)
+	return RunServerWithAuth(&opts, &auth.Token{Token: AUTH_TOKEN})
 }
 
 func TestNoAuthClient(t *testing.T) {
@@ -111,7 +112,9 @@ func runAuthServerWithUserPass() *server.Server {
 	opts.Port = AUTH_PORT
 	opts.Username = AUTH_USER
 	opts.Password = AUTH_PASS
-	return RunServer(&opts)
+
+	auth := &auth.Plain{Username: AUTH_USER, Password: AUTH_PASS}
+	return RunServerWithAuth(&opts, auth)
 }
 
 func TestNoUserOrPasswordClient(t *testing.T) {
