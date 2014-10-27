@@ -17,7 +17,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 	defer trash.Close()
 
 	s := &Server{sl: sublist.New()}
-	c := &client{srv: s, subs: hashmap.New(), nc: cli}
+	c := &Client{srv: s, subs: hashmap.New(), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -53,7 +53,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 
 func TestSplitBufferUnsubOp(t *testing.T) {
 	s := &Server{sl: sublist.New()}
-	c := &client{srv: s, subs: hashmap.New()}
+	c := &Client{srv: s, subs: hashmap.New()}
 
 	subop := []byte("SUB foo 1024\r\n")
 	if err := c.parse(subop); err != nil {
@@ -86,7 +86,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &Client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	pub1 := pub[:2]
 	pub2 := pub[2:9]
@@ -152,7 +152,7 @@ func TestSplitBufferPubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp2(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &Client{subs: hashmap.New()}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
 	pub1 := pub[:30]
 	pub2 := pub[30:]
@@ -172,7 +172,7 @@ func TestSplitBufferPubOp2(t *testing.T) {
 }
 
 func TestSplitBufferPubOp3(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &Client{subs: hashmap.New()}
 	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
 	pub := pubAll[:16]
 
@@ -198,7 +198,7 @@ func TestSplitBufferPubOp3(t *testing.T) {
 }
 
 func TestSplitBufferPubOp4(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &Client{subs: hashmap.New()}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 	pub := pubAll[:12]
 
@@ -224,7 +224,7 @@ func TestSplitBufferPubOp4(t *testing.T) {
 }
 
 func TestSplitBufferPubOp5(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &Client{subs: hashmap.New()}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 
 	// Splits need to be on MSG_END now too, so make sure we check that.

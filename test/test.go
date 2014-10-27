@@ -44,12 +44,21 @@ func runDefaultServer() *server.Server {
 
 // New Go Routine based server
 func RunServer(opts *server.Options) *server.Server {
+	return RunServerWithAuth(opts, nil)
+}
+
+// New Go Routine based server with auth
+func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
 	}
 	s := server.New(opts)
 	if s == nil {
 		panic("No NATS Server object returned.")
+	}
+
+	if auth != nil {
+		s.SetAuthMethod(auth)
 	}
 
 	// Run server in Go routine.

@@ -84,7 +84,7 @@ func executeLogCall(f func(logger Logger, format string, v ...interface{}), form
 
 	argc := len(args)
 	if argc != 0 {
-		if client, ok := args[argc-1].(*client); ok {
+		if client, ok := args[argc-1].(*Client); ok {
 			args = args[:argc-1]
 			format = fmt.Sprintf("%s - %s", client, format)
 		}
