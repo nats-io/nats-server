@@ -111,7 +111,7 @@ func New(opts *Options) *Server {
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		Fatal("Error marshalling INFO JSON: %+v\n", err)
+		Fatalf("Error marshalling INFO JSON: %+v\n", err)
 	}
 
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
@@ -140,9 +140,9 @@ func (s *Server) handleSignals() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for sig := range c {
-			Debug("Trapped Signal; %v", sig)
+			Debugf("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			Notice("Server Exiting..")
+			Noticef("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -166,7 +166,7 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	Notice("Starting gnatsd version %s", VERSION)
+	Noticef("Starting gnatsd version %s", VERSION)
 	s.running = true
 
 	// Log the pid to a file
@@ -261,14 +261,14 @@ func (s *Server) Shutdown() {
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
-	Notice("Listening for client connections on %s", hp)
+	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatal("Error listening on port: %d - %v", s.opts.Port, e)
+		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
 		return
 	}
 
-	Notice("gnatsd is ready")
+	Noticef("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -278,12 +278,12 @@ func (s *Server) AcceptLoop() {
 	// Write resolved port back to options.
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
-		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		Fatal("Error parsing server address (%s): %s", l.Addr().String(), e)
+		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
 		return
 	}
 	s.opts.Port = portNum
@@ -294,7 +294,7 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Client Accept Error(%v), sleeping %dms",
+				Debugf("Temporary Client Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -302,39 +302,39 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Notice("Accept error: %v", err)
+				Noticef("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	Notice("Server Exiting..")
+	Noticef("Server Exiting..")
 	s.done <- true
 }
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	Notice("Starting profiling on http port %d", s.opts.ProfPort)
+	Noticef("Starting profiling on http port %d", s.opts.ProfPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
 		err := http.ListenAndServe(hp, nil)
 		if err != nil {
-			Fatal("error starting monitor server: %s", err)
+			Fatalf("error starting monitor server: %s", err)
 		}
 	}()
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Notice("Starting http monitor on port %d", s.opts.HTTPPort)
+	Noticef("Starting http monitor on port %d", s.opts.HTTPPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 
 	l, err := net.Listen("tcp", hp)
 	if err != nil {
-		Fatal("Can't listen to the monitor port: %v", err)
+		Fatalf("Can't listen to the monitor port: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -374,7 +374,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Initialize
 	c.initClient()
 
-	Debug("Client connection created", c)
+	Debugf("Client connection created", c)
 
 	// Send our information.
 	s.sendInfo(c)

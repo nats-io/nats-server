@@ -59,25 +59,25 @@ func getNetworkAndAddr(fqn string) (network, addr string) {
 	return
 }
 
-func (l *SysLogger) Notice(format string, v ...interface{}) {
+func (l *SysLogger) Noticef(format string, v ...interface{}) {
 	l.writer.Notice(fmt.Sprintf(format, v...))
 }
 
-func (l *SysLogger) Fatal(format string, v ...interface{}) {
+func (l *SysLogger) Fatalf(format string, v ...interface{}) {
 	l.writer.Crit(fmt.Sprintf(format, v...))
 }
 
-func (l *SysLogger) Error(format string, v ...interface{}) {
+func (l *SysLogger) Errorf(format string, v ...interface{}) {
 	l.writer.Err(fmt.Sprintf(format, v...))
 }
 
-func (l *SysLogger) Debug(format string, v ...interface{}) {
+func (l *SysLogger) Debugf(format string, v ...interface{}) {
 	if l.debug {
 		l.writer.Debug(fmt.Sprintf(format, v...))
 	}
 }
 
-func (l *SysLogger) Trace(format string, v ...interface{}) {
+func (l *SysLogger) Tracef(format string, v ...interface{}) {
 	if l.trace {
 		l.writer.Notice(fmt.Sprintf(format, v...))
 	}
