@@ -401,6 +401,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
@@ -408,7 +409,6 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.state = 0, OP_START
-				c.argBuf = nil
 				// Reset notion on authSet
 				authSet = c.isAuthTimerSet()
 			default:

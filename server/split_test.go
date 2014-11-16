@@ -286,6 +286,58 @@ func TestSplitConnectArg(t *testing.T) {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.argBuf != nil {
-		t.Fatalf("Unexpected argBug placeholder.\n")
+		t.Fatalf("Unexpected argBuf placeholder.\n")
+	}
+}
+
+func TestSplitDanglingArgBuf(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+
+	// We test to make sure we do not dangle any argBufs after processing
+	// since that could lead to performance issues.
+
+	// SUB
+	subop := []byte("SUB foo 1\r\n")
+	c.parse(subop[:6])
+	c.parse(subop[6:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// UNSUB
+	unsubop := []byte("UNSUB 1024\r\n")
+	c.parse(unsubop[:8])
+	c.parse(unsubop[8:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// PUB
+	pubop := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
+	c.parse(pubop[:22])
+	c.parse(pubop[22:25])
+	if c.argBuf == nil {
+		t.Fatal("Expected a nil argBuf!")
+	}
+	c.parse(pubop[25:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// MINUS_ERR
+	errop := []byte("-ERR Too Long\r\n")
+	c.parse(errop[:8])
+	c.parse(errop[8:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// CONNECT_ARG
+	connop := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
+		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
+	c.parse(connop[:22])
+	c.parse(connop[22:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 }
