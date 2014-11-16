@@ -173,3 +173,23 @@ func TestSubToArgState(t *testing.T) {
 	send("SUBZZZ foo 1\r\n")
 	expect(errRe)
 }
+
+// Issue #63
+func TestProtoCrash(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
+	send, expect := sendCommand(t, c), expectCommand(t, c)
+
+	checkInfoMsg(t, c)
+
+	send("CONNECT {\"verbose\":true,\"ssl_required\":false,\"user\":\"test\",\"pedantic\":true,\"pass\":\"password\"}")
+
+	time.Sleep(100 * time.Millisecond)
+
+	send("\r\n")
+	expect(okRe)
+}

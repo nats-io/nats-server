@@ -1,4 +1,4 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package server
 
@@ -398,12 +398,23 @@ func (c *client) parse(buf []byte) error {
 			case '\r':
 				c.drop = 1
 			case '\n':
-				if err := c.processConnect(buf[c.as : i-c.drop]); err != nil {
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processConnect(arg); err != nil {
 					return err
 				}
 				c.drop, c.state = 0, OP_START
+				c.argBuf = nil
 				// Reset notion on authSet
 				authSet = c.isAuthTimerSet()
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
 			}
 		case OP_M:
 			switch b {
@@ -573,7 +584,8 @@ func (c *client) parse(buf []byte) error {
 	}
 	// Check for split buffer scenarios for any ARG state.
 	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
-		c.state == MSG_ARG || c.state == MINUS_ERR_ARG) && c.argBuf == nil {
+		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
+		c.state == CONNECT_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:(i+1)-c.drop]...)
 		// FIXME, check max len
@@ -585,11 +597,10 @@ func (c *client) parse(buf []byte) error {
 		if c.argBuf == nil {
 			c.clonePubArg()
 		}
-		// FIXME: copy better here? Make whole buf if large?
-		//c.msgBuf = c.scratch[:0]
 		c.msgBuf = c.scratch[len(c.argBuf):len(c.argBuf)]
 		c.msgBuf = append(c.msgBuf, (buf[c.as:])...)
 	}
+
 	return nil
 
 authErr:

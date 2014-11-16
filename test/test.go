@@ -184,7 +184,7 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 	t.Fatalf("Failed to connect to the socket: %q", addr)
 }
 
-func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
+func checkInfoMsg(t tLogger, c net.Conn) {
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
 	var sinfo server.Info
@@ -192,6 +192,10 @@ func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
 	if err != nil {
 		stackFatalf(t, "Could not unmarshal INFO json: %v\n", err)
 	}
+}
+
+func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
+	checkInfoMsg(t, c)
 	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
 	sendProto(t, c, cs)
 }
