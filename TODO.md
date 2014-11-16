@@ -1,7 +1,8 @@
 
 # General
 
-- [ ] Syslog support
+- [ ] Remove reliance on `ps`
+- [X] Syslog support
 - [ ] SSL/TLS support
 - [ ] nats-top equivalent, utils
 - [ ] Pedantic state
