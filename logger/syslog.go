@@ -1,4 +1,7 @@
 // Copyright 2012-2014 Apcera Inc. All rights reserved.
+
+// +build !windows
+
 package logger
 
 import (
