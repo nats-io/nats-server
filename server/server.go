@@ -264,7 +264,7 @@ func (s *Server) AcceptLoop() {
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
+		Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
 
