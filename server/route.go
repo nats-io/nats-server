@@ -93,12 +93,12 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	Debugf("Route connection created", c)
+	c.Debugf("Route connection created")
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rURL
-		Debugf("Route connect msg sent", c)
+		c.Debugf("Route connect msg sent")
 		c.sendConnect()
 	}
 

@@ -374,7 +374,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Initialize
 	c.initClient()
 
-	Debugf("Client connection created", c)
+	c.Debugf("Client connection created")
 
 	// Send our information.
 	s.sendInfo(c)
