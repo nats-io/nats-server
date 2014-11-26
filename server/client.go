@@ -69,6 +69,10 @@ func (c *client) String() (id string) {
 	return id
 }
 
+func (c *client) GetOpts() *clientOpts {
+	return &c.opts
+}
+
 type subscription struct {
 	client  *client
 	subject []byte
@@ -223,7 +227,7 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 }
 
-// Process the information messages from clients and other routes.
+// Process the information messages from Clients and other routes.
 func (c *client) processInfo(arg []byte) error {
 	info := Info{}
 	if err := json.Unmarshal(arg, &info); err != nil {

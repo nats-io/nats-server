@@ -80,5 +80,6 @@ func executeLogCall(f func(logger Logger, format string, v ...interface{}), form
 	if log.logger == nil {
 		return
 	}
+
 	f(log.logger, format, args...)
 }
