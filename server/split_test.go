@@ -241,3 +241,103 @@ func TestSplitBufferPubOp5(t *testing.T) {
 		t.Fatalf("c.msgBuf did not snaphot the msg")
 	}
 }
+
+func TestSplitConnectArg(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+	connectAll := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
+		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
+
+	argJson := connectAll[8:]
+
+	c1 := connectAll[:5]
+	c2 := connectAll[5:22]
+	c3 := connectAll[22 : len(connectAll)-2]
+	c4 := connectAll[len(connectAll)-2:]
+
+	if err := c.parse(c1); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.argBuf != nil {
+		t.Fatalf("Unexpected argBug placeholder.\n")
+	}
+
+	if err := c.parse(c2); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.argBuf == nil {
+		t.Fatalf("Expected argBug to not be nil.\n")
+	}
+	if !bytes.Equal(c.argBuf, argJson[:14]) {
+		t.Fatalf("argBuf not correct, received %q, wanted %q\n", argJson[:14], c.argBuf)
+	}
+
+	if err := c.parse(c3); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.argBuf == nil {
+		t.Fatalf("Expected argBug to not be nil.\n")
+	}
+	if !bytes.Equal(c.argBuf, argJson[:len(argJson)-2]) {
+		t.Fatalf("argBuf not correct, received %q, wanted %q\n",
+			argJson[:len(argJson)-2], c.argBuf)
+	}
+
+	if err := c.parse(c4); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.argBuf != nil {
+		t.Fatalf("Unexpected argBuf placeholder.\n")
+	}
+}
+
+func TestSplitDanglingArgBuf(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+
+	// We test to make sure we do not dangle any argBufs after processing
+	// since that could lead to performance issues.
+
+	// SUB
+	subop := []byte("SUB foo 1\r\n")
+	c.parse(subop[:6])
+	c.parse(subop[6:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// UNSUB
+	unsubop := []byte("UNSUB 1024\r\n")
+	c.parse(unsubop[:8])
+	c.parse(unsubop[8:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// PUB
+	pubop := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
+	c.parse(pubop[:22])
+	c.parse(pubop[22:25])
+	if c.argBuf == nil {
+		t.Fatal("Expected a nil argBuf!")
+	}
+	c.parse(pubop[25:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// MINUS_ERR
+	errop := []byte("-ERR Too Long\r\n")
+	c.parse(errop[:8])
+	c.parse(errop[8:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// CONNECT_ARG
+	connop := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
+		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
+	c.parse(connop[:22])
+	c.parse(connop[22:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+}

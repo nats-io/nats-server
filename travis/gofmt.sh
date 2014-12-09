@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -e
 
 # run go fmt and exit non-zero if it detected anything
 T=$(mktemp -t gofmt.XXXXX)

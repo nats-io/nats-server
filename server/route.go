@@ -46,7 +46,7 @@ func (c *client) sendConnect() {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		Logf("Error marshalling CONNECT to route: %v\n", err)
+		Errorf("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
 	}
 	c.bw.WriteString(fmt.Sprintf(conProto, b))
@@ -79,7 +79,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	route.bw.Write(b.Bytes())
 	route.bw.Flush()
 
-	Debug("Route sent local subscriptions", route.cid)
+	Debugf("Route sent local subscriptions", route)
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
@@ -93,12 +93,12 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	Debug("Route connection created", clientConnStr(c.nc), c.cid)
+	c.Debugf("Route connection created")
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rURL
-		Debug("Route connect msg sent", clientConnStr(c.nc), c.cid)
+		c.Debugf("Route connect msg sent")
 		c.sendConnect()
 	}
 
@@ -234,7 +234,7 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	hp := fmt.Sprintf("%s:%d", s.opts.ClusterHost, s.opts.ClusterPort)
-	Logf("Listening for route connections on %s", hp)
+	Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		Fatalf("Error listening on router port: %d - %v", s.opts.Port, e)
@@ -255,7 +255,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Route Accept Error(%v), sleeping %dms",
+				Debugf("Temporary Route Accept Errorf(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -263,14 +263,14 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Logf("Accept error: %v", err)
+				Noticef("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createRoute(conn, nil)
 	}
-	Debug("Router accept loop exiting..")
+	Debugf("Router accept loop exiting..")
 	s.done <- true
 }
 

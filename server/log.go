@@ -1,119 +1,84 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2014 Apcera Inc. All rights reserved.
 
 package server
 
 import (
-	"fmt"
-	"log"
-	"os"
-	"strings"
+	"sync"
 	"sync/atomic"
 )
 
-// logging functionality, compatible with the original nats-server.
-
 var trace int32
 var debug int32
-var nolog int32
+var log = struct {
+	logger Logger
+	sync.Mutex
+}{}
 
-// LogSetup will properly setup logging and the logging flags.
-func LogSetup() {
-	log.SetFlags(0)
-	atomic.StoreInt32(&nolog, 0)
-	atomic.StoreInt32(&debug, 0)
-	atomic.StoreInt32(&trace, 0)
+type Logger interface {
+	Noticef(format string, v ...interface{})
+	Fatalf(format string, v ...interface{})
+	Errorf(format string, v ...interface{})
+	Debugf(format string, v ...interface{})
+	Tracef(format string, v ...interface{})
 }
 
-// LogInit parses option flags and sets up logging.
-func (s *Server) LogInit() {
-	// Reset
-	LogSetup()
-
-	if s.opts.Logtime {
-		log.SetFlags(log.LstdFlags)
-	}
-	if s.opts.NoLog {
-		atomic.StoreInt32(&nolog, 1)
-	}
-	if s.opts.LogFile != "" {
-		flags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
-		file, err := os.OpenFile(s.opts.LogFile, flags, 0660)
-		if err != nil {
-			PrintAndDie(fmt.Sprintf("Error opening logfile: %q", s.opts.LogFile))
-		}
-		log.SetOutput(file)
-	}
-	if s.opts.Debug {
-		Log(s.opts)
+func (s *Server) SetLogger(logger Logger, d, t bool) {
+	if d {
 		atomic.StoreInt32(&debug, 1)
-		Log("DEBUG is on")
 	}
-	if s.opts.Trace {
+
+	if t {
 		atomic.StoreInt32(&trace, 1)
-		Log("TRACE is on")
 	}
+
+	log.Lock()
+	defer log.Unlock()
+	log.logger = logger
 }
 
-func alreadyFormatted(s string) bool {
-	return strings.HasPrefix(s, "[")
+func Noticef(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Noticef(format, v...)
+	}, format, v...)
 }
 
-func logStr(v []interface{}) string {
-	args := make([]string, 0, len(v))
-	for _, vt := range v {
-		switch t := vt.(type) {
-		case string:
-			if alreadyFormatted(t) {
-				args = append(args, t)
-			} else {
-				t = strings.Replace(t, "\"", "\\\"", -1)
-				args = append(args, fmt.Sprintf("\"%s\"", t))
-			}
-		default:
-			args = append(args, fmt.Sprintf("%+v", vt))
-		}
-	}
-	return fmt.Sprintf("[%s]", strings.Join(args, ", "))
-}
-
-func Log(v ...interface{}) {
-	if nolog == 0 {
-		log.Print(logStr(v))
-	}
-}
-
-func Logf(format string, v ...interface{}) {
-	Log(fmt.Sprintf(format, v...))
-}
-
-func Fatal(v ...interface{}) {
-	log.Fatalf(logStr(v))
+func Errorf(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, format, v...)
 }
 
 func Fatalf(format string, v ...interface{}) {
-	Fatal(fmt.Sprintf(format, v...))
-}
-
-func Debug(v ...interface{}) {
-	if debug > 0 {
-		Log(v...)
-	}
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Fatalf(format, v...)
+	}, format, v...)
 }
 
 func Debugf(format string, v ...interface{}) {
-	if debug > 0 {
-		Debug(fmt.Sprintf(format, v...))
+	if debug == 0 {
+		return
 	}
-}
 
-func Trace(v ...interface{}) {
-	if trace > 0 {
-		Log(v...)
-	}
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Debugf(format, v...)
+	}, format, v...)
 }
 
 func Tracef(format string, v ...interface{}) {
-	if trace > 0 {
-		Trace(fmt.Sprintf(format, v...))
+	if trace == 0 {
+		return
 	}
+
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Tracef(format, v...)
+	}, format, v...)
+}
+
+func executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
+	log.Lock()
+	defer log.Unlock()
+	if log.logger == nil {
+		return
+	}
+	f(log.logger, format, args...)
 }

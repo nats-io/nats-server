@@ -82,6 +82,7 @@ func New(opts *Options) *Server {
 	if opts.Username != "" || opts.Authorization != "" {
 		info.AuthRequired = true
 	}
+
 	s := &Server{
 		info:  info,
 		sl:    sublist.New(),
@@ -95,9 +96,6 @@ func New(opts *Options) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Setup logging with flags
-	s.LogInit()
-
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -108,19 +106,15 @@ func New(opts *Options) *Server {
 	// Used to kick out all of the route
 	// connect Go routines.
 	s.rcQuit = make(chan bool)
+	s.handleSignals()
 
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatalf("Error marshalling INFO JSON: %+v\n", err)
 	}
+
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-
-	s.handleSignals()
-
-	Logf("Starting gnatsd version %s", VERSION)
-
-	s.running = true
 
 	return s
 }
@@ -148,7 +142,7 @@ func (s *Server) handleSignals() {
 		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
 			// FIXME, trip running?
-			Log("Server Exiting..")
+			Noticef("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
@@ -172,6 +166,8 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
+	Noticef("Starting gnatsd version %s", VERSION)
+	s.running = true
 
 	// Log the pid to a file
 	if s.opts.PidFile != _EMPTY_ {
@@ -265,14 +261,14 @@ func (s *Server) Shutdown() {
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
-	Logf("Listening for client connections on %s", hp)
+	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		Fatalf("Error listening on port: %d - %v", s.opts.Port, e)
+		Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
 
-	Logf("gnatsd is ready")
+	Noticef("gnatsd is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -298,7 +294,7 @@ func (s *Server) AcceptLoop() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debug("Temporary Client Accept Error(%v), sleeping %dms",
+				Debugf("Temporary Client Accept Error(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -306,30 +302,33 @@ func (s *Server) AcceptLoop() {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Logf("Accept error: %v", err)
+				Noticef("Accept error: %v", err)
 			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		s.createClient(conn)
 	}
-	Log("Server Exiting..")
+	Noticef("Server Exiting..")
 	s.done <- true
 }
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	Logf("Starting profiling on http port %d", s.opts.ProfPort)
+	Noticef("Starting profiling on http port %d", s.opts.ProfPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
 	go func() {
-		Log(http.ListenAndServe(hp, nil))
+		err := http.ListenAndServe(hp, nil)
+		if err != nil {
+			Fatalf("error starting monitor server: %s", err)
+		}
 	}()
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Logf("Starting http monitor on port %d", s.opts.HTTPPort)
+	Noticef("Starting http monitor on port %d", s.opts.HTTPPort)
 
 	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
 
@@ -348,6 +347,9 @@ func (s *Server) StartHTTPMonitoring() {
 
 	// Routez
 	mux.HandleFunc("/routez", s.HandleRoutez)
+
+	// Subz
+	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
 
 	srv := &http.Server{
 		Addr:           hp,
@@ -375,7 +377,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Initialize
 	c.initClient()
 
-	Debug("Client connection created", clientConnStr(c.nc), c.cid)
+	c.Debugf("Client connection created")
 
 	// Send our information.
 	s.sendInfo(c)
