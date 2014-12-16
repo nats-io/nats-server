@@ -6,6 +6,7 @@ import (
 	"flag"
 	"strings"
 
+	"github.com/apcera/gnatsd/auth"
 	"github.com/apcera/gnatsd/logger"
 	"github.com/apcera/gnatsd/server"
 )
@@ -94,25 +95,45 @@ func main() {
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
-	// Builds and set the logger based on the flags
-	s.SetLogger(buildLogger(&opts), opts.Debug, opts.Trace)
+	// Configure the authentication mechanism
+	configureAuth(s, &opts)
+
+	// Configure the logger based on the flags
+	configureLogger(s, &opts)
 
 	// Start things up. Block here until done.
 	s.Start()
 }
 
-func buildLogger(opts *server.Options) server.Logger {
+func configureAuth(s *server.Server, opts *server.Options) {
+	if opts.Username != "" {
+		auth := &auth.Plain{
+			Username: opts.Username,
+			Password: opts.Password,
+		}
+
+		s.SetAuthMethod(auth)
+	} else if opts.Authorization != "" {
+		auth := &auth.Token{
+			Token: opts.Authorization,
+		}
+
+		s.SetAuthMethod(auth)
+	}
+}
+
+func configureLogger(s *server.Server, opts *server.Options) {
+	var log server.Logger
+
 	if opts.LogFile != "" {
-		return logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
+		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
+	} else if opts.RemoteSyslog != "" {
+		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
+	} else if opts.Syslog {
+		log = logger.NewSysLogger(opts.Debug, opts.Trace)
+	} else {
+		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
 	}
 
-	if opts.RemoteSyslog != "" {
-		return logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
-	}
-
-	if opts.Syslog {
-		return logger.NewSysLogger(opts.Debug, opts.Trace)
-	}
-
-	return logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
+	s.SetLogger(log, opts.Debug, opts.Trace)
 }

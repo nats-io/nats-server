@@ -40,6 +40,7 @@ type Server struct {
 	sl       *sublist.Sublist
 	gcid     uint64
 	opts     *Options
+	auth     Auth
 	trace    bool
 	debug    bool
 	running  bool
@@ -78,10 +79,6 @@ func New(opts *Options) *Server {
 		SslRequired:  false,
 		MaxPayload:   MAX_PAYLOAD_SIZE,
 	}
-	// Check for Auth items
-	if opts.Username != "" || opts.Authorization != "" {
-		info.AuthRequired = true
-	}
 
 	s := &Server{
 		info:  info,
@@ -106,17 +103,27 @@ func New(opts *Options) *Server {
 	// Used to kick out all of the route
 	// connect Go routines.
 	s.rcQuit = make(chan bool)
+	s.generateServerInfoJSON()
 	s.handleSignals()
 
+	return s
+}
+
+// Sets the authentication method
+func (s *Server) SetAuthMethod(authMethod Auth) {
+	s.info.AuthRequired = true
+	s.auth = authMethod
+
+	s.generateServerInfoJSON()
+}
+
+func (s *Server) generateServerInfoJSON() {
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatalf("Error marshalling INFO JSON: %+v\n", err)
 	}
-
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-
-	return s
 }
 
 // PrintAndDie is exported for access in other packages.
@@ -407,18 +414,11 @@ func (s *Server) sendInfo(c *client) {
 }
 
 func (s *Server) checkClientAuth(c *client) bool {
-	if !s.info.AuthRequired {
+	if s.auth == nil {
 		return true
 	}
-	// We require auth here, check the client
-	// Authorization tokens trump username/password
-	if s.opts.Authorization != "" {
-		return s.opts.Authorization == c.opts.Authorization
-	} else if s.opts.Username != c.opts.Username ||
-		s.opts.Password != c.opts.Password {
-		return false
-	}
-	return true
+
+	return s.auth.Check(c)
 }
 
 func (s *Server) checkRouterAuth(c *client) bool {
