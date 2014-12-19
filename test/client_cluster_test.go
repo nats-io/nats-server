@@ -233,7 +233,9 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 // This will test request semantics across a route
 func TestRequestsAcrossRoutes(t *testing.T) {
-	_, _, optsA, optsB := runServers(t)
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
 
 	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
@@ -269,7 +271,9 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 
 // This will test request semantics across a route to queues
 func TestRequestsAcrossRoutesToQueues(t *testing.T) {
-	_, _, optsA, optsB := runServers(t)
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
 
 	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
@@ -313,5 +317,4 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
-
 }
