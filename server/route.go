@@ -79,7 +79,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	route.bw.Write(b.Bytes())
 	route.bw.Flush()
 
-	Debugf("Route sent local subscriptions", route)
+	route.Debugf("Route sent local subscriptions")
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
