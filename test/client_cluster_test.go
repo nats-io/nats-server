@@ -60,7 +60,9 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 		go func() {
 			time.Sleep(10 * time.Millisecond)
 			for i := 1; 1 <= 100; i++ {
-				nc.Publish(subject, msg)
+				if err := nc.Publish(subject, msg); err != nil {
+					return
+				}
 				if i%10 == 0 {
 					time.Sleep(time.Millisecond)
 				}
@@ -244,11 +246,14 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc1: %v\n", err)
 	}
+	defer nc1.Close()
 
 	nc2, err := nats.Connect(urlB)
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc2: %v\n", err)
 	}
+	defer nc2.Close()
+
 	ec2, _ := nats.NewEncodedConn(nc2, nats.JSON_ENCODER)
 
 	response := []byte("I will help you")
@@ -282,11 +287,14 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc1: %v\n", err)
 	}
+	defer nc1.Close()
 
 	nc2, err := nats.Connect(urlB)
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc2: %v\n", err)
 	}
+	defer nc2.Close()
+
 	ec1, _ := nats.NewEncodedConn(nc1, nats.JSON_ENCODER)
 	ec2, _ := nats.NewEncodedConn(nc2, nats.JSON_ENCODER)
 
