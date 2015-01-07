@@ -553,9 +553,9 @@ func pubSubTest(t *testing.T, addrs []string) {
 		var recvMsg []string
 		defer func() {
 			exp := numPublisher * numMessage
-			fmt.Println("exp:%v, got:%v", exp, len(recvMsg))
+			fmt.Printf("exp:%v, got:%v\n", exp, len(recvMsg))
 			if exp != len(recvMsg) {
-				t.Fatalf("exp:%v, got:%v", exp, len(recvMsg))
+				t.Fatalf("exp:%v, got:%v\n", exp, len(recvMsg))
 			}
 		}()
 
