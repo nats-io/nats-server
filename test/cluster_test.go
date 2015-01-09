@@ -578,6 +578,8 @@ func pubSubTest(t *testing.T, addrs []string) {
 		go subscriptor(i, nc, topic)
 	}
 
+	time.Sleep(1 * time.Second)
+
 	wg.Add(numPublisher)
 	for i := 0; i < numPublisher; i++ {
 		go publisher(i, nc, topic)
