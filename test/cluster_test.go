@@ -4,11 +4,17 @@ package test
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/apcera/gnatsd/server"
+	"github.com/apcera/nats"
 )
 
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
@@ -371,4 +377,214 @@ func TestAutoUnsubscribePropogation(t *testing.T) {
 	if subs := srvB.NumSubscriptions(); subs != 0 {
 		t.Fatalf("Expected no subscriptions on remote server, got %d\n", subs)
 	}
+}
+
+func TestPubSubInRouteMode(t *testing.T) {
+	servs := setupCluster(t)
+	testPubSub(t, servs)
+	tearDownServers(t, servs)
+}
+
+func TestPubSubInStandalone(t *testing.T) {
+	servs := setupStandalone(t)
+	testPubSub(t, servs)
+	tearDownServers(t, servs)
+}
+
+const (
+	host         = "127.0.0.1"
+	natHost      = "nats://127.0.0.1"
+	natRouteHost = "nats-route://127.0.0.1"
+)
+
+type GNATSDPort struct {
+	client int //client port
+	route  int //route port
+}
+
+// setupCluster setups a gnatsd cluster
+// supposed we use the following configuration
+// serv1: client port: 14222, route port: 14322
+// serv2: client port: 14223, route port: 14323
+// serv3: client port: 14224, route port: 14324
+func setupCluster(t *testing.T) []*server.Server {
+	ports := []GNATSDPort{
+		GNATSDPort{
+			client: 14222,
+			route:  14322,
+		},
+		GNATSDPort{
+			client: 14223,
+			route:  14323,
+		},
+		GNATSDPort{
+			client: 14224,
+			route:  14324,
+		},
+	}
+
+	servs, _ := RunRouteServerWithPorts(t, ports)
+	return servs
+}
+
+func RunRouteServerWithPorts(
+	t *testing.T,
+	ports []GNATSDPort) ([]*server.Server, []*server.Options) {
+
+	var servs []*server.Server
+	var opts []*server.Options
+
+	for i, p := range ports {
+
+		// generate route address
+		var routes []*url.URL
+		for j, rp := range ports {
+			if j == i {
+				continue // skip myself
+			}
+			url, err := url.Parse(fmt.Sprintf("%s:%d", natRouteHost, rp.route))
+			if err != nil {
+				t.Fatalf("parse url fail, err:%v", err)
+			}
+			routes = append(routes, url)
+		}
+
+		fmt.Printf("route:%v\n", routes)
+		opt := &server.Options{
+			// NOTE: we cannot specify host in route mode
+			//Host:        host,
+			Port:        p.client,
+			Trace:       true, // enable trace
+			Debug:       true, // enable debug
+			ClusterHost: host,
+			ClusterPort: p.route,
+			Routes:      routes,
+			LogFile:     filepath.Join(os.TempDir(), fmt.Sprintf("gnatsd-%d.log", i)),
+		}
+
+		opts = append(opts, opt)
+		// wakeup servers one-by-one
+		servs = append(servs, RunServer(opt))
+	}
+
+	return servs, opts
+}
+
+// setupCluster setups a standalone gnatsd
+func setupStandalone(t *testing.T) []*server.Server {
+	opts := DefaultTestOptions
+	opts.Port = server.RANDOM_PORT
+	return []*server.Server{RunServer(&opts)}
+}
+
+func tearDownServers(t *testing.T, servs []*server.Server) {
+	for _, v := range servs {
+		v.Shutdown()
+	}
+}
+
+func encodedConn(addrs []string) (*nats.EncodedConn, error) {
+	opts := nats.DefaultOptions
+	opts.Servers = addrs
+
+	nc, err := opts.Connect()
+	if err != nil {
+		return nil, err
+	}
+	return nats.NewEncodedConn(nc, "json")
+}
+
+func testPubSub(t *testing.T, servs []*server.Server) {
+	// get all server's address
+	var addrs []string
+	for _, s := range servs {
+		_, port, _ := net.SplitHostPort(s.Addr().String())
+		addrs = append(addrs, fmt.Sprintf("%s:%s", natHost, port))
+	}
+
+	fmt.Println(addrs)
+	pubSubTest(t, addrs)
+}
+
+func pubSubTest(t *testing.T, addrs []string) {
+
+	numPublisher := 1000
+	numSubscriptor := 3
+	numMessage := 10
+	topic := "pubsubtest"
+
+	wg := sync.WaitGroup{}
+
+	nc, err := encodedConn(addrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	publisher := func(id int, nc *nats.EncodedConn, topic string) {
+		defer wg.Done()
+
+		ch := make(chan interface{})
+		if err := nc.BindSendChan(topic, ch); err != nil {
+			t.Fatal(err)
+		}
+
+		for n := 0; n < numMessage; n++ {
+			ch <- fmt.Sprintf("msg:%d:%d", id, n)
+		}
+		close(ch)
+	}
+
+	subscriptor := func(id int, nc *nats.EncodedConn, topic string) {
+		defer wg.Done()
+
+		ch := make(chan interface{})
+		sub, err := nc.BindRecvChan(topic, ch)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer func() {
+			close(ch)
+			sub.Unsubscribe()
+		}()
+
+		// push a defer to check the result
+		var recvMsg []string
+		defer func() {
+			exp := numPublisher * numMessage
+			fmt.Printf("exp:%v, got:%v\n", exp, len(recvMsg))
+			if exp != len(recvMsg) {
+				t.Fatalf("exp:%v, got:%v\n", exp, len(recvMsg))
+			}
+		}()
+
+		for {
+			select {
+			case msg, more := <-ch:
+				if !more {
+					return
+				}
+				recvMsg = append(recvMsg, msg.(string))
+			case <-time.After(10 * time.Second):
+				// if no further message, return
+				return
+			}
+		}
+	}
+
+	wg.Add(numSubscriptor)
+	for i := 0; i < numSubscriptor; i++ {
+		go subscriptor(i, nc, topic)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	wg.Add(numPublisher)
+	for i := 0; i < numPublisher; i++ {
+		go publisher(i, nc, topic)
+	}
+
+	wg.Wait()
+
 }
