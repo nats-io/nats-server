@@ -18,22 +18,21 @@ type Logger struct {
 	traceLabel string
 }
 
-func NewStdLogger(time, debug, trace, colors bool) *Logger {
+func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 	flags := 0
 	if time {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}
 
-	l := &Logger{
-		logger: log.New(os.Stderr, pidPrefix(), flags),
-		debug:  debug,
-		trace:  trace,
+	pre := ""
+	if pid {
+		pre = pidPrefix()
 	}
 
-	// Check to see if stderr is being redirected and if so turn off color
-	stat, _ := os.Stderr.Stat()
-	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		colors = false
+	l := &Logger{
+		logger: log.New(os.Stderr, pre, flags),
+		debug:  debug,
+		trace:  trace,
 	}
 
 	if colors {
@@ -45,7 +44,7 @@ func NewStdLogger(time, debug, trace, colors bool) *Logger {
 	return l
 }
 
-func NewFileLogger(filename string, time, debug, trace bool) *Logger {
+func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	f, err := os.OpenFile(filename, fileflags, 0660)
 	if err != nil {
@@ -57,8 +56,13 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}
 
+	pre := ""
+	if pid {
+		pre = pidPrefix()
+	}
+
 	l := &Logger{
-		logger: log.New(f, pidPrefix(), flags),
+		logger: log.New(f, pre, flags),
 		debug:  debug,
 		trace:  trace,
 	}
