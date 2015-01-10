@@ -21,13 +21,19 @@ type Logger struct {
 func NewStdLogger(time, debug, trace, colors bool) *Logger {
 	flags := 0
 	if time {
-		flags = log.LstdFlags
+		flags = log.LstdFlags | log.Lmicroseconds
 	}
 
 	l := &Logger{
-		logger: log.New(os.Stderr, "", flags),
+		logger: log.New(os.Stderr, pidPrefix(), flags),
 		debug:  debug,
 		trace:  trace,
+	}
+
+	// Check to see if stderr is being redirected and if so turn off color
+	stat, _ := os.Stderr.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		colors = false
 	}
 
 	if colors {
@@ -48,11 +54,11 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 
 	flags := 0
 	if time {
-		flags = log.LstdFlags
+		flags = log.LstdFlags | log.Lmicroseconds
 	}
 
 	l := &Logger{
-		logger: log.New(f, "", flags),
+		logger: log.New(f, pidPrefix(), flags),
 		debug:  debug,
 		trace:  trace,
 	}
@@ -61,21 +67,26 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 	return l
 }
 
+// Generate the pid prefix string
+func pidPrefix() string {
+	return fmt.Sprintf("[%d] ", os.Getpid())
+}
+
 func setPlainLabelFormats(l *Logger) {
-	l.infoLabel = "[INFO] "
-	l.debugLabel = "[DEBUG] "
-	l.errorLabel = "[ERROR] "
-	l.fatalLabel = "[FATAL] "
-	l.traceLabel = "[TRACE] "
+	l.infoLabel = "[INF] "
+	l.debugLabel = "[DBG] "
+	l.errorLabel = "[ERR] "
+	l.fatalLabel = "[FTL] "
+	l.traceLabel = "[TRC] "
 }
 
 func setColoredLabelFormats(l *Logger) {
 	colorFormat := "[\x1b[%dm%s\x1b[0m] "
-	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INFO")
-	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DEBUG")
-	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERROR")
-	l.fatalLabel = fmt.Sprintf(colorFormat, 35, "FATAL")
-	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRACE")
+	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INF")
+	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DBG")
+	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERR")
+	l.fatalLabel = fmt.Sprintf(colorFormat, 35, "FTL")
+	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRC")
 }
 
 func (l *Logger) Noticef(format string, v ...interface{}) {
