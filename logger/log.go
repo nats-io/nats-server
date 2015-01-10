@@ -89,7 +89,7 @@ func setColoredLabelFormats(l *Logger) {
 	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INF")
 	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DBG")
 	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERR")
-	l.fatalLabel = fmt.Sprintf(colorFormat, 35, "FTL")
+	l.fatalLabel = fmt.Sprintf(colorFormat, 31, "FTL")
 	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRC")
 }
 
