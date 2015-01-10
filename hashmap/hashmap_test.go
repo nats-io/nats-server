@@ -240,6 +240,25 @@ func TestFalseLookup(t *testing.T) {
 	}
 }
 
+func TestRemoveRandom(t *testing.T) {
+	h := New()
+	h.RemoveRandom()
+
+	h.Set(foo, "1")
+	h.Set(bar, "1")
+	h.Set(baz, "1")
+
+	if h.Count() != 3 {
+		t.Fatalf("Expected 3 members, got %d\n", h.Count())
+	}
+
+	h.RemoveRandom()
+
+	if h.Count() != 2 {
+		t.Fatalf("Expected 2 members, got %d\n", h.Count())
+	}
+}
+
 func Benchmark_GoMap___GetSmallKey(b *testing.B) {
 	b.StopTimer()
 	b.SetBytes(1)
