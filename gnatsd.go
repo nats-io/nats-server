@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"os"
 	"strings"
 
 	"github.com/apcera/gnatsd/auth"
@@ -126,13 +127,19 @@ func configureLogger(s *server.Server, opts *server.Options) {
 	var log server.Logger
 
 	if opts.LogFile != "" {
-		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace)
+		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
 	} else if opts.RemoteSyslog != "" {
 		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
 	} else if opts.Syslog {
 		log = logger.NewSysLogger(opts.Debug, opts.Trace)
 	} else {
-		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, true)
+		colors := true
+		// Check to see if stderr is being redirected and if so turn off color
+		stat, _ := os.Stderr.Stat()
+		if (stat.Mode() & os.ModeCharDevice) == 0 {
+			colors = false
+		}
+		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
 	}
 
 	s.SetLogger(log, opts.Debug, opts.Trace)
