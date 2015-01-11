@@ -38,6 +38,29 @@ func TestSimpleKeyStringValues(t *testing.T) {
 	// NL
 	lx = lex("foo='bar'\r\n")
 	expect(t, lx, expectedItems)
+	lx = lex("foo=\t'bar'\t")
+	expect(t, lx, expectedItems)
+}
+
+func TestComplexStringValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "bar\\r\\n  \\t", 1},
+		{itemEOF, "", 2},
+	}
+
+	lx := lex("foo = 'bar\\r\\n  \\t'")
+	expect(t, lx, expectedItems)
+}
+
+func TestBinaryString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "\\x22", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = \\x22")
+	expect(t, lx, expectedItems)
 }
 
 func TestSimpleKeyIntegerValues(t *testing.T) {
@@ -93,6 +116,21 @@ func TestComments(t *testing.T) {
 	lx = lex("# This is a comment\r\n")
 	expect(t, lx, expectedItems)
 	lx = lex("// This is a comment\r\n")
+	expect(t, lx, expectedItems)
+}
+
+func TestTopValuesWithComments(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "123", 1},
+		{itemCommentStart, "", 1},
+		{itemText, " This is a comment", 1},
+		{itemEOF, "", 1},
+	}
+
+	lx := lex("foo = 123 // This is a comment")
+	expect(t, lx, expectedItems)
+	lx = lex("foo=123    # This is a comment")
 	expect(t, lx, expectedItems)
 }
 
@@ -153,7 +191,7 @@ func TestMultilineArrays(t *testing.T) {
 var mlArrayNoSep = `
 # top level comment
 foo = [
- 1
+ 1 // foo
  2
  3
  'bar'
@@ -168,6 +206,8 @@ func TestMultilineArraysNoSep(t *testing.T) {
 		{itemKey, "foo", 3},
 		{itemArrayStart, "", 3},
 		{itemInteger, "1", 4},
+		{itemCommentStart, "", 4},
+		{itemText, " foo", 4},
 		{itemInteger, "2", 5},
 		{itemInteger, "3", 6},
 		{itemString, "bar", 7},
@@ -197,8 +237,8 @@ func TestSimpleMap(t *testing.T) {
 
 var mlMap = `
 foo = {
-  ip = '127.0.0.1'
-  port= 4242
+  ip = '127.0.0.1' # the IP
+  port= 4242 // the port
 }
 `
 
@@ -208,8 +248,12 @@ func TestMultilineMap(t *testing.T) {
 		{itemMapStart, "", 2},
 		{itemKey, "ip", 3},
 		{itemString, "127.0.0.1", 3},
+		{itemCommentStart, "", 3},
+		{itemText, " the IP", 3},
 		{itemKey, "port", 4},
 		{itemInteger, "4242", 4},
+		{itemCommentStart, "", 4},
+		{itemText, " the port", 4},
 		{itemMapEnd, "", 5},
 		{itemEOF, "", 5},
 	}
