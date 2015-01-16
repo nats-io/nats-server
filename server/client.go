@@ -202,7 +202,10 @@ func (c *client) traceOp(format, op string, arg []byte) {
 		return
 	}
 
-	opa := []interface{}{op}
+	opa := []interface{}{}
+	if op != "" {
+		opa = append(opa, op)
+	}
 	if arg != nil {
 		opa = append(opa, string(arg))
 	}
@@ -625,7 +628,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	}
 
 	if trace == 1 {
-		c.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
+		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
 	}
 
 	// TODO(dlc) - Do we need this or can we just call always?

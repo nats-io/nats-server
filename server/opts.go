@@ -201,6 +201,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Trace {
 		opts.Trace = true
 	}
+	if flagOpts.Logtime {
+		opts.Logtime = true
+	}
 	if flagOpts.LogFile != "" {
 		opts.LogFile = flagOpts.LogFile
 	}
