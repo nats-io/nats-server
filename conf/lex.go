@@ -1,4 +1,4 @@
-// Copyright 2013 Apcera Inc. All rights reserved.
+// Copyright 2013-2015 Apcera Inc. All rights reserved.
 
 // Customized heavily from
 // https://github.com/BurntSushi/toml/blob/master/lex.go, which is based on
@@ -152,15 +152,6 @@ func (lx *lexer) backup() {
 	if lx.pos < len(lx.input) && lx.input[lx.pos] == '\n' {
 		lx.line--
 	}
-}
-
-// accept consumes the next rune if it's equal to `valid`.
-func (lx *lexer) accept(valid rune) bool {
-	if lx.next() == valid {
-		return true
-	}
-	lx.backup()
-	return false
 }
 
 // peek returns but does not consume the next rune in the input.
@@ -362,8 +353,8 @@ func lexValue(lx *lexer) stateFn {
 	case isNL(r):
 		return lx.errorf("Expected value but found new line")
 	}
+	lx.backup()
 	return lexString
-	//return lx.errorf("Expected value but found '%s' instead.", r)
 }
 
 // lexArrayValue consumes one value in an array. It assumes that '[' or ','
@@ -529,17 +520,6 @@ func lexMapValue(lx *lexer) stateFn {
 	switch {
 	case isWhitespace(r) || isNL(r):
 		return lexSkip(lx, lexMapValue)
-	case r == commentHashStart:
-		lx.push(lexMapValue)
-		return lexCommentStart
-	case r == commentSlashStart:
-		rn := lx.next()
-		if rn == commentSlashStart {
-			lx.push(lexMapValue)
-			return lexCommentStart
-		}
-		lx.backup()
-		fallthrough
 	case r == mapValTerm:
 		return lx.errorf("Unexpected map value terminator %q.", mapValTerm)
 	case r == mapEnd:
@@ -647,32 +627,6 @@ func lexString(lx *lexer) stateFn {
 		return lx.pop()
 	}
 	return lexString
-}
-
-// lexDubString consumes the inner contents of a string. It assumes that the
-// beginning '"' has already been consumed and ignored.
-func lexDubString(lx *lexer) stateFn {
-	r := lx.next()
-	switch {
-	case r == '\\':
-		return lexStringEscape
-	// Termination of non-quoted strings
-	case isNL(r) || r == eof || r == optValTerm || isWhitespace(r):
-		lx.backup()
-		if lx.isBool() {
-			lx.emit(itemBool)
-		} else {
-			lx.emit(itemString)
-		}
-		return lx.pop()
-	case r == dqStringEnd:
-		lx.backup()
-		lx.emit(itemString)
-		lx.next()
-		lx.ignore()
-		return lx.pop()
-	}
-	return lexDubString
 }
 
 // lexBlock consumes the inner contents as a string. It assumes that the

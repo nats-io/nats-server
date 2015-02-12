@@ -1,3 +1,4 @@
+// Copyright 2014-2015 Apcera Inc. All rights reserved.
 package logger
 
 import (
@@ -10,7 +11,7 @@ import (
 )
 
 func TestStdLogger(t *testing.T) {
-	logger := NewStdLogger(false, false, false, false)
+	logger := NewStdLogger(false, false, false, false, false)
 
 	flags := logger.logger.Flags()
 	if flags != 0 {
@@ -27,10 +28,10 @@ func TestStdLogger(t *testing.T) {
 }
 
 func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
-	logger := NewStdLogger(true, true, true, false)
+	logger := NewStdLogger(true, true, true, false, false)
 
 	flags := logger.logger.Flags()
-	if flags != log.LstdFlags {
+	if flags != log.LstdFlags|log.Lmicroseconds {
 		t.Fatalf("Expected %d, received %d\n", log.LstdFlags, flags)
 	}
 
@@ -45,42 +46,42 @@ func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
 
 func TestStdLoggerNotice(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false)
 		logger.Noticef("foo")
-	}, "[INFO] foo\n")
+	}, "[INF] foo\n")
 }
 
 func TestStdLoggerNoticeWithColor(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, true)
+		logger := NewStdLogger(false, false, false, true, false)
 		logger.Noticef("foo")
-	}, "[\x1b[32mINFO\x1b[0m] foo\n")
+	}, "[\x1b[32mINF\x1b[0m] foo\n")
 }
 
 func TestStdLoggerDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, true, false, false)
+		logger := NewStdLogger(false, true, false, false, false)
 		logger.Debugf("foo %s", "bar")
-	}, "[DEBUG] foo bar\n")
+	}, "[DBG] foo bar\n")
 }
 
 func TestStdLoggerDebugWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false)
 		logger.Debugf("foo")
 	}, "")
 }
 
 func TestStdLoggerTrace(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, true, false)
+		logger := NewStdLogger(false, false, true, false, false)
 		logger.Tracef("foo")
-	}, "[TRACE] foo\n")
+	}, "[TRC] foo\n")
 }
 
 func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false)
 		logger.Tracef("foo")
 	}, "")
 }
@@ -95,7 +96,7 @@ func TestFileLogger(t *testing.T) {
 	file, err := ioutil.TempFile(tmpDir, "gnatsd:log_")
 	file.Close()
 
-	logger := NewFileLogger(file.Name(), false, false, false)
+	logger := NewFileLogger(file.Name(), false, false, false, false)
 	logger.Noticef("foo")
 
 	buf, err := ioutil.ReadFile(file.Name())
@@ -106,7 +107,7 @@ func TestFileLogger(t *testing.T) {
 		t.Fatal("Expected a non-zero length logfile")
 	}
 
-	if string(buf) != "[INFO] foo\n" {
+	if string(buf) != "[INF] foo\n" {
 		t.Fatalf("Expected '%s', received '%s'\n", "[INFO] foo", string(buf))
 	}
 }

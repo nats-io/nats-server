@@ -4,6 +4,79 @@ import (
 	"testing"
 )
 
+var keys = [][]byte{
+	[]byte("foo"),
+	[]byte("bar"),
+	[]byte("apcera.continuum.router.foo.bar"),
+	[]byte("apcera.continuum.router.foo.bar.baz"),
+}
+
+func TestBernstein(t *testing.T) {
+	results := []uint32{193491849, 193487034, 2487287557, 3139297488}
+	for i, key := range keys {
+		h := Bernstein(key)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
+func TestFNV1A(t *testing.T) {
+	results := []uint32{2851307223, 1991736602, 1990810707, 1244015104}
+	for i, key := range keys {
+		h := FNV1A(key)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
+func TestJesteress(t *testing.T) {
+	results := []uint32{1058908168, 1061739001, 4242539713, 3332038527}
+	for i, key := range keys {
+		h := Jesteress(key)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
+func TestMeiyan(t *testing.T) {
+	results := []uint32{1058908168, 1061739001, 2891236487, 3332038527}
+	for i, key := range keys {
+		h := Meiyan(key)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
+func TestYorikke(t *testing.T) {
+	results := []uint32{3523423968, 2222334353, 407908456, 359111667}
+	for i, key := range keys {
+		h := Yorikke(key)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
+func TestMurmur3(t *testing.T) {
+	results := []uint32{659908353, 522989004, 135963738, 990328005}
+	for i, key := range keys {
+		h := Murmur3(key, M3Seed)
+		if h != results[i] {
+			t.Fatalf("hash is incorrect, expected %d, got %d\n",
+				results[i], h)
+		}
+	}
+}
+
 // Representative of small and medium subjects.
 var smlKey = []byte("foo")
 var medKey = []byte("apcera.continuum.router.foo.bar")

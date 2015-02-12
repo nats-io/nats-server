@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 package logger
 
 import (
@@ -18,14 +18,19 @@ type Logger struct {
 	traceLabel string
 }
 
-func NewStdLogger(time, debug, trace, colors bool) *Logger {
+func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 	flags := 0
 	if time {
-		flags = log.LstdFlags
+		flags = log.LstdFlags | log.Lmicroseconds
+	}
+
+	pre := ""
+	if pid {
+		pre = pidPrefix()
 	}
 
 	l := &Logger{
-		logger: log.New(os.Stderr, "", flags),
+		logger: log.New(os.Stderr, pre, flags),
 		debug:  debug,
 		trace:  trace,
 	}
@@ -39,7 +44,7 @@ func NewStdLogger(time, debug, trace, colors bool) *Logger {
 	return l
 }
 
-func NewFileLogger(filename string, time, debug, trace bool) *Logger {
+func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	f, err := os.OpenFile(filename, fileflags, 0660)
 	if err != nil {
@@ -48,11 +53,16 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 
 	flags := 0
 	if time {
-		flags = log.LstdFlags
+		flags = log.LstdFlags | log.Lmicroseconds
+	}
+
+	pre := ""
+	if pid {
+		pre = pidPrefix()
 	}
 
 	l := &Logger{
-		logger: log.New(f, "", flags),
+		logger: log.New(f, pre, flags),
 		debug:  debug,
 		trace:  trace,
 	}
@@ -61,21 +71,26 @@ func NewFileLogger(filename string, time, debug, trace bool) *Logger {
 	return l
 }
 
+// Generate the pid prefix string
+func pidPrefix() string {
+	return fmt.Sprintf("[%d] ", os.Getpid())
+}
+
 func setPlainLabelFormats(l *Logger) {
-	l.infoLabel = "[INFO] "
-	l.debugLabel = "[DEBUG] "
-	l.errorLabel = "[ERROR] "
-	l.fatalLabel = "[FATAL] "
-	l.traceLabel = "[TRACE] "
+	l.infoLabel = "[INF] "
+	l.debugLabel = "[DBG] "
+	l.errorLabel = "[ERR] "
+	l.fatalLabel = "[FTL] "
+	l.traceLabel = "[TRC] "
 }
 
 func setColoredLabelFormats(l *Logger) {
 	colorFormat := "[\x1b[%dm%s\x1b[0m] "
-	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INFO")
-	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DEBUG")
-	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERROR")
-	l.fatalLabel = fmt.Sprintf(colorFormat, 35, "FATAL")
-	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRACE")
+	l.infoLabel = fmt.Sprintf(colorFormat, 32, "INF")
+	l.debugLabel = fmt.Sprintf(colorFormat, 36, "DBG")
+	l.errorLabel = fmt.Sprintf(colorFormat, 31, "ERR")
+	l.fatalLabel = fmt.Sprintf(colorFormat, 31, "FTL")
+	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRC")
 }
 
 func (l *Logger) Noticef(format string, v ...interface{}) {

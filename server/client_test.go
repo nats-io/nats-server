@@ -22,6 +22,12 @@ type serverInfo struct {
 	MaxPayload   int64  `json:"max_payload"`
 }
 
+type mockAuth struct{}
+
+func (m *mockAuth) Check(c ClientAuth) bool {
+	return true
+}
+
 func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	go func() {
 		c := s.createClient(cli)
@@ -38,12 +44,17 @@ var defaultServerOptions = Options{
 	NoSigs: true,
 }
 
-func rawSetup(serverOption Options) (*Server, *client, *bufio.Reader, string) {
+func rawSetup(serverOptions Options) (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
 	cr := bufio.NewReaderSize(cli, defaultBufSize)
-	s := New(&serverOption)
+	s := New(&serverOptions)
+	if serverOptions.Authorization != "" {
+		s.SetAuthMethod(&mockAuth{})
+	}
+
 	ch := make(chan *client)
 	createClientAsync(ch, s, srv)
+
 	l, _ := cr.ReadString('\n')
 
 	// Grab client
@@ -519,7 +530,8 @@ func TestAuthorizationTimeout(t *testing.T) {
 	serverOptions := defaultServerOptions
 	serverOptions.Authorization = "my_token"
 	serverOptions.AuthTimeout = 1
-	_, _, cr, _ := rawSetup(serverOptions)
+	s, _, cr, _ := rawSetup(serverOptions)
+	s.SetAuthMethod(&mockAuth{})
 
 	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
 	l, err := cr.ReadString('\n')

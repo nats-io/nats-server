@@ -79,7 +79,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	route.bw.Write(b.Bytes())
 	route.bw.Flush()
 
-	Debugf("Route sent local subscriptions", route)
+	route.Debugf("Route sent local subscriptions")
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
@@ -200,6 +200,10 @@ func (s *Server) addRoute(c *client) bool {
 }
 
 func (s *Server) broadcastToRoutes(proto string) {
+	var arg []byte
+	if trace == 1 {
+		arg = []byte(proto[:len(proto)-LEN_CR_LF])
+	}
 	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
@@ -207,6 +211,7 @@ func (s *Server) broadcastToRoutes(proto string) {
 		route.bw.WriteString(proto)
 		route.bw.Flush()
 		route.mu.Unlock()
+		route.traceOutOp("", arg)
 	}
 	s.mu.Unlock()
 }

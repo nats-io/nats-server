@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
@@ -7,11 +7,13 @@ import (
 	"sync/atomic"
 )
 
+// Package globals for performance checks
 var trace int32
 var debug int32
+
 var log = struct {
-	logger Logger
 	sync.Mutex
+	logger Logger
 }{}
 
 type Logger interface {
@@ -22,18 +24,18 @@ type Logger interface {
 	Tracef(format string, v ...interface{})
 }
 
-func (s *Server) SetLogger(logger Logger, d, t bool) {
-	if d {
+func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
+	if debugFlag {
 		atomic.StoreInt32(&debug, 1)
 	}
 
-	if t {
+	if traceFlag {
 		atomic.StoreInt32(&trace, 1)
 	}
 
 	log.Lock()
-	defer log.Unlock()
 	log.logger = logger
+	log.Unlock()
 }
 
 func Noticef(format string, v ...interface{}) {
@@ -80,5 +82,6 @@ func executeLogCall(f func(logger Logger, format string, v ...interface{}), form
 	if log.logger == nil {
 		return
 	}
+
 	f(log.logger, format, args...)
 }
