@@ -65,7 +65,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, req *http.Request) {
 		r.NumRoutes = len(r.Routes)
 		b, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {
-			Logf("Error marshalling response to /routez request: %v", err)
+			Fatalf("Error marshalling response to /routez request: %v", err)
 		}
 		w.Write(b)
 	} else if req.Method == "PUT" {
