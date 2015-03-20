@@ -135,8 +135,9 @@ func configureLogger(s *server.Server, opts *server.Options) {
 	} else {
 		colors := true
 		// Check to see if stderr is being redirected and if so turn off color
-		stat, _ := os.Stderr.Stat()
-		if (stat.Mode() & os.ModeCharDevice) == 0 {
+		// Also turn off colors if we're running on Windows where os.Stderr.Stat() returns an invalid handle-error
+		stat, err := os.Stderr.Stat()
+		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
 			colors = false
 		}
 		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
