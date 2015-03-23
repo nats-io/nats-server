@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	// Allow dynamic profiling.
@@ -177,14 +178,20 @@ func (s *Server) handleSignals() {
 		return
 	}
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for sig := range c {
+
+	signal.Notify(c, os.Interrupt, syscall.SIGHUP)
+ 	go func() {
+ 		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
-			// FIXME, trip running?
-			Noticef("Server Exiting..")
-			os.Exit(0)
-		}
+			switch sig {
+			case syscall.SIGHUP:
+				Noticef("Server got SIGHUP, reloading configuration..")
+				s.ReloadConfig()
+			case os.Interrupt:
+				// FIXME, trip running?
+				Noticef("Server Exiting..")
+				os.Exit(0)
+			}
 	}()
 }
 
