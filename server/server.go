@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -107,6 +108,38 @@ func New(opts *Options) *Server {
 	s.handleSignals()
 
 	return s
+}
+
+// Reload config when requested
+func (s *Server) ReloadConfig() {
+	if s.opts.ConfigFile == "" {
+		return
+	}
+	fileOpts, err := ProcessConfigFile(s.opts.ConfigFile)
+	if err != nil {
+		PrintAndDie(err.Error())
+	}
+	s.opts = (MergeOptions(s.opts, fileOpts))
+	newroutes, err := RemoveSelfReference(fileOpts.ClusterPort, fileOpts.Routes)
+	if err != nil {
+		PrintAndDie(err.Error())
+	}
+	s.updateRoutes(newroutes)
+}
+
+func (s *Server) updateRoutes(newroutes []*url.URL) {
+	// this is a bit hacky, as it closes *all* the routing connections.
+	// probably should diff the old and new routes and reconnect if something changed..
+
+	// close existing routes first, need to set didSolicit to false, otherwise
+	// they will reconnect
+	for _, c := range s.routes {
+		c.route.didSolicit = false
+		c.closeConnection()
+	}
+	// and reconnect to the new routes
+	s.opts.Routes = newroutes
+	s.solicitRoutes()
 }
 
 // Sets the authentication method
