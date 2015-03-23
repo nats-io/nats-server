@@ -285,7 +285,17 @@ func getInterfaceIPs() []net.IP {
 	}
 
 	for i := 0; i < len(interfaceAddr); i++ {
-		interfaceIP, _, _ := net.ParseCIDR(interfaceAddr[i].String())
+		var interfaceIP net.IP
+		interfaceIP, _, err = net.ParseCIDR(interfaceAddr[i].String())
+		// for some reason, windows returns non-CIDR addresses through net.interfaceaddrs,
+		// so in case we can't parse it, let's try with /32 appended
+		if err != nil {
+			interfaceIP, _, err = net.ParseCIDR(interfaceAddr[i].String() + "/32")
+			if err != nil {
+				Errorf("Error CIDR parsing address: %v", err)
+				return localIPs
+			}
+		}
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
