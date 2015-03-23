@@ -41,6 +41,7 @@ type Options struct {
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
 	Routes             []*url.URL    `json:"-"`
 	ProfPort           int           `json:"-"`
+	ConfigFile         string        `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
 	Syslog             bool          `json:"-"`
@@ -203,6 +204,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.Logtime {
 		opts.Logtime = true
+	}
+	if flagOpts.ConfigFile != "" {
+		opts.ConfigFile = flagOpts.ConfigFile
 	}
 	if flagOpts.LogFile != "" {
 		opts.LogFile = flagOpts.LogFile
