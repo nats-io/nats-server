@@ -180,8 +180,8 @@ func (s *Server) handleSignals() {
 	c := make(chan os.Signal, 1)
 
 	signal.Notify(c, os.Interrupt, syscall.SIGHUP)
- 	go func() {
- 		for sig := range c {
+	go func() {
+		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
 			switch sig {
 			case syscall.SIGHUP:
@@ -192,6 +192,7 @@ func (s *Server) handleSignals() {
 				Noticef("Server Exiting..")
 				os.Exit(0)
 			}
+		}
 	}()
 }
 
