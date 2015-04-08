@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
@@ -367,5 +367,81 @@ func TestSplitMsgArg(t *testing.T) {
 
 	if string(c.pa.szb) != wantSzb {
 		t.Fatalf("Incorrect szb: want %q, got %q", wantSzb, c.pa.szb)
+	}
+}
+
+func TestSplitBufferMsgOp(t *testing.T) {
+	c := &client{subs: hashmap.New()}
+	msg := []byte("MSG foo.bar QRSID:15:3 _INBOX.22 11\r\nhello world\r")
+	msg1 := msg[:2]
+	msg2 := msg[2:9]
+	msg3 := msg[9:15]
+	msg4 := msg[15:22]
+	msg5 := msg[22:25]
+	msg6 := msg[25:37]
+	msg7 := msg[37:42]
+	msg8 := msg[42:]
+
+	if err := c.parse(msg1); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != OP_MS {
+		t.Fatalf("Expected OP_MS state vs %d\n", c.state)
+	}
+	if err := c.parse(msg2); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_ARG {
+		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
+	}
+	if err := c.parse(msg3); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_ARG {
+		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
+	}
+	if err := c.parse(msg4); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_ARG {
+		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
+	}
+	if err := c.parse(msg5); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_ARG {
+		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
+	}
+	if err := c.parse(msg6); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_PAYLOAD {
+		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
+	}
+
+	// Check c.pa
+	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
+		t.Fatalf("MSG arg subject incorrect: '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.sid, []byte("QRSID:15:3")) {
+		t.Fatalf("MSG arg sid incorrect: '%s'\n", c.pa.sid)
+	}
+	if !bytes.Equal(c.pa.reply, []byte("_INBOX.22")) {
+		t.Fatalf("MSG arg reply subject incorrect: '%s'\n", c.pa.reply)
+	}
+	if c.pa.size != 11 {
+		t.Fatalf("MSG arg msg size incorrect: %d\n", c.pa.size)
+	}
+	if err := c.parse(msg7); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_PAYLOAD {
+		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
+	}
+	if err := c.parse(msg8); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_END {
+		t.Fatalf("Expected MSG_END state vs %d\n", c.state)
 	}
 }
