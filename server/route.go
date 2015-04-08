@@ -166,6 +166,7 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 		return nil, true
 	}
 	sid := matches[RSID_SID_INDEX]
+
 	if sub, ok := (client.subs.Get(sid)).(*subscription); ok {
 		return sub, true
 	}

@@ -341,3 +341,31 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 }
+
+func TestSplitMsgArg(t *testing.T) {
+	_, c, _ := setupClient()
+
+	b := make([]byte, 1024)
+
+	copy(b, []byte("MSG hello.world RSID:14:8 6040\r\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+	c.parse(b)
+
+	copy(b, []byte("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\r\n"))
+	c.parse(b)
+
+	wantSubject := "hello.world"
+	wantSid := "RSID:14:8"
+	wantSzb := "6040"
+
+	if string(c.pa.subject) != wantSubject {
+		t.Fatalf("Incorrect subject: want %q, got %q", wantSubject, c.pa.subject)
+	}
+
+	if string(c.pa.sid) != wantSid {
+		t.Fatalf("Incorrect sid: want %q, got %q", wantSid, c.pa.sid)
+	}
+
+	if string(c.pa.szb) != wantSzb {
+		t.Fatalf("Incorrect szb: want %q, got %q", wantSzb, c.pa.szb)
+	}
+}
