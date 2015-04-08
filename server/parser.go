@@ -629,10 +629,18 @@ func (c *client) clonePubArg() {
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.subject...)
 	c.argBuf = append(c.argBuf, c.pa.reply...)
+	c.argBuf = append(c.argBuf, c.pa.sid...)
 	c.argBuf = append(c.argBuf, c.pa.szb...)
+
 	c.pa.subject = c.argBuf[:len(c.pa.subject)]
+
 	if c.pa.reply != nil {
 		c.pa.reply = c.argBuf[len(c.pa.subject) : len(c.pa.subject)+len(c.pa.reply)]
 	}
-	c.pa.szb = c.argBuf[len(c.pa.subject)+len(c.pa.reply):]
+
+	if c.pa.sid != nil {
+		c.pa.sid = c.argBuf[len(c.pa.subject)+len(c.pa.reply) : len(c.pa.subject)+len(c.pa.reply)+len(c.pa.sid)]
+	}
+
+	c.pa.szb = c.argBuf[len(c.pa.subject)+len(c.pa.reply)+len(c.pa.sid):]
 }
