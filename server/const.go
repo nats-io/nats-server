@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
@@ -8,7 +8,7 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "0.5.8"
+	VERSION = "0.6.0"
 
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
