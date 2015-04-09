@@ -574,7 +574,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		// still process the message in hand, otherwise
 		// unsubscribe and drop message on the floor.
 		if sub.nm == sub.max {
-			c.Debugf("Auto-unsubscribe limit of %d reached for sid:%s\n", sub.max, string(sub.sid))
+			c.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'\n", sub.max, string(sub.sid))
 			defer client.unsubscribe(sub)
 			if shouldForward {
 				defer client.srv.broadcastUnSubscribe(sub)
@@ -676,20 +676,20 @@ func (c *client) processMsg(msg []byte) {
 	if trace == 1 {
 		c.traceMsg(msg)
 	}
-	if srv == nil {
-		return
-	}
 	if c.opts.Verbose {
 		c.sendOK()
 	}
-
-	// Scratch buffer..
-	msgh := c.msgb[:len(msgHeadProto)]
+	if srv == nil {
+		return
+	}
 
 	r := srv.sl.Match(c.pa.subject)
 	if len(r) <= 0 {
 		return
 	}
+
+	// Scratch buffer..
+	msgh := c.msgb[:len(msgHeadProto)]
 
 	// msg header
 	msgh = append(msgh, c.pa.subject...)
