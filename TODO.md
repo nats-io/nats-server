@@ -16,3 +16,4 @@
 - [ ] Buffer pools?
 - [ ] Add ability to reload config on signal
 - [ ] NewSource on Rand do lower lock contention on QueueSubs
+- [ ] Place version in varz?
