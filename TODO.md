@@ -19,3 +19,4 @@
 - [ ] Add ENV support to dconf
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Client support for language and version
+- [ ] Place version in varz?
