@@ -16,3 +16,6 @@
 - [ ] Buffer pools?
 - [ ] Add ability to reload config on signal
 - [ ] NewSource on Rand do lower lock contention on QueueSubs
+- [ ] Add ENV support to dconf
+- [ ] Modify cluster support for single message across routes between pub/sub and d-queue
+- [ ] Client support for language and version
