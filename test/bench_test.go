@@ -29,7 +29,7 @@ const defaultSendBufSize = 16384
 
 func flushConnection(b *testing.B, c net.Conn, buf []byte) {
 	c.Write([]byte("PING\r\n"))
-	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	n, err := c.Read(buf)
 	c.SetReadDeadline(time.Time{})
 	if err != nil {
