@@ -39,6 +39,7 @@ type client struct {
 	lang string
 	opts clientOpts
 	nc   net.Conn
+	ncs  string
 	bw   *bufio.Writer
 	srv  *Server
 	subs *hashmap.HashMap
@@ -54,20 +55,7 @@ type client struct {
 }
 
 func (c *client) String() (id string) {
-	conn := "-"
-	if ip, ok := c.nc.(*net.TCPConn); ok {
-		addr := ip.RemoteAddr().(*net.TCPAddr)
-		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
-	}
-
-	switch c.typ {
-	case CLIENT:
-		id = fmt.Sprintf("%s - cid:%d", conn, c.cid)
-	case ROUTER:
-		id = fmt.Sprintf("%s - rid:%d", conn, c.cid)
-	}
-
-	return id
+	return c.ncs
 }
 
 func (c *client) GetOpts() *clientOpts {
@@ -114,6 +102,20 @@ func (c *client) initClient() {
 	// This is to track pending clients that have data to be flushed
 	// after we process inbound msgs from our own connection.
 	c.pcd = make(map[*client]struct{})
+
+	// snapshot the string version of the connection
+	conn := "-"
+	if ip, ok := c.nc.(*net.TCPConn); ok {
+		addr := ip.RemoteAddr().(*net.TCPAddr)
+		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+	}
+
+	switch c.typ {
+	case CLIENT:
+		c.ncs = fmt.Sprintf("%s - cid:%d", conn, c.cid)
+	case ROUTER:
+		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
+	}
 
 	// No clue why, but this stalls and kills performance on Mac (Mavericks).
 	//
@@ -176,7 +178,10 @@ func (c *client) readLoop() {
 			delete(c.pcd, cp)
 		}
 		// Check to see if we got closed, e.g. slow consumer
-		if c.nc == nil {
+		c.mu.Lock()
+		nc := c.nc
+		c.mu.Unlock()
+		if nc == nil {
 			return
 		}
 	}
