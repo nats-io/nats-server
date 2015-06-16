@@ -79,6 +79,8 @@ type clientOpts struct {
 	Username      string `json:"user"`
 	Password      string `json:"pass"`
 	Name          string `json:"name"`
+	Lang          string `json:"lang"`
+	Version       string `json:"version"`
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
