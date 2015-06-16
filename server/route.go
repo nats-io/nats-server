@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"sync/atomic"
 	"time"
 )
 
@@ -202,7 +203,7 @@ func (s *Server) addRoute(c *client) bool {
 
 func (s *Server) broadcastToRoutes(proto string) {
 	var arg []byte
-	if trace == 1 {
+	if atomic.LoadInt32(&trace) == 1 {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
 	s.mu.Lock()

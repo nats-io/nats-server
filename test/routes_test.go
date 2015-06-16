@@ -157,7 +157,10 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Eat the CONNECT and INFO protos
-	routeExpect(infoRe)
+	buf := routeExpect(connectRe)
+	if !infoRe.Match(buf) {
+		routeExpect(infoRe)
+	}
 
 	// Send SUB via route connection
 	routeSend("SUB foo RSID:2:22\r\n")
@@ -356,7 +359,7 @@ func TestSolicitRouteReconnect(t *testing.T) {
 
 	// We expect to get called back..
 	route = acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
-	defer route.Close()
+	route.Close()
 }
 
 func TestMultipleRoutesSameId(t *testing.T) {
@@ -436,6 +439,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
 
 	// Expect to see the local sub echoed through after we send our INFO.
+	time.Sleep(50 * time.Millisecond)
 	buf := routeExpect(infoRe)
 
 	// Generate our own INFO so we can send one to trigger the local subs.

@@ -57,7 +57,7 @@ func Fatalf(format string, v ...interface{}) {
 }
 
 func Debugf(format string, v ...interface{}) {
-	if debug == 0 {
+	if atomic.LoadInt32(&debug) == 0 {
 		return
 	}
 
@@ -67,7 +67,7 @@ func Debugf(format string, v ...interface{}) {
 }
 
 func Tracef(format string, v ...interface{}) {
-	if trace == 0 {
+	if atomic.LoadInt32(&trace) == 0 {
 		return
 	}
 

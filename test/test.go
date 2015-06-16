@@ -279,8 +279,7 @@ var (
 	unsubRe      = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
 	unsubmaxRe   = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))\r\n`)
 	unsubnomaxRe = regexp.MustCompile(`UNSUB\s+([^\s]+)\r\n`)
-
-	connectRe = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
+	connectRe    = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
 )
 
 const (

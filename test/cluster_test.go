@@ -205,6 +205,8 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
+	time.Sleep(50 * time.Millisecond)
+
 	clientA1 := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA1.Close()
 
