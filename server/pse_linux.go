@@ -2,11 +2,6 @@
 
 package server
 
-/*
-#include <unistd.h>
-*/
-import "C"
-
 import (
 	"bytes"
 	"fmt"
@@ -27,7 +22,8 @@ const (
 )
 
 func init() {
-	ticks = int64(C.sysconf(C._SC_CLK_TCK))
+	// Avoiding to generate docker image without CGO
+	ticks = 100 // int64(C.sysconf(C._SC_CLK_TCK))
 	procStatFile = fmt.Sprintf("/proc/%d/stat", os.Getpid())
 }
 
