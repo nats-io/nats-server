@@ -32,7 +32,7 @@ func TestPSEmulation(t *testing.T) {
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta > 5 { // 5%
+		if delta > 10 { // 10%
 			t.Fatalf("CPUs did not match close enough: %f vs %f", pcpu, psPcpu)
 		}
 	}
