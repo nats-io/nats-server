@@ -4,7 +4,7 @@ for Dir in $(find ./* -maxdepth 10 -type d | grep -v test);
 do
         if ls $Dir/*.go &> /dev/null;
         then
-            go test -v -covermode=count -coverprofile=profile.out $Dir
+            GOMAXPROCS=1 go test -v -covermode=count -coverprofile=profile.out $Dir
             if [ -f profile.out ]
             then
                 cat profile.out | grep -v "mode: count" >> acc.out
