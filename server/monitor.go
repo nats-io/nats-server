@@ -39,8 +39,12 @@ type ConnInfo struct {
 	InBytes  int64    `json:"in_bytes"`
 	OutBytes int64    `json:"out_bytes"`
 	NumSubs  uint32   `json:"subscriptions"`
+	Lang     string   `json:"lang,omitempty"`
+	Version  string   `json:"version,omitempty"`
 	Subs     []string `json:"subscriptions_list,omitempty"`
 }
+
+const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +54,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	if c.Limit == 0 {
-		c.Limit = 100
+		c.Limit = DefaultConnListSize
 	}
 
 	// Walk the list
@@ -75,6 +79,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			InBytes:  client.inBytes,
 			OutBytes: client.outBytes,
 			NumSubs:  client.subs.Count(),
+			Lang:     client.opts.Lang,
+			Version:  client.opts.Version,
 		}
 
 		if subs == 1 {

@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package test
 
@@ -169,8 +169,8 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
 	}
 
-	if c.Limit != 100 {
-		t.Fatalf("Expected limit of 100, got %v\n", c.Limit)
+	if c.Limit != server.DefaultConnListSize {
+		t.Fatalf("Expected limit of %d, got %v\n", server.DefaultConnListSize, c.Limit)
 	}
 
 	if c.Offset != 0 {
