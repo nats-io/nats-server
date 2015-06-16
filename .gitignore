@@ -31,3 +31,6 @@ _testmain.go
 
 # bin
 gnatsd
+
+# coverage
+coverage.out
