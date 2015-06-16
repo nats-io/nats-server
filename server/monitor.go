@@ -113,14 +113,14 @@ func castToSliceString(input []interface{}) []string {
 	return output
 }
 
-// Connz represents detail information on current connections.
+// Subsz represents detail information on current connections.
 type Subsz struct {
-	SubjectStats *sublist.Stats `json:"stats"`
+	SubjectStats sublist.Stats `json:"stats"`
 }
 
 // HandleStats process HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
-	st := &Subsz{SubjectStats: s.sl.Stats()}
+	st := &Subsz{SubjectStats: *s.sl.Stats()}
 
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
