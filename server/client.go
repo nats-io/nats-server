@@ -36,6 +36,7 @@ type client struct {
 	mu   sync.Mutex
 	typ  int
 	cid  uint64
+	lang string
 	opts clientOpts
 	nc   net.Conn
 	bw   *bufio.Writer
