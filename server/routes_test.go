@@ -1,11 +1,15 @@
-// Copyright 2013-2014 Apcera Inc. All rights reserved.
+// Copyright 2013-2015 Apcera Inc. All rights reserved.
 
 package server
 
 import (
+	"fmt"
 	"net/url"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/apcera/nats"
 )
 
 func TestRouteConfig(t *testing.T) {
@@ -39,4 +43,45 @@ func TestRouteConfig(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
+}
+
+func TestServerRoutesWithClients(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
+	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+
+	optsA.NoSigs, optsA.NoLog = true, true
+	optsB.NoSigs, optsB.NoLog = true, true
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
+
+	nc1, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc1.Close()
+
+	ch := make(chan bool)
+	sub, _ := nc1.Subscribe("foo", func(m *nats.Msg) { ch <- true })
+	nc1.QueueSubscribe("foo", "bar", func(m *nats.Msg) {})
+	nc1.Publish("foo", []byte("Hello"))
+	// Wait for message
+	<-ch
+	sub.Unsubscribe()
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	time.Sleep(250 * time.Millisecond)
+
+	nc2, err := nats.Connect(urlB)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+	nc2.Publish("foo", []byte("Hello"))
+	nc2.Flush()
 }

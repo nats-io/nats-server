@@ -81,19 +81,3 @@ func TestStartupAndShutdown(t *testing.T) {
 		t.Fatalf("Expected numSubscriptions to be 0 vs %d\n", numSubscriptions)
 	}
 }
-
-func TestServerRoutes(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
-	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
-
-	optsA.NoSigs, optsA.NoLog = true, true
-	optsB.NoSigs, optsB.NoLog = true, true
-
-	srvA := RunServer(optsA)
-	srvB := RunServer(optsB)
-
-	defer srvA.Shutdown()
-	defer srvB.Shutdown()
-
-	time.Sleep(250 * time.Millisecond)
-}
