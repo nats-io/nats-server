@@ -46,7 +46,7 @@ func procUsage(pcpu *float64, rss, vss *int64) error {
 	stime := parseInt64(fields[stimePos])
 	totalTime := utime + stime
 
-	sysinfo := syscall.Sysinfo_t{}
+	var sysinfo syscall.Sysinfo_t
 	if err := syscall.Sysinfo(&sysinfo); err != nil {
 		return err
 	}
