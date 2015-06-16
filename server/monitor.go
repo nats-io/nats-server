@@ -20,7 +20,7 @@ func init() {
 	numCores = runtime.NumCPU()
 }
 
-// Connz represents detail information on current connections.
+// Connz represents detailed information on current client connections.
 type Connz struct {
 	NumConns int         `json:"num_connections"`
 	Offset   int         `json:"offset"`
@@ -116,6 +116,70 @@ func castToSliceString(input []interface{}) []string {
 // Subsz represents detail information on current connections.
 type Subsz struct {
 	SubjectStats sublist.Stats `json:"stats"`
+}
+
+// Routez represents detailed information on current client connections.
+type Routez struct {
+	NumRoutes int          `json:"num_routes"`
+	Routes    []*RouteInfo `json:"routes"`
+}
+
+// RouteInfo has detailed information on a per connection basis.
+type RouteInfo struct {
+	Rid        uint64   `json:"rid"`
+	RemoteId   string   `json:"remote_id"`
+	DidSolicit bool     `json:"did_solicit"`
+	IP         string   `json:"ip"`
+	Port       int      `json:"port"`
+	Pending    int      `json:"pending_size"`
+	InMsgs     int64    `json:"in_msgs"`
+	OutMsgs    int64    `json:"out_msgs"`
+	InBytes    int64    `json:"in_bytes"`
+	OutBytes   int64    `json:"out_bytes"`
+	NumSubs    uint32   `json:"subscriptions"`
+	Subs       []string `json:"subscriptions_list,omitempty"`
+}
+
+// HandleRoutez process HTTP requests for route information.
+func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
+	rs := &Routez{Routes: []*RouteInfo{}}
+
+	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
+
+	// Walk the list
+	s.mu.Lock()
+	rs.NumRoutes = len(s.routes)
+
+	for _, route := range s.routes {
+		ri := &RouteInfo{
+			Rid:        route.cid,
+			RemoteId:   route.route.remoteID,
+			DidSolicit: route.route.didSolicit,
+			InMsgs:     route.inMsgs,
+			OutMsgs:    route.outMsgs,
+			InBytes:    route.inBytes,
+			OutBytes:   route.outBytes,
+			NumSubs:    route.subs.Count(),
+		}
+
+		if subs == 1 {
+			ri.Subs = castToSliceString(route.subs.All())
+		}
+
+		if ip, ok := route.nc.(*net.TCPConn); ok {
+			addr := ip.RemoteAddr().(*net.TCPAddr)
+			ri.Port = addr.Port
+			ri.IP = addr.IP.String()
+		}
+		rs.Routes = append(rs.Routes, ri)
+	}
+	s.mu.Unlock()
+
+	b, err := json.MarshalIndent(rs, "", "  ")
+	if err != nil {
+		Errorf("Error marshalling response to /routez request: %v", err)
+	}
+	w.Write(b)
 }
 
 // HandleStats process HTTP requests for subjects stats.

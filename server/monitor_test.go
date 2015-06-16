@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -15,13 +16,15 @@ import (
 
 const CLIENT_PORT = 11224
 const MONITOR_PORT = 11424
+const CLUSTER_PORT = 12444
 
 var DefaultMonitorOptions = Options{
-	Host:     "localhost",
-	Port:     CLIENT_PORT,
-	HTTPPort: MONITOR_PORT,
-	NoLog:    true,
-	NoSigs:   true,
+	Host:        "localhost",
+	Port:        CLIENT_PORT,
+	HTTPPort:    MONITOR_PORT,
+	ClusterPort: CLUSTER_PORT,
+	NoLog:       true,
+	NoSigs:      true,
 }
 
 func runMonitorServer(monitorPort int) *Server {
@@ -287,6 +290,88 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 
 	if len(c.Conns) != 1 {
 		t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
+	}
+}
+
+func TestConnzWithRoutes(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	var opts = Options{
+		Host:        "localhost",
+		Port:        CLIENT_PORT + 1,
+		ClusterPort: CLUSTER_PORT + 1,
+		NoLog:       true,
+		NoSigs:      true,
+	}
+	routeUrl, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
+	opts.Routes = []*url.URL{routeUrl}
+
+	sc := RunServer(&opts)
+	defer sc.Shutdown()
+
+	time.Sleep(time.Second)
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Test contents..
+	// Make sure routes don't show up under connz, but do under routez
+	if c.NumConns != 0 {
+		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+	}
+	if c.Conns == nil || len(c.Conns) != 0 {
+		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+	}
+
+	// Now check routez
+	url = fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err = http.Get(url + "routez")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	rz := Routez{}
+	if err := json.Unmarshal(body, &rz); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if rz.NumRoutes != 1 {
+		t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
+	}
+
+	if len(rz.Routes) != 1 {
+		t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
+	}
+
+	route := rz.Routes[0]
+
+	if route.DidSolicit != false {
+		t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
 	}
 }
 
