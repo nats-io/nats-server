@@ -1,8 +1,8 @@
 # gnatsd
 [![License MIT](https://img.shields.io/npm/l/express.svg)](http://opensource.org/licenses/MIT)
-[![Build Status](https://travis-ci.org/apcera/gnatsd.svg?branch=master)](http://travis-ci.org/apcera/gnatsd)
-[![Current Release](http://img.shields.io/badge/release-v0.6.0-1eb0fc.svg)](https://github.com/apcera/gnatsd/releases/tag/v0.6.0)
-[![Coverage Status](https://img.shields.io/coveralls/apcera/gnatsd.svg)](https://coveralls.io/r/apcera/gnatsd?branch=master)
+[![Build Status](https://travis-ci.org/nats-io/gnatsd.svg?branch=master)](http://travis-ci.org/nats-io/gnatsd)
+[![Current Release](http://img.shields.io/badge/release-v0.6.0-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.0)
+[![Coverage Status](https://img.shields.io/coveralls/nats-io/gnatsd.svg)](https://coveralls.io/r/nats-io/gnatsd?branch=master)
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
 
@@ -109,11 +109,11 @@ presentations, references and more.
 ## Client libraries
 
 There are several client language bindings for NATS.
-- [Go](https://github.com/apcera/nats)
+- [Go](https://github.com/nats-io/nats)
 - [Java](https://github.com/tyagihas/java_nats)
 - [Java - Spring](https://github.com/mheath/jnats)
-- [Node.js](https://github.com/derekcollison/node_nats)
-- [Ruby](https://github.com/derekcollison/nats)
+- [Node.js](https://github.com/nats-io/node-nats)
+- [Ruby](https://github.com/nats-io/ruby-nats)
 
 
 ## License
