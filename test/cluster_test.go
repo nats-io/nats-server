@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {

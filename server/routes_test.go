@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/nats"
+	"github.com/nats-io/nats"
 )
 
 func TestRouteConfig(t *testing.T) {

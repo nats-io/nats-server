@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apcera/gnatsd/conf"
+	"github.com/nats-io/gnatsd/conf"
 )
 
 // Options block for gnatsd server.

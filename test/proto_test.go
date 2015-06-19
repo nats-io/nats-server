@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 const PROTO_TEST_PORT = 9922

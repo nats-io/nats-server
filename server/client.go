@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/apcera/gnatsd/hashmap"
-	"github.com/apcera/gnatsd/sublist"
+	"github.com/nats-io/gnatsd/hashmap"
+	"github.com/nats-io/gnatsd/sublist"
 )
 
 const (

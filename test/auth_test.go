@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/auth"
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/auth"
+	"github.com/nats-io/gnatsd/server"
 )
 
 func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {

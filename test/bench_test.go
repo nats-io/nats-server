@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 const PERF_PORT = 8422

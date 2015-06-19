@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/nats"
+	"github.com/nats-io/nats"
 )
 
 const CLIENT_PORT = 11224
