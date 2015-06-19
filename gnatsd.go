@@ -1,4 +1,4 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package main
 
@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/apcera/gnatsd/auth"
-	"github.com/apcera/gnatsd/logger"
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/auth"
+	"github.com/nats-io/gnatsd/logger"
+	"github.com/nats-io/gnatsd/server"
 )
 
 func main() {

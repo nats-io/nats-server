@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 type Plain struct {

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/apcera/gnatsd/sublist"
+	"github.com/nats-io/gnatsd/sublist"
 )
 
 // Snapshot this

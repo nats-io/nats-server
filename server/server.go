@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
@@ -17,7 +17,7 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
-	"github.com/apcera/gnatsd/sublist"
+	"github.com/nats-io/gnatsd/sublist"
 )
 
 // Info is the information sent to clients to help them understand information

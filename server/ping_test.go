@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/nats"
+	"github.com/nats-io/nats"
 )
 
 const PING_CLIENT_PORT = 11228

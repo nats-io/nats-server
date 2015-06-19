@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 const MONITOR_PORT = 11422

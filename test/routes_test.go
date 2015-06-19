@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apcera/gnatsd/server"
+	"github.com/nats-io/gnatsd/server"
 )
 
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
