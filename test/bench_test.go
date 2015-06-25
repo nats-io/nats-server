@@ -4,10 +4,10 @@ package test
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
+	//	"encoding/hex"
 	"fmt"
-	"io"
+	//	"io"
+	"math/rand"
 	"net"
 	"testing"
 	"time"
@@ -25,17 +25,18 @@ func runBenchServer() *server.Server {
 }
 
 const defaultRecBufSize = 32768
-const defaultSendBufSize = 16384
+const defaultSendBufSize = 32768
 
-func flushConnection(b *testing.B, c net.Conn, buf []byte) {
+func flushConnection(b *testing.B, c net.Conn) {
+	buf := make([]byte, 32)
 	c.Write([]byte("PING\r\n"))
-	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	c.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, err := c.Read(buf)
 	c.SetReadDeadline(time.Time{})
 	if err != nil {
 		b.Fatalf("Failed read: %v\n", err)
 	}
-	if n != 6 && buf[0] != 'P' {
+	if n != 6 && buf[0] != 'P' && buf[1] != 'O' {
 		b.Fatalf("Failed read of PONG: %s\n", buf)
 	}
 }
@@ -48,22 +49,25 @@ func benchPub(b *testing.B, subject, payload string) {
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
 	b.SetBytes(int64(len(sendOp)))
-	buf := make([]byte, 1024)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
 		bw.Write(sendOp)
 	}
 	bw.Flush()
-	flushConnection(b, c, buf)
+	flushConnection(b, c)
 	b.StopTimer()
 	c.Close()
 	s.Shutdown()
 }
 
+var ch = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@$#%^&*()")
+
 func sizedString(sz int) string {
-	u := make([]byte, sz)
-	io.ReadFull(rand.Reader, u)
-	return hex.EncodeToString(u)
+	b := make([]byte, sz)
+	for i := range b {
+		b[i] = ch[rand.Intn(len(ch))]
+	}
+	return string(b)
 }
 
 func Benchmark___PubNo_Payload(b *testing.B) {
@@ -100,12 +104,18 @@ func Benchmark___Pub4K_Payload(b *testing.B) {
 	benchPub(b, "a", s)
 }
 
+func Benchmark___Pub8K_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(8 * 1024)
+	benchPub(b, "a", s)
+}
+
 func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	buf := make([]byte, defaultRecBufSize)
 	bytes := 0
 
 	for {
-		c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
 		n, err := c.Read(buf)
 		if err != nil {
 			b.Errorf("Error on read: %v\n", err)
@@ -164,6 +174,7 @@ func Benchmark__PubSubTwoConns(b *testing.B) {
 	c2 := createClientConn(b, "localhost", PERF_PORT)
 	doDefaultConnect(b, c2)
 	sendProto(b, c2, "SUB foo 1\r\n")
+	flushConnection(b, c2)
 
 	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
 	ch := make(chan bool)
