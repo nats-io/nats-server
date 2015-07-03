@@ -87,7 +87,10 @@ func (c *client) parse(buf []byte) error {
 	// proper CONNECT if needed.
 	authSet := c.isAuthTimerSet()
 
-	for i, b = range buf {
+	// Move to loop instead of range syntax to allow jumping of i
+	for i = 0; i < len(buf); i++ {
+		b = buf[i]
+
 		switch c.state {
 		case OP_START:
 			if b != 'C' && b != 'c' && authSet {
@@ -161,6 +164,12 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+				// If we don't have a saved buffer then jump ahead with
+				// the index. If this overruns what is left we fall out
+				// and process split buffer.
+				if c.msgBuf == nil {
+					i = c.as + c.pa.size - LEN_CR_LF
+				}
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -168,7 +177,23 @@ func (c *client) parse(buf []byte) error {
 			}
 		case MSG_PAYLOAD:
 			if c.msgBuf != nil {
-				c.msgBuf = append(c.msgBuf, b)
+				// copy as much as we can to the buffer and skip ahead.
+				toCopy := c.pa.size - len(c.msgBuf)
+				avail := len(buf) - i
+				if avail < toCopy {
+					toCopy = avail
+				}
+				if toCopy > 0 {
+					start := len(c.msgBuf)
+					// This is needed for copy to work.
+					c.msgBuf = c.msgBuf[:start+toCopy]
+					copy(c.msgBuf[start:], buf[i:i+toCopy])
+					// Update our index
+					i = (i + toCopy) - 1
+				} else {
+					// Fall back to append if needed.
+					c.msgBuf = append(c.msgBuf, b)
+				}
 				if len(c.msgBuf) >= c.pa.size {
 					c.state = MSG_END
 				}
@@ -587,7 +612,7 @@ func (c *client) parse(buf []byte) error {
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
 		c.state == CONNECT_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
-		c.argBuf = append(c.argBuf, buf[c.as:(i+1)-c.drop]...)
+		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
 		// FIXME, check max len
 	}
 	// Check for split msg
@@ -597,8 +622,17 @@ func (c *client) parse(buf []byte) error {
 		if c.argBuf == nil {
 			c.clonePubArg()
 		}
-		c.msgBuf = c.scratch[len(c.argBuf):len(c.argBuf)]
-		c.msgBuf = append(c.msgBuf, (buf[c.as:])...)
+
+		// If we will overflow the scratch buffer, just create a
+		// new buffer to hold the split message.
+		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
+			lrem := len(buf[c.as:])
+			c.msgBuf = make([]byte, lrem, c.pa.size+LEN_CR_LF)
+			copy(c.msgBuf, buf[c.as:])
+		} else {
+			c.msgBuf = c.scratch[len(c.argBuf):len(c.argBuf)]
+			c.msgBuf = append(c.msgBuf, (buf[c.as:])...)
+		}
 	}
 
 	return nil

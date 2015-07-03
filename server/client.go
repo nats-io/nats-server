@@ -123,7 +123,7 @@ func (c *client) initClient() {
 	//
 	//	if ip, ok := c.nc.(*net.TCPConn); ok {
 	//		ip.SetReadBuffer(defaultBufSize)
-	//		ip.SetWriteBuffer(2*defaultBufSize)
+	//		ip.SetWriteBuffer(2 * defaultBufSize)
 	//	}
 
 	// Set the Ping timer
