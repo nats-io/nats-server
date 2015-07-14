@@ -23,6 +23,7 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
+	Now      time.Time   `json:"now"`
 	NumConns int         `json:"num_connections"`
 	Offset   int         `json:"offset"`
 	Limit    int         `json:"limit"`
@@ -50,6 +51,7 @@ const DefaultConnListSize = 1024
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c := &Connz{Conns: []*ConnInfo{}}
+	c.Now = time.Now()
 
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
@@ -119,6 +121,7 @@ type Subsz struct {
 
 // Routez represents detailed information on current client connections.
 type Routez struct {
+	Now       time.Time    `json:"now"`
 	NumRoutes int          `json:"num_routes"`
 	Routes    []*RouteInfo `json:"routes"`
 }
@@ -142,6 +145,7 @@ type RouteInfo struct {
 // HandleRoutez process HTTP requests for route information.
 func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	rs := &Routez{Routes: []*RouteInfo{}}
+	rs.Now = time.Now()
 
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 
