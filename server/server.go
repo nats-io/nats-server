@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 type Info struct {
 	ID           string `json:"server_id"`
 	Version      string `json:"version"`
+	GoVersion    string `json:"go"`
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
 	AuthRequired bool   `json:"auth_required"`
@@ -73,6 +75,7 @@ func New(opts *Options) *Server {
 	info := Info{
 		ID:           genID(),
 		Version:      VERSION,
+		GoVersion:    runtime.Version(),
 		Host:         opts.Host,
 		Port:         opts.Port,
 		AuthRequired: false,
