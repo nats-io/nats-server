@@ -38,6 +38,38 @@ func resetPreviousHTTPConnections() {
 	http.DefaultTransport = &http.Transport{}
 }
 
+func TestMyUptime(t *testing.T) {
+	// Make sure we print this stuff right.
+	var d time.Duration
+	var s string
+
+	d = 22 * time.Second
+	s = myUptime(d)
+	if s != "22s" {
+		t.Fatalf("Expected `22s`, go ``%s`", s)
+	}
+	d = 4*time.Minute + d
+	s = myUptime(d)
+	if s != "4m22s" {
+		t.Fatalf("Expected `4m22s`, go ``%s`", s)
+	}
+	d = 4*time.Hour + d
+	s = myUptime(d)
+	if s != "4h4m22s" {
+		t.Fatalf("Expected `4h4m22s`, go ``%s`", s)
+	}
+	d = 32*24*time.Hour + d
+	s = myUptime(d)
+	if s != "32d4h4m22s" {
+		t.Fatalf("Expected `32d4h4m22s`, go ``%s`", s)
+	}
+	d = 22*365*24*time.Hour + d
+	s = myUptime(d)
+	if s != "22y32d4h4m22s" {
+		t.Fatalf("Expected `22y32d4h4m22s`, go ``%s`", s)
+	}
+}
+
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
 	s := runMonitorServer(0)

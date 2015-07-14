@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"runtime"
@@ -195,8 +196,10 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	Start       time.Time `json:"start"`
+	Information *Info     `json:"info"`
 	Options     *Options  `json:"options"`
+	Start       time.Time `json:"start"`
+	Uptime      string    `json:"uptime"`
 	Mem         int64     `json:"mem"`
 	Cores       int       `json:"cores"`
 	CPU         float64   `json:"cpu"`
@@ -207,7 +210,6 @@ type Varz struct {
 	OutMsgs     int64     `json:"out_msgs"`
 	InBytes     int64     `json:"in_bytes"`
 	OutBytes    int64     `json:"out_bytes"`
-	Uptime      string    `json:"uptime"`
 }
 
 type usage struct {
@@ -216,10 +218,33 @@ type usage struct {
 	Mem   int64
 }
 
+func myUptime(d time.Duration) string {
+	// Just use total seconds for uptime, and display days / years
+	tsecs := d / time.Second
+	tmins := tsecs / 60
+	thrs := tmins / 60
+	tdays := thrs / 24
+	tyrs := tdays / 365
+
+	if tyrs > 0 {
+		return fmt.Sprintf("%dy%dd%dh%dm%ds", tyrs, tdays%365, thrs%24, tmins%60, tsecs%60)
+	}
+	if tdays > 0 {
+		return fmt.Sprintf("%dd%dh%dm%ds", tdays, thrs%24, tmins%60, tsecs%60)
+	}
+	if thrs > 0 {
+		return fmt.Sprintf("%dh%dm%ds", thrs, tmins%60, tsecs%60)
+	}
+	if tmins > 0 {
+		return fmt.Sprintf("%dm%ds", tmins, tsecs%60)
+	}
+	return fmt.Sprintf("%ds", tsecs)
+}
+
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
-	v := &Varz{Start: s.start, Options: s.opts}
-	v.Uptime = time.Since(s.start).String()
+	v := &Varz{Information: &s.info, Options: s.opts, Start: s.start}
+	v.Uptime = myUptime(time.Since(s.start))
 
 	updateUsage(v)
 
