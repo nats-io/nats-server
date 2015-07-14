@@ -1,12 +1,10 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package test
 
 import (
 	"bufio"
-	//	"encoding/hex"
 	"fmt"
-	//	"io"
 	"math/rand"
 	"net"
 	"testing"
