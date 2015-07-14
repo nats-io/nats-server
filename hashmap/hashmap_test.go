@@ -261,7 +261,6 @@ func TestRemoveRandom(t *testing.T) {
 
 func Benchmark_GoMap___GetSmallKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	m := make(map[string][]byte)
 	m["foo"] = bar
 	b.StartTimer()
@@ -273,7 +272,6 @@ func Benchmark_GoMap___GetSmallKey(b *testing.B) {
 
 func Benchmark_HashMap_GetSmallKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	m := New()
 	m.Set(foo, bar)
 	b.StartTimer()
@@ -285,7 +283,6 @@ func Benchmark_HashMap_GetSmallKey(b *testing.B) {
 
 func Benchmark_GoMap____GetMedKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	ts := string(med)
 	m := make(map[string][]byte)
 	m[ts] = bar
@@ -298,7 +295,6 @@ func Benchmark_GoMap____GetMedKey(b *testing.B) {
 
 func Benchmark_HashMap__GetMedKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	m := New()
 	m.Set(sub, bar)
 	b.StartTimer()
@@ -310,7 +306,6 @@ func Benchmark_HashMap__GetMedKey(b *testing.B) {
 
 func Benchmark_GoMap____GetLrgKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	ts := string(sub)
 	m := make(map[string][]byte)
 	m[ts] = bar
@@ -323,7 +318,6 @@ func Benchmark_GoMap____GetLrgKey(b *testing.B) {
 
 func Benchmark_HashMap__GetLrgKey(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	m := New()
 	m.Set(sub, bar)
 	b.StartTimer()
@@ -333,9 +327,18 @@ func Benchmark_HashMap__GetLrgKey(b *testing.B) {
 	}
 }
 
+func Benchmark_GoMap_________Set(b *testing.B) {
+	b.StopTimer()
+	m := make(map[string][]byte)
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		m["foo"] = bar
+	}
+}
+
 func Benchmark_HashMap_______Set(b *testing.B) {
 	b.StopTimer()
-	b.SetBytes(1)
 	m := New()
 	b.StartTimer()
 
