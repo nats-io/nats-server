@@ -198,21 +198,22 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	Information *Info     `json:"info"`
-	Options     *Options  `json:"options"`
-	Start       time.Time `json:"start"`
-	Now         time.Time `json:"now"`
-	Uptime      string    `json:"uptime"`
-	Mem         int64     `json:"mem"`
-	Cores       int       `json:"cores"`
-	CPU         float64   `json:"cpu"`
-	Connections int       `json:"connections"`
-	Routes      int       `json:"routes"`
-	Remotes     int       `json:"remotes"`
-	InMsgs      int64     `json:"in_msgs"`
-	OutMsgs     int64     `json:"out_msgs"`
-	InBytes     int64     `json:"in_bytes"`
-	OutBytes    int64     `json:"out_bytes"`
+	Information   *Info     `json:"info"`
+	Options       *Options  `json:"options"`
+	Start         time.Time `json:"start"`
+	Now           time.Time `json:"now"`
+	Uptime        string    `json:"uptime"`
+	Mem           int64     `json:"mem"`
+	Cores         int       `json:"cores"`
+	CPU           float64   `json:"cpu"`
+	Connections   int       `json:"connections"`
+	Routes        int       `json:"routes"`
+	Remotes       int       `json:"remotes"`
+	InMsgs        int64     `json:"in_msgs"`
+	OutMsgs       int64     `json:"out_msgs"`
+	InBytes       int64     `json:"in_bytes"`
+	OutBytes      int64     `json:"out_bytes"`
+	SlowConsumers int64     `json:"slow_consumers"`
 }
 
 type usage struct {
@@ -260,6 +261,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v.InBytes = s.inBytes
 	v.OutMsgs = s.outMsgs
 	v.OutBytes = s.outBytes
+	v.SlowConsumers = s.slowConsumers
 	s.mu.Unlock()
 
 	b, err := json.MarshalIndent(v, "", "  ")

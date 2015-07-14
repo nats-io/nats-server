@@ -655,7 +655,8 @@ writeErr:
 	client.mu.Unlock()
 
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		c.Noticef("Slow Consumer Detected")
+		atomic.AddInt64(&client.srv.slowConsumers, 1)
+		client.Noticef("Slow Consumer Detected")
 		client.closeConnection()
 	} else {
 		c.Debugf("Error writing msg: %v", err)

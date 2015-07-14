@@ -63,10 +63,11 @@ type Server struct {
 }
 
 type stats struct {
-	inMsgs   int64
-	outMsgs  int64
-	inBytes  int64
-	outBytes int64
+	inMsgs        int64
+	outMsgs       int64
+	inBytes       int64
+	outBytes      int64
+	slowConsumers int64
 }
 
 // New will setup a new server struct after parsing the options.
