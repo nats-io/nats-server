@@ -105,12 +105,10 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 }
 
 func castToSliceString(input []interface{}) []string {
-
 	output := make([]string, 0, len(input))
 	for _, line := range input {
 		output = append(output, string(line.(*subscription).subject))
 	}
-
 	return output
 }
 
@@ -199,6 +197,7 @@ type Varz struct {
 	Information *Info     `json:"info"`
 	Options     *Options  `json:"options"`
 	Start       time.Time `json:"start"`
+	Now         time.Time `json:"now"`
 	Uptime      string    `json:"uptime"`
 	Mem         int64     `json:"mem"`
 	Cores       int       `json:"cores"`
@@ -244,6 +243,7 @@ func myUptime(d time.Duration) string {
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v := &Varz{Information: &s.info, Options: s.opts, Start: s.start}
+	v.Now = time.Now()
 	v.Uptime = myUptime(time.Since(s.start))
 
 	updateUsage(v)
