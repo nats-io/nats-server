@@ -8,6 +8,10 @@ A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang
 
 ## Usage
 
+gnatsd accepts command line arguments to control its behavior. An example  configuration file is listed below. Note that
+command line arguments will override those items in the configuration file.
+
+
 ```
 
 Server options:
@@ -35,26 +39,30 @@ Common options:
 
 ```
 
-## Configuration
+## Sample Configuration
 
 ```
-# Sample config file
 
-port: 4242
-net: apcera.me # net interface
+port: 4242      # port to listen for client connections
+net: apcera.me  # net interface to listen
 
-http_port: 8222
+http_port: 8222 # HTTP monitoring port
 
+# Authorization for client connections
 authorization {
   user:     derek
   password: T0pS3cr3t
   timeout:  1
 }
 
-cluster {
-  host: '127.0.0.1'
-  port: 4244
+# Cluster definition
 
+cluster {
+
+  host: '127.0.0.1'  # host/net interface
+  port: 4244         # port for inbound route connections
+
+  # Authorization for route connections
   authorization {
     user: route_user
     password: T0pS3cr3tT00!
@@ -77,10 +85,139 @@ trace:   true
 logtime: false
 log_file: "/tmp/gnatsd.log"
 
-#pid file
+# pid file
 pid_file: "/tmp/gnatsd.pid"
 ```
 
+## Monitoring
+
+If the monitoring port is enabled, the server will run a lightweight http server on that port that has several endpoints [/varz, /connz, /routez, /subscriptionsz]. All endpoints return a JSON onject.
+
+To test, run '``go run gnatsd.go -m 8222``'
+
+<http://localhost:8222/varz> reports various general statistics.
+
+```json
+{
+  "info": {
+    "server_id": "ec933edcd2bd86bcf71d555fc8b4fb2c",
+    "version": "0.6.1.beta",
+    "go": "go1.4.2",
+    "host": "0.0.0.0",
+    "port": 4222,
+    "auth_required": false,
+    "ssl_required": false,
+    "max_payload": 1048576
+  },
+  "options": {
+    "max_connections": 65536,
+    "ping_interval": 120000000000,
+    "ping_max": 2,
+    "http_port": 8222,
+    "ssl_timeout": 0.5,
+    "max_control_line": 1024,
+    "max_payload": 1048576
+  },
+  "start": "2015-07-14T13:29:26.426805508-07:00",
+  "now": "2015-07-14T13:30:59.349179963-07:00",
+  "uptime": "1m33s",
+  "mem": 8445952,
+  "cores": 4,
+  "cpu": 0,
+  "connections": 39,
+  "routes": 0,
+  "remotes": 0,
+  "in_msgs": 100000,
+  "out_msgs": 100000,
+  "in_bytes": 1600000,
+  "out_bytes": 1600000,
+  "slow_consumers": 0
+}
+```
+
+<http://localhost:8222/connz> reports more detailed information on current connections. It uses a paging mechanism which defaults to 1024 connections.
+You can control these via url arguments (limit and offset), e.g. <http://localhost:8222/connz?limit=1&offset=1>.
+You can also report detailed subscription information on a per connection basis using subs=1, e.g. <http://localhost:8222/connz?limit=1&offset=1&subs=1>.
+
+```json
+{
+  "now": "2015-07-14T13:30:59.349179963-07:00",
+  "num_connections": 2,
+  "offset": 0,
+  "limit": 1024,
+  "connections": [
+    {
+      "cid": 571,
+      "ip": "127.0.0.1",
+      "port": 61572,
+      "pending_size": 0,
+      "in_msgs": 0,
+      "out_msgs": 0,
+      "in_bytes": 0,
+      "out_bytes": 0,
+      "subscriptions": 1,
+      "lang": "go",
+      "version": "1.0.9"
+    },
+    {
+      "cid": 574,
+      "ip": "127.0.0.1",
+      "port": 61577,
+      "pending_size": 0,
+      "in_msgs": 0,
+      "out_msgs": 0,
+      "in_bytes": 0,
+      "out_bytes": 0,
+      "subscriptions": 1,
+      "lang": "ruby",
+      "version": "0.5.0"
+    }
+  ]
+}
+```
+
+
+<http://localhost:8222/routez> reports information on active routes for a cluster. Routes are expected to be low, so there is no paging mechanism currently with this endpoint. It does support the subs arg line /connz, e.g. <http://localhost:8222/routez?subs=1>
+
+```json
+{
+  "now": "2015-07-14T13:30:59.349179963-07:00",
+  "num_routes": 1,
+  "routes": [
+    {
+      "rid": 1,
+      "remote_id": "de475c0041418afc799bccf0fdd61b47",
+      "did_solicit": true,
+      "ip": "127.0.0.1",
+      "port": 61791,
+      "pending_size": 0,
+      "in_msgs": 0,
+      "out_msgs": 0,
+      "in_bytes": 0,
+      "out_bytes": 0,
+      "subscriptions": 0
+    }
+  ]
+}
+```
+
+<http://localhost:8222/subscriptionsz> reports detailed information about the current subscriptions and the routing data structure.
+
+```json
+{
+  "stats": {
+    "num_subscriptions": 3,
+    "num_cache": 0,
+    "num_inserts": 572,
+    "num_removes": 569,
+    "num_matches": 200000,
+    "cache_hit_rate": 0.99999,
+    "max_fanout": 0,
+    "avg_fanout": 0,
+    "stats_time": "2015-07-14T12:55:25.564818051-07:00"
+  }
+}
+```
 
 ## Building
 
@@ -108,7 +245,7 @@ presentations, references and more.
 
 ## Client libraries
 
-There are several client language bindings for NATS.
+There are several client language bindings for NATS. For a complete and updated list, please visit <https://nats.io>.
 - [Go](https://github.com/nats-io/nats)
 - [Java](https://github.com/tyagihas/java_nats)
 - [Java - Spring](https://github.com/mheath/jnats)

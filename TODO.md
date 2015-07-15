@@ -9,17 +9,21 @@
 - [ ] Sublist better at high concurrency
 - [ ] Buffer pools/sync pools?
 - [ ] Add ability to reload config on signal
-- [ ] NewSource on Rand do lower lock contention on QueueSubs
+- [ ] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [ ] Add ENV and variable support to dconf
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
-- [ ] Place version in varz?
-- [ ] Remove options in varz by default?
 - [ ] Memory limits/warnings?
 - [ ] Gossip Protocol for discovery for clustering
 - [ ] Info updates contain other implicit route servers
-- [ ] Dropped message statistics
+- [ ] Multi-tenant accounts with isolation of subject space
+- [ ] Support sort options for /connz via nats-top
+- [X] Dropped message statistics (slow consumers)
+- [X] Add current time to each monitoring endpoint
+- [X] varz uptime do days and only integer secs
+- [X] Place version in varz (same info sent to clients)
+- [X] Place server ID/UUID in varz
 - [X] nats-top equivalent, utils
-- [X] Connz report routes
+- [X] Connz report routes (/routez)
 - [X] Docker
 - [X] Remove reliance on `ps`
 - [X] Syslog support
