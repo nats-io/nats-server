@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"time"
 
@@ -46,6 +47,24 @@ type ConnInfo struct {
 	Subs     []string `json:"subscriptions_list,omitempty"`
 }
 
+// Helper types to sort by ConnInfo values
+type Pair struct {
+	Key int
+	Val int
+}
+
+type Pairs []Pair
+
+func (d Pairs) Len() int {
+	return len(d)
+}
+func (d Pairs) Swap(i, j int) {
+	d[i], d[j] = d[j], d[i]
+}
+func (d Pairs) Less(i, j int) bool {
+	return d[i].Val < d[j].Val
+}
+
 const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
@@ -56,6 +75,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	sortOpt := r.URL.Query().Get("sort")
+
 	if c.Limit == 0 {
 		c.Limit = DefaultConnListSize
 	}
@@ -64,8 +85,48 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	c.NumConns = len(s.clients)
 
+	// Filter key value pairs used for sorting in another structure
+	pairs := Pairs{}
+	switch sortOpt {
+	case "cid":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.cid)})
+		}
+	case "subs":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.subs.Count())})
+		}
+	case "msgs_to":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inMsgs)})
+		}
+	case "msgs_from":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outMsgs)})
+		}
+	case "bytes_to":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inBytes)})
+		}
+	case "bytes_from":
+		for i, c := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outBytes)})
+		}
+	default:
+		// Just get the unsorted keys
+		for i, _ := range s.clients {
+			pairs = append(pairs, Pair{Key: int(i)})
+		}
+	}
+
+	// Return in descending order
+	if len(pairs) > 0 {
+		sort.Sort(sort.Reverse(pairs))
+	}
+
 	i := 0
-	for _, client := range s.clients {
+	for _, pair := range pairs {
+		client := s.clients[uint64(pair.Key)]
 		if i >= c.Offset+c.Limit {
 			break
 		}
