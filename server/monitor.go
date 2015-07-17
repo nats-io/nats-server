@@ -98,19 +98,19 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		}
 	case "msgs_to":
 		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inMsgs)})
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outMsgs)})
 		}
 	case "msgs_from":
 		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outMsgs)})
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inMsgs)})
 		}
 	case "bytes_to":
 		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inBytes)})
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outBytes)})
 		}
 	case "bytes_from":
 		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outBytes)})
+			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inBytes)})
 		}
 	default:
 		// Just get the unsorted keys
