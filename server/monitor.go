@@ -65,6 +65,17 @@ func (d Pairs) Less(i, j int) bool {
 	return d[i].Val < d[j].Val
 }
 
+type SortOpt string
+
+const (
+	ByCid      SortOpt = "cid"
+	BySubs             = "subs"
+	ByOutMsgs          = "msgs_to"
+	ByInMsgs           = "msgs_from"
+	ByOutBytes         = "bytes_to"
+	ByInBytes          = "bytes_from"
+)
+
 const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
@@ -75,7 +86,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-	sortOpt := r.URL.Query().Get("sort")
+	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 
 	if c.Limit == 0 {
 		c.Limit = DefaultConnListSize
@@ -86,37 +97,28 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.NumConns = len(s.clients)
 
 	// Filter key value pairs used for sorting in another structure
-	pairs := Pairs{}
-	switch sortOpt {
-	case "cid":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.cid)})
+	pairs := make(Pairs, c.NumConns)
+
+	i := 0
+	for index, client := range s.clients {
+		switch sortOpt {
+		case ByCid:
+			pairs[i] = Pair{Key: int(index), Val: int(client.cid)}
+		case BySubs:
+			pairs[i] = Pair{Key: int(index), Val: int(client.subs.Count())}
+		case ByOutMsgs:
+			pairs[i] = Pair{Key: int(index), Val: int(client.outMsgs)}
+		case ByInMsgs:
+			pairs[i] = Pair{Key: int(index), Val: int(client.inMsgs)}
+		case ByOutBytes:
+			pairs[i] = Pair{Key: int(index), Val: int(client.outBytes)}
+		case ByInBytes:
+			pairs[i] = Pair{Key: int(index), Val: int(client.inBytes)}
+		default:
+			// Just get the unsorted keys
+			pairs[i] = Pair{Key: int(index)}
 		}
-	case "subs":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.subs.Count())})
-		}
-	case "msgs_to":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outMsgs)})
-		}
-	case "msgs_from":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inMsgs)})
-		}
-	case "bytes_to":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.outBytes)})
-		}
-	case "bytes_from":
-		for i, c := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i), Val: int(c.inBytes)})
-		}
-	default:
-		// Just get the unsorted keys
-		for i, _ := range s.clients {
-			pairs = append(pairs, Pair{Key: int(i)})
-		}
+		i++
 	}
 
 	// Return in descending order
@@ -124,7 +126,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		sort.Sort(sort.Reverse(pairs))
 	}
 
-	i := 0
+	i = 0
 	for _, pair := range pairs {
 		client := s.clients[uint64(pair.Key)]
 		if i >= c.Offset+c.Limit {
