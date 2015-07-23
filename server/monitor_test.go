@@ -354,10 +354,10 @@ func TestConnzSortedByCid(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
-	if c.Conns[0].Cid < c.Conns[1].Cid ||
-		c.Conns[1].Cid < c.Conns[2].Cid ||
-		c.Conns[2].Cid < c.Conns[3].Cid {
-		t.Fatalf("Expected conns sorted in descending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+	if c.Conns[0].Cid > c.Conns[1].Cid ||
+		c.Conns[1].Cid > c.Conns[2].Cid ||
+		c.Conns[2].Cid > c.Conns[3].Cid {
+		t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
 	}
 }
 
@@ -400,7 +400,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	if c.Conns[0].OutBytes < c.Conns[1].OutBytes ||
 		c.Conns[0].OutBytes < c.Conns[2].OutBytes ||
 		c.Conns[0].OutBytes < c.Conns[3].OutBytes {
-		t.Fatalf("Expected conns sorted in descending order by bytes from, got %v < one of [%v, %v, %v]\n",
+		t.Fatalf("Expected conns sorted in descending order by bytes to, got %v < one of [%v, %v, %v]\n",
 			c.Conns[0].OutBytes, c.Conns[1].OutBytes, c.Conns[2].OutBytes, c.Conns[3].OutBytes)
 	}
 

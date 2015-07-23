@@ -47,35 +47,6 @@ type ConnInfo struct {
 	Subs     []string `json:"subscriptions_list,omitempty"`
 }
 
-// Helper types to sort by ConnInfo values
-type Pair struct {
-	Key int
-	Val int
-}
-
-type Pairs []Pair
-
-func (d Pairs) Len() int {
-	return len(d)
-}
-func (d Pairs) Swap(i, j int) {
-	d[i], d[j] = d[j], d[i]
-}
-func (d Pairs) Less(i, j int) bool {
-	return d[i].Val < d[j].Val
-}
-
-type SortOpt string
-
-const (
-	ByCid      SortOpt = "cid"
-	BySubs             = "subs"
-	ByOutMsgs          = "msgs_to"
-	ByInMsgs           = "msgs_from"
-	ByOutBytes         = "bytes_to"
-	ByInBytes          = "bytes_from"
-)
-
 const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
@@ -96,34 +67,27 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	c.NumConns = len(s.clients)
 
-	// Filter key value pairs used for sorting in another structure
-	pairs := make(Pairs, c.NumConns)
-
+	// Copy the keys to sort by them
+	pairs := make([]Pair, c.NumConns)
 	i := 0
-	for index, client := range s.clients {
-		switch sortOpt {
-		case ByCid:
-			pairs[i] = Pair{Key: int(index), Val: int(client.cid)}
-		case BySubs:
-			pairs[i] = Pair{Key: int(index), Val: int(client.subs.Count())}
-		case ByOutMsgs:
-			pairs[i] = Pair{Key: int(index), Val: int(client.outMsgs)}
-		case ByInMsgs:
-			pairs[i] = Pair{Key: int(index), Val: int(client.inMsgs)}
-		case ByOutBytes:
-			pairs[i] = Pair{Key: int(index), Val: int(client.outBytes)}
-		case ByInBytes:
-			pairs[i] = Pair{Key: int(index), Val: int(client.inBytes)}
-		default:
-			// Just get the unsorted keys
-			pairs[i] = Pair{Key: int(index)}
-		}
+	for k, v := range s.clients {
+		pairs[i] = Pair{Key: k, Val: v}
 		i++
 	}
 
-	// Return in descending order
-	if len(pairs) > 0 {
-		sort.Sort(sort.Reverse(pairs))
+	switch sortOpt {
+	case byCid:
+		sort.Sort(ByCid(pairs))
+	case bySubs:
+		sort.Sort(sort.Reverse(BySubs(pairs)))
+	case byOutMsgs:
+		sort.Sort(sort.Reverse(ByOutMsgs(pairs)))
+	case byInMsgs:
+		sort.Sort(sort.Reverse(ByInMsgs(pairs)))
+	case byOutBytes:
+		sort.Sort(sort.Reverse(ByOutBytes(pairs)))
+	case byInBytes:
+		sort.Sort(sort.Reverse(ByInBytes(pairs)))
 	}
 
 	i = 0
