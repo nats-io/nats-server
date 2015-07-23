@@ -86,14 +86,21 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		sort.Sort(sort.Reverse(ByOutBytes(pairs)))
 	case byInBytes:
 		sort.Sort(sort.Reverse(ByInBytes(pairs)))
+	default:
+		if sortOpt != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Invalid sorting option"))
+			s.mu.Unlock()
+			return
+		}
 	}
 
 	var limit int
 	if c.Offset == c.Limit {
-		// Get the immediate one after the offset
+		// get the immediate one after the offset
 		pairs = pairs[c.Offset:][0:]
 	} else if c.NumConns < c.Limit {
-		// Chop to actual number of connections instead of default limit
+		// chop to actual number of connections instead of default limit
 		limit = c.NumConns
 		pairs = pairs[c.Offset:limit]
 	} else {

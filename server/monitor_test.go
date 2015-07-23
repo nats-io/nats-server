@@ -523,6 +523,30 @@ func TestConnzSortedBySubs(t *testing.T) {
 	}
 }
 
+func TestConnzSortBadRequest(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	firstClient := createClientConnSubscribeAndPublish(t)
+	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
+	clients := make([]*nats.Conn, 3)
+	for i, _ := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t)
+		defer clients[i].Close()
+	}
+	defer firstClient.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz?sort=foo")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("Expected a 400 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+}
+
 func TestConnzWithRoutes(t *testing.T) {
 	s := runMonitorServer(DEFAULT_HTTP_PORT)
 	defer s.Shutdown()
