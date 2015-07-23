@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"time"
 
@@ -56,6 +57,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	sortOpt := SortOpt(r.URL.Query().Get("sort"))
+
 	if c.Limit == 0 {
 		c.Limit = DefaultConnListSize
 	}
@@ -64,16 +67,48 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	c.NumConns = len(s.clients)
 
-	i := 0
-	for _, client := range s.clients {
-		if i >= c.Offset+c.Limit {
-			break
-		}
+	// Copy the keys to sort by them
+	pairs := make([]Pair, 0)
+	for k, v := range s.clients {
+		pairs = append(pairs, Pair{Key: k, Val: v})
+	}
 
-		i++
-		if i <= c.Offset {
-			continue
+	switch sortOpt {
+	case byCid:
+		sort.Sort(ByCid(pairs))
+	case bySubs:
+		sort.Sort(sort.Reverse(BySubs(pairs)))
+	case byOutMsgs:
+		sort.Sort(sort.Reverse(ByOutMsgs(pairs)))
+	case byInMsgs:
+		sort.Sort(sort.Reverse(ByInMsgs(pairs)))
+	case byOutBytes:
+		sort.Sort(sort.Reverse(ByOutBytes(pairs)))
+	case byInBytes:
+		sort.Sort(sort.Reverse(ByInBytes(pairs)))
+	default:
+		if sortOpt != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Invalid sorting option"))
+			s.mu.Unlock()
+			return
 		}
+	}
+
+	var limit int
+	if c.Offset == c.Limit {
+		// get the immediate one after the offset
+		pairs = pairs[c.Offset:][0:]
+	} else if c.NumConns < c.Limit {
+		// chop to actual number of connections instead of default limit
+		limit = c.NumConns
+		pairs = pairs[c.Offset:limit]
+	} else {
+		pairs = pairs[c.Offset:c.Limit]
+	}
+
+	for _, pair := range pairs {
+		client := s.clients[uint64(pair.Key)]
 
 		ci := &ConnInfo{
 			Cid:      client.cid,
