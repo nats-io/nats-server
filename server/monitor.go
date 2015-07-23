@@ -68,11 +68,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.NumConns = len(s.clients)
 
 	// Copy the keys to sort by them
-	pairs := make([]Pair, c.NumConns)
-	i := 0
+	pairs := make([]Pair, 0)
 	for k, v := range s.clients {
-		pairs[i] = Pair{Key: k, Val: v}
-		i++
+		pairs = append(pairs, Pair{Key: k, Val: v})
 	}
 
 	switch sortOpt {
@@ -90,17 +88,20 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		sort.Sort(sort.Reverse(ByInBytes(pairs)))
 	}
 
-	i = 0
+	var limit int
+	if c.Offset == c.Limit {
+		// Get the immediate one after the offset
+		pairs = pairs[c.Offset:][0:]
+	} else if c.NumConns < c.Limit {
+		// Chop to actual number of connections instead of default limit
+		limit = c.NumConns
+		pairs = pairs[c.Offset:limit]
+	} else {
+		pairs = pairs[c.Offset:c.Limit]
+	}
+
 	for _, pair := range pairs {
 		client := s.clients[uint64(pair.Key)]
-		if i >= c.Offset+c.Limit {
-			break
-		}
-
-		i++
-		if i <= c.Offset {
-			continue
-		}
 
 		ci := &ConnInfo{
 			Cid:      client.cid,
