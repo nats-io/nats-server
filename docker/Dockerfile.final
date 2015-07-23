@@ -2,7 +2,7 @@ FROM scratch
 
 MAINTAINER Derek Collison <derek@apcera.com>
 
-ADD gnatsd /gnatsd
+ADD gnatsd_build/gnatsd /gnatsd
 
 CMD []
 ENTRYPOINT ["/gnatsd", "-p", "4222", "-m", "8333"]
