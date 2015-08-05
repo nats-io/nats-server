@@ -36,7 +36,7 @@ type ConnInfo struct {
 	Cid      uint64   `json:"cid"`
 	IP       string   `json:"ip"`
 	Port     int      `json:"port"`
-	Pending  int      `json:"pending_size"`
+	Pending  int      `json:"pending_bytes"`
 	InMsgs   int64    `json:"in_msgs"`
 	OutMsgs  int64    `json:"out_msgs"`
 	InBytes  int64    `json:"in_bytes"`
@@ -117,6 +117,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			InBytes:  client.inBytes,
 			OutBytes: client.outBytes,
 			NumSubs:  client.subs.Count(),
+			Pending:  client.bw.Buffered(),
 			Lang:     client.opts.Lang,
 			Version:  client.opts.Version,
 		}
