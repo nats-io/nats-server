@@ -17,6 +17,7 @@
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Support sort options for /connz via nats-top
+- [ ] Add to varz, time for slow consumers, peek connections, memory, etc.
 - [X] Dropped message statistics (slow consumers)
 - [X] Add current time to each monitoring endpoint
 - [X] varz uptime do days and only integer secs

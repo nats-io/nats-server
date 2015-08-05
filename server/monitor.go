@@ -233,8 +233,8 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	Information   *Info     `json:"info"`
-	Options       *Options  `json:"options"`
+	*Info
+	*Options
 	Start         time.Time `json:"start"`
 	Now           time.Time `json:"now"`
 	Uptime        string    `json:"uptime"`
@@ -282,7 +282,7 @@ func myUptime(d time.Duration) string {
 
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
-	v := &Varz{Information: &s.info, Options: s.opts, Start: s.start}
+	v := &Varz{Info: &s.info, Options: s.opts, Start: s.start}
 	v.Now = time.Now()
 	v.Uptime = myUptime(time.Since(s.start))
 
