@@ -60,12 +60,16 @@ func benchPub(b *testing.B, subject, payload string) {
 
 var ch = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@$#%^&*()")
 
-func sizedString(sz int) string {
+func sizedBytes(sz int) []byte {
 	b := make([]byte, sz)
 	for i := range b {
 		b[i] = ch[rand.Intn(len(ch))]
 	}
-	return string(b)
+	return b
+}
+
+func sizedString(sz int) string {
+	return string(sizedBytes(sz))
 }
 
 func Benchmark___PubNo_Payload(b *testing.B) {

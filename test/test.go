@@ -38,13 +38,23 @@ var DefaultTestOptions = server.Options{
 	NoSigs: true,
 }
 
-func runDefaultServer() *server.Server {
+func RunDefaultServer() *server.Server {
 	return RunServer(&DefaultTestOptions)
 }
 
 // New Go Routine based server
 func RunServer(opts *server.Options) *server.Server {
 	return RunServerWithAuth(opts, nil)
+}
+
+func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
+	opts, err := server.ProcessConfigFile(configFile)
+	if err != nil {
+		panic(fmt.Sprintf("Error processing configuration file: %v", err))
+	}
+	opts.NoSigs, opts.NoLog = true, true
+	srv = RunServer(opts)
+	return
 }
 
 // New Go Routine based server with auth
@@ -193,7 +203,7 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 	t.Fatalf("Failed to connect to the socket: %q", addr)
 }
 
-func checkInfoMsg(t tLogger, c net.Conn) {
+func checkInfoMsg(t tLogger, c net.Conn) server.Info {
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
 	var sinfo server.Info
@@ -201,6 +211,7 @@ func checkInfoMsg(t tLogger, c net.Conn) {
 	if err != nil {
 		stackFatalf(t, "Could not unmarshal INFO json: %v\n", err)
 	}
+	return sinfo
 }
 
 func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {

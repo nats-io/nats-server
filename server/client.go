@@ -39,6 +39,7 @@ type client struct {
 	lang string
 	opts clientOpts
 	nc   net.Conn
+	mpay int
 	ncs  string
 	bw   *bufio.Writer
 	srv  *Server
@@ -153,9 +154,9 @@ func (c *client) readLoop() {
 			return
 		}
 		if err := c.parse(b[:n]); err != nil {
-			c.Errorf("Error reading from client: %s", err.Error())
-			// Auth was handled inline
-			if err != ErrAuthorization {
+			// handled inline
+			if err != ErrMaxPayload && err != ErrAuthorization {
+				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
 				c.closeConnection()
 			}
@@ -297,7 +298,14 @@ func (c *client) authTimeout() {
 }
 
 func (c *client) authViolation() {
+	c.Errorf(ErrAuthorization.Error())
 	c.sendErr("Authorization Violation")
+	c.closeConnection()
+}
+
+func (c *client) maxPayloadViolation(sz int) {
+	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
+	c.sendErr("Maximum Payload Violation")
 	c.closeConnection()
 }
 
@@ -430,6 +438,11 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
+	if c.mpay > 0 && c.pa.size > c.mpay {
+		c.maxPayloadViolation(c.pa.size)
+		return ErrMaxPayload
+	}
+
 	if c.opts.Pedantic && !sublist.IsValidLiteralSubject(c.pa.subject) {
 		c.sendErr("Invalid Subject")
 	}

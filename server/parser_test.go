@@ -223,6 +223,15 @@ func TestParsePubArg(t *testing.T) {
 	testPubArg(c, t)
 }
 
+func TestParsePubBadSize(t *testing.T) {
+	c := dummyClient()
+	// Setup localized max payload
+	c.mpay = 32768
+	if err := c.processPub([]byte("foo 2222222222222222\r")); err == nil {
+		t.Fatalf("Expected parse error for size too large")
+	}
+}
+
 func TestParseMsg(t *testing.T) {
 	c := dummyClient()
 

@@ -81,7 +81,7 @@ func New(opts *Options) *Server {
 		Port:         opts.Port,
 		AuthRequired: false,
 		SslRequired:  false,
-		MaxPayload:   MAX_PAYLOAD_SIZE,
+		MaxPayload:   opts.MaxPayload,
 	}
 
 	s := &Server{
@@ -380,7 +380,7 @@ func (s *Server) StartHTTPMonitoring() {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, opts: defaultOpts}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload}
 
 	// Grab lock
 	c.mu.Lock()

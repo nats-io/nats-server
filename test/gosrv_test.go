@@ -10,7 +10,7 @@ import (
 
 func TestSimpleGoServerShutdown(t *testing.T) {
 	base := runtime.NumGoroutine()
-	s := runDefaultServer()
+	s := RunDefaultServer()
 	s.Shutdown()
 	time.Sleep(10 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
@@ -21,7 +21,7 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 
 func TestGoServerShutdownWithClients(t *testing.T) {
 	base := runtime.NumGoroutine()
-	s := runDefaultServer()
+	s := RunDefaultServer()
 	for i := 0; i < 50; i++ {
 		createClientConn(t, "localhost", 4222)
 	}
@@ -37,7 +37,7 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 }
 
 func TestGoServerMultiShutdown(t *testing.T) {
-	s := runDefaultServer()
+	s := RunDefaultServer()
 	s.Shutdown()
 	s.Shutdown()
 }
