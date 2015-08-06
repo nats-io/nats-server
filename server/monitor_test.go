@@ -207,7 +207,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
+		t.Fatalf("Expected 1 connections in array, got %d\n", len(c.Conns))
 	}
 
 	if c.Limit != DefaultConnListSize {

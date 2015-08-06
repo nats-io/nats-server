@@ -68,10 +68,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.NumConns = len(s.clients)
 
 	// Copy the keys to sort by them
-	pairs := make([]Pair, 0)
+	pairs := make([]Pair, 0, c.NumConns)
 	for k, v := range s.clients {
 		pairs = append(pairs, Pair{Key: k, Val: v})
 	}
+	s.mu.Unlock()
 
 	switch sortOpt {
 	case byCid:
@@ -90,7 +91,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		if sortOpt != "" {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("Invalid sorting option"))
-			s.mu.Unlock()
 			return
 		}
 	}
@@ -108,7 +108,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, pair := range pairs {
-		client := s.clients[uint64(pair.Key)]
+		client := pair.Val
+		client.mu.Lock()
 
 		ci := &ConnInfo{
 			Cid:      client.cid,
@@ -131,9 +132,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.Port = addr.Port
 			ci.IP = addr.IP.String()
 		}
+		client.mu.Unlock()
 		c.Conns = append(c.Conns, ci)
 	}
-	s.mu.Unlock()
 
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
