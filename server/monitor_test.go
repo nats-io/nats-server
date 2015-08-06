@@ -654,14 +654,14 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
-	if sl.SubjectStats.NumSubs != 1 {
-		t.Fatalf("Expected NumSubs of 1, got %d\n", sl.SubjectStats.NumSubs)
+	if sl.NumSubs != 1 {
+		t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
 	}
-	if sl.SubjectStats.NumInserts != 1 {
-		t.Fatalf("Expected NumInserts of 1, got %d\n", sl.SubjectStats.NumInserts)
+	if sl.NumInserts != 1 {
+		t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
 	}
-	if sl.SubjectStats.NumMatches != 1 {
-		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.SubjectStats.NumMatches)
+	if sl.NumMatches != 1 {
+		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
 	}
 
 }

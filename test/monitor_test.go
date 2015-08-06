@@ -311,8 +311,8 @@ func TestSubsz(t *testing.T) {
 	}
 
 	// Do some sanity checks on values
-	if su.SubjectStats.NumSubs != 1 {
-		t.Fatalf("Expected num_subs of 1, got %v\n", su.SubjectStats.NumSubs)
+	if su.NumSubs != 1 {
+		t.Fatalf("Expected num_subs of 1, got %v\n", su.NumSubs)
 	}
 }
 
