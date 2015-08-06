@@ -778,16 +778,20 @@ func (c *client) processMsg(msg []byte) {
 			if rmap == nil {
 				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
-			if sub.client == nil || sub.client.nc == nil || sub.client.route == nil ||
+			sub.client.mu.Lock()
+			if sub.client.nc == nil || sub.client.route == nil ||
 				sub.client.route.remoteID == "" {
 				c.Debugf("Bad or Missing ROUTER Identity, not processing msg")
+				sub.client.mu.Unlock()
 				continue
 			}
 			if _, ok := rmap[sub.client.route.remoteID]; ok {
 				c.Debugf("Ignoring route, already processed")
+				sub.client.mu.Unlock()
 				continue
 			}
 			rmap[sub.client.route.remoteID] = routeSeen
+			sub.client.mu.Unlock()
 		}
 
 		mh := c.msgHeader(msgh[:si], sub)
