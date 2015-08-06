@@ -106,14 +106,14 @@ To test, run '``go run gnatsd.go -m 8222``'
   "port": 4222,
   "auth_required": false,
   "ssl_required": false,
-  "max_payload": 1048576
+  "max_payload": 1048576,
   "max_connections": 65536,
   "ping_interval": 120000000000,
   "ping_max": 2,
   "http_port": 8222,
   "ssl_timeout": 0.5,
   "max_control_line": 1024,
-  "max_payload": 1048576
+  "max_payload": 1048576,
   "start": "2015-07-14T13:29:26.426805508-07:00",
   "now": "2015-07-14T13:30:59.349179963-07:00",
   "uptime": "1m33s",
