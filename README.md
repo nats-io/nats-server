@@ -153,7 +153,10 @@ You can also report detailed subscription information on a per connection basis 
       "out_bytes": 0,
       "subscriptions": 1,
       "lang": "go",
-      "version": "1.0.9"
+      "version": "1.0.9",
+      "subscriptions_list": [
+        "hello.world"
+      ]
     },
     {
       "cid": 574,
@@ -166,7 +169,10 @@ You can also report detailed subscription information on a per connection basis 
       "out_bytes": 0,
       "subscriptions": 1,
       "lang": "ruby",
-      "version": "0.5.0"
+      "version": "0.5.0",
+      "subscriptions_list": [
+        "hello.world"
+      ]
     }
   ]
 }
