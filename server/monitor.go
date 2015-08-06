@@ -153,7 +153,7 @@ func castToSliceString(input []interface{}) []string {
 
 // Subsz represents detail information on current connections.
 type Subsz struct {
-	SubjectStats sublist.Stats `json:"stats"`
+	*sublist.Stats
 }
 
 // Routez represents detailed information on current client connections.
@@ -224,7 +224,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 // HandleStats process HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
-	st := &Subsz{SubjectStats: *s.sl.Stats()}
+	st := &Subsz{s.sl.Stats()}
 
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -280,6 +280,20 @@ func myUptime(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", tmins, tsecs%60)
 	}
 	return fmt.Sprintf("%ds", tsecs)
+}
+
+// HandleRoot will show basic info and links to others handlers.
+func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, "<html lang=\"en\">gnatsd monitoring<br/><br/>")
+	vlink := fmt.Sprintf("http://%s/varz", r.Host)
+	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", vlink, vlink)
+	clink := fmt.Sprintf("http://%s/connz", r.Host)
+	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", clink, clink)
+	rlink := fmt.Sprintf("http://%s/routez", r.Host)
+	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", rlink, rlink)
+	slink := fmt.Sprintf("http://%s/subscriptionsz", r.Host)
+	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", slink, slink)
+	fmt.Fprint(w, "</html>")
 }
 
 // HandleVarz will process HTTP requests for server information.

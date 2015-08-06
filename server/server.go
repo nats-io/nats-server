@@ -350,6 +350,9 @@ func (s *Server) StartHTTPMonitoring() {
 
 	mux := http.NewServeMux()
 
+	// Root
+	mux.HandleFunc("/", s.HandleRoot)
+
 	// Varz
 	mux.HandleFunc("/varz", s.HandleVarz)
 

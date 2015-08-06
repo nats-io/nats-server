@@ -8,6 +8,7 @@
 - [ ] Switch to 1.4 and use maps vs hashmaps in sublist
 - [ ] Sublist better at high concurrency
 - [ ] Buffer pools/sync pools?
+- [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
 - [ ] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [ ] Add ENV and variable support to dconf
@@ -16,8 +17,9 @@
 - [ ] Gossip Protocol for discovery for clustering
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Support sort options for /connz via nats-top
 - [ ] Add to varz, time for slow consumers, peek connections, memory, etc.
+- [X] Add support for / to point to varz, connz, etc..
+- [X] Support sort options for /connz via nats-top
 - [X] Dropped message statistics (slow consumers)
 - [X] Add current time to each monitoring endpoint
 - [X] varz uptime do days and only integer secs
