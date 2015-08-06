@@ -95,17 +95,17 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var limit int
-	if c.Offset == c.Limit {
-		// get the immediate one after the offset
-		pairs = pairs[c.Offset:][0:]
-	} else if c.NumConns < c.Limit {
-		// chop to actual number of connections instead of default limit
-		limit = c.NumConns
-		pairs = pairs[c.Offset:limit]
-	} else {
-		pairs = pairs[c.Offset:c.Limit]
+	minoff := c.Offset
+	maxoff := c.Offset + c.Limit
+
+	// Make sure these are sane.
+	if minoff > c.NumConns {
+		minoff = c.NumConns
 	}
+	if maxoff > c.NumConns {
+		maxoff = c.NumConns
+	}
+	pairs = pairs[minoff:maxoff]
 
 	for _, pair := range pairs {
 		client := pair.Val

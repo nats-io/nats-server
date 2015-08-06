@@ -184,6 +184,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
 
+	// Test with connections.
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
 
@@ -287,13 +288,9 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer(DEFAULT_HTTP_PORT)
 	defer s.Shutdown()
 
-	cl1 := createClientConnSubscribeAndPublish(t)
-	defer cl1.Close()
-
-	cl2 := createClientConnSubscribeAndPublish(t)
-	defer cl2.Close()
-
 	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+
+	// Test that offset and limit ok when not enough connections
 	resp, err := http.Get(url + "connz?offset=1&limit=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -311,6 +308,33 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
+	if c.Conns == nil || len(c.Conns) != 0 {
+		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+	}
+
+	cl1 := createClientConnSubscribeAndPublish(t)
+	defer cl1.Close()
+
+	cl2 := createClientConnSubscribeAndPublish(t)
+	defer cl2.Close()
+
+	resp, err = http.Get(url + "connz?offset=1&limit=1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c = Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
 
 	if c.Limit != 1 {
 		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
@@ -323,6 +347,37 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	if len(c.Conns) != 1 {
 		t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
 	}
+
+	resp, err = http.Get(url + "connz?offset=2&limit=1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c = Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.Limit != 1 {
+		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
+	}
+
+	if c.Offset != 2 {
+		t.Fatalf("Expected offset of 2, got %v\n", c.Offset)
+	}
+
+	if len(c.Conns) != 0 {
+		t.Fatalf("Expected conns of 0, got %v\n", len(c.Conns))
+	}
+
 }
 
 func TestConnzSortedByCid(t *testing.T) {
