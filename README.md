@@ -87,6 +87,21 @@ log_file: "/tmp/gnatsd.log"
 
 # pid file
 pid_file: "/tmp/gnatsd.pid"
+
+# Some system overides
+
+# max_connections
+max_connections: 100
+
+# maximum protocol control line
+max_control_line: 512
+
+# maximum payload
+max_payload: 65536
+
+# slow consumer threshold
+max_pending_size: 10000000
+
 ```
 
 ## Monitoring
@@ -95,7 +110,7 @@ If the monitoring port is enabled, the server will run a lightweight http server
 
 To test, run '``go run gnatsd.go -m 8222``'
 
-<http://localhost:8222/varz> reports various general statistics.
+<a href="http://localhost:8222/varz" target="_blank">http://localhost:8222/varz</a> reports various general statistics.
 
 ```json
 {
@@ -131,9 +146,9 @@ To test, run '``go run gnatsd.go -m 8222``'
 }
 ```
 
-<http://localhost:8222/connz> reports more detailed information on current connections. It uses a paging mechanism which defaults to 1024 connections.
-You can control these via url arguments (limit and offset), e.g. <http://localhost:8222/connz?limit=1&offset=1>.
-You can also report detailed subscription information on a per connection basis using subs=1, e.g. <http://localhost:8222/connz?limit=1&offset=1&subs=1>.
+<a href="http://localhost:8222/connz" target="_blank">http://localhost:8222/connz</a> reports more detailed information on current connections. It uses a paging mechanism which defaults to 1024 connections.
+You can control these via url arguments (limit and offset), e.g. <a href="http://localhost:8222/connz?limit=1&offset=1" target="_blank">http://localhost:8222/connz?limit=1&offset=1</a>.
+You can also report detailed subscription information on a per connection basis using subs=1, e.g. <a href="http://localhost:8222/connz?limit=1&offset=1&subs=1" target="_blank">http://localhost:8222/connz?limit=1&offset=1&subs=1</a>.
 
 ```json
 {
@@ -179,7 +194,7 @@ You can also report detailed subscription information on a per connection basis 
 ```
 
 
-<http://localhost:8222/routez> reports information on active routes for a cluster. Routes are expected to be low, so there is no paging mechanism currently with this endpoint. It does support the subs arg line /connz, e.g. <http://localhost:8222/routez?subs=1>
+<a href="http://localhost:8222/routez" target="_blank">http://localhost:8222/routez</a> reports information on active routes for a cluster. Routes are expected to be low, so there is no paging mechanism currently with this endpoint. It does support the subs arg line /connz, e.g. <a href="http://localhost:8222/routez?subs=1" target="_blank">http://localhost:8222/routez?subs=1</a>
 
 ```json
 {
@@ -203,7 +218,7 @@ You can also report detailed subscription information on a per connection basis 
 }
 ```
 
-<http://localhost:8222/subscriptionsz> reports detailed information about the current subscriptions and the routing data structure.
+<a href="http://localhost:8222/subscriptionsz" target="_blank">http://localhost:8222/subscriptionsz</a> reports detailed information about the current subscriptions and the routing data structure.
 
 ```json
 {
