@@ -151,3 +151,67 @@ func TestAllowRouteWithDifferentPort(t *testing.T) {
 		t.Fatalf("Wrong number of routes: %d", len(newroutes))
 	}
 }
+
+func TestRouteFlagOverride(t *testing.T) {
+	routeFlag := "nats-route://ruser:top_secret@127.0.0.1:8246"
+	rurl, _ := url.Parse(routeFlag)
+
+	golden := &Options{
+		Port:               7222,
+		ClusterHost:        "127.0.0.1",
+		ClusterPort:        7244,
+		ClusterUsername:    "ruser",
+		ClusterPassword:    "top_secret",
+		ClusterAuthTimeout: 0.5,
+		Routes:             []*url.URL{rurl},
+		RoutesStr:          routeFlag,
+	}
+
+	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	// Overrides via flags
+	opts := &Options{
+		RoutesStr: routeFlag,
+	}
+	merged := MergeOptions(fopts, opts)
+
+	if !reflect.DeepEqual(golden, merged) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, merged)
+	}
+}
+
+func TestRouteFlagOverrideWithMultiple(t *testing.T) {
+	routeFlag := "nats-route://ruser:top_secret@127.0.0.1:8246, nats-route://ruser:top_secret@127.0.0.1:8266"
+	rurls := RoutesFromStr(routeFlag)
+
+	golden := &Options{
+		Port:               7222,
+		ClusterHost:        "127.0.0.1",
+		ClusterPort:        7244,
+		ClusterUsername:    "ruser",
+		ClusterPassword:    "top_secret",
+		ClusterAuthTimeout: 0.5,
+		Routes:             rurls,
+		RoutesStr:          routeFlag,
+	}
+
+	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	// Overrides via flags
+	opts := &Options{
+		RoutesStr: routeFlag,
+	}
+	merged := MergeOptions(fopts, opts)
+
+	if !reflect.DeepEqual(golden, merged) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, merged)
+	}
+}

@@ -57,7 +57,7 @@ const (
 	DEFAULT_FLUSH_DEADLINE = 2 * time.Second
 
 	// DEFAULT_HTTP_PORT is the default monitoring port.
-	DEFAULT_HTTP_PORT = 8333
+	DEFAULT_HTTP_PORT = 8222
 
 	// ACCEPT_MIN_SLEEP is the minimum acceptable sleep times on temporary errors.
 	ACCEPT_MIN_SLEEP = 10 * time.Millisecond

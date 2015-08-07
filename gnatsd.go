@@ -51,6 +51,7 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
+	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 
 	flag.Usage = server.Usage
 

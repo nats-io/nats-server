@@ -40,12 +40,13 @@ type Options struct {
 	ClusterUsername    string        `json:"-"`
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
-	Routes             []*url.URL    `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
 	Syslog             bool          `json:"-"`
 	RemoteSyslog       string        `json:"-"`
+	Routes             []*url.URL    `json:"-"`
+	RoutesStr          string        `json:"-"`
 }
 
 type authorization struct {
@@ -222,7 +223,34 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
+	if flagOpts.RoutesStr != "" {
+		mergeRoutes(&opts, flagOpts)
+	}
 	return &opts
+}
+
+func RoutesFromStr(routesStr string) []*url.URL {
+	routes := strings.Split(routesStr, ",")
+	if len(routes) == 0 {
+		return nil
+	}
+	routeUrls := []*url.URL{}
+	for _, r := range routes {
+		r = strings.TrimSpace(r)
+		u, _ := url.Parse(r)
+		routeUrls = append(routeUrls, u)
+	}
+	return routeUrls
+}
+
+// This will merge the flag routes and override anything that was present.
+func mergeRoutes(opts, flagOpts *Options) {
+	routeUrls := RoutesFromStr(flagOpts.RoutesStr)
+	if routeUrls == nil {
+		return
+	}
+	opts.Routes = routeUrls
+	opts.RoutesStr = flagOpts.RoutesStr
 }
 
 func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error) {
