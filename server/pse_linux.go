@@ -47,7 +47,7 @@ func procUsage(pcpu *float64, rss, vss *int64) error {
 		return err
 	}
 
-	seconds := sysinfo.Uptime - (startTime / ticks)
+	seconds := int64(sysinfo.Uptime) - (startTime / ticks)
 
 	if seconds > 0 {
 		ipcpu := (totalTime * 1000 / ticks) / seconds
