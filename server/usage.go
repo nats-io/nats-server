@@ -8,26 +8,30 @@ import (
 )
 
 var usageStr = `
-Server options:
+Server Options:
     -a, --addr HOST                  Bind to HOST address (default: 0.0.0.0)
-    -p, --port PORT                  Use PORT (default: 4222)
+    -p, --port PORT                  Use PORT for clients (default: 4222)
     -P, --pid FILE                   File to store PID
-    -m, --http_port PORT             Use HTTP PORT
+    -m, --http_port PORT             Use HTTP PORT for monitoring
     -c, --config FILE                Configuration File
 
-Logging options:
+Logging Options:
     -l, --log FILE                   File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
     -s, --syslog                     Enable syslog as log method.
     -r, --remote_syslog              Syslog server addr (udp://localhost:514).
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
+    -DV                              Debug and Trace
 
-Authorization options:
+Authorization Options:
         --user user                  User required for connections
         --pass password              Password required for connections
 
-Common options:
+Cluster Options:
+        --routes [rurl-1, rurl-2]    Routes to solicit and connect
+
+Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
 `

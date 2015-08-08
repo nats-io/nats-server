@@ -1,7 +1,7 @@
 # gnatsd
 [![License MIT](https://img.shields.io/npm/l/express.svg)](http://opensource.org/licenses/MIT)
 [![Build Status](https://travis-ci.org/nats-io/gnatsd.svg?branch=master)](http://travis-ci.org/nats-io/gnatsd)
-[![Current Release](http://img.shields.io/badge/release-v0.6.2-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.2)
+[![Current Release](http://img.shields.io/badge/release-v0.6.4-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.4)
 [![Coverage Status](https://img.shields.io/coveralls/nats-io/gnatsd.svg)](https://coveralls.io/r/nats-io/gnatsd?branch=master)
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
@@ -13,30 +13,32 @@ command line arguments will override those items in the configuration file.
 
 
 ```
-
-Server options:
+Server Options:
     -a, --addr HOST                  Bind to HOST address (default: 0.0.0.0)
-    -p, --port PORT                  Use PORT (default: 4222)
+    -p, --port PORT                  Use PORT for clients (default: 4222)
     -P, --pid FILE                   File to store PID
-    -m, --http_port PORT             Use HTTP PORT
+    -m, --http_port PORT             Use HTTP PORT for monitoring
     -c, --config FILE                Configuration File
 
-Logging options:
+Logging Options:
     -l, --log FILE                   File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
     -s, --syslog                     Enable syslog as log method.
     -r, --remote_syslog              Syslog server addr (udp://localhost:514).
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
+    -DV                              Debug and Trace
 
-Authorization options:
+Authorization Options:
         --user user                  User required for connections
         --pass password              Password required for connections
 
-Common options:
+Cluster Options:
+        --routes [rurl-1, rurl-2]    Routes to solicit and connect
+
+Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
-
 ```
 
 ## Sample Configuration
