@@ -108,7 +108,7 @@ max_pending_size: 10000000
 
 ## Monitoring
 
-If the monitoring port is enabled, the server will run a lightweight http server on that port that has several endpoints [/varz, /connz, /routez, /subscriptionsz]. All endpoints return a JSON onject.
+If the monitoring port is enabled, the server will run a lightweight http server on that port that has several endpoints [/varz, /connz, /routez, /subscriptionsz]. All endpoints return a JSON object.
 
 To test, run '``go run gnatsd.go -m 8222``'
 
