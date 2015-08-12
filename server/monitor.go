@@ -140,6 +140,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /connz request: %v", err)
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
 
@@ -219,6 +220,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /routez request: %v", err)
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
 
@@ -230,6 +232,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /subscriptionsz request: %v", err)
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
 
@@ -319,6 +322,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /varz request: %v", err)
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
 
