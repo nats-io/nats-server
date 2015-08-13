@@ -29,6 +29,10 @@ Authorization Options:
         --pass password              Password required for connections
 
 Cluster Options:
+        --cluster_port PORT          Use PORT for incomming route connections
+        --cluster_addr HOST          Bind to HOST address for incomming route connections
+        --cluster_user user          User required for incomming route connections
+        --cluster_pass password      Password required for incomming route connections
         --routes [rurl-1, rurl-2]    Routes to solicit and connect
 
 Common Options:
