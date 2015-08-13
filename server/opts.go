@@ -223,6 +223,18 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
+	if flagOpts.ClusterPort != 0 {
+		opts.ClusterPort = flagOpts.ClusterPort
+	}
+	if flagOpts.ClusterHost != "" {
+		opts.ClusterHost = flagOpts.ClusterHost
+	}
+	if flagOpts.ClusterPassword != "" {
+		opts.ClusterPassword = flagOpts.ClusterPassword
+	}
+	if flagOpts.ClusterUsername != "" {
+		opts.ClusterUsername = flagOpts.ClusterUsername
+	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
