@@ -141,7 +141,12 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		Errorf("Error marshalling response to /connz request: %v", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+	callback := r.FormValue("callback")
+	if callback != "" {
+		fmt.Fprintf(w, "%s(%s)", callback, b)
+	} else {
+		w.Write(b)
+	}
 }
 
 func castToSliceString(input []interface{}) []string {
@@ -221,7 +226,12 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 		Errorf("Error marshalling response to /routez request: %v", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+	callback := r.FormValue("callback")
+	if callback != "" {
+		fmt.Fprintf(w, "%s(%s)", callback, b)
+	} else {
+		w.Write(b)
+	}
 }
 
 // HandleStats process HTTP requests for subjects stats.
@@ -233,7 +243,12 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 		Errorf("Error marshalling response to /subscriptionsz request: %v", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+	callback := r.FormValue("callback")
+	if callback != "" {
+		fmt.Fprintf(w, "%s(%s)", callback, b)
+	} else {
+		w.Write(b)
+	}
 }
 
 // Varz will output server information on the monitoring port at /varz.
@@ -323,7 +338,12 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 		Errorf("Error marshalling response to /varz request: %v", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+	callback := r.FormValue("callback")
+	if callback != "" {
+		fmt.Fprintf(w, "%s(%s)", callback, b)
+	} else {
+		w.Write(b)
+	}
 }
 
 // Grab RSS and PCPU
