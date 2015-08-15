@@ -151,6 +151,33 @@ func TestVarz(t *testing.T) {
 	if v.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 	}
+
+	// Test JSON and JSONP
+	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz")
+	ct := respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/json" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
+
+	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz?callback=callback")
+	ct = respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
 }
 
 func TestConnz(t *testing.T) {
@@ -249,6 +276,33 @@ func TestConnz(t *testing.T) {
 	if ci.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
 	}
+
+	// Test JSON and JSONP
+	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz")
+	ct := respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/json" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
+
+	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
+	ct = respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -682,6 +736,33 @@ func TestConnzWithRoutes(t *testing.T) {
 	if route.DidSolicit != false {
 		t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
 	}
+
+	// Test JSON and JSONP
+	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez")
+	ct := respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/json" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
+
+	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez?callback=callback")
+	ct = respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
 }
 
 func TestSubsz(t *testing.T) {
@@ -719,6 +800,32 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
 	}
 
+	// Test JSON and JSONP
+	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz")
+	ct := respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/json" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
+
+	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz?callback=callback")
+	ct = respJSON.Header.Get("Content-Type");
+	if errJSON != nil {
+		t.Fatalf("Expected no error: Got %v\n", errJSON)
+	}
+	if respJSON.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected a 200 response, got %s\n", ct)
+	}
+	defer respJSON.Body.Close()
 }
 
 // Create a connection to test ConnInfo
