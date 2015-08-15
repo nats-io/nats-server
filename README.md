@@ -268,6 +268,11 @@ There are several client language bindings for NATS. For a complete and updated 
 - [Java - Spring](https://github.com/mheath/jnats)
 - [Node.js](https://github.com/nats-io/node-nats)
 - [Ruby](https://github.com/nats-io/ruby-nats)
+- [Lua](https://github.com/DawnAngel/lua-nats)
+- [PHP](https://github.com/repejota/phpnats)
+- [Python](https://github.com/mcuadros/pynats)
+- [Scala](https://github.com/tyagihas/scala_nats/)
+- [Haskell](https://github.com/ondrap/nats-queue)
 
 
 ## License
