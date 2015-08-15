@@ -142,7 +142,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle response
-	ResponseHandler(w, r, b);
+	ResponseHandler(w, r, b)
 }
 
 func castToSliceString(input []interface{}) []string {
@@ -223,7 +223,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle response
-	ResponseHandler(w, r, b);
+	ResponseHandler(w, r, b)
 }
 
 // HandleStats process HTTP requests for subjects stats.
@@ -236,7 +236,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle response
-	ResponseHandler(w, r, b);
+	ResponseHandler(w, r, b)
 }
 
 // Varz will output server information on the monitoring port at /varz.
@@ -299,7 +299,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 			<a href=http://%s/routez>http://%s/routez</a><br/>
 			<a href=http://%s/subscriptionsz>http://%s/subscriptionsz</a><br/>
 		</body>
-	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host);
+	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host)
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -327,7 +327,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle response
-	ResponseHandler(w, r, b);
+	ResponseHandler(w, r, b)
 }
 
 // Grab RSS and PCPU
