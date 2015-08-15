@@ -5,10 +5,10 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -783,24 +783,24 @@ func TestSubsz(t *testing.T) {
 
 // Tests handle root
 func TestHandleRoot(t *testing.T) {
-  s := runMonitorServer(DEFAULT_HTTP_PORT)
-  defer s.Shutdown()
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
 
-  nc := createClientConnSubscribeAndPublish(t)
-  defer nc.Close()
+	nc := createClientConnSubscribeAndPublish(t)
+	defer nc.Close()
 
-  resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT))
-  if err != nil {
-    t.Fatalf("Expected no error: Got %v\n", err)
-  }
-  if resp.StatusCode != 200 {
-    t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-  }
-  ct := resp.Header.Get("Content-Type")
-  if !strings.Contains(ct, "text/html") {
-    t.Fatalf("Expected text/html response, got %s\n", ct)
-  }
-  defer resp.Body.Close()
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT))
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("Expected text/html response, got %s\n", ct)
+	}
+	defer resp.Body.Close()
 }
 
 // Create a connection to test ConnInfo
