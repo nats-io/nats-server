@@ -162,7 +162,7 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/json" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 
@@ -175,7 +175,7 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/javascript" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 }
@@ -287,7 +287,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/json" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 
@@ -300,7 +300,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/javascript" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 }
@@ -747,7 +747,7 @@ func TestConnzWithRoutes(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/json" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 
@@ -760,7 +760,7 @@ func TestConnzWithRoutes(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/javascript" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 }
@@ -810,7 +810,7 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/json" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/json response, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 
@@ -823,7 +823,7 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", respJSON.StatusCode)
 	}
 	if ct != "application/javascript" {
-		t.Fatalf("Expected a 200 response, got %s\n", ct)
+		t.Fatalf("Expected application/javascript response, got %s\n", ct)
 	}
 	defer respJSON.Body.Close()
 }
