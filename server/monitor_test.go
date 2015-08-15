@@ -154,7 +154,7 @@ func TestVarz(t *testing.T) {
 
 	// Test JSON and JSONP
 	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz")
-	ct := respJSON.Header.Get("Content-Type");
+	ct := respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -167,7 +167,7 @@ func TestVarz(t *testing.T) {
 	defer respJSON.Body.Close()
 
 	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz?callback=callback")
-	ct = respJSON.Header.Get("Content-Type");
+	ct = respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -279,7 +279,7 @@ func TestConnz(t *testing.T) {
 
 	// Test JSON and JSONP
 	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz")
-	ct := respJSON.Header.Get("Content-Type");
+	ct := respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -292,7 +292,7 @@ func TestConnz(t *testing.T) {
 	defer respJSON.Body.Close()
 
 	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
-	ct = respJSON.Header.Get("Content-Type");
+	ct = respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -739,7 +739,7 @@ func TestConnzWithRoutes(t *testing.T) {
 
 	// Test JSON and JSONP
 	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez")
-	ct := respJSON.Header.Get("Content-Type");
+	ct := respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -752,7 +752,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	defer respJSON.Body.Close()
 
 	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez?callback=callback")
-	ct = respJSON.Header.Get("Content-Type");
+	ct = respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -802,7 +802,7 @@ func TestSubsz(t *testing.T) {
 
 	// Test JSON and JSONP
 	respJSON, errJSON := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz")
-	ct := respJSON.Header.Get("Content-Type");
+	ct := respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
@@ -815,7 +815,7 @@ func TestSubsz(t *testing.T) {
 	defer respJSON.Body.Close()
 
 	respJSON, errJSON = http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz?callback=callback")
-	ct = respJSON.Header.Get("Content-Type");
+	ct = respJSON.Header.Get("Content-Type")
 	if errJSON != nil {
 		t.Fatalf("Expected no error: Got %v\n", errJSON)
 	}
