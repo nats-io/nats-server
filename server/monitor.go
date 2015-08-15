@@ -290,16 +290,16 @@ func myUptime(d time.Duration) string {
 
 // HandleRoot will show basic info and links to others handlers.
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "<html lang=\"en\">gnatsd monitoring<br/><br/>")
-	vlink := fmt.Sprintf("http://%s/varz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", vlink, vlink)
-	clink := fmt.Sprintf("http://%s/connz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", clink, clink)
-	rlink := fmt.Sprintf("http://%s/routez", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", rlink, rlink)
-	slink := fmt.Sprintf("http://%s/subscriptionsz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", slink, slink)
-	fmt.Fprint(w, "</html>")
+	fmt.Fprintf(w, `<html lang="en">
+		<body>
+			gnatsd monitoring
+			<br/><br/>
+			<a href=http://%s/varz>http://%s/varz</a><br/>
+			<a href=http://%s/connz>http://%s/connz</a><br/>
+			<a href=http://%s/routez>http://%s/routez</a><br/>
+			<a href=http://%s/subscriptionsz>http://%s/subscriptionsz</a><br/>
+		</body>
+	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host);
 }
 
 // HandleVarz will process HTTP requests for server information.
