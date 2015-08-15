@@ -140,13 +140,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /connz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	callback := r.FormValue("callback")
-	if callback != "" {
-		fmt.Fprintf(w, "%s(%s)", callback, b)
-	} else {
-		w.Write(b)
-	}
+
+	// Handle response
+	ResponseHandler(w, r, b);
 }
 
 func castToSliceString(input []interface{}) []string {
@@ -225,13 +221,9 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /routez request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	callback := r.FormValue("callback")
-	if callback != "" {
-		fmt.Fprintf(w, "%s(%s)", callback, b)
-	} else {
-		w.Write(b)
-	}
+
+	// Handle response
+	ResponseHandler(w, r, b);
 }
 
 // HandleStats process HTTP requests for subjects stats.
@@ -242,13 +234,9 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /subscriptionsz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	callback := r.FormValue("callback")
-	if callback != "" {
-		fmt.Fprintf(w, "%s(%s)", callback, b)
-	} else {
-		w.Write(b)
-	}
+
+	// Handle response
+	ResponseHandler(w, r, b);
 }
 
 // Varz will output server information on the monitoring port at /varz.
@@ -337,13 +325,9 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /varz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	callback := r.FormValue("callback")
-	if callback != "" {
-		fmt.Fprintf(w, "%s(%s)", callback, b)
-	} else {
-		w.Write(b)
-	}
+
+	// Handle response
+	ResponseHandler(w, r, b);
 }
 
 // Grab RSS and PCPU
@@ -356,4 +340,20 @@ func updateUsage(v *Varz) {
 	v.Mem = rss
 	v.CPU = pcpu
 	v.Cores = numCores
+}
+
+// ResponseHandler handles responses for monitoring routes
+func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
+	// Get callback from request
+	callback := r.FormValue("callback")
+	// If callback is not empty then
+	if callback != "" {
+		// Response for JSONP
+		w.Header().Set("Content-Type", "application/javascript")
+		fmt.Fprintf(w, "%s(%s)", callback, data)
+	} else {
+		// Otherwise JSON
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}
 }
