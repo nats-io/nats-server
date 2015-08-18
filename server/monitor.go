@@ -345,7 +345,7 @@ func updateUsage(v *Varz) {
 // ResponseHandler handles responses for monitoring routes
 func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 	// Get callback from request
-	callback := r.FormValue("callback")
+	callback := r.URL.Query().Get("callback")
 	// If callback is not empty then
 	if callback != "" {
 		// Response for JSONP
