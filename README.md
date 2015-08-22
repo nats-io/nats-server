@@ -236,6 +236,19 @@ You can also report detailed subscription information on a per connection basis 
 }
 ```
 
+Monitoring endpoints support JSONP for CORS so you can easily create single page
+web applications for monitoring. Simply pass `callback` query parameter to any
+endpoint. For example; `http://localhost:8222/connz?callback=cb`
+
+```javascript
+// JQuery example
+
+$.getJSON('http://localhost:8222/connz?callback=?', function(data) {
+  console.log(data);
+});
+
+```
+
 ## Building
 
 This code currently requires at _least_ version 1.1 of Go, but we encourage

@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,10 @@ func TestVarz(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
+	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -151,6 +156,17 @@ func TestVarz(t *testing.T) {
 	if v.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 	}
+
+	// Test JSONP
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz?callback=callback")
+	if errj != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	ct = respj.Header.Get("Content-Type")
+	if ct != "application/javascript" {
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
+	}
+	defer respj.Body.Close()
 }
 
 func TestConnz(t *testing.T) {
@@ -164,6 +180,10 @@ func TestConnz(t *testing.T) {
 	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
@@ -249,6 +269,17 @@ func TestConnz(t *testing.T) {
 	if ci.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
 	}
+
+	// Test JSONP
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
+	if errj != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	ct = respj.Header.Get("Content-Type")
+	if ct != "application/javascript" {
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
+	}
+	defer respj.Body.Close()
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -629,6 +660,10 @@ func TestConnzWithRoutes(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
+	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -682,6 +717,17 @@ func TestConnzWithRoutes(t *testing.T) {
 	if route.DidSolicit != false {
 		t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
 	}
+
+	// Test JSONP
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez?callback=callback")
+	if errj != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	ct = respj.Header.Get("Content-Type")
+	if ct != "application/javascript" {
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
+	}
+	defer respj.Body.Close()
 }
 
 func TestSubsz(t *testing.T) {
@@ -698,6 +744,10 @@ func TestSubsz(t *testing.T) {
 	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
@@ -719,6 +769,38 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
 	}
 
+	// Test JSONP
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz?callback=callback")
+	ct = respj.Header.Get("Content-Type")
+	if errj != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
+	}
+	defer respj.Body.Close()
+}
+
+// Tests handle root
+func TestHandleRoot(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t)
+	defer nc.Close()
+
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT))
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("Expected text/html response, got %s\n", ct)
+	}
+	defer resp.Body.Close()
 }
 
 // Create a connection to test ConnInfo

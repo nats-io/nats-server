@@ -140,8 +140,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /connz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+
+	// Handle response
+	ResponseHandler(w, r, b)
 }
 
 func castToSliceString(input []interface{}) []string {
@@ -220,8 +221,9 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /routez request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+
+	// Handle response
+	ResponseHandler(w, r, b)
 }
 
 // HandleStats process HTTP requests for subjects stats.
@@ -232,8 +234,9 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /subscriptionsz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+
+	// Handle response
+	ResponseHandler(w, r, b)
 }
 
 // Varz will output server information on the monitoring port at /varz.
@@ -287,16 +290,16 @@ func myUptime(d time.Duration) string {
 
 // HandleRoot will show basic info and links to others handlers.
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "<html lang=\"en\">gnatsd monitoring<br/><br/>")
-	vlink := fmt.Sprintf("http://%s/varz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", vlink, vlink)
-	clink := fmt.Sprintf("http://%s/connz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", clink, clink)
-	rlink := fmt.Sprintf("http://%s/routez", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", rlink, rlink)
-	slink := fmt.Sprintf("http://%s/subscriptionsz", r.Host)
-	fmt.Fprintf(w, "<a href=%s>%s</a><br/>", slink, slink)
-	fmt.Fprint(w, "</html>")
+	fmt.Fprintf(w, `<html lang="en">
+		<body>
+			gnatsd monitoring
+			<br/><br/>
+			<a href=http://%s/varz>http://%s/varz</a><br/>
+			<a href=http://%s/connz>http://%s/connz</a><br/>
+			<a href=http://%s/routez>http://%s/routez</a><br/>
+			<a href=http://%s/subscriptionsz>http://%s/subscriptionsz</a><br/>
+		</body>
+	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host)
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -322,8 +325,9 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Errorf("Error marshalling response to /varz request: %v", err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(b)
+
+	// Handle response
+	ResponseHandler(w, r, b)
 }
 
 // Grab RSS and PCPU
@@ -336,4 +340,20 @@ func updateUsage(v *Varz) {
 	v.Mem = rss
 	v.CPU = pcpu
 	v.Cores = numCores
+}
+
+// ResponseHandler handles responses for monitoring routes
+func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
+	// Get callback from request
+	callback := r.URL.Query().Get("callback")
+	// If callback is not empty then
+	if callback != "" {
+		// Response for JSONP
+		w.Header().Set("Content-Type", "application/javascript")
+		fmt.Fprintf(w, "%s(%s)", callback, data)
+	} else {
+		// Otherwise JSON
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}
 }
