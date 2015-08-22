@@ -250,6 +250,8 @@ func TestMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.>")), true, t)
 	checkBool(matchLiteral([]byte("stats.test.22"), []byte("stats.*.*")), true, t)
 	checkBool(matchLiteral([]byte("foo.bar"), []byte("foo")), false, t)
+	checkBool(matchLiteral([]byte("stats.test.foos"), []byte("stats.test.foos")), true, t)
+	checkBool(matchLiteral([]byte("stats.test.foos"), []byte("stats.test.foo")), false, t)
 }
 
 func TestCacheBounds(t *testing.T) {
