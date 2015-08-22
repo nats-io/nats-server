@@ -193,7 +193,6 @@ func (s *Sublist) removeFromCache(subject []byte, sub interface{}) {
 // slice of results.
 func (s *Sublist) Match(subject []byte) []interface{} {
 	// Fastpath match on cache
-
 	s.mu.RLock()
 	atomic.AddUint64(&s.stats.matches, 1)
 	r := s.cache.Get(subject)
@@ -426,7 +425,7 @@ func matchLiteral(literal, subject []byte) bool {
 		li += 1
 	}
 	// Make sure we have processed all of the literal's chars..
-	if li < (ll - 1) {
+	if li < ll {
 		return false
 	}
 	return true
