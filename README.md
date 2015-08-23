@@ -1,7 +1,7 @@
 # gnatsd
 [![License MIT](https://img.shields.io/npm/l/express.svg)](http://opensource.org/licenses/MIT)
 [![Build Status](https://travis-ci.org/nats-io/gnatsd.svg?branch=master)](http://travis-ci.org/nats-io/gnatsd)
-[![Current Release](http://img.shields.io/badge/release-v0.6.4-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.4)
+[![Current Release](http://img.shields.io/badge/release-v0.6.6-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.6)
 [![Coverage Status](https://img.shields.io/coveralls/nats-io/gnatsd.svg)](https://coveralls.io/r/nats-io/gnatsd?branch=master)
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
@@ -117,8 +117,8 @@ To test, run '``go run gnatsd.go -m 8222``'
 ```json
 {
   "server_id": "ec933edcd2bd86bcf71d555fc8b4fb2c",
-  "version": "0.6.1.beta",
-  "go": "go1.4.2",
+  "version": "0.6.6",
+  "go": "go1.5.0",
   "host": "0.0.0.0",
   "port": 4222,
   "auth_required": false,
@@ -130,6 +130,7 @@ To test, run '``go run gnatsd.go -m 8222``'
   "http_port": 8222,
   "ssl_timeout": 0.5,
   "max_control_line": 1024,
+  "max_pending_size": 10485760,
   "max_payload": 1048576,
   "start": "2015-07-14T13:29:26.426805508-07:00",
   "now": "2015-07-14T13:30:59.349179963-07:00",
@@ -252,7 +253,8 @@ $.getJSON('http://localhost:8222/connz?callback=?', function(data) {
 ## Building
 
 This code currently requires at _least_ version 1.1 of Go, but we encourage
-the use of the latest stable release.  Go is still young and improving
+the use of the latest stable release.  We will be moving to requiring at _least_ 1.4
+in the near future. Go is still young and improving
 rapidly, new releases provide performance improvements and fixes.  Information
 on installation, including pre-built binaries, is available at
 <http://golang.org/doc/install>.  Stable branches of operating system
