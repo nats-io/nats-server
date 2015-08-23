@@ -8,6 +8,7 @@ type SortOpt string
 const (
 	byCid      SortOpt = "cid"
 	bySubs             = "subs"
+	byPending          = "pending"
 	byOutMsgs          = "msgs_to"
 	byInMsgs           = "msgs_from"
 	byOutBytes         = "bytes_to"
@@ -41,6 +42,18 @@ func (d BySubs) Swap(i, j int) {
 }
 func (d BySubs) Less(i, j int) bool {
 	return d[i].Val.subs.Count() < d[j].Val.subs.Count()
+}
+
+type ByPending []Pair
+
+func (d ByPending) Len() int {
+	return len(d)
+}
+func (d ByPending) Swap(i, j int) {
+	d[i], d[j] = d[j], d[i]
+}
+func (d ByPending) Less(i, j int) bool {
+	return d[i].Val.bw.Buffered() < d[j].Val.bw.Buffered()
 }
 
 type ByOutMsgs []Pair

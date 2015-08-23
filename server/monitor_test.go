@@ -569,6 +569,46 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 }
 
+func TestConnzSortedByPending(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	firstClient := createClientConnSubscribeAndPublish(t)
+	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
+	clients := make([]*nats.Conn, 3)
+	for i, _ := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t)
+		defer clients[i].Close()
+	}
+	defer firstClient.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz?sort=pending")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.Conns[0].Pending < c.Conns[1].Pending ||
+		c.Conns[0].Pending < c.Conns[2].Pending ||
+		c.Conns[0].Pending < c.Conns[3].Pending {
+		t.Fatalf("Expected conns sorted in descending order by number of pending, got %v < one of [%v, %v, %v]\n",
+			c.Conns[0].Pending, c.Conns[1].Pending, c.Conns[2].Pending, c.Conns[3].Pending)
+	}
+}
+
 func TestConnzSortedBySubs(t *testing.T) {
 	s := runMonitorServer(DEFAULT_HTTP_PORT)
 	defer s.Shutdown()

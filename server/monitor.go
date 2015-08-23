@@ -79,6 +79,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		sort.Sort(ByCid(pairs))
 	case bySubs:
 		sort.Sort(sort.Reverse(BySubs(pairs)))
+	case byPending:
+		sort.Sort(sort.Reverse(ByPending(pairs)))
 	case byOutMsgs:
 		sort.Sort(sort.Reverse(ByOutMsgs(pairs)))
 	case byInMsgs:
