@@ -53,7 +53,15 @@ func (d ByPending) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByPending) Less(i, j int) bool {
-	return d[i].Val.bw.Buffered() < d[j].Val.bw.Buffered()
+	client := d[i].Val
+	client.mu.Lock()
+	bwi := client.bw.Buffered()
+	client.mu.Unlock()
+	client = d[j].Val
+	client.mu.Lock()
+	bwj := client.bw.Buffered()
+	client.mu.Unlock()
+	return bwi < bwj
 }
 
 type ByOutMsgs []Pair

@@ -5,8 +5,8 @@
 - [ ] Pedantic state
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Dynamic socket buffer sizes
-- [ ] Switch to 1.4 and use maps vs hashmaps in sublist
-- [ ] Sublist better at high concurrency
+- [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
+- [ ] Sublist better at high concurrency, cache uses writelock currently
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
