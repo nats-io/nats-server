@@ -245,6 +245,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 type Varz struct {
 	*Info
 	*Options
+	MaxPayload    int       `json:"max_payload"`
 	Start         time.Time `json:"start"`
 	Now           time.Time `json:"now"`
 	Uptime        string    `json:"uptime"`
@@ -306,7 +307,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
-	v := &Varz{Info: &s.info, Options: s.opts, Start: s.start}
+	v := &Varz{Info: &s.info, Options: s.opts, MaxPayload: s.opts.MaxPayload, Start: s.start}
 	v.Now = time.Now()
 	v.Uptime = myUptime(time.Since(s.start))
 

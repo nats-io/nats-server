@@ -363,4 +363,7 @@ func processOptions(opts *Options) {
 	if opts.MaxPayload == 0 {
 		opts.MaxPayload = MAX_PAYLOAD_SIZE
 	}
+	if opts.MaxPending == 0 {
+		opts.MaxPending = MAX_PENDING_SIZE
+	}
 }
