@@ -11,6 +11,10 @@ func dummyClient() *client {
 	return &client{}
 }
 
+func dummyRouteClient() *client {
+	return &client{typ: ROUTER}
+}
+
 func TestParsePing(t *testing.T) {
 	c := dummyClient()
 	if c.state != OP_START {
@@ -233,7 +237,7 @@ func TestParsePubBadSize(t *testing.T) {
 }
 
 func TestParseMsg(t *testing.T) {
-	c := dummyClient()
+	c := dummyRouteClient()
 
 	pub := []byte("MSG foo RSID:1:2 5\r\nhello\r")
 	err := c.parse(pub)
@@ -308,6 +312,22 @@ func TestParseMsgArg(t *testing.T) {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	testMsgArg(c, t)
+}
+
+func TestParseMsgSpace(t *testing.T) {
+	c := dummyRouteClient()
+
+	// Ivan bug he found
+	if err := c.parse([]byte("MSG \r\n")); err == nil {
+		t.Fatalf("Expected parse error for MSG <SPC>")
+	}
+
+	c = dummyClient()
+
+	// Anything with an M from a client should parse error
+	if err := c.parse([]byte("M")); err == nil {
+		t.Fatalf("Expected parse error for M* from a client")
+	}
 }
 
 func TestShouldFail(t *testing.T) {

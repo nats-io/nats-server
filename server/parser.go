@@ -104,7 +104,11 @@ func (c *client) parse(buf []byte) error {
 			case 'U', 'u':
 				c.state = OP_U
 			case 'M', 'm':
-				c.state = OP_M
+				if c.typ == CLIENT {
+					goto parseErr
+				} else {
+					c.state = OP_M
+				}
 			case 'C', 'c':
 				c.state = OP_C
 			case 'I', 'i':
@@ -613,7 +617,7 @@ func (c *client) parse(buf []byte) error {
 		c.state == CONNECT_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
-		// FIXME, check max len
+		// FIXME(dlc), check max control line len
 	}
 	// Check for split msg
 	if (c.state == MSG_PAYLOAD || c.state == MSG_END) && c.msgBuf == nil {
