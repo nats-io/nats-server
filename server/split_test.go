@@ -344,6 +344,8 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 
 func TestSplitMsgArg(t *testing.T) {
 	_, c, _ := setupClient()
+	// Allow parser to process MSG
+	c.typ = ROUTER
 
 	b := make([]byte, 1024)
 
@@ -371,7 +373,7 @@ func TestSplitMsgArg(t *testing.T) {
 }
 
 func TestSplitBufferMsgOp(t *testing.T) {
-	c := &client{subs: hashmap.New()}
+	c := &client{subs: hashmap.New(), typ: ROUTER}
 	msg := []byte("MSG foo.bar QRSID:15:3 _INBOX.22 11\r\nhello world\r")
 	msg1 := msg[:2]
 	msg2 := msg[2:9]

@@ -374,9 +374,6 @@ func (c *client) processMsgArgs(arg []byte) error {
 		args = append(args, arg[start:])
 	}
 
-	c.pa.subject = args[0]
-	c.pa.sid = args[1]
-
 	switch len(args) {
 	case 3:
 		c.pa.reply = nil
@@ -392,6 +389,11 @@ func (c *client) processMsgArgs(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processMsgArgs Bad or Missing Size: '%s'", arg)
 	}
+
+	// Common ones processed after check for arg length
+	c.pa.subject = args[0]
+	c.pa.sid = args[1]
+
 	return nil
 }
 
