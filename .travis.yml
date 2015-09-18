@@ -1,5 +1,4 @@
 language: go
-sudo: false
 go:
 - 1.4
 - 1.5
@@ -15,7 +14,7 @@ script:
 - ./travis/gofmt.sh
 - ./travis/govet.sh
 - go test -i -race ./...
-- GOMAXPROCS=1 go test -v -race ./...
+- go test -v -race ./...
 - ./travis/coveralls-script.sh
 env:
   global:
