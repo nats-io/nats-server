@@ -113,13 +113,11 @@ func configureAuth(s *server.Server, opts *server.Options) {
 			Username: opts.Username,
 			Password: opts.Password,
 		}
-
 		s.SetAuthMethod(auth)
 	} else if opts.Authorization != "" {
 		auth := &auth.Token{
 			Token: opts.Authorization,
 		}
-
 		s.SetAuthMethod(auth)
 	}
 }

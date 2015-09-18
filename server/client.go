@@ -313,7 +313,9 @@ func (c *client) sendErr(err string) {
 	c.mu.Lock()
 	if c.bw != nil {
 		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
-		c.pcd[c] = needFlush
+		// Flush errors in place.
+		c.bw.Flush()
+		//c.pcd[c] = needFlush
 	}
 	c.mu.Unlock()
 }
@@ -326,12 +328,13 @@ func (c *client) sendOK() {
 }
 
 func (c *client) processPing() {
+	c.mu.Lock()
 	c.traceInOp("PING", nil)
 	if c.nc == nil {
+		c.mu.Unlock()
 		return
 	}
 	c.traceOutOp("PONG", nil)
-	c.mu.Lock()
 	c.bw.WriteString("PONG\r\n")
 	err := c.bw.Flush()
 	if err != nil {

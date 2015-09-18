@@ -115,6 +115,9 @@ func New(opts *Options) *Server {
 
 // Sets the authentication method
 func (s *Server) SetAuthMethod(authMethod Auth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.info.AuthRequired = true
 	s.auth = authMethod
 
@@ -385,6 +388,12 @@ func (s *Server) StartHTTPMonitoring() {
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload}
 
+	// Grab JSON info string
+	s.mu.Lock()
+	info := s.infoJSON
+	authRequired := s.info.AuthRequired
+	s.mu.Unlock()
+
 	// Grab lock
 	c.mu.Lock()
 
@@ -393,14 +402,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	c.Debugf("Client connection created")
 
-	// Send our information.
-	s.sendInfo(c)
-
 	// Check for Auth
-	if s.info.AuthRequired {
+	if authRequired {
 		ttl := secondsToDuration(s.opts.AuthTimeout)
 		c.setAuthTimer(ttl)
 	}
+
+	// Send our information.
+	s.sendInfo(c, info)
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -414,13 +423,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 }
 
 // Assume the lock is held upon entry.
-func (s *Server) sendInfo(c *client) {
-	switch c.typ {
-	case CLIENT:
-		c.nc.Write(s.infoJSON)
-	case ROUTER:
-		c.nc.Write(s.routeInfoJSON)
-	}
+func (s *Server) sendInfo(c *client, info []byte) {
+	c.nc.Write(info)
 }
 
 func (s *Server) checkClientAuth(c *client) bool {
