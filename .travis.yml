@@ -1,6 +1,8 @@
 language: go
+sudo: false
 go:
 - 1.4
+- 1.5
 install:
 - DST=~/gopath/src/github.com/nats-io
 - mkdir -p "$DST"

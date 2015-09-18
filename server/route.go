@@ -88,6 +88,11 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	r := &route{didSolicit: didSolicit}
 	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
+	// Grab JSON info string
+	s.mu.Lock()
+	info := s.routeInfoJSON
+	s.mu.Unlock()
+
 	// Grab lock
 	c.mu.Lock()
 
@@ -104,7 +109,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Send our info to the other side.
-	s.sendInfo(c)
+	s.sendInfo(c, info)
 
 	// Check for Auth required state for incoming connections.
 	if s.routeInfo.AuthRequired && !didSolicit {
@@ -221,6 +226,9 @@ func (s *Server) broadcastToRoutes(proto string) {
 // broadcastSubscribe will forward a client subscription
 // to all active routes.
 func (s *Server) broadcastSubscribe(sub *subscription) {
+	if s.numRoutes() == 0 {
+		return
+	}
 	rsid := routeSid(sub)
 	proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
 	s.broadcastToRoutes(proto)
@@ -229,6 +237,9 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 // broadcastUnSubscribe will forward a client unsubscribe
 // action to all active routes.
 func (s *Server) broadcastUnSubscribe(sub *subscription) {
+	if s.numRoutes() == 0 {
+		return
+	}
 	rsid := routeSid(sub)
 	maxStr := _EMPTY_
 	// Set max if we have it set and have not tripped auto-unsubscribe

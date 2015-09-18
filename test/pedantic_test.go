@@ -10,6 +10,10 @@ import (
 
 func runPedanticServer() *server.Server {
 	opts := DefaultTestOptions
+
+	opts.NoLog = false
+	opts.Trace = true
+
 	opts.Port = PROTO_TEST_PORT
 	return RunServer(&opts)
 }
@@ -23,8 +27,7 @@ func TestPedanticSub(t *testing.T) {
 
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
-	doConnect(t, c, true, true, false)
-	expect(okRe)
+	doConnect(t, c, false, true, false)
 
 	// Ping should still be same
 	send("PING\r\n")
@@ -69,8 +72,7 @@ func TestPedanticPub(t *testing.T) {
 
 	send := sendCommand(t, c)
 	expect := expectCommand(t, c)
-	doConnect(t, c, true, true, false)
-	expect(okRe)
+	doConnect(t, c, false, true, false)
 
 	// Ping should still be same
 	send("PING\r\n")
