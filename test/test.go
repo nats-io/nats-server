@@ -78,7 +78,7 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	for time.Now().Before(end) {
 		addr := s.Addr()
 		if addr == nil {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			// Retry. We might take a little while to open a connection.
 			continue
 		}

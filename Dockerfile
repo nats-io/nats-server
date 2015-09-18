@@ -1,4 +1,4 @@
-FROM golang:1.5
+FROM golang:1.5.1
 
 MAINTAINER Derek Collison <derek@apcera.com>
 
@@ -10,4 +10,3 @@ RUN CGO_ENABLED=0 go install -v -a -tags netgo -installsuffix netgo -ldflags "-s
 EXPOSE 4222 8222
 ENTRYPOINT ["gnatsd"]
 CMD ["--help"]
-

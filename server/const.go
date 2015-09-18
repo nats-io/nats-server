@@ -8,7 +8,7 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "0.6.6"
+	VERSION = "0.6.8"
 
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
@@ -82,4 +82,8 @@ const (
 
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
+
+	// Default Buffer size for reads and writes per connection. Will be replaced by dynamic
+	// system in the long run.
+	DEFAULT_BUF_SIZE = 32768
 )

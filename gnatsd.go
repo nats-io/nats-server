@@ -53,6 +53,10 @@ func main() {
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 
+	// Not public per se, will be replaced with dynamic system, but can be used to lower memory footprint when
+	// lots of connections present.
+	flag.IntVar(&opts.BufSize, "bs", 0, "Read/Write buffer size per client connection.")
+
 	flag.Usage = server.Usage
 
 	flag.Parse()

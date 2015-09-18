@@ -22,6 +22,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxPayload:         MAX_PAYLOAD_SIZE,
 		MaxPending:         MAX_PENDING_SIZE,
 		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
+		BufSize:            DEFAULT_BUF_SIZE,
 	}
 
 	opts := &Options{}

@@ -17,8 +17,6 @@ import (
 )
 
 const (
-	// The size of the bufio reader/writer on top of the socket.
-	defaultBufSize = 32768
 	// Scratch buffer size for the processMsg() calls.
 	msgScratchSize = 512
 	msgHeadProto   = "MSG "
@@ -94,7 +92,7 @@ func init() {
 func (c *client) initClient() {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-	c.bw = bufio.NewWriterSize(c.nc, defaultBufSize)
+	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
 	c.subs = hashmap.New()
 
 	// This is a scratch buffer used for processMsg()
@@ -123,8 +121,8 @@ func (c *client) initClient() {
 	// No clue why, but this stalls and kills performance on Mac (Mavericks).
 	//
 	//	if ip, ok := c.nc.(*net.TCPConn); ok {
-	//		ip.SetReadBuffer(defaultBufSize)
-	//		ip.SetWriteBuffer(2 * defaultBufSize)
+	//		ip.SetReadBuffer(s.opts.BufSize)
+	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
 	//	}
 
 	// Set the Ping timer
@@ -139,13 +137,14 @@ func (c *client) readLoop() {
 	// We check for that after the loop, but want to avoid a nil dereference
 	c.mu.Lock()
 	nc := c.nc
+	s := c.srv
 	c.mu.Unlock()
 
 	if nc == nil {
 		return
 	}
 
-	b := make([]byte, defaultBufSize)
+	b := make([]byte, s.opts.BufSize)
 
 	for {
 		n, err := nc.Read(b)
