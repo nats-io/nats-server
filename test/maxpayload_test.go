@@ -12,7 +12,7 @@ import (
 )
 
 func TestMaxPayload(t *testing.T) {
-	srv, opts := RunServerWithConfig("./ProcessConfigFile("./etcoverride.conf")
+	srv, opts := RunServerWithConfig("./configs/override.conf")
 	defer srv.Shutdown()
 
 	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)

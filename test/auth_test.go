@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/gnatsd"
 	"github.com/nats-io/gnatsd/auth"
-	"github.com/nats-io/gnatsd/server"
 )
 
 func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {
@@ -19,7 +19,7 @@ func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {
 }
 
 func testInfoForAuth(t tLogger, infojs []byte) bool {
-	var sinfo server.Info
+	var sinfo gnatsd.Info
 	err := json.Unmarshal(infojs, &sinfo)
 	if err != nil {
 		t.Fatalf("Could not unmarshal INFO json: %v\n", err)
@@ -42,7 +42,7 @@ func expectAuthRequired(t tLogger, c net.Conn) {
 const AUTH_PORT = 10422
 const AUTH_TOKEN = "_YZZ22_"
 
-func runAuthServerWithToken() *server.Server {
+func runAuthServerWithToken() *gnatsd.Server {
 	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Authorization = AUTH_TOKEN
@@ -76,7 +76,7 @@ func TestAuthClientNoConnect(t *testing.T) {
 	defer c.Close()
 	expectAuthRequired(t, c)
 	// This is timing dependent..
-	time.Sleep(server.AUTH_TIMEOUT)
+	time.Sleep(gnatsd.AUTH_TIMEOUT)
 	expectResult(t, c, errRe)
 }
 
@@ -107,7 +107,7 @@ func TestAuthClientFailOnEverythingElse(t *testing.T) {
 const AUTH_USER = "derek"
 const AUTH_PASS = "foobar"
 
-func runAuthServerWithUserPass() *server.Server {
+func runAuthServerWithUserPass() *gnatsd.Server {
 	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Username = AUTH_USER

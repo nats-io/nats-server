@@ -5,10 +5,10 @@ package test
 import (
 	"testing"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
-func runPedanticServer() *server.Server {
+func runPedanticServer() *gnatsd.Server {
 	opts := DefaultTestOptions
 
 	opts.NoLog = false

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
-func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
-	srvA, optsA = RunServerWithConfig("./ProcessConfigFile("./etcsrv_a.conf")
-	srvB, optsB = RunServerWithConfig("./ProcessConfigFile("./etcsrv_b.conf")
+func runServers(t *testing.T) (srvA, srvB *gnatsd.Server, optsA, optsB *gnatsd.Options) {
+	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
+	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
 	return
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 func TestServerConfig(t *testing.T) {
-	srv, opts := RunServerWithConfig("./ProcessConfigFile("./etcoverride.conf")
+	srv, opts := RunServerWithConfig("./configs/override.conf")
 	defer srv.Shutdown()
 
 	c := createClientConn(t, opts.Host, opts.Port)

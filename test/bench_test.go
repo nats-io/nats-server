@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
 const PERF_PORT = 8422
 
 // For Go routine based server.
-func runBenchServer() *server.Server {
+func runBenchServer() *gnatsd.Server {
 	opts := DefaultTestOptions
 	opts.Port = PERF_PORT
 	return RunServer(&opts)
