@@ -1,6 +1,6 @@
 // Copyright 2012-2015 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
 
 import (
 	"encoding/json"
@@ -140,7 +140,7 @@ func PrintAndDie(msg string) {
 }
 
 // PrintServerAndExit will print our version and exit.
-func PrintServerAndExit() {
+func PrintVersionAndExit() {
 	fmt.Printf("gnatsd version %s\n", VERSION)
 	os.Exit(0)
 }

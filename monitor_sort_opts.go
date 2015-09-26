@@ -1,6 +1,6 @@
 // Copyright 2013-2015 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
 
 // Helper types to sort by ConnInfo values
 type SortOpt string

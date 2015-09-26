@@ -15,7 +15,7 @@ import (
 )
 
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
-	opts, err := server.ProcessConfigFile("./configs/cluster.conf")
+	opts, err := server.ProcessConfigFile("./ProcessConfigFile("./etccluster.conf")
 
 	// Override for running in Go routine.
 	opts.NoSigs = true

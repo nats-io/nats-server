@@ -12,8 +12,8 @@ import (
 )
 
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
-	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
-	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
+	srvA, optsA = RunServerWithConfig("./ProcessConfigFile("./etcsrv_a.conf")
+	srvB, optsB = RunServerWithConfig("./ProcessConfigFile("./etcsrv_b.conf")
 	return
 }
 

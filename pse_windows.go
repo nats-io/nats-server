@@ -1,6 +1,8 @@
 // Copyright 2015 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
+
+import ()
 
 // This is a placeholder for now.
 func procUsage(pcpu *float64, rss, vss *int64) error {

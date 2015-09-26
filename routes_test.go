@@ -1,6 +1,6 @@
 // Copyright 2013-2015 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 )
 
 func TestRouteConfig(t *testing.T) {
-	opts, err := ProcessConfigFile("./configs/cluster.conf")
+	opts, err := ProcessConfigFile("./etc/cluster.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading route config file: %v\n", err)
 	}
@@ -46,8 +46,8 @@ func TestRouteConfig(t *testing.T) {
 }
 
 func TestServerRoutesWithClients(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
-	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+	optsA, _ := ProcessConfigFile("./etc/srv_a.conf")
+	optsB, _ := ProcessConfigFile("./etc/srv_b.conf")
 
 	optsA.NoSigs, optsA.NoLog = true, true
 	optsB.NoSigs, optsB.NoLog = true, true
