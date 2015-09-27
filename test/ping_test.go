@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
 const (
@@ -16,7 +16,7 @@ const (
 	PING_MAX       = 2
 )
 
-func runPingServer() *server.Server {
+func runPingServer() *gnatsd.Server {
 	opts := DefaultTestOptions
 	opts.Port = PING_TEST_PORT
 	opts.PingInterval = PING_INTERVAL

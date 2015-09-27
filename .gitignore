@@ -30,7 +30,7 @@ _testmain.go
 .DS_Store
 
 # bin
-gnatsd
+bin/
 
 # coverage
 coverage.out

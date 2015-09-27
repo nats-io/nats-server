@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
-func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
-	opts, err := server.ProcessConfigFile("./configs/cluster.conf")
+func runRouteServer(t *testing.T) (*gnatsd.Server, *gnatsd.Options) {
+	opts, err := gnatsd.ProcessConfigFile("./configs/cluster.conf")
 
 	// Override for running in Go routine.
 	opts.NoSigs = true
@@ -59,7 +59,7 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	routeSend, routeExpect := setupRoute(t, rc, opts)
 	buf := routeExpect(infoRe)
 
-	info := server.Info{}
+	info := gnatsd.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
 		t.Fatalf("Could not unmarshal route info: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestSendRouteSolicit(t *testing.T) {
 	}
 	rUrl := opts.Routes[0]
 
-	conn := acceptRouteConn(t, rUrl.Host, server.DEFAULT_ROUTE_CONNECT)
+	conn := acceptRouteConn(t, rUrl.Host, gnatsd.DEFAULT_ROUTE_CONNECT)
 	defer conn.Close()
 
 	// We should receive a connect message right away due to auth.
@@ -150,7 +150,7 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 
 	clientSend, clientExpect := setupConn(t, client)
 
-	route := acceptRouteConn(t, opts.Routes[0].Host, server.DEFAULT_ROUTE_CONNECT)
+	route := acceptRouteConn(t, opts.Routes[0].Host, gnatsd.DEFAULT_ROUTE_CONNECT)
 	defer route.Close()
 
 	routeSend, routeExpect := setupRoute(t, route, opts)
@@ -352,13 +352,13 @@ func TestSolicitRouteReconnect(t *testing.T) {
 
 	rUrl := opts.Routes[0]
 
-	route := acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+	route := acceptRouteConn(t, rUrl.Host, 2*gnatsd.DEFAULT_ROUTE_CONNECT)
 
 	// Go ahead and close the Route.
 	route.Close()
 
 	// We expect to get called back..
-	route = acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+	route = acceptRouteConn(t, rUrl.Host, 2*gnatsd.DEFAULT_ROUTE_CONNECT)
 	route.Close()
 }
 
@@ -443,7 +443,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	buf := routeExpect(infoRe)
 
 	// Generate our own INFO so we can send one to trigger the local subs.
-	info := server.Info{}
+	info := gnatsd.Info{}
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
 		t.Fatalf("Could not unmarshal route info: %v", err)
 	}

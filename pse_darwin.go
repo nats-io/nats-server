@@ -1,6 +1,6 @@
 // Copyright 2015 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
 
 /*
 #include <unistd.h>

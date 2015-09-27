@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
 func TestResolveRandomPort(t *testing.T) {
-	opts := &server.Options{Port: server.RANDOM_PORT}
+	opts := &gnatsd.Options{Port: gnatsd.RANDOM_PORT}
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -26,12 +26,12 @@ func TestResolveRandomPort(t *testing.T) {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
 
-	if portNum == server.DEFAULT_PORT {
-		t.Fatalf("Expected server to choose a random port\nGot: %d", server.DEFAULT_PORT)
+	if portNum == gnatsd.DEFAULT_PORT {
+		t.Fatalf("Expected server to choose a random port\nGot: %d", gnatsd.DEFAULT_PORT)
 	}
 
-	if portNum == server.RANDOM_PORT {
-		t.Fatalf("Expected server to choose a random port\nGot: %d", server.RANDOM_PORT)
+	if portNum == gnatsd.RANDOM_PORT {
+		t.Fatalf("Expected server to choose a random port\nGot: %d", gnatsd.RANDOM_PORT)
 	}
 
 	if opts.Port != portNum {

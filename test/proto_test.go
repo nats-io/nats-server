@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
 const PROTO_TEST_PORT = 9922
 
-func runProtoServer() *server.Server {
+func runProtoServer() *gnatsd.Server {
 	opts := DefaultTestOptions
 	opts.Port = PROTO_TEST_PORT
 	return RunServer(&opts)

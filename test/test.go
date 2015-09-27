@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/gnatsd"
 )
 
-const natsServerExe = "../gnatsd"
+const natsServerExe = "../bin/gnatsd"
 
 type natsServer struct {
 	args []string
@@ -31,24 +31,24 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
-var DefaultTestOptions = server.Options{
+var DefaultTestOptions = gnatsd.Options{
 	Host:   "localhost",
 	Port:   4222,
 	NoLog:  true,
 	NoSigs: true,
 }
 
-func RunDefaultServer() *server.Server {
+func RunDefaultServer() *gnatsd.Server {
 	return RunServer(&DefaultTestOptions)
 }
 
 // New Go Routine based server
-func RunServer(opts *server.Options) *server.Server {
+func RunServer(opts *gnatsd.Options) *gnatsd.Server {
 	return RunServerWithAuth(opts, nil)
 }
 
-func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
-	opts, err := server.ProcessConfigFile(configFile)
+func RunServerWithConfig(configFile string) (srv *gnatsd.Server, opts *gnatsd.Options) {
+	opts, err := gnatsd.ProcessConfigFile(configFile)
 	if err != nil {
 		panic(fmt.Sprintf("Error processing configuration file: %v", err))
 	}
@@ -58,11 +58,11 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 }
 
 // New Go Routine based server with auth
-func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
+func RunServerWithAuth(opts *gnatsd.Options, auth gnatsd.Auth) *gnatsd.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
 	}
-	s := server.New(opts)
+	s := gnatsd.New(opts)
 	if s == nil {
 		panic("No NATS Server object returned.")
 	}
@@ -203,10 +203,10 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 	t.Fatalf("Failed to connect to the socket: %q", addr)
 }
 
-func checkInfoMsg(t tLogger, c net.Conn) server.Info {
+func checkInfoMsg(t tLogger, c net.Conn) gnatsd.Info {
 	buf := expectResult(t, c, infoRe)
 	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
-	var sinfo server.Info
+	var sinfo gnatsd.Info
 	err := json.Unmarshal(js, &sinfo)
 	if err != nil {
 		stackFatalf(t, "Could not unmarshal INFO json: %v\n", err)
@@ -232,14 +232,14 @@ func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
 	sendProto(t, c, cs)
 }
 
-func setupRouteEx(t tLogger, c net.Conn, opts *server.Options, id string) (sendFun, expectFun) {
+func setupRouteEx(t tLogger, c net.Conn, opts *gnatsd.Options, id string) (sendFun, expectFun) {
 	user := opts.ClusterUsername
 	pass := opts.ClusterPassword
 	doRouteAuthConnect(t, c, user, pass, id)
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
-func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun) {
+func setupRoute(t tLogger, c net.Conn, opts *gnatsd.Options) (sendFun, expectFun) {
 	u := make([]byte, 16)
 	io.ReadFull(rand.Reader, u)
 	id := fmt.Sprintf("ROUTER:%s", hex.EncodeToString(u))
@@ -268,7 +268,7 @@ func expectCommand(t tLogger, c net.Conn) expectFun {
 	}
 }
 
-// Send the protocol command to the server.
+// Send the protocol command to the gnatsd.
 func sendProto(t tLogger, c net.Conn, op string) {
 	n, err := c.Write([]byte(op))
 	if err != nil {

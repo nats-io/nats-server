@@ -1,150 +1,89 @@
 // Copyright 2012-2015 Apcera Inc. All rights reserved.
 
-package main
+package gnatsd
 
 import (
-	"flag"
-	"os"
-	"strings"
-
-	"github.com/nats-io/gnatsd/auth"
-	"github.com/nats-io/gnatsd/logger"
-	"github.com/nats-io/gnatsd/server"
+	"time"
 )
 
-func main() {
-	// Server Options
-	opts := server.Options{}
+const (
+	// VERSION is the current version for the server.
+	VERSION = "0.6.8"
 
-	var showVersion bool
-	var debugAndTrace bool
-	var configFile string
+	// DEFAULT_PORT is the deault port for client connections.
+	DEFAULT_PORT = 4222
 
-	// Parse flags
-	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
-	flag.IntVar(&opts.Port, "p", 0, "Port to listen on.")
-	flag.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
-	flag.StringVar(&opts.Host, "a", "", "Network host to listen on.")
-	flag.StringVar(&opts.Host, "net", "", "Network host to listen on.")
-	flag.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
-	flag.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
-	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
-	flag.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
-	flag.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
-	flag.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
-	flag.StringVar(&opts.Username, "user", "", "Username required for connection.")
-	flag.StringVar(&opts.Password, "pass", "", "Password required for connection.")
-	flag.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
-	flag.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
-	flag.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
-	flag.StringVar(&configFile, "c", "", "Configuration file.")
-	flag.StringVar(&configFile, "config", "", "Configuration file.")
-	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
-	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
-	flag.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
-	flag.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
-	flag.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
-	flag.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://localhost:514).")
-	flag.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://localhost:514).")
-	flag.BoolVar(&showVersion, "version", false, "Print version information.")
-	flag.BoolVar(&showVersion, "v", false, "Print version information.")
-	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
-	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
+	// RANDOM_PORT is the value for port that, when supplied, will cause the
+	// server to listen on a randomly-chosen available port. The resolved port
+	// is available via the Addr() method.
+	RANDOM_PORT = -1
 
-	// Not public per se, will be replaced with dynamic system, but can be used to lower memory footprint when
-	// lots of connections present.
-	flag.IntVar(&opts.BufSize, "bs", 0, "Read/Write buffer size per client connection.")
+	// DEFAULT_HOST defaults to all interfaces.
+	DEFAULT_HOST = "0.0.0.0"
 
-	flag.Usage = server.Usage
+	// MAX_CONTROL_LINE_SIZE is the maximum allowed protocol control line size.
+	// 1k should be plenty since payloads sans connect string are separate
+	MAX_CONTROL_LINE_SIZE = 1024
 
-	flag.Parse()
+	// MAX_PAYLOAD_SIZE is the maximum allowed payload size. Should be using
+	// something different if > 1MB payloads are needed.
+	MAX_PAYLOAD_SIZE = (1024 * 1024)
 
-	// Show version and exit
-	if showVersion {
-		server.PrintServerAndExit()
-	}
+	// MAX_PENDING_SIZE is the maximum outbound size (in bytes) per client.
+	MAX_PENDING_SIZE = (10 * 1024 * 1024)
 
-	// One flag can set multiple options.
-	if debugAndTrace {
-		opts.Trace, opts.Debug = true, true
-	}
+	// DEFAULT_MAX_CONNECTIONS is the default maximum connections allowed.
+	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
 
-	// Process args looking for non-flag options,
-	// 'version' and 'help' only for now
-	for _, arg := range flag.Args() {
-		switch strings.ToLower(arg) {
-		case "version":
-			server.PrintServerAndExit()
-		case "help":
-			server.Usage()
-		}
-	}
+	// SSL_TIMEOUT is the TLS/SSL wait time.
+	SSL_TIMEOUT = 500 * time.Millisecond
 
-	// Parse config if given
-	if configFile != "" {
-		fileOpts, err := server.ProcessConfigFile(configFile)
-		if err != nil {
-			server.PrintAndDie(err.Error())
-		}
-		opts = *server.MergeOptions(fileOpts, &opts)
-	}
+	// AUTH_TIMEOUT is the authorization wait time.
+	AUTH_TIMEOUT = 2 * SSL_TIMEOUT
 
-	// Remove any host/ip that points to itself in Route
-	newroutes, err := server.RemoveSelfReference(opts.ClusterPort, opts.Routes)
-	if err != nil {
-		server.PrintAndDie(err.Error())
-	}
-	opts.Routes = newroutes
+	// DEFAULT_PING_INTERVAL is how often pings are sent to clients and routes.
+	DEFAULT_PING_INTERVAL = 2 * time.Minute
 
-	// Create the server with appropriate options.
-	s := server.New(&opts)
+	// DEFAULT_PING_MAX_OUT is maximum allowed pings outstanding before disconnect.
+	DEFAULT_PING_MAX_OUT = 2
 
-	// Configure the authentication mechanism
-	configureAuth(s, &opts)
+	// CRLF string
+	CR_LF = "\r\n"
 
-	// Configure the logger based on the flags
-	configureLogger(s, &opts)
+	// LEN_CR_LF hold onto the computed size.
+	LEN_CR_LF = len(CR_LF)
 
-	// Start things up. Block here until done.
-	s.Start()
-}
+	// DEFAULT_FLUSH_DEADLINE is the write/flush deadlines.
+	DEFAULT_FLUSH_DEADLINE = 2 * time.Second
 
-func configureAuth(s *server.Server, opts *server.Options) {
-	if opts.Username != "" {
-		auth := &auth.Plain{
-			Username: opts.Username,
-			Password: opts.Password,
-		}
-		s.SetAuthMethod(auth)
-	} else if opts.Authorization != "" {
-		auth := &auth.Token{
-			Token: opts.Authorization,
-		}
-		s.SetAuthMethod(auth)
-	}
-}
+	// DEFAULT_HTTP_PORT is the default monitoring port.
+	DEFAULT_HTTP_PORT = 8222
 
-func configureLogger(s *server.Server, opts *server.Options) {
-	var log server.Logger
+	// ACCEPT_MIN_SLEEP is the minimum acceptable sleep times on temporary errors.
+	ACCEPT_MIN_SLEEP = 10 * time.Millisecond
 
-	if opts.LogFile != "" {
-		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
-	} else if opts.RemoteSyslog != "" {
-		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
-	} else if opts.Syslog {
-		log = logger.NewSysLogger(opts.Debug, opts.Trace)
-	} else {
-		colors := true
-		// Check to see if stderr is being redirected and if so turn off color
-		// Also turn off colors if we're running on Windows where os.Stderr.Stat() returns an invalid handle-error
-		stat, err := os.Stderr.Stat()
-		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
-			colors = false
-		}
-		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
-	}
+	// ACCEPT_MAX_SLEEP is the maximum acceptable sleep times on temporary errors
+	ACCEPT_MAX_SLEEP = 1 * time.Second
 
-	s.SetLogger(log, opts.Debug, opts.Trace)
-}
+	// DEFAULT_ROUTE_CONNECT Route solicitation intervals.
+	DEFAULT_ROUTE_CONNECT = 1 * time.Second
+
+	// DEFAULT_ROUTE_RECONNECT Route reconnect intervals.
+	DEFAULT_ROUTE_RECONNECT = 1 * time.Second
+
+	// DEFAULT_ROUTE_DIAL Route dial timeout.
+	DEFAULT_ROUTE_DIAL = 1 * time.Second
+
+	// PROTO_SNIPPET_SIZE is the default size of proto to print on parse errors.
+	PROTO_SNIPPET_SIZE = 32
+
+	// MAX_MSG_ARGS Maximum possible number of arguments from MSG proto.
+	MAX_MSG_ARGS = 4
+
+	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
+	MAX_PUB_ARGS = 3
+
+	// Default Buffer size for reads and writes per connection. Will be replaced by dynamic
+	// system in the long run.
+	DEFAULT_BUF_SIZE = 32768
+)

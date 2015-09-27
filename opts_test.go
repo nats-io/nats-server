@@ -1,6 +1,6 @@
 // Copyright 2013-2014 Apcera Inc. All rights reserved.
 
-package server
+package gnatsd
 
 import (
 	"net/url"
@@ -66,7 +66,7 @@ func TestConfigFile(t *testing.T) {
 		MaxPending:     10000000,
 	}
 
-	opts, err := ProcessConfigFile("./configs/test.conf")
+	opts, err := ProcessConfigFile("./etc/test.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -98,7 +98,7 @@ func TestMergeOverrides(t *testing.T) {
 		MaxConn:        100,
 		MaxPending:     10000000,
 	}
-	fopts, err := ProcessConfigFile("./configs/test.conf")
+	fopts, err := ProcessConfigFile("./etc/test.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -169,7 +169,7 @@ func TestRouteFlagOverride(t *testing.T) {
 		RoutesStr:          routeFlag,
 	}
 
-	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
+	fopts, err := ProcessConfigFile("./etc/srv_a.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -201,7 +201,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 		RoutesStr:          routeFlag,
 	}
 
-	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
+	fopts, err := ProcessConfigFile("./etc/srv_a.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
