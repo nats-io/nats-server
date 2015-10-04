@@ -316,7 +316,7 @@ IN THE SOFTWARE.
 [License-Image]: https://img.shields.io/npm/l/express.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.6.6
-[Release-image]: http://img.shields.io/badge/release-v0.6.6-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.6.8
+[Release-image]: http://img.shields.io/badge/release-v0.6.8-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://img.shields.io/coveralls/nats-io/gnatsd.svg
