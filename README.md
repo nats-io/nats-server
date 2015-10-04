@@ -1,8 +1,6 @@
 # gnatsd
-[![License MIT](https://img.shields.io/npm/l/express.svg)](http://opensource.org/licenses/MIT)
-[![Build Status](https://travis-ci.org/nats-io/gnatsd.svg?branch=master)](http://travis-ci.org/nats-io/gnatsd)
-[![Current Release](http://img.shields.io/badge/release-v0.6.6-1eb0fc.svg)](https://github.com/nats-io/gnatsd/releases/tag/v0.6.6)
-[![Coverage Status](https://img.shields.io/coveralls/nats-io/gnatsd.svg)](https://coveralls.io/r/nats-io/gnatsd?branch=master)
+
+[![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Coverage][Coverage-Image]][Coverage-Url]
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
 
@@ -313,3 +311,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
+
+[License-Url]: http://opensource.org/licenses/MIT
+[License-Image]: https://img.shields.io/npm/l/express.svg
+[Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
+[Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.6.6
+[Release-image]: http://img.shields.io/badge/release-v0.6.6-1eb0fc.svg
+[Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
+[Coverage-image]: https://img.shields.io/coveralls/nats-io/gnatsd.svg
