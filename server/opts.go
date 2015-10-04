@@ -36,7 +36,7 @@ type Options struct {
 	MaxPayload         int           `json:"max_payload"`
 	MaxPending         int           `json:"max_pending_size"`
 	ClusterHost        string        `json:"addr"`
-	ClusterPort        int           `json:"port"`
+	ClusterPort        int           `json:"cluster_port"`
 	ClusterUsername    string        `json:"-"`
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
