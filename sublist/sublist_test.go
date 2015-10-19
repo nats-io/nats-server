@@ -432,7 +432,6 @@ func addWildcards() {
 // -- Benchmarks Setup End --
 
 func Benchmark______________________Insert(b *testing.B) {
-	b.SetBytes(1)
 	s := New()
 	for i, l := 0, len(subs); i < b.N; i++ {
 		index := i % l
@@ -441,7 +440,6 @@ func Benchmark______________________Insert(b *testing.B) {
 }
 
 func Benchmark____________MatchSingleToken(b *testing.B) {
-	b.SetBytes(1)
 	s := []byte("apcera")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
@@ -449,23 +447,20 @@ func Benchmark____________MatchSingleToken(b *testing.B) {
 }
 
 func Benchmark______________MatchTwoTokens(b *testing.B) {
-	b.SetBytes(1)
 	s := []byte("apcera.continuum")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
 	}
 }
 
-func Benchmark______________MatchThreeTokens(b *testing.B) {
-	b.SetBytes(1)
+func Benchmark____________MatchThreeTokens(b *testing.B) {
 	s := []byte("apcera.continuum.component")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
 	}
 }
 
-func Benchmark______________MatchFourTokens(b *testing.B) {
-	b.SetBytes(1)
+func Benchmark_____________MatchFourTokens(b *testing.B) {
 	s := []byte("apcera.continuum.component.router")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
@@ -473,7 +468,6 @@ func Benchmark______________MatchFourTokens(b *testing.B) {
 }
 
 func Benchmark_MatchFourTokensSingleResult(b *testing.B) {
-	b.SetBytes(1)
 	s := []byte("apcera.continuum.component.router")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
@@ -481,7 +475,6 @@ func Benchmark_MatchFourTokensSingleResult(b *testing.B) {
 }
 
 func Benchmark_MatchFourTokensMultiResults(b *testing.B) {
-	b.SetBytes(1)
 	s := []byte("cloud.continuum.component.router")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
@@ -489,7 +482,6 @@ func Benchmark_MatchFourTokensMultiResults(b *testing.B) {
 }
 
 func Benchmark_______MissOnLastTokenOfFive(b *testing.B) {
-	b.SetBytes(1)
 	s := []byte("apcera.continuum.component.router.ZZZZ")
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
