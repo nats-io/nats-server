@@ -244,7 +244,7 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 }
 
-// Process the information messages from Clients and other routes.
+// Process the information messages from Clients and other Routes.
 func (c *client) processInfo(arg []byte) error {
 	info := Info{}
 	if err := json.Unmarshal(arg, &info); err != nil {
@@ -293,6 +293,7 @@ func (c *client) processConnect(arg []byte) error {
 
 func (c *client) authTimeout() {
 	c.sendErr("Authorization Timeout")
+	c.Debugf("Authorization Timeout")
 	c.closeConnection()
 }
 

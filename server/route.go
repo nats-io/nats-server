@@ -24,7 +24,7 @@ type connectInfo struct {
 	Pedantic bool   `json:"pedantic"`
 	User     string `json:"user,omitempty"`
 	Pass     string `json:"pass,omitempty"`
-	Ssl      bool   `json:"ssl_required"`
+	TLS      bool   `json:"ssl_required"`
 	Name     string `json:"name"`
 }
 
@@ -42,7 +42,7 @@ func (c *client) sendConnect() {
 		Pedantic: false,
 		User:     user,
 		Pass:     pass,
-		Ssl:      false,
+		TLS:      false,
 		Name:     c.srv.info.ID,
 	}
 	b, err := json.Marshal(cinfo)
@@ -301,7 +301,7 @@ func (s *Server) StartRouting() {
 		Host:         s.opts.ClusterHost,
 		Port:         s.opts.ClusterPort,
 		AuthRequired: false,
-		SslRequired:  false,
+		TLSRequired:  false,
 		MaxPayload:   MAX_PAYLOAD_SIZE,
 	}
 	// Check for Auth items

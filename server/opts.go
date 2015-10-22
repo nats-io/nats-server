@@ -1,8 +1,10 @@
-// Copyright 2012-2013 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -30,7 +32,6 @@ type Options struct {
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
 	HTTPPort           int           `json:"http_port"`
-	SslTimeout         float64       `json:"ssl_timeout"`
 	AuthTimeout        float64       `json:"auth_timeout"`
 	MaxControlLine     int           `json:"max_control_line"`
 	MaxPayload         int           `json:"max_payload"`
@@ -48,12 +49,20 @@ type Options struct {
 	Routes             []*url.URL    `json:"-"`
 	RoutesStr          string        `json:"-"`
 	BufSize            int           `json:"-"`
+	TLSTimeout         float64       `json:"tls_timeout"`
+	TLSConfig          *tls.Config   `json:"-"`
 }
 
 type authorization struct {
 	user    string
 	pass    string
 	timeout float64
+}
+
+// This struct holds the parsed tls config information.
+type tlsConfig struct {
+	certFile string
+	keyFile  string
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -118,6 +127,11 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxPending = int(v.(int64))
 		case "max_connections", "max_conn":
 			opts.MaxConn = int(v.(int64))
+		case "tls":
+			tlsm := v.(map[string]interface{})
+			if err := parseTLS(tlsm, opts); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return opts, nil
@@ -174,6 +188,53 @@ func parseAuthorization(am map[string]interface{}) authorization {
 		}
 	}
 	return auth
+}
+
+// Helper function to parse TLS configs.
+func parseTLS(tlsm map[string]interface{}, opts *Options) error {
+	tc := tlsConfig{}
+	for mk, mv := range tlsm {
+		switch strings.ToLower(mk) {
+		case "cert_file":
+			certFile, ok := mv.(string)
+			if !ok {
+				return fmt.Errorf("error parsing tls config, expected 'cert_file' to be filename")
+			}
+			tc.certFile = certFile
+		case "key_file":
+			keyFile, ok := mv.(string)
+			if !ok {
+				return fmt.Errorf("error parsing tls config, expected 'key_file' to be filename")
+			}
+			tc.keyFile = keyFile
+		default:
+			return fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
+		}
+	}
+	// Now load in cert and private key
+	cert, err := tls.LoadX509KeyPair(tc.certFile, tc.keyFile)
+	if err != nil {
+		return fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
+	}
+	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("error parsing certificate: %v", err)
+	}
+	// Create TLSConfig
+	// We will determine the cipher suites that we prefer.
+	config := tls.Config{
+		Certificates:             []tls.Certificate{cert},
+		PreferServerCipherSuites: true,
+		MinVersion:               tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+	opts.TLSConfig = &config
+	return nil
 }
 
 // MergeOptions will merge two options giving preference to the flagOpts
@@ -349,8 +410,8 @@ func processOptions(opts *Options) {
 	if opts.MaxPingsOut == 0 {
 		opts.MaxPingsOut = DEFAULT_PING_MAX_OUT
 	}
-	if opts.SslTimeout == 0 {
-		opts.SslTimeout = float64(SSL_TIMEOUT) / float64(time.Second)
+	if opts.TLSTimeout == 0 {
+		opts.TLSTimeout = float64(SSL_TIMEOUT) / float64(time.Second)
 	}
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)

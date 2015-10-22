@@ -1,8 +1,9 @@
-// Copyright 2013-2014 Apcera Inc. All rights reserved.
+// Copyright 2013-2015 Apcera Inc. All rights reserved.
 
 package server
 
 import (
+	"crypto/tls"
 	"net/url"
 	"reflect"
 	"testing"
@@ -16,7 +17,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxConn:            DEFAULT_MAX_CONNECTIONS,
 		PingInterval:       DEFAULT_PING_INTERVAL,
 		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
-		SslTimeout:         float64(SSL_TIMEOUT) / float64(time.Second),
+		TLSTimeout:         float64(SSL_TIMEOUT) / float64(time.Second),
 		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
@@ -74,6 +75,57 @@ func TestConfigFile(t *testing.T) {
 	if !reflect.DeepEqual(golden, opts) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
+	}
+}
+
+func TestTLSConfigFile(t *testing.T) {
+	golden := &Options{
+		Host:        "apcera.me",
+		Port:        4443,
+		Username:    "derek",
+		Password:    "buckley",
+		AuthTimeout: 1.0,
+	}
+	opts, err := ProcessConfigFile("./configs/tls/test.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	tlsConfig := opts.TLSConfig
+	if tlsConfig == nil {
+		t.Fatal("Expected opts.TLSConfig to be non-nil")
+	}
+	opts.TLSConfig = nil
+	if !reflect.DeepEqual(golden, opts) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, opts)
+	}
+	// Now check TLSConfig a bit more closely
+	// CipherSuites
+	ciphers := []uint16{
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
+		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("Expected MinVersion of 1.2 [%v], got [%v]", tls.VersionTLS12, tlsConfig.MinVersion)
+	}
+	if tlsConfig.PreferServerCipherSuites != true {
+		t.Fatal("Expected PreferServerCipherSuites to be true")
+	}
+	// Verify hostname is correct in certificate
+	if len(tlsConfig.Certificates) != 1 {
+		t.Fatal("Expected 1 certificate")
+	}
+	if len(tlsConfig.Certificates) < 1 {
+		t.Fatalf("Expected certificates")
+	}
+	cert := tlsConfig.Certificates[0].Leaf
+	if err := cert.VerifyHostname("apcera.me:4443"); err != nil {
+		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
 	}
 }
 
