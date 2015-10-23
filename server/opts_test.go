@@ -120,9 +120,6 @@ func TestTLSConfigFile(t *testing.T) {
 	if len(tlsConfig.Certificates) != 1 {
 		t.Fatal("Expected 1 certificate")
 	}
-	if len(tlsConfig.Certificates) < 1 {
-		t.Fatalf("Expected certificates")
-	}
 	cert := tlsConfig.Certificates[0].Leaf
 	if err := cert.VerifyHostname("apcera.me:4443"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
