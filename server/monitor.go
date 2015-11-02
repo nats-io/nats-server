@@ -42,6 +42,7 @@ type ConnInfo struct {
 	InBytes  int64    `json:"in_bytes"`
 	OutBytes int64    `json:"out_bytes"`
 	NumSubs  uint32   `json:"subscriptions"`
+	Name     string   `json:"name,omitempty"`
 	Lang     string   `json:"lang,omitempty"`
 	Version  string   `json:"version,omitempty"`
 	Subs     []string `json:"subscriptions_list,omitempty"`
@@ -121,6 +122,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			OutBytes: client.outBytes,
 			NumSubs:  client.subs.Count(),
 			Pending:  client.bw.Buffered(),
+			Name:     client.opts.Name,
 			Lang:     client.opts.Lang,
 			Version:  client.opts.Version,
 		}

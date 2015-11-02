@@ -843,6 +843,50 @@ func TestHandleRoot(t *testing.T) {
 	defer resp.Body.Close()
 }
 
+func TestConnzWithNamedClient(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	clientName := "test-client"
+	nc := createClientConnWithName(t, clientName)
+	defer nc.Close()
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	// Confirm server is exposing client name in monitoring endpoint.
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	got := len(c.Conns)
+	expected := 1
+	if got != expected {
+		t.Fatalf("Expected %d connection in array, got %d\n", expected, got)
+	}
+
+	conn := c.Conns[0]
+	if conn.Name != clientName {
+		t.Fatalf("Expected client to have name %q. got %q", clientName, conn.Name)
+	}
+}
+
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T) *nats.Conn {
 	nc, err := nats.Connect(fmt.Sprintf("nats://localhost:%d", CLIENT_PORT))
@@ -855,5 +899,19 @@ func createClientConnSubscribeAndPublish(t *testing.T) *nats.Conn {
 	nc.Publish("foo", []byte("Hello"))
 	// Wait for message
 	<-ch
+	return nc
+}
+
+func createClientConnWithName(t *testing.T, name string) *nats.Conn {
+	natsUri := fmt.Sprintf("nats://localhost:%d", CLIENT_PORT)
+
+	client := nats.DefaultOptions
+	client.Servers = []string{natsUri}
+	client.Name = name
+	nc, err := client.Connect()
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+
 	return nc
 }
