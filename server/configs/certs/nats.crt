@@ -1,0 +1,88 @@
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            c8:77:4b:d6:10:0a:9f:f3
+        Signature Algorithm: sha1WithRSAEncryption
+        Issuer: C=US, ST=California, L=San Francisco, O=Apcera Inc, OU=NATS Testing, CN=apcera.me:4443/emailAddress=derek@nats.io
+        Validity
+            Not Before: Oct 21 12:44:12 2015 GMT
+            Not After : Oct 20 12:44:12 2016 GMT
+        Subject: C=US, ST=California, L=San Francisco, O=Apcera Inc, OU=NATS Testing, CN=apcera.me:4443/emailAddress=derek@nats.io
+        Subject Public Key Info:
+            Public Key Algorithm: rsaEncryption
+            RSA Public Key: (2048 bit)
+                Modulus (2048 bit):
+                    00:a1:e3:36:e3:e4:88:53:e8:b7:37:56:96:c9:a8:
+                    1d:0a:53:d2:b8:87:96:b3:aa:35:26:f2:e6:20:65:
+                    f2:6a:6f:31:e1:0d:44:82:fc:97:bc:3e:db:c9:25:
+                    68:ee:81:84:b9:88:49:bf:cc:46:46:68:8c:fa:0e:
+                    05:9a:3d:0f:cc:90:54:0a:58:ee:3e:85:fe:64:75:
+                    85:49:17:a1:ed:10:04:6d:34:22:1e:81:d0:ca:4c:
+                    ec:a4:1c:e6:fd:7d:a0:05:b4:3c:e3:5d:e8:32:8e:
+                    a6:04:a6:af:42:cd:09:15:39:12:9b:7c:32:9d:ce:
+                    3e:06:aa:bf:13:98:36:ff:b1:f7:aa:1d:f1:fe:ba:
+                    1d:c2:38:86:52:ce:7e:d3:86:44:8c:2f:65:e3:50:
+                    4a:67:22:e2:39:51:ab:30:0e:e3:a8:ce:c9:9a:d1:
+                    9f:4c:1c:25:49:da:fa:b7:a1:0f:8e:d6:c0:d6:6d:
+                    05:22:cc:58:06:fa:7c:4a:b0:b9:ab:d5:e6:0b:60:
+                    48:ed:cf:c8:46:ab:e1:fa:55:91:88:21:8d:e0:fc:
+                    21:21:26:3f:a5:9f:b5:95:40:59:27:03:84:3f:2c:
+                    61:b2:2b:5b:e0:75:5c:fb:70:eb:c3:d3:3a:3a:e8:
+                    2e:47:7e:3d:51:82:7a:b8:b4:8e:17:ff:e4:0d:fb:
+                    86:5f
+                Exponent: 65537 (0x10001)
+        X509v3 extensions:
+            X509v3 Subject Key Identifier:
+                1E:A4:01:43:CF:10:7B:1A:A8:47:40:90:13:CE:5B:66:4C:B4:3B:69
+            X509v3 Authority Key Identifier:
+                keyid:1E:A4:01:43:CF:10:7B:1A:A8:47:40:90:13:CE:5B:66:4C:B4:3B:69
+                DirName:/C=US/ST=California/L=San Francisco/O=Apcera Inc/OU=NATS Testing/CN=apcera.me:4443/emailAddress=derek@nats.io
+                serial:C8:77:4B:D6:10:0A:9F:F3
+
+            X509v3 Basic Constraints:
+                CA:TRUE
+    Signature Algorithm: sha1WithRSAEncryption
+        8c:4c:4a:36:de:84:81:9e:fa:25:0c:50:d1:dd:96:33:34:f9:
+        7a:f2:40:ed:9b:14:af:86:1e:f0:32:bc:03:67:96:fe:34:16:
+        2e:92:9b:97:c1:76:93:04:d7:d6:e1:d0:75:66:a2:0e:2b:1a:
+        60:ac:df:e6:14:78:ef:32:3a:91:e8:19:4c:e5:25:5b:ee:3f:
+        77:5a:30:2e:f1:e2:0b:cb:33:80:af:ec:71:f4:c2:eb:4f:14:
+        5a:b4:c7:df:d9:86:7a:ef:23:fc:c2:fd:35:00:e0:77:4c:50:
+        d3:b7:f6:ca:4b:5b:19:26:6a:8e:53:66:6a:e5:fc:7f:46:54:
+        7f:78:ad:98:45:e4:66:9b:78:7b:e4:8e:da:13:50:2c:a1:6b:
+        03:6d:a7:36:b9:f8:10:ed:e4:23:02:d8:9f:0f:f7:fe:6e:c8:
+        75:58:8d:34:bf:45:52:58:8c:d0:86:09:e4:aa:6d:61:d8:8c:
+        d1:1d:fb:f1:4c:3d:d5:dc:9e:17:49:d8:2f:8c:b1:34:aa:81:
+        93:de:50:c0:f7:c7:17:83:7f:66:a0:d2:c5:8c:63:70:b6:34:
+        0b:0a:77:41:41:19:ca:92:8a:ed:02:e6:98:62:e6:66:8f:2f:
+        46:16:b6:71:b2:4a:76:15:ba:ce:a8:7a:a1:3a:44:d1:84:12:
+        b8:61:97:bf
+-----BEGIN CERTIFICATE-----
+MIIExzCCA6+gAwIBAgIJAMh3S9YQCp/zMA0GCSqGSIb3DQEBBQUAMIGdMQswCQYD
+VQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTEWMBQGA1UEBxMNU2FuIEZyYW5j
+aXNjbzETMBEGA1UEChMKQXBjZXJhIEluYzEVMBMGA1UECxMMTkFUUyBUZXN0aW5n
+MRcwFQYDVQQDEw5hcGNlcmEubWU6NDQ0MzEcMBoGCSqGSIb3DQEJARYNZGVyZWtA
+bmF0cy5pbzAeFw0xNTEwMjExMjQ0MTJaFw0xNjEwMjAxMjQ0MTJaMIGdMQswCQYD
+VQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTEWMBQGA1UEBxMNU2FuIEZyYW5j
+aXNjbzETMBEGA1UEChMKQXBjZXJhIEluYzEVMBMGA1UECxMMTkFUUyBUZXN0aW5n
+MRcwFQYDVQQDEw5hcGNlcmEubWU6NDQ0MzEcMBoGCSqGSIb3DQEJARYNZGVyZWtA
+bmF0cy5pbzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKHjNuPkiFPo
+tzdWlsmoHQpT0riHlrOqNSby5iBl8mpvMeENRIL8l7w+28klaO6BhLmISb/MRkZo
+jPoOBZo9D8yQVApY7j6F/mR1hUkXoe0QBG00Ih6B0MpM7KQc5v19oAW0PONd6DKO
+pgSmr0LNCRU5Ept8Mp3OPgaqvxOYNv+x96od8f66HcI4hlLOftOGRIwvZeNQSmci
+4jlRqzAO46jOyZrRn0wcJUna+rehD47WwNZtBSLMWAb6fEqwuavV5gtgSO3PyEar
+4fpVkYghjeD8ISEmP6WftZVAWScDhD8sYbIrW+B1XPtw68PTOjroLkd+PVGCeri0
+jhf/5A37hl8CAwEAAaOCAQYwggECMB0GA1UdDgQWBBQepAFDzxB7GqhHQJATzltm
+TLQ7aTCB0gYDVR0jBIHKMIHHgBQepAFDzxB7GqhHQJATzltmTLQ7aaGBo6SBoDCB
+nTELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDVNh
+biBGcmFuY2lzY28xEzARBgNVBAoTCkFwY2VyYSBJbmMxFTATBgNVBAsTDE5BVFMg
+VGVzdGluZzEXMBUGA1UEAxMOYXBjZXJhLm1lOjQ0NDMxHDAaBgkqhkiG9w0BCQEW
+DWRlcmVrQG5hdHMuaW+CCQDId0vWEAqf8zAMBgNVHRMEBTADAQH/MA0GCSqGSIb3
+DQEBBQUAA4IBAQCMTEo23oSBnvolDFDR3ZYzNPl68kDtmxSvhh7wMrwDZ5b+NBYu
+kpuXwXaTBNfW4dB1ZqIOKxpgrN/mFHjvMjqR6BlM5SVb7j93WjAu8eILyzOAr+xx
+9MLrTxRatMff2YZ67yP8wv01AOB3TFDTt/bKS1sZJmqOU2Zq5fx/RlR/eK2YReRm
+m3h75I7aE1AsoWsDbac2ufgQ7eQjAtifD/f+bsh1WI00v0VSWIzQhgnkqm1h2IzR
+HfvxTD3V3J4XSdgvjLE0qoGT3lDA98cXg39moNLFjGNwtjQLCndBQRnKkortAuaY
+YuZmjy9GFrZxskp2FbrOqHqhOkTRhBK4YZe/
+-----END CERTIFICATE-----
