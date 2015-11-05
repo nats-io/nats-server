@@ -86,7 +86,7 @@ func TestTLSConfigFile(t *testing.T) {
 		Password:    "buckley",
 		AuthTimeout: 1.0,
 	}
-	opts, err := ProcessConfigFile("./configs/tls/test.conf")
+	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
@@ -121,7 +121,7 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatal("Expected 1 certificate")
 	}
 	cert := tlsConfig.Certificates[0].Leaf
-	if err := cert.VerifyHostname("apcera.me:4443"); err != nil {
+	if err := cert.VerifyHostname("localhost"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
 	}
 }
