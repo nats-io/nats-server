@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io/ioutil"
 	"testing"
 
 	"github.com/nats-io/nats"
@@ -16,22 +17,19 @@ func TestTLSConnection(t *testing.T) {
 	defer srv.Shutdown()
 
 	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
-	nurl := fmt.Sprintf("nats://%s/", endpoint)
+	nurl := fmt.Sprintf("nats://%s:%s@%s/", opts.Username, opts.Password, endpoint)
 	nc, err := nats.Connect(nurl)
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server")
 	}
 
 	// Do simple SecureConnect
-	nc, err = nats.SecureConnect(nurl)
+	nc, err = nats.SecureConnect(fmt.Sprintf("nats://%s/", endpoint))
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server with no auth")
 	}
 
-	// Add in the user/pass
-	purl := fmt.Sprintf("nats://%s:%s@%s/", opts.Username, opts.Password, endpoint)
-
-	nc, err = nats.SecureConnect(purl)
+	nc, err = nats.SecureConnect(nurl)
 	if err != nil {
 		t.Fatalf("Got an error on SecureConnect: %+v\n", err)
 	}
@@ -46,20 +44,26 @@ func TestTLSConnection(t *testing.T) {
 	}
 	defer nc.Close()
 
-	// Now do more advanced checking
-
-	// Setup our own TLSConfig using Root from our self signed cert.
+	// Now do more advanced checking, verifying servername and using rootCA.
+	// Setup our own TLSConfig using RootCA from our self signed cert.
+	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	if err != nil || rootPEM == nil {
+		t.Fatalf("failed to read root certificate")
+	}
 	pool := x509.NewCertPool()
-	pool.AddCert(opts.TLSConfig.Certificates[0].Leaf)
+	ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+	if !ok {
+		t.Fatalf("failed to parse root certificate")
+	}
 
 	config := &tls.Config{
-		ServerName: nurl,
+		ServerName: opts.Host,
 		RootCAs:    pool,
 		MinVersion: tls.VersionTLS12,
 	}
 
 	copts := nats.DefaultOptions
-	copts.Url = purl
+	copts.Url = nurl
 	copts.Secure = true
 	copts.TLSConfig = config
 
@@ -69,7 +73,4 @@ func TestTLSConnection(t *testing.T) {
 	}
 	nc.Flush()
 	defer nc.Close()
-
-	//	nc.conn = tls.Client(nc.conn, &tls.Config{ServerName: nc.url.String()})
-
 }

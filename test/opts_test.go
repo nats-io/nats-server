@@ -3,7 +3,6 @@
 package test
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -29,7 +28,6 @@ func TestTLSConfig(t *testing.T) {
 	defer c.Close()
 
 	sinfo := checkInfoMsg(t, c)
-	fmt.Printf("sinfo is %+v\n", sinfo)
 	if sinfo.TLSRequired != true {
 		t.Fatal("Expected TLSRequired to be true when configured")
 	}
