@@ -36,6 +36,9 @@ func TestBasicTLSClusterPubSub(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
+	// Wait for the setup
+	time.Sleep(500 * time.Millisecond)
+
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
