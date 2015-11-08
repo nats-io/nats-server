@@ -41,6 +41,7 @@ type Options struct {
 	ClusterUsername    string        `json:"-"`
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
+	ClusterTLSConfig   *tls.Config   `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
@@ -131,7 +132,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxConn = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
-			if err := parseTLS(tlsm, opts); err != nil {
+			if opts.TLSConfig, err = parseTLS(tlsm); err != nil {
 				return nil, err
 			}
 		}
@@ -164,6 +165,12 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 				}
 				opts.Routes = append(opts.Routes, url)
 			}
+		case "tls":
+			var err error
+			tlsm := mv.(map[string]interface{})
+			if opts.ClusterTLSConfig, err = parseTLS(tlsm); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -193,47 +200,47 @@ func parseAuthorization(am map[string]interface{}) authorization {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(tlsm map[string]interface{}, opts *Options) error {
+func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 	tc := tlsConfig{}
 	for mk, mv := range tlsm {
 		switch strings.ToLower(mk) {
 		case "cert_file":
 			certFile, ok := mv.(string)
 			if !ok {
-				return fmt.Errorf("error parsing tls config, expected 'cert_file' to be filename")
+				return nil, fmt.Errorf("error parsing tls config, expected 'cert_file' to be filename")
 			}
 			tc.certFile = certFile
 		case "key_file":
 			keyFile, ok := mv.(string)
 			if !ok {
-				return fmt.Errorf("error parsing tls config, expected 'key_file' to be filename")
+				return nil, fmt.Errorf("error parsing tls config, expected 'key_file' to be filename")
 			}
 			tc.keyFile = keyFile
 		case "ca_file":
 			caFile, ok := mv.(string)
 			if !ok {
-				return fmt.Errorf("error parsing tls config, expected 'ca_file' to be filename")
+				return nil, fmt.Errorf("error parsing tls config, expected 'ca_file' to be filename")
 			}
 			tc.caFile = caFile
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
-				return fmt.Errorf("error parsing tls config, expected 'veridy' to be a boolean")
+				return nil, fmt.Errorf("error parsing tls config, expected 'verify' to be a boolean")
 			}
 			tc.verify = verify
 
 		default:
-			return fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
+			return nil, fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
 		}
 	}
 	// Now load in cert and private key
 	cert, err := tls.LoadX509KeyPair(tc.certFile, tc.keyFile)
 	if err != nil {
-		return fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
+		return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
 	}
 	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		return fmt.Errorf("error parsing certificate: %v", err)
+		return nil, fmt.Errorf("error parsing certificate: %v", err)
 	}
 	// Create TLSConfig
 	// We will determine the cipher suites that we prefer.
@@ -253,8 +260,21 @@ func parseTLS(tlsm map[string]interface{}, opts *Options) error {
 	if tc.verify == true {
 		config.ClientAuth = tls.RequireAnyClientCert
 	}
-	opts.TLSConfig = &config
-	return nil
+	// Add in CAs if applicable.
+	if tc.caFile != "" {
+		rootPEM, err := ioutil.ReadFile(tc.caFile)
+		if err != nil || rootPEM == nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+		if !ok {
+			return nil, fmt.Errorf("failed to parse root ca certificate")
+		}
+		config.RootCAs = pool
+	}
+
+	return &config, nil
 }
 
 // MergeOptions will merge two options giving preference to the flagOpts
