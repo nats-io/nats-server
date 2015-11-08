@@ -19,3 +19,16 @@ func TestServerConfig(t *testing.T) {
 			opts.MaxPayload, sinfo.MaxPayload)
 	}
 }
+
+func TestTLSConfig(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	sinfo := checkInfoMsg(t, c)
+	if sinfo.TLSRequired != true {
+		t.Fatal("Expected TLSRequired to be true when configured")
+	}
+}

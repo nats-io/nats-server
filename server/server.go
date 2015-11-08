@@ -3,6 +3,8 @@
 package server
 
 import (
+	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -30,7 +32,9 @@ type Info struct {
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
 	AuthRequired bool   `json:"auth_required"`
-	SslRequired  bool   `json:"ssl_required"`
+	SSLRequired  bool   `json:"ssl_required"` // ssl json used for older clients
+	TLSRequired  bool   `json:"tls_required"`
+	TLSVerify    bool   `json:"tls_verify"`
 	MaxPayload   int    `json:"max_payload"`
 }
 
@@ -73,6 +77,11 @@ type stats struct {
 // New will setup a new server struct after parsing the options.
 func New(opts *Options) *Server {
 	processOptions(opts)
+
+	// Process TLS options, including whether we require client certificates.
+	tlsReq := opts.TLSConfig != nil
+	verify := (tlsReq == true && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
+
 	info := Info{
 		ID:           genID(),
 		Version:      VERSION,
@@ -80,7 +89,9 @@ func New(opts *Options) *Server {
 		Host:         opts.Host,
 		Port:         opts.Port,
 		AuthRequired: false,
-		SslRequired:  false,
+		TLSRequired:  tlsReq,
+		SSLRequired:  tlsReq,
+		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
 	}
 
@@ -393,6 +404,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	s.mu.Lock()
 	info := s.infoJSON
 	authRequired := s.info.AuthRequired
+	tlsRequired := s.info.TLSRequired
 	s.mu.Unlock()
 
 	// Grab lock
@@ -411,6 +423,19 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Send our information.
 	s.sendInfo(c, info)
+
+	// Check for TLS
+	if tlsRequired {
+		c.Debugf("Starting TLS client connection handshake")
+		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
+		conn := c.nc.(*tls.Conn)
+		err := conn.Handshake()
+		if err != nil {
+			c.Debugf("TLS handshake error: %v", err)
+		}
+		// Rewrap bw
+		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+	}
 
 	// Unlock to register
 	c.mu.Unlock()

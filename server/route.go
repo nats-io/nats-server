@@ -1,9 +1,11 @@
-// Copyright 2013-2014 Apcera Inc. All rights reserved.
+// Copyright 2013-2015 Apcera Inc. All rights reserved.
 
 package server
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -24,14 +26,14 @@ type connectInfo struct {
 	Pedantic bool   `json:"pedantic"`
 	User     string `json:"user,omitempty"`
 	Pass     string `json:"pass,omitempty"`
-	Ssl      bool   `json:"ssl_required"`
+	TLS      bool   `json:"tls_required"`
 	Name     string `json:"name"`
 }
 
 const conProto = "CONNECT %s" + _CRLF_
 
 // Lock should be held entering here.
-func (c *client) sendConnect() {
+func (c *client) sendConnect(tlsRequired bool) {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
 		user = userInfo.Username()
@@ -42,16 +44,41 @@ func (c *client) sendConnect() {
 		Pedantic: false,
 		User:     user,
 		Pass:     pass,
-		Ssl:      false,
+		TLS:      tlsRequired,
 		Name:     c.srv.info.ID,
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		Errorf("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
+		return
 	}
 	c.bw.WriteString(fmt.Sprintf(conProto, b))
 	c.bw.Flush()
+}
+
+// Process the info message if we are a route.
+func (c *client) processRouteInfo(info *Info) {
+	c.mu.Lock()
+	if c.route == nil {
+		c.mu.Unlock()
+		return
+	}
+	c.route.remoteID = info.ID
+
+	// Check to see if we have this remote already registered.
+	// This can happen when both servers have routes to each other.
+	s := c.srv
+	c.mu.Unlock()
+
+	if s.addRoute(c) {
+		c.Debugf("Registering remote route %q", info.ID)
+		// Send our local subscriptions to this route.
+		s.sendLocalSubsToRoute(c)
+	} else {
+		c.Debugf("Detected duplicate remote route %q", info.ID)
+		c.closeConnection()
+	}
 }
 
 // This will send local subscription state to a new route connection.
@@ -88,9 +115,11 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	r := &route{didSolicit: didSolicit}
 	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
-	// Grab JSON info string
+	// Grab server variables.
 	s.mu.Lock()
 	info := s.routeInfoJSON
+	authRequired := s.routeInfo.AuthRequired
+	tlsRequired := s.routeInfo.TLSRequired
 	s.mu.Unlock()
 
 	// Grab lock
@@ -101,18 +130,46 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c.Debugf("Route connection created")
 
+	// Check for TLS
+	if tlsRequired {
+		// Copy off the config to add in ServerName if we
+		tlsConfig := *s.opts.ClusterTLSConfig
+
+		// If we solicited, we will act like the client, otherwise the server.
+		if didSolicit {
+			c.Debugf("Starting TLS route client handshake")
+			// Specify the ServerName we are expecting.
+			host, _, _ := net.SplitHostPort(rURL.Host)
+			tlsConfig.ServerName = host
+			c.nc = tls.Client(c.nc, &tlsConfig)
+		} else {
+			c.Debugf("Starting TLS route server handshake")
+			c.nc = tls.Server(c.nc, &tlsConfig)
+		}
+
+		conn := c.nc.(*tls.Conn)
+		err := conn.Handshake()
+		if err != nil {
+			c.Debugf("TLS route handshake error: %v", err)
+			c.closeConnection()
+			return nil
+		}
+		// Rewrap bw
+		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+	}
+
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		r.url = rURL
 		c.Debugf("Route connect msg sent")
-		c.sendConnect()
+		c.sendConnect(tlsRequired)
 	}
 
 	// Send our info to the other side.
 	s.sendInfo(c, info)
 
 	// Check for Auth required state for incoming connections.
-	if s.routeInfo.AuthRequired && !didSolicit {
+	if authRequired && !didSolicit {
 		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
 		c.setAuthTimer(ttl)
 	}
@@ -295,14 +352,18 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 // StartRouting will start the accept loop on the cluster host:port
 // and will actively try to connect to listed routes.
 func (s *Server) StartRouting() {
+	// Check for TLSConfig
+	tlsReq := s.opts.ClusterTLSConfig != nil
 	info := Info{
 		ID:           s.info.ID,
 		Version:      s.info.Version,
 		Host:         s.opts.ClusterHost,
 		Port:         s.opts.ClusterPort,
 		AuthRequired: false,
-		SslRequired:  false,
-		MaxPayload:   MAX_PAYLOAD_SIZE,
+		TLSRequired:  tlsReq,
+		SSLRequired:  tlsReq,
+		TLSVerify:    tlsReq,
+		MaxPayload:   s.info.MaxPayload,
 	}
 	// Check for Auth items
 	if s.opts.ClusterUsername != "" {

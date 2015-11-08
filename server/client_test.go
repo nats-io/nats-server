@@ -18,7 +18,7 @@ type serverInfo struct {
 	Port         uint   `json:"port"`
 	Version      string `json:"version"`
 	AuthRequired bool   `json:"auth_required"`
-	SslRequired  bool   `json:"ssl_required"`
+	TLSRequired  bool   `json:"ssl_required"`
 	MaxPayload   int64  `json:"max_payload"`
 }
 
@@ -93,7 +93,7 @@ func TestClientCreateAndInfo(t *testing.T) {
 	}
 	// Sanity checks
 	if info.MaxPayload != MAX_PAYLOAD_SIZE ||
-		info.AuthRequired || info.SslRequired ||
+		info.AuthRequired || info.TLSRequired ||
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
 	}

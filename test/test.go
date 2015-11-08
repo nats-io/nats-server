@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/server"
 )
 
@@ -53,7 +54,16 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 		panic(fmt.Sprintf("Error processing configuration file: %v", err))
 	}
 	opts.NoSigs, opts.NoLog = true, true
-	srv = RunServer(opts)
+
+	// Check for auth
+	var a server.Auth
+	if opts.Authorization != "" {
+		a = &auth.Token{Token: opts.Authorization}
+	}
+	if opts.Username != "" {
+		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
+	}
+	srv = RunServerWithAuth(opts, a)
 	return
 }
 
