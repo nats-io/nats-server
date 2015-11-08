@@ -34,12 +34,11 @@ func TestMaxPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not make a raw connection to the server: %v", err)
 	}
-	info := make([]byte, 200)
+	info := make([]byte, 512)
 	_, err = conn.Read(info)
 	if err != nil {
 		t.Fatalf("Expected an info message to be sent by the server: %s", err)
 	}
-
 	pub := fmt.Sprintf("PUB bar %d\r\n", size)
 	conn.Write([]byte(pub))
 	if err != nil {
