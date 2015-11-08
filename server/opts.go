@@ -63,6 +63,8 @@ type authorization struct {
 type tlsConfig struct {
 	certFile string
 	keyFile  string
+	caFile   string
+	verify   bool
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -207,6 +209,19 @@ func parseTLS(tlsm map[string]interface{}, opts *Options) error {
 				return fmt.Errorf("error parsing tls config, expected 'key_file' to be filename")
 			}
 			tc.keyFile = keyFile
+		case "ca_file":
+			caFile, ok := mv.(string)
+			if !ok {
+				return fmt.Errorf("error parsing tls config, expected 'ca_file' to be filename")
+			}
+			tc.caFile = caFile
+		case "verify":
+			verify, ok := mv.(bool)
+			if !ok {
+				return fmt.Errorf("error parsing tls config, expected 'veridy' to be a boolean")
+			}
+			tc.verify = verify
+
 		default:
 			return fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
 		}
@@ -233,6 +248,10 @@ func parseTLS(tlsm map[string]interface{}, opts *Options) error {
 			//			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		},
+	}
+	// Require client certificates as needed
+	if tc.verify == true {
+		config.ClientAuth = tls.RequireAnyClientCert
 	}
 	opts.TLSConfig = &config
 	return nil

@@ -74,3 +74,58 @@ func TestTLSConnection(t *testing.T) {
 	nc.Flush()
 	defer nc.Close()
 }
+
+func TestTLSClientCertificate(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tlsverify.conf")
+	defer srv.Shutdown()
+
+	nurl := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	_, err := nats.Connect(nurl)
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server without a certificate")
+	}
+
+	_, err = nats.SecureConnect(nurl)
+	if err == nil {
+		t.Fatalf("Expected error trying to secure connect to secure server without a certificate")
+	}
+
+	// Load client certificate to sucessfully connect.
+	certFile := "./configs/certs/client-cert.pem"
+	keyFile := "./configs/certs/client-key.pem"
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("error parsing X509 certificate/key pair: %v", err)
+	}
+
+	// Load in root CA for server verification
+	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	if err != nil || rootPEM == nil {
+		t.Fatalf("failed to read root certificate")
+	}
+	pool := x509.NewCertPool()
+	ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+	if !ok {
+		t.Fatalf("failed to parse root certificate")
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ServerName:   opts.Host,
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	copts := nats.DefaultOptions
+	copts.Url = nurl
+	copts.Secure = true
+	copts.TLSConfig = config
+
+	nc, err := copts.Connect()
+	if err != nil {
+		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
+	}
+	nc.Flush()
+	defer nc.Close()
+}

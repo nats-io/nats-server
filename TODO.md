@@ -2,6 +2,7 @@
 # General
 
 - [ ] SSL/TLS support
+- [ ] Better user/pass support using bcrypt etc.
 - [ ] Pedantic state
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Dynamic socket buffer sizes
