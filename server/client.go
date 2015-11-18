@@ -473,16 +473,27 @@ func (c *client) processSub(argo []byte) (err error) {
 		return fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
 
+	shouldForward := false
+
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()
 		return nil
 	}
-	c.subs.Set(sub.sid, sub)
-	if c.srv != nil {
-		err = c.srv.sl.Insert(sub.subject, sub)
+
+	// We can have two SUB protocols coming from a route due to some
+	// race conditions. We should make sure that we process only one.
+	if c.subs.Get(sub.sid) == nil {
+		c.subs.Set(sub.sid, sub)
+		if c.srv != nil {
+			err = c.srv.sl.Insert(sub.subject, sub)
+			if err != nil {
+				c.subs.Remove(sub.sid)
+			} else {
+				shouldForward = c.typ != ROUTER
+			}
+		}
 	}
-	shouldForward := c.typ != ROUTER && c.srv != nil
 	c.mu.Unlock()
 	if err != nil {
 		c.sendErr("Invalid Subject")
