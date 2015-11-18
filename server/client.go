@@ -50,7 +50,8 @@ type client struct {
 	parseState
 	stats
 
-	route *route
+	route         *route
+	sendLocalSubs bool
 }
 
 func (c *client) String() (id string) {
