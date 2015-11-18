@@ -88,6 +88,18 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	b := bytes.Buffer{}
 
 	s.mu.Lock()
+	if s.routes[route.cid] == nil {
+
+		// We are too early, let createRoute call this function.
+		route.mu.Lock()
+		route.sendLocalSubs = true
+		route.mu.Unlock()
+
+		s.mu.Unlock()
+
+		return
+	}
+
 	for _, client := range s.clients {
 		client.mu.Lock()
 		subs := client.subs.All()
@@ -181,6 +193,17 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	s.mu.Lock()
 	s.routes[c.cid] = c
 	s.mu.Unlock()
+
+	// Now that the route is registered, we need to make sure that
+	// the send of the local subs was not done too early (from
+	// processRouteInfo). If it was, then send again.
+	c.mu.Lock()
+	sendLocalSubs := c.sendLocalSubs
+	c.mu.Unlock()
+
+	if sendLocalSubs {
+		s.sendLocalSubsToRoute(c)
+	}
 
 	return c
 }
