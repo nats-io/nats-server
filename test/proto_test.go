@@ -193,3 +193,36 @@ func TestProtoCrash(t *testing.T) {
 	send("\r\n")
 	expect(okRe)
 }
+
+// Issue #136
+func TestDuplicateProtoSub(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+
+	send("PING\r\n")
+	expect(pongRe)
+
+	send("SUB foo 1\r\n")
+
+	send("SUB foo 1\r\n")
+
+	ns := 0
+
+	for i := 0; i < 5; i++ {
+		ns = int(s.NumSubscriptions())
+		if ns == 0 {
+			time.Sleep(50 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+
+	if ns != 1 {
+		t.Fatalf("Expected 1 subscription, got %d\n", ns)
+	}
+}
