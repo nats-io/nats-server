@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats"
 )
 
 type serverInfo struct {
@@ -280,7 +284,7 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 func TestClientPubWithQueueSub(t *testing.T) {
 	_, c, cr := setupClient()
 
-	num := 10
+	num := 100
 
 	// Queue SUB/PUB
 	subs := []byte("SUB foo g1 1\r\nSUB foo g1 2\r\n")
@@ -320,7 +324,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 		t.Fatalf("Received wrong # of msgs: %d vs %d\n", received, num)
 	}
 	// Threshold for randomness for now
-	if n1 < 2 || n2 < 2 {
+	if n1 < 20 || n2 < 20 {
 		t.Fatalf("Received wrong # of msgs per subscriber: %d - %d\n", n1, n2)
 	}
 }
@@ -560,4 +564,48 @@ func TestTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 	if !strings.HasPrefix(l, "PONG\r\n") {
 		t.Fatalf("PONG response was expected, got: %q\n", l)
 	}
+}
+
+func TestUnsubRace(t *testing.T) {
+	s := RunServer(nil)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+		DefaultOptions.Host,
+		DefaultOptions.Port))
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc.Close()
+
+	ncp, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+		DefaultOptions.Host,
+		DefaultOptions.Port))
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer ncp.Close()
+
+	sub, _ := nc.Subscribe("foo", func(m *nats.Msg) {
+		// Just eat it..
+	})
+
+	nc.Flush()
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+
+	go func() {
+		for i := 0; i < 10000; i++ {
+			ncp.Publish("foo", []byte("hello"))
+		}
+		wg.Done()
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+
+	sub.Unsubscribe()
+
+	wg.Wait()
 }
