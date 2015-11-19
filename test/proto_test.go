@@ -72,6 +72,9 @@ func TestUnsubMax(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		send("PUB foo 2\r\nok\r\n")
 	}
+
+	time.Sleep(50 * time.Millisecond)
+
 	matches := expectMsgs(2)
 	checkMsg(t, matches[0], "foo", "22", "", "2", "ok")
 	checkMsg(t, matches[1], "foo", "22", "", "2", "ok")

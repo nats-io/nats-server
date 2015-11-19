@@ -52,6 +52,8 @@ type client struct {
 
 	route         *route
 	sendLocalSubs bool
+	debug         bool
+	trace         bool
 }
 
 func (c *client) String() (id string) {
@@ -95,6 +97,8 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
 	c.subs = hashmap.New()
+	c.debug = (atomic.LoadInt32(&debug) != 0)
+	c.trace = (atomic.LoadInt32(&trace) != 0)
 
 	// This is a scratch buffer used for processMsg()
 	// The msg header starts with "MSG ",
@@ -191,7 +195,7 @@ func (c *client) readLoop() {
 }
 
 func (c *client) traceMsg(msg []byte) {
-	if trace == 0 {
+	if !c.trace {
 		return
 	}
 	// FIXME(dlc), allow limits to printable payload
@@ -207,7 +211,7 @@ func (c *client) traceOutOp(op string, arg []byte) {
 }
 
 func (c *client) traceOp(format, op string, arg []byte) {
-	if trace == 0 {
+	if !c.trace {
 		return
 	}
 
@@ -329,7 +333,7 @@ func (c *client) processPong() {
 }
 
 func (c *client) processMsgArgs(arg []byte) error {
-	if trace == 1 {
+	if c.trace {
 		c.traceInOp("MSG", arg)
 	}
 
@@ -378,7 +382,7 @@ func (c *client) processMsgArgs(arg []byte) error {
 }
 
 func (c *client) processPub(arg []byte) error {
-	if trace == 1 {
+	if c.trace {
 		c.traceInOp("PUB", arg)
 	}
 
@@ -538,17 +542,31 @@ func (c *client) processUnsub(arg []byte) error {
 	default:
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
-	if sub, ok := (c.subs.Get(sid)).(*subscription); ok {
+
+	var sub *subscription
+
+	unsub := false
+	shouldForward := false
+	ok := false
+
+	c.mu.Lock()
+	if sub, ok = (c.subs.Get(sid)).(*subscription); ok {
 		if max > 0 {
 			sub.max = int64(max)
 		} else {
 			// Clear it here to override
 			sub.max = 0
 		}
+		unsub = true
+		shouldForward = c.typ != ROUTER && c.srv != nil
+	}
+	c.mu.Unlock()
+
+	if unsub {
 		c.unsubscribe(sub)
-		if shouldForward := c.typ != ROUTER && c.srv != nil; shouldForward {
-			c.srv.broadcastUnSubscribe(sub)
-		}
+	}
+	if shouldForward {
+		c.srv.broadcastUnSubscribe(sub)
 	}
 	if c.opts.Verbose {
 		c.sendOK()
@@ -641,7 +659,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		goto writeErr
 	}
 
-	if trace == 1 {
+	if c.trace {
 		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
 	}
 
@@ -688,7 +706,7 @@ func (c *client) processMsg(msg []byte) {
 		atomic.AddInt64(&srv.inBytes, msgSize)
 	}
 
-	if trace == 1 {
+	if c.trace {
 		c.traceMsg(msg)
 	}
 	if c.opts.Verbose {
