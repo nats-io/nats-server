@@ -100,13 +100,12 @@ func TestTLSConfigFile(t *testing.T) {
 			golden, opts)
 	}
 	// Now check TLSConfig a bit more closely
-	// CipherSuites
+	// The default CipherSuites we recommend
 	ciphers := []uint16{
 		//		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		//		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_RSA_WITH_RC4_128_SHA,
 	}
 	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
 		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
@@ -125,6 +124,40 @@ func TestTLSConfigFile(t *testing.T) {
 	if err := cert.VerifyHostname("localhost"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
 	}
+
+	// Now test adding cipher suites.
+	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	tlsConfig = opts.TLSConfig
+	if tlsConfig == nil {
+		t.Fatal("Expected opts.TLSConfig to be non-nil")
+	}
+
+	// CipherSuites listed in the config - test all of them.
+	ciphers = []uint16{
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		//tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		//tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	}
+
+	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
+		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
+	}
+
 }
 
 func TestMergeOverrides(t *testing.T) {

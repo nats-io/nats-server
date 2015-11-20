@@ -34,6 +34,7 @@ Cluster Options:
 Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
+        --help_tls                   TLS help.
 `
 
 // Usage will print out the flag options for the server.

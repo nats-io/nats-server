@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/conf"
+	"os"
 )
 
 // Options block for gnatsd server.
@@ -66,6 +67,7 @@ type tlsConfig struct {
 	keyFile  string
 	caFile   string
 	verify   bool
+	ciphers  []uint16
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -199,6 +201,67 @@ func parseAuthorization(am map[string]interface{}) authorization {
 	return auth
 }
 
+// keep one place where we hold all of the available ciphers
+var cipherMap = map [string]uint16 {
+    "TLS_RSA_WITH_RC4_128_SHA": tls.TLS_RSA_WITH_RC4_128_SHA,
+    "TLS_RSA_WITH_3DES_EDE_CBC_SHA": tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+    "TLS_RSA_WITH_AES_128_CBC_SHA": tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+    "TLS_RSA_WITH_AES_256_CBC_SHA": tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+    "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA": tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+    "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA": tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+    "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA": tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+    "TLS_ECDHE_RSA_WITH_RC4_128_SHA": tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+    "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA": tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA": tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA": tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256": tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256": tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    // go 1.5 "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384": tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    // go 1.5 "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384": tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+}
+
+// For Usage...
+func PrintTlsHelpAndDie() {
+
+	var tlsUsage = `
+TLS configuration is specified in the tls section of a configuration file:
+
+e.g.
+
+    tls {
+        cert_file: "./certs/server-cert.pem"
+        key_file:  "./certs/server-key.pem"
+        ca_file:   "./certs/ca.pem"
+        verify:    true
+
+        cipher_suites: [
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        ]
+    }
+
+Available cipher suites include:
+`
+
+	fmt.Printf("%s\n", tlsUsage)
+	for k, _ := range cipherMap {
+		fmt.Printf("    %s\n", k);
+	}
+	fmt.Printf("\n")
+
+	os.Exit(0)
+}
+
+func parseCipher(cipherName string) (uint16, error) {
+
+	cipher, exists := cipherMap[cipherName];
+	if !exists {
+		return 0, fmt.Errorf("Unrecognized cipher %s", cipherName);
+	}
+
+	return cipher, nil;
+}
+
 // Helper function to parse TLS configs.
 func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 	tc := tlsConfig{}
@@ -228,11 +291,29 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 				return nil, fmt.Errorf("error parsing tls config, expected 'verify' to be a boolean")
 			}
 			tc.verify = verify
-
+		case "cipher_suites":
+			ra := mv.([]interface{})
+			if len(ra) == 0 {
+				return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' cannot be empty.")
+			}
+			tc.ciphers = make([]uint16, 0, len(ra))
+			for _, r := range ra {
+				cipher, err := parseCipher(r.(string))
+				if err != nil {
+					return nil, err
+				}
+				tc.ciphers = append(tc.ciphers, cipher)
+			}
 		default:
 			return nil, fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
 		}
 	}
+
+	// specifing a cipher suite is required.
+	if (tc.ciphers == nil) {
+		return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' not present.")
+	}
+
 	// Now load in cert and private key
 	cert, err := tls.LoadX509KeyPair(tc.certFile, tc.keyFile)
 	if err != nil {
@@ -242,21 +323,16 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error parsing certificate: %v", err)
 	}
+
 	// Create TLSConfig
 	// We will determine the cipher suites that we prefer.
 	config := tls.Config{
 		Certificates:             []tls.Certificate{cert},
 		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,
-		CipherSuites: []uint16{
-			// The SHA384 versions are only in Go1.5
-			//			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			//			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_RSA_WITH_RC4_128_SHA,
-		},
+		CipherSuites:             tc.ciphers,
 	}
+
 	// Require client certificates as needed
 	if tc.verify == true {
 		config.ClientAuth = tls.RequireAnyClientCert

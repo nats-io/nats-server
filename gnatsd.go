@@ -19,6 +19,7 @@ func main() {
 	var showVersion bool
 	var debugAndTrace bool
 	var configFile string
+	var showTlsHelp bool
 
 	// Parse flags
 	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
@@ -52,6 +53,7 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
+	flag.BoolVar(&showTlsHelp, "help_tls", false, "TLS help.")
 
 	// Not public per se, will be replaced with dynamic system, but can be used to lower memory footprint when
 	// lots of connections present.
@@ -64,6 +66,10 @@ func main() {
 	// Show version and exit
 	if showVersion {
 		server.PrintServerAndExit()
+	}
+
+	if showTlsHelp {
+		server.PrintTlsHelpAndDie()
 	}
 
 	// One flag can set multiple options.
