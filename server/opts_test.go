@@ -101,12 +101,7 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 	// Now check TLSConfig a bit more closely
 	// CipherSuites
-	ciphers := []uint16{
-		//		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		//		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	}
+	ciphers := defaultCipherSuites()
 	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
 		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
 	}
