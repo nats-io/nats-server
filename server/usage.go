@@ -18,8 +18,8 @@ Server Options:
 Logging Options:
     -l, --log FILE                   File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
-    -s, --syslog                     Enable syslog as log method.
-    -r, --remote_syslog              Syslog server addr (udp://localhost:514).
+    -s, --syslog                     Enable syslog as log method
+    -r, --remote_syslog              Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
     -DV                              Debug and Trace
@@ -27,6 +27,13 @@ Logging Options:
 Authorization Options:
         --user user                  User required for connections
         --pass password              Password required for connections
+
+TLS Options:
+        --tls                        Enable TLS, do not verify clients (default: false)
+        --tlscert FILE               Server certificate file
+        --tlskey FILE                Private key for server certificate
+        --tlsverify                  Enable TLS, very client certificates
+        --tlscacert client           Client certificate CA for verification
 
 Cluster Options:
         --routes [rurl-1, rurl-2]    Routes to solicit and connect

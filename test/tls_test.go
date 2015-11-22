@@ -3,11 +3,15 @@
 package test
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats"
 )
@@ -128,4 +132,41 @@ func TestTLSClientCertificate(t *testing.T) {
 	}
 	nc.Flush()
 	defer nc.Close()
+}
+
+func TestTLSConnectionTimeout(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+
+	// Dial with normal TCP
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	conn, err := net.Dial("tcp", endpoint)
+	if err != nil {
+		t.Fatalf("Could not connect to %q", endpoint)
+	}
+	defer conn.Close()
+
+	// Read deadlines
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+
+	// Read the INFO string.
+	br := bufio.NewReader(conn)
+	info, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Failed to read INFO - %v", err)
+	}
+	if !strings.HasPrefix(info, "INFO ") {
+		t.Fatalf("INFO response incorrect: %s\n", info)
+	}
+	wait := time.Duration(opts.TLSTimeout * float64(time.Second))
+	time.Sleep(wait)
+	// Read deadlines
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	tlsErr, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading error response - %v\n", err)
+	}
+	if !strings.Contains(tlsErr, "-ERR 'Secure Connection - TLS Required") {
+		t.Fatalf("TLS Timeout response incorrect: %q\n", tlsErr)
+	}
 }

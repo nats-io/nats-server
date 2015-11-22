@@ -17,7 +17,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxConn:            DEFAULT_MAX_CONNECTIONS,
 		PingInterval:       DEFAULT_PING_INTERVAL,
 		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
-		TLSTimeout:         float64(SSL_TIMEOUT) / float64(time.Second),
+		TLSTimeout:         float64(TLS_TIMEOUT) / float64(time.Second),
 		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
@@ -85,6 +85,7 @@ func TestTLSConfigFile(t *testing.T) {
 		Username:    "derek",
 		Password:    "buckley",
 		AuthTimeout: 1.0,
+		TLSTimeout:  0.5,
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
