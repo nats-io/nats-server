@@ -100,7 +100,7 @@ func TestTLSConfigFile(t *testing.T) {
 			golden, opts)
 	}
 	// Now check TLSConfig a bit more closely
-	// The default CipherSuites we recommend
+	// The default CipherSuites
 	ciphers := []uint16{
 		//		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,

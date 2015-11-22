@@ -309,9 +309,12 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 		}
 	}
 
-	// specifing a cipher suite is required.
+	// use some sane defaults
 	if tc.ciphers == nil {
-		return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' not present.")
+		tc.ciphers = []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		}
 	}
 
 	// Now load in cert and private key
