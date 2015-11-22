@@ -244,17 +244,12 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 	}
 	// Create TLSConfig
 	// We will determine the cipher suites that we prefer.
+
 	config := tls.Config{
 		Certificates:             []tls.Certificate{cert},
 		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,
-		CipherSuites: []uint16{
-			// The SHA384 versions are only in Go1.5
-			//			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			//			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		},
+		CipherSuites:             defaultCipherSuites(),
 	}
 	// Require client certificates as needed
 	if tc.verify == true {
