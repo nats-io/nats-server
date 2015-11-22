@@ -147,7 +147,7 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	defer conn.Close()
 
 	// Read deadlines
-	conn.SetReadDeadline(time.Now().Add(time.Second))
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 	// Read the INFO string.
 	br := bufio.NewReader(conn)
@@ -161,7 +161,7 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	wait := time.Duration(opts.TLSTimeout * float64(time.Second))
 	time.Sleep(wait)
 	// Read deadlines
-	conn.SetReadDeadline(time.Now().Add(time.Second))
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	tlsErr, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error reading error response - %v\n", err)

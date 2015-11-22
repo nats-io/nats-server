@@ -160,14 +160,31 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 
 		conn := c.nc.(*tls.Conn)
-		err := conn.Handshake()
-		if err != nil {
+
+		// Setup the timeout
+		ttl := secondsToDuration(s.opts.ClusterTLSTimeout)
+		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
+		conn.SetReadDeadline(time.Now().Add(ttl))
+
+		c.mu.Unlock()
+		if err := conn.Handshake(); err != nil {
 			c.Debugf("TLS route handshake error: %v", err)
+			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection()
 			return nil
 		}
+		// Reset the read deadline
+		conn.SetReadDeadline(time.Time{})
+
+		// Re-Grab lock
+		c.mu.Lock()
+
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+
+		c.Debugf("TLS handshake complete")
+		cs := conn.ConnectionState()
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
 	}
 
 	// Queue Connect proto if we solicited the connection.
@@ -366,7 +383,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		s.createRoute(conn, nil)
+		go s.createRoute(conn, nil)
 	}
 	Debugf("Router accept loop exiting..")
 	s.done <- true
@@ -415,7 +432,7 @@ func (s *Server) reConnectToRoute(rUrl *url.URL) {
 }
 
 func (s *Server) connectToRoute(rUrl *url.URL) {
-	for s.isRunning() {
+	for s.isRunning() && rUrl != nil {
 		Debugf("Trying to connect to route on %s", rUrl.Host)
 		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {

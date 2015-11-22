@@ -467,6 +467,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+
 		c.Debugf("TLS handshake complete")
 		cs := conn.ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
