@@ -60,6 +60,7 @@ func TestTLSConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
 	}
+	defer nc.Close()
 
 	subj := "foo-tls"
 	sub, _ := nc.SubscribeSync(subj)
@@ -70,7 +71,6 @@ func TestTLSConnection(t *testing.T) {
 	if nmsgs != 1 {
 		t.Fatalf("Expected to receive a message over the TLS connection")
 	}
-	defer nc.Close()
 }
 
 func TestTLSClientCertificate(t *testing.T) {
