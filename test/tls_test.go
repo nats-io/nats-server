@@ -33,21 +33,6 @@ func TestTLSConnection(t *testing.T) {
 		t.Fatalf("Expected error trying to connect to secure server with no auth")
 	}
 
-	nc, err = nats.SecureConnect(nurl)
-	if err != nil {
-		t.Fatalf("Got an error on SecureConnect: %+v\n", err)
-	}
-	subj := "foo-tls"
-	sub, _ := nc.SubscribeSync(subj)
-
-	nc.Publish(subj, []byte("We are Secure!"))
-	nc.Flush()
-	nmsgs, _ := sub.QueuedMsgs()
-	if nmsgs != 1 {
-		t.Fatalf("Expected to receive a message over the TLS connection")
-	}
-	defer nc.Close()
-
 	// Now do more advanced checking, verifying servername and using rootCA.
 	// Setup our own TLSConfig using RootCA from our self signed cert.
 	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
@@ -75,7 +60,16 @@ func TestTLSConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
 	}
+
+	subj := "foo-tls"
+	sub, _ := nc.SubscribeSync(subj)
+
+	nc.Publish(subj, []byte("We are Secure!"))
 	nc.Flush()
+	nmsgs, _ := sub.QueuedMsgs()
+	if nmsgs != 1 {
+		t.Fatalf("Expected to receive a message over the TLS connection")
+	}
 	defer nc.Close()
 }
 
