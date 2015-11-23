@@ -17,12 +17,13 @@ func TestDefaultOptions(t *testing.T) {
 		MaxConn:            DEFAULT_MAX_CONNECTIONS,
 		PingInterval:       DEFAULT_PING_INTERVAL,
 		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
-		TLSTimeout:         float64(SSL_TIMEOUT) / float64(time.Second),
+		TLSTimeout:         float64(TLS_TIMEOUT) / float64(time.Second),
 		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
 		MaxPending:         MAX_PENDING_SIZE,
 		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
+		ClusterTLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
 		BufSize:            DEFAULT_BUF_SIZE,
 	}
 
@@ -85,6 +86,7 @@ func TestTLSConfigFile(t *testing.T) {
 		Username:    "derek",
 		Password:    "buckley",
 		AuthTimeout: 1.0,
+		TLSTimeout:  0.5,
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
@@ -100,13 +102,8 @@ func TestTLSConfigFile(t *testing.T) {
 			golden, opts)
 	}
 	// Now check TLSConfig a bit more closely
-	// The default CipherSuites
-	ciphers := []uint16{
-		//		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		//		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	}
+	// CipherSuites
+	ciphers := defaultCipherSuites()
 	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
 		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
 	}
@@ -150,8 +147,6 @@ func TestTLSConfigFile(t *testing.T) {
 		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		//tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		//tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 	}
 
 	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
@@ -167,7 +162,7 @@ func TestTLSConfigFile(t *testing.T) {
 	// Test an empty cipher entry in a config file.
 	opts, err = ProcessConfigFile("./configs/tls_empty_cipher.conf")
 	if err == nil {
-		t.Fatalf("Did not receive an error from a empty cipher.")
+		t.Fatalf("Did not receive an error from empty cipher_suites.")
 	}
 }
 

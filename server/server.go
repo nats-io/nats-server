@@ -294,6 +294,11 @@ func (s *Server) AcceptLoop() {
 		return
 	}
 
+	// Alert of TLS enabled.
+	if s.opts.TLSConfig != nil {
+		Noticef("TLS required for client connections")
+	}
+
 	Noticef("gnatsd is ready")
 
 	// Setup state that can enable shutdown
@@ -333,7 +338,7 @@ func (s *Server) AcceptLoop() {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		s.createClient(conn)
+		go s.createClient(conn)
 	}
 	Noticef("Server Exiting..")
 	s.done <- true
@@ -424,19 +429,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Send our information.
 	s.sendInfo(c, info)
 
-	// Check for TLS
-	if tlsRequired {
-		c.Debugf("Starting TLS client connection handshake")
-		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
-		conn := c.nc.(*tls.Conn)
-		err := conn.Handshake()
-		if err != nil {
-			c.Debugf("TLS handshake error: %v", err)
-		}
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
-	}
-
 	// Unlock to register
 	c.mu.Unlock()
 
@@ -445,7 +437,111 @@ func (s *Server) createClient(conn net.Conn) *client {
 	s.clients[c.cid] = c
 	s.mu.Unlock()
 
+	// Check for TLS
+	if tlsRequired {
+		// Re-Grab lock
+		c.mu.Lock()
+
+		c.Debugf("Starting TLS client connection handshake")
+		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
+		conn := c.nc.(*tls.Conn)
+
+		// Setup the timeout
+		ttl := secondsToDuration(s.opts.TLSTimeout)
+		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
+		conn.SetReadDeadline(time.Now().Add(ttl))
+
+		// Force handshake
+		c.mu.Unlock()
+		if err := conn.Handshake(); err != nil {
+			c.Debugf("TLS handshake error: %v", err)
+			c.sendErr("Secure Connection - TLS Required")
+			c.closeConnection()
+			return nil
+		}
+		// Reset the read deadline
+		conn.SetReadDeadline(time.Time{})
+
+		// Re-Grab lock
+		c.mu.Lock()
+
+		// Rewrap bw
+		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+
+		c.Debugf("TLS handshake complete")
+		cs := conn.ConnectionState()
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+		c.mu.Unlock()
+	}
+
 	return c
+}
+
+// Handle closing down a connection when the handshake has timedout.
+func tlsTimeout(c *client, conn *tls.Conn) {
+	c.mu.Lock()
+	nc := c.nc
+	c.mu.Unlock()
+	// Check if already closed
+	if nc == nil {
+		return
+	}
+	cs := conn.ConnectionState()
+	if cs.HandshakeComplete == false {
+		c.Debugf("TLS handshake timeout")
+		c.sendErr("Secure Connection - TLS Required")
+		c.closeConnection()
+	}
+}
+
+// Seems silly we have to write these
+func tlsVersion(ver uint16) string {
+	switch ver {
+	case tls.VersionTLS10:
+		return "1.0"
+	case tls.VersionTLS11:
+		return "1.1"
+	case tls.VersionTLS12:
+		return "1.2"
+	}
+	return fmt.Sprintf("Unknown [%x]", ver)
+}
+
+// We use hex here so we don't need multiple versions
+func tlsCipher(cs uint16) string {
+	switch cs {
+	case 0x0005:
+		return "TLS_RSA_WITH_RC4_128_SHA"
+	case 0x000a:
+		return "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+	case 0x002f:
+		return "TLS_RSA_WITH_AES_128_CBC_SHA"
+	case 0x0035:
+		return "TLS_RSA_WITH_AES_256_CBC_SHA"
+	case 0xc007:
+		return "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA"
+	case 0xc009:
+		return "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"
+	case 0xc00a:
+		return "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA"
+	case 0xc011:
+		return "TLS_ECDHE_RSA_WITH_RC4_128_SHA"
+	case 0xc012:
+		return "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA"
+	case 0xc013:
+		return "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+	case 0xc014:
+		return "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+	case 0xc02f:
+		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+	case 0xc02b:
+		return "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+	case 0xc030:
+		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+	case 0xc02c:
+		return "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+	}
+	return fmt.Sprintf("Unknown [%x]", cs)
 }
 
 // Assume the lock is held upon entry.

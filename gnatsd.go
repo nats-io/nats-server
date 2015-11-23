@@ -55,6 +55,12 @@ func main() {
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	flag.BoolVar(&showTlsHelp, "help_tls", false, "TLS help.")
 
+	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
+	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
+	flag.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
+	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
+	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+
 	// Not public per se, will be replaced with dynamic system, but can be used to lower memory footprint when
 	// lots of connections present.
 	flag.IntVar(&opts.BufSize, "bs", 0, "Read/Write buffer size per client connection.")
@@ -103,6 +109,9 @@ func main() {
 		server.PrintAndDie(err.Error())
 	}
 	opts.Routes = newroutes
+
+	// Configure TLS based on any present flags
+	configureTLS(&opts)
 
 	// Create the server with appropriate options.
 	s := server.New(&opts)
@@ -153,4 +162,30 @@ func configureLogger(s *server.Server, opts *server.Options) {
 	}
 
 	s.SetLogger(log, opts.Debug, opts.Trace)
+}
+
+func configureTLS(opts *server.Options) {
+	// If no trigger flags, ignore the others
+	if !opts.TLS && !opts.TLSVerify {
+		return
+	}
+	if opts.TLSCert == "" {
+		server.PrintAndDie("TLS Server certificate must be present and valid.")
+	}
+	if opts.TLSKey == "" {
+		server.PrintAndDie("TLS Server private key must be present and valid.")
+	}
+
+	tc := server.TLSConfigOpts{}
+	tc.CertFile = opts.TLSCert
+	tc.KeyFile = opts.TLSKey
+	tc.CaFile = opts.TLSCaCert
+
+	if opts.TLSVerify {
+		tc.Verify = true
+	}
+	var err error
+	if opts.TLSConfig, err = server.GenTLSConfig(&tc); err != nil {
+		server.PrintAndDie(err.Error())
+	}
 }
