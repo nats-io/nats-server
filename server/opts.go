@@ -41,6 +41,7 @@ type Options struct {
 	ClusterUsername    string        `json:"-"`
 	ClusterPassword    string        `json:"-"`
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
+	ClusterTLSTimeout  float64       `json:"-"`
 	ClusterTLSConfig   *tls.Config   `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
@@ -51,6 +52,11 @@ type Options struct {
 	RoutesStr          string        `json:"-"`
 	BufSize            int           `json:"-"`
 	TLSTimeout         float64       `json:"tls_timeout"`
+	TLS                bool          `json:"-"`
+	TLSVerify          bool          `json:"-"`
+	TLSCert            string        `json:"-"`
+	TLSKey             string        `json:"-"`
+	TLSCaCert          string        `json:"-"`
 	TLSConfig          *tls.Config   `json:"-"`
 }
 
@@ -61,11 +67,13 @@ type authorization struct {
 }
 
 // This struct holds the parsed tls config information.
-type tlsConfig struct {
-	certFile string
-	keyFile  string
-	caFile   string
-	verify   bool
+// It spublic so we can use ot for flag parsing
+type TLSConfigOpts struct {
+	CertFile string
+	KeyFile  string
+	CaFile   string
+	Verify   bool
+	Timeout  float64
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -132,9 +140,14 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxConn = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
-			if opts.TLSConfig, err = parseTLS(tlsm); err != nil {
+			tc, err := parseTLS(tlsm)
+			if err != nil {
 				return nil, err
 			}
+			if opts.TLSConfig, err = GenTLSConfig(tc); err != nil {
+				return nil, err
+			}
+			opts.TLSTimeout = tc.Timeout
 		}
 	}
 	return opts, nil
@@ -168,9 +181,14 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 		case "tls":
 			var err error
 			tlsm := mv.(map[string]interface{})
-			if opts.ClusterTLSConfig, err = parseTLS(tlsm); err != nil {
+			tc, err := parseTLS(tlsm)
+			if err != nil {
 				return err
 			}
+			if opts.ClusterTLSConfig, err = GenTLSConfig(tc); err != nil {
+				return err
+			}
+			opts.ClusterTLSTimeout = tc.Timeout
 		}
 	}
 	return nil
@@ -200,8 +218,9 @@ func parseAuthorization(am map[string]interface{}) authorization {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
-	tc := tlsConfig{}
+//func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
+func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
+	tc := TLSConfigOpts{}
 	for mk, mv := range tlsm {
 		switch strings.ToLower(mk) {
 		case "cert_file":
@@ -209,32 +228,44 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 			if !ok {
 				return nil, fmt.Errorf("error parsing tls config, expected 'cert_file' to be filename")
 			}
-			tc.certFile = certFile
+			tc.CertFile = certFile
 		case "key_file":
 			keyFile, ok := mv.(string)
 			if !ok {
 				return nil, fmt.Errorf("error parsing tls config, expected 'key_file' to be filename")
 			}
-			tc.keyFile = keyFile
+			tc.KeyFile = keyFile
 		case "ca_file":
 			caFile, ok := mv.(string)
 			if !ok {
 				return nil, fmt.Errorf("error parsing tls config, expected 'ca_file' to be filename")
 			}
-			tc.caFile = caFile
+			tc.CaFile = caFile
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
 				return nil, fmt.Errorf("error parsing tls config, expected 'verify' to be a boolean")
 			}
-			tc.verify = verify
-
+			tc.Verify = verify
+		case "timeout":
+			at := float64(0)
+			switch mv.(type) {
+			case int64:
+				at = float64(mv.(int64))
+			case float64:
+				at = mv.(float64)
+			}
+			tc.Timeout = at
 		default:
 			return nil, fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
 		}
 	}
+	return &tc, nil
+}
+
+func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	// Now load in cert and private key
-	cert, err := tls.LoadX509KeyPair(tc.certFile, tc.keyFile)
+	cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
 	}
@@ -248,21 +279,15 @@ func parseTLS(tlsm map[string]interface{}) (*tls.Config, error) {
 		Certificates:             []tls.Certificate{cert},
 		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,
-		CipherSuites: []uint16{
-			// The SHA384 versions are only in Go1.5
-			//			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			//			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		},
+		CipherSuites:             defaultCipherSuites(),
 	}
 	// Require client certificates as needed
-	if tc.verify == true {
+	if tc.Verify == true {
 		config.ClientAuth = tls.RequireAnyClientCert
 	}
 	// Add in CAs if applicable.
-	if tc.caFile != "" {
-		rootPEM, err := ioutil.ReadFile(tc.caFile)
+	if tc.CaFile != "" {
+		rootPEM, err := ioutil.ReadFile(tc.CaFile)
 		if err != nil || rootPEM == nil {
 			return nil, err
 		}
@@ -451,10 +476,13 @@ func processOptions(opts *Options) {
 		opts.MaxPingsOut = DEFAULT_PING_MAX_OUT
 	}
 	if opts.TLSTimeout == 0 {
-		opts.TLSTimeout = float64(SSL_TIMEOUT) / float64(time.Second)
+		opts.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	}
+	if opts.ClusterTLSTimeout == 0 {
+		opts.ClusterTLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
 	if opts.ClusterAuthTimeout == 0 {
 		opts.ClusterAuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
