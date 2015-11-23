@@ -121,6 +121,49 @@ func TestTLSConfigFile(t *testing.T) {
 	if err := cert.VerifyHostname("localhost"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
 	}
+
+	// Now test adding cipher suites.
+	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	tlsConfig = opts.TLSConfig
+	if tlsConfig == nil {
+		t.Fatal("Expected opts.TLSConfig to be non-nil")
+	}
+
+	// CipherSuites listed in the config - test all of them.
+	ciphers = []uint16{
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	}
+
+	if !reflect.DeepEqual(tlsConfig.CipherSuites, ciphers) {
+		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
+	}
+
+	// Test an unrecognized/bad cipher
+	opts, err = ProcessConfigFile("./configs/tls_bad_cipher.conf")
+	if err == nil {
+		t.Fatalf("Did not receive an error from a unrecognized cipher.")
+	}
+
+	// Test an empty cipher entry in a config file.
+	opts, err = ProcessConfigFile("./configs/tls_empty_cipher.conf")
+	if err == nil {
+		t.Fatalf("Did not receive an error from empty cipher_suites.")
+	}
 }
 
 func TestMergeOverrides(t *testing.T) {
