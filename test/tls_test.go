@@ -163,10 +163,7 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	// Read deadlines
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	tlsErr, err := br.ReadString('\n')
-	if err != nil {
-		t.Fatalf("Error reading error response - %v\n", err)
-	}
-	if !strings.Contains(tlsErr, "-ERR 'Secure Connection - TLS Required") {
+	if err == nil && !strings.Contains(tlsErr, "-ERR 'Secure Connection - TLS Required") {
 		t.Fatalf("TLS Timeout response incorrect: %q\n", tlsErr)
 	}
 }
