@@ -31,6 +31,13 @@ Authorization Options:
         --user user                  User required for connections
         --pass password              Password required for connections
 
+TLS Options:
+        --tls                        Enable TLS, do not verify clients (default: false)
+        --tlscert FILE               Server certificate file
+        --tlskey FILE                Private key for server certificate
+        --tlsverify                  Enable TLS, very client certificates
+        --tlscacert client           Client certificate CA for verification
+
 Cluster Options:
         --routes [rurl-1, rurl-2]    Routes to solicit and connect
 

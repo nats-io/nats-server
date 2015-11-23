@@ -189,6 +189,11 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			if opts.ClusterTLSConfig, err = GenTLSConfig(tc); err != nil {
 				return err
 			}
+			// For clusters, we will force strict verification. We also act
+			// as both client and server, so will mirror the rootCA to the
+			// clientCA pool.
+			opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			opts.ClusterTLSConfig.ClientCAs = opts.ClusterTLSConfig.RootCAs
 			opts.ClusterTLSTimeout = tc.Timeout
 		}
 	}
