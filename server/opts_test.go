@@ -158,6 +158,17 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CipherSuites)
 	}
 
+	// Test an unrecognized/bad cipher
+	opts, err = ProcessConfigFile("./configs/tls_bad_cipher.conf")
+	if err == nil {
+		t.Fatalf("Did not receive an error from a unrecognized cipher.")
+	}
+
+	// Test an empty cipher entry in a config file.
+	opts, err = ProcessConfigFile("./configs/tls_empty_cipher.conf")
+	if err == nil {
+		t.Fatalf("Did not receive an error from a empty cipher.")
+	}
 }
 
 func TestMergeOverrides(t *testing.T) {
