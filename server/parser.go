@@ -631,6 +631,13 @@ func (c *client) parse(buf []byte) error {
 		// new buffer to hold the split message.
 		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
 			lrem := len(buf[c.as:])
+
+			// Consider it a protocol error when the remaining payload
+			// is larger than the reported size for PUB. It can happen
+			// when processing incomplete messages from rogue clients.
+			if lrem > c.pa.size+LEN_CR_LF {
+				goto parseErr
+			}
 			c.msgBuf = make([]byte, lrem, c.pa.size+LEN_CR_LF)
 			copy(c.msgBuf, buf[c.as:])
 		} else {
@@ -655,8 +662,12 @@ parseErr:
 
 func protoSnippet(start int, buf []byte) string {
 	stop := start + PROTO_SNIPPET_SIZE
-	if stop > len(buf) {
-		stop = len(buf) - 1
+	bufSize := len(buf)
+	if start == bufSize {
+		return ""
+	}
+	if stop > bufSize {
+		stop = bufSize - 1
 	}
 	return fmt.Sprintf("%q", buf[start:stop])
 }
