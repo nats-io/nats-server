@@ -36,7 +36,7 @@ TLS Options:
         --tlscert FILE               Server certificate file
         --tlskey FILE                Private key for server certificate
         --tlsverify                  Enable TLS, very client certificates
-        --tlscacert client           Client certificate CA for verification
+        --tlscacert FILE             Client certificate CA for verification
 
 Cluster Options:
         --routes [rurl-1, rurl-2]    Routes to solicit and connect
