@@ -9,12 +9,12 @@ import (
 	"io/ioutil"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nats-io/gnatsd/conf"
-	"os"
 )
 
 // Options block for gnatsd server.
@@ -44,6 +44,7 @@ type Options struct {
 	ClusterAuthTimeout float64       `json:"auth_timeout"`
 	ClusterTLSTimeout  float64       `json:"-"`
 	ClusterTLSConfig   *tls.Config   `json:"-"`
+	ClusterListenStr   string        `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
