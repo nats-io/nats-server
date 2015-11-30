@@ -229,3 +229,37 @@ func TestDuplicateProtoSub(t *testing.T) {
 		t.Fatalf("Expected 1 subscription, got %d\n", ns)
 	}
 }
+
+func TestIncompletePubArg(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+	send, expect := setupConn(t, c)
+
+	size := 10000
+	goodBuf := ""
+	for i := 0; i < size; i++ {
+		goodBuf += "A"
+	}
+	goodBuf += "\r\n"
+
+	badSize := 3371
+	badBuf := ""
+	for i := 0; i < badSize; i++ {
+		badBuf += "B"
+	}
+	// Message is corrupted and since we are still reading from client,
+	// next PUB accidentally becomes part of the payload of the
+	// incomplete message thus breaking the protocol.
+	badBuf2 := ""
+	for i := 0; i < size; i++ {
+		badBuf2 += "C"
+	}
+	badBuf2 += "\r\n"
+
+	pub := "PUB example 10000\r\n"
+	send(pub + goodBuf + pub + goodBuf + pub + badBuf + pub + badBuf2)
+	expect(errRe)
+}
