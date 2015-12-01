@@ -16,18 +16,21 @@ import (
 )
 
 func usage() {
-	log.Fatalf("Usage: mkpasswd -p <stdin password> \n")
+	log.Fatalf("Usage: mkpasswd [-p <stdin password>] [-c COST] \n")
 }
 
 const (
-	// Make sure password reasonably long to generate enough entropy
+	// Make sure the password is reasonably long to generate enough entropy.
 	PasswordLength = 22
-	// Make cost reasonably expensive, min is 4, max is 31
-	Cost = 11
+	// Common advice from the past couple of years suggests that 10 should be sufficient.
+	// Up that a little, to 11. Feel free to raise this higher if this value from 2015 is
+	// no longer appropriate. Min is 4, Max is 31.
+	DefaultCost = 11
 )
 
 func main() {
 	var pw = flag.Bool("p", false, "Input password via stdin")
+	var cost = flag.Int("c", DefaultCost, "The cost weight, range of 4-31 (11)")
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -50,7 +53,7 @@ func main() {
 		fmt.Printf("pass: %s\n", password)
 	}
 
-	cb, err := bcrypt.GenerateFromPassword([]byte(password), Cost)
+	cb, err := bcrypt.GenerateFromPassword([]byte(password), *cost)
 	if err != nil {
 		log.Fatalf("Error producing bcrypt hash: %v\n", err)
 	}
