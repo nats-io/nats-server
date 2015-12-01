@@ -161,9 +161,9 @@ func TestPasswordClientGoodConnect(t *testing.T) {
 // The bcrypt username/password version
 ////////////////////////////////////////////////////////////
 
-// Generated with util/mkpasswd
-const BCRYPT_AUTH_PASS = "#00L2zPr!j11VsT@e9QGPt"
-const BCRYPT_AUTH_HASH = "$2a$11$wDaOBnEx0GbcFTOzJRywpexI/dxH3sqV3.adFefmDDMJggnOTNqKS"
+// Generated with util/mkpasswd (Cost 4 because of cost of --race, default is 11)
+const BCRYPT_AUTH_PASS = "IW@$6v(y1(t@fhPDvf!5^%"
+const BCRYPT_AUTH_HASH = "$2a$04$Q.CgCP2Sl9pkcTXEZHazaeMwPaAkSHk7AI51HkyMt5iJQQyUA4qxq"
 
 func runAuthServerWithBcryptUserPass() *server.Server {
 	opts := DefaultTestOptions
@@ -199,8 +199,8 @@ func TestGoodBcryptPassword(t *testing.T) {
 // The bcrypt authorization token version
 ////////////////////////////////////////////////////////////
 
-const BCRYPT_AUTH_TOKEN = "743&@WeTlIwtHDytI5Bnxl"
-const BCRYPT_AUTH_TOKEN_HASH = "$2a$11$Gp5x2rvdzfm9rUREuyQeBOFd61oPYKoLWSI2fJN7DAFMF34Z9o4s2"
+const BCRYPT_AUTH_TOKEN = "0uhJOSr3GW7xvHvtd^K6pa"
+const BCRYPT_AUTH_TOKEN_HASH = "$2a$04$u5ZClXpcjHgpfc61Ee0VKuwI1K3vTC4zq7SjphjnlHMeb1Llkb5Y6"
 
 func runAuthServerWithBcryptToken() *server.Server {
 	opts := DefaultTestOptions

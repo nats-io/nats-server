@@ -247,7 +247,9 @@ func (c *client) processConnect(arg []byte) error {
 
 	// This will be resolved regardless before we exit this func,
 	// so we can just clear it here.
+	c.mu.Lock()
 	c.clearAuthTimer()
+	c.mu.Unlock()
 
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
 		return err
