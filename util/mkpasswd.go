@@ -42,15 +42,9 @@ func main() {
 			log.Fatalf("Error, passwords do not match\n")
 		}
 		password = string(bytePassword)
-	}
-
-	if password == "" {
-		password = genPassword()
-	}
-
-	if *pw {
 		fmt.Printf("\n")
 	} else {
+		password = genPassword()
 		fmt.Printf("pass: %s\n", password)
 	}
 
