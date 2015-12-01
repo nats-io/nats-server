@@ -20,8 +20,10 @@ func usage() {
 }
 
 const (
+	// Make sure password reasonably long to generate enough entropy
 	PasswordLength = 22
-	Cost           = 11
+	// Make cost reasonably expensive, min is 4, max is 31
+	Cost = 11
 )
 
 func main() {
