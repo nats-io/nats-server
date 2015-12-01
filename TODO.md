@@ -1,8 +1,6 @@
 
 # General
 
-- [ ] SSL/TLS support
-- [ ] Better user/pass support using bcrypt etc.
 - [ ] Pedantic state
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Dynamic socket buffer sizes
@@ -19,6 +17,8 @@
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Add to varz, time for slow consumers, peek connections, memory, etc.
+- [X] Better user/pass support using bcrypt etc.
+- [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..
 - [X] Support sort options for /connz via nats-top
 - [X] Dropped message statistics (slow consumers)
