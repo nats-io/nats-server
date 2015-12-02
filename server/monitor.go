@@ -299,19 +299,20 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<html lang="en">
         <head>
         <style type="text/css">
-        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; }
+        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; font-size: 18; }
         a { margin-left: 32px; }
         </style>
         </head>
 		<body>
             <img src="http://nats.io/img/logo.png" alt="NATS">
 			<br/>
-			<a href=http://%s/varz>http://%s/varz</a><br/>
-			<a href=http://%s/connz>http://%s/connz</a><br/>
-			<a href=http://%s/routez>http://%s/routez</a><br/>
-			<a href=http://%s/subscriptionsz>http://%s/subscriptionsz</a><br/>
+			<a href=/varz>varz</a><br/>
+			<a href=/connz>connz</a><br/>
+			<a href=/routez>routez</a><br/>
+			<a href=/subsz>subsz</a><br/>
 		</body>
-	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host)
+	</html>
+    `)
 }
 
 // HandleVarz will process HTTP requests for server information.

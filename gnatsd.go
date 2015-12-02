@@ -42,6 +42,8 @@ func main() {
 	flag.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
 	flag.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
 	flag.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
+	flag.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
+	flag.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
 	flag.StringVar(&configFile, "c", "", "Configuration file.")
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
 	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
@@ -58,7 +60,6 @@ func main() {
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	flag.BoolVar(&showTlsHelp, "help_tls", false, "TLS help.")
-
 	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
 	flag.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")

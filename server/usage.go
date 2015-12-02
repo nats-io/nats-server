@@ -13,6 +13,7 @@ Server Options:
     -p, --port PORT                  Use PORT for clients (default: 4222)
     -P, --pid FILE                   File to store PID
     -m, --http_port PORT             Use HTTP PORT for monitoring
+    -ms,--https_port PORT            Use HTTPS PORT for monitoring
     -c, --config FILE                Configuration File
 
 Logging Options:
