@@ -2,12 +2,12 @@ language: go
 go:
 - 1.5
 install:
-- DST=~/gopath/src/github.com/nats-io
-- mkdir -p "$DST"
-- git clone --depth=1 --quiet https://github.com/nats-io/nats.git "$DST"/nats
+- go get github.com/nats-io/nats
+- go get golang.org/x/crypto/bcrypt
 - go get golang.org/x/tools/cmd/vet
 - go get golang.org/x/tools/cmd/cover
 - go get github.com/mattn/goveralls
+
 script:
 - go build
 - ./travis/gofmt.sh

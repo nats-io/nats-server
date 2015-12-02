@@ -272,9 +272,9 @@ func TestRouteQueueSemantics(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
-	qrsid1 := "RSID:2:1"
+	qrsid1 := "QRSID:2:1"
 	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid1))
-	qrsid2 := "RSID:2:2"
+	qrsid2 := "QRSID:2:2"
 	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid2))
 
 	// Use ping roundtrip to make sure its processed.
@@ -341,6 +341,7 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
 	matches = clientExpectMsgs(2)
+
 	// Expect first to be the normal subscriber, next will be the queue one.
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
 	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")

@@ -27,7 +27,7 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 	}
 	s.Shutdown()
 	// Wait longer for client connections
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	// There may be some finalizers or IO, but in general more than
 	// 2 as a delta represents a problem.

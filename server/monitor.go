@@ -297,9 +297,15 @@ func myUptime(d time.Duration) string {
 // HandleRoot will show basic info and links to others handlers.
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<html lang="en">
+        <head>
+        <style type="text/css">
+        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; }
+        a { margin-left: 32px; }
+        </style>
+        </head>
 		<body>
-			gnatsd monitoring
-			<br/><br/>
+            <img src="http://nats.io/img/logo.png" alt="NATS">
+			<br/>
 			<a href=http://%s/varz>http://%s/varz</a><br/>
 			<a href=http://%s/connz>http://%s/connz</a><br/>
 			<a href=http://%s/routez>http://%s/routez</a><br/>

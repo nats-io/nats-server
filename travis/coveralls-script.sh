@@ -1,6 +1,6 @@
 #!/bin/bash -e
 echo "mode: count" > acc.out
-for Dir in $(find ./* -maxdepth 10 -type d | grep -v test);
+for Dir in $(find ./* -maxdepth 10 -type d | grep -v test | grep -v util);
 do
         if ls $Dir/*.go &> /dev/null;
         then
