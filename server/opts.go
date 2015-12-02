@@ -33,6 +33,7 @@ type Options struct {
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
 	HTTPPort           int           `json:"http_port"`
+	HTTPSPort          int           `json:"https_port"`
 	AuthTimeout        float64       `json:"auth_timeout"`
 	MaxControlLine     int           `json:"max_control_line"`
 	MaxPayload         int           `json:"max_payload"`
@@ -118,6 +119,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.AuthTimeout = auth.timeout
 		case "http_port", "monitor_port":
 			opts.HTTPPort = int(v.(int64))
+		case "https_port":
+			opts.HTTPSPort = int(v.(int64))
 		case "cluster":
 			cm := v.(map[string]interface{})
 			if err := parseCluster(cm, opts); err != nil {

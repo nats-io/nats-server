@@ -3,6 +3,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -33,19 +34,21 @@ type Connz struct {
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid      uint64   `json:"cid"`
-	IP       string   `json:"ip"`
-	Port     int      `json:"port"`
-	Pending  int      `json:"pending_bytes"`
-	InMsgs   int64    `json:"in_msgs"`
-	OutMsgs  int64    `json:"out_msgs"`
-	InBytes  int64    `json:"in_bytes"`
-	OutBytes int64    `json:"out_bytes"`
-	NumSubs  uint32   `json:"subscriptions"`
-	Name     string   `json:"name,omitempty"`
-	Lang     string   `json:"lang,omitempty"`
-	Version  string   `json:"version,omitempty"`
-	Subs     []string `json:"subscriptions_list,omitempty"`
+	Cid        uint64   `json:"cid"`
+	IP         string   `json:"ip"`
+	Port       int      `json:"port"`
+	Pending    int      `json:"pending_bytes"`
+	InMsgs     int64    `json:"in_msgs"`
+	OutMsgs    int64    `json:"out_msgs"`
+	InBytes    int64    `json:"in_bytes"`
+	OutBytes   int64    `json:"out_bytes"`
+	NumSubs    uint32   `json:"subscriptions"`
+	Name       string   `json:"name,omitempty"`
+	Lang       string   `json:"lang,omitempty"`
+	Version    string   `json:"version,omitempty"`
+	TLSVersion string   `json:"tls_version,omitempty"`
+	TLSCipher  string   `json:"tls_cipher_suite,omitempty"`
+	Subs       []string `json:"subscriptions_list,omitempty"`
 }
 
 const DefaultConnListSize = 1024
@@ -66,6 +69,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	// Walk the list
 	s.mu.Lock()
+	tlsRequired := s.info.TLSRequired
 	c.NumConns = len(s.clients)
 
 	// Copy the keys to sort by them
@@ -125,6 +129,13 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			Name:     client.opts.Name,
 			Lang:     client.opts.Lang,
 			Version:  client.opts.Version,
+		}
+
+		if tlsRequired {
+			conn := client.nc.(*tls.Conn)
+			cs := conn.ConnectionState()
+			ci.TLSVersion = tlsVersion(cs.Version)
+			ci.TLSCipher = tlsCipher(cs.CipherSuite)
 		}
 
 		if subs == 1 {
@@ -299,19 +310,20 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<html lang="en">
         <head>
         <style type="text/css">
-        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; }
+        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; font-size: 18; }
         a { margin-left: 32px; }
         </style>
         </head>
 		<body>
             <img src="http://nats.io/img/logo.png" alt="NATS">
 			<br/>
-			<a href=http://%s/varz>http://%s/varz</a><br/>
-			<a href=http://%s/connz>http://%s/connz</a><br/>
-			<a href=http://%s/routez>http://%s/routez</a><br/>
-			<a href=http://%s/subscriptionsz>http://%s/subscriptionsz</a><br/>
+			<a href=/varz>varz</a><br/>
+			<a href=/connz>connz</a><br/>
+			<a href=/routez>routez</a><br/>
+			<a href=/subsz>subsz</a><br/>
 		</body>
-	</html>`, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host, r.Host)
+	</html>
+    `)
 }
 
 // HandleVarz will process HTTP requests for server information.

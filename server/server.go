@@ -204,6 +204,14 @@ func (s *Server) Start() {
 		s.StartHTTPMonitoring()
 	}
 
+	// Start up the https server if needed.
+	if s.opts.HTTPSPort != 0 {
+		if s.opts.TLSConfig == nil {
+			Fatalf("TLS cert and key required for HTTPS")
+		}
+		s.StartHTTPSMonitoring()
+	}
+
 	// Start up routing as well if needed.
 	if s.opts.ClusterPort != 0 {
 		s.StartRouting()
@@ -289,7 +297,6 @@ func (s *Server) AcceptLoop() {
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		fmt.Printf("could not listen on port for %s, %v\n", hp, e)
 		Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
@@ -359,11 +366,30 @@ func (s *Server) StartProfiler() {
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Noticef("Starting http monitor on port %d", s.opts.HTTPPort)
+	s.startMonitoring(false)
+}
 
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
+// StartHTTPMonitoring will enable the HTTPS monitoring port.
+func (s *Server) StartHTTPSMonitoring() {
+	s.startMonitoring(true)
+}
 
-	l, err := net.Listen("tcp", hp)
+// Start the monitoring server
+func (s *Server) startMonitoring(secure bool) {
+	var hp string
+	var err error
+
+	if secure {
+		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPSPort)
+		Noticef("Starting https monitor on %s", hp)
+		s.http, err = tls.Listen("tcp", hp, s.opts.TLSConfig)
+
+	} else {
+		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
+		Noticef("Starting http monitor on %s", hp)
+		s.http, err = net.Listen("tcp", hp)
+	}
+
 	if err != nil {
 		Fatalf("Can't listen to the monitor port: %v", err)
 	}
@@ -372,18 +398,16 @@ func (s *Server) StartHTTPMonitoring() {
 
 	// Root
 	mux.HandleFunc("/", s.HandleRoot)
-
 	// Varz
 	mux.HandleFunc("/varz", s.HandleVarz)
-
 	// Connz
 	mux.HandleFunc("/connz", s.HandleConnz)
-
 	// Routez
 	mux.HandleFunc("/routez", s.HandleRoutez)
-
 	// Subz
 	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
+	// Subz
+	mux.HandleFunc("/subsz", s.HandleSubsz)
 
 	srv := &http.Server{
 		Addr:           hp,
@@ -392,8 +416,6 @@ func (s *Server) StartHTTPMonitoring() {
 		WriteTimeout:   2 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-
-	s.http = l
 
 	go func() {
 		srv.Serve(s.http)
