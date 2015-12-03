@@ -26,11 +26,18 @@ type Sublist struct {
 	stats stats
 }
 
+// Use padding for better cache alignement when multiple goroutines
+// updating the stats.
 type stats struct {
-	inserts   uint64
-	removes   uint64
+	_         [8]int64
 	matches   uint64
+	_         [7]int64
 	cacheHits uint64
+	_         [7]int64
+	inserts   uint64
+	_         [7]int64
+	removes   uint64
+	_         [7]int64
 	since     time.Time
 }
 
