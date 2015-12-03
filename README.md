@@ -166,7 +166,6 @@ tls {
   ca_file:   "./configs/certs/ca.pem"
   verify:    true
 }
-
 ```
 
 When setting up clusters, all servers in the cluster, if using TLS, will both verify the connecting endpoints and the server responses. So certificates are checked in
@@ -197,12 +196,11 @@ cluster {
 The server can be run using command line arguments to enable TLS functionality.
 
 ```
-TLS Options:
-        --tls                        Enable TLS, do not verify clients (default: false)
-        --tlscert FILE               Server certificate file
-        --tlskey FILE                Private key for server certificate
-        --tlsverify                  Enable TLS, very client certificates
-        --tlscacert FILE             Client certificate CA for verification
+--tls                        Enable TLS, do not verify clients (default: false)
+--tlscert FILE               Server certificate file
+--tlskey FILE                Private key for server certificate
+--tlsverify                  Enable TLS, very client certificates
+--tlscacert FILE             Client certificate CA for verification
 ```
 
 Examples using the test certicates which are self signed for localhost and 127.0.0.1.
@@ -232,9 +230,9 @@ gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./tes
 
 ### Bcrypt
 
-In addition to TLS functionality, the server now also supports bcrypt for passwords and tokens. This is transparent and you can simply replace the plaintext passowrd in the configuration with the bcrypt hash, the server will automatically utilize bcrypt as needed.
+In addition to TLS functionality, the server now also supports bcrypt for passwords and tokens. This is transparent and you can simply replace the plaintext password in the configuration with the bcrypt hash, the server will automatically utilize bcrypt as needed.
 
-There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can suply that on stdin with the -p flag.
+There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can supply that on stdin with the -p flag.
 
 ```bash
 ~/go/src/github.com/nats-io/gnatsd/util> ./mkpasswd
@@ -248,7 +246,6 @@ Add into the server configuration file's authorization section.
     user: derek
     password: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
   }
-
 ```
 
 ## Monitoring
