@@ -16,6 +16,7 @@ Server Options:
     -p, --port PORT                  Use PORT for clients (default: 4222)
     -P, --pid FILE                   File to store PID
     -m, --http_port PORT             Use HTTP PORT for monitoring
+    -ms,--https_port PORT            Use HTTPS PORT for monitoring
     -c, --config FILE                Configuration File
 
 Logging Options:
@@ -108,6 +109,145 @@ max_payload: 65536
 
 # slow consumer threshold
 max_pending_size: 10000000
+
+```
+
+## Securing NATS
+
+### TLS
+
+As of Release 0.7.0, the server can use modern TLS semantics for client connections, route connections, and the HTTPS monitoring port.
+The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vunerabilities. The
+server's preferences when building with Go1.5 are as follows.
+
+```go
+func defaultCipherSuites() []uint16 {
+	return []uint16{
+		// The SHA384 versions are only in Go1.5
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+}
+```
+
+Generating self signed certs and intermediary certificate authotities is beyond the scope here, but this document can be helpful in addition to Google Search:
+<a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>
+
+The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured
+with a CA authority to verify the client certificates.
+
+```
+# Simple TLS config file
+
+port: 4443
+net: apcera.me # net interface
+
+tls {
+  cert_file:  "./configs/certs/server-cert.pem"
+  key_file:   "./configs/certs/server-key.pem"
+  timeout:    0.5
+}
+
+authorization {
+  user:     derek
+  password: s3cr3t!
+  timeout:  1
+}
+```
+
+If requiring client certificates as well, simply change the TLS section as follows.
+
+```
+tls {
+  cert_file: "./configs/certs/server-cert.pem"
+  key_file:  "./configs/certs/server-key.pem"
+  ca_file:   "./configs/certs/ca.pem"
+  verify:    true
+}
+
+```
+
+When setting up clusters, all servers in the cluster, if using TLS, will both verify the connecting endpoints and the server responses. So certificates are checked in
+both directions. Certificates can be configured only for the server's cluster identity, keeping client and server certificates separate from cluster formation.
+
+```
+cluster {
+  host: '127.0.0.1'
+  port: 4244
+
+  tls {
+    # Route cert
+    cert_file: "./configs/certs/srva-cert.pem"
+    # Private key
+    key_file:  "./configs/certs/srva-key.pem"
+    # Optional certificate authority verifying connected routes
+    # Required when we have self-signed CA, etc.
+    ca_file:   "./configs/certs/ca.pem"
+  }
+  # Routes are actively solicited and connected to from this server.
+  # Other servers can connect to us if they supply the correct credentials
+  # in their routes definitions from above.
+  routes = [
+    nats-route://127.0.0.1:4246
+  ]
+}
+```
+The server can be run using command line arguments to enable TLS functionality.
+
+```
+TLS Options:
+        --tls                        Enable TLS, do not verify clients (default: false)
+        --tlscert FILE               Server certificate file
+        --tlskey FILE                Private key for server certificate
+        --tlsverify                  Enable TLS, very client certificates
+        --tlscacert FILE             Client certificate CA for verification
+```
+
+Examples using the test certicates which are self signed for localhost and 127.0.0.1.
+```bash
+gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
+
+[15139] 2015/12/03 12:37:18.963635 [INF] Starting gnatsd version 0.7.0
+[15139] 2015/12/03 12:37:18.963710 [INF] Listening for client connections on 0.0.0.0:4222
+[15139] 2015/12/03 12:37:18.963874 [INF] TLS required for client connections
+[15139] 2015/12/03 12:37:18.963878 [INF] gnatsd is ready
+```
+
+Notice that the log  indicates that the client connections will be required to use TLS. If you run the server in Debug mode with -D or -DV, the logs will show the cipher suite selection for each connected client.
+```
+[15146] 2015/12/03 12:38:37.733139 [DBG] ::1:63330 - cid:1 - Starting TLS client connection handshake
+[15146] 2015/12/03 12:38:37.751948 [DBG] ::1:63330 - cid:1 - TLS handshake complete
+[15146] 2015/12/03 12:38:37.751959 [DBG] ::1:63330 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+```
+
+
+If you want the server to enforce and require client certificates as well via the command line, utilize this example.
+
+```
+gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
+```
+
+
+### Bcrypt
+
+In addition to TLS functionality, the server now also supports bcrypt for passwords and tokens. This is transparent and you can simply replace the plaintext passowrd in the configuration with the bcrypt hash, the server will automatically utilize bcrypt as needed.
+
+There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can suply that on stdin with the -p flag.
+
+```bash
+~/go/src/github.com/nats-io/gnatsd/util> ./mkpasswd
+pass: #IclkRPHUpsTmACWzmIGXr
+bcrypt hash: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
+```
+
+Add into the server configuration file's authorization section.
+```
+  authorization {
+    user: derek
+    password: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
+  }
 
 ```
 
@@ -257,8 +397,8 @@ $.getJSON('http://localhost:8222/connz?callback=?', function(data) {
 
 ## Building
 
-This code currently requires at _least_ version 1.1 of Go, but we encourage
-the use of the latest stable release.  We will be moving to requiring at _least_ 1.4
+This code currently requires at _least_ version 1.4 of Go, but we encourage
+the use of the latest stable release.  We will be moving to requiring at _least_ 1.5
 in the near future. Go is still young and improving
 rapidly, new releases provide performance improvements and fixes.  Information
 on installation, including pre-built binaries, is available at
