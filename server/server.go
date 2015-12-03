@@ -293,7 +293,7 @@ func (s *Server) Shutdown() {
 
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
+	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
@@ -354,8 +354,7 @@ func (s *Server) AcceptLoop() {
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
 	Noticef("Starting profiling on http port %d", s.opts.ProfPort)
-
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
+	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.ProfPort))
 	go func() {
 		err := http.ListenAndServe(hp, nil)
 		if err != nil {
@@ -380,12 +379,14 @@ func (s *Server) startMonitoring(secure bool) {
 	var err error
 
 	if secure {
-		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPSPort)
+		hp = net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
-		s.http, err = tls.Listen("tcp", hp, s.opts.TLSConfig)
+		config := *s.opts.TLSConfig
+		config.ClientAuth = tls.NoClientCert
+		s.http, err = tls.Listen("tcp", hp, &config)
 
 	} else {
-		hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
+		hp = net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.HTTPPort))
 		Noticef("Starting http monitor on %s", hp)
 		s.http, err = net.Listen("tcp", hp)
 	}
