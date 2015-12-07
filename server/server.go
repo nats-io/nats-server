@@ -311,6 +311,7 @@ func (s *Server) AcceptLoop() {
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.listener = l
+	fmt.Printf("@@IK: Server listening to: %s\n", l.Addr().String())
 	s.mu.Unlock()
 
 	// Write resolved port back to options.

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -39,8 +40,10 @@ func RunServer(opts *Options) *Server {
 			// Retry. We might take a little while to open a connection.
 			continue
 		}
+		fmt.Printf("@@IK: Trying to connect to: %s\n", addr.String())
 		conn, err := net.Dial("tcp", addr.String())
 		if err != nil {
+			fmt.Printf("@@IK: Got error: %v\n", err)
 			// Retry after 50ms
 			time.Sleep(50 * time.Millisecond)
 			continue
