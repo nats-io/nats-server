@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package server
 
@@ -379,5 +379,77 @@ func TestShouldFail(t *testing.T) {
 	c.state = OP_START
 	if err := c.parse([]byte("PUB foo 2\r\nok\r \n")); err == nil {
 		t.Fatal("Should have received a parse error")
+	}
+}
+
+func TestProtoSnippet(t *testing.T) {
+	sample := []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+	tests := []struct {
+		input    int
+		expected string
+	}{
+		{0, `"abcdefghijklmnopqrstuvwxyzABCDEF"`},
+		{1, `"bcdefghijklmnopqrstuvwxyzABCDEFG"`},
+		{2, `"cdefghijklmnopqrstuvwxyzABCDEFGH"`},
+		{3, `"defghijklmnopqrstuvwxyzABCDEFGHI"`},
+		{4, `"efghijklmnopqrstuvwxyzABCDEFGHIJ"`},
+		{5, `"fghijklmnopqrstuvwxyzABCDEFGHIJK"`},
+		{6, `"ghijklmnopqrstuvwxyzABCDEFGHIJKL"`},
+		{7, `"hijklmnopqrstuvwxyzABCDEFGHIJKLM"`},
+		{8, `"ijklmnopqrstuvwxyzABCDEFGHIJKLMN"`},
+		{9, `"jklmnopqrstuvwxyzABCDEFGHIJKLMNO"`},
+		{10, `"klmnopqrstuvwxyzABCDEFGHIJKLMNOP"`},
+		{11, `"lmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"`},
+		{12, `"mnopqrstuvwxyzABCDEFGHIJKLMNOPQR"`},
+		{13, `"nopqrstuvwxyzABCDEFGHIJKLMNOPQRS"`},
+		{14, `"opqrstuvwxyzABCDEFGHIJKLMNOPQRST"`},
+		{15, `"pqrstuvwxyzABCDEFGHIJKLMNOPQRSTU"`},
+		{16, `"qrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"`},
+		{17, `"rstuvwxyzABCDEFGHIJKLMNOPQRSTUVW"`},
+		{18, `"stuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"`},
+		{19, `"tuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{20, `"uvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"`},
+		{21, `"vwxyzABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{22, `"wxyzABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{23, `"xyzABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{24, `"yzABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{25, `"zABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{26, `"ABCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{27, `"BCDEFGHIJKLMNOPQRSTUVWXY"`},
+		{28, `"CDEFGHIJKLMNOPQRSTUVWXY"`},
+		{29, `"DEFGHIJKLMNOPQRSTUVWXY"`},
+		{30, `"EFGHIJKLMNOPQRSTUVWXY"`},
+		{31, `"FGHIJKLMNOPQRSTUVWXY"`},
+		{32, `"GHIJKLMNOPQRSTUVWXY"`},
+		{33, `"HIJKLMNOPQRSTUVWXY"`},
+		{34, `"IJKLMNOPQRSTUVWXY"`},
+		{35, `"JKLMNOPQRSTUVWXY"`},
+		{36, `"KLMNOPQRSTUVWXY"`},
+		{37, `"LMNOPQRSTUVWXY"`},
+		{38, `"MNOPQRSTUVWXY"`},
+		{39, `"NOPQRSTUVWXY"`},
+		{40, `"OPQRSTUVWXY"`},
+		{41, `"PQRSTUVWXY"`},
+		{42, `"QRSTUVWXY"`},
+		{43, `"RSTUVWXY"`},
+		{44, `"STUVWXY"`},
+		{45, `"TUVWXY"`},
+		{46, `"UVWXY"`},
+		{47, `"VWXY"`},
+		{48, `"WXY"`},
+		{49, `"XY"`},
+		{50, `"Y"`},
+		{51, `""`},
+		{52, `""`},
+		{53, `""`},
+		{54, `""`},
+	}
+
+	for _, tt := range tests {
+		got := protoSnippet(tt.input, sample)
+		if tt.expected != got {
+			t.Errorf("Expected protocol snippet to be %s when start=%d but got %s\n", tt.expected, tt.input, got)
+		}
 	}
 }

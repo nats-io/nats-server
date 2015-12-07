@@ -663,8 +663,8 @@ parseErr:
 func protoSnippet(start int, buf []byte) string {
 	stop := start + PROTO_SNIPPET_SIZE
 	bufSize := len(buf)
-	if start <= bufSize {
-		return ""
+	if start >= bufSize {
+		return `""`
 	}
 	if stop > bufSize {
 		stop = bufSize - 1
