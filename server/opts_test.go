@@ -248,6 +248,7 @@ func TestRouteFlagOverride(t *testing.T) {
 	rurl, _ := url.Parse(routeFlag)
 
 	golden := &Options{
+		Host:               "127.0.0.1",
 		Port:               7222,
 		ClusterHost:        "127.0.0.1",
 		ClusterPort:        7244,
@@ -280,6 +281,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	rurls := RoutesFromStr(routeFlag)
 
 	golden := &Options{
+		Host:               "127.0.0.1",
 		Port:               7222,
 		ClusterHost:        "127.0.0.1",
 		ClusterPort:        7244,
