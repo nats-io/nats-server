@@ -40,10 +40,14 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	// Create 20 random clients.
 	// Half connected to A and half to B..
 	numClients := 20
+
+	clients := make([]*nats.Conn, numClients)
+
 	for i := 0; i < numClients; i++ {
 		opts.Url = servers[i%2]
 		nc, err := opts.Connect()
 		defer nc.Close()
+		clients = append(clients, nc)
 
 		if err != nil {
 			t.Fatalf("Failed to create connection: %v\n", err)
@@ -59,7 +63,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 		subject := fmt.Sprintf("foo.%d", (rand.Int()%50)+1)
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			for i := 1; 1 <= 100; i++ {
+			for i := 1; i <= 100; i++ {
 				if err := nc.Publish(subject, msg); err != nil {
 					return
 				}
@@ -83,6 +87,14 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 		break
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Expected %d reconnects, got %d\n", numClients/2, reconnects)
+	}
+
+	// On windows, as of go 1.5.2, the test does not exit until we close
+	// the connections...
+	for _, nc := range clients {
+		if nc != nil {
+			nc.Close()
+		}
 	}
 }
 
