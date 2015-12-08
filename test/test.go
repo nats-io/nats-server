@@ -48,12 +48,17 @@ func RunServer(opts *server.Options) *server.Server {
 	return RunServerWithAuth(opts, nil)
 }
 
-func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
+func LoadConfig(configFile string) (opts *server.Options) {
 	opts, err := server.ProcessConfigFile(configFile)
 	if err != nil {
 		panic(fmt.Sprintf("Error processing configuration file: %v", err))
 	}
 	opts.NoSigs, opts.NoLog = true, true
+	return
+}
+
+func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
+	opts = LoadConfig(configFile)
 
 	// Check for auth
 	var a server.Auth
