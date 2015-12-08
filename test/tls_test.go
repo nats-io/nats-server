@@ -131,7 +131,10 @@ func TestTLSClientCertificate(t *testing.T) {
 }
 
 func TestTLSConnectionTimeout(t *testing.T) {
-	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	opts := LoadConfig("./configs/tls.conf")
+	opts.TLSTimeout = 0.25
+
+	srv := RunServer(opts)
 	defer srv.Shutdown()
 
 	// Dial with normal TCP

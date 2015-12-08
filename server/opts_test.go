@@ -86,7 +86,7 @@ func TestTLSConfigFile(t *testing.T) {
 		Username:    "derek",
 		Password:    "buckley",
 		AuthTimeout: 1.0,
-		TLSTimeout:  0.5,
+		TLSTimeout:  2.0,
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
