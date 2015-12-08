@@ -92,7 +92,7 @@ func init() {
 }
 
 // Lock should be held
-func (c *client) initClient() {
+func (c *client) initClient(tlsConn bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
@@ -130,11 +130,13 @@ func (c *client) initClient() {
 	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
 	//	}
 
-	// Set the Ping timer
-	c.setPingTimer()
+	if !tlsConn {
+		// Set the Ping timer
+		c.setPingTimer()
 
-	// Spin up the read loop.
-	go c.readLoop()
+		// Spin up the read loop.
+		go c.readLoop()
+	}
 }
 
 func (c *client) readLoop() {
