@@ -439,7 +439,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient()
+	c.initClient(tlsRequired)
 
 	c.Debugf("Client connection created")
 
@@ -490,6 +490,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+
+		// Do final client initialization
+
+		// Set the Ping timer
+		c.setPingTimer()
+
+		// Spin up the read loop.
+		go c.readLoop()
 
 		c.Debugf("TLS handshake complete")
 		cs := conn.ConnectionState()
