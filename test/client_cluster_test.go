@@ -30,8 +30,10 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	opts.ReconnectWait = (50 * time.Millisecond)
 	opts.MaxReconnect = 1000
 
+	numClients := 20
+
 	reconnects := int32(0)
-	reconnectsDone := make(chan bool)
+	reconnectsDone := make(chan bool, numClients)
 	opts.ReconnectedCB = func(nc *nats.Conn) {
 		atomic.AddInt32(&reconnects, 1)
 		reconnectsDone <- true
@@ -39,19 +41,14 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 
 	// Create 20 random clients.
 	// Half connected to A and half to B..
-	numClients := 20
-
-	clients := make([]*nats.Conn, numClients)
-
 	for i := 0; i < numClients; i++ {
 		opts.Url = servers[i%2]
 		nc, err := opts.Connect()
-		defer nc.Close()
-		clients = append(clients, nc)
-
 		if err != nil {
 			t.Fatalf("Failed to create connection: %v\n", err)
 		}
+		defer nc.Close()
+
 		// Create 10 subscriptions each..
 		for x := 0; x < 10; x++ {
 			subject := fmt.Sprintf("foo.%d", (rand.Int()%50)+1)
@@ -85,16 +82,8 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	select {
 	case <-reconnectsDone:
 		break
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("Expected %d reconnects, got %d\n", numClients/2, reconnects)
-	}
-
-	// On windows, as of go 1.5.2, the test does not exit until we close
-	// the connections...
-	for _, nc := range clients {
-		if nc != nil {
-			nc.Close()
-		}
 	}
 }
 
