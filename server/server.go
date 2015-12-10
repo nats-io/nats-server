@@ -319,11 +319,13 @@ func (s *Server) AcceptLoop() {
 		_, port, err := net.SplitHostPort(l.Addr().String())
 		if err != nil {
 			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			s.mu.Unlock()
 			return
 		}
 		portNum, err := strconv.Atoi(port)
 		if err != nil {
 			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			s.mu.Unlock()
 			return
 		}
 		s.opts.Port = portNum
