@@ -91,13 +91,13 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 
 	end := time.Now().Add(10 * time.Second)
 	for time.Now().Before(end) {
-		addr := s.Addr()
-		if addr == nil {
+		addr := s.GetListenEndpoint()
+		if addr == "" {
 			time.Sleep(50 * time.Millisecond)
 			// Retry. We might take a little while to open a connection.
 			continue
 		}
-		conn, err := net.Dial("tcp", addr.String())
+		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			// Retry after 50ms
 			time.Sleep(50 * time.Millisecond)
