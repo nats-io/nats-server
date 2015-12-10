@@ -311,20 +311,24 @@ func (s *Server) AcceptLoop() {
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.listener = l
-	s.mu.Unlock()
 
-	// Write resolved port back to options.
-	_, port, err := net.SplitHostPort(l.Addr().String())
-	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-		return
+	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
+	// to 0 at the beginning this function. So we need to get the actual port
+	if s.opts.Port == 0 {
+		// Write resolved port back to options.
+		_, port, err := net.SplitHostPort(l.Addr().String())
+		if err != nil {
+			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			return
+		}
+		portNum, err := strconv.Atoi(port)
+		if err != nil {
+			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			return
+		}
+		s.opts.Port = portNum
 	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-		return
-	}
-	s.opts.Port = portNum
+	s.mu.Unlock()
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
@@ -676,4 +680,28 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.listener.Addr()
+}
+
+// GetListenEndpoint will return a string of the form host:port suitable for
+// a connect. Will return nil if the server is not ready to accept client
+// connections.
+func (s *Server) GetListenEndpoint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Wait for the listener to be set, see note about RANDOM_PORT below
+	if s.listener == nil {
+		return ""
+	}
+
+	host := s.opts.Host
+
+	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
+	// We replace it with "localhost" when that's the case.
+	if host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "localhost"
+	}
+
+	// Return the opts's Host and Port. Note that the Port may be set
+	// when the listener is started, due to the use of RANDOM_PORT
+	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
 }
