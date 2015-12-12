@@ -23,6 +23,7 @@ var DefaultMonitorOptions = Options{
 	Host:        "localhost",
 	Port:        CLIENT_PORT,
 	HTTPPort:    MONITOR_PORT,
+	ClusterHost: "localhost",
 	ClusterPort: CLUSTER_PORT,
 	NoLog:       true,
 	NoSigs:      true,
@@ -680,6 +681,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	var opts = Options{
 		Host:        "localhost",
 		Port:        CLIENT_PORT + 1,
+		ClusterHost: "localhost",
 		ClusterPort: CLUSTER_PORT + 1,
 		NoLog:       true,
 		NoSigs:      true,

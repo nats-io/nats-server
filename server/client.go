@@ -47,6 +47,7 @@ type client struct {
 	ptmr *time.Timer
 	pout int
 	msgb [msgScratchSize]byte
+
 	parseState
 	stats
 
@@ -963,7 +964,7 @@ func (c *client) closeConnection() {
 		if rid != "" && srv.remotes[rid] != nil {
 			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
-		} else {
+		} else if c.route.routeType != Implicit {
 			Debugf("Attempting reconnect for solicited route \"%s\"", c.route.url)
 			go srv.reConnectToRoute(c.route.url)
 		}

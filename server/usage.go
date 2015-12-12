@@ -38,6 +38,7 @@ TLS Options:
 
 Cluster Options:
         --routes [rurl-1, rurl-2]    Routes to solicit and connect
+        --cluster [cluster url]      Cluster URL for solicited routes
 
 Common Options:
     -h, --help                       Show this message

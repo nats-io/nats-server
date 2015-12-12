@@ -182,18 +182,19 @@ type Routez struct {
 
 // RouteInfo has detailed information on a per connection basis.
 type RouteInfo struct {
-	Rid        uint64   `json:"rid"`
-	RemoteId   string   `json:"remote_id"`
-	DidSolicit bool     `json:"did_solicit"`
-	IP         string   `json:"ip"`
-	Port       int      `json:"port"`
-	Pending    int      `json:"pending_size"`
-	InMsgs     int64    `json:"in_msgs"`
-	OutMsgs    int64    `json:"out_msgs"`
-	InBytes    int64    `json:"in_bytes"`
-	OutBytes   int64    `json:"out_bytes"`
-	NumSubs    uint32   `json:"subscriptions"`
-	Subs       []string `json:"subscriptions_list,omitempty"`
+	Rid          uint64   `json:"rid"`
+	RemoteId     string   `json:"remote_id"`
+	DidSolicit   bool     `json:"did_solicit"`
+	IsConfigured bool     `json:"is_configured"`
+	IP           string   `json:"ip"`
+	Port         int      `json:"port"`
+	Pending      int      `json:"pending_size"`
+	InMsgs       int64    `json:"in_msgs"`
+	OutMsgs      int64    `json:"out_msgs"`
+	InBytes      int64    `json:"in_bytes"`
+	OutBytes     int64    `json:"out_bytes"`
+	NumSubs      uint32   `json:"subscriptions"`
+	Subs         []string `json:"subscriptions_list,omitempty"`
 }
 
 // HandleRoutez process HTTP requests for route information.
@@ -207,23 +208,24 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	rs.NumRoutes = len(s.routes)
 
-	for _, route := range s.routes {
+	for _, r := range s.routes {
 		ri := &RouteInfo{
-			Rid:        route.cid,
-			RemoteId:   route.route.remoteID,
-			DidSolicit: route.route.didSolicit,
-			InMsgs:     route.inMsgs,
-			OutMsgs:    route.outMsgs,
-			InBytes:    route.inBytes,
-			OutBytes:   route.outBytes,
-			NumSubs:    route.subs.Count(),
+			Rid:          r.cid,
+			RemoteId:     r.route.remoteID,
+			DidSolicit:   r.route.didSolicit,
+			IsConfigured: r.route.routeType == Explicit,
+			InMsgs:       r.inMsgs,
+			OutMsgs:      r.outMsgs,
+			InBytes:      r.inBytes,
+			OutBytes:     r.outBytes,
+			NumSubs:      r.subs.Count(),
 		}
 
 		if subs == 1 {
-			ri.Subs = castToSliceString(route.subs.All())
+			ri.Subs = castToSliceString(r.subs.All())
 		}
 
-		if ip, ok := route.nc.(*net.TCPConn); ok {
+		if ip, ok := r.nc.(*net.TCPConn); ok {
 			addr := ip.RemoteAddr().(*net.TCPAddr)
 			ri.Port = addr.Port
 			ri.IP = addr.IP.String()
