@@ -58,6 +58,7 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
+	flag.StringVar(&opts.ClusterListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	flag.BoolVar(&showTlsHelp, "help_tls", false, "TLS help.")
 	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
@@ -203,6 +204,9 @@ func configureTLS(opts *server.Options) {
 
 func configureClusterOpts(opts *server.Options) error {
 	if opts.ClusterListenStr == "" {
+		if opts.RoutesStr != "" {
+			server.PrintAndDie("Solicited routes require cluster capabilities, e.g. --cluster.")
+		}
 		return nil
 	}
 
@@ -226,6 +230,11 @@ func configureClusterOpts(opts *server.Options) error {
 
 		user := clusterUrl.User.Username()
 		opts.ClusterUsername = user
+	}
+
+	// If we have routes but no config file, fill in here.
+	if opts.RoutesStr != "" && opts.Routes == nil {
+		opts.Routes = server.RoutesFromStr(opts.RoutesStr)
 	}
 
 	return nil

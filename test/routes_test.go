@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2015 Apcera Inc. All rights reserved.
 
 package test
 
@@ -15,18 +15,7 @@ import (
 )
 
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
-	opts, err := server.ProcessConfigFile("./configs/cluster.conf")
-
-	// Override for running in Go routine.
-	opts.NoSigs = true
-	opts.Debug = true
-	opts.Trace = true
-	opts.NoLog = true
-
-	if err != nil {
-		t.Fatalf("Error parsing config file: %v\n", err)
-	}
-	return RunServer(opts), opts
+	return RunServerWithConfig("./configs/cluster.conf")
 }
 
 func TestRouterListeningSocket(t *testing.T) {

@@ -11,14 +11,36 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
 
+// Designate the router type
+type RouteType int
+
+// Type of Route
+const (
+	// This route we learned from speaking to other routes.
+	Implicit RouteType = iota
+	// This route was explicitly configured.
+	Explicit
+)
+
 type route struct {
-	remoteID   string
-	didSolicit bool
-	url        *url.URL
+	remoteID     string
+	didSolicit   bool
+	routeType    RouteType
+	url          *url.URL
+	authRequired bool
+	tlsRequired  bool
+}
+
+type RemoteInfo struct {
+	RemoteID     string `json:"id"`
+	URL          string `json:"url"`
+	AuthRequired bool   `json:"auth_required"`
+	TLSRequired  bool   `json:"tls_required"`
 }
 
 type connectInfo struct {
@@ -30,7 +52,10 @@ type connectInfo struct {
 	Name     string `json:"name"`
 }
 
-const conProto = "CONNECT %s" + _CRLF_
+const (
+	ConProto  = "CONNECT %s" + _CRLF_
+	InfoProto = "INFO %s" + _CRLF_
+)
 
 // Lock should be held entering here.
 func (c *client) sendConnect(tlsRequired bool) {
@@ -49,11 +74,11 @@ func (c *client) sendConnect(tlsRequired bool) {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		Errorf("Error marshalling CONNECT to route: %v\n", err)
+		c.Errorf("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
 		return
 	}
-	c.bw.WriteString(fmt.Sprintf(conProto, b))
+	c.bw.WriteString(fmt.Sprintf(ConProto, b))
 	c.bw.Flush()
 }
 
@@ -64,7 +89,25 @@ func (c *client) processRouteInfo(info *Info) {
 		c.mu.Unlock()
 		return
 	}
+	// Copy over important information
 	c.route.remoteID = info.ID
+	c.route.authRequired = info.AuthRequired
+	c.route.tlsRequired = info.TLSRequired
+
+	// If we do not know this route's URL, construct one on the fly
+	// from the information provided.
+	if c.route.url == nil {
+		// Add in the URL from host and port
+		hp := net.JoinHostPort(info.Host, strconv.Itoa(info.Port))
+		url, err := url.Parse(fmt.Sprintf("nats-route://%s/", hp))
+		if err != nil {
+			c.Errorf("Error parsing URL from INFO: %v\n", err)
+			c.mu.Unlock()
+			c.closeConnection()
+			return
+		}
+		c.route.url = url
+	}
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
@@ -75,9 +118,36 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Registering remote route %q", info.ID)
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
+		if len(info.Routes) > 0 {
+			s.processImplicitRoutes(info.Routes)
+		}
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection()
+	}
+}
+
+// This will process implicit route information from other servers.
+// We will check to see if we have configured or are already connected,
+// and if so we will ignore. Otherwise we will attempt to connect.
+func (s *Server) processImplicitRoutes(routes []RemoteInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ri := range routes {
+		if _, exists := s.remotes[ri.RemoteID]; exists {
+			continue
+		}
+		// We have a new route that we do not currently know about.
+		// Process here and solicit a connection.
+		r, err := url.Parse(ri.URL)
+		if err != nil {
+			Debugf("Error parsing URL from Remote INFO: %v\n", err)
+			continue
+		}
+		if ri.AuthRequired {
+			r.User = url.UserPassword(s.opts.ClusterUsername, s.opts.ClusterPassword)
+		}
+		go s.connectToRoute(r)
 	}
 }
 
@@ -89,14 +159,11 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 
 	s.mu.Lock()
 	if s.routes[route.cid] == nil {
-
 		// We are too early, let createRoute call this function.
 		route.mu.Lock()
 		route.sendLocalSubs = true
 		route.mu.Unlock()
-
 		s.mu.Unlock()
-
 		return
 	}
 
@@ -125,14 +192,34 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
+	for _, route := range s.opts.Routes {
+		if rURL == route {
+			r.routeType = Explicit
+		}
+	}
 	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
-	// Grab server variables.
+	// Grab server variables and clone known routes.
 	s.mu.Lock()
-	info := s.routeInfoJSON
-	authRequired := s.routeInfo.AuthRequired
-	tlsRequired := s.routeInfo.TLSRequired
+	// copy
+	info := s.routeInfo
+	for _, r := range s.routes {
+		r.mu.Lock()
+		if r.route.url != nil {
+			ri := RemoteInfo{
+				RemoteID:     r.route.remoteID,
+				URL:          fmt.Sprintf("%s", r.route.url),
+				AuthRequired: r.route.authRequired,
+				TLSRequired:  r.route.tlsRequired,
+			}
+			info.Routes = append(info.Routes, ri)
+		}
+		r.mu.Unlock()
+	}
 	s.mu.Unlock()
+
+	authRequired := info.AuthRequired
+	tlsRequired := info.TLSRequired
 
 	// Grab lock
 	c.mu.Lock()
@@ -202,8 +289,12 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		c.sendConnect(tlsRequired)
 	}
 
+	// Add other routes in that are known to the info payload
+	b, _ := json.Marshal(info)
+	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
+
 	// Send our info to the other side.
-	s.sendInfo(c, info)
+	s.sendInfo(c, infoJSON)
 
 	// Check for Auth required state for incoming connections.
 	if authRequired && !didSolicit {
@@ -418,12 +509,6 @@ func (s *Server) StartRouting() {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
-	// Generate the info json
-	b, err := json.Marshal(info)
-	if err != nil {
-		Fatalf("Error marshalling Route INFO JSON: %+v\n", err)
-	}
-	s.routeInfoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 
 	// Spin up the accept loop
 	ch := make(chan struct{})

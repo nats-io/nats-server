@@ -26,16 +26,17 @@ import (
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
-	ID           string `json:"server_id"`
-	Version      string `json:"version"`
-	GoVersion    string `json:"go"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	AuthRequired bool   `json:"auth_required"`
-	SSLRequired  bool   `json:"ssl_required"` // ssl json used for older clients
-	TLSRequired  bool   `json:"tls_required"`
-	TLSVerify    bool   `json:"tls_verify"`
-	MaxPayload   int    `json:"max_payload"`
+	ID           string       `json:"server_id"`
+	Version      string       `json:"version"`
+	GoVersion    string       `json:"go"`
+	Host         string       `json:"host"`
+	Port         int          `json:"port"`
+	AuthRequired bool         `json:"auth_required"`
+	SSLRequired  bool         `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
+	TLSRequired  bool         `json:"tls_required"`
+	TLSVerify    bool         `json:"tls_verify"`
+	MaxPayload   int          `json:"max_payload"`
+	Routes       []RemoteInfo `json:"routes,omitempty"`
 }
 
 // Server is our main struct.
@@ -62,7 +63,6 @@ type Server struct {
 
 	routeListener net.Listener
 	routeInfo     Info
-	routeInfoJSON []byte
 	rcQuit        chan bool
 }
 
@@ -706,4 +706,11 @@ func (s *Server) GetListenEndpoint() string {
 	// Return the opts's Host and Port. Note that the Port may be set
 	// when the listener is started, due to the use of RANDOM_PORT
 	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
+}
+
+// Server's ID
+func (s *Server) Id() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info.ID
 }

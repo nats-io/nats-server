@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveRandomPort(t *testing.T) {
-	opts := &server.Options{Port: server.RANDOM_PORT}
+	opts := &server.Options{Host: "127.0.0.1", Port: server.RANDOM_PORT}
 	s := RunServer(opts)
 	defer s.Shutdown()
 
