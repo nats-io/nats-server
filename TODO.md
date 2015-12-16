@@ -13,10 +13,11 @@
 - [ ] Add ENV and variable support to dconf
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
+- [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Gossip Protocol for discovery for clustering
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Add to varz, time for slow consumers, peek connections, memory, etc.
+- [ ] Add to varz, time for slow consumers, peek or total connections, memory, etc.
 - [X] Better user/pass support using bcrypt etc.
 - [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..
