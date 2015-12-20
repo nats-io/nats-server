@@ -22,7 +22,7 @@ func main() {
 	var showVersion bool
 	var debugAndTrace bool
 	var configFile string
-	var showTlsHelp bool
+	var showTLSHelp bool
 
 	// Parse flags
 	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
@@ -60,7 +60,7 @@ func main() {
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	flag.BoolVar(&showTlsHelp, "help_tls", false, "TLS help.")
+	flag.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
 	flag.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
@@ -80,7 +80,7 @@ func main() {
 		server.PrintServerAndExit()
 	}
 
-	if showTlsHelp {
+	if showTLSHelp {
 		server.PrintTlsHelpAndDie()
 	}
 
@@ -210,8 +210,8 @@ func configureClusterOpts(opts *server.Options) error {
 		return nil
 	}
 
-	clusterUrl, err := url.Parse(opts.ClusterListenStr)
-	h, p, err := net.SplitHostPort(clusterUrl.Host)
+	clusterURL, err := url.Parse(opts.ClusterListenStr)
+	h, p, err := net.SplitHostPort(clusterURL.Host)
 	if err != nil {
 		return err
 	}
@@ -221,14 +221,14 @@ func configureClusterOpts(opts *server.Options) error {
 		return err
 	}
 
-	if clusterUrl.User != nil {
-		pass, hasPassword := clusterUrl.User.Password()
+	if clusterURL.User != nil {
+		pass, hasPassword := clusterURL.User.Password()
 		if !hasPassword {
 			return fmt.Errorf("Expected cluster password to be set.")
 		}
 		opts.ClusterPassword = pass
 
-		user := clusterUrl.User.Username()
+		user := clusterURL.User.Username()
 		opts.ClusterUsername = user
 	}
 
