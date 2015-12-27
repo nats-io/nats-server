@@ -395,10 +395,9 @@ $.getJSON('http://localhost:8222/connz?callback=?', function(data) {
 
 ## Building
 
-This code currently requires at _least_ version 1.4 of Go, but we encourage
-the use of the latest stable release.  We will be moving to requiring at _least_ 1.5
-in the near future. Go is still young and improving
-rapidly, new releases provide performance improvements and fixes.  Information
+This code currently requires at _least_ version 1.5 of Go, but we encourage
+the use of the latest stable release. Go is still young and improving
+rapidly. New releases provide performance improvements and fixes.  Information
 on installation, including pre-built binaries, is available at
 <http://golang.org/doc/install>.  Stable branches of operating system
 packagers provided by your OS vendor may not be sufficient.
