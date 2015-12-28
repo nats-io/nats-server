@@ -169,8 +169,10 @@ tls {
 }
 ```
 
-When setting up clusters, all servers in the cluster, if using TLS, will both verify the connecting endpoints and the server responses. So certificates are checked in
-both directions. Certificates can be configured only for the server's cluster identity, keeping client and server certificates separate from cluster formation.
+When setting up clusters, all servers in the cluster, if using TLS, will by default both verify the connecting endpoints and the server responses.
+That means certificates will be checked in both directions.
+If this is undesirable, you can set `verify: false` similarly to the example above, in which case no client certificate will be required and authentication relies purely on the configured cluster username/password.
+Certificates can be configured only for the server's cluster identity, keeping client and server certificates separate from cluster formation.
 
 ```
 cluster {

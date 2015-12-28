@@ -3,6 +3,7 @@
 package test
 
 import (
+	"crypto/tls"
 	"testing"
 	"time"
 
@@ -59,4 +60,20 @@ func TestBasicTLSClusterPubSub(t *testing.T) {
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "22", "", "2", "ok")
+}
+
+func TestTLSClientCertRequiredByDefault(t *testing.T) {
+	opts := LoadConfig("./configs/srv_a_tls.conf")
+
+	if opts.ClusterTLSConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Errorf("ClusterTLSConfig should have RequireAndVerifyClientCert set by default")
+	}
+}
+
+func TestTLSNoClientCertWhenVerifyFalse(t *testing.T) {
+	opts := LoadConfig("./configs/srv_a_tls_verify_false.conf")
+
+	if opts.ClusterTLSConfig.ClientAuth != tls.NoClientCert {
+		t.Errorf("ClusterTLSConfig should have NoClientCert set when 'verify: false'")
+	}
 }
