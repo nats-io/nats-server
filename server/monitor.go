@@ -34,21 +34,23 @@ type Connz struct {
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid        uint64   `json:"cid"`
-	IP         string   `json:"ip"`
-	Port       int      `json:"port"`
-	Pending    int      `json:"pending_bytes"`
-	InMsgs     int64    `json:"in_msgs"`
-	OutMsgs    int64    `json:"out_msgs"`
-	InBytes    int64    `json:"in_bytes"`
-	OutBytes   int64    `json:"out_bytes"`
-	NumSubs    uint32   `json:"subscriptions"`
-	Name       string   `json:"name,omitempty"`
-	Lang       string   `json:"lang,omitempty"`
-	Version    string   `json:"version,omitempty"`
-	TLSVersion string   `json:"tls_version,omitempty"`
-	TLSCipher  string   `json:"tls_cipher_suite,omitempty"`
-	Subs       []string `json:"subscriptions_list,omitempty"`
+	Cid        uint64    `json:"cid"`
+	IP         string    `json:"ip"`
+	Port       int       `json:"port"`
+	Start      time.Time `json:"start"`
+	Uptime     string    `json:"uptime"`
+	Pending    int       `json:"pending_bytes"`
+	InMsgs     int64     `json:"in_msgs"`
+	OutMsgs    int64     `json:"out_msgs"`
+	InBytes    int64     `json:"in_bytes"`
+	OutBytes   int64     `json:"out_bytes"`
+	NumSubs    uint32    `json:"subscriptions"`
+	Name       string    `json:"name,omitempty"`
+	Lang       string    `json:"lang,omitempty"`
+	Version    string    `json:"version,omitempty"`
+	TLSVersion string    `json:"tls_version,omitempty"`
+	TLSCipher  string    `json:"tls_cipher_suite,omitempty"`
+	Subs       []string  `json:"subscriptions_list,omitempty"`
 }
 
 const DefaultConnListSize = 1024
@@ -114,12 +116,17 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs = pairs[minoff:maxoff]
 
+	// Use same now for all uptime calculations.
+	now := time.Now()
+
 	for _, pair := range pairs {
 		client := pair.Val
 		client.mu.Lock()
 
 		ci := &ConnInfo{
 			Cid:      client.cid,
+			Start:    client.start,
+			Uptime:   myUptime(now.Sub(client.start)),
 			InMsgs:   client.inMsgs,
 			OutMsgs:  client.outMsgs,
 			InBytes:  client.inBytes,
