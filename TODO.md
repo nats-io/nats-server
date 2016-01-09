@@ -18,6 +18,9 @@
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Add to varz, time for slow consumers, peek or total connections, memory, etc.
+- [ ] Add starttime and uptime to connz list.
+- [ ] Add in HTTP requests to varz?
+- [ ] Add favico and help link for monitoring?
 - [X] Better user/pass support using bcrypt etc.
 - [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..
