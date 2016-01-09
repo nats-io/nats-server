@@ -145,6 +145,9 @@ func TestVarz(t *testing.T) {
 	if v.Connections != 1 {
 		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
 	}
+	if v.TotalConnections >= 1 {
+		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
+	}
 	if v.InMsgs != 1 {
 		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
 	}
