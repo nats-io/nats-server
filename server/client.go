@@ -31,22 +31,23 @@ const (
 )
 
 type client struct {
-	mu   sync.Mutex
-	typ  int
-	cid  uint64
-	lang string
-	opts clientOpts
-	nc   net.Conn
-	mpay int
-	ncs  string
-	bw   *bufio.Writer
-	srv  *Server
-	subs *hashmap.HashMap
-	pcd  map[*client]struct{}
-	atmr *time.Timer
-	ptmr *time.Timer
-	pout int
-	msgb [msgScratchSize]byte
+	mu    sync.Mutex
+	typ   int
+	cid   uint64
+	lang  string
+	opts  clientOpts
+	start time.Time
+	nc    net.Conn
+	mpay  int
+	ncs   string
+	bw    *bufio.Writer
+	srv   *Server
+	subs  *hashmap.HashMap
+	pcd   map[*client]struct{}
+	atmr  *time.Timer
+	ptmr  *time.Timer
+	pout  int
+	msgb  [msgScratchSize]byte
 
 	parseState
 	stats

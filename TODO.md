@@ -1,10 +1,9 @@
 
 # General
 
-- [ ] Pedantic state
-- [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Dynamic socket buffer sizes
 - [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
+- [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Sublist better at high concurrency, cache uses writelock currently
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
@@ -14,10 +13,15 @@
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
-- [ ] Gossip Protocol for discovery for clustering
 - [ ] Info updates contain other implicit route servers
+- [ ] Pedantic state
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Add to varz, time for slow consumers, peek or total connections, memory, etc.
+- [ ] Track last activity time per connection?
+- [X] Add total connections to varz so we won't miss spikes, etc.
+- [X] Add starttime and uptime to connz list.
+- [X] Gossip Protocol for discovery for clustering
+- [X] Add in HTTP requests to varz?
+- [X] Add favico and help link for monitoring?
 - [X] Better user/pass support using bcrypt etc.
 - [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..

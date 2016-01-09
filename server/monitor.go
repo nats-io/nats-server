@@ -34,21 +34,23 @@ type Connz struct {
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid        uint64   `json:"cid"`
-	IP         string   `json:"ip"`
-	Port       int      `json:"port"`
-	Pending    int      `json:"pending_bytes"`
-	InMsgs     int64    `json:"in_msgs"`
-	OutMsgs    int64    `json:"out_msgs"`
-	InBytes    int64    `json:"in_bytes"`
-	OutBytes   int64    `json:"out_bytes"`
-	NumSubs    uint32   `json:"subscriptions"`
-	Name       string   `json:"name,omitempty"`
-	Lang       string   `json:"lang,omitempty"`
-	Version    string   `json:"version,omitempty"`
-	TLSVersion string   `json:"tls_version,omitempty"`
-	TLSCipher  string   `json:"tls_cipher_suite,omitempty"`
-	Subs       []string `json:"subscriptions_list,omitempty"`
+	Cid        uint64    `json:"cid"`
+	IP         string    `json:"ip"`
+	Port       int       `json:"port"`
+	Start      time.Time `json:"start"`
+	Uptime     string    `json:"uptime"`
+	Pending    int       `json:"pending_bytes"`
+	InMsgs     int64     `json:"in_msgs"`
+	OutMsgs    int64     `json:"out_msgs"`
+	InBytes    int64     `json:"in_bytes"`
+	OutBytes   int64     `json:"out_bytes"`
+	NumSubs    uint32    `json:"subscriptions"`
+	Name       string    `json:"name,omitempty"`
+	Lang       string    `json:"lang,omitempty"`
+	Version    string    `json:"version,omitempty"`
+	TLSVersion string    `json:"tls_version,omitempty"`
+	TLSCipher  string    `json:"tls_cipher_suite,omitempty"`
+	Subs       []string  `json:"subscriptions_list,omitempty"`
 }
 
 const DefaultConnListSize = 1024
@@ -69,6 +71,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	// Walk the list
 	s.mu.Lock()
+	s.httpReqStats[ConnzPath]++
 	tlsRequired := s.info.TLSRequired
 	c.NumConns = len(s.clients)
 
@@ -114,12 +117,17 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs = pairs[minoff:maxoff]
 
+	// Use same now for all uptime calculations.
+	now := time.Now()
+
 	for _, pair := range pairs {
 		client := pair.Val
 		client.mu.Lock()
 
 		ci := &ConnInfo{
 			Cid:      client.cid,
+			Start:    client.start,
+			Uptime:   myUptime(now.Sub(client.start)),
 			InMsgs:   client.inMsgs,
 			OutMsgs:  client.outMsgs,
 			InBytes:  client.inBytes,
@@ -206,6 +214,8 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 	// Walk the list
 	s.mu.Lock()
+
+	s.httpReqStats[RoutezPath]++
 	rs.NumRoutes = len(s.routes)
 
 	for _, r := range s.routes {
@@ -245,6 +255,10 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 // HandleStats process HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[SubszPath]++
+	s.mu.Unlock()
+
 	st := &Subsz{s.sl.Stats()}
 
 	b, err := json.MarshalIndent(st, "", "  ")
@@ -260,22 +274,25 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 type Varz struct {
 	*Info
 	*Options
-	Port          int       `json:"port"`
-	MaxPayload    int       `json:"max_payload"`
-	Start         time.Time `json:"start"`
-	Now           time.Time `json:"now"`
-	Uptime        string    `json:"uptime"`
-	Mem           int64     `json:"mem"`
-	Cores         int       `json:"cores"`
-	CPU           float64   `json:"cpu"`
-	Connections   int       `json:"connections"`
-	Routes        int       `json:"routes"`
-	Remotes       int       `json:"remotes"`
-	InMsgs        int64     `json:"in_msgs"`
-	OutMsgs       int64     `json:"out_msgs"`
-	InBytes       int64     `json:"in_bytes"`
-	OutBytes      int64     `json:"out_bytes"`
-	SlowConsumers int64     `json:"slow_consumers"`
+	Port             int       `json:"port"`
+	MaxPayload       int       `json:"max_payload"`
+	Start            time.Time `json:"start"`
+	Now              time.Time `json:"now"`
+	Uptime           string    `json:"uptime"`
+	Mem              int64     `json:"mem"`
+	Cores            int       `json:"cores"`
+	CPU              float64   `json:"cpu"`
+	Connections      int       `json:"connections"`
+	TotalConnections uint64    `json:"total_connections"`
+	Routes           int       `json:"routes"`
+	Remotes          int       `json:"remotes"`
+	InMsgs           int64     `json:"in_msgs"`
+	OutMsgs          int64     `json:"out_msgs"`
+	InBytes          int64     `json:"in_bytes"`
+	OutBytes         int64     `json:"out_bytes"`
+	SlowConsumers    int64     `json:"slow_consumers"`
+
+	HTTPReqStats map[string]uint64 `json:"http_req_stats"`
 }
 
 type usage struct {
@@ -309,23 +326,33 @@ func myUptime(d time.Duration) string {
 
 // HandleRoot will show basic info and links to others handlers.
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
+	// This feels dumb to me, but is required: https://code.google.com/p/go/issues/detail?id=4799
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	s.httpReqStats[RootPath]++
+	s.mu.Unlock()
 	fmt.Fprintf(w, `<html lang="en">
-        <head>
-        <style type="text/css">
-        body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; font-size: 18; }
-        a { margin-left: 32px; }
-        </style>
-        </head>
-		<body>
-            <img src="http://nats.io/img/logo.png" alt="NATS">
-			<br/>
-			<a href=/varz>varz</a><br/>
-			<a href=/connz>connz</a><br/>
-			<a href=/routez>routez</a><br/>
-			<a href=/subsz>subsz</a><br/>
-		</body>
-	</html>
-    `)
+   <head>
+    <link rel="shortcut icon" href="http://nats.io/img/favicon.ico">
+    <style type="text/css">
+      body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; font-size: 22; }
+      a { margin-left: 32px; }
+    </style>
+  </head>
+  <body>
+    <img src="http://nats.io/img/logo.png" alt="NATS">
+    <br/>
+	<a href=/varz>varz</a><br/>
+	<a href=/connz>connz</a><br/>
+	<a href=/routez>routez</a><br/>
+	<a href=/subsz>subsz</a><br/>
+    <br/>
+    <a href=http://nats.io/documentation/server/gnatsd-monitoring/>help</a>
+  </body>
+</html>`)
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -339,6 +366,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	v.Connections = len(s.clients)
+	v.TotalConnections = s.totalClients
 	v.Routes = len(s.routes)
 	v.Remotes = len(s.remotes)
 	v.InMsgs = s.inMsgs
@@ -346,6 +374,8 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v.OutMsgs = s.outMsgs
 	v.OutBytes = s.outBytes
 	v.SlowConsumers = s.slowConsumers
+	s.httpReqStats[VarzPath]++
+	v.HTTPReqStats = s.httpReqStats
 	s.mu.Unlock()
 
 	b, err := json.MarshalIndent(v, "", "  ")

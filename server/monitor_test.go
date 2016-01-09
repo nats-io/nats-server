@@ -145,6 +145,9 @@ func TestVarz(t *testing.T) {
 	if v.Connections != 1 {
 		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
 	}
+	if v.TotalConnections < 1 {
+		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
+	}
 	if v.InMsgs != 1 {
 		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
 	}
@@ -218,6 +221,7 @@ func TestConnz(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, err = ioutil.ReadAll(resp.Body)
+
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -269,6 +273,12 @@ func TestConnz(t *testing.T) {
 	}
 	if ci.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
+	}
+	if ci.Start.IsZero() {
+		t.Fatalf("Expected Start to be valid\n")
+	}
+	if ci.Uptime == "" {
+		t.Fatalf("Expected Uptime to be valid\n")
 	}
 
 	// Test JSONP

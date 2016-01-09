@@ -44,23 +44,24 @@ type Server struct {
 	gcid uint64
 	grid uint64
 	stats
-	mu       sync.Mutex
-	info     Info
-	infoJSON []byte
-	sl       *sublist.Sublist
-	opts     *Options
-	auth     Auth
-	trace    bool
-	debug    bool
-	running  bool
-	listener net.Listener
-	clients  map[uint64]*client
-	routes   map[uint64]*client
-	remotes  map[string]*client
-	done     chan bool
-	start    time.Time
-	http     net.Listener
-
+	mu            sync.Mutex
+	info          Info
+	infoJSON      []byte
+	sl            *sublist.Sublist
+	opts          *Options
+	auth          Auth
+	trace         bool
+	debug         bool
+	running       bool
+	listener      net.Listener
+	clients       map[uint64]*client
+	routes        map[uint64]*client
+	remotes       map[string]*client
+	totalClients  uint64
+	done          chan bool
+	start         time.Time
+	http          net.Listener
+	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
 	rcQuit        chan bool
@@ -379,8 +380,27 @@ func (s *Server) StartHTTPSMonitoring() {
 	s.startMonitoring(true)
 }
 
+// HTTP endpoints
+const (
+	RootPath   = "/"
+	VarzPath   = "/varz"
+	ConnzPath  = "/connz"
+	RoutezPath = "/routez"
+	SubszPath  = "/subsz"
+)
+
 // Start the monitoring server
 func (s *Server) startMonitoring(secure bool) {
+
+	// Used to track HTTP requests
+	s.httpReqStats = map[string]uint64{
+		RootPath:   0,
+		VarzPath:   0,
+		ConnzPath:  0,
+		RoutezPath: 0,
+		SubszPath:  0,
+	}
+
 	var hp string
 	var err error
 
@@ -404,17 +424,17 @@ func (s *Server) startMonitoring(secure bool) {
 	mux := http.NewServeMux()
 
 	// Root
-	mux.HandleFunc("/", s.HandleRoot)
+	mux.HandleFunc(RootPath, s.HandleRoot)
 	// Varz
-	mux.HandleFunc("/varz", s.HandleVarz)
+	mux.HandleFunc(VarzPath, s.HandleVarz)
 	// Connz
-	mux.HandleFunc("/connz", s.HandleConnz)
+	mux.HandleFunc(ConnzPath, s.HandleConnz)
 	// Routez
-	mux.HandleFunc("/routez", s.HandleRoutez)
+	mux.HandleFunc(RoutezPath, s.HandleRoutez)
 	// Subz
+	mux.HandleFunc(SubszPath, s.HandleSubsz)
+	// Subz alias for backwards compatibility
 	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
-	// Subz
-	mux.HandleFunc("/subsz", s.HandleSubsz)
 
 	srv := &http.Server{
 		Addr:           hp,
@@ -432,13 +452,14 @@ func (s *Server) startMonitoring(secure bool) {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
 
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.infoJSON
 	authRequired := s.info.AuthRequired
 	tlsRequired := s.info.TLSRequired
+	s.totalClients++
 	s.mu.Unlock()
 
 	// Grab lock
