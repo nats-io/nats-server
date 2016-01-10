@@ -1,10 +1,52 @@
-# gnatsd
+# NATS server
 
 [![License][License-Image]][License-Url] [![ReportCard][ReportCard-Image]][ReportCard-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Coverage][Coverage-Image]][Coverage-Url]
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
 
-## Usage
+**Note**: The `master` branch may be in an *unstable or even in a broken state* during development. Please use [releases][github-release] instead of the `master` branch in order to get stable binaries.
+
+## Getting Started
+
+The best way to get the nats server is to use one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
+You can also connect to a public server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443).
+
+Of course you can build the latest version of gnatsd from the `master` branch. The master branch will always build and pass tests, but may not work correctly in your environment.
+You will first need [*Go*](https://golang.org/) installed on your machine (version 1.4+ is required) to build gnatsd.
+
+### Running
+
+The nats server is lightweight and very performant. Starting one with no arguments will give you a server with sane default settings.
+
+```sh
+> gnatsd
+[35572] 2016/01/10 08:54:16.178798 [INF] Starting gnatsd version 0.7.3
+[35572] 2016/01/10 08:54:16.178940 [INF] Listening for client connections on 0.0.0.0:4222
+[35572] 2016/01/10 08:54:16.179115 [INF] gnatsd is ready
+```
+
+The server will be started and listening for client connections on port 4222 from all interfaces. The logs will be displayed to stdout
+as shown above. There are a large range of supported clients that can be found at [https://nats.io/clients](https://nats.io/download).
+The server uses a text based protocol, so interacting with it can be as simple as using telnet.
+
+```sh
+> telnet localhost 4222
+Trying ::1...
+Connected to localhost.
+Escape character is '^]'.
+INFO {"server_id":"3d13165236fe601c863b6714e819fc36","version":"0.7.3","go":"go1.5.2","host":"0.0.0.0","port":4222, ...}
+SUB foo 1
++OK
+PUB foo 11
+Hello World
++OK
+MSG foo 1 11
+Hello World
+```
+
+More information on the protocol can be found at [http://nats.io/documentation/internals/nats-protocol](http://nats.io/documentation/internals/nats-protocol/).
+
+## Configuring
 
 gnatsd accepts command line arguments to control its behavior. An example  configuration file is listed below. Note that
 command line arguments will override those items in the configuration file.
@@ -48,7 +90,7 @@ Common Options:
     -v, --version                    Show version
 ```
 
-## Sample Configuration
+## Sample Configuration File
 
 ```
 
@@ -251,9 +293,11 @@ Add into the server configuration file's authorization section.
 
 ## Monitoring
 
-If the monitoring port is enabled, the server will run a lightweight http server on that port that has several endpoints [/varz, /connz, /routez, /subscriptionsz]. All endpoints return a JSON object.
+If the monitoring port is enabled, the server will run a lightweight http server that has several endpoints defined, **[/varz, /connz, /routez, /subsz]**. All endpoints return a JSON object.
 
-To test, run '``go run gnatsd.go -m 8222``'
+To test, run '``gnatsd -m 8222``', then go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>
+
+### /varz
 
 <a href="http://localhost:8222/varz" target="_blank">http://localhost:8222/varz</a> reports various general statistics.
 
@@ -282,15 +326,25 @@ To test, run '``go run gnatsd.go -m 8222``'
   "cores": 4,
   "cpu": 0,
   "connections": 39,
+  "total_connections": 122,
   "routes": 0,
   "remotes": 0,
   "in_msgs": 100000,
   "out_msgs": 100000,
   "in_bytes": 1600000,
   "out_bytes": 1600000,
-  "slow_consumers": 0
+  "slow_consumers": 0,
+  "http_req_stats": {
+    "/": 8,
+    "/connz": 2,
+    "/routez": 0,
+    "/subsz": 0,
+    "/varz": 8
+  }
 }
 ```
+
+### /connz
 
 <a href="http://localhost:8222/connz" target="_blank">http://localhost:8222/connz</a> reports more detailed information on current connections. It uses a paging mechanism which defaults to 1024 connections.
 You can control these via url arguments (limit and offset), e.g. <a href="http://localhost:8222/connz?limit=1&offset=1" target="_blank">http://localhost:8222/connz?limit=1&offset=1</a>.
@@ -298,7 +352,7 @@ You can also report detailed subscription information on a per connection basis 
 
 ```json
 {
-  "now": "2015-07-14T13:30:59.349179963-07:00",
+  "now": "2016-01-10T08:17:29.970134607-08:00",
   "num_connections": 2,
   "offset": 0,
   "limit": 1024,
@@ -307,6 +361,8 @@ You can also report detailed subscription information on a per connection basis 
       "cid": 571,
       "ip": "127.0.0.1",
       "port": 61572,
+      "start": "2016-01-10T08:15:07.970134607-08:00",
+      "uptime": "2m22s",
       "pending_bytes": 0,
       "in_msgs": 0,
       "out_msgs": 0,
@@ -323,6 +379,8 @@ You can also report detailed subscription information on a per connection basis 
       "cid": 574,
       "ip": "127.0.0.1",
       "port": 61577,
+      "start": "2016-01-10T08:17:09.970134607-08:00",
+      "uptime": "22m22s",
       "pending_bytes": 0,
       "in_msgs": 0,
       "out_msgs": 0,
@@ -339,6 +397,7 @@ You can also report detailed subscription information on a per connection basis 
 }
 ```
 
+### /routez
 
 <a href="http://localhost:8222/routez" target="_blank">http://localhost:8222/routez</a> reports information on active routes for a cluster. Routes are expected to be low, so there is no paging mechanism currently with this endpoint. It does support the subs arg line /connz, e.g. <a href="http://localhost:8222/routez?subs=1" target="_blank">http://localhost:8222/routez?subs=1</a>
 
@@ -364,7 +423,9 @@ You can also report detailed subscription information on a per connection basis 
 }
 ```
 
-<a href="http://localhost:8222/subscriptionsz" target="_blank">http://localhost:8222/subscriptionsz</a> reports detailed information about the current subscriptions and the routing data structure.
+### /subsz
+
+<a href="http://localhost:8222/subsz" target="_blank">http://localhost:8222/subsz</a> reports detailed information about the current subscriptions and the routing data structure.
 
 ```json
 {
@@ -420,24 +481,28 @@ presentations, references and more.
 
 ## Client libraries
 
-There are several client language bindings for NATS. For a complete and updated list, please visit <https://nats.io>.
+Here is a sample of client language bindings for NATS. For a complete and updated list, please visit <https://nats.io/download>.
+
 - [Go](https://github.com/nats-io/nats)
-- [Java](https://github.com/tyagihas/java_nats)
-- [Java - Spring](https://github.com/mheath/jnats)
 - [Node.js](https://github.com/nats-io/node-nats)
+- [Java](https://github.com/nats-io/jnats)
+- [Spring](https://github.com/cloudfoundry-community/java-nats)
+- [C/C++](https://github.com/nats-io/cnats)
+- [C#/.NET](https://github.com/nats-io/csnats)
 - [Ruby](https://github.com/nats-io/ruby-nats)
 - [Lua](https://github.com/DawnAngel/lua-nats)
 - [PHP](https://github.com/repejota/phpnats)
 - [Python](https://github.com/mcuadros/pynats)
-- [Scala](https://github.com/tyagihas/scala_nats/)
+- [Scala](https://github.com/tyagihas/scala_nats)
 - [Haskell](https://github.com/ondrap/nats-queue)
-
+- [Rust](https://github.com/jedisct1/rust-nats)
+- [NGINX](https://github.com/nats-io/nginx-nats)
 
 ## License
 
 (The MIT License)
 
-Copyright (c) 2012-2015 Apcera Inc.
+Copyright (c) 2012-2016 Apcera Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to
@@ -467,3 +532,4 @@ IN THE SOFTWARE.
 [Coverage-image]: https://img.shields.io/coveralls/nats-io/gnatsd.svg
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
 [ReportCard-Image]: http://goreportcard.com/badge/nats-io/gnatsd
+[github-release]: https://github.com/nats-io/gnatsd/releases/

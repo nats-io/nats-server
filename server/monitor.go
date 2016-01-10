@@ -117,9 +117,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs = pairs[minoff:maxoff]
 
-	// Use same now for all uptime calculations.
-	now := time.Now()
-
 	for _, pair := range pairs {
 		client := pair.Val
 		client.mu.Lock()
@@ -127,7 +124,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		ci := &ConnInfo{
 			Cid:      client.cid,
 			Start:    client.start,
-			Uptime:   myUptime(now.Sub(client.start)),
+			Uptime:   myUptime(c.Now.Sub(client.start)),
 			InMsgs:   client.inMsgs,
 			OutMsgs:  client.outMsgs,
 			InBytes:  client.inBytes,
