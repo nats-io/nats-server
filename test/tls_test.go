@@ -23,42 +23,21 @@ func TestTLSConnection(t *testing.T) {
 	defer srv.Shutdown()
 
 	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
-	nurl := fmt.Sprintf("nats://%s:%s@%s/", opts.Username, opts.Password, endpoint)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
 	nc, err := nats.Connect(nurl)
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server")
 	}
 
 	// Do simple SecureConnect
-	nc, err = nats.SecureConnect(fmt.Sprintf("nats://%s/", endpoint))
+	nc, err = nats.Connect(fmt.Sprintf("tls://%s/", endpoint))
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server with no auth")
 	}
 
 	// Now do more advanced checking, verifying servername and using rootCA.
-	// Setup our own TLSConfig using RootCA from our self signed cert.
-	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
-	if err != nil || rootPEM == nil {
-		t.Fatalf("failed to read root certificate")
-	}
-	pool := x509.NewCertPool()
-	ok := pool.AppendCertsFromPEM([]byte(rootPEM))
-	if !ok {
-		t.Fatalf("failed to parse root certificate")
-	}
 
-	config := &tls.Config{
-		ServerName: opts.Host,
-		RootCAs:    pool,
-		MinVersion: tls.VersionTLS12,
-	}
-
-	copts := nats.DefaultOptions
-	copts.Url = nurl
-	copts.Secure = true
-	copts.TLSConfig = config
-
-	nc, err = copts.Connect()
+	nc, err = nats.Connect(nurl, nats.RootCAs("./configs/certs/ca.pem"))
 	if err != nil {
 		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
 	}
@@ -79,14 +58,14 @@ func TestTLSClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify.conf")
 	defer srv.Shutdown()
 
-	nurl := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
 
 	_, err := nats.Connect(nurl)
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server without a certificate")
 	}
 
-	_, err = nats.SecureConnect(nurl)
+	_, err = nats.Connect(nurl)
 	if err == nil {
 		t.Fatalf("Expected error trying to secure connect to secure server without a certificate")
 	}
@@ -173,7 +152,7 @@ func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url strin
 	subName := fmt.Sprintf("foo.%d", index)
 
 	for i := 0; i < 100; i++ {
-		nc, err := nats.SecureConnect(url)
+		nc, err := nats.Connect(url, nats.RootCAs("./configs/certs/ca.pem"))
 		if err != nil {
 			errCh <- fmt.Errorf("Unable to create TLS connection: %v\n", err)
 			return
@@ -216,7 +195,7 @@ func TestTLSStressConnect(t *testing.T) {
 	srv := RunServer(opts)
 	defer srv.Shutdown()
 
-	nurl := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
 
 	threadCount := 3
 
