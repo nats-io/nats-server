@@ -7,14 +7,11 @@ install:
 - go get golang.org/x/tools/cmd/vet
 - go get golang.org/x/tools/cmd/cover
 - go get github.com/mattn/goveralls
-
+- go get github.com/wadey/gocovmerge
 script:
 - go build
-- ./travis/gofmt.sh
-- ./travis/govet.sh
+- go fmt ./...
+- go vet ./...
 - go test -i -race ./...
 - go test -v -race ./...
-- ./travis/coveralls-script.sh
-env:
-  global:
-    secure: fi/zxSp5eF6Mt8yrgJakBVinDpCDFy3zPZ4Jy7jsyoKWgF7CdSFmh0WBcN932KOLCRaVm7ZqD2RwO9SifIsBcDtZqML4RKg3Q+T+Uqt4LpskVobMYkPKDcA5i3c3ifhJu/wzl7Y/jnysvjxCwQrH/nGAc4+AwyH6x2TjKF7UFoY=
+- ./scripts/cov.sh TRAVIS
