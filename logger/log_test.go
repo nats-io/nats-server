@@ -79,13 +79,6 @@ func TestStdLoggerTrace(t *testing.T) {
 	}, "[TRC] foo\n")
 }
 
-func TestStdLoggerTraceWithOutDebug(t *testing.T) {
-	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false, false)
-		logger.Tracef("foo")
-	}, "")
-}
-
 func TestFileLogger(t *testing.T) {
 	tmpDir, err := ioutil.TempDir("", "_gnatsd")
 	if err != nil {

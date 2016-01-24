@@ -107,7 +107,7 @@ func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
 	// Basic Connect setting flags
-	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"trace\":true,\"ssl_required\":false}\r\n")
 	err := c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -115,8 +115,11 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Trace: true}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
+	}
+	if !c.trace {
+		t.Fatal("Expected trace to be true")
 	}
 
 	// Test that we can capture user/pass
