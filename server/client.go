@@ -78,6 +78,7 @@ type subscription struct {
 type clientOpts struct {
 	Verbose       bool   `json:"verbose"`
 	Pedantic      bool   `json:"pedantic"`
+	Trace         bool   `json:"trace"`
 	SslRequired   bool   `json:"ssl_required"`
 	Authorization string `json:"auth_token"`
 	Username      string `json:"user"`
@@ -257,6 +258,12 @@ func (c *client) processConnect(arg []byte) error {
 
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
 		return err
+	}
+
+	// Client-enabled tracing.
+	// TODO: This probably needs to support some kind of authorization?
+	if c.opts.Trace {
+		c.trace = true
 	}
 
 	if c.srv != nil {
@@ -991,5 +998,5 @@ func (c *client) Noticef(format string, v ...interface{}) {
 
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Tracef(format, v...)
+	tracef(format, v...)
 }

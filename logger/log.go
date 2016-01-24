@@ -112,7 +112,5 @@ func (l *Logger) Debugf(format string, v ...interface{}) {
 }
 
 func (l *Logger) Tracef(format string, v ...interface{}) {
-	if l.trace == true {
-		l.logger.Printf(l.traceLabel+format, v...)
-	}
+	l.logger.Printf(l.traceLabel+format, v...)
 }

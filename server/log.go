@@ -76,6 +76,12 @@ func Tracef(format string, v ...interface{}) {
 	}, format, v...)
 }
 
+func tracef(format string, v ...interface{}) {
+	executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Tracef(format, v...)
+	}, format, v...)
+}
+
 func executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
 	log.Lock()
 	defer log.Unlock()
