@@ -1,6 +1,10 @@
 
 # General
 
+- [ ] Multiple Auth
+- [ ] Authorization / Access
+- [ ] No downtime restart
+- [ ] Signal based reload of configuration.
 - [ ] Dynamic socket buffer sizes
 - [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [ ] brew, apt-get, rpm, chocately (windows)
