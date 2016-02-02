@@ -147,7 +147,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 		// Wait for processing.
 		c1.Flush()
 		c2.Flush()
-		// Wait for a short bit for cluster propogation.
+		// Wait for a short bit for cluster propagation.
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -263,7 +263,7 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	nc1.Subscribe("foo-req", func(m *nats.Msg) {
 		nc1.Publish(m.Reply, response)
 	})
-	// Make sure the route and the subscription are propogated.
+	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
 	var resp string
@@ -305,7 +305,7 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	nc1.QueueSubscribe("foo-req", "booboo", func(m *nats.Msg) {
 		nc1.Publish(m.Reply, response)
 	})
-	// Make sure the route and the subscription are propogated.
+	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
 	// Connect the other responder to srvB
