@@ -463,7 +463,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeExpect(subRe)
 }
 
-func TestAutoUnsubPropogation(t *testing.T) {
+func TestAutoUnsubPropagation(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
