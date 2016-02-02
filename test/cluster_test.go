@@ -283,7 +283,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
@@ -298,7 +298,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 2 {
@@ -313,7 +313,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
@@ -326,7 +326,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	// Close the client and make sure we remove subscription state.
 	clientA.Close()
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 	if sc := srvA.NumSubscriptions(); sc != 0 {
 		t.Fatalf("Expected no subscriptions for srvA, got %d\n", sc)
@@ -337,7 +337,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 }
 
 // This will test that we drop remote sids correctly.
-func TestAutoUnsubscribePropogation(t *testing.T) {
+func TestAutoUnsubscribePropagation(t *testing.T) {
 	srvA, srvB, optsA, _ := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
