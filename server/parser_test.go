@@ -380,6 +380,34 @@ func TestShouldFail(t *testing.T) {
 	if err := c.parse([]byte("PUB foo 2\r\nok\r \n")); err == nil {
 		t.Fatal("Should have received a parse error")
 	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUBUNSUB 1\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB_2\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB_UNSUB_UNSUB 2\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB_\t2\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB\r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB \r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
+	c.state = OP_START
+	if err := c.parse([]byte("UNSUB          \t       \r\n")); err == nil {
+		t.Fatal("Should have received a parse error")
+	}
 }
 
 func TestProtoSnippet(t *testing.T) {
