@@ -3,6 +3,7 @@
 package test
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -72,6 +73,33 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	return
 }
 
+// completeConnection ensures that the server has fully processed (and assigned
+// a client id) to the connection created to check that the server has started.
+// This is important for tests that expect connections to have a predictable
+// value.
+func completeConnection(conn net.Conn) error {
+	// Close the connection on exit
+	defer conn.Close()
+
+	buf := bufio.NewReader(conn)
+	resp := ""
+
+	// Consume the INFO protocol
+	_, err := buf.ReadString('\n')
+	if err == nil {
+		// Send a PING
+		_, err = conn.Write([]byte("PING\r\n"))
+	}
+	if err == nil {
+		// Expect a PONG
+		resp, err = buf.ReadString('\n')
+	}
+	if err != nil || resp != "PONG\r\n" {
+		return err
+	}
+	return nil
+}
+
 // New Go Routine based server with auth
 func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	if opts == nil {
@@ -103,7 +131,9 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		conn.Close()
+		if err := completeConnection(conn); err != nil {
+			break
+		}
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")
@@ -132,7 +162,10 @@ func startServer(t tLogger, port int, other string) *natsServer {
 				return nil
 			}
 		} else {
-			c.Close()
+			if err := completeConnection(c); err != nil {
+				t.Fatalf("Error trying to connect to %s: %v", natsServerExe, err)
+				return nil
+			}
 			break
 		}
 	}
@@ -210,8 +243,9 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		// We bound to the addr, so close and return.
-		conn.Close()
+		if err := completeConnection(conn); err != nil {
+			break
+		}
 		return
 	}
 	// We have failed to bind the socket in the time allowed.

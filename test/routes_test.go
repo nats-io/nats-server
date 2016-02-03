@@ -253,6 +253,12 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	defer client.Close()
 
+	// Make sure client connection is fully processed before creating route
+	// connection, so we are sure that client ID will be "2" ("1" being used
+	// by the connection created to check the server is started)
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	defer route.Close()
 
