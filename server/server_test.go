@@ -46,6 +46,11 @@ func RunServer(opts *Options) *Server {
 			continue
 		}
 		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
+
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")

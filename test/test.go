@@ -104,6 +104,10 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 			continue
 		}
 		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")
@@ -133,6 +137,10 @@ func startServer(t tLogger, port int, other string) *natsServer {
 			}
 		} else {
 			c.Close()
+			// Wait a bit to give a chance to the server to remove this
+			// "client" from its state, which may otherwise interfere with
+			// some tests.
+			time.Sleep(25 * time.Millisecond)
 			break
 		}
 	}
@@ -210,8 +218,11 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		// We bound to the addr, so close and return.
 		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return
 	}
 	// We have failed to bind the socket in the time allowed.
