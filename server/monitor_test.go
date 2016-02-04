@@ -177,17 +177,6 @@ func TestConnz(t *testing.T) {
 	s := runMonitorServer(DEFAULT_HTTP_PORT)
 	defer s.Shutdown()
 
-	// Wait a bit to make sure that the "client" that was created
-	// by the connection checking that the server is started is gone.
-	end := time.Now().Add(5 * time.Second)
-	for time.Now().Before(end) {
-		if s.NumClients() > 0 {
-			time.Sleep(10 * time.Millisecond)
-		} else {
-			break
-		}
-	}
-
 	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {

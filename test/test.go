@@ -3,7 +3,6 @@
 package test
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -73,32 +72,6 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	return
 }
 
-// completeConnection ensures that the server has fully processed (and assigned
-// a client id) to the connection created to check that the server has started.
-// This is important for tests that expect connections to have a predictable
-// value.
-func completeConnection(conn net.Conn) error {
-	// Close the connection on exit
-	defer conn.Close()
-
-	buf := bufio.NewReader(conn)
-
-	// Consume the INFO protocol
-	_, err := buf.ReadString('\n')
-	if err == nil {
-		// Send a PING
-		_, err = conn.Write([]byte("PING\r\n"))
-	}
-	if err == nil {
-		// Expect a PONG, but could be -ERR. We don't really care,
-		// the point is that if we received something, the client
-		// is initialized.
-		_, err = buf.ReadString('\n')
-	}
-
-	return err
-}
-
 // New Go Routine based server with auth
 func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	if opts == nil {
@@ -130,9 +103,11 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		if err := completeConnection(conn); err != nil {
-			break
-		}
+		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")
@@ -161,10 +136,11 @@ func startServer(t tLogger, port int, other string) *natsServer {
 				return nil
 			}
 		} else {
-			if err := completeConnection(c); err != nil {
-				t.Fatalf("Error trying to connect to %s: %v", natsServerExe, err)
-				return nil
-			}
+			c.Close()
+			// Wait a bit to give a chance to the server to remove this
+			// "client" from its state, which may otherwise interfere with
+			// some tests.
+			time.Sleep(25 * time.Millisecond)
 			break
 		}
 	}
@@ -242,9 +218,11 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		if err := completeConnection(conn); err != nil {
-			break
-		}
+		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return
 	}
 	// We have failed to bind the socket in the time allowed.

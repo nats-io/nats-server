@@ -3,7 +3,6 @@
 package server
 
 import (
-	"bufio"
 	"net"
 	"testing"
 	"time"
@@ -17,32 +16,6 @@ var DefaultOptions = Options{
 	ProfPort:    11280,
 	NoLog:       true,
 	NoSigs:      true,
-}
-
-// completeConnection ensures that the server has fully processed (and assigned
-// a client id) to the connection created to check that the server has started.
-// This is important for tests that expect connections to have a predictable
-// value.
-func completeConnection(conn net.Conn) error {
-	// Close the connection on exit
-	defer conn.Close()
-
-	buf := bufio.NewReader(conn)
-
-	// Consume the INFO protocol
-	_, err := buf.ReadString('\n')
-	if err == nil {
-		// Send a PING
-		_, err = conn.Write([]byte("PING\r\n"))
-	}
-	if err == nil {
-		// Expect a PONG, but could be -ERR. We don't really care,
-		// the point is that if we received something, the client
-		// is initialized.
-		_, err = buf.ReadString('\n')
-	}
-
-	return err
 }
 
 // New Go Routine based server
@@ -72,9 +45,12 @@ func RunServer(opts *Options) *Server {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		if err := completeConnection(conn); err != nil {
-			break
-		}
+		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
+
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")
