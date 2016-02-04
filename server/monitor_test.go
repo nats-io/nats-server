@@ -468,6 +468,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		firstClient.Publish("foo", []byte("Hello World"))
 	}
 	defer firstClient.Close()
+	firstClient.Flush()
 
 	clients := make([]*nats.Conn, 3)
 	for i, _ := range clients {

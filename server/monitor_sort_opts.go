@@ -2,6 +2,8 @@
 
 package server
 
+import "sync/atomic"
+
 // Helper types to sort by ConnInfo values
 type SortOpt string
 
@@ -15,12 +17,35 @@ const (
 	byInBytes          = "bytes_from"
 )
 
-type Pair struct {
-	Key uint64
-	Val *client
+type ClientInfo struct {
+	client   *client
+	cid      uint64
+	subCount uint32
+	buffered int
+	outMsgs  int64
+	inMsgs   int64
+	outBytes int64
+	inBytes  int64
 }
 
-type ByCid []Pair
+func NewClientInfo(c *client) *ClientInfo {
+	o := &ClientInfo{}
+	c.mu.Lock()
+	o.client = c
+	o.cid = c.cid
+	o.subCount = c.subs.Count()
+	o.buffered = c.bw.Buffered()
+	o.outMsgs = c.outMsgs
+	o.outBytes = c.outBytes
+	// inMsgs and inBytes are updated outside of client's lock.
+	// So use atomic here to read (and updated in processMsg)
+	o.inMsgs = atomic.LoadInt64(&c.inMsgs)
+	o.inBytes = atomic.LoadInt64(&c.inBytes)
+	c.mu.Unlock()
+	return o
+}
+
+type ByCid []*ClientInfo
 
 func (d ByCid) Len() int {
 	return len(d)
@@ -29,10 +54,10 @@ func (d ByCid) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByCid) Less(i, j int) bool {
-	return d[i].Val.cid < d[j].Val.cid
+	return d[i].cid < d[j].cid
 }
 
-type BySubs []Pair
+type BySubs []*ClientInfo
 
 func (d BySubs) Len() int {
 	return len(d)
@@ -41,10 +66,10 @@ func (d BySubs) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d BySubs) Less(i, j int) bool {
-	return d[i].Val.subs.Count() < d[j].Val.subs.Count()
+	return d[i].subCount < d[j].subCount
 }
 
-type ByPending []Pair
+type ByPending []*ClientInfo
 
 func (d ByPending) Len() int {
 	return len(d)
@@ -53,18 +78,10 @@ func (d ByPending) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByPending) Less(i, j int) bool {
-	client := d[i].Val
-	client.mu.Lock()
-	bwi := client.bw.Buffered()
-	client.mu.Unlock()
-	client = d[j].Val
-	client.mu.Lock()
-	bwj := client.bw.Buffered()
-	client.mu.Unlock()
-	return bwi < bwj
+	return d[i].buffered < d[j].buffered
 }
 
-type ByOutMsgs []Pair
+type ByOutMsgs []*ClientInfo
 
 func (d ByOutMsgs) Len() int {
 	return len(d)
@@ -73,10 +90,10 @@ func (d ByOutMsgs) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByOutMsgs) Less(i, j int) bool {
-	return d[i].Val.outMsgs < d[j].Val.outMsgs
+	return d[i].outMsgs < d[j].outMsgs
 }
 
-type ByInMsgs []Pair
+type ByInMsgs []*ClientInfo
 
 func (d ByInMsgs) Len() int {
 	return len(d)
@@ -85,10 +102,10 @@ func (d ByInMsgs) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByInMsgs) Less(i, j int) bool {
-	return d[i].Val.inMsgs < d[j].Val.inMsgs
+	return d[i].inMsgs < d[j].inMsgs
 }
 
-type ByOutBytes []Pair
+type ByOutBytes []*ClientInfo
 
 func (d ByOutBytes) Len() int {
 	return len(d)
@@ -97,10 +114,10 @@ func (d ByOutBytes) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByOutBytes) Less(i, j int) bool {
-	return d[i].Val.outBytes < d[j].Val.outBytes
+	return d[i].outBytes < d[j].outBytes
 }
 
-type ByInBytes []Pair
+type ByInBytes []*ClientInfo
 
 func (d ByInBytes) Len() int {
 	return len(d)
@@ -109,5 +126,5 @@ func (d ByInBytes) Swap(i, j int) {
 	d[i], d[j] = d[j], d[i]
 }
 func (d ByInBytes) Less(i, j int) bool {
-	return d[i].Val.inBytes < d[j].Val.inBytes
+	return d[i].inBytes < d[j].inBytes
 }
