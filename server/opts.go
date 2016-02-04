@@ -146,7 +146,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxConn = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
-			tc, err := parseTLS(tlsm)
+			tc, err := parseTLS(tlsm, &TLSConfigOpts{})
 			if err != nil {
 				return nil, err
 			}
@@ -186,18 +186,22 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			}
 		case "tls":
 			tlsm := mv.(map[string]interface{})
-			tc, err := parseTLS(tlsm)
+			tc, err := parseTLS(tlsm, &TLSConfigOpts{Verify: true})
 			if err != nil {
 				return err
 			}
 			if opts.ClusterTLSConfig, err = GenTLSConfig(tc); err != nil {
 				return err
 			}
-			// For clusters, we will force strict verification. We also act
+
+			// For clusters, we will force strict verification unless the user
+			// specifically disables this by setting `verify: false`. We also act
 			// as both client and server, so will mirror the rootCA to the
 			// clientCA pool.
-			opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			opts.ClusterTLSConfig.ClientCAs = opts.ClusterTLSConfig.RootCAs
+			if tc.Verify {
+				opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+				opts.ClusterTLSConfig.ClientCAs = opts.ClusterTLSConfig.RootCAs
+			}
 			opts.ClusterTLSTimeout = tc.Timeout
 		}
 	}
@@ -269,9 +273,9 @@ func parseCipher(cipherName string) (uint16, error) {
 	return cipher, nil
 }
 
-// Helper function to parse TLS configs.
-func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
-	tc := TLSConfigOpts{}
+// parseTLS is a helper function to parse TLS configs into the
+// provided TLSConfigOpts.
+func parseTLS(tlsm map[string]interface{}, tc *TLSConfigOpts) (*TLSConfigOpts, error) {
 	for mk, mv := range tlsm {
 		switch strings.ToLower(mk) {
 		case "cert_file":
@@ -330,7 +334,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 		tc.Ciphers = defaultCipherSuites()
 	}
 
-	return &tc, nil
+	return tc, nil
 }
 
 func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {

@@ -244,6 +244,9 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		} else {
 			c.Debugf("Starting TLS route server handshake")
 			c.nc = tls.Server(c.nc, &tlsConfig)
+			if tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+				c.Noticef("Client certificate validation of incoming route connections is disabled, this is NOT recommended")
+			}
 		}
 
 		conn := c.nc.(*tls.Conn)
