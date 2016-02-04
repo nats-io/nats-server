@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/gnatsd/sublist"
@@ -122,18 +121,19 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		client := cli.client
 		client.mu.Lock()
 
-		// Use atomic for inMsgs and inBytes since they are updated
-		// outside of the client's lock
+		// For some of the fields, we need to use the values from 'cli' here,
+		// not 'client', because otherwise we may be off compared to the
+		// previous sort.
 		ci := &ConnInfo{
 			Cid:      client.cid,
 			Start:    client.start,
 			Uptime:   myUptime(c.Now.Sub(client.start)),
-			InMsgs:   atomic.LoadInt64(&client.inMsgs),
-			OutMsgs:  client.outMsgs,
-			InBytes:  atomic.LoadInt64(&client.inBytes),
-			OutBytes: client.outBytes,
-			NumSubs:  client.subs.Count(),
-			Pending:  client.bw.Buffered(),
+			InMsgs:   cli.inMsgs,
+			OutMsgs:  cli.outMsgs,
+			InBytes:  cli.inBytes,
+			OutBytes: cli.outBytes,
+			NumSubs:  cli.subCount,
+			Pending:  cli.buffered,
 			Name:     client.opts.Name,
 			Lang:     client.opts.Lang,
 			Version:  client.opts.Version,
