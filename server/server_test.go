@@ -28,7 +28,6 @@ func completeConnection(conn net.Conn) error {
 	defer conn.Close()
 
 	buf := bufio.NewReader(conn)
-	resp := ""
 
 	// Consume the INFO protocol
 	_, err := buf.ReadString('\n')
@@ -37,13 +36,13 @@ func completeConnection(conn net.Conn) error {
 		_, err = conn.Write([]byte("PING\r\n"))
 	}
 	if err == nil {
-		// Expect a PONG
-		resp, err = buf.ReadString('\n')
+		// Expect a PONG, but could be -ERR. We don't really care,
+		// the point is that if we received something, the client
+		// is initialized.
+		_, err = buf.ReadString('\n')
 	}
-	if err != nil || resp != "PONG\r\n" {
-		return err
-	}
-	return nil
+
+	return err
 }
 
 // New Go Routine based server
