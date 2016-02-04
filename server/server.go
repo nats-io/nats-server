@@ -67,6 +67,7 @@ type Server struct {
 	rcQuit        chan bool
 }
 
+// Make sure all are 64bits for atomic use
 type stats struct {
 	inMsgs        int64
 	outMsgs       int64

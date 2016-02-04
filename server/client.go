@@ -31,6 +31,8 @@ const (
 )
 
 type client struct {
+	// Here first because of use of atomics, and memory alignment.
+	stats
 	mu    sync.Mutex
 	typ   int
 	cid   uint64
@@ -50,7 +52,6 @@ type client struct {
 	msgb  [msgScratchSize]byte
 
 	parseState
-	stats
 
 	route         *route
 	sendLocalSubs bool
@@ -638,6 +639,8 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	// The msg includes the CR_LF, so pull back out for accounting.
 	msgSize := int64(len(msg) - LEN_CR_LF)
 
+	// No atomic needed since accessed under client lock.
+	// Monitor is reading those also under client's lock.
 	client.outMsgs++
 	client.outBytes += msgSize
 
@@ -701,8 +704,10 @@ func (c *client) processMsg(msg []byte) {
 	// The msg includes the CR_LF, so pull back out for accounting.
 	msgSize := int64(len(msg) - LEN_CR_LF)
 
-	c.inMsgs++
-	c.inBytes += msgSize
+	// Since we don't grab the client's lock, use atomic here.
+	// Monitor will also use atomic to read those.
+	atomic.AddInt64(&c.inMsgs, 1)
+	atomic.AddInt64(&c.inBytes, msgSize)
 
 	// Snapshot server.
 	srv := c.srv

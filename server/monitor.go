@@ -76,27 +76,27 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.NumConns = len(s.clients)
 
 	// Copy the keys to sort by them
-	pairs := make([]Pair, 0, c.NumConns)
-	for k, v := range s.clients {
-		pairs = append(pairs, Pair{Key: k, Val: v})
+	clients := make([]*ClientInfo, 0, c.NumConns)
+	for _, c := range s.clients {
+		clients = append(clients, NewClientInfo(c))
 	}
 	s.mu.Unlock()
 
 	switch sortOpt {
 	case byCid:
-		sort.Sort(ByCid(pairs))
+		sort.Sort(ByCid(clients))
 	case bySubs:
-		sort.Sort(sort.Reverse(BySubs(pairs)))
+		sort.Sort(sort.Reverse(BySubs(clients)))
 	case byPending:
-		sort.Sort(sort.Reverse(ByPending(pairs)))
+		sort.Sort(sort.Reverse(ByPending(clients)))
 	case byOutMsgs:
-		sort.Sort(sort.Reverse(ByOutMsgs(pairs)))
+		sort.Sort(sort.Reverse(ByOutMsgs(clients)))
 	case byInMsgs:
-		sort.Sort(sort.Reverse(ByInMsgs(pairs)))
+		sort.Sort(sort.Reverse(ByInMsgs(clients)))
 	case byOutBytes:
-		sort.Sort(sort.Reverse(ByOutBytes(pairs)))
+		sort.Sort(sort.Reverse(ByOutBytes(clients)))
 	case byInBytes:
-		sort.Sort(sort.Reverse(ByInBytes(pairs)))
+		sort.Sort(sort.Reverse(ByInBytes(clients)))
 	default:
 		if sortOpt != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -115,10 +115,10 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	if maxoff > c.NumConns {
 		maxoff = c.NumConns
 	}
-	pairs = pairs[minoff:maxoff]
+	clients = clients[minoff:maxoff]
 
-	for _, pair := range pairs {
-		client := pair.Val
+	for _, cli := range clients {
+		client := cli.client
 		client.mu.Lock()
 
 		ci := &ConnInfo{
