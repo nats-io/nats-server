@@ -66,6 +66,7 @@ const (
 	OP_UNS
 	OP_UNSU
 	OP_UNSUB
+	OP_UNSUB_SPC
 	UNSUB_ARG
 	OP_M
 	OP_MS
@@ -304,6 +305,13 @@ func (c *client) parse(buf []byte) error {
 				goto parseErr
 			}
 		case OP_UNSUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_UNSUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_UNSUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
