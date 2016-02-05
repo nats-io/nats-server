@@ -304,11 +304,20 @@ func TestRouteQueueSemantics(t *testing.T) {
 	matches = expectMsgs(2)
 
 	// Expect first to be the normal subscriber, next will be the queue one.
-	checkMsg(t, matches[0], "foo", "RSID:2:4", "", "2", "ok")
+	if string(matches[0][SID_INDEX]) != "RSID:2:4" &&
+		string(matches[1][SID_INDEX]) != "RSID:2:4" {
+		t.Fatalf("Did not received routed sid\n")
+	}
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
 	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
 
 	// Check the rsid to verify it is one of the queue group subscribers.
-	rsid := string(matches[1][SID_INDEX])
+	var rsid string
+	if matches[0][SID_INDEX][0] == 'Q' {
+		rsid = string(matches[0][SID_INDEX])
+	} else {
+		rsid = string(matches[1][SID_INDEX])
+	}
 	if rsid != qrsid1 && rsid != qrsid2 {
 		t.Fatalf("Expected a queue group rsid, got %s\n", rsid)
 	}

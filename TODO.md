@@ -12,7 +12,6 @@
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
-- [ ] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [ ] Add ENV and variable support to dconf
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
@@ -20,6 +19,7 @@
 - [ ] Info updates contain other implicit route servers
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Pedantic state
+- [X] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [X] Default sort by cid on connz
 - [X] Track last activity time per connection?
 - [X] Add total connections to varz so we won't miss spikes, etc.

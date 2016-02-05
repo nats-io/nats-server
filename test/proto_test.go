@@ -39,8 +39,9 @@ func TestProtoBasics(t *testing.T) {
 	// 2 Messages
 	send("SUB * 2\r\nPUB foo 2\r\nok\r\n")
 	matches = expectMsgs(2)
-	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
+	// Could arrive in any order
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
 }
 
 func TestProtoErr(t *testing.T) {
