@@ -363,7 +363,7 @@ func TestConnzLastActivity(t *testing.T) {
 	// Test inside details of each connection
 	ci := pollConz().Conns[0]
 	if len(ci.Subs) != 1 {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+		t.Fatalf("Expected subs of 1, got %v\n", len(ci.Subs))
 	}
 	firstLast := ci.LastActivity
 	if firstLast.IsZero() {
