@@ -1,8 +1,11 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Helper types to sort by ConnInfo values
 type SortOpt string
@@ -26,6 +29,7 @@ type ClientInfo struct {
 	inMsgs   int64
 	outBytes int64
 	inBytes  int64
+	last     time.Time
 }
 
 func NewClientInfo(c *client) *ClientInfo {
@@ -37,6 +41,7 @@ func NewClientInfo(c *client) *ClientInfo {
 	o.buffered = c.bw.Buffered()
 	o.outMsgs = c.outMsgs
 	o.outBytes = c.outBytes
+	o.last = c.last
 	// inMsgs and inBytes are updated outside of client's lock.
 	// So use atomic here to read (and updated in processMsg)
 	o.inMsgs = atomic.LoadInt64(&c.inMsgs)

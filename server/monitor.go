@@ -34,23 +34,24 @@ type Connz struct {
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid        uint64    `json:"cid"`
-	IP         string    `json:"ip"`
-	Port       int       `json:"port"`
-	Start      time.Time `json:"start"`
-	Uptime     string    `json:"uptime"`
-	Pending    int       `json:"pending_bytes"`
-	InMsgs     int64     `json:"in_msgs"`
-	OutMsgs    int64     `json:"out_msgs"`
-	InBytes    int64     `json:"in_bytes"`
-	OutBytes   int64     `json:"out_bytes"`
-	NumSubs    uint32    `json:"subscriptions"`
-	Name       string    `json:"name,omitempty"`
-	Lang       string    `json:"lang,omitempty"`
-	Version    string    `json:"version,omitempty"`
-	TLSVersion string    `json:"tls_version,omitempty"`
-	TLSCipher  string    `json:"tls_cipher_suite,omitempty"`
-	Subs       []string  `json:"subscriptions_list,omitempty"`
+	Cid          uint64    `json:"cid"`
+	IP           string    `json:"ip"`
+	Port         int       `json:"port"`
+	Start        time.Time `json:"start"`
+	Uptime       string    `json:"uptime"`
+	LastActivity time.Time `json:"last_activity"`
+	Pending      int       `json:"pending_bytes"`
+	InMsgs       int64     `json:"in_msgs"`
+	OutMsgs      int64     `json:"out_msgs"`
+	InBytes      int64     `json:"in_bytes"`
+	OutBytes     int64     `json:"out_bytes"`
+	NumSubs      uint32    `json:"subscriptions"`
+	Name         string    `json:"name,omitempty"`
+	Lang         string    `json:"lang,omitempty"`
+	Version      string    `json:"version,omitempty"`
+	TLSVersion   string    `json:"tls_version,omitempty"`
+	TLSCipher    string    `json:"tls_cipher_suite,omitempty"`
+	Subs         []string  `json:"subscriptions_list,omitempty"`
 }
 
 const DefaultConnListSize = 1024
@@ -125,18 +126,19 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		// not 'client', because otherwise we may be off compared to the
 		// previous sort.
 		ci := &ConnInfo{
-			Cid:      client.cid,
-			Start:    client.start,
-			Uptime:   myUptime(c.Now.Sub(client.start)),
-			InMsgs:   cli.inMsgs,
-			OutMsgs:  cli.outMsgs,
-			InBytes:  cli.inBytes,
-			OutBytes: cli.outBytes,
-			NumSubs:  cli.subCount,
-			Pending:  cli.buffered,
-			Name:     client.opts.Name,
-			Lang:     client.opts.Lang,
-			Version:  client.opts.Version,
+			Cid:          client.cid,
+			Start:        client.start,
+			Uptime:       myUptime(c.Now.Sub(client.start)),
+			LastActivity: cli.last,
+			InMsgs:       cli.inMsgs,
+			OutMsgs:      cli.outMsgs,
+			InBytes:      cli.inBytes,
+			OutBytes:     cli.outBytes,
+			NumSubs:      cli.subCount,
+			Pending:      cli.buffered,
+			Name:         client.opts.Name,
+			Lang:         client.opts.Lang,
+			Version:      client.opts.Version,
 		}
 
 		if tlsRequired {
