@@ -50,7 +50,7 @@ type client struct {
 	ptmr  *time.Timer
 	pout  int
 	msgb  [msgScratchSize]byte
-
+	last  time.Time
 	parseState
 
 	route         *route
@@ -254,6 +254,7 @@ func (c *client) processConnect(arg []byte) error {
 	// so we can just clear it here.
 	c.mu.Lock()
 	c.clearAuthTimer()
+	c.last = time.Now()
 	c.mu.Unlock()
 
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
@@ -439,6 +440,8 @@ func (c *client) processPub(arg []byte) error {
 	if c.opts.Pedantic && !sublist.IsValidLiteralSubject(c.pa.subject) {
 		c.sendErr("Invalid Subject")
 	}
+	// Update last activity.
+	c.last = time.Now()
 	return nil
 }
 
@@ -492,6 +495,8 @@ func (c *client) processSub(argo []byte) (err error) {
 		c.mu.Unlock()
 		return nil
 	}
+	// Update last activity.
+	c.last = time.Now()
 
 	// We can have two SUB protocols coming from a route due to some
 	// race conditions. We should make sure that we process only one.

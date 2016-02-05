@@ -280,6 +280,12 @@ func TestConnz(t *testing.T) {
 	if ci.Uptime == "" {
 		t.Fatalf("Expected Uptime to be valid\n")
 	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("Expected LastActivity to be valid\n")
+	}
+	if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
+		t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
+	}
 
 	// Test JSONP
 	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
@@ -323,6 +329,62 @@ func TestConnzWithSubs(t *testing.T) {
 	ci := c.Conns[0]
 	if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
 		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	}
+}
+
+func TestConnzLastActivity(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t)
+	defer nc.Close()
+
+	pollConz := func() *Connz {
+		url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+		resp, err := http.Get(url + "connz?subs=1")
+		if err != nil {
+			t.Fatalf("Expected no error: Got %v\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+		}
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Got an error reading the body: %v\n", err)
+		}
+		c := Connz{}
+		if err := json.Unmarshal(body, &c); err != nil {
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		return &c
+	}
+
+	// Test inside details of each connection
+	ci := pollConz().Conns[0]
+	if len(ci.Subs) != 1 {
+		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	}
+	firstLast := ci.LastActivity
+	if firstLast.IsZero() {
+		t.Fatalf("Expected LastActivity to be valid\n")
+	}
+
+	// Sub should trigger update.
+	nc.Subscribe("hello.world", func(m *nats.Msg) {})
+	nc.Flush()
+	ci = pollConz().Conns[0]
+	subLast := ci.LastActivity
+	if firstLast.Equal(subLast) {
+		t.Fatalf("Subscribe should have triggered update to LastActivity\n")
+	}
+	// Pub should trigger as well
+	nc.Publish("foo", []byte("Hello"))
+	nc.Flush()
+	ci = pollConz().Conns[0]
+	pubLast := ci.LastActivity
+	if subLast.Equal(pubLast) {
+		t.Fatalf("Publish should have triggered update to LastActivity\n")
 	}
 }
 

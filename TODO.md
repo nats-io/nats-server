@@ -20,7 +20,8 @@
 - [ ] Info updates contain other implicit route servers
 - [ ] Pedantic state
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Track last activity time per connection?
+- [ ] Default sort by cid on connz
+- [X] Track last activity time per connection?
 - [X] Add total connections to varz so we won't miss spikes, etc.
 - [X] Add starttime and uptime to connz list.
 - [X] Gossip Protocol for discovery for clustering
