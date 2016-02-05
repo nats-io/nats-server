@@ -286,6 +286,9 @@ func TestConnz(t *testing.T) {
 	if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
 		t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
 	}
+	if ci.Idle == "" {
+		t.Fatalf("Expected Idle to be valid\n")
+	}
 
 	// Test JSONP
 	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
@@ -339,6 +342,9 @@ func TestConnzLastActivity(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
 
+	nc2 := createClientConnSubscribeAndPublish(t)
+	defer nc2.Close()
+
 	pollConz := func() *Connz {
 		url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
 		resp, err := http.Get(url + "connz?subs=1")
@@ -385,6 +391,15 @@ func TestConnzLastActivity(t *testing.T) {
 	pubLast := ci.LastActivity
 	if subLast.Equal(pubLast) {
 		t.Fatalf("Publish should have triggered update to LastActivity\n")
+	}
+	// Message delivery should trigger as well
+	nc2.Publish("foo", []byte("Hello"))
+	nc2.Flush()
+	nc.Flush()
+	ci = pollConz().Conns[0]
+	msgLast := ci.LastActivity
+	if pubLast.Equal(msgLast) {
+		t.Fatalf("Message delivery should have triggered update to LastActivity\n")
 	}
 }
 
@@ -720,6 +735,49 @@ func TestConnzSortedBySubs(t *testing.T) {
 		c.Conns[0].NumSubs < c.Conns[3].NumSubs {
 		t.Fatalf("Expected conns sorted in descending order by number of subs, got %v < one of [%v, %v, %v]\n",
 			c.Conns[0].NumSubs, c.Conns[1].NumSubs, c.Conns[2].NumSubs, c.Conns[3].NumSubs)
+	}
+}
+
+func TestConnzSortedByLast(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	firstClient := createClientConnSubscribeAndPublish(t)
+	defer firstClient.Close()
+	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
+	firstClient.Flush()
+
+	clients := make([]*nats.Conn, 3)
+	for i, _ := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t)
+		defer clients[i].Close()
+		clients[i].Flush()
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz?sort=last")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
+		c.Conns[0].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
+		c.Conns[0].LastActivity.UnixNano() < c.Conns[3].LastActivity.UnixNano() {
+		t.Fatalf("Expected conns sorted in descending order by lastActivity, got %v < one of [%v, %v, %v]\n",
+			c.Conns[0].LastActivity, c.Conns[1].LastActivity, c.Conns[2].LastActivity, c.Conns[3].LastActivity)
 	}
 }
 

@@ -38,8 +38,9 @@ type ConnInfo struct {
 	IP           string    `json:"ip"`
 	Port         int       `json:"port"`
 	Start        time.Time `json:"start"`
-	Uptime       string    `json:"uptime"`
 	LastActivity time.Time `json:"last_activity"`
+	Uptime       string    `json:"uptime"`
+	Idle         string    `json:"idle"`
 	Pending      int       `json:"pending_bytes"`
 	InMsgs       int64     `json:"in_msgs"`
 	OutMsgs      int64     `json:"out_msgs"`
@@ -87,17 +88,26 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	case byCid:
 		sort.Sort(ByCid(clients))
 	case bySubs:
-		sort.Sort(sort.Reverse(BySubs(clients)))
+		// By default reversed, descending order.
+		sort.Sort(BySubs(clients))
 	case byPending:
-		sort.Sort(sort.Reverse(ByPending(clients)))
+		// By default reversed, descending order.
+		sort.Sort(ByPending(clients))
 	case byOutMsgs:
-		sort.Sort(sort.Reverse(ByOutMsgs(clients)))
+		// By default reversed, descending order.
+		sort.Sort(ByOutMsgs(clients))
 	case byInMsgs:
-		sort.Sort(sort.Reverse(ByInMsgs(clients)))
+		// By default reversed, descending order.
+		sort.Sort(ByInMsgs(clients))
 	case byOutBytes:
-		sort.Sort(sort.Reverse(ByOutBytes(clients)))
+		// By default reversed, descending order.
+		sort.Sort(ByOutBytes(clients))
 	case byInBytes:
-		sort.Sort(sort.Reverse(ByInBytes(clients)))
+		// By default reversed, descending order.
+		sort.Sort(ByInBytes(clients))
+	case byLast, byIdle:
+		// By default reversed, descending order.
+		sort.Sort(ByLast(clients))
 	default:
 		if sortOpt != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -128,8 +138,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		ci := &ConnInfo{
 			Cid:          client.cid,
 			Start:        client.start,
+			LastActivity: client.last,
 			Uptime:       myUptime(c.Now.Sub(client.start)),
-			LastActivity: cli.last,
+			Idle:         myUptime(c.Now.Sub(client.last)),
 			InMsgs:       cli.inMsgs,
 			OutMsgs:      cli.outMsgs,
 			InBytes:      cli.inBytes,

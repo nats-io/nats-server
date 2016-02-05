@@ -641,6 +641,9 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 
 	// Update statistics
 
+	// Update last activity.
+	client.last = time.Now()
+
 	// The msg includes the CR_LF, so pull back out for accounting.
 	msgSize := int64(len(msg) - LEN_CR_LF)
 
