@@ -499,6 +499,42 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 
 }
 
+func TestConnzDefaultSorted(t *testing.T) {
+	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	defer s.Shutdown()
+
+	clients := make([]*nats.Conn, 4)
+	for i, _ := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t)
+		defer clients[i].Close()
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	resp, err := http.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.Conns[0].Cid > c.Conns[1].Cid ||
+		c.Conns[1].Cid > c.Conns[2].Cid ||
+		c.Conns[2].Cid > c.Conns[3].Cid {
+		t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+	}
+}
+
 func TestConnzSortedByCid(t *testing.T) {
 	s := runMonitorServer(DEFAULT_HTTP_PORT)
 	defer s.Shutdown()
@@ -774,8 +810,8 @@ func TestConnzSortedByLast(t *testing.T) {
 	}
 
 	if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
-		c.Conns[0].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
-		c.Conns[0].LastActivity.UnixNano() < c.Conns[3].LastActivity.UnixNano() {
+		c.Conns[1].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
+		c.Conns[2].LastActivity.UnixNano() < c.Conns[3].LastActivity.UnixNano() {
 		t.Fatalf("Expected conns sorted in descending order by lastActivity, got %v < one of [%v, %v, %v]\n",
 			c.Conns[0].LastActivity, c.Conns[1].LastActivity, c.Conns[2].LastActivity, c.Conns[3].LastActivity)
 	}

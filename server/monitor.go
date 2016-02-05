@@ -67,6 +67,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 
+	// If no sort option given, sort by cid
+	if sortOpt == "" {
+		sortOpt = byCid
+	}
+
 	if c.Limit == 0 {
 		c.Limit = DefaultConnListSize
 	}

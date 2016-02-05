@@ -8,7 +8,7 @@
 - [ ] Dynamic socket buffer sizes
 - [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [ ] brew, apt-get, rpm, chocately (windows)
-- [ ] Sublist better at high concurrency, cache uses writelock currently
+- [ ] Sublist better at high concurrency, cache uses writelock always currently
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
@@ -18,9 +18,9 @@
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Info updates contain other implicit route servers
-- [ ] Pedantic state
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Default sort by cid on connz
+- [ ] Pedantic state
+- [X] Default sort by cid on connz
 - [X] Track last activity time per connection?
 - [X] Add total connections to varz so we won't miss spikes, etc.
 - [X] Add starttime and uptime to connz list.
