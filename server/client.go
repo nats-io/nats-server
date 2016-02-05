@@ -441,7 +441,9 @@ func (c *client) processPub(arg []byte) error {
 		c.sendErr("Invalid Subject")
 	}
 	// Update last activity.
+	c.mu.Lock()
 	c.last = time.Now()
+	c.mu.Unlock()
 	return nil
 }
 
