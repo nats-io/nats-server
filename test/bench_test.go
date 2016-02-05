@@ -288,7 +288,6 @@ func Benchmark_PubEightQueueSub(b *testing.B) {
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
-	b.ReportAllocs()
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
