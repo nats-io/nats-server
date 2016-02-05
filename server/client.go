@@ -16,6 +16,10 @@ import (
 	"github.com/nats-io/gnatsd/sublist"
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
 const (
 	// Scratch buffer size for the processMsg() calls.
 	msgScratchSize = 512
@@ -750,8 +754,7 @@ func (c *client) processMsg(msg []byte) {
 	msgh = append(msgh, ' ')
 	si := len(msgh)
 
-	var qmap map[string][]*subscription
-	var qsubs []*subscription
+	seenQ := map[string]struct{}{}
 
 	isRoute := c.typ == ROUTER
 	var rmap map[string]struct{}
@@ -770,37 +773,27 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	// Loop over all subscriptions that match.
-	for _, v := range r {
-		sub := v.(*subscription)
+	// We randomize/shuffle the list to optimize a bit on queue subscribers.
+	indexes := rand.Perm(len(r))
+	for _, i := range indexes {
+		sub := r[i].(*subscription)
 
-		// Process queue group subscriptions by gathering them all up
-		// here. We will pick the winners when we are done processing
-		// all of the subscriptions.
 		if sub.queue != nil {
 			// Queue subscriptions handled from routes directly above.
 			if isRoute {
 				continue
 			}
-			// FIXME(dlc), this can be more efficient
-			if qmap == nil {
-				qmap = make(map[string][]*subscription)
-			}
 			qname := string(sub.queue)
-			qsubs = qmap[qname]
-			if qsubs == nil {
-				qsubs = make([]*subscription, 0, 4)
+			if _, ok := seenQ[qname]; ok {
+				continue
 			}
-			qsubs = append(qsubs, sub)
-			qmap[qname] = qsubs
-			continue
+			seenQ[qname] = struct{}{}
 		}
-
-		// Process normal, non-queue group subscriptions.
 
 		// If this is a send to a ROUTER, make sure we only send it
 		// once. The other side will handle the appropriate re-processing.
 		// Also enforce 1-Hop.
-		if sub.client.typ == ROUTER {
+		if sub.client.typ == ROUTER && sub.queue == nil {
 			// Skip if sourced from a ROUTER and going to another ROUTER.
 			// This is 1-Hop semantics for ROUTERs.
 			if isRoute {
@@ -826,17 +819,9 @@ func (c *client) processMsg(msg []byte) {
 			sub.client.mu.Unlock()
 		}
 
+		// Process subscription.
 		mh := c.msgHeader(msgh[:si], sub)
 		c.deliverMsg(sub, mh, msg)
-	}
-
-	if qmap != nil {
-		for _, qsubs := range qmap {
-			index := rand.Int() % len(qsubs)
-			sub := qsubs[index]
-			mh := c.msgHeader(msgh[:si], sub)
-			c.deliverMsg(sub, mh, msg)
-		}
 	}
 }
 
