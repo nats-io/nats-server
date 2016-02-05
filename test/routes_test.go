@@ -239,8 +239,9 @@ func TestRouteOnlySendOnce(t *testing.T) {
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	matches := expectMsgs(1)
-	checkMsg(t, matches[0], "foo", "RSID:2:1", "", "2", "ok")
+	expectMsgs(1)
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 }
 
 func TestRouteQueueSemantics(t *testing.T) {
