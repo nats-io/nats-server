@@ -72,41 +72,41 @@ func sizedString(sz int) string {
 	return string(sizedBytes(sz))
 }
 
-func Benchmark___PubNo_Payload(b *testing.B) {
+func Benchmark____PubNo_Payload(b *testing.B) {
 	benchPub(b, "a", "")
 }
 
-func Benchmark___Pub8b_Payload(b *testing.B) {
+func Benchmark____Pub8b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8)
 	benchPub(b, "a", s)
 }
 
-func Benchmark__Pub32b_Payload(b *testing.B) {
+func Benchmark___Pub32b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(32)
 	benchPub(b, "a", s)
 }
 
-func Benchmark_Pub256B_Payload(b *testing.B) {
+func Benchmark__Pub256B_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(256)
 	benchPub(b, "a", s)
 }
 
-func Benchmark___Pub1K_Payload(b *testing.B) {
+func Benchmark____Pub1K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(1024)
 	benchPub(b, "a", s)
 }
 
-func Benchmark___Pub4K_Payload(b *testing.B) {
+func Benchmark____Pub4K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(4 * 1024)
 	benchPub(b, "a", s)
 }
 
-func Benchmark___Pub8K_Payload(b *testing.B) {
+func Benchmark____Pub8K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8 * 1024)
 	benchPub(b, "a", s)
