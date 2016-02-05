@@ -134,7 +134,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	ch <- true
 }
 
-func Benchmark__________PubSub(b *testing.B) {
+func Benchmark___________PubSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -166,7 +166,7 @@ func Benchmark__________PubSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark__PubSubTwoConns(b *testing.B) {
+func Benchmark___PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -202,7 +202,7 @@ func Benchmark__PubSubTwoConns(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark__PubTwoQueueSub(b *testing.B) {
+func Benchmark___PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -235,7 +235,7 @@ func Benchmark__PubTwoQueueSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark_PubFourQueueSub(b *testing.B) {
+func Benchmark__PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -249,6 +249,46 @@ func Benchmark_PubFourQueueSub(b *testing.B) {
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := bw.Write(sendOp)
+		if err != nil {
+			b.Fatalf("Received error on PUB write: %v\n", err)
+		}
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Fatalf("Received error on FLUSH write: %v\n", err)
+	}
+
+	// Wait for connection to be drained
+	<-ch
+
+	b.StopTimer()
+	c.Close()
+	s.Shutdown()
+}
+
+func Benchmark_PubEightQueueSub(b *testing.B) {
+	b.StopTimer()
+	s := runBenchServer()
+	c := createClientConn(b, "localhost", PERF_PORT)
+	doDefaultConnect(b, c)
+	sendProto(b, c, "SUB foo group1 1\r\n")
+	sendProto(b, c, "SUB foo group1 2\r\n")
+	sendProto(b, c, "SUB foo group1 3\r\n")
+	sendProto(b, c, "SUB foo group1 4\r\n")
+	sendProto(b, c, "SUB foo group1 5\r\n")
+	sendProto(b, c, "SUB foo group1 6\r\n")
+	sendProto(b, c, "SUB foo group1 7\r\n")
+	sendProto(b, c, "SUB foo group1 8\r\n")
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	ch := make(chan bool)
+	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
+	go drainConnection(b, c, ch, expected)
+	b.ReportAllocs()
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
