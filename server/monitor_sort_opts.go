@@ -21,6 +21,7 @@ const (
 	byIdle             = "idle"
 )
 
+// FIXME(dlc) - Why have 3 structures, 1 client, 2 ClientInfo, 3 ConnInfo.
 type ClientInfo struct {
 	client   *client
 	cid      uint64

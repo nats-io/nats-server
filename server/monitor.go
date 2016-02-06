@@ -140,12 +140,14 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		// For some of the fields, we need to use the values from 'cli' here,
 		// not 'client', because otherwise we may be off compared to the
 		// previous sort.
+		last := time.Unix(0, cli.last)
+
 		ci := &ConnInfo{
 			Cid:          client.cid,
 			Start:        client.start,
-			LastActivity: client.last,
+			LastActivity: last,
 			Uptime:       myUptime(c.Now.Sub(client.start)),
-			Idle:         myUptime(c.Now.Sub(client.last)),
+			Idle:         myUptime(c.Now.Sub(last)),
 			InMsgs:       cli.inMsgs,
 			OutMsgs:      cli.outMsgs,
 			InBytes:      cli.inBytes,
@@ -237,6 +239,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	rs.NumRoutes = len(s.routes)
 
 	for _, r := range s.routes {
+		r.mu.Lock()
 		ri := &RouteInfo{
 			Rid:          r.cid,
 			RemoteId:     r.route.remoteID,
@@ -252,6 +255,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 		if subs == 1 {
 			ri.Subs = castToSliceString(r.subs.All())
 		}
+		r.mu.Unlock()
 
 		if ip, ok := r.nc.(*net.TCPConn); ok {
 			addr := ip.RemoteAddr().(*net.TCPAddr)
