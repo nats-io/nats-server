@@ -823,6 +823,78 @@ func TestConnzSortedByLast(t *testing.T) {
 	}
 }
 
+func TestConnzSortedByIdle(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	firstClient := createClientConnSubscribeAndPublish(t)
+	defer firstClient.Close()
+	firstClient.Subscribe("client.1", func(m *nats.Msg) {})
+	firstClient.Flush()
+
+	secondClient := createClientConnSubscribeAndPublish(t)
+	defer secondClient.Close()
+	secondClient.Subscribe("client.2", func(m *nats.Msg) {})
+	secondClient.Flush()
+
+	// The Idle granularity is a whole second, that being said,
+	// the value used to do the sort is in nano. So we will update
+	// the first client, and check that the sort returns the second
+	// client having the "highest" idle time. We will use cid's to
+	// verify that.
+	firstClient.Publish("client.1", []byte("new message"))
+
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
+	resp, err := http.Get(url + "connz?sort=idle")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Make sure we are returned 2 connections...
+	if len(c.Conns) != 2 {
+		t.Fatalf("Expected to get two connections, got %v", len(c.Conns))
+	}
+
+	// And that the Idle time is valid (even if equal to "0s")
+	if c.Conns[0].Idle == "" || c.Conns[1].Idle == "" {
+		t.Fatal("Expected Idle value to be valid")
+	}
+
+	// If we are willing to sleep a whole second before sending a message
+	// to the first client, we could enable this code.
+	/*
+		idle1, err := time.ParseDuration(c.Conns[0].Idle)
+		if err != nil {
+			t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
+		}
+		idle2, err := time.ParseDuration(c.Conns[1].Idle)
+		if err != nil {
+			t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
+		}
+
+		if idle1 < idle2 {
+			t.Fatalf("Expected conns sorted in descending order by Idle, got %v < %v\n",
+				idle1, idle2)
+		}
+	*/
+	if c.Conns[0].Cid < c.Conns[1].Cid {
+		t.Fatalf("Expected second client to be more idle than first")
+	}
+}
+
 func TestConnzSortBadRequest(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
