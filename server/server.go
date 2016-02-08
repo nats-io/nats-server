@@ -142,6 +142,7 @@ func (s *Server) generateServerInfoJSON() {
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatalf("Error marshalling INFO JSON: %+v\n", err)
+		return
 	}
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 }
@@ -210,6 +211,7 @@ func (s *Server) Start() {
 	if s.opts.HTTPSPort != 0 {
 		if s.opts.TLSConfig == nil {
 			Fatalf("TLS cert and key required for HTTPS")
+			return
 		}
 		s.StartHTTPSMonitoring()
 	}
@@ -420,6 +422,7 @@ func (s *Server) startMonitoring(secure bool) {
 
 	if err != nil {
 		Fatalf("Can't listen to the monitor port: %v", err)
+		return
 	}
 
 	mux := http.NewServeMux()

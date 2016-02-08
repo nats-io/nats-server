@@ -14,13 +14,23 @@ import (
 	"github.com/nats-io/gnatsd/server"
 )
 
-const MONITOR_PORT = 11422
+const CLIENT_PORT = 11422
+const MONITOR_PORT = 11522
 
-func runMonitorServer(monitorPort int) *server.Server {
+func runMonitorServer() *server.Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultTestOptions
-	opts.Port = MONITOR_PORT
-	opts.HTTPPort = monitorPort
+	opts.Port = CLIENT_PORT
+	opts.HTTPPort = MONITOR_PORT
+
+	return RunServer(&opts)
+}
+
+func runMonitorServerNoHttpPort() *server.Server {
+	resetPreviousHTTPConnections()
+	opts := DefaultTestOptions
+	opts.Port = CLIENT_PORT
+	opts.HTTPPort = 0
 
 	return RunServer(&opts)
 }
@@ -31,10 +41,10 @@ func resetPreviousHTTPConnections() {
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
-	s := runMonitorServer(0)
+	s := runMonitorServerNoHttpPort()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	if resp, err := http.Get(url + "varz"); err == nil {
 		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
@@ -47,10 +57,10 @@ func TestNoMonitorPort(t *testing.T) {
 }
 
 func TestVarz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "varz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -113,10 +123,10 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -210,13 +220,13 @@ func TestConnz(t *testing.T) {
 }
 
 func TestConnzWithSubs(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?subs=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -243,7 +253,7 @@ func TestConnzWithSubs(t *testing.T) {
 }
 
 func TestConnzWithOffsetAndLimit(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	cl1 := createClientConnSubscribeAndPublish(t)
@@ -252,7 +262,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	cl2 := createClientConnSubscribeAndPublish(t)
 	defer cl2.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?offset=1&limit=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -285,13 +295,13 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 }
 
 func TestSubsz(t *testing.T) {
-	s := runMonitorServer(server.DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	cl := createClientConnSubscribeAndPublish(t)
 	defer cl.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", server.DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "subscriptionsz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -318,7 +328,7 @@ func TestSubsz(t *testing.T) {
 
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T) net.Conn {
-	cl := createClientConn(t, "localhost", MONITOR_PORT)
+	cl := createClientConn(t, "localhost", CLIENT_PORT)
 
 	send := sendCommand(t, cl)
 	send, expect := setupConn(t, cl)

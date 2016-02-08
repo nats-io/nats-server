@@ -29,10 +29,16 @@ var DefaultMonitorOptions = Options{
 	NoSigs:      true,
 }
 
-func runMonitorServer(monitorPort int) *Server {
+func runMonitorServer() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions
-	opts.HTTPPort = monitorPort
+	return RunServer(&opts)
+}
+
+func runMonitorServerNoHttpPort() *Server {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions
+	opts.HTTPPort = 0
 	return RunServer(&opts)
 }
 
@@ -74,10 +80,10 @@ func TestMyUptime(t *testing.T) {
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
-	s := runMonitorServer(0)
+	s := runMonitorServerNoHttpPort()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	if resp, err := http.Get(url + "varz"); err == nil {
 		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
@@ -90,10 +96,10 @@ func TestNoMonitorPort(t *testing.T) {
 }
 
 func TestVarz(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "varz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -162,7 +168,7 @@ func TestVarz(t *testing.T) {
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "varz?callback=callback")
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "varz?callback=callback")
 	if errj != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -174,10 +180,10 @@ func TestVarz(t *testing.T) {
 }
 
 func TestConnz(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -291,7 +297,7 @@ func TestConnz(t *testing.T) {
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "connz?callback=callback")
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "connz?callback=callback")
 	if errj != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -303,13 +309,13 @@ func TestConnz(t *testing.T) {
 }
 
 func TestConnzWithSubs(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?subs=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -336,7 +342,7 @@ func TestConnzWithSubs(t *testing.T) {
 }
 
 func TestConnzLastActivity(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	nc := createClientConnSubscribeAndPublish(t)
@@ -346,7 +352,7 @@ func TestConnzLastActivity(t *testing.T) {
 	defer nc2.Close()
 
 	pollConz := func() *Connz {
-		url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+		url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 		resp, err := http.Get(url + "connz?subs=1")
 		if err != nil {
 			t.Fatalf("Expected no error: Got %v\n", err)
@@ -404,10 +410,10 @@ func TestConnzLastActivity(t *testing.T) {
 }
 
 func TestConnzWithOffsetAndLimit(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 
 	// Test that offset and limit ok when not enough connections
 	resp, err := http.Get(url + "connz?offset=1&limit=1")
@@ -500,7 +506,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 }
 
 func TestConnzDefaultSorted(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	clients := make([]*nats.Conn, 4)
@@ -509,7 +515,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -536,7 +542,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 }
 
 func TestConnzSortedByCid(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	clients := make([]*nats.Conn, 4)
@@ -545,7 +551,7 @@ func TestConnzSortedByCid(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=cid")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -572,7 +578,7 @@ func TestConnzSortedByCid(t *testing.T) {
 }
 
 func TestConnzSortedByBytesAndMsgs(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	// Create a connection and make it send more messages than others
@@ -589,7 +595,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=bytes_to")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -615,7 +621,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 			c.Conns[0].OutBytes, c.Conns[1].OutBytes, c.Conns[2].OutBytes, c.Conns[3].OutBytes)
 	}
 
-	url = fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url = fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err = http.Get(url + "connz?sort=msgs_to")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -641,7 +647,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 			c.Conns[0].OutMsgs, c.Conns[1].OutMsgs, c.Conns[2].OutMsgs, c.Conns[3].OutMsgs)
 	}
 
-	url = fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url = fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err = http.Get(url + "connz?sort=bytes_from")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -667,7 +673,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 			c.Conns[0].InBytes, c.Conns[1].InBytes, c.Conns[2].InBytes, c.Conns[3].InBytes)
 	}
 
-	url = fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url = fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err = http.Get(url + "connz?sort=msgs_from")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -695,7 +701,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 }
 
 func TestConnzSortedByPending(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	firstClient := createClientConnSubscribeAndPublish(t)
@@ -707,7 +713,7 @@ func TestConnzSortedByPending(t *testing.T) {
 	}
 	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=pending")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -735,7 +741,7 @@ func TestConnzSortedByPending(t *testing.T) {
 }
 
 func TestConnzSortedBySubs(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	firstClient := createClientConnSubscribeAndPublish(t)
@@ -747,7 +753,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 	}
 	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=subs")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -775,7 +781,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 }
 
 func TestConnzSortedByLast(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	firstClient := createClientConnSubscribeAndPublish(t)
@@ -790,7 +796,7 @@ func TestConnzSortedByLast(t *testing.T) {
 		clients[i].Flush()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=last")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -818,7 +824,7 @@ func TestConnzSortedByLast(t *testing.T) {
 }
 
 func TestConnzSortBadRequest(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	firstClient := createClientConnSubscribeAndPublish(t)
@@ -830,7 +836,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 	}
 	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz?sort=foo")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -842,7 +848,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 }
 
 func TestConnzWithRoutes(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	var opts = Options{
@@ -861,7 +867,7 @@ func TestConnzWithRoutes(t *testing.T) {
 
 	time.Sleep(time.Second)
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -894,7 +900,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	}
 
 	// Now check routez
-	url = fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url = fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err = http.Get(url + "routez")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -928,7 +934,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "routez?callback=callback")
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "routez?callback=callback")
 	if errj != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -940,13 +946,13 @@ func TestConnzWithRoutes(t *testing.T) {
 }
 
 func TestSubsz(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "subscriptionsz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -979,7 +985,7 @@ func TestSubsz(t *testing.T) {
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT) + "subscriptionsz?callback=callback")
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "subscriptionsz?callback=callback")
 	ct = respj.Header.Get("Content-Type")
 	if errj != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -992,13 +998,13 @@ func TestSubsz(t *testing.T) {
 
 // Tests handle root
 func TestHandleRoot(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
 
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT))
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT))
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -1013,14 +1019,14 @@ func TestHandleRoot(t *testing.T) {
 }
 
 func TestConnzWithNamedClient(t *testing.T) {
-	s := runMonitorServer(DEFAULT_HTTP_PORT)
+	s := runMonitorServer()
 	defer s.Shutdown()
 
 	clientName := "test-client"
 	nc := createClientConnWithName(t, clientName)
 	defer nc.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", DEFAULT_HTTP_PORT)
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
 	resp, err := http.Get(url + "connz")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
