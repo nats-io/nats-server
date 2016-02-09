@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/gnatsd/sublist"
@@ -25,11 +26,11 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
-	Now      time.Time   `json:"now"`
-	NumConns int         `json:"num_connections"`
-	Offset   int         `json:"offset"`
-	Limit    int         `json:"limit"`
-	Conns    []*ConnInfo `json:"connections"`
+	Now      time.Time  `json:"now"`
+	NumConns int        `json:"num_connections"`
+	Offset   int        `json:"offset"`
+	Limit    int        `json:"limit"`
+	Conns    []ConnInfo `json:"connections"`
 }
 
 // ConnInfo has detailed information on a per connection basis.
@@ -59,18 +60,23 @@ const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
-	c := &Connz{Conns: []*ConnInfo{}}
-	c.Now = time.Now()
-
-	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
-	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
-	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 
 	// If no sort option given, sort by cid
 	if sortOpt == "" {
 		sortOpt = byCid
+	} else if !sortOpt.IsValid() {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Invalid sorting option: %s", sortOpt)))
+		return
 	}
+
+	c := &Connz{}
+	c.Now = time.Now()
+
+	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
+	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 
 	if c.Limit == 0 {
 		c.Limit = DefaultConnListSize
@@ -80,44 +86,47 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[ConnzPath]++
 	tlsRequired := s.info.TLSRequired
-	c.NumConns = len(s.clients)
 
-	// Copy the keys to sort by them
-	clients := make([]*ClientInfo, 0, c.NumConns)
-	for _, c := range s.clients {
-		clients = append(clients, NewClientInfo(c))
+	// number total of clients. The resulting ConnInfo array
+	// may be smaller if pagination is used.
+	totalClients := len(s.clients)
+
+	i := 0
+	pairs := make(Pairs, totalClients)
+	for _, client := range s.clients {
+		client.mu.Lock()
+		switch sortOpt {
+		case byCid:
+			pairs[i] = Pair{Key: client, Val: int64(client.cid)}
+		case bySubs:
+			pairs[i] = Pair{Key: client, Val: int64(client.subs.Count())}
+		case byPending:
+			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
+		case byOutMsgs:
+			pairs[i] = Pair{Key: client, Val: client.outMsgs}
+		case byInMsgs:
+			pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inMsgs)}
+		case byOutBytes:
+			pairs[i] = Pair{Key: client, Val: client.outBytes}
+		case byInBytes:
+			pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inBytes)}
+		case byLast:
+			pairs[i] = Pair{Key: client, Val: client.last.UnixNano()}
+		case byIdle:
+			pairs[i] = Pair{Key: client, Val: c.Now.Sub(client.last).Nanoseconds()}
+		}
+		client.mu.Unlock()
+		i++
 	}
 	s.mu.Unlock()
 
-	switch sortOpt {
-	case byCid:
-		sort.Sort(ByCid(clients))
-	case bySubs:
-		// By default reversed, descending order.
-		sort.Sort(BySubs(clients))
-	case byPending:
-		// By default reversed, descending order.
-		sort.Sort(ByPending(clients))
-	case byOutMsgs:
-		// By default reversed, descending order.
-		sort.Sort(ByOutMsgs(clients))
-	case byInMsgs:
-		// By default reversed, descending order.
-		sort.Sort(ByInMsgs(clients))
-	case byOutBytes:
-		// By default reversed, descending order.
-		sort.Sort(ByOutBytes(clients))
-	case byInBytes:
-		// By default reversed, descending order.
-		sort.Sort(ByInBytes(clients))
-	case byLast, byIdle:
-		// By default reversed, descending order.
-		sort.Sort(ByLast(clients))
-	default:
-		if sortOpt != "" {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid sorting option"))
-			return
+	if totalClients > 0 {
+		if sortOpt == byCid {
+			// Return in ascending order
+			sort.Sort(pairs)
+		} else {
+			// Return in descending order
+			sort.Sort(sort.Reverse(pairs))
 		}
 	}
 
@@ -125,41 +134,71 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	maxoff := c.Offset + c.Limit
 
 	// Make sure these are sane.
-	if minoff > c.NumConns {
-		minoff = c.NumConns
+	if minoff > totalClients {
+		minoff = totalClients
 	}
-	if maxoff > c.NumConns {
-		maxoff = c.NumConns
+	if maxoff > totalClients {
+		maxoff = totalClients
 	}
-	clients = clients[minoff:maxoff]
+	pairs = pairs[minoff:maxoff]
 
-	for _, cli := range clients {
-		client := cli.client
+	// Now we have the real number of ConnInfo objects, we can set c.NumConns
+	// and allocate the array
+	c.NumConns = len(pairs)
+	c.Conns = make([]ConnInfo, c.NumConns)
+
+	i = 0
+	for _, pair := range pairs {
+
+		client := pair.Key
+
 		client.mu.Lock()
 
-		// For some of the fields, we need to use the values from 'cli' here,
-		// not 'client', because otherwise we may be off compared to the
-		// previous sort.
-		last := time.Unix(0, cli.last)
+		// First, fill ConnInfo with current client's values. We will
+		// then overwrite the field used for the sort with what was stored
+		// in 'pair'.
+		ci := &c.Conns[i]
 
-		ci := &ConnInfo{
-			Cid:          client.cid,
-			Start:        client.start,
-			LastActivity: last,
-			Uptime:       myUptime(c.Now.Sub(client.start)),
-			Idle:         myUptime(c.Now.Sub(last)),
-			InMsgs:       cli.inMsgs,
-			OutMsgs:      cli.outMsgs,
-			InBytes:      cli.inBytes,
-			OutBytes:     cli.outBytes,
-			NumSubs:      cli.subCount,
-			Pending:      cli.buffered,
-			Name:         client.opts.Name,
-			Lang:         client.opts.Lang,
-			Version:      client.opts.Version,
+		ci.Cid = client.cid
+		ci.Start = client.start
+		ci.LastActivity = client.last
+		ci.Uptime = myUptime(c.Now.Sub(client.start))
+		ci.Idle = myUptime(c.Now.Sub(client.last))
+		ci.OutMsgs = client.outMsgs
+		ci.OutBytes = client.outBytes
+		ci.NumSubs = client.subs.Count()
+		ci.Pending = client.bw.Buffered()
+		ci.Name = client.opts.Name
+		ci.Lang = client.opts.Lang
+		ci.Version = client.opts.Version
+		// inMsgs and inBytes are updated outside of the client's lock, so
+		// we need to use atomic here.
+		ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
+		ci.InBytes = atomic.LoadInt64(&client.inBytes)
+
+		// Now overwrite the field that was used as the sort key, so results
+		// still look sorted even if the value has changed since sort occurred.
+		switch sortOpt {
+		case bySubs:
+			ci.NumSubs = uint32(pair.Val)
+		case byPending:
+			ci.Pending = int(pair.Val)
+		case byOutMsgs:
+			ci.OutMsgs = pair.Val
+		case byInMsgs:
+			ci.InMsgs = pair.Val
+		case byOutBytes:
+			ci.OutBytes = pair.Val
+		case byInBytes:
+			ci.InBytes = pair.Val
+		case byLast:
+			ci.LastActivity = time.Unix(0, pair.Val)
+		case byIdle:
+			ci.Idle = myUptime(time.Duration(pair.Val))
 		}
 
-		if tlsRequired {
+		// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
+		if tlsRequired && client.nc != nil {
 			conn := client.nc.(*tls.Conn)
 			cs := conn.ConnectionState()
 			ci.TLSVersion = tlsVersion(cs.Version)
@@ -176,7 +215,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.IP = addr.IP.String()
 		}
 		client.mu.Unlock()
-		c.Conns = append(c.Conns, ci)
+		i++
 	}
 
 	b, err := json.MarshalIndent(c, "", "  ")
