@@ -473,6 +473,10 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
 	}
 
+	if c.NumConns != 1 {
+		t.Fatalf("Expected NumConns to be 1, got %v\n", c.NumConns)
+	}
+
 	resp, err = http.Get(url + "connz?offset=2&limit=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
@@ -503,6 +507,9 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected conns of 0, got %v\n", len(c.Conns))
 	}
 
+	if c.NumConns != 0 {
+		t.Fatalf("Expected NumConns to be 0, got %v\n", c.NumConns)
+	}
 }
 
 func TestConnzDefaultSorted(t *testing.T) {
