@@ -26,11 +26,11 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
-	Now      time.Time   `json:"now"`
-	NumConns int         `json:"num_connections"`
-	Offset   int         `json:"offset"`
-	Limit    int         `json:"limit"`
-	Conns    []*ConnInfo `json:"connections"`
+	Now      time.Time  `json:"now"`
+	NumConns int        `json:"num_connections"`
+	Offset   int        `json:"offset"`
+	Limit    int        `json:"limit"`
+	Conns    []ConnInfo `json:"connections"`
 }
 
 // ConnInfo has detailed information on a per connection basis.
@@ -71,7 +71,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := &Connz{Conns: []*ConnInfo{}}
+	c := &Connz{}
 	c.Now = time.Now()
 
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
@@ -86,10 +86,13 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[ConnzPath]++
 	tlsRequired := s.info.TLSRequired
-	c.NumConns = len(s.clients)
+
+	// number total of clients. The resulting ConnInfo array
+	// may be smaller if pagination is used.
+	totalClients := len(s.clients)
 
 	i := 0
-	pairs := make(Pairs, c.NumConns)
+	pairs := make(Pairs, totalClients)
 	for _, client := range s.clients {
 		client.mu.Lock()
 		switch sortOpt {
@@ -117,7 +120,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	if len(pairs) > 0 {
+	if totalClients > 0 {
 		if sortOpt == byCid {
 			// Return in ascending order
 			sort.Sort(pairs)
@@ -131,49 +134,47 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	maxoff := c.Offset + c.Limit
 
 	// Make sure these are sane.
-	if minoff > c.NumConns {
-		minoff = c.NumConns
+	if minoff > totalClients {
+		minoff = totalClients
 	}
-	if maxoff > c.NumConns {
-		maxoff = c.NumConns
+	if maxoff > totalClients {
+		maxoff = totalClients
 	}
 	pairs = pairs[minoff:maxoff]
 
+	// Now we have the real number of ConnInfo objects, we can set c.NumConns
+	// and allocate the array
+	c.NumConns = len(pairs)
+	c.Conns = make([]ConnInfo, c.NumConns)
+
+	i = 0
 	for _, pair := range pairs {
 
 		client := pair.Key
 
 		client.mu.Lock()
 
-		// Client connection may have been closed. If 'tlsRequired' is true,
-		// we need the connection object. So if nil, just skip this client.
-		if tlsRequired && client.nc == nil {
-			client.mu.Unlock()
-			continue
-		}
-
-		// First, create the ConnInfo with current client's values. We will
+		// First, fill ConnInfo with current client's values. We will
 		// then overwrite the field used for the sort with what was stored
 		// in 'pair'.
+		ci := &c.Conns[i]
 
+		ci.Cid = client.cid
+		ci.Start = client.start
+		ci.LastActivity = client.last
+		ci.Uptime = myUptime(c.Now.Sub(client.start))
+		ci.Idle = myUptime(c.Now.Sub(client.last))
+		ci.OutMsgs = client.outMsgs
+		ci.OutBytes = client.outBytes
+		ci.NumSubs = client.subs.Count()
+		ci.Pending = client.bw.Buffered()
+		ci.Name = client.opts.Name
+		ci.Lang = client.opts.Lang
+		ci.Version = client.opts.Version
 		// inMsgs and inBytes are updated outside of the client's lock, so
 		// we need to use atomic here.
-		ci := &ConnInfo{
-			Cid:          client.cid,
-			Start:        client.start,
-			LastActivity: client.last,
-			Uptime:       myUptime(c.Now.Sub(client.start)),
-			Idle:         myUptime(c.Now.Sub(client.last)),
-			InMsgs:       atomic.LoadInt64(&client.inMsgs),
-			OutMsgs:      client.outMsgs,
-			InBytes:      atomic.LoadInt64(&client.inBytes),
-			OutBytes:     client.outBytes,
-			NumSubs:      client.subs.Count(),
-			Pending:      client.bw.Buffered(),
-			Name:         client.opts.Name,
-			Lang:         client.opts.Lang,
-			Version:      client.opts.Version,
-		}
+		ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
+		ci.InBytes = atomic.LoadInt64(&client.inBytes)
 
 		// Now overwrite the field that was used as the sort key, so results
 		// still look sorted even if the value has changed since sort occurred.
@@ -196,7 +197,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.Idle = myUptime(time.Duration(pair.Val))
 		}
 
-		if tlsRequired {
+		// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
+		if tlsRequired && client.nc != nil {
 			conn := client.nc.(*tls.Conn)
 			cs := conn.ConnectionState()
 			ci.TLSVersion = tlsVersion(cs.Version)
@@ -213,7 +215,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.IP = addr.IP.String()
 		}
 		client.mu.Unlock()
-		c.Conns = append(c.Conns, ci)
+		i++
 	}
 
 	b, err := json.MarshalIndent(c, "", "  ")
