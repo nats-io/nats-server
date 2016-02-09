@@ -178,23 +178,24 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 		// Now overwrite the field that was used as the sort key, so results
 		// still look sorted even if the value has changed since sort occurred.
+		sortValue := pair.Val
 		switch sortOpt {
 		case bySubs:
-			ci.NumSubs = uint32(pair.Val)
+			ci.NumSubs = uint32(sortValue)
 		case byPending:
-			ci.Pending = int(pair.Val)
+			ci.Pending = int(sortValue)
 		case byOutMsgs:
-			ci.OutMsgs = pair.Val
+			ci.OutMsgs = sortValue
 		case byInMsgs:
-			ci.InMsgs = pair.Val
+			ci.InMsgs = sortValue
 		case byOutBytes:
-			ci.OutBytes = pair.Val
+			ci.OutBytes = sortValue
 		case byInBytes:
-			ci.InBytes = pair.Val
+			ci.InBytes = sortValue
 		case byLast:
-			ci.LastActivity = time.Unix(0, pair.Val)
+			ci.LastActivity = time.Unix(0, sortValue)
 		case byIdle:
-			ci.Idle = myUptime(time.Duration(pair.Val))
+			ci.Idle = myUptime(time.Duration(sortValue))
 		}
 
 		// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
