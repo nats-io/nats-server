@@ -1,5 +1,4 @@
 #!/bin/bash
-go get github.com/inconshreveable/mousetrap
 go get github.com/mitchellh/gox
 go get github.com/tcnksm/ghr
 
