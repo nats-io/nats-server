@@ -965,6 +965,9 @@ func (c *client) closeConnection() {
 		if rid != "" && srv.remotes[rid] != nil {
 			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
+		} else if c.route.remoteID == srv.info.ID {
+			Debugf("Detected route to self, ignoring \"%s\"", c.route.url)
+			return
 		} else if c.route.routeType != Implicit {
 			Debugf("Attempting reconnect for solicited route \"%s\"", c.route.url)
 			go srv.reConnectToRoute(c.route.url)

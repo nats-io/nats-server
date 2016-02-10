@@ -61,10 +61,50 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 			info.Port, opts.ClusterPort)
 	}
 
-	// Now send it back and make sure it is processed correctly inbound.
-	routeSend(string(buf))
+	// Need to send a different INFO than the one received, otherwise the server
+	// will detect as a "cycle" and close the connection.
+	info.ID = "RouteID"
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+	infoJson := fmt.Sprintf("INFO %s\r\n", b)
+	routeSend(infoJson)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
+}
+
+func TestRouteToSelf(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer rc.Close()
+
+	routeSend, routeExpect := setupRoute(t, rc, opts)
+	buf := routeExpect(infoRe)
+
+	info := server.Info{}
+	if err := json.Unmarshal(buf[4:], &info); err != nil {
+		t.Fatalf("Could not unmarshal route info: %v", err)
+	}
+
+	if !info.AuthRequired {
+		t.Fatal("Expected to see AuthRequired")
+	}
+	if info.Port != opts.ClusterPort {
+		t.Fatalf("Received wrong information for port, expected %d, got %d",
+			info.Port, opts.ClusterPort)
+	}
+
+	// Now send it back and that should be detected as a route to self and the
+	// connection closed.
+	routeSend(string(buf))
+	routeSend("PING\r\n")
+	rc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := rc.Read(buf); err == nil {
+		t.Fatal("Expected route connection to be closed")
+	}
 }
 
 func TestSendRouteSubAndUnsub(t *testing.T) {

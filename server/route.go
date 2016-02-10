@@ -89,8 +89,19 @@ func (c *client) processRouteInfo(info *Info) {
 		c.mu.Unlock()
 		return
 	}
-	// Copy over important information
+
+	// Need to set this for the detection of the route to self to work
+	// in closeConnection().
 	c.route.remoteID = info.ID
+
+	// Detect route to self.
+	if c.route.remoteID == c.srv.info.ID {
+		c.mu.Unlock()
+		c.closeConnection()
+		return
+	}
+
+	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
 
