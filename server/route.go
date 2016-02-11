@@ -217,9 +217,28 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	for _, r := range s.routes {
 		r.mu.Lock()
 		if r.route.url != nil {
+
+			var rurl string
+
+			if r.nc != nil {
+				_, rport, err := net.SplitHostPort(r.route.url.Host)
+				if err != nil {
+					// We will send the url but based on the route's ip address.
+					if ip, ok := r.nc.(*net.TCPConn); ok {
+						addr := ip.RemoteAddr().(*net.TCPAddr)
+						rurl = fmt.Sprintf("nats://%s:%s", addr.IP.String(), rport)
+					}
+				}
+			}
+
+			// Error or route not connected?
+			if rurl == "" {
+				rurl = fmt.Sprintf("%s", r.route.url)
+			}
+
 			ri := RemoteInfo{
 				RemoteID:     r.route.remoteID,
-				URL:          fmt.Sprintf("%s", r.route.url),
+				URL:          rurl,
 				AuthRequired: r.route.authRequired,
 				TLSRequired:  r.route.tlsRequired,
 			}
