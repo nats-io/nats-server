@@ -222,7 +222,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 			if r.nc != nil {
 				_, rport, err := net.SplitHostPort(r.route.url.Host)
-				if err != nil {
+				if err == nil {
 					// We will send the url but based on the route's ip address.
 					if ip, ok := r.nc.(*net.TCPConn); ok {
 						addr := ip.RemoteAddr().(*net.TCPAddr)
