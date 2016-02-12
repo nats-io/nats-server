@@ -216,18 +216,22 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	info := s.routeInfo
 	for _, r := range s.routes {
 		r.mu.Lock()
-		if r.route.url != nil {
+		// race condition where connection can be closed (r.nc == nil)
+		// and route still in s.routes[].
+		if r.nc == nil {
+			r.mu.Unlock()
+			continue
+		}
 
+		if r.route.url != nil {
 			var rurl string
 
-			if r.nc != nil {
-				_, rport, err := net.SplitHostPort(r.route.url.Host)
-				if err == nil {
-					// We will send the url but based on the route's ip address.
-					if ip, ok := r.nc.(*net.TCPConn); ok {
-						addr := ip.RemoteAddr().(*net.TCPAddr)
-						rurl = fmt.Sprintf("nats://%s:%s", addr.IP.String(), rport)
-					}
+			_, rport, err := net.SplitHostPort(r.route.url.Host)
+			if err == nil {
+				// We will send the url but based on the route's ip address.
+				if ip, ok := r.nc.(*net.TCPConn); ok {
+					addr := ip.RemoteAddr().(*net.TCPAddr)
+					rurl = fmt.Sprintf("nats-route://%s:%s/", addr.IP.String(), rport)
 				}
 			}
 
