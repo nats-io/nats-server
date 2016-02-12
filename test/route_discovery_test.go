@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -352,4 +353,77 @@ func readHttpRoutez(t *testing.T, url string) *server.Routez {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 	return &r
+}
+
+func TestSeedReturnIPInsteadOfURL(t *testing.T) {
+	s, opts := runSeedServer(t)
+	defer s.Shutdown()
+
+	rc1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer rc1.Close()
+
+	routeSend1, route1Expect := setupRoute(t, rc1, opts)
+	route1Expect(infoRe)
+
+	rc1ID := "2222"
+	rc1Port := 22
+	rc1Host := "localhost"
+
+	// register ourselves via INFO
+	r1Info := server.Info{ID: rc1ID, Host: rc1Host, Port: rc1Port}
+	b, _ := json.Marshal(r1Info)
+	infoJSON := fmt.Sprintf(server.InfoProto, b)
+	routeSend1(infoJSON)
+	routeSend1("PING\r\n")
+	route1Expect(pongRe)
+
+	rc2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer rc2.Close()
+
+	routeSend2, route2Expect := setupRoute(t, rc2, opts)
+
+	rc2ID := "2224"
+	rc2Port := 24
+	rc2Host := "localhost"
+
+	// register ourselves via INFO
+	r2Info := server.Info{ID: rc2ID, Host: rc2Host, Port: rc2Port}
+	b, _ = json.Marshal(r2Info)
+	infoJSON = fmt.Sprintf(server.InfoProto, b)
+	routeSend2(infoJSON)
+
+	// Now read back out the info from the seed route
+	buf := route2Expect(infoRe)
+
+	info := server.Info{}
+	if err := json.Unmarshal(buf[4:], &info); err != nil {
+		t.Fatalf("Could not unmarshal route info: %v", err)
+	}
+
+	if len(info.Routes) != 1 {
+		t.Fatalf("Expected len of []Routes to be 1 vs %d", len(info.Routes))
+	}
+
+	route := info.Routes[0]
+	if route.RemoteID != rc1ID {
+		t.Fatalf("Expected RemoteID of \"22\", got %q", route.RemoteID)
+	}
+	if route.URL == "" {
+		t.Fatal("Expected a URL for the implicit route")
+	}
+	rurl := strings.TrimPrefix(route.URL, "nats-route://")
+	rhost, _, err := net.SplitHostPort(rurl)
+	if err != nil {
+		t.Fatalf("Error getting host information from: %v, err=%v", route.URL, err)
+	}
+	if rhost == rc1Host {
+		t.Fatalf("Expected route url to include IP address, got %s", rhost)
+	}
+	addr, ok := rc1.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		t.Fatal("Unable to get IP address from route")
+	}
+	if rhost != addr.IP.String() {
+		t.Fatalf("Expected IP %s, got %s", addr.IP.String(), rhost)
+	}
 }
