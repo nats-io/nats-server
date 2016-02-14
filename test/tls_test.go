@@ -223,3 +223,19 @@ func TestTLSStressConnect(t *testing.T) {
 		t.Fatalf("%v\n", lastError)
 	}
 }
+
+func TestTLSBadAuthError(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, "NOT_THE_PASSWORD", endpoint)
+
+	_, err := nats.Connect(nurl, nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server")
+	}
+	if err.Error() != nats.ErrAuthorization.Error() {
+		t.Fatalf("Excpected and auth violation, got %v\n", err)
+	}
+}
