@@ -3,6 +3,8 @@
 package test
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/nats"
 )
 
 const CLIENT_PORT = 11422
@@ -216,6 +219,118 @@ func TestConnz(t *testing.T) {
 	}
 	if ci.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
+	}
+}
+
+func TestTLSConnz(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+	rootCAFile := "./configs/certs/ca.pem"
+	clientCertFile := "./configs/certs/client-cert.pem"
+	clientKeyFile := "./configs/certs/client-key.pem"
+
+	// Test with secure connection
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
+	nc, err := nats.Connect(nurl, nats.RootCAs(rootCAFile))
+	if err != nil {
+		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
+	}
+	defer nc.Close()
+	ch := make(chan struct{})
+	nc.Subscribe("foo", func(m *nats.Msg) { ch <- struct{}{} })
+	nc.Publish("foo", []byte("Hello"))
+
+	// Wait for message
+	<-ch
+
+	url := fmt.Sprintf("https://localhost:%d/", opts.HTTPSPort)
+	tlsConfig := &tls.Config{}
+	caCert, err := ioutil.ReadFile(rootCAFile)
+	if err != nil {
+		t.Fatalf("Got error reading RootCA file: %s", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+	tlsConfig.RootCAs = caCertPool
+
+	cert, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
+	if err != nil {
+		t.Fatalf("Got error reading client certificates: %s", err)
+	}
+	tlsConfig.Certificates = []tls.Certificate{cert}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	httpClient := &http.Client{Transport: transport}
+
+	resp, err := httpClient.Get(url + "connz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	c := server.Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	if c.NumConns != 1 {
+		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+	}
+	if c.Conns == nil || len(c.Conns) != 1 {
+		t.Fatalf("Expected 1 connections in array, got %d\n", len(c.Conns))
+	}
+
+	// Test inside details of each connection
+	ci := c.Conns[0]
+
+	if ci.Cid == 0 {
+		t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
+	}
+	if ci.IP != "127.0.0.1" {
+		t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.IP)
+	}
+	if ci.Port == 0 {
+		t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
+	}
+	if ci.NumSubs != 1 {
+		t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
+	}
+	if len(ci.Subs) != 0 {
+		t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
+	}
+	if ci.InMsgs != 1 {
+		t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
+	}
+	if ci.OutMsgs != 1 {
+		t.Fatalf("Expected OutMsgs of 1, got %v\n", ci.OutMsgs)
+	}
+	if ci.InBytes != 5 {
+		t.Fatalf("Expected InBytes of 1, got %v\n", ci.InBytes)
+	}
+	if ci.OutBytes != 5 {
+		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
+	}
+	if ci.Start.IsZero() {
+		t.Fatalf("Expected Start to be valid\n")
+	}
+	if ci.Uptime == "" {
+		t.Fatalf("Expected Uptime to be valid\n")
+	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("Expected LastActivity to be valid\n")
+	}
+	if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
+		t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
+	}
+	if ci.Idle == "" {
+		t.Fatalf("Expected Idle to be valid\n")
 	}
 }
 
