@@ -206,15 +206,17 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.TLSCipher = tlsCipher(cs.CipherSuite)
 		}
 
+		switch conn := client.nc.(type) {
+		case *net.TCPConn, *tls.Conn:
+			addr := conn.RemoteAddr().(*net.TCPAddr)
+			ci.Port = addr.Port
+			ci.IP = addr.IP.String()
+		}
+
 		if subs == 1 {
 			ci.Subs = castToSliceString(client.subs.All())
 		}
 
-		if ip, ok := client.nc.(*net.TCPConn); ok {
-			addr := ip.RemoteAddr().(*net.TCPAddr)
-			ci.Port = addr.Port
-			ci.IP = addr.IP.String()
-		}
 		client.mu.Unlock()
 		i++
 	}
