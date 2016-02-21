@@ -10,11 +10,13 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	// Allow dynamic profiling.
@@ -126,6 +128,38 @@ func New(opts *Options) *Server {
 	return s
 }
 
+// Reload config when requested
+func (s *Server) ReloadConfig() {
+	if s.opts.ConfigFile == "" {
+		return
+	}
+	fileOpts, err := ProcessConfigFile(s.opts.ConfigFile)
+	if err != nil {
+		PrintAndDie(err.Error())
+	}
+	s.opts = (MergeOptions(s.opts, fileOpts))
+	newroutes, err := RemoveSelfReference(fileOpts.ClusterPort, fileOpts.Routes)
+	if err != nil {
+		PrintAndDie(err.Error())
+	}
+	s.updateRoutes(newroutes)
+}
+
+func (s *Server) updateRoutes(newroutes []*url.URL) {
+	// this is a bit hacky, as it closes *all* the routing connections.
+	// probably should diff the old and new routes and reconnect if something changed..
+
+	// close existing routes first, need to set didSolicit to false, otherwise
+	// they will reconnect
+	for _, c := range s.routes {
+		c.route.didSolicit = false
+		c.closeConnection()
+	}
+	// and reconnect to the new routes
+	s.opts.Routes = newroutes
+	s.solicitRoutes()
+}
+
 // Sets the authentication method
 func (s *Server) SetAuthMethod(authMethod Auth) {
 	s.mu.Lock()
@@ -165,13 +199,20 @@ func (s *Server) handleSignals() {
 		return
 	}
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+
+	signal.Notify(c, os.Interrupt, syscall.SIGHUP)
 	go func() {
 		for sig := range c {
 			Debugf("Trapped Signal; %v", sig)
-			// FIXME, trip running?
-			Noticef("Server Exiting..")
-			os.Exit(0)
+			switch sig {
+			case syscall.SIGHUP:
+				Noticef("Server got SIGHUP, reloading configuration..")
+				s.ReloadConfig()
+			case os.Interrupt:
+				// FIXME, trip running?
+				Noticef("Server Exiting..")
+				os.Exit(0)
+			}
 		}
 	}()
 }
