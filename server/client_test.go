@@ -53,7 +53,7 @@ func rawSetup(serverOptions Options) (*Server, *client, *bufio.Reader, string) {
 	cr := bufio.NewReaderSize(cli, DEFAULT_BUF_SIZE)
 	s := New(&serverOptions)
 	if serverOptions.Authorization != "" {
-		s.SetAuthMethod(&mockAuth{})
+		s.SetClientAuthMethod(&mockAuth{})
 	}
 
 	ch := make(chan *client)
@@ -535,7 +535,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	serverOptions.Authorization = "my_token"
 	serverOptions.AuthTimeout = 1
 	s, _, cr, _ := rawSetup(serverOptions)
-	s.SetAuthMethod(&mockAuth{})
+	s.SetClientAuthMethod(&mockAuth{})
 
 	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
 	l, err := cr.ReadString('\n')

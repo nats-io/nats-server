@@ -3,8 +3,10 @@
 
 - [ ] Multiple Auth
 - [ ] Authorization / Access
+- [ ] T series reservations
+= [ ] _SYS. server events?
 - [ ] No downtime restart
-- [ ] Signal based reload of configuration.
+- [ ] Signal based reload of configuration
 - [ ] Dynamic socket buffer sizes
 - [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [ ] brew, apt-get, rpm, chocately (windows)

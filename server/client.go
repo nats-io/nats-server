@@ -247,7 +247,12 @@ func (c *client) processInfo(arg []byte) error {
 }
 
 func (c *client) processErr(errStr string) {
-	c.Errorf("Client error %s", errStr)
+	switch c.typ {
+	case CLIENT:
+		c.Errorf("Client Error %s", errStr)
+	case ROUTER:
+		c.Errorf("Route Error %s", errStr)
+	}
 	c.closeConnection()
 }
 
@@ -285,7 +290,7 @@ func (c *client) processConnect(arg []byte) error {
 }
 
 func (c *client) authTimeout() {
-	c.sendErr("Authorization Timeout")
+	c.sendErr(ErrAuthTimeout.Error())
 	c.Debugf("Authorization Timeout")
 	c.closeConnection()
 }

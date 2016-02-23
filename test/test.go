@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package test
 
@@ -83,7 +83,7 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	}
 
 	if auth != nil {
-		s.SetAuthMethod(auth)
+		s.SetClientAuthMethod(auth)
 	}
 
 	// Run server in Go routine.
