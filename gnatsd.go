@@ -139,17 +139,26 @@ func main() {
 }
 
 func configureAuth(s *server.Server, opts *server.Options) {
+	// Client
 	if opts.Username != "" {
 		auth := &auth.Plain{
 			Username: opts.Username,
 			Password: opts.Password,
 		}
-		s.SetAuthMethod(auth)
+		s.SetClientAuthMethod(auth)
 	} else if opts.Authorization != "" {
 		auth := &auth.Token{
 			Token: opts.Authorization,
 		}
-		s.SetAuthMethod(auth)
+		s.SetClientAuthMethod(auth)
+	}
+	// Routes
+	if opts.ClusterUsername != "" {
+		auth := &auth.Plain{
+			Username: opts.ClusterUsername,
+			Password: opts.ClusterPassword,
+		}
+		s.SetRouteAuthMethod(auth)
 	}
 }
 

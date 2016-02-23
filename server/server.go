@@ -49,7 +49,8 @@ type Server struct {
 	infoJSON      []byte
 	sl            *sublist.Sublist
 	opts          *Options
-	auth          Auth
+	cAuth         Auth
+	rAuth         Auth
 	trace         bool
 	debug         bool
 	running       bool
@@ -126,15 +127,22 @@ func New(opts *Options) *Server {
 	return s
 }
 
-// Sets the authentication method
-func (s *Server) SetAuthMethod(authMethod Auth) {
+// Sets the authentication method for clients.
+func (s *Server) SetClientAuthMethod(authMethod Auth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.info.AuthRequired = true
-	s.auth = authMethod
+	s.cAuth = authMethod
 
 	s.generateServerInfoJSON()
+}
+
+// Sets the authentication method for routes.
+func (s *Server) SetRouteAuthMethod(authMethod Auth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rAuth = authMethod
 }
 
 func (s *Server) generateServerInfoJSON() {
@@ -612,22 +620,17 @@ func (s *Server) sendInfo(c *client, info []byte) {
 }
 
 func (s *Server) checkClientAuth(c *client) bool {
-	if s.auth == nil {
+	if s.cAuth == nil {
 		return true
 	}
-
-	return s.auth.Check(c)
+	return s.cAuth.Check(c)
 }
 
 func (s *Server) checkRouterAuth(c *client) bool {
-	if !s.routeInfo.AuthRequired {
+	if s.rAuth == nil {
 		return true
 	}
-	if s.opts.ClusterUsername != c.opts.Username ||
-		s.opts.ClusterPassword != c.opts.Password {
-		return false
-	}
-	return true
+	return s.rAuth.Check(c)
 }
 
 // Check auth and return boolean indicating if client is ok

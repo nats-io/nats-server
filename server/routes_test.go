@@ -75,6 +75,7 @@ func TestServerRoutesWithClients(t *testing.T) {
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
+	// Wait for route to form.
 	time.Sleep(250 * time.Millisecond)
 
 	nc2, err := nats.Connect(urlB)
@@ -84,4 +85,50 @@ func TestServerRoutesWithClients(t *testing.T) {
 	defer nc2.Close()
 	nc2.Publish("foo", []byte("Hello"))
 	nc2.Flush()
+}
+
+func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/srv_a_bcrypt.conf")
+	optsB, _ := ProcessConfigFile("./configs/srv_b_bcrypt.conf")
+
+	optsA.NoSigs, optsA.NoLog = true, true
+	optsB.NoSigs, optsB.NoLog = true, true
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
+
+	// Wait for route to form.
+	time.Sleep(250 * time.Millisecond)
+
+	nc1, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc1.Close()
+
+	// Test that we are connected.
+	ch := make(chan bool)
+	sub, _ := nc1.Subscribe("foo", func(m *nats.Msg) { ch <- true })
+	nc1.Flush()
+	defer sub.Unsubscribe()
+
+	nc2, err := nats.Connect(urlB)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+	nc2.Publish("foo", []byte("Hello"))
+
+	// Wait for message
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for message across route")
+	}
 }

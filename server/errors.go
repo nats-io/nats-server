@@ -11,6 +11,9 @@ var (
 	// ErrAuthorization represents error condition on failed authorization.
 	ErrAuthorization = errors.New("Authorization Error")
 
+	// ErrAuthTimeout represents error condition on failed authorization due to timeout.
+	ErrAuthTimeout = errors.New("Authorization Timeout")
+
 	// ErrMaxPayload represents error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
 )
