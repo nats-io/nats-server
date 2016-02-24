@@ -318,7 +318,8 @@ func (s *Server) AcceptLoop() {
 		Noticef("TLS required for client connections")
 	}
 
-	Noticef("gnatsd is ready")
+	Noticef("server is ready")
+	Debugf("server id - %s", s.info.ID)
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
