@@ -1,18 +1,16 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"io"
 	"time"
+
+	"github.com/nats-io/nuid"
 )
 
+// Use nuid.
 func genID() string {
-	u := make([]byte, 16)
-	io.ReadFull(rand.Reader, u)
-	return hex.EncodeToString(u)
+	return nuid.Next()
 }
 
 // Ascii numbers 0-9
