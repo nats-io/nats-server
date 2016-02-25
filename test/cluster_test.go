@@ -11,16 +11,42 @@ import (
 	"github.com/nats-io/gnatsd/server"
 )
 
+// Helper function to check that a cluster is formed
+func checkClusterFormed(t *testing.T, servers ...*server.Server) {
+	// Wait for the cluster to form
+	var err string
+	expectedNumRoutes := len(servers) - 1
+	maxTime := time.Now().Add(5 * time.Second)
+	for time.Now().Before(maxTime) {
+		err = ""
+		for _, s := range servers {
+			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
+				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.Id(), numRoutes)
+				break
+			}
+		}
+		if err != "" {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	if err != "" {
+		t.Fatalf("%s", err)
+	}
+}
+
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
 	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
+
+	checkClusterFormed(t, srvA, srvB)
 	return
 }
 
 func TestProperServerWithRoutesShutdown(t *testing.T) {
 	before := runtime.NumGoroutine()
 	srvA, srvB, _, _ := runServers(t)
-	time.Sleep(100 * time.Millisecond)
 	srvA.Shutdown()
 	srvB.Shutdown()
 	time.Sleep(100 * time.Millisecond)
@@ -38,16 +64,6 @@ func TestDoubleRouteConfig(t *testing.T) {
 	srvA, srvB, _, _ := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
-
-	// Wait for the setup
-	time.Sleep(1 * time.Second)
-
-	if numRoutesA := srvA.NumRoutes(); numRoutesA != 1 {
-		t.Fatalf("Expected one route for srvA, got %d\n", numRoutesA)
-	}
-	if numRoutesB := srvB.NumRoutes(); numRoutesB != 1 {
-		t.Fatalf("Expected one route for srvB, got %d\n", numRoutesB)
-	}
 }
 
 func TestBasicClusterPubSub(t *testing.T) {
