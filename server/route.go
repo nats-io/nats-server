@@ -34,7 +34,6 @@ type route struct {
 	retry        bool
 	routeType    RouteType
 	url          *url.URL
-	ipUrlString  string
 	authRequired bool
 	tlsRequired  bool
 }
@@ -132,22 +131,6 @@ func (c *client) processRouteInfo(info *Info) {
 		c.route.url = url
 	}
 
-	// Need to get the remote IP address. Do this outside of the c.route.url
-	// test because the former can be not nil in case of explicit route, but
-	// we still want to get the remote IP.
-	if c.route.ipUrlString == "" {
-		switch conn := c.nc.(type) {
-		case *net.TCPConn, *tls.Conn:
-			addr := conn.RemoteAddr().(*net.TCPAddr)
-			c.route.ipUrlString = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
-		default:
-			c.route.ipUrlString = fmt.Sprintf("%s", c.route.url)
-		}
-	}
-
-	// Set this in case we need to forward the info to other servers.
-	info.IP = c.route.ipUrlString
-
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
 	c.mu.Unlock()
@@ -157,6 +140,17 @@ func (c *client) processRouteInfo(info *Info) {
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
 		if sendInfo {
+			// Need to get the remote IP address.
+			c.mu.Lock()
+			switch conn := c.nc.(type) {
+			case *net.TCPConn, *tls.Conn:
+				addr := conn.RemoteAddr().(*net.TCPAddr)
+				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
+			default:
+				info.IP = fmt.Sprintf("%s", c.route.url)
+			}
+			c.mu.Unlock()
+			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
 	} else {
@@ -203,9 +197,9 @@ func (s *Server) processImplicitRoute(info *Info) {
 // in the server's opts.Routes, false otherwise.
 // Server lock is assumed to be held by caller.
 func (s *Server) hasThisRouteConfigured(info *Info) bool {
-	urlToCheckExplicit := net.JoinHostPort(info.Host, strconv.Itoa(info.Port))
+	urlToCheckExplicit := strings.ToLower(net.JoinHostPort(info.Host, strconv.Itoa(info.Port)))
 	for _, ri := range s.opts.Routes {
-		if strings.ToLower(ri.Host) == strings.ToLower(urlToCheckExplicit) {
+		if strings.ToLower(ri.Host) == urlToCheckExplicit {
 			return true
 		}
 	}
