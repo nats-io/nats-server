@@ -81,7 +81,7 @@ func TestRouteToSelf(t *testing.T) {
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	defer rc.Close()
 
-	routeSend, routeExpect := setupRoute(t, rc, opts)
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, s.Id())
 	buf := routeExpect(infoRe)
 
 	info := server.Info{}
@@ -121,7 +121,8 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	defer rc.Close()
 
 	expectAuthRequired(t, rc)
-	setupRoute(t, rc, opts)
+	routeSend, _ := setupRouteEx(t, rc, opts, "ROUTER:xyz")
+	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
 
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")
@@ -216,6 +217,7 @@ func TestRouteForwardsMsgToClients(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, clientExpect)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
 	expectAuthRequired(t, route)
 	routeSend, _ := setupRoute(t, route, opts)
 
@@ -304,7 +306,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 	defer route.Close()
 
 	expectAuthRequired(t, route)
-	routeSend, routeExpect := setupRoute(t, route, opts)
+	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
+	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
@@ -482,6 +485,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	clientExpect(pongRe)
 
 	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	defer route.Close()
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
 
 	// Expect to see the local sub echoed through after we send our INFO.
@@ -532,7 +536,8 @@ func TestAutoUnsubPropagation(t *testing.T) {
 	defer route.Close()
 
 	expectAuthRequired(t, route)
-	_, routeExpect := setupRoute(t, route, opts)
+	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
+	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
 
 	// Setup a local subscription
 	clientSend("SUB foo 2\r\n")

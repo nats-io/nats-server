@@ -26,17 +26,17 @@ import (
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
-	ID           string       `json:"server_id"`
-	Version      string       `json:"version"`
-	GoVersion    string       `json:"go"`
-	Host         string       `json:"host"`
-	Port         int          `json:"port"`
-	AuthRequired bool         `json:"auth_required"`
-	SSLRequired  bool         `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
-	TLSRequired  bool         `json:"tls_required"`
-	TLSVerify    bool         `json:"tls_verify"`
-	MaxPayload   int          `json:"max_payload"`
-	Routes       []RemoteInfo `json:"routes,omitempty"`
+	ID           string `json:"server_id"`
+	Version      string `json:"version"`
+	GoVersion    string `json:"go"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	AuthRequired bool   `json:"auth_required"`
+	SSLRequired  bool   `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
+	TLSRequired  bool   `json:"tls_required"`
+	TLSVerify    bool   `json:"tls_verify"`
+	MaxPayload   int    `json:"max_payload"`
+	IP           string `json:"ip,omitempty"`
 }
 
 // Server is our main struct.
@@ -65,6 +65,7 @@ type Server struct {
 	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
+	routeInfoJSON []byte
 	rcQuit        chan bool
 }
 
@@ -490,7 +491,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 
 	// Send our information.
-	s.sendInfo(c, info)
+	c.sendInfo(info)
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -615,11 +616,6 @@ func tlsCipher(cs uint16) string {
 	return fmt.Sprintf("Unknown [%x]", cs)
 }
 
-// Assume the lock is held upon entry.
-func (s *Server) sendInfo(c *client, info []byte) {
-	c.nc.Write(info)
-}
-
 func (s *Server) checkClientAuth(c *client) bool {
 	if s.cAuth == nil {
 		return true
@@ -651,6 +647,7 @@ func (s *Server) removeClient(c *client) {
 	c.mu.Lock()
 	cid := c.cid
 	typ := c.typ
+	r := c.route
 	c.mu.Unlock()
 
 	s.mu.Lock()
@@ -659,11 +656,11 @@ func (s *Server) removeClient(c *client) {
 		delete(s.clients, cid)
 	case ROUTER:
 		delete(s.routes, cid)
-		if c.route != nil {
-			rc, ok := s.remotes[c.route.remoteID]
+		if r != nil {
+			rc, ok := s.remotes[r.remoteID]
 			// Only delete it if it is us..
 			if ok && c == rc {
-				delete(s.remotes, c.route.remoteID)
+				delete(s.remotes, r.remoteID)
 			}
 		}
 	}

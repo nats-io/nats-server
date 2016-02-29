@@ -57,10 +57,9 @@ type client struct {
 	last  time.Time
 	parseState
 
-	route         *route
-	sendLocalSubs bool
-	debug         bool
-	trace         bool
+	route *route
+	debug bool
+	trace bool
 }
 
 func (c *client) String() (id string) {
@@ -305,6 +304,12 @@ func (c *client) maxPayloadViolation(sz int) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
 	c.sendErr("Maximum Payload Violation")
 	c.closeConnection()
+}
+
+// Assume the lock is held upon entry.
+func (c *client) sendInfo(info []byte) {
+	c.bw.Write(info)
+	c.bw.Flush()
 }
 
 func (c *client) sendErr(err string) {
@@ -942,6 +947,11 @@ func (c *client) closeConnection() {
 	subs := c.subs.All()
 	srv := c.srv
 
+	retryImplicit := false
+	if c.route != nil {
+		retryImplicit = c.route.retry
+	}
+
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -963,19 +973,26 @@ func (c *client) closeConnection() {
 
 	// Check for a solicited route. If it was, start up a reconnect unless
 	// we are already connected to the other end.
-	if c.isSolicitedRoute() {
+	if c.isSolicitedRoute() || retryImplicit {
+		// Capture these under lock
+		c.mu.Lock()
+		rid := c.route.remoteID
+		rtype := c.route.routeType
+		rurl := c.route.url
+		c.mu.Unlock()
+
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
-		rid := c.route.remoteID
+
 		if rid != "" && srv.remotes[rid] != nil {
 			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
-		} else if c.route.remoteID == srv.info.ID {
-			Debugf("Detected route to self, ignoring \"%s\"", c.route.url)
+		} else if rid == srv.info.ID {
+			Debugf("Detected route to self, ignoring \"%s\"", rurl)
 			return
-		} else if c.route.routeType != Implicit {
-			Debugf("Attempting reconnect for solicited route \"%s\"", c.route.url)
-			go srv.reConnectToRoute(c.route.url)
+		} else if rtype != Implicit || retryImplicit {
+			Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
+			go srv.reConnectToRoute(rurl, rtype)
 		}
 	}
 }

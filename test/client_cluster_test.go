@@ -228,7 +228,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 	waitOnReconnect()
 
-	time.Sleep(50 * time.Millisecond)
+	checkClusterFormed(t, srvA, srvB)
 
 	// Now send another 10 messages, from each client..
 	sendAndCheckMsgs(10)
