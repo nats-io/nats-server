@@ -517,7 +517,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 	defer s.Shutdown()
 
 	clients := make([]*nats.Conn, 4)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}
@@ -553,7 +553,7 @@ func TestConnzSortedByCid(t *testing.T) {
 	defer s.Shutdown()
 
 	clients := make([]*nats.Conn, 4)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}
@@ -597,7 +597,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	firstClient.Flush()
 
 	clients := make([]*nats.Conn, 3)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}
@@ -714,7 +714,7 @@ func TestConnzSortedByPending(t *testing.T) {
 	firstClient := createClientConnSubscribeAndPublish(t)
 	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
 	clients := make([]*nats.Conn, 3)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}
@@ -754,7 +754,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 	firstClient := createClientConnSubscribeAndPublish(t)
 	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
 	clients := make([]*nats.Conn, 3)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}
@@ -797,7 +797,7 @@ func TestConnzSortedByLast(t *testing.T) {
 	firstClient.Flush()
 
 	clients := make([]*nats.Conn, 3)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 		clients[i].Flush()
@@ -899,7 +899,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 	firstClient := createClientConnSubscribeAndPublish(t)
 	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
 	clients := make([]*nats.Conn, 3)
-	for i, _ := range clients {
+	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t)
 		defer clients[i].Close()
 	}

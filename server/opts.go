@@ -251,7 +251,7 @@ Available cipher suites include:
 `
 
 	fmt.Printf("%s\n", tlsUsage)
-	for k, _ := range cipherMap {
+	for k := range cipherMap {
 		fmt.Printf("    %s\n", k)
 	}
 	fmt.Printf("\n")

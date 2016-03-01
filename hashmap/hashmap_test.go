@@ -64,7 +64,7 @@ func TestGrowing(t *testing.T) {
 	}
 	// Create _INBOX style end tokens
 	var toks [INS][]byte
-	for i, _ := range toks {
+	for i := range toks {
 		u := make([]byte, 13)
 		io.ReadFull(rand.Reader, u)
 		toks[i] = []byte(hex.EncodeToString(u))
@@ -85,7 +85,7 @@ func TestHashMapCollisions(t *testing.T) {
 
 	// Create _INBOX style end tokens
 	var toks [INS][]byte
-	for i, _ := range toks {
+	for i := range toks {
 		u := make([]byte, 13)
 		io.ReadFull(rand.Reader, u)
 		toks[i] = []byte(hex.EncodeToString(u))
@@ -169,7 +169,7 @@ func TestHashMapStats(t *testing.T) {
 
 	// Create _INBOX style end tokens
 	var toks [INS][]byte
-	for i, _ := range toks {
+	for i := range toks {
 		u := make([]byte, 13)
 		io.ReadFull(rand.Reader, u)
 		toks[i] = []byte(hex.EncodeToString(u))
@@ -203,7 +203,7 @@ func TestShrink(t *testing.T) {
 	}
 	// Create _INBOX style end tokens
 	var toks [INS][]byte
-	for i, _ := range toks {
+	for i := range toks {
 		u := make([]byte, 13)
 		io.ReadFull(rand.Reader, u)
 		toks[i] = []byte(hex.EncodeToString(u))
