@@ -70,7 +70,7 @@ func TestTLSClientCertificate(t *testing.T) {
 		t.Fatalf("Expected error trying to secure connect to secure server without a certificate")
 	}
 
-	// Load client certificate to sucessfully connect.
+	// Load client certificate to successfully connect.
 	certFile := "./configs/certs/client-cert.pem"
 	keyFile := "./configs/certs/client-key.pem"
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
