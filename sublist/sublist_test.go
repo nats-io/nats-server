@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -486,6 +487,35 @@ func Benchmark_______MissOnLastTokenOfFive(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		sl.Match(s)
 	}
+}
+
+func multiRead(b *testing.B, num int) {
+	b.StopTimer()
+	var swg, fwg sync.WaitGroup
+	swg.Add(num)
+	fwg.Add(num)
+	s := []byte("apcera.continuum.component.router")
+	for i := 0; i < num; i++ {
+		go func() {
+			swg.Done()
+			swg.Wait()
+			for i := 0; i < b.N; i++ {
+				sl.Match(s)
+			}
+			fwg.Done()
+		}()
+	}
+	swg.Wait()
+	b.StartTimer()
+	fwg.Wait()
+}
+
+func Benchmark_____________10XMultipleReads(b *testing.B) {
+	multiRead(b, 10)
+}
+
+func Benchmark____________100XMultipleReads(b *testing.B) {
+	multiRead(b, 100)
 }
 
 func _BenchmarkRSS(b *testing.B) {
