@@ -106,7 +106,7 @@ func BenchmarkMapRange(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		for _, _ = range subs {
+		for range subs {
 			break
 		}
 	}
