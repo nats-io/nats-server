@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 // Sublist is a subject distribution data structure that can match subjects to
 // interested subscribers. Subscribers can have wildcard subjects to match
@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/gnatsd/hash"
 	"github.com/nats-io/gnatsd/hashmap"
 )
 
@@ -63,7 +62,6 @@ func newNode() *node {
 // algortihm for the tokens, which should be short.
 func newLevel() *level {
 	h := hashmap.New()
-	h.Hash = hash.FNV1A
 	return &level{nodes: h}
 }
 
@@ -81,7 +79,7 @@ func New() *Sublist {
 }
 
 // Common byte variables for wildcards and token separator.
-var (
+const (
 	_PWC = byte('*')
 	_FWC = byte('>')
 	_SEP = byte('.')
