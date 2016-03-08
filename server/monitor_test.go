@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -382,6 +383,12 @@ func TestConnzLastActivity(t *testing.T) {
 		t.Fatalf("Expected LastActivity to be valid\n")
 	}
 
+	// On Windows, looks like the precision is too low, and if we
+	// don't wait, first and last would be equal.
+	if runtime.GOOS == "windows" {
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// Sub should trigger update.
 	nc.Subscribe("hello.world", func(m *nats.Msg) {})
 	nc.Flush()
@@ -390,6 +397,13 @@ func TestConnzLastActivity(t *testing.T) {
 	if firstLast.Equal(subLast) {
 		t.Fatalf("Subscribe should have triggered update to LastActivity\n")
 	}
+
+	// On Windows, looks like the precision is too low, and if we
+	// don't wait, first and last would be equal.
+	if runtime.GOOS == "windows" {
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// Pub should trigger as well
 	nc.Publish("foo", []byte("Hello"))
 	nc.Flush()
@@ -398,6 +412,13 @@ func TestConnzLastActivity(t *testing.T) {
 	if subLast.Equal(pubLast) {
 		t.Fatalf("Publish should have triggered update to LastActivity\n")
 	}
+
+	// On Windows, looks like the precision is too low, and if we
+	// don't wait, first and last would be equal.
+	if runtime.GOOS == "windows" {
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// Message delivery should trigger as well
 	nc2.Publish("foo", []byte("Hello"))
 	nc2.Flush()

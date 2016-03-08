@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,6 +14,43 @@ import (
 
 	"github.com/nats-io/gnatsd/server"
 )
+
+func shutdownServerAndWait(t *testing.T, s *server.Server) bool {
+	listenSpec := s.GetListenEndpoint()
+	routeListenSpec := s.GetRouteListenEndpoint()
+
+	s.Shutdown()
+
+	// For now, do this only on Windows. Lots of tests would fail
+	// without this because the listen port would linger from one
+	// test to another causing failures.
+	checkShutdown := func(listen string) bool {
+		down := false
+		maxTime := time.Now().Add(5 * time.Second)
+		for time.Now().Before(maxTime) {
+			conn, err := net.Dial("tcp", listen)
+			if err != nil {
+				down = true
+				break
+			}
+			conn.Close()
+			// Retry after 50ms
+			time.Sleep(50 * time.Millisecond)
+		}
+		return down
+	}
+	if listenSpec != "" {
+		if !checkShutdown(listenSpec) {
+			return false
+		}
+	}
+	if routeListenSpec != "" {
+		if !checkShutdown(routeListenSpec) {
+			return false
+		}
+	}
+	return true
+}
 
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 	return RunServerWithConfig("./configs/cluster.conf")
@@ -145,6 +183,12 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 
 	if rsid2 != rsid {
 		t.Fatalf("Expected rsid's to match. %q vs %q\n", rsid, rsid2)
+	}
+
+	// Explicitly shutdown the server, otherwise this test would
+	// cause following test to fail.
+	if down := shutdownServerAndWait(t, s); !down {
+		t.Fatal("Unable to verify server was shutdown")
 	}
 }
 

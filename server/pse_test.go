@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 )
 
 func TestPSEmulation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("Skipping this test on Windows")
+	}
 	var rss, vss, psRss, psVss int64
 	var pcpu, psPcpu float64
 

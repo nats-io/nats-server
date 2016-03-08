@@ -3,6 +3,7 @@
 package test
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"testing"
@@ -34,6 +35,31 @@ func checkClusterFormed(t *testing.T, servers ...*server.Server) {
 	if err != "" {
 		t.Fatalf("%s", err)
 	}
+}
+
+// Helper function to check that a server (or list of servers) have the
+// expected number of subscriptions
+func checkExpectedSubs(expected int, servers ...*server.Server) error {
+	var err string
+	maxTime := time.Now().Add(5 * time.Second)
+	for time.Now().Before(maxTime) {
+		err = ""
+		for _, s := range servers {
+			if numSubs := int(s.NumSubscriptions()); numSubs != expected {
+				err = fmt.Sprintf("Expected %d subscriptions for server %q, got %d", expected, s.Id(), numSubs)
+				break
+			}
+		}
+		if err != "" {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	if err != "" {
+		return errors.New(err)
+	}
+	return nil
 }
 
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
@@ -120,6 +146,11 @@ func TestClusterQueueSubs(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1Sids_a), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
@@ -141,6 +172,11 @@ func TestClusterQueueSubs(t *testing.T) {
 	sendA("SUB > 7\r\n")
 	sendA("PING\r\n")
 	expectA(pongRe)
+
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1Sids_a)+len(pSids), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
@@ -168,6 +204,11 @@ func TestClusterQueueSubs(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	// Make sure the subs have propagated to srvA before continuing
+	if err := checkExpectedSubs(len(qg1Sids_a)+len(pSids)+len(qg2Sids_b), srvA); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
 
@@ -186,6 +227,11 @@ func TestClusterQueueSubs(t *testing.T) {
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
+
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(pSids)+len(qg2Sids_b), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
@@ -215,8 +261,6 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	time.Sleep(50 * time.Millisecond)
-
 	clientA1 := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA1.Close()
 
@@ -243,6 +287,11 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	sendA1("PING\r\n")
 	expectA1(pongRe)
 
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1Sids_a), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
@@ -258,6 +307,11 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	sendA2("PING\r\n")
 	expectA2(pongRe)
 	pSids := []string{"1", "2"}
+
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1Sids_a)+2, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")

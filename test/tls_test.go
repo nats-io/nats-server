@@ -151,7 +151,7 @@ func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url strin
 
 	subName := fmt.Sprintf("foo.%d", index)
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 33; i++ {
 		nc, err := nats.Connect(url, nats.RootCAs("./configs/certs/ca.pem"))
 		if err != nil {
 			errCh <- fmt.Errorf("Unable to create TLS connection: %v\n", err)
