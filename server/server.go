@@ -711,8 +711,8 @@ func (s *Server) Addr() net.Addr {
 }
 
 // GetListenEndpoint will return a string of the form host:port suitable for
-// a connect. Will return nil if the server is not ready to accept client
-// connections.
+// a connect. Will return empty string if the server is not ready to accept
+// client connections.
 func (s *Server) GetListenEndpoint() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -732,6 +732,29 @@ func (s *Server) GetListenEndpoint() string {
 	// Return the opts's Host and Port. Note that the Port may be set
 	// when the listener is started, due to the use of RANDOM_PORT
 	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
+}
+
+// GetRouteListenEndpoint will return a string of the form host:port suitable
+// for a connect. Will return empty string if the server is not configured for
+// routing or not ready to accept route connections.
+func (s *Server) GetRouteListenEndpoint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.routeListener == nil {
+		return ""
+	}
+
+	host := s.opts.ClusterHost
+
+	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
+	// We replace it with "localhost" when that's the case.
+	if host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "localhost"
+	}
+
+	// Return the cluster's Host and Port.
+	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
 }
 
 // Server's ID

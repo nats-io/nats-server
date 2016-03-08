@@ -429,6 +429,10 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	sendInfo := false
 
 	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return false, false
+	}
 	remote, exists := s.remotes[id]
 	if !exists {
 		s.routes[c.cid] = c
