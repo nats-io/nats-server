@@ -169,7 +169,7 @@ func (c *client) readLoop() {
 		last := time.Now()
 		if err := c.parse(b[:n]); err != nil {
 			// handled inline
-			if err != ErrMaxPayload && err != ErrAuthorization {
+			if err != ErrMaxPayload && err != ErrAuthorization && err != ErrUnpromptedPong {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
 				c.closeConnection()
@@ -312,6 +312,12 @@ func (c *client) maxPayloadViolation(sz int) {
 	c.closeConnection()
 }
 
+func (c *client) unpromptedPong() {
+	c.Errorf(ErrUnpromptedPong.Error())
+	c.sendErr("Received PONG without a pending PING")
+	c.closeConnection()
+}
+
 // Assume the lock is held upon entry.
 func (c *client) sendInfo(info []byte) {
 	c.bw.Write(info)
@@ -353,11 +359,18 @@ func (c *client) processPing() {
 	c.mu.Unlock()
 }
 
-func (c *client) processPong() {
+func (c *client) processPong() error {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
-	c.pout -= 1
+	if c.pout > 0 {
+		c.pout -= 1
+	} else {
+		c.mu.Unlock()
+		c.unpromptedPong()
+		return ErrUnpromptedPong
+	}
 	c.mu.Unlock()
+	return nil
 }
 
 func (c *client) processMsgArgs(arg []byte) error {

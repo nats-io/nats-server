@@ -16,4 +16,7 @@ var (
 
 	// ErrMaxPayload represents error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
+
+	// ErrUnpromptedPong represents error condition when a PONG is received without a pending PING.
+	ErrUnpromptedPong = errors.New("Unprompted Pong")
 )

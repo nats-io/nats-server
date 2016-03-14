@@ -377,7 +377,9 @@ func (c *client) parse(buf []byte) error {
 		case OP_PONG:
 			switch b {
 			case '\n':
-				c.processPong()
+				if err := c.processPong(); err != nil {
+					return err
+				}
 				c.drop, c.state = 0, OP_START
 			}
 		case OP_C:
