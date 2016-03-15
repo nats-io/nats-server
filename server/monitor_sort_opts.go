@@ -2,7 +2,7 @@
 
 package server
 
-// Helper types to sort by ConnInfo values
+// SortOpt is a helper type to sort by ConnInfo values
 type SortOpt string
 
 const (
@@ -17,6 +17,7 @@ const (
 	byIdle             = "idle"
 )
 
+// IsValid determines if a sort option is valid
 func (s SortOpt) IsValid() bool {
 	switch s {
 	case "", byCid, bySubs, byPending, byOutMsgs, byInMsgs, byOutBytes, byInBytes, byLast, byIdle:
@@ -26,11 +27,13 @@ func (s SortOpt) IsValid() bool {
 	}
 }
 
+// Pair type is internally used.
 type Pair struct {
 	Key *client
 	Val int64
 }
 
+// Pairs type is internally used.
 type Pairs []Pair
 
 func (d Pairs) Len() int {

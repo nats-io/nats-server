@@ -1,6 +1,6 @@
 // Copyright 2012-2015 Apcera Inc. All rights reserved.
 
-// HashMap defines a high performance hashmap based on
+// Package hashmap defines a high performance hashmap based on
 // fast hashing and fast key comparison. Simple chaining
 // is used, relying on the hashing algorithms for good
 // distribution
@@ -93,7 +93,7 @@ func (h *HashMap) Set(key []byte, data interface{}) {
 	ne := &Entry{hk: hk, key: key, data: data}
 	ne.next = h.bkts[hk&h.msk]
 	h.bkts[hk&h.msk] = ne
-	h.used += 1
+	h.used++
 	// Check for resizing
 	if h.rsz && (h.used > uint32(len(h.bkts))) {
 		h.grow()
@@ -152,7 +152,7 @@ func (h *HashMap) Remove(key []byte) {
 		if len(key) == len((*e).key) && bytes.Equal(key, (*e).key) {
 			// Success
 			*e = (*e).next
-			h.used -= 1
+			h.used--
 			// Check for resizing
 			lbkts := uint32(len(h.bkts))
 			if h.rsz && lbkts > _BSZ && (h.used < lbkts/4) {
@@ -235,11 +235,11 @@ func (h *HashMap) Stats() *Stats {
 	lc, totalc, slots := 0, 0, 0
 	for _, e := range h.bkts {
 		if e != nil {
-			slots += 1
+			slots++
 		}
 		i := 0
 		for ; e != nil; e = e.next {
-			i += 1
+			i++
 			if i > lc {
 				lc = i
 			}

@@ -36,7 +36,7 @@ func runMonitorServer() *Server {
 	return RunServer(&opts)
 }
 
-func runMonitorServerNoHttpPort() *Server {
+func runMonitorServerNoHTTPPort() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions
 	opts.HTTPPort = 0
@@ -81,7 +81,7 @@ func TestMyUptime(t *testing.T) {
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
-	s := runMonitorServerNoHttpPort()
+	s := runMonitorServerNoHTTPPort()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
@@ -949,8 +949,8 @@ func TestConnzWithRoutes(t *testing.T) {
 		NoLog:       true,
 		NoSigs:      true,
 	}
-	routeUrl, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
-	opts.Routes = []*url.URL{routeUrl}
+	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
+	opts.Routes = []*url.URL{routeURL}
 
 	sc := RunServer(&opts)
 	defer sc.Shutdown()
@@ -1168,10 +1168,10 @@ func createClientConnSubscribeAndPublish(t *testing.T) *nats.Conn {
 }
 
 func createClientConnWithName(t *testing.T, name string) *nats.Conn {
-	natsUri := fmt.Sprintf("nats://localhost:%d", CLIENT_PORT)
+	natsURI := fmt.Sprintf("nats://localhost:%d", CLIENT_PORT)
 
 	client := nats.DefaultOptions
-	client.Servers = []string{natsUri}
+	client.Servers = []string{natsURI}
 	client.Name = name
 	nc, err := client.Connect()
 	if err != nil {

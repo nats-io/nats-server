@@ -9,17 +9,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const BcryptPrefix = "$2a$"
+const bcryptPrefix = "$2a$"
 
 func isBcrypt(password string) bool {
-	return strings.HasPrefix(password, BcryptPrefix)
+	return strings.HasPrefix(password, bcryptPrefix)
 }
 
+// Plain authentication is a basic username and password
 type Plain struct {
 	Username string
 	Password string
 }
 
+// Check authenticates the client using a username and password
 func (p *Plain) Check(c server.ClientAuth) bool {
 	opts := c.GetOpts()
 	if p.Username != opts.Username {

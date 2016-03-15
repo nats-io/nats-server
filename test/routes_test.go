@@ -106,8 +106,8 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	infoJson := fmt.Sprintf("INFO %s\r\n", b)
-	routeSend(infoJson)
+	infoJSON := fmt.Sprintf("INFO %s\r\n", b)
+	routeSend(infoJSON)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 }
@@ -200,9 +200,9 @@ func TestSendRouteSolicit(t *testing.T) {
 	if len(opts.Routes) <= 0 {
 		t.Fatalf("Need an outbound solicted route for this test")
 	}
-	rUrl := opts.Routes[0]
+	rURL := opts.Routes[0]
 
-	conn := acceptRouteConn(t, rUrl.Host, server.DEFAULT_ROUTE_CONNECT)
+	conn := acceptRouteConn(t, rURL.Host, server.DEFAULT_ROUTE_CONNECT)
 	defer conn.Close()
 
 	// We should receive a connect message right away due to auth.
@@ -391,8 +391,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 	matches = expectMsgs(2)
 
 	// Expect first to be the normal subscriber, next will be the queue one.
-	if string(matches[0][SID_INDEX]) != "RSID:2:4" &&
-		string(matches[1][SID_INDEX]) != "RSID:2:4" {
+	if string(matches[0][sidIndex]) != "RSID:2:4" &&
+		string(matches[1][sidIndex]) != "RSID:2:4" {
 		t.Fatalf("Did not received routed sid\n")
 	}
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
@@ -400,10 +400,10 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	// Check the rsid to verify it is one of the queue group subscribers.
 	var rsid string
-	if matches[0][SID_INDEX][0] == 'Q' {
-		rsid = string(matches[0][SID_INDEX])
+	if matches[0][sidIndex][0] == 'Q' {
+		rsid = string(matches[0][sidIndex])
 	} else {
-		rsid = string(matches[1][SID_INDEX])
+		rsid = string(matches[1][sidIndex])
 	}
 	if rsid != qrsid1 && rsid != qrsid2 {
 		t.Fatalf("Expected a queue group rsid, got %s\n", rsid)
@@ -443,15 +443,15 @@ func TestSolicitRouteReconnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
-	rUrl := opts.Routes[0]
+	rURL := opts.Routes[0]
 
-	route := acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+	route := acceptRouteConn(t, rURL.Host, 2*server.DEFAULT_ROUTE_CONNECT)
 
 	// Go ahead and close the Route.
 	route.Close()
 
 	// We expect to get called back..
-	route = acceptRouteConn(t, rUrl.Host, 2*server.DEFAULT_ROUTE_CONNECT)
+	route = acceptRouteConn(t, rURL.Host, 2*server.DEFAULT_ROUTE_CONNECT)
 	route.Close()
 }
 
@@ -546,10 +546,10 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	infoJson := fmt.Sprintf("INFO %s\r\n", b)
+	infoJSON := fmt.Sprintf("INFO %s\r\n", b)
 
 	// Trigger the send of local subs.
-	routeSend(infoJson)
+	routeSend(infoJSON)
 
 	routeExpect(subRe)
 
@@ -563,7 +563,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 
 	routeExpect(infoRe)
 
-	routeSend(infoJson)
+	routeSend(infoJSON)
 	routeExpect(subRe)
 }
 

@@ -709,9 +709,8 @@ func lexNumberOrDateStart(lx *lexer) stateFn {
 	if !isDigit(r) {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
-		} else {
-			return lx.errorf("Expected a digit but got '%v'.", r)
 		}
+		return lx.errorf("Expected a digit but got '%v'.", r)
 	}
 	return lexNumberOrDate
 }
@@ -772,9 +771,8 @@ func lexNumberStart(lx *lexer) stateFn {
 	if !isDigit(r) {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
-		} else {
-			return lx.errorf("Expected a digit but got '%v'.", r)
 		}
+		return lx.errorf("Expected a digit but got '%v'.", r)
 	}
 	return lexNumber
 }

@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// Designate the router type
+// RouteType designates the router type
 type RouteType int
 
 // Type of Route
@@ -47,6 +47,7 @@ type connectInfo struct {
 	Name     string `json:"name"`
 }
 
+// Route protocol constants
 const (
 	ConProto  = "CONNECT %s" + _CRLF_
 	InfoProto = "INFO %s" + _CRLF_
@@ -378,7 +379,7 @@ const (
 
 // FIXME(dlc) - Make these reserved and reject if they come in as a sid
 // from a client connection.
-
+// Route constants
 const (
 	RSID  = "RSID"
 	QRSID = "QRSID"
@@ -588,18 +589,18 @@ func (s *Server) StartRouting() {
 	s.solicitRoutes()
 }
 
-func (s *Server) reConnectToRoute(rUrl *url.URL, rtype RouteType) {
+func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 	tryForEver := rtype == Explicit
 	if tryForEver {
 		time.Sleep(DEFAULT_ROUTE_RECONNECT)
 	}
-	s.connectToRoute(rUrl, tryForEver)
+	s.connectToRoute(rURL, tryForEver)
 }
 
-func (s *Server) connectToRoute(rUrl *url.URL, tryForEver bool) {
-	for s.isRunning() && rUrl != nil {
-		Debugf("Trying to connect to route on %s", rUrl.Host)
-		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
+func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+	for s.isRunning() && rURL != nil {
+		Debugf("Trying to connect to route on %s", rURL.Host)
+		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
 			select {
@@ -614,7 +615,7 @@ func (s *Server) connectToRoute(rUrl *url.URL, tryForEver bool) {
 		}
 		// We have a route connection here.
 		// Go ahead and create it and exit this func.
-		s.createRoute(conn, rUrl)
+		s.createRoute(conn, rURL)
 		return
 	}
 }

@@ -1,8 +1,8 @@
 // Copyright 2012-2016 Apcera Inc. All rights reserved.
 
-// Sublist is a subject distribution data structure that can match subjects to
-// interested subscribers. Subscribers can have wildcard subjects to match
-// multiple published subjects.
+// Package sublist handles subject distribution and provides a facility
+// match subjects to interested subscribers. Subscribers can have wildcard
+// subjects to match multiple published subjects.
 package sublist
 
 import (
@@ -85,6 +85,7 @@ const (
 	_SEP = byte('.')
 )
 
+// Sublist related errors
 var (
 	ErrInvalidSubject = errors.New("Invalid Subject")
 	ErrNotFound       = errors.New("No Matches Found")
@@ -102,6 +103,7 @@ func split(subject []byte, tokens [][]byte) [][]byte {
 	return append(tokens, subject[start:])
 }
 
+// Insert adds a subject into the sublist
 func (s *Sublist) Insert(subject []byte, sub interface{}) error {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
@@ -375,10 +377,10 @@ func (n *node) isEmpty() bool {
 func (l *level) numNodes() uint32 {
 	num := l.nodes.Count()
 	if l.pwc != nil {
-		num += 1
+		num++
 	}
 	if l.fwc != nil {
-		num += 1
+		num++
 	}
 	return num
 }
@@ -415,10 +417,10 @@ func matchLiteral(literal, subject []byte) bool {
 			ll := len(literal)
 			for {
 				if li >= ll || literal[li] == _SEP {
-					li -= 1
+					li--
 					break
 				}
-				li += 1
+				li++
 			}
 		case _FWC:
 			return true
@@ -427,7 +429,7 @@ func matchLiteral(literal, subject []byte) bool {
 				return false
 			}
 		}
-		li += 1
+		li++
 	}
 	// Make sure we have processed all of the literal's chars..
 	if li < ll {
@@ -436,6 +438,7 @@ func matchLiteral(literal, subject []byte) bool {
 	return true
 }
 
+// IsValidLiteralSubject returns true if a subject is valid, false otherwise
 func IsValidLiteralSubject(subject []byte) bool {
 	tsa := [16][]byte{}
 	toks := split(subject, tsa[:0])
@@ -523,7 +526,7 @@ func visitLevel(l *level, depth int) int {
 		return depth
 	}
 
-	depth += 1
+	depth++
 	maxDepth := depth
 
 	all := l.nodes.All()

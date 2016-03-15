@@ -1,6 +1,6 @@
 // Copyright 2013 Apcera Inc. All rights reserved.
 
-// Conf is a configuration file format used by gnatsd. It is
+// Package conf supports a configuration file format used by gnatsd. It is
 // a flexible format that combines the best of traditional
 // configuration formats and newer styles such as JSON and YAML.
 package conf
@@ -20,9 +20,6 @@ import (
 	"time"
 )
 
-// Parser will return a map of keys to interface{}, although concrete types
-// underly them. The values supported are string, bool, int64, float64, DateTime.
-// Arrays and nested Maps are also supported.
 type parser struct {
 	mapping map[string]interface{}
 	lx      *lexer
@@ -37,6 +34,9 @@ type parser struct {
 	keys []string
 }
 
+// Parse will return a map of keys to interface{}, although concrete types
+// underly them. The values supported are string, bool, int64, float64, DateTime.
+// Arrays and nested Maps are also supported.
 func Parse(data string) (map[string]interface{}, error) {
 	p, err := parse(data)
 	if err != nil {
@@ -121,9 +121,8 @@ func (p *parser) processItem(it item) error {
 			if e, ok := err.(*strconv.NumError); ok &&
 				e.Err == strconv.ErrRange {
 				return fmt.Errorf("Integer '%s' is out of the range.", it.val)
-			} else {
-				return fmt.Errorf("Expected integer, but got '%s'.", it.val)
 			}
+			return fmt.Errorf("Expected integer, but got '%s'.", it.val)
 		}
 		p.setValue(num)
 	case itemFloat:
@@ -132,9 +131,8 @@ func (p *parser) processItem(it item) error {
 			if e, ok := err.(*strconv.NumError); ok &&
 				e.Err == strconv.ErrRange {
 				return fmt.Errorf("Float '%s' is out of the range.", it.val)
-			} else {
-				return fmt.Errorf("Expected float, but got '%s'.", it.val)
 			}
+			return fmt.Errorf("Expected float, but got '%s'.", it.val)
 		}
 		p.setValue(num)
 	case itemBool:
@@ -154,7 +152,7 @@ func (p *parser) processItem(it item) error {
 		}
 		p.setValue(dt)
 	case itemArrayStart:
-		array := make([]interface{}, 0)
+		var array = make([]interface{}, 0)
 		p.pushContext(array)
 	case itemArrayEnd:
 		array := p.ctx

@@ -47,7 +47,7 @@ const (
 	// DEFAULT_PING_MAX_OUT is maximum allowed pings outstanding before disconnect.
 	DEFAULT_PING_MAX_OUT = 2
 
-	// CRLF string
+	// CR_LF string
 	CR_LF = "\r\n"
 
 	// LEN_CR_LF hold onto the computed size.
@@ -83,7 +83,7 @@ const (
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
 
-	// Default Buffer size for reads and writes per connection. Will be replaced by dynamic
-	// system in the long run.
+	// DEFAULT_BUF_SIZE is the default buffer size for reads and writes per connection.
+	// It will be replaced by a dynamic system in the long run.
 	DEFAULT_BUF_SIZE = 32768
 )

@@ -103,7 +103,7 @@ func TestQueueSub(t *testing.T) {
 	matches := expectMsgs(sent)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 2 {
 		t.Fatalf("Expected only 2 sids, got %d\n", len(sids))
@@ -140,7 +140,7 @@ func TestMultipleQueueSub(t *testing.T) {
 	matches := expectMsgs(sent * 2)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 4 {
 		t.Fatalf("Expected 4 sids, got %d\n", len(sids))

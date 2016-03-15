@@ -161,9 +161,9 @@ func checkClusterFormed(t *testing.T, servers ...*Server) {
 // Helper function to generate next opts to make sure no port conflicts etc.
 func nextServerOpts(opts *Options) *Options {
 	nopts := *opts
-	nopts.Port += 1
-	nopts.ClusterPort += 1
-	nopts.HTTPPort += 1
+	nopts.Port++
+	nopts.ClusterPort++
+	nopts.HTTPPort++
 	return &nopts
 }
 

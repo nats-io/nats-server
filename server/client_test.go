@@ -304,7 +304,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 	}()
 
 	var n1, n2, received int
-	for ; ; received += 1 {
+	for ; ; received++ {
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -353,7 +353,7 @@ func TestClientUnSub(t *testing.T) {
 	}()
 
 	var received int
-	for ; ; received += 1 {
+	for ; ; received++ {
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break
@@ -396,7 +396,7 @@ func TestClientUnSubMax(t *testing.T) {
 	}()
 
 	var received int
-	for ; ; received += 1 {
+	for ; ; received++ {
 		l, err := cr.ReadString('\n')
 		if err != nil {
 			break

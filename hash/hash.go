@@ -1,13 +1,13 @@
 // Copyright 2012 Apcera Inc. All rights reserved.
 
-// Collection of high performance 32-bit hash functions.
+// Package hash is a collection of high performance 32-bit hash functions.
 package hash
 
 import (
 	"unsafe"
 )
 
-// Generates a Bernstein Hash.
+// Bernstein Hash.
 func Bernstein(data []byte) uint32 {
 	hash := uint32(5381)
 	for _, b := range data {
@@ -23,7 +23,7 @@ const (
 	_YP32  = 709607
 )
 
-// Generates an FNV1A Hash [http://en.wikipedia.org/wiki/Fowler-Noll-Vo_hash_function]
+// FNV1A Hash [http://en.wikipedia.org/wiki/Fowler-Noll-Vo_hash_function]
 func FNV1A(data []byte) uint32 {
 	var hash uint32 = _OFF32
 	for _, c := range data {
@@ -152,10 +152,10 @@ const (
 	_F2 = uint32(0xc2b2ae35)
 )
 
-// A default seed for Murmur3
+// M3Seed is a default seed for Murmur3
 const M3Seed = uint32(0x9747b28c)
 
-// Generates a Murmur3 Hash [http://code.google.com/p/smhasher/wiki/MurmurHash3]
+// Murmur3 Hash [http://code.google.com/p/smhasher/wiki/MurmurHash3]
 // Does not generate intermediate objects.
 func Murmur3(data []byte, seed uint32) uint32 {
 	h1 := seed

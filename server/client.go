@@ -356,7 +356,7 @@ func (c *client) processPing() {
 func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
-	c.pout -= 1
+	c.pout--
 	c.mu.Unlock()
 }
 
@@ -861,7 +861,7 @@ func (c *client) processPingTimer() {
 	c.Debugf("%s Ping Timer", c.typeString())
 
 	// Check for violation
-	c.pout += 1
+	c.pout++
 	if c.pout > c.srv.opts.MaxPingsOut {
 		c.Debugf("Stale Client Connection - Closing")
 		if c.bw != nil {
