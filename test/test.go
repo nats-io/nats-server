@@ -32,6 +32,7 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
+// DefaultTestOptions are default options for the unit tests.
 var DefaultTestOptions = server.Options{
 	Host:   "localhost",
 	Port:   4222,
@@ -39,15 +40,17 @@ var DefaultTestOptions = server.Options{
 	NoSigs: true,
 }
 
+// RunDefaultServer starts a new Go routine based server using the default options
 func RunDefaultServer() *server.Server {
 	return RunServer(&DefaultTestOptions)
 }
 
-// New Go Routine based server
+// RunServer starts a new Go routine based server
 func RunServer(opts *server.Options) *server.Server {
 	return RunServerWithAuth(opts, nil)
 }
 
+// LoadConfig loads a configuration from a filename
 func LoadConfig(configFile string) (opts *server.Options) {
 	opts, err := server.ProcessConfigFile(configFile)
 	if err != nil {
@@ -57,6 +60,7 @@ func LoadConfig(configFile string) (opts *server.Options) {
 	return
 }
 
+// RunServerWithConfig starts a new Go routine based server with a configuration file.
 func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
 	opts = LoadConfig(configFile)
 
@@ -72,7 +76,7 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	return
 }
 
-// New Go Routine based server with auth
+// RunServerWithAuth starts a new Go routine based server with auth
 func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
@@ -251,10 +255,10 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
-const CONNECT_F = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
+const connectProto = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
 
 func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
-	cs := fmt.Sprintf(CONNECT_F, user, pass, id)
+	cs := fmt.Sprintf(connectProto, user, pass, id)
 	sendProto(t, c, cs)
 }
 
@@ -320,11 +324,11 @@ var (
 )
 
 const (
-	SUB_INDEX   = 1
-	SID_INDEX   = 2
-	REPLY_INDEX = 4
-	LEN_INDEX   = 5
-	MSG_INDEX   = 6
+	subIndex   = 1
+	sidIndex   = 2
+	replyIndex = 4
+	lenIndex   = 5
+	msgIndex   = 6
 )
 
 // Reuse expect buffer
@@ -361,20 +365,20 @@ func expectNothing(t tLogger, c net.Conn) {
 
 // This will check that we got what we expected.
 func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
-	if string(m[SUB_INDEX]) != subject {
-		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
+	if string(m[subIndex]) != subject {
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[subIndex])
 	}
-	if sid != "" && string(m[SID_INDEX]) != sid {
-		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[SID_INDEX])
+	if sid != "" && string(m[sidIndex]) != sid {
+		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[sidIndex])
 	}
-	if string(m[REPLY_INDEX]) != reply {
-		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[REPLY_INDEX])
+	if string(m[replyIndex]) != reply {
+		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[replyIndex])
 	}
-	if string(m[LEN_INDEX]) != len {
-		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[LEN_INDEX])
+	if string(m[lenIndex]) != len {
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[lenIndex])
 	}
-	if string(m[MSG_INDEX]) != msg {
-		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[MSG_INDEX])
+	if string(m[msgIndex]) != msg {
+		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[msgIndex])
 	}
 }
 
@@ -398,9 +402,9 @@ func checkForQueueSid(t tLogger, matches [][][]byte, sids []string) {
 		seen[sid] = 0
 	}
 	for _, m := range matches {
-		sid := string(m[SID_INDEX])
+		sid := string(m[sidIndex])
 		if _, ok := seen[sid]; ok {
-			seen[sid] += 1
+			seen[sid]++
 		}
 	}
 	// Make sure we only see one and exactly one.
@@ -421,9 +425,9 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 		seen[sid] = 0
 	}
 	for _, m := range matches {
-		sid := string(m[SID_INDEX])
+		sid := string(m[sidIndex])
 		if _, ok := seen[sid]; ok {
-			seen[sid] += 1
+			seen[sid]++
 		}
 	}
 	// Make sure we only see one and exactly one for each sid.
@@ -438,8 +442,8 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 // Helper function to generate next opts to make sure no port conflicts etc.
 func nextServerOpts(opts *server.Options) *server.Options {
 	nopts := *opts
-	nopts.Port += 1
-	nopts.ClusterPort += 1
-	nopts.HTTPPort += 1
+	nopts.Port++
+	nopts.ClusterPort++
+	nopts.HTTPPort++
 	return &nopts
 }

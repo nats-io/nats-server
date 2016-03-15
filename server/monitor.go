@@ -56,6 +56,7 @@ type ConnInfo struct {
 	Subs         []string  `json:"subscriptions_list,omitempty"`
 }
 
+// DefaultConnListSize is the default size of the connection list.
 const DefaultConnListSize = 1024
 
 // HandleConnz process HTTP requests for connection information.
@@ -317,7 +318,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
-// HandleStats process HTTP requests for subjects stats.
+// HandleSubsz processes HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[SubszPath]++

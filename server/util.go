@@ -15,8 +15,8 @@ func genID() string {
 
 // Ascii numbers 0-9
 const (
-	ascii_0 = 48
-	ascii_9 = 57
+	asciiZero = 48
+	asciiNine = 57
 )
 
 // parseSize expects decimal positive numbers. We
@@ -26,10 +26,10 @@ func parseSize(d []byte) (n int) {
 		return -1
 	}
 	for _, dec := range d {
-		if dec < ascii_0 || dec > ascii_9 {
+		if dec < asciiZero || dec > asciiNine {
 			return -1
 		}
-		n = n*10 + (int(dec) - ascii_0)
+		n = n*10 + (int(dec) - asciiZero)
 	}
 	return n
 }
@@ -41,10 +41,10 @@ func parseInt64(d []byte) (n int64) {
 		return -1
 	}
 	for _, dec := range d {
-		if dec < ascii_0 || dec > ascii_9 {
+		if dec < asciiZero || dec > asciiNine {
 			return -1
 		}
-		n = n*10 + (int64(dec) - ascii_0)
+		n = n*10 + (int64(dec) - asciiZero)
 	}
 	return n
 }

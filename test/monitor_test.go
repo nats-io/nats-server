@@ -29,7 +29,7 @@ func runMonitorServer() *server.Server {
 	return RunServer(&opts)
 }
 
-func runMonitorServerNoHttpPort() *server.Server {
+func runMonitorServerNoHTTPPort() *server.Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultTestOptions
 	opts.Port = CLIENT_PORT
@@ -44,7 +44,7 @@ func resetPreviousHTTPConnections() {
 
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestNoMonitorPort(t *testing.T) {
-	s := runMonitorServerNoHttpPort()
+	s := runMonitorServerNoHTTPPort()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)

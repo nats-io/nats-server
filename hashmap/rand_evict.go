@@ -25,7 +25,7 @@ func (h *HashMap) RemoveRandom() {
 		e := &h.bkts[i]
 		if *e != nil {
 			*e = (*e).next
-			h.used -= 1
+			h.used--
 			return
 		}
 	}
@@ -35,7 +35,7 @@ func (h *HashMap) RemoveRandom() {
 		e := &h.bkts[i]
 		if *e != nil {
 			*e = (*e).next
-			h.used -= 1
+			h.used--
 			return
 		}
 	}

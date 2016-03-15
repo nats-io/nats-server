@@ -247,7 +247,7 @@ func TestSplitConnectArg(t *testing.T) {
 	connectAll := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 
-	argJson := connectAll[8:]
+	argJSON := connectAll[8:]
 
 	c1 := connectAll[:5]
 	c2 := connectAll[5:22]
@@ -267,8 +267,8 @@ func TestSplitConnectArg(t *testing.T) {
 	if c.argBuf == nil {
 		t.Fatalf("Expected argBug to not be nil.\n")
 	}
-	if !bytes.Equal(c.argBuf, argJson[:14]) {
-		t.Fatalf("argBuf not correct, received %q, wanted %q\n", argJson[:14], c.argBuf)
+	if !bytes.Equal(c.argBuf, argJSON[:14]) {
+		t.Fatalf("argBuf not correct, received %q, wanted %q\n", argJSON[:14], c.argBuf)
 	}
 
 	if err := c.parse(c3); err != nil {
@@ -277,9 +277,9 @@ func TestSplitConnectArg(t *testing.T) {
 	if c.argBuf == nil {
 		t.Fatalf("Expected argBug to not be nil.\n")
 	}
-	if !bytes.Equal(c.argBuf, argJson[:len(argJson)-2]) {
+	if !bytes.Equal(c.argBuf, argJSON[:len(argJSON)-2]) {
 		t.Fatalf("argBuf not correct, received %q, wanted %q\n",
-			argJson[:len(argJson)-2], c.argBuf)
+			argJSON[:len(argJSON)-2], c.argBuf)
 	}
 
 	if err := c.parse(c4); err != nil {

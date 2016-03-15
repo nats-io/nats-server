@@ -24,6 +24,7 @@ type parseState struct {
 	scratch [MAX_CONTROL_LINE_SIZE]byte
 }
 
+// Parser constants
 const (
 	OP_START = iota
 	OP_PLUS

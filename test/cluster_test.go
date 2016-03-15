@@ -137,17 +137,17 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectMsgsB := expectMsgsCommand(t, expectB)
 
 	// Capture sids for checking later.
-	qg1Sids_a := []string{"1", "2", "3"}
+	qg1SidsA := []string{"1", "2", "3"}
 
 	// Three queue subscribers
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1Sids_a), srvB); err != nil {
+	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1Sids_a)+len(pSids), srvB); err != nil {
+	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids), srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Send to A
@@ -193,19 +193,19 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Now add queue subscribers to B
-	qg2Sids_b := []string{"1", "2", "3"}
-	for _, sid := range qg2Sids_b {
+	qg2SidsB := []string{"1", "2", "3"}
+	for _, sid := range qg2SidsB {
 		sendB(fmt.Sprintf("SUB foo qg2 %s\r\n", sid))
 	}
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	// Make sure the subs have propagated to srvA before continuing
-	if err := checkExpectedSubs(len(qg1Sids_a)+len(pSids)+len(qg2Sids_b), srvA); err != nil {
+	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids)+len(qg2SidsB), srvA); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -214,22 +214,22 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
-	checkForQueueSid(t, matches, qg2Sids_b)
+	checkForQueueSid(t, matches, qg2SidsB)
 
 	// Should receive 5 still from A.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Now drop queue subscribers from A
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA(fmt.Sprintf("UNSUB %s\r\n", sid))
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(pSids)+len(qg2Sids_b), srvB); err != nil {
+	if err := checkExpectedSubs(len(pSids)+len(qg2SidsB), srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
-	checkForQueueSid(t, matches, qg2Sids_b)
+	checkForQueueSid(t, matches, qg2SidsB)
 
 	sendB("PING\r\n")
 	expectB(pongRe)
@@ -278,17 +278,17 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	expectMsgsA2 := expectMsgsCommand(t, expectA2)
 
 	// Capture sids for checking later.
-	qg1Sids_a := []string{"1", "2", "3"}
+	qg1SidsA := []string{"1", "2", "3"}
 
 	// Three queue subscribers
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA1(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
 	}
 	sendA1("PING\r\n")
 	expectA1(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1Sids_a), srvB); err != nil {
+	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	// Make sure we get only 1.
 	matches := expectMsgsA1(1)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 
 	// Add a FWC subscriber on A2
 	sendA2("SUB > 1\r\n")
@@ -309,7 +309,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	pSids := []string{"1", "2"}
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1Sids_a)+2, srvB); err != nil {
+	if err := checkExpectedSubs(len(qg1SidsA)+2, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 
 	matches = expectMsgsA1(1)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 
 	matches = expectMsgsA2(2)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")

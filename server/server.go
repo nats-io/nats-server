@@ -128,7 +128,7 @@ func New(opts *Options) *Server {
 	return s
 }
 
-// Sets the authentication method for clients.
+// SetClientAuthMethod sets the authentication method for clients.
 func (s *Server) SetClientAuthMethod(authMethod Auth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,7 +139,7 @@ func (s *Server) SetClientAuthMethod(authMethod Auth) {
 	s.generateServerInfoJSON()
 }
 
-// Sets the authentication method for routes.
+// SetRouteAuthMethod sets the authentication method for routes.
 func (s *Server) SetRouteAuthMethod(authMethod Auth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -388,7 +388,7 @@ func (s *Server) StartHTTPMonitoring() {
 	s.startMonitoring(false)
 }
 
-// StartHTTPMonitoring will enable the HTTPS monitoring port.
+// StartHTTPSMonitoring will enable the HTTPS monitoring port.
 func (s *Server) StartHTTPSMonitoring() {
 	s.startMonitoring(true)
 }
@@ -757,7 +757,7 @@ func (s *Server) GetRouteListenEndpoint() string {
 	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
 }
 
-// Server's ID
+// Id returns the server's ID
 func (s *Server) Id() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

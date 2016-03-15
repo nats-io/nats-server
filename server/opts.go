@@ -69,8 +69,8 @@ type authorization struct {
 	timeout float64
 }
 
-// This struct holds the parsed tls config information.
-// It's public so we can use it for flag parsing
+// TLSConfigOpts holds the parsed tls config information,
+// used with flag parsing
 type TLSConfigOpts struct {
 	CertFile string
 	KeyFile  string
@@ -227,8 +227,8 @@ func parseAuthorization(am map[string]interface{}) authorization {
 	return auth
 }
 
-// For Usage...
-func PrintTlsHelpAndDie() {
+// PrintTLSHelpAndDie prints TLS usage and exits.
+func PrintTLSHelpAndDie() {
 
 	var tlsUsage = `
 TLS configuration is specified in the tls section of a configuration file:
@@ -301,7 +301,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 		case "cipher_suites":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {
-				return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' cannot be empty.")
+				return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' cannot be empty")
 			}
 			tc.Ciphers = make([]uint16, 0, len(ra))
 			for _, r := range ra {
@@ -333,6 +333,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 	return &tc, nil
 }
 
+// GenTLSConfig loads TLS related configuration parameters.
 func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 
 	// Now load in cert and private key
@@ -429,6 +430,7 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	return &opts
 }
 
+// RoutesFromStr parses route URLs from a string
 func RoutesFromStr(routesStr string) []*url.URL {
 	routes := strings.Split(routesStr, ",")
 	if len(routes) == 0 {
@@ -453,6 +455,7 @@ func mergeRoutes(opts, flagOpts *Options) {
 	opts.RoutesStr = flagOpts.RoutesStr
 }
 
+// RemoveSelfReference removes this server from an array of routes
 func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error) {
 	var cleanRoutes []*url.URL
 	cport := strconv.Itoa(clusterPort)
@@ -464,7 +467,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 			return nil, err
 		}
 
-		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
+		if cport == port && isIPInList(selfIPs, getURLIP(host)) {
 			Noticef("Self referencing IP found: ", r)
 			continue
 		}
@@ -474,7 +477,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 	return cleanRoutes, nil
 }
 
-func isIpInList(list1 []net.IP, list2 []net.IP) bool {
+func isIPInList(list1 []net.IP, list2 []net.IP) bool {
 	for _, ip1 := range list1 {
 		for _, ip2 := range list2 {
 			if ip1.Equal(ip2) {
@@ -485,7 +488,7 @@ func isIpInList(list1 []net.IP, list2 []net.IP) bool {
 	return false
 }
 
-func getUrlIp(ipStr string) []net.IP {
+func getURLIP(ipStr string) []net.IP {
 	ipList := []net.IP{}
 
 	ip := net.ParseIP(ipStr)

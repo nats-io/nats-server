@@ -150,7 +150,7 @@ func expectSyslogOutput(t *testing.T, line string, expected string) {
 
 func runSyslog(c net.PacketConn, done chan<- string) {
 	var buf [4096]byte
-	var rcvd string = ""
+	var rcvd string
 	for {
 		n, _, err := c.ReadFrom(buf[:])
 		if err != nil || n == 0 {
