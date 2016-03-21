@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 package test
 
@@ -40,8 +40,8 @@ func TestSeedFirstRouteInfo(t *testing.T) {
 		t.Fatalf("Could not unmarshal route info: %v", err)
 	}
 
-	if info.ID != s.Id() {
-		t.Fatalf("Expected seed's ID %q, got %q", s.Id(), info.ID)
+	if info.ID != s.ID() {
+		t.Fatalf("Expected seed's ID %q, got %q", s.ID(), info.ID)
 	}
 }
 
@@ -174,31 +174,31 @@ func TestSeedSolicitWorks(t *testing.T) {
 	// Grab Routez from monitor ports, make sure we are fully connected
 	url := fmt.Sprintf("http://%s:%d/", opts.Host, opts.HTTPPort)
 	rz := readHTTPRoutez(t, url)
-	ris := expectRids(t, rz, []string{s2.Id(), s3.Id()})
-	if ris[s2.Id()].IsConfigured == true {
+	ris := expectRids(t, rz, []string{s2.ID(), s3.ID()})
+	if ris[s2.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s2Opts.Host, s2Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s3.Id()})
-	if ris[s1.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s3.ID()})
+	if ris[s1.ID()].IsConfigured != true {
 		t.Fatalf("Expected seed server to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s3Opts.Host, s3Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s2.Id()})
-	if ris[s1.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s2.ID()})
+	if ris[s1.ID()].IsConfigured != true {
 		t.Fatalf("Expected seed server to be configured\n")
 	}
-	if ris[s2.Id()].IsConfigured == true {
+	if ris[s2.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 }
@@ -220,7 +220,7 @@ func checkConnected(t *testing.T, servers []serverInfo, current int, oneSeed boo
 		if i == current {
 			continue
 		}
-		ids = append(ids, servers[i].server.Id())
+		ids = append(ids, servers[i].server.ID())
 	}
 	ris, err := expectRidsNoFatal(t, true, rz, ids)
 	if err != nil {
@@ -232,11 +232,11 @@ func checkConnected(t *testing.T, servers []serverInfo, current int, oneSeed boo
 		}
 		s := servers[i]
 		if current == 0 || ((oneSeed && i > 0) || (!oneSeed && (i != current-1))) {
-			if ris[s.server.Id()].IsConfigured != false {
+			if ris[s.server.ID()].IsConfigured != false {
 				return fmt.Errorf("Expected server %s:%d not to be configured", s.opts.Host, s.opts.Port)
 			}
 		} else if oneSeed || (i == current-1) {
-			if ris[s.server.Id()].IsConfigured != true {
+			if ris[s.server.ID()].IsConfigured != true {
 				return fmt.Errorf("Expected server %s:%d to be configured", s.opts.Host, s.opts.Port)
 			}
 		}
@@ -350,31 +350,31 @@ func TestChainedSolicitWorks(t *testing.T) {
 	// Grab Routez from monitor ports, make sure we are fully connected
 	url := fmt.Sprintf("http://%s:%d/", opts.Host, opts.HTTPPort)
 	rz := readHTTPRoutez(t, url)
-	ris := expectRids(t, rz, []string{s2.Id(), s3.Id()})
-	if ris[s2.Id()].IsConfigured == true {
+	ris := expectRids(t, rz, []string{s2.ID(), s3.ID()})
+	if ris[s2.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s2Opts.Host, s2Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s3.Id()})
-	if ris[s1.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s3.ID()})
+	if ris[s1.ID()].IsConfigured != true {
 		t.Fatalf("Expected seed server to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s3Opts.Host, s3Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s2.Id()})
-	if ris[s2.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s2.ID()})
+	if ris[s2.ID()].IsConfigured != true {
 		t.Fatalf("Expected s2 server to be configured\n")
 	}
-	if ris[s1.Id()].IsConfigured == true {
+	if ris[s1.ID()].IsConfigured == true {
 		t.Fatalf("Expected seed server not to be configured\n")
 	}
 }
@@ -488,31 +488,31 @@ func TestAuthSeedSolicitWorks(t *testing.T) {
 	// Grab Routez from monitor ports, make sure we are fully connected
 	url := fmt.Sprintf("http://%s:%d/", opts.Host, opts.HTTPPort)
 	rz := readHTTPRoutez(t, url)
-	ris := expectRids(t, rz, []string{s2.Id(), s3.Id()})
-	if ris[s2.Id()].IsConfigured == true {
+	ris := expectRids(t, rz, []string{s2.ID(), s3.ID()})
+	if ris[s2.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s2Opts.Host, s2Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s3.Id()})
-	if ris[s1.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s3.ID()})
+	if ris[s1.ID()].IsConfigured != true {
 		t.Fatalf("Expected seed server to be configured\n")
 	}
-	if ris[s3.Id()].IsConfigured == true {
+	if ris[s3.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
 	url = fmt.Sprintf("http://%s:%d/", s3Opts.Host, s3Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
-	ris = expectRids(t, rz, []string{s1.Id(), s2.Id()})
-	if ris[s1.Id()].IsConfigured != true {
+	ris = expectRids(t, rz, []string{s1.ID(), s2.ID()})
+	if ris[s1.ID()].IsConfigured != true {
 		t.Fatalf("Expected seed server to be configured\n")
 	}
-	if ris[s2.Id()].IsConfigured == true {
+	if ris[s2.ID()].IsConfigured == true {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 }
@@ -542,11 +542,11 @@ func expectRidsNoFatal(t *testing.T, direct bool, rz *server.Routez, rids []stri
 	// Make result map for additional checking
 	ri := make(map[string]*server.RouteInfo)
 	for _, r := range rz.Routes {
-		if set[r.RemoteId] != true {
+		if set[r.RemoteID] != true {
 			_, fn, line, _ := runtime.Caller(caller)
-			return nil, fmt.Errorf("[%s:%d] Route with rid %s unexpected, expected %+v\n", fn, line, r.RemoteId, rids)
+			return nil, fmt.Errorf("[%s:%d] Route with rid %s unexpected, expected %+v\n", fn, line, r.RemoteID, rids)
 		}
-		ri[r.RemoteId] = r
+		ri[r.RemoteID] = r
 	}
 	return ri, nil
 }

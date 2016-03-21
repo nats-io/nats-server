@@ -760,7 +760,7 @@ func (s *Server) GetRouteListenEndpoint() string {
 }
 
 // Id returns the server's ID
-func (s *Server) Id() string {
+func (s *Server) ID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.info.ID

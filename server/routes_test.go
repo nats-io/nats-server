@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -143,7 +143,7 @@ func checkClusterFormed(t *testing.T, servers ...*Server) {
 		err = ""
 		for _, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
-				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.Id(), numRoutes)
+				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
 				break
 			}
 		}

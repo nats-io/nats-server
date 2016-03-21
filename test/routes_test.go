@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package test
 
@@ -119,7 +119,7 @@ func TestRouteToSelf(t *testing.T) {
 	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
 	defer rc.Close()
 
-	routeSend, routeExpect := setupRouteEx(t, rc, opts, s.Id())
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, s.ID())
 	buf := routeExpect(infoRe)
 
 	info := server.Info{}

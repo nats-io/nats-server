@@ -560,7 +560,7 @@ func TestTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 		t.Fatalf("PONG response incorrect: %q\n", l)
 	}
 	// Expect just a pong, no match should exist here..
-	l, err = cr.ReadString('\n')
+	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "PONG\r\n") {
 		t.Fatalf("PONG response was expected, got: %q\n", l)
 	}
