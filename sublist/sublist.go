@@ -209,7 +209,6 @@ func (s *Sublist) Match(subject []byte) []interface{} {
 		atomic.AddUint64(&s.stats.cacheHits, 1)
 		return r.([]interface{})
 	}
-
 	// Cache miss
 
 	// Process subject into tokens, this is performed

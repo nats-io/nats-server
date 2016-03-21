@@ -204,6 +204,8 @@ func (s *Server) logPid() {
 // Start via a Go routine if needed.
 func (s *Server) Start() {
 	Noticef("Starting gnatsd version %s", VERSION)
+	Debugf("Go build version %s", s.info.GoVersion)
+
 	s.running = true
 
 	// Log the pid to a file
@@ -319,8 +321,8 @@ func (s *Server) AcceptLoop() {
 		Noticef("TLS required for client connections")
 	}
 
+	Debugf("server id is %s", s.info.ID)
 	Noticef("server is ready")
-	Debugf("server id - %s", s.info.ID)
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
