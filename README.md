@@ -25,7 +25,7 @@ The nats server is lightweight and very performant. Starting one with no argumen
 [35572] 2016/01/10 08:54:16.179115 [INF] gnatsd is ready
 ```
 
-The server will be started and listening for client connections on port 4222 from all interfaces. The logs will be displayed to stdout
+The server will be started and listening for client connections on port 4222 from all interfaces. The logs will be displayed to stderr
 as shown above. There are a large range of supported clients that can be found at [https://nats.io/clients](https://nats.io/download).
 The server uses a text based protocol, so interacting with it can be as simple as using telnet.
 
