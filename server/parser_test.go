@@ -93,9 +93,15 @@ func TestParsePong(t *testing.T) {
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
+	if c.pout != 0 {
+		t.Fatalf("Unexpected pout value: %d vs 0\n", c.pout)
+	}
 	err = c.parse(pong)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if c.pout != 0 {
+		t.Fatalf("Unexpected pout value: %d vs 0\n", c.pout)
 	}
 	// Should tolerate spaces
 	pong = []byte("PONG  \r")
@@ -109,8 +115,11 @@ func TestParsePong(t *testing.T) {
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
+	if c.pout != 0 {
+		t.Fatalf("Unexpected pout value: %d vs 0\n", c.pout)
+	}
 
-	// Should be adjusting c.pout, Pings Outstanding
+	// Should be adjusting c.pout (Pings Outstanding): reset to 0
 	c.state = OP_START
 	c.pout = 10
 	pong = []byte("PONG\r\n")
@@ -118,8 +127,8 @@ func TestParsePong(t *testing.T) {
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	if c.pout != 9 {
-		t.Fatalf("Unexpected pout: %d vs %d\n", c.pout, 9)
+	if c.pout != 0 {
+		t.Fatalf("Unexpected pout: %d vs 0\n", c.pout)
 	}
 }
 
