@@ -10,7 +10,7 @@ import (
 
 // Use nuid.
 func genID() string {
-	return "NS:" + nuid.Next()
+	return nuid.Next()
 }
 
 // Ascii numbers 0-9

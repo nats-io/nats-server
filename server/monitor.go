@@ -258,7 +258,7 @@ type Routez struct {
 // RouteInfo has detailed information on a per connection basis.
 type RouteInfo struct {
 	Rid          uint64   `json:"rid"`
-	RemoteId     string   `json:"remote_id"`
+	RemoteID     string   `json:"remote_id"`
 	DidSolicit   bool     `json:"did_solicit"`
 	IsConfigured bool     `json:"is_configured"`
 	IP           string   `json:"ip"`
@@ -289,7 +289,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 		r.mu.Lock()
 		ri := &RouteInfo{
 			Rid:          r.cid,
-			RemoteId:     r.route.remoteID,
+			RemoteID:     r.route.remoteID,
 			DidSolicit:   r.route.didSolicit,
 			IsConfigured: r.route.routeType == Explicit,
 			InMsgs:       r.inMsgs,

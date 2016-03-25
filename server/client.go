@@ -381,7 +381,7 @@ func (c *client) processPing() {
 func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
-	c.pout--
+	c.pout = 0
 	c.mu.Unlock()
 }
 
