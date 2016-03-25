@@ -168,7 +168,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
 		ci.NumSubs = client.subs.Count()
-		ci.Pending = client.bw.Buffered()
+		if client.internal {
+			ci.Pending = 0
+		} else {
+			ci.Pending = client.bw.Buffered()
+		}
 		ci.Name = client.opts.Name
 		ci.Lang = client.opts.Lang
 		ci.Version = client.opts.Version

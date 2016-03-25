@@ -60,6 +60,7 @@ type client struct {
 	route *route
 	debug bool
 	trace bool
+	internal bool
 }
 
 func (c *client) String() (id string) {
@@ -91,6 +92,12 @@ type clientOpts struct {
 	Version       string `json:"version"`
 }
 
+// Event data published when a client connects or disconnects
+type clientConnEvent struct {
+	ClientName string `json:"ClientName"`
+	IP         string `json:"IP"`
+}
+
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
 
 func init() {
@@ -101,7 +108,6 @@ func init() {
 func (c *client) initClient(tlsConn bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
 	c.subs = hashmap.New()
 	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
@@ -117,9 +123,14 @@ func (c *client) initClient(tlsConn bool) {
 
 	// snapshot the string version of the connection
 	conn := "-"
-	if ip, ok := c.nc.(*net.TCPConn); ok {
-		addr := ip.RemoteAddr().(*net.TCPAddr)
-		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+	if c.internal {
+		conn = fmt.Sprintf("internal:0")
+	} else {
+		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+		if ip, ok := c.nc.(*net.TCPConn); ok {
+			addr := ip.RemoteAddr().(*net.TCPAddr)
+			conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+		}
 	}
 
 	switch c.typ {
@@ -136,12 +147,40 @@ func (c *client) initClient(tlsConn bool) {
 	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
 	//	}
 
-	if !tlsConn {
+	if !tlsConn && !c.internal {
 		// Set the Ping timer
 		c.setPingTimer()
 
 		// Spin up the read loop.
 		go c.readLoop()
+	}
+}
+
+// flushes any pending messages that have been received and processed.
+func (c *client) flushPendingMessages() {
+
+	last := time.Now()
+
+	// Check pending clients for flush.
+	for cp := range c.pcd {
+		// Flush those in the set
+		cp.mu.Lock()
+		if cp.nc != nil {
+			cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+			err := cp.bw.Flush()
+			cp.nc.SetWriteDeadline(time.Time{})
+			if err != nil {
+				c.Debugf("Error flushing: %v", err)
+				cp.mu.Unlock()
+				cp.closeConnection()
+				cp.mu.Lock()
+			} else {
+				// Update outbound last activity.
+				cp.last = last
+			}
+		}
+		cp.mu.Unlock()
+		delete(c.pcd, cp)
 	}
 }
 
@@ -176,27 +215,9 @@ func (c *client) readLoop() {
 			}
 			return
 		}
-		// Check pending clients for flush.
-		for cp := range c.pcd {
-			// Flush those in the set
-			cp.mu.Lock()
-			if cp.nc != nil {
-				cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
-				err := cp.bw.Flush()
-				cp.nc.SetWriteDeadline(time.Time{})
-				if err != nil {
-					c.Debugf("Error flushing: %v", err)
-					cp.mu.Unlock()
-					cp.closeConnection()
-					cp.mu.Lock()
-				} else {
-					// Update outbound last activity.
-					cp.last = last
-				}
-			}
-			cp.mu.Unlock()
-			delete(c.pcd, cp)
-		}
+
+		c.flushPendingMessages()
+
 		// Check to see if we got closed, e.g. slow consumer
 		c.mu.Lock()
 		nc := c.nc
@@ -320,11 +341,15 @@ func (c *client) sendInfo(info []byte) {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	if c.bw != nil {
+	if c.bw != nil && !c.internal {
 		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
 		// Flush errors in place.
 		c.bw.Flush()
 		//c.pcd[c] = needFlush
+	}
+
+	if c.internal {
+		c.Errorf("Internal Client Error: " + err)
 	}
 	c.mu.Unlock()
 }
@@ -944,6 +969,7 @@ func (c *client) typeString() string {
 }
 
 func (c *client) closeConnection() {
+
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()
@@ -952,6 +978,15 @@ func (c *client) closeConnection() {
 
 	c.Debugf("%s connection closed", c.typeString())
 
+	srv := c.srv
+
+	c.mu.Unlock()
+
+	c.Debugf("Publishing disconnect advisory.")
+	srv.publishDisconnectEvent(c)
+
+	c.mu.Lock()
+
 	c.clearAuthTimer()
 	c.clearPingTimer()
 	c.clearConnection()
@@ -959,7 +994,6 @@ func (c *client) closeConnection() {
 
 	// Snapshot for use.
 	subs := c.subs.All()
-	srv := c.srv
 
 	retryImplicit := false
 	if c.route != nil {

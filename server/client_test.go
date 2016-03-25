@@ -609,3 +609,47 @@ func TestUnsubRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestClientAdvisories(t *testing.T) {
+	name := "TestClient"
+
+	s := RunServer(nil)
+	defer s.Shutdown()
+
+	adviseNc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+		DefaultOptions.Host,
+		DefaultOptions.Port))
+
+	if err != nil {
+		t.Fatalf("Error creating advisory client: %v\n", err)
+	}
+
+	natsURI := fmt.Sprintf("nats://%s:%d",
+		DefaultOptions.Host,
+		DefaultOptions.Port)
+
+	client := nats.DefaultOptions
+	client.Servers = []string{natsURI}
+	client.Name = name
+	nc, err := client.Connect()
+
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+
+	ch := make(chan bool)
+
+	defer adviseNc.Close()
+
+	adviseNc.Subscribe("_SYS.DISCONNECT", func(m *nats.Msg) {
+		fmt.Printf("Message from %s, %s\n", m.Subject, string(m.Data))
+		ch <- true
+	})
+	adviseNc.Flush()
+
+	nc.Close()
+
+	time.Sleep(time.Second * 3)
+
+	//<-ch
+}

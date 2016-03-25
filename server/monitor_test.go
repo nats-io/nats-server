@@ -149,8 +149,8 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
-	if v.Connections != 1 {
-		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+	if v.Connections < 1 {
+		t.Fatalf("Expected Connections of at least 1, got %v\n", v.Connections)
 	}
 	if v.TotalConnections < 1 {
 		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)

@@ -67,6 +67,7 @@ type Server struct {
 	routeInfo     Info
 	routeInfoJSON []byte
 	rcQuit        chan bool
+	advCli        *client
 }
 
 // Make sure all are 64bits for atomic use
@@ -235,6 +236,8 @@ func (s *Server) Start() {
 		s.StartProfiler()
 	}
 
+	s.CreateInternalClients()
+
 	// Wait for clients.
 	s.AcceptLoop()
 }
@@ -383,6 +386,11 @@ func (s *Server) StartProfiler() {
 	}()
 }
 
+func (s *Server) CreateInternalClients() {
+	s.advCli = s.createInternalClient("Advisories (Internal)")
+
+}
+
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
 	s.startMonitoring(false)
@@ -463,6 +471,27 @@ func (s *Server) startMonitoring(secure bool) {
 		srv.Handler = nil
 		s.done <- true
 	}()
+}
+
+func (s *Server) createInternalClient(name string) *client {
+	c := &client{srv: s, nc: nil, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
+
+	// Initialize
+	c.typ = CLIENT
+	c.internal = true
+	c.opts.Name = name
+	c.opts.Verbose = false
+
+	c.initClient(false)
+
+	// Register with the server.
+	s.mu.Lock()
+	s.clients[c.cid] = c
+	s.mu.Unlock()
+
+	c.Debugf("Internal client created")
+
+	return c
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
@@ -634,7 +663,11 @@ func (s *Server) checkRouterAuth(c *client) bool {
 func (s *Server) checkAuth(c *client) bool {
 	switch c.typ {
 	case CLIENT:
-		return s.checkClientAuth(c)
+		if c.internal {
+			return true
+		} else {
+			return s.checkClientAuth(c)
+		}
 	case ROUTER:
 		return s.checkRouterAuth(c)
 	default:
@@ -762,4 +795,60 @@ func (s *Server) Id() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.info.ID
+}
+
+// Event subjects
+const (
+	clientConnectEventSubj     = "_SYS.CLIENT.CONNECT"
+	clientDisconnectEventSubj  = "_SYS.CLIENT.DISCONNECT"
+)
+
+func (s *Server) sendEventNotification(subject string, e interface{}) {
+
+	payload, err := json.Marshal(e)
+	if err != nil {
+		Errorf("Error marshaling event notification: %v, %s\n", e, err)
+		return
+	}
+
+	s.advCli.processPub([]byte(fmt.Sprintf("%s %d", subject, len(payload))))
+	s.advCli.processMsg([]byte(fmt.Sprintf("%s\r\n", payload)))
+
+	s.advCli.flushPendingMessages()
+
+}
+
+func (s *Server) createConnectEvent(c *client) clientConnEvent {
+
+	cda := clientConnEvent{ClientName: "unknown", IP: "unknown"}
+
+	if c.nc != nil && c.nc.RemoteAddr() != nil {
+		cda.IP = c.nc.RemoteAddr().String()
+	}
+
+	if c.opts.Name == "" {
+		cda.ClientName = c.opts.Name
+	}
+
+	return cda
+}
+
+// sends a disconnect event message to any interested subscribers
+func (s *Server) publishDisconnectEvent(c *client) {
+
+	if c == nil {
+		return
+	}
+
+	s.sendEventNotification(clientDisconnectEventSubj, s.createConnectEvent(c))
+}
+
+// sends a connect event message to any interested subscribers
+func (s *Server) publishConnectEvent(c *client) {
+
+	if c == nil {
+		return
+	}
+
+	s.sendEventNotification(clientConnectEventSubj, s.createConnectEvent(c))
 }
