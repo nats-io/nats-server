@@ -102,7 +102,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		case bySubs:
 			pairs[i] = Pair{Key: client, Val: int64(client.subs.Count())}
 		case byPending:
-			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
+			len := 0
+			if !client.internal {
+				len = client.bw.Buffered()
+			}
+			pairs[i] = Pair{Key: client, Val: int64(len)}
 		case byOutMsgs:
 			pairs[i] = Pair{Key: client, Val: client.outMsgs}
 		case byInMsgs:

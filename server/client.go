@@ -57,9 +57,9 @@ type client struct {
 	last  time.Time
 	parseState
 
-	route *route
-	debug bool
-	trace bool
+	route    *route
+	debug    bool
+	trace    bool
 	internal bool
 }
 
@@ -90,12 +90,6 @@ type clientOpts struct {
 	Name          string `json:"name"`
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
-}
-
-// Event data published when a client connects or disconnects
-type clientConnEvent struct {
-	ClientName string `json:"ClientName"`
-	IP         string `json:"IP"`
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
@@ -172,7 +166,7 @@ func (c *client) flushPendingMessages() {
 			if err != nil {
 				c.Debugf("Error flushing: %v", err)
 				cp.mu.Unlock()
-				cp.closeConnection()
+				cp.closeConnectionWithEvent("Unknown")
 				cp.mu.Lock()
 			} else {
 				// Update outbound last activity.
@@ -201,7 +195,7 @@ func (c *client) readLoop() {
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
-			c.closeConnection()
+			c.closeConnectionWithEvent("Unknown")
 			return
 		}
 		// Grab for updates for last activity.
@@ -211,7 +205,7 @@ func (c *client) readLoop() {
 			if err != ErrMaxPayload && err != ErrAuthorization {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
-				c.closeConnection()
+				c.closeConnectionWithEvent("Parser Error")
 			}
 			return
 		}
@@ -279,7 +273,7 @@ func (c *client) processErr(errStr string) {
 	case ROUTER:
 		c.Errorf("Route Error %s", errStr)
 	}
-	c.closeConnection()
+	c.closeConnectionWithEvent(errStr)
 }
 
 func (c *client) processConnect(arg []byte) error {
@@ -302,6 +296,8 @@ func (c *client) processConnect(arg []byte) error {
 			c.authViolation()
 			return ErrAuthorization
 		}
+
+		c.srv.publishConnectEvent(c)
 	}
 
 	// Grab connection name of remote route.
@@ -312,6 +308,7 @@ func (c *client) processConnect(arg []byte) error {
 	if c.opts.Verbose {
 		c.sendOK()
 	}
+
 	return nil
 }
 
@@ -330,7 +327,7 @@ func (c *client) authViolation() {
 func (c *client) maxPayloadViolation(sz int) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
 	c.sendErr("Maximum Payload Violation")
-	c.closeConnection()
+	c.closeConnectionWithEvent("Maximum Payload Violation")
 }
 
 // Assume the lock is held upon entry.
@@ -736,7 +733,7 @@ writeErr:
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		atomic.AddInt64(&client.srv.slowConsumers, 1)
 		client.Noticef("Slow Consumer Detected")
-		client.closeConnection()
+		client.closeConnectionWithEvent("Slow Consumer Detected")
 	} else {
 		c.Debugf("Error writing msg: %v", err)
 	}
@@ -968,6 +965,28 @@ func (c *client) typeString() string {
 	return "Unknown Type"
 }
 
+func (c *client) closeConnectionWithEvent(reason string) {
+
+	c.mu.Lock()
+
+	if c.nc == nil {
+		c.mu.Unlock()
+		return
+	}
+
+	srv := c.srv
+	isClient := c.typ == CLIENT
+
+	c.mu.Unlock()
+
+	// do not publish on route errors.  That will be a seperate type of notification.
+	if isClient {
+		srv.publishDisconnectEvent(c, reason)
+	}
+
+	c.closeConnection()
+}
+
 func (c *client) closeConnection() {
 
 	c.mu.Lock()
@@ -979,13 +998,6 @@ func (c *client) closeConnection() {
 	c.Debugf("%s connection closed", c.typeString())
 
 	srv := c.srv
-
-	c.mu.Unlock()
-
-	c.Debugf("Publishing disconnect advisory.")
-	srv.publishDisconnectEvent(c)
-
-	c.mu.Lock()
 
 	c.clearAuthTimer()
 	c.clearPingTimer()
