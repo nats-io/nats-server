@@ -98,10 +98,9 @@ func init() {
 }
 
 // Lock should be held
-func (c *client) initClient(tlsConn bool) {
+func (c *client) initClient(tlsConn, isInternal bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
 	c.subs = hashmap.New()
 	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
@@ -117,9 +116,14 @@ func (c *client) initClient(tlsConn bool) {
 
 	// snapshot the string version of the connection
 	conn := "-"
-	if ip, ok := c.nc.(*net.TCPConn); ok {
-		addr := ip.RemoteAddr().(*net.TCPAddr)
-		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+	if isInternal {
+		conn = fmt.Sprintf("internal:0")
+	} else {
+		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+		if ip, ok := c.nc.(*net.TCPConn); ok {
+			addr := ip.RemoteAddr().(*net.TCPAddr)
+			conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+		}
 	}
 
 	switch c.typ {
@@ -136,12 +140,38 @@ func (c *client) initClient(tlsConn bool) {
 	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
 	//	}
 
-	if !tlsConn {
+	if !tlsConn && !isInternal {
 		// Set the Ping timer
 		c.setPingTimer()
 
 		// Spin up the read loop.
 		go c.readLoop()
+	}
+}
+
+// flushes any pending messages that have been received and processed.
+func (c *client) flushPendingMessages(last time.Time) {
+
+	// Check pending clients for flush.
+	for cp := range c.pcd {
+		// Flush those in the set
+		cp.mu.Lock()
+		if cp.nc != nil {
+			cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+			err := cp.bw.Flush()
+			cp.nc.SetWriteDeadline(time.Time{})
+			if err != nil {
+				c.Debugf("Error flushing: %v", err)
+				cp.mu.Unlock()
+				cp.closeConnectionWithEvent()
+				cp.mu.Lock()
+			} else {
+				// Update outbound last activity.
+				cp.last = last
+			}
+		}
+		cp.mu.Unlock()
+		delete(c.pcd, cp)
 	}
 }
 
@@ -162,7 +192,7 @@ func (c *client) readLoop() {
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
-			c.closeConnection()
+			c.closeConnectionWithEvent()
 			return
 		}
 		// Grab for updates for last activity.
@@ -172,31 +202,13 @@ func (c *client) readLoop() {
 			if err != ErrMaxPayload && err != ErrAuthorization {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
-				c.closeConnection()
+				c.closeConnectionWithEvent()
 			}
 			return
 		}
-		// Check pending clients for flush.
-		for cp := range c.pcd {
-			// Flush those in the set
-			cp.mu.Lock()
-			if cp.nc != nil {
-				cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
-				err := cp.bw.Flush()
-				cp.nc.SetWriteDeadline(time.Time{})
-				if err != nil {
-					c.Debugf("Error flushing: %v", err)
-					cp.mu.Unlock()
-					cp.closeConnection()
-					cp.mu.Lock()
-				} else {
-					// Update outbound last activity.
-					cp.last = last
-				}
-			}
-			cp.mu.Unlock()
-			delete(c.pcd, cp)
-		}
+
+		c.flushPendingMessages(last)
+
 		// Check to see if we got closed, e.g. slow consumer
 		c.mu.Lock()
 		nc := c.nc
@@ -258,7 +270,7 @@ func (c *client) processErr(errStr string) {
 	case ROUTER:
 		c.Errorf("Route Error %s", errStr)
 	}
-	c.closeConnection()
+	c.closeConnectionWithEvent()
 }
 
 func (c *client) processConnect(arg []byte) error {
@@ -281,6 +293,8 @@ func (c *client) processConnect(arg []byte) error {
 			c.authViolation()
 			return ErrAuthorization
 		}
+
+		c.srv.publishConnectEvent(c)
 	}
 
 	// Grab connection name of remote route.
@@ -291,6 +305,7 @@ func (c *client) processConnect(arg []byte) error {
 	if c.opts.Verbose {
 		c.sendOK()
 	}
+
 	return nil
 }
 
@@ -309,7 +324,7 @@ func (c *client) authViolation() {
 func (c *client) maxPayloadViolation(sz int) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
 	c.sendErr("Maximum Payload Violation")
-	c.closeConnection()
+	c.closeConnectionWithEvent()
 }
 
 // Assume the lock is held upon entry.
@@ -325,6 +340,8 @@ func (c *client) sendErr(err string) {
 		// Flush errors in place.
 		c.bw.Flush()
 		//c.pcd[c] = needFlush
+	} else {
+		c.Errorf("Internal Client Error: " + err)
 	}
 	c.mu.Unlock()
 }
@@ -711,7 +728,7 @@ writeErr:
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		atomic.AddInt64(&client.srv.slowConsumers, 1)
 		client.Noticef("Slow Consumer Detected")
-		client.closeConnection()
+		client.closeConnectionWithEvent()
 	} else {
 		c.Debugf("Error writing msg: %v", err)
 	}
@@ -943,7 +960,31 @@ func (c *client) typeString() string {
 	return "Unknown Type"
 }
 
+func (c *client) closeConnectionWithEvent() {
+
+	c.mu.Lock()
+
+	if c.nc == nil {
+		c.mu.Unlock()
+		return
+	}
+
+	srv := c.srv
+	isClient := c.typ == CLIENT
+
+	c.mu.Unlock()
+
+	// do not publish on route errors.  That will be a different notification.
+	if isClient {
+		// TODO (cls) test if we can get here more than once for the same client
+		srv.publishDisconnectEvent(c)
+	}
+
+	c.closeConnection()
+}
+
 func (c *client) closeConnection() {
+
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()
@@ -952,6 +993,8 @@ func (c *client) closeConnection() {
 
 	c.Debugf("%s connection closed", c.typeString())
 
+	srv := c.srv
+
 	c.clearAuthTimer()
 	c.clearPingTimer()
 	c.clearConnection()
@@ -959,7 +1002,6 @@ func (c *client) closeConnection() {
 
 	// Snapshot for use.
 	subs := c.subs.All()
-	srv := c.srv
 
 	retryImplicit := false
 	if c.route != nil {
@@ -1009,6 +1051,10 @@ func (c *client) closeConnection() {
 			go srv.reConnectToRoute(rurl, rtype)
 		}
 	}
+}
+
+func (c *client) isInternal() bool {
+	return c.bw == nil
 }
 
 // Logging functionality scoped to a client or route.

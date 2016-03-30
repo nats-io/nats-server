@@ -3,9 +3,13 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats"
 )
 
 var DefaultOptions = Options{
@@ -85,4 +89,82 @@ func TestStartupAndShutdown(t *testing.T) {
 	if numSubscriptions != 0 {
 		t.Fatalf("Expected numSubscriptions to be 0 vs %d\n", numSubscriptions)
 	}
+}
+
+type connEvent struct {
+	Name string `json:"name"`
+}
+
+func TestSysEvents(t *testing.T) {
+	s := RunServer(nil)
+	defer s.Shutdown()
+
+	serverURL := fmt.Sprintf("nats://%s:%d",
+		DefaultOptions.Host, DefaultOptions.Port)
+
+	// nil test.  Make sure we run OK w/o any subscriptions to _SYS functions, etc.
+	nc, err := nats.Connect(serverURL)
+	if err != nil {
+		t.Fatalf("Error creating connection: %v\n", err)
+	}
+	nc.Close()
+
+	eventNc, err := nats.Connect(serverURL)
+	if err != nil {
+		t.Fatalf("Error creating system event connection: %v\n", err)
+	}
+	defer eventNc.Close()
+
+	ch := make(chan bool)
+
+	processMsg := func(m *nats.Msg) {
+
+		c := connEvent{}
+
+		if err := json.Unmarshal(m.Data, &c); err != nil {
+			t.Fatalf("Error unmarshalling data: %s", err)
+		}
+
+		if c.Name != "TestClient" {
+			t.Fatalf("Expected name of \"TestClient\", received %s\n", c.Name)
+		}
+
+		ch <- true
+	}
+
+	connSub, err := eventNc.Subscribe("_SYS.CLIENT.*.CONNECT", func(m *nats.Msg) {
+		processMsg(m)
+	})
+	if err != nil {
+		t.Fatalf("Could not subscribe: %v\n", err)
+	}
+
+	eventNc.Subscribe("_SYS.CLIENT.*.DISCONNECT", func(m *nats.Msg) {
+		processMsg(m)
+	})
+	if err != nil {
+		t.Fatalf("Could not subscribe: %v\n", err)
+	}
+
+	eventNc.Flush()
+
+	// Test connection exception
+	opts := nats.DefaultOptions
+	opts.Servers = []string{serverURL}
+	opts.Name = "TestClient"
+	nc, err = opts.Connect()
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+
+	// wait for connect
+	<-ch
+
+	// unsubscribe to ensure a message is published on DISCONNECT.
+	connSub.Unsubscribe()
+
+	nc.Close()
+
+	// wait for disconnect
+	<-ch
 }

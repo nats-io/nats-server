@@ -102,7 +102,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		case bySubs:
 			pairs[i] = Pair{Key: client, Val: int64(client.subs.Count())}
 		case byPending:
-			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
+			pendingSize := 0
+			if !client.isInternal() {
+				pendingSize = client.bw.Buffered()
+			}
+			pairs[i] = Pair{Key: client, Val: int64(pendingSize)}
 		case byOutMsgs:
 			pairs[i] = Pair{Key: client, Val: client.outMsgs}
 		case byInMsgs:
@@ -168,7 +172,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
 		ci.NumSubs = client.subs.Count()
-		ci.Pending = client.bw.Buffered()
+		if !client.isInternal() {
+			ci.Pending = client.bw.Buffered()
+		}
 		ci.Name = client.opts.Name
 		ci.Lang = client.opts.Lang
 		ci.Version = client.opts.Version

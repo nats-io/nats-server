@@ -47,6 +47,28 @@ func resetPreviousHTTPConnections() {
 	http.DefaultTransport = &http.Transport{}
 }
 
+func removeSysConns(connz *Connz) bool {
+	hasAdminConn := bool(false)
+	for i := len(connz.Conns) - 1; i >= 0; i-- {
+		c := connz.Conns[i]
+		if strings.Contains(c.Name, "Internal") {
+			connz.NumConns--
+			hasAdminConn = true
+			connz.Conns = append(connz.Conns[:i], connz.Conns[i+1:]...)
+		}
+	}
+	return hasAdminConn
+}
+
+func unmarshalConnz(t *testing.T, b []byte) Connz {
+	c := Connz{}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+	removeSysConns(&c)
+	return c
+}
+
 func TestMyUptime(t *testing.T) {
 	// Make sure we print this stuff right.
 	var d time.Duration
@@ -149,8 +171,8 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
-	if v.Connections != 1 {
-		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+	if v.Connections < 1 {
+		t.Fatalf("Expected Connections of at least 1, got %v\n", v.Connections)
 	}
 	if v.TotalConnections < 1 {
 		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
@@ -207,6 +229,11 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
+	hasInternalConnz := removeSysConns(&c)
+	if !hasInternalConnz {
+		t.Fatalf("Expected internal conns, received none.")
+	}
+
 	// Test contents..
 	if c.NumConns != 0 {
 		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
@@ -232,9 +259,8 @@ func TestConnz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+
+	c = unmarshalConnz(t, body)
 
 	if c.NumConns != 1 {
 		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
@@ -330,10 +356,7 @@ func TestConnzWithSubs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	// Test inside details of each connection
 	ci := c.Conns[0]
@@ -366,10 +389,8 @@ func TestConnzLastActivity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Got an error reading the body: %v\n", err)
 		}
-		c := Connz{}
-		if err := json.Unmarshal(body, &c); err != nil {
-			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-		}
+		c := unmarshalConnz(t, body)
+
 		return &c
 	}
 
@@ -450,10 +471,8 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
+
 	if c.Conns == nil || len(c.Conns) != 0 {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
@@ -477,10 +496,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c = unmarshalConnz(t, body)
 
 	if c.Limit != 1 {
 		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
@@ -498,7 +514,8 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected NumConns to be 1, got %v\n", c.NumConns)
 	}
 
-	resp, err = http.Get(url + "connz?offset=2&limit=1")
+	// Use offset of three to account for the internal client
+	resp, err = http.Get(url + "connz?offset=3&limit=1")
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -511,7 +528,6 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
@@ -520,8 +536,8 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
 	}
 
-	if c.Offset != 2 {
-		t.Fatalf("Expected offset of 2, got %v\n", c.Offset)
+	if c.Offset != 3 {
+		t.Fatalf("Expected offset of 3, got %v\n", c.Offset)
 	}
 
 	if len(c.Conns) != 0 {
@@ -557,10 +573,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].Cid > c.Conns[1].Cid ||
 		c.Conns[1].Cid > c.Conns[2].Cid ||
@@ -593,10 +606,7 @@ func TestConnzSortedByCid(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].Cid > c.Conns[1].Cid ||
 		c.Conns[1].Cid > c.Conns[2].Cid ||
@@ -637,10 +647,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].OutBytes < c.Conns[1].OutBytes ||
 		c.Conns[0].OutBytes < c.Conns[2].OutBytes ||
@@ -663,10 +670,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c = unmarshalConnz(t, body)
 
 	if c.Conns[0].OutMsgs < c.Conns[1].OutMsgs ||
 		c.Conns[0].OutMsgs < c.Conns[2].OutMsgs ||
@@ -689,10 +693,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c = unmarshalConnz(t, body)
 
 	if c.Conns[0].InBytes < c.Conns[1].InBytes ||
 		c.Conns[0].InBytes < c.Conns[2].InBytes ||
@@ -715,10 +716,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c = unmarshalConnz(t, body)
 
 	if c.Conns[0].InMsgs < c.Conns[1].InMsgs ||
 		c.Conns[0].InMsgs < c.Conns[2].InMsgs ||
@@ -755,10 +753,7 @@ func TestConnzSortedByPending(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].Pending < c.Conns[1].Pending ||
 		c.Conns[0].Pending < c.Conns[2].Pending ||
@@ -795,10 +790,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].NumSubs < c.Conns[1].NumSubs ||
 		c.Conns[0].NumSubs < c.Conns[2].NumSubs ||
@@ -838,10 +830,7 @@ func TestConnzSortedByLast(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
 		c.Conns[1].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
@@ -883,10 +872,7 @@ func TestConnzSortedByIdle(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	// Make sure we are returned 2 connections...
 	if len(c.Conns) != 2 {
@@ -975,10 +961,7 @@ func TestConnzWithRoutes(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	// Test contents..
 	// Make sure routes don't show up under connz, but do under routez
@@ -1070,8 +1053,8 @@ func TestSubsz(t *testing.T) {
 	if sl.NumInserts != 1 {
 		t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
 	}
-	if sl.NumMatches != 1 {
-		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
+	if sl.NumMatches != 3 {
+		t.Fatalf("Expected NumMatches of 3, got %d\n", sl.NumMatches)
 	}
 
 	// Test JSONP
@@ -1135,10 +1118,7 @@ func TestConnzWithNamedClient(t *testing.T) {
 	}
 
 	// Confirm server is exposing client name in monitoring endpoint.
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	got := len(c.Conns)
 	expected := 1

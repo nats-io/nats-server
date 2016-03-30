@@ -67,6 +67,7 @@ type Server struct {
 	routeInfo     Info
 	routeInfoJSON []byte
 	rcQuit        chan bool
+	eventCli      *client
 }
 
 // Make sure all are 64bits for atomic use
@@ -76,6 +77,11 @@ type stats struct {
 	inBytes       int64
 	outBytes      int64
 	slowConsumers int64
+}
+
+// Client related system events
+type clientConnEvent struct {
+	Name string `json:"name"`
 }
 
 // New will setup a new server struct after parsing the options.
@@ -237,6 +243,8 @@ func (s *Server) Start() {
 		s.StartProfiler()
 	}
 
+	s.CreateInternalClients()
+
 	// Wait for clients.
 	s.AcceptLoop()
 }
@@ -385,6 +393,11 @@ func (s *Server) StartProfiler() {
 	}()
 }
 
+func (s *Server) CreateInternalClients() {
+	s.eventCli = s.createInternalClient("NATS Event Notifier")
+
+}
+
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
 	s.startMonitoring(false)
@@ -467,6 +480,29 @@ func (s *Server) startMonitoring(secure bool) {
 	}()
 }
 
+func (s *Server) createInternalClient(name string) *client {
+	c := &client{srv: s, nc: nil, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
+
+	// Initialize
+	c.typ = CLIENT
+	c.bw = nil
+	c.last = time.Now()
+	c.opts.Name = fmt.Sprintf("%s [Internal]", name)
+
+	c.opts.Verbose = false
+
+	c.initClient(false, true)
+
+	// Register with the server.
+	s.mu.Lock()
+	s.clients[c.cid] = c
+	s.mu.Unlock()
+
+	c.Debugf("Created client %s.", name)
+
+	return c
+}
+
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
 
@@ -482,7 +518,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient(tlsRequired)
+	c.initClient(tlsRequired, false)
 
 	c.Debugf("Client connection created")
 
@@ -636,7 +672,11 @@ func (s *Server) checkRouterAuth(c *client) bool {
 func (s *Server) checkAuth(c *client) bool {
 	switch c.typ {
 	case CLIENT:
-		return s.checkClientAuth(c)
+		if c.isInternal() {
+			return true
+		} else {
+			return s.checkClientAuth(c)
+		}
 	case ROUTER:
 		return s.checkRouterAuth(c)
 	default:
@@ -764,4 +804,78 @@ func (s *Server) ID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.info.ID
+}
+
+// Event subjects
+const (
+	clientConnectEventSubj    = "_SYS.CLIENT.%d.CONNECT"
+	clientDisconnectEventSubj = "_SYS.CLIENT.%d.DISCONNECT"
+)
+
+func (s *Server) sendEventNotification(subject string, payload []byte) {
+	if payload == nil {
+		return
+	}
+	s.eventCli.mu.Lock()
+	s.eventCli.processPub([]byte(fmt.Sprintf("%s %d", subject, len(payload))))
+	s.eventCli.processMsg([]byte(fmt.Sprintf("%s\r\n", payload)))
+	last := time.Now()
+	s.eventCli.flushPendingMessages(last)
+	s.eventCli.last = last
+	s.eventCli.mu.Unlock()
+}
+
+// caller must lock the client
+func (s *Server) createConnectEvent(c *client) []byte {
+	c.mu.Lock()
+	if c.nc == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	name := c.opts.Name
+	c.mu.Unlock()
+
+	cda := &clientConnEvent{Name: name}
+
+	payload, err := json.Marshal(cda)
+	if err != nil {
+		Errorf("Error marshaling event notification: %v, %s\n", cda, err)
+		return nil
+	}
+
+	return payload
+}
+
+// sends a disconnect event message to any interested subscribers
+func (s *Server) publishDisconnectEvent(c *client) {
+
+	if c == nil || !s.isRunning() {
+		return
+	}
+
+	subject := fmt.Sprintf(clientDisconnectEventSubj, c.cid)
+	// Don't send a notification unless there is interest.
+	subs := s.sl.Match([]byte(subject))
+	if len(subs) <= 0 {
+		return
+	}
+
+	s.sendEventNotification(subject, s.createConnectEvent(c))
+}
+
+// sends a connect event message to any interested subscribers
+func (s *Server) publishConnectEvent(c *client) {
+
+	if c == nil || !s.isRunning() {
+		return
+	}
+
+	subject := fmt.Sprintf(clientConnectEventSubj, c.cid)
+	// Don't send a notification unless there is interest.
+	subs := s.sl.Match([]byte(subject))
+	if len(subs) <= 0 {
+		return
+	}
+
+	s.sendEventNotification(subject, s.createConnectEvent(c))
 }

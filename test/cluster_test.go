@@ -141,7 +141,7 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Three queue subscribers
 	for _, sid := range qg1SidsA {
-		sendA(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
+		sendA(fmt.Sprintf("SUB t.foo qg1 %s\r\n", sid))
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
@@ -151,25 +151,25 @@ func TestClusterQueueSubs(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	// Make sure we get only 1.
 	matches := expectMsgsA(1)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[0], "t.foo", "", "", "2", "ok")
 
 	// Capture sids for checking later.
 	pSids := []string{"4", "5", "6"}
 
 	// Create 3 normal subscribers
 	for _, sid := range pSids {
-		sendA(fmt.Sprintf("SUB foo %s\r\n", sid))
+		sendA(fmt.Sprintf("SUB t.foo %s\r\n", sid))
 	}
 
 	// Create a FWC Subscriber
 	pSids = append(pSids, "7")
-	sendA("SUB > 7\r\n")
+	sendA("SUB t.> 7\r\n")
 	sendA("PING\r\n")
 	expectA(pongRe)
 
@@ -179,7 +179,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	}
 
 	// Send to B
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
@@ -189,7 +189,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	checkForPubSids(t, matches, pSids)
 
 	// Send to A
-	sendA("PUB foo 2\r\nok\r\n")
+	sendA("PUB t.foo 2\r\nok\r\n")
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
@@ -199,7 +199,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	// Now add queue subscribers to B
 	qg2SidsB := []string{"1", "2", "3"}
 	for _, sid := range qg2SidsB {
-		sendB(fmt.Sprintf("SUB foo qg2 %s\r\n", sid))
+		sendB(fmt.Sprintf("SUB t.foo qg2 %s\r\n", sid))
 	}
 	sendB("PING\r\n")
 	expectB(pongRe)
@@ -210,7 +210,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	}
 
 	// Send to B
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
@@ -234,7 +234,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	}
 
 	// Send to B
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
@@ -248,7 +248,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	checkForPubSids(t, matches, pSids)
 
 	// Send to A
-	sendA("PUB foo 2\r\nok\r\n")
+	sendA("PUB t.foo 2\r\nok\r\n")
 
 	// Should receive 4 now.
 	matches = expectMsgsA(4)
@@ -282,7 +282,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 
 	// Three queue subscribers
 	for _, sid := range qg1SidsA {
-		sendA1(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
+		sendA1(fmt.Sprintf("SUB t.foo qg1 %s\r\n", sid))
 	}
 	sendA1("PING\r\n")
 	expectA1(pongRe)
@@ -292,18 +292,18 @@ func TestClusterDoubleMsgs(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	// Make sure we get only 1.
 	matches := expectMsgsA1(1)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[0], "t.foo", "", "", "2", "ok")
 	checkForQueueSid(t, matches, qg1SidsA)
 
 	// Add a FWC subscriber on A2
-	sendA2("SUB > 1\r\n")
-	sendA2("SUB foo 2\r\n")
+	sendA2("SUB t.> 1\r\n")
+	sendA2("SUB t.foo 2\r\n")
 	sendA2("PING\r\n")
 	expectA2(pongRe)
 	pSids := []string{"1", "2"}
@@ -313,27 +313,27 @@ func TestClusterDoubleMsgs(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	matches = expectMsgsA1(1)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[0], "t.foo", "", "", "2", "ok")
 	checkForQueueSid(t, matches, qg1SidsA)
 
 	matches = expectMsgsA2(2)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[0], "t.foo", "", "", "2", "ok")
 	checkForPubSids(t, matches, pSids)
 
 	// Close ClientA1
 	clientA1.Close()
 
-	sendB("PUB foo 2\r\nok\r\n")
+	sendB("PUB t.foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	matches = expectMsgsA2(2)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[0], "t.foo", "", "", "2", "ok")
 	checkForPubSids(t, matches, pSids)
 }
 

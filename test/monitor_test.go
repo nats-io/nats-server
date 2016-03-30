@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,35 @@ func runMonitorServerNoHTTPPort() *server.Server {
 
 func resetPreviousHTTPConnections() {
 	http.DefaultTransport = &http.Transport{}
+}
+
+func removeSysConns(connz *server.Connz) bool {
+
+	hasAdminConn := bool(false)
+
+	for i := len(connz.Conns) - 1; i >= 0; i-- {
+
+		c := connz.Conns[i]
+
+		if strings.Contains(c.Name, "Internal") {
+			connz.NumConns--
+			hasAdminConn = true
+			connz.Conns = append(connz.Conns[:i], connz.Conns[i+1:]...)
+		}
+	}
+
+	return hasAdminConn
+}
+
+func unmarshalConnz(t *testing.T, b []byte) server.Connz {
+	c := server.Connz{}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	removeSysConns(&c)
+
+	return c
 }
 
 // Make sure that we do not run the http server for monitoring unless asked.
@@ -108,8 +138,8 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
-	if v.Connections != 1 {
-		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+	if v.Connections < 1 {
+		t.Fatalf("Expected Connections of at least 1, got %v\n", v.Connections)
 	}
 	if v.InMsgs != 1 {
 		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
@@ -148,6 +178,11 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 
+	hasInternalConnz := removeSysConns(&c)
+	if !hasInternalConnz {
+		t.Fatalf("Expected internal conns, received none.")
+	}
+
 	// Test contents..
 	if c.NumConns != 0 {
 		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
@@ -171,15 +206,14 @@ func TestConnz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+
+	c = unmarshalConnz(t, body)
 
 	if c.NumConns != 1 {
-		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+		t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
+		t.Fatalf("Expected 1 connection in array, got %p\n", c.Conns)
 	}
 
 	if c.Limit != server.DefaultConnListSize {
@@ -275,16 +309,14 @@ func TestTLSConnz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
-	c := server.Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+
+	c := unmarshalConnz(t, body)
 
 	if c.NumConns != 1 {
-		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+		t.Fatalf("Expected at least 1 connection, got %d\n", c.NumConns)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %d\n", len(c.Conns))
+		t.Fatalf("Expected at least 1 connection in array, got %d\n", len(c.Conns))
 	}
 
 	// Test inside details of each connection
@@ -355,10 +387,7 @@ func TestConnzWithSubs(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
-	c := server.Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	c := unmarshalConnz(t, body)
 
 	// Test inside details of each connection
 	ci := c.Conns[0]

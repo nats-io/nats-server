@@ -423,9 +423,11 @@ func TestRouteQueueSemantics(t *testing.T) {
 	routeExpect(subRe)
 
 	// Deliver a MSG from the route itself, make sure the client receives both.
-	routeSend("MSG foo RSID:2:1 2\r\nok\r\n")
+	// The SID of the route was created internally, and we have one internal
+	// client (#1), so the route sid will be 3.
+	routeSend("MSG foo RSID:3:1 2\r\nok\r\n")
 	// Queue group one.
-	routeSend("MSG foo QRSID:2:2 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:3:2 2\r\nok\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
