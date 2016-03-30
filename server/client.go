@@ -57,10 +57,9 @@ type client struct {
 	last  time.Time
 	parseState
 
-	route    *route
-	debug    bool
-	trace    bool
-	internal bool
+	route *route
+	debug bool
+	trace bool
 }
 
 func (c *client) String() (id string) {
@@ -99,7 +98,7 @@ func init() {
 }
 
 // Lock should be held
-func (c *client) initClient(tlsConn bool) {
+func (c *client) initClient(tlsConn, isInternal bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.subs = hashmap.New()
@@ -117,7 +116,7 @@ func (c *client) initClient(tlsConn bool) {
 
 	// snapshot the string version of the connection
 	conn := "-"
-	if c.internal {
+	if isInternal {
 		conn = fmt.Sprintf("internal:0")
 	} else {
 		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
@@ -141,7 +140,7 @@ func (c *client) initClient(tlsConn bool) {
 	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
 	//	}
 
-	if !tlsConn && !c.internal {
+	if !tlsConn && !isInternal {
 		// Set the Ping timer
 		c.setPingTimer()
 
@@ -151,9 +150,7 @@ func (c *client) initClient(tlsConn bool) {
 }
 
 // flushes any pending messages that have been received and processed.
-func (c *client) flushPendingMessages() {
-
-	last := time.Now()
+func (c *client) flushPendingMessages(last time.Time) {
 
 	// Check pending clients for flush.
 	for cp := range c.pcd {
@@ -210,7 +207,7 @@ func (c *client) readLoop() {
 			return
 		}
 
-		c.flushPendingMessages()
+		c.flushPendingMessages(last)
 
 		// Check to see if we got closed, e.g. slow consumer
 		c.mu.Lock()
@@ -338,14 +335,12 @@ func (c *client) sendInfo(info []byte) {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	if c.bw != nil && !c.internal {
+	if c.bw != nil {
 		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
 		// Flush errors in place.
 		c.bw.Flush()
 		//c.pcd[c] = needFlush
-	}
-
-	if c.internal {
+	} else {
 		c.Errorf("Internal Client Error: " + err)
 	}
 	c.mu.Unlock()
@@ -981,6 +976,12 @@ func (c *client) closeConnectionWithEvent(reason string) {
 
 	// do not publish on route errors.  That will be a seperate type of notification.
 	if isClient {
+		srv.mu.Lock()
+		_, exists := srv.clients[c.cid]
+		srv.mu.Unlock()
+		if !exists {
+			return
+		}
 		srv.publishDisconnectEvent(c, reason)
 	}
 
@@ -1055,6 +1056,10 @@ func (c *client) closeConnection() {
 			go srv.reConnectToRoute(rurl, rtype)
 		}
 	}
+}
+
+func (c *client) isInternal() bool {
+	return c.bw == nil
 }
 
 // Logging functionality scoped to a client or route.

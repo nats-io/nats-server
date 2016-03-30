@@ -277,7 +277,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient(tlsRequired)
+	c.initClient(tlsRequired, false)
 
 	c.Debugf("Route connection created")
 

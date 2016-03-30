@@ -99,7 +99,6 @@ type connEvent struct {
 }
 
 func TestSysEvents(t *testing.T) {
-
 	s := RunServer(nil)
 	defer s.Shutdown()
 

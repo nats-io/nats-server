@@ -488,13 +488,13 @@ func (s *Server) createInternalClient(name string) *client {
 
 	// Initialize
 	c.typ = CLIENT
-	c.internal = true
+	c.bw = nil
 	c.last = time.Now()
 	c.opts.Name = fmt.Sprintf("%s [Internal]", name)
 
 	c.opts.Verbose = false
 
-	c.initClient(false)
+	c.initClient(false, true)
 
 	// Register with the server.
 	s.mu.Lock()
@@ -521,7 +521,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient(tlsRequired)
+	c.initClient(tlsRequired, false)
 
 	c.Debugf("Client connection created")
 
@@ -675,7 +675,7 @@ func (s *Server) checkRouterAuth(c *client) bool {
 func (s *Server) checkAuth(c *client) bool {
 	switch c.typ {
 	case CLIENT:
-		if c.internal {
+		if c.isInternal() {
 			return true
 		} else {
 			return s.checkClientAuth(c)
@@ -815,56 +815,55 @@ const (
 	clientDisconnectEventSubj = "_SYS.CLIENT.DISCONNECT"
 )
 
-func (s *Server) sendEventNotification(subject string, v interface{}) {
-
-	// Don't send a notification unless there is interest.
-	subs := s.sl.Match([]byte(subject))
-	if len(subs) <= 0 {
+func (s *Server) sendEventNotification(subject string, payload []byte) {
+	if payload == nil {
 		return
 	}
-
-	payload, err := json.Marshal(v)
-	if err != nil {
-		Errorf("Error marshaling event notification: %v, %s\n", v, err)
-		return
-	}
-
 	s.eventCli.mu.Lock()
-
 	s.eventCli.processPub([]byte(fmt.Sprintf("%s %d", subject, len(payload))))
 	s.eventCli.processMsg([]byte(fmt.Sprintf("%s\r\n", payload)))
-
-	s.eventCli.flushPendingMessages()
-	s.eventCli.last = time.Now()
-
+	last := time.Now()
+	s.eventCli.flushPendingMessages(last)
+	s.eventCli.last = last
 	s.eventCli.mu.Unlock()
 }
 
 // caller must lock the client
-func (s *Server) createConnectEvent(c *client, reason string) clientConnEvent {
-
+func (s *Server) createConnectEvent(c *client, reason string) []byte {
 	c.mu.Lock()
 	nc := c.nc
 	name := c.opts.Name
 	cid := c.cid
 	c.mu.Unlock()
 
-	cda := clientConnEvent{Name: "unknown", IP: "unknown", CID: int(cid), Reason: "unknown"}
-
+	ip := "unknown"
 	if nc != nil && nc.RemoteAddr() != nil {
-		cda.IP = nc.RemoteAddr().String()
+		ip = nc.RemoteAddr().String()
 	}
 
+	cda := &clientConnEvent{Name: name, IP: ip, CID: int(cid), Reason: "unknown"}
 	cda.Name = name
 	cda.Reason = reason
 
-	return cda
+	payload, err := json.Marshal(cda)
+	if err != nil {
+		Errorf("Error marshaling event notification: %v, %s\n", cda, err)
+		return nil
+	}
+
+	return payload
 }
 
 // sends a disconnect event message to any interested subscribers
 func (s *Server) publishDisconnectEvent(c *client, reason string) {
 
 	if c == nil || !s.isRunning() {
+		return
+	}
+
+	// Don't send a notification unless there is interest.
+	subs := s.sl.Match([]byte(clientDisconnectEventSubj))
+	if len(subs) <= 0 {
 		return
 	}
 
@@ -875,6 +874,12 @@ func (s *Server) publishDisconnectEvent(c *client, reason string) {
 func (s *Server) publishConnectEvent(c *client) {
 
 	if c == nil || !s.isRunning() {
+		return
+	}
+
+	// Don't send a notification unless there is interest.
+	subs := s.sl.Match([]byte(clientConnectEventSubj))
+	if len(subs) <= 0 {
 		return
 	}
 

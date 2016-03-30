@@ -48,20 +48,15 @@ func resetPreviousHTTPConnections() {
 }
 
 func removeSysConns(connz *Connz) bool {
-
 	hasAdminConn := bool(false)
-
 	for i := len(connz.Conns) - 1; i >= 0; i-- {
-
 		c := connz.Conns[i]
-
 		if strings.Contains(c.Name, "Internal") {
 			connz.NumConns--
 			hasAdminConn = true
 			connz.Conns = append(connz.Conns[:i], connz.Conns[i+1:]...)
 		}
 	}
-
 	return hasAdminConn
 }
 
@@ -70,9 +65,7 @@ func unmarshalConnz(t *testing.T, b []byte) Connz {
 	if err := json.Unmarshal(b, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
-
 	removeSysConns(&c)
-
 	return c
 }
 
