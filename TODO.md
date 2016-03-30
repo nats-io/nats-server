@@ -4,7 +4,7 @@
 - [ ] Multiple Auth
 - [ ] Authorization / Access
 - [ ] T series reservations
-= [ ] _SYS. server events?
+- [ ] _SYS. server events?
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
 - [ ] Dynamic socket buffer sizes
