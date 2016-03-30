@@ -826,7 +826,7 @@ func (s *Server) sendEventNotification(subject string, payload []byte) {
 }
 
 // caller must lock the client
-func (s *Server) createConnectEvent(c *client, reason string) []byte {
+func (s *Server) createConnectEvent(c *client) []byte {
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()
@@ -847,7 +847,7 @@ func (s *Server) createConnectEvent(c *client, reason string) []byte {
 }
 
 // sends a disconnect event message to any interested subscribers
-func (s *Server) publishDisconnectEvent(c *client, reason string) {
+func (s *Server) publishDisconnectEvent(c *client) {
 
 	if c == nil || !s.isRunning() {
 		return
@@ -860,7 +860,7 @@ func (s *Server) publishDisconnectEvent(c *client, reason string) {
 		return
 	}
 
-	s.sendEventNotification(subject, s.createConnectEvent(c, reason))
+	s.sendEventNotification(subject, s.createConnectEvent(c))
 }
 
 // sends a connect event message to any interested subscribers
@@ -877,5 +877,5 @@ func (s *Server) publishConnectEvent(c *client) {
 		return
 	}
 
-	s.sendEventNotification(subject, s.createConnectEvent(c, ""))
+	s.sendEventNotification(subject, s.createConnectEvent(c))
 }

@@ -163,7 +163,7 @@ func (c *client) flushPendingMessages(last time.Time) {
 			if err != nil {
 				c.Debugf("Error flushing: %v", err)
 				cp.mu.Unlock()
-				cp.closeConnectionWithEvent("Unknown")
+				cp.closeConnectionWithEvent()
 				cp.mu.Lock()
 			} else {
 				// Update outbound last activity.
@@ -192,7 +192,7 @@ func (c *client) readLoop() {
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
-			c.closeConnectionWithEvent("Unknown")
+			c.closeConnectionWithEvent()
 			return
 		}
 		// Grab for updates for last activity.
@@ -202,7 +202,7 @@ func (c *client) readLoop() {
 			if err != ErrMaxPayload && err != ErrAuthorization {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
-				c.closeConnectionWithEvent("Parser Error")
+				c.closeConnectionWithEvent()
 			}
 			return
 		}
@@ -270,7 +270,7 @@ func (c *client) processErr(errStr string) {
 	case ROUTER:
 		c.Errorf("Route Error %s", errStr)
 	}
-	c.closeConnectionWithEvent(errStr)
+	c.closeConnectionWithEvent()
 }
 
 func (c *client) processConnect(arg []byte) error {
@@ -324,7 +324,7 @@ func (c *client) authViolation() {
 func (c *client) maxPayloadViolation(sz int) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
 	c.sendErr("Maximum Payload Violation")
-	c.closeConnectionWithEvent("Maximum Payload Violation")
+	c.closeConnectionWithEvent()
 }
 
 // Assume the lock is held upon entry.
@@ -728,7 +728,7 @@ writeErr:
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		atomic.AddInt64(&client.srv.slowConsumers, 1)
 		client.Noticef("Slow Consumer Detected")
-		client.closeConnectionWithEvent("Slow Consumer Detected")
+		client.closeConnectionWithEvent()
 	} else {
 		c.Debugf("Error writing msg: %v", err)
 	}
@@ -960,7 +960,7 @@ func (c *client) typeString() string {
 	return "Unknown Type"
 }
 
-func (c *client) closeConnectionWithEvent(reason string) {
+func (c *client) closeConnectionWithEvent() {
 
 	c.mu.Lock()
 
@@ -977,7 +977,7 @@ func (c *client) closeConnectionWithEvent(reason string) {
 	// do not publish on route errors.  That will be a different notification.
 	if isClient {
 		// TODO (cls) test if we can get here more than once for the same client
-		srv.publishDisconnectEvent(c, reason)
+		srv.publishDisconnectEvent(c)
 	}
 
 	c.closeConnection()
