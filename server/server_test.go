@@ -92,10 +92,7 @@ func TestStartupAndShutdown(t *testing.T) {
 }
 
 type connEvent struct {
-	Name   string `json:"name"`
-	IP     string `json:"ip"`
-	CID    int    `json:"cid"`
-	Reason string `json:"reason"`
+	Name string `json:"name"`
 }
 
 func TestSysEvents(t *testing.T) {
@@ -132,21 +129,17 @@ func TestSysEvents(t *testing.T) {
 			t.Fatalf("Expected name of \"TestClient\", received %s\n", c.Name)
 		}
 
-		if c.CID < 1 {
-			t.Fatalf("Expected CID of at least 1, received %d.\n", c.CID)
-		}
-
 		ch <- true
 	}
 
-	connSub, err := eventNc.Subscribe("_SYS.CLIENT.CONNECT", func(m *nats.Msg) {
+	connSub, err := eventNc.Subscribe("_SYS.CLIENT.*.CONNECT", func(m *nats.Msg) {
 		processMsg(m)
 	})
 	if err != nil {
 		t.Fatalf("Could not subscribe: %v\n", err)
 	}
 
-	eventNc.Subscribe("_SYS.CLIENT.DISCONNECT", func(m *nats.Msg) {
+	eventNc.Subscribe("_SYS.CLIENT.*.DISCONNECT", func(m *nats.Msg) {
 		processMsg(m)
 	})
 	if err != nil {

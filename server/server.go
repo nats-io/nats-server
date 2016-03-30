@@ -81,10 +81,7 @@ type stats struct {
 
 // Client related system events
 type clientConnEvent struct {
-	Name   string `json:"name"`
-	IP     string `json:"ip"`
-	CID    int    `json:"cid"`
-	Reason string `json:"reason"`
+	Name string `json:"name"`
 }
 
 // New will setup a new server struct after parsing the options.
@@ -811,8 +808,8 @@ func (s *Server) ID() string {
 
 // Event subjects
 const (
-	clientConnectEventSubj    = "_SYS.CLIENT.CONNECT"
-	clientDisconnectEventSubj = "_SYS.CLIENT.DISCONNECT"
+	clientConnectEventSubj    = "_SYS.CLIENT.%d.CONNECT"
+	clientDisconnectEventSubj = "_SYS.CLIENT.%d.DISCONNECT"
 )
 
 func (s *Server) sendEventNotification(subject string, payload []byte) {
@@ -831,19 +828,14 @@ func (s *Server) sendEventNotification(subject string, payload []byte) {
 // caller must lock the client
 func (s *Server) createConnectEvent(c *client, reason string) []byte {
 	c.mu.Lock()
-	nc := c.nc
+	if c.nc == nil {
+		c.mu.Unlock()
+		return nil
+	}
 	name := c.opts.Name
-	cid := c.cid
 	c.mu.Unlock()
 
-	ip := "unknown"
-	if nc != nil && nc.RemoteAddr() != nil {
-		ip = nc.RemoteAddr().String()
-	}
-
-	cda := &clientConnEvent{Name: name, IP: ip, CID: int(cid), Reason: "unknown"}
-	cda.Name = name
-	cda.Reason = reason
+	cda := &clientConnEvent{Name: name}
 
 	payload, err := json.Marshal(cda)
 	if err != nil {
@@ -861,13 +853,14 @@ func (s *Server) publishDisconnectEvent(c *client, reason string) {
 		return
 	}
 
+	subject := fmt.Sprintf(clientDisconnectEventSubj, c.cid)
 	// Don't send a notification unless there is interest.
-	subs := s.sl.Match([]byte(clientDisconnectEventSubj))
+	subs := s.sl.Match([]byte(subject))
 	if len(subs) <= 0 {
 		return
 	}
 
-	s.sendEventNotification(clientDisconnectEventSubj, s.createConnectEvent(c, reason))
+	s.sendEventNotification(subject, s.createConnectEvent(c, reason))
 }
 
 // sends a connect event message to any interested subscribers
@@ -877,11 +870,12 @@ func (s *Server) publishConnectEvent(c *client) {
 		return
 	}
 
+	subject := fmt.Sprintf(clientConnectEventSubj, c.cid)
 	// Don't send a notification unless there is interest.
-	subs := s.sl.Match([]byte(clientConnectEventSubj))
+	subs := s.sl.Match([]byte(subject))
 	if len(subs) <= 0 {
 		return
 	}
 
-	s.sendEventNotification(clientConnectEventSubj, s.createConnectEvent(c, ""))
+	s.sendEventNotification(subject, s.createConnectEvent(c, ""))
 }

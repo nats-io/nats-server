@@ -974,14 +974,9 @@ func (c *client) closeConnectionWithEvent(reason string) {
 
 	c.mu.Unlock()
 
-	// do not publish on route errors.  That will be a seperate type of notification.
+	// do not publish on route errors.  That will be a different notification.
 	if isClient {
-		srv.mu.Lock()
-		_, exists := srv.clients[c.cid]
-		srv.mu.Unlock()
-		if !exists {
-			return
-		}
+		// TODO (cls) test if we can get here more than once for the same client
 		srv.publishDisconnectEvent(c, reason)
 	}
 
