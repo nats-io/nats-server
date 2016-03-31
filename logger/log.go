@@ -115,14 +115,14 @@ func (l *Logger) Fatalf(format string, v ...interface{}) {
 
 // Debugf logs a debug statement
 func (l *Logger) Debugf(format string, v ...interface{}) {
-	if l.debug == true {
+	if l.debug {
 		l.logger.Printf(l.debugLabel+format, v...)
 	}
 }
 
 // Tracef logs a trace statement
 func (l *Logger) Tracef(format string, v ...interface{}) {
-	if l.trace == true {
+	if l.trace {
 		l.logger.Printf(l.traceLabel+format, v...)
 	}
 }
