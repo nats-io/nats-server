@@ -54,7 +54,7 @@ func TestMaxPayload(t *testing.T) {
 		t.Fatalf("Expected an error message to be sent by the server: %s", err)
 	}
 
-	if strings.Contains(string(errMsg), "Maximum Payload Violation") != true {
+	if !strings.Contains(string(errMsg), "Maximum Payload Violation") {
 		t.Errorf("Received wrong error message (%v)\n", string(errMsg))
 	}
 

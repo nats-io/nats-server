@@ -28,7 +28,7 @@ func TestTLSConfig(t *testing.T) {
 	defer c.Close()
 
 	sinfo := checkInfoMsg(t, c)
-	if sinfo.TLSRequired != true {
+	if !sinfo.TLSRequired {
 		t.Fatal("Expected TLSRequired to be true when configured")
 	}
 }

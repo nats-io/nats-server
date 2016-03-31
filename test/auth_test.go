@@ -30,7 +30,7 @@ func testInfoForAuth(t tLogger, infojs []byte) bool {
 func expectAuthRequired(t tLogger, c net.Conn) {
 	buf := expectResult(t, c, infoRe)
 	infojs := infoRe.FindAllSubmatch(buf, 1)[0][1]
-	if testInfoForAuth(t, infojs) != true {
+	if !testInfoForAuth(t, infojs) {
 		t.Fatalf("Expected server to require authorization: '%s'", infojs)
 	}
 }
