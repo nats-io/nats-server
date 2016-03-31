@@ -1019,7 +1019,7 @@ func TestConnzWithRoutes(t *testing.T) {
 
 	route := rz.Routes[0]
 
-	if route.DidSolicit != false {
+	if route.DidSolicit {
 		t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
 	}
 

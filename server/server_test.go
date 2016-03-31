@@ -61,7 +61,7 @@ func TestStartupAndShutdown(t *testing.T) {
 	s := RunServer(&DefaultOptions)
 	defer s.Shutdown()
 
-	if s.isRunning() != true {
+	if !s.isRunning() {
 		t.Fatal("Could not run server")
 	}
 

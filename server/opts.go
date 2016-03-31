@@ -356,7 +356,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	// Require client certificates as needed
-	if tc.Verify == true {
+	if tc.Verify {
 		config.ClientAuth = tls.RequireAnyClientCert
 	}
 	// Add in CAs if applicable.

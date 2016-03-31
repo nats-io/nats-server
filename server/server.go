@@ -84,7 +84,7 @@ func New(opts *Options) *Server {
 
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
-	verify := (tlsReq == true && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
+	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
 
 	info := Info{
 		ID:           genID(),
@@ -561,7 +561,7 @@ func tlsTimeout(c *client, conn *tls.Conn) {
 		return
 	}
 	cs := conn.ConnectionState()
-	if cs.HandshakeComplete == false {
+	if !cs.HandshakeComplete {
 		c.Debugf("TLS handshake timeout")
 		c.sendErr("Secure Connection - TLS Required")
 		c.closeConnection()
