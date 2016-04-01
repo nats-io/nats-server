@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/nats"
+	"sync/atomic"
 )
 
 // Helper function to check that a cluster is formed
@@ -436,5 +438,100 @@ func TestAutoUnsubscribePropagation(t *testing.T) {
 	// Make sure number of subscriptions on B is correct
 	if subs := srvB.NumSubscriptions(); subs != 0 {
 		t.Fatalf("Expected no subscriptions on remote server, got %d\n", subs)
+	}
+}
+
+type connEvent struct {
+	Name string `json:"name"`
+}
+
+func TestSysEventsClustered(t *testing.T) {
+	cCount := int32(0)
+	dCount := int32(0)
+
+	// create two routed servers
+	srvA, optsA := RunServerWithConfig("./configs/srv_a.conf")
+	defer srvA.Shutdown()
+
+	srvB, optsB := RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	// connect our event listener conn to server B
+	eventNc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+		optsB.Host, optsB.Port))
+	if err != nil {
+		t.Fatalf("Error creating system event connection: %v\n", err)
+	}
+	defer eventNc.Close()
+
+	dch := make(chan (bool))
+	cch := make(chan (bool))
+
+	_, err = eventNc.Subscribe("_SYS.CLIENT.*.CONNECT", func(m *nats.Msg) {
+		atomic.AddInt32(&cCount, 1)
+		cch <- true
+	})
+	if err != nil {
+		t.Fatalf("Could not subscribe: %v\n", err)
+	}
+
+	_, err = eventNc.Subscribe("_SYS.CLIENT.*.DISCONNECT", func(m *nats.Msg) {
+		atomic.AddInt32(&dCount, 1)
+		dch <- true
+	})
+	if err != nil {
+		t.Fatalf("Could not subscribe: %v\n", err)
+	}
+
+	eventNc.Flush()
+
+	// Now connect and disconnect a client with server A
+	serverURL := fmt.Sprintf("nats://%s:%d",
+		optsA.Host, optsA.Port)
+
+	nc, err := nats.Connect(serverURL)
+	if err != nil {
+		t.Fatalf("Error creating connection: %v\n", err)
+	}
+	nc.Close()
+
+	// wait for the callbacks then check our counts
+	<-cch
+	<-dch
+
+	n := atomic.LoadInt32(&cCount)
+	if n != 1 {
+		t.Fatalf("Expected conn event count of 1, received %d\n", n)
+	}
+	n = atomic.LoadInt32(&dCount)
+	if n != 1 {
+		t.Fatalf("Expected disconnect event count of 1, received %d\n", n)
+	}
+
+	// Connect again to server A
+	nc, err = nats.Connect(serverURL)
+	if err != nil {
+		t.Fatalf("Error creating connection: %v\n", err)
+	}
+	defer nc.Close()
+
+	// wait for the connect callback
+	<-cch
+
+	// shutdown server A, which will let server B know the client has
+	// disconnected
+	srvA.Shutdown()
+
+	// wait for the disconnect callback
+	<-dch
+
+	// check our counts
+	n = atomic.LoadInt32(&cCount)
+	if n != 2 {
+		t.Fatalf("Expected conn event count of 2, received %d\n", n)
+	}
+	n = atomic.LoadInt32(&dCount)
+	if n != 2 {
+		t.Fatalf("Expected disconnect event count of 2, received %d\n", n)
 	}
 }

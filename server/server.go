@@ -252,6 +252,7 @@ func (s *Server) Start() {
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
+	s.publishDisconnectEventForAllClients()
 	s.mu.Lock()
 
 	// Prevent issues with multiple calls.
@@ -878,4 +879,18 @@ func (s *Server) publishConnectEvent(c *client) {
 	}
 
 	s.sendEventNotification(subject, s.createConnectEvent(c))
+}
+
+// This publishes disconnect events for every non-internal client.
+func (s *Server) publishDisconnectEventForAllClients() {
+	s.mu.Lock()
+	extClients := make([]*client, len(s.clients))
+	for _, c := range s.clients {
+		extClients = append(extClients, c)
+	}
+	s.mu.Unlock()
+
+	for i := 0; i < len(extClients); i++ {
+		s.publishDisconnectEvent(extClients[i])
+	}
 }
