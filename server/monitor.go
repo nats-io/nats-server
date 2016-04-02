@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
-
-	"github.com/nats-io/gnatsd/sublist"
 )
 
 // Snapshot this
@@ -100,7 +98,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		case byCid:
 			pairs[i] = Pair{Key: client, Val: int64(client.cid)}
 		case bySubs:
-			pairs[i] = Pair{Key: client, Val: int64(client.subs.Count())}
+			pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
 		case byPending:
 			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
 		case byOutMsgs:
@@ -167,7 +165,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		ci.Idle = myUptime(c.Now.Sub(client.last))
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
-		ci.NumSubs = client.subs.Count()
+		ci.NumSubs = uint32(len(client.subs))
 		ci.Pending = client.bw.Buffered()
 		ci.Name = client.opts.Name
 		ci.Lang = client.opts.Lang
@@ -215,7 +213,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if subs == 1 {
-			ci.Subs = castToSliceString(client.subs.All())
+			sublist := make([]*subscription, 0, len(client.subs))
+			for _, sub := range client.subs {
+				sublist = append(sublist, sub)
+			}
+			ci.Subs = castToSliceString(sublist)
 		}
 
 		client.mu.Unlock()
@@ -231,17 +233,17 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
-func castToSliceString(input []interface{}) []string {
+func castToSliceString(input []*subscription) []string {
 	output := make([]string, 0, len(input))
 	for _, line := range input {
-		output = append(output, string(line.(*subscription).subject))
+		output = append(output, string(line.subject))
 	}
 	return output
 }
 
 // Subsz represents detail information on current connections.
 type Subsz struct {
-	*sublist.Stats
+	*SublistStats
 }
 
 // Routez represents detailed information on current client connections.
@@ -292,11 +294,15 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 			OutMsgs:      r.outMsgs,
 			InBytes:      r.inBytes,
 			OutBytes:     r.outBytes,
-			NumSubs:      r.subs.Count(),
+			NumSubs:      uint32(len(r.subs)),
 		}
 
 		if subs == 1 {
-			ri.Subs = castToSliceString(r.subs.All())
+			sublist := make([]*subscription, 0, len(r.subs))
+			for _, sub := range r.subs {
+				sublist = append(sublist, sub)
+			}
+			ri.Subs = castToSliceString(sublist)
 		}
 		r.mu.Unlock()
 
@@ -325,7 +331,6 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	st := &Subsz{s.sl.Stats()}
-
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		Errorf("Error marshalling response to /subscriptionsz request: %v", err)

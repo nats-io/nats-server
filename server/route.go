@@ -235,14 +235,15 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	s.mu.Lock()
 	for _, client := range s.clients {
 		client.mu.Lock()
-		subs := client.subs.All()
+		subs := make([]*subscription, 0, len(client.subs))
+		for _, sub := range client.subs {
+			subs = append(subs, sub)
+		}
 		client.mu.Unlock()
-		for _, s := range subs {
-			if sub, ok := s.(*subscription); ok {
-				rsid := routeSid(sub)
-				proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-				b.WriteString(proto)
-			}
+		for _, sub := range subs {
+			rsid := routeSid(sub)
+			proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+			b.WriteString(proto)
 		}
 	}
 	s.mu.Unlock()
@@ -411,7 +412,7 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	}
 	sid := matches[RSID_SID_INDEX]
 
-	if sub, ok := (client.subs.Get(sid)).(*subscription); ok {
+	if sub, ok := client.subs[string(sid)]; ok {
 		return sub, true
 	}
 	return nil, true

@@ -1,3 +1,5 @@
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
+
 package server
 
 import (
@@ -436,9 +438,8 @@ func TestClientAutoUnsubExactReceived(t *testing.T) {
 	<-ch
 
 	// We should not have any subscriptions in place here.
-	if c.subs.Count() != 0 {
-		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n",
-			c.subs.Count())
+	if len(c.subs) != 0 {
+		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n", len(c.subs))
 	}
 }
 
@@ -466,9 +467,8 @@ func TestClientUnsubAfterAutoUnsub(t *testing.T) {
 	<-ch
 
 	// We should not have any subscriptions in place here.
-	if c.subs.Count() != 0 {
-		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n",
-			c.subs.Count())
+	if len(c.subs) != 0 {
+		t.Fatalf("Wrong number of subscriptions: expected 0, got %d\n", len(c.subs))
 	}
 }
 
