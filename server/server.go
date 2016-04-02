@@ -19,8 +19,6 @@ import (
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
-
-	"github.com/nats-io/gnatsd/sublist"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -47,7 +45,7 @@ type Server struct {
 	mu            sync.Mutex
 	info          Info
 	infoJSON      []byte
-	sl            *sublist.Sublist
+	sl            *Sublist
 	opts          *Options
 	cAuth         Auth
 	rAuth         Auth
@@ -101,7 +99,7 @@ func New(opts *Options) *Server {
 
 	s := &Server{
 		info:  info,
-		sl:    sublist.New(),
+		sl:    NewSublist(),
 		opts:  opts,
 		debug: opts.Debug,
 		trace: opts.Trace,
@@ -697,9 +695,9 @@ func (s *Server) NumClients() int {
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	stats := s.sl.Stats()
-	return stats.NumSubs
+	subs := s.sl.Count()
+	s.mu.Unlock()
+	return subs
 }
 
 // Addr will return the net.Addr object for the current listener.

@@ -1,6 +1,8 @@
 
 # General
 
+- [ ] Multiple listen endpoints
+- [ ] Listen configure key vs addr and port
 - [ ] Multiple Auth
 - [ ] Authorization / Access
 - [ ] T series reservations
@@ -8,7 +10,6 @@
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
 - [ ] Dynamic socket buffer sizes
-- [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Sublist better at high concurrency, cache uses writelock always currently
 - [ ] Buffer pools/sync pools?
@@ -19,8 +20,9 @@
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Info updates contain other implicit route servers
-- [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Pedantic state
+- [ ] Multi-tenant accounts with isolation of subject space
+- [X] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [X] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [X] Default sort by cid on connz
 - [X] Track last activity time per connection?

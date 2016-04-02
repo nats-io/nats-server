@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -11,9 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/nats-io/gnatsd/hashmap"
-	"github.com/nats-io/gnatsd/sublist"
 )
 
 func init() {
@@ -48,7 +45,7 @@ type client struct {
 	ncs   string
 	bw    *bufio.Writer
 	srv   *Server
-	subs  *hashmap.HashMap
+	subs  map[string]*subscription
 	pcd   map[*client]struct{}
 	atmr  *time.Timer
 	ptmr  *time.Timer
@@ -102,7 +99,7 @@ func (c *client) initClient(tlsConn bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
-	c.subs = hashmap.New()
+	c.subs = make(map[string]*subscription)
 	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
 
@@ -457,7 +454,7 @@ func (c *client) processPub(arg []byte) error {
 		return ErrMaxPayload
 	}
 
-	if c.opts.Pedantic && !sublist.IsValidLiteralSubject(c.pa.subject) {
+	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
 		c.sendErr("Invalid Subject")
 	}
 	return nil
@@ -516,12 +513,13 @@ func (c *client) processSub(argo []byte) (err error) {
 
 	// We can have two SUB protocols coming from a route due to some
 	// race conditions. We should make sure that we process only one.
-	if c.subs.Get(sub.sid) == nil {
-		c.subs.Set(sub.sid, sub)
+	sid := string(sub.sid)
+	if c.subs[sid] == nil {
+		c.subs[sid] = sub
 		if c.srv != nil {
-			err = c.srv.sl.Insert(sub.subject, sub)
+			err = c.srv.sl.Insert(sub)
 			if err != nil {
-				c.subs.Remove(sub.sid)
+				delete(c.subs, sid)
 			} else {
 				shouldForward = c.typ != ROUTER
 			}
@@ -549,9 +547,9 @@ func (c *client) unsubscribe(sub *subscription) {
 		return
 	}
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
-	c.subs.Remove(sub.sid)
+	delete(c.subs, string(sub.sid))
 	if c.srv != nil {
-		c.srv.sl.Remove(sub.subject, sub)
+		c.srv.sl.Remove(sub)
 	}
 }
 
@@ -578,7 +576,7 @@ func (c *client) processUnsub(arg []byte) error {
 	ok := false
 
 	c.mu.Lock()
-	if sub, ok = (c.subs.Get(sid)).(*subscription); ok {
+	if sub, ok = c.subs[string(sid)]; ok {
 		if max > 0 {
 			sub.max = int64(max)
 		} else {
@@ -747,7 +745,7 @@ func (c *client) processMsg(msg []byte) {
 	atomic.AddInt64(&srv.inMsgs, 1)
 	atomic.AddInt64(&srv.inBytes, msgSize)
 
-	r := srv.sl.Match(c.pa.subject)
+	r := srv.sl.Match(string(c.pa.subject))
 	if len(r) <= 0 {
 		return
 	}
@@ -779,9 +777,7 @@ func (c *client) processMsg(msg []byte) {
 	var qmap map[string][]*subscription
 
 	// Loop over all subscriptions that match.
-	for _, v := range r {
-		sub := v.(*subscription)
-
+	for _, sub := range r {
 		// Process queue group subscriptions by gathering them all up
 		// here. We will pick the winners when we are done processing
 		// all of the subscriptions.
@@ -958,7 +954,10 @@ func (c *client) closeConnection() {
 	c.nc = nil
 
 	// Snapshot for use.
-	subs := c.subs.All()
+	subs := make([]*subscription, 0, len(c.subs))
+	for _, sub := range c.subs {
+		subs = append(subs, sub)
+	}
 	srv := c.srv
 
 	retryImplicit := false
@@ -973,14 +972,12 @@ func (c *client) closeConnection() {
 		srv.removeClient(c)
 
 		// Remove clients subscriptions.
-		for _, s := range subs {
-			if sub, ok := s.(*subscription); ok {
-				srv.sl.Remove(sub.subject, sub)
-				// Forward on unsubscribes if we are not
-				// a router ourselves.
-				if c.typ != ROUTER {
-					srv.broadcastUnSubscribe(sub)
-				}
+		for _, sub := range subs {
+			srv.sl.Remove(sub)
+			// Forward on unsubscribes if we are not
+			// a router ourselves.
+			if c.typ != ROUTER {
+				srv.broadcastUnSubscribe(sub)
 			}
 		}
 	}

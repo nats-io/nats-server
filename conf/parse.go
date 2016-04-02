@@ -1,4 +1,4 @@
-// Copyright 2013 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 // Package conf supports a configuration file format used by gnatsd. It is
 // a flexible format that combines the best of traditional
@@ -46,7 +46,6 @@ func Parse(data string) (map[string]interface{}, error) {
 }
 
 func parse(data string) (p *parser, err error) {
-
 	p = &parser{
 		mapping: make(map[string]interface{}),
 		lx:      lex(data),
