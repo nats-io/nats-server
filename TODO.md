@@ -11,7 +11,6 @@
 - [ ] Signal based reload of configuration
 - [ ] Dynamic socket buffer sizes
 - [ ] brew, apt-get, rpm, chocately (windows)
-- [ ] Sublist better at high concurrency, cache uses writelock always currently
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
@@ -19,9 +18,10 @@
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
-- [ ] Info updates contain other implicit route servers
-- [ ] Pedantic state
 - [ ] Multi-tenant accounts with isolation of subject space
+- [ ] Pedantic state
+- [X] Info updates contain other implicit route servers
+- [X] Sublist better at high concurrency, cache uses writelock always currently
 - [X] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
 - [X] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
 - [X] Default sort by cid on connz
