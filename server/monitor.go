@@ -290,9 +290,9 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 			RemoteID:     r.route.remoteID,
 			DidSolicit:   r.route.didSolicit,
 			IsConfigured: r.route.routeType == Explicit,
-			InMsgs:       r.inMsgs,
+			InMsgs:       atomic.LoadInt64(&r.inMsgs),
 			OutMsgs:      r.outMsgs,
-			InBytes:      r.inBytes,
+			InBytes:      atomic.LoadInt64(&r.inBytes),
 			OutBytes:     r.outBytes,
 			NumSubs:      uint32(len(r.subs)),
 		}
