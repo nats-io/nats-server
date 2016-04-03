@@ -33,6 +33,7 @@ const slCacheMax = 1024
 // A Sublist stores and efficiently retrieves subscriptions.
 type Sublist struct {
 	sync.RWMutex
+	genid     uint64
 	matches   uint64
 	cacheHits uint64
 	inserts   uint64
@@ -128,9 +129,9 @@ func (s *Sublist) Insert(sub *subscription) error {
 	s.inserts++
 
 	s.addToCache(subject, sub)
+	atomic.AddUint64(&s.genid, 1)
 
 	s.Unlock()
-
 	return nil
 }
 
@@ -305,6 +306,7 @@ func (s *Sublist) Remove(sub *subscription) error {
 		}
 	}
 	s.removeFromCache(subject, sub)
+	atomic.AddUint64(&s.genid, 1)
 
 	return nil
 }
