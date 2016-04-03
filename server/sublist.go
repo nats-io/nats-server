@@ -7,6 +7,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"sync"
@@ -30,6 +31,12 @@ var (
 // cacheMax is used to bound limit the frontend cache
 const slCacheMax = 1024
 
+// A result structure better optimized for queue subs.
+type SublistResult struct {
+	psubs []*subscription
+	qsubs [][]*subscription // don't make this a map, too expensive to iterate
+}
+
 // A Sublist stores and efficiently retrieves subscriptions.
 type Sublist struct {
 	sync.RWMutex
@@ -38,15 +45,16 @@ type Sublist struct {
 	cacheHits uint64
 	inserts   uint64
 	removes   uint64
-	cache     map[string][]*subscription
+	cache     map[string]*SublistResult
 	root      *level
 	count     uint32
 }
 
 // A node contains subscriptions and a pointer to the next level.
 type node struct {
-	next *level
-	subs []*subscription
+	next  *level
+	psubs []*subscription
+	qsubs [][]*subscription
 }
 
 // A level represents a group of nodes and special pointers to
@@ -58,7 +66,7 @@ type level struct {
 
 // Create a new default node.
 func newNode() *node {
-	return &node{subs: make([]*subscription, 0, 4)}
+	return &node{psubs: make([]*subscription, 0, 4)}
 }
 
 // Create a new default level. We use FNV1A as the hash
@@ -69,7 +77,7 @@ func newLevel() *level {
 
 // New will create a default sublist
 func NewSublist() *Sublist {
-	return &Sublist{root: newLevel(), cache: make(map[string][]*subscription)}
+	return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
 }
 
 // Insert adds a subscription into the sublist
@@ -124,7 +132,17 @@ func (s *Sublist) Insert(sub *subscription) error {
 		}
 		l = n.next
 	}
-	n.subs = append(n.subs, sub)
+	if sub.queue == nil {
+		n.psubs = append(n.psubs, sub)
+	} else {
+		// This is a queue subscription
+		if i := findQSliceForSub(sub, n.qsubs); i >= 0 {
+			n.qsubs[i] = append(n.qsubs[i], sub)
+		} else {
+			n.qsubs = append(n.qsubs, []*subscription{sub})
+		}
+	}
+
 	s.count++
 	s.inserts++
 
@@ -135,15 +153,34 @@ func (s *Sublist) Insert(sub *subscription) error {
 	return nil
 }
 
+// Deep copy
+func copyResult(r *SublistResult) *SublistResult {
+	nr := &SublistResult{}
+	nr.psubs = append([]*subscription(nil), r.psubs...)
+	for _, qr := range r.qsubs {
+		nqr := append([]*subscription(nil), qr...)
+		nr.qsubs = append(nr.qsubs, nqr)
+	}
+	return nr
+}
+
 // addToCache will add the new entry to existing cache
 // entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
-	for k, results := range s.cache {
+	for k, r := range s.cache {
 		if matchLiteral(k, subject) {
 			// Copy since others may have a reference.
-			nr := make([]*subscription, len(results), len(results)+1)
-			copy(nr, results)
-			s.cache[k] = append(nr, sub)
+			nr := copyResult(r)
+			if sub.queue == nil {
+				nr.psubs = append(nr.psubs, sub)
+			} else {
+				if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
+					nr.qsubs[i] = append(nr.qsubs[i], sub)
+				} else {
+					nr.qsubs = append(nr.qsubs, []*subscription{sub})
+				}
+			}
+			s.cache[k] = nr
 		}
 	}
 }
@@ -162,10 +199,8 @@ func (s *Sublist) removeFromCache(subject string, sub *subscription) {
 }
 
 // Match will match all entries to the literal subject.
-// It will return a slice of results.
-// Note that queue subscribers will only have one member selected
-// and returned for each queue group.
-func (s *Sublist) Match(subject string) []*subscription {
+// It will return a set of results for both normal and queue subscribers.
+func (s *Sublist) Match(subject string) *SublistResult {
 	s.RLock()
 	atomic.AddUint64(&s.matches, 1)
 	rc, ok := s.cache[subject]
@@ -186,16 +221,14 @@ func (s *Sublist) Match(subject string) []*subscription {
 	}
 	tokens = append(tokens, subject[start:])
 
-	// FIXME(dlc) - Make pool?
-	results := []*subscription{}
-
-	s.RLock()
-	results = matchLevel(s.root, tokens, results)
-	s.RUnlock()
+	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
+	result := &SublistResult{}
 
 	s.Lock()
+	matchLevel(s.root, tokens, result)
+
 	// Add to our cache
-	s.cache[subject] = results
+	s.cache[subject] = result
 	// Bound the number of entries to sublistMaxCache
 	if len(s.cache) > slCacheMax {
 		for k, _ := range s.cache {
@@ -205,21 +238,53 @@ func (s *Sublist) Match(subject string) []*subscription {
 	}
 	s.Unlock()
 
-	return results
+	return result
+}
+
+// This will add in a node's results to the total results.
+func addNodeToResults(n *node, results *SublistResult) {
+	results.psubs = append(results.psubs, n.psubs...)
+	for _, qr := range n.qsubs {
+		if len(qr) == 0 {
+			continue
+		}
+		// Need to find matching list in results
+		if i := findQSliceForSub(qr[0], results.qsubs); i >= 0 {
+			results.qsubs[i] = append(results.qsubs[i], qr...)
+		} else {
+			results.qsubs = append(results.qsubs, qr)
+		}
+	}
+}
+
+// We do not use a map here since we want iteration to be past when
+// processing publishes in L1 on client. So we need to walk sequentially
+// for now. Keep an eye on this in case we start getting large number of
+// different queue subscribers for the same subject.
+func findQSliceForSub(sub *subscription, qsl [][]*subscription) int {
+	if sub.queue == nil {
+		return -1
+	}
+	for i, qr := range qsl {
+		if len(qr) > 0 && bytes.Equal(sub.queue, qr[0].queue) {
+			return i
+		}
+	}
+	return -1
 }
 
 // matchLevel is used to recursively descend into the trie.
-func matchLevel(l *level, toks []string, results []*subscription) []*subscription {
+func matchLevel(l *level, toks []string, results *SublistResult) {
 	var pwc, n *node
 	for i, t := range toks {
 		if l == nil {
-			return results
+			return
 		}
 		if l.fwc != nil {
-			results = append(results, l.fwc.subs...)
+			addNodeToResults(l.fwc, results)
 		}
 		if pwc = l.pwc; pwc != nil {
-			results = matchLevel(pwc.next, toks[i+1:], results)
+			matchLevel(pwc.next, toks[i+1:], results)
 		}
 		n = l.nodes[t]
 		if n != nil {
@@ -229,12 +294,11 @@ func matchLevel(l *level, toks []string, results []*subscription) []*subscriptio
 		}
 	}
 	if n != nil {
-		results = append(results, n.subs...)
+		addNodeToResults(n, results)
 	}
 	if pwc != nil {
-		results = append(results, pwc.subs...)
+		addNodeToResults(pwc, results)
 	}
-	return results
 }
 
 // lnt is used to track descent into levels for a removal for pruning.
@@ -328,7 +392,7 @@ func (l *level) pruneNode(n *node, t string) {
 // isEmpty will test if the node has any entries. Used
 // in pruning.
 func (n *node) isEmpty() bool {
-	if len(n.subs) == 0 {
+	if len(n.psubs) == 0 && len(n.qsubs) == 0 {
 		if n.next == nil || n.next.numNodes() == 0 {
 			return true
 		}
@@ -348,20 +412,43 @@ func (l *level) numNodes() int {
 	return num
 }
 
+// Removes a sub from a list.
+func removeSubFromList(sub *subscription, sl []*subscription) ([]*subscription, bool) {
+	for i := 0; i < len(sl); i++ {
+		if sl[i] == sub {
+			last := len(sl) - 1
+			sl[i] = sl[last]
+			sl[last] = nil
+			sl = sl[:last]
+			return shrinkAsNeeded(sl), true
+		}
+	}
+	return sl, false
+}
+
 // Remove the sub for the given node.
-func (s *Sublist) removeFromNode(n *node, sub *subscription) bool {
+func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 	if n == nil {
 		return false
 	}
-	sl := n.subs
-	for i := 0; i < len(sl); i++ {
-		if sl[i] == sub {
-			sl[i] = sl[len(sl)-1]
-			sl[len(sl)-1] = nil
-			sl = sl[:len(sl)-1]
-			n.subs = shrinkAsNeeded(sl)
-			return true
+	if sub.queue == nil {
+		n.psubs, found = removeSubFromList(sub, n.psubs)
+		return found
+	}
+
+	// We have a queue group subscription here
+	if i := findQSliceForSub(sub, n.qsubs); i >= 0 {
+		n.qsubs[i], found = removeSubFromList(sub, n.qsubs[i])
+		if len(n.qsubs[i]) == 0 {
+			last := len(n.qsubs) - 1
+			n.qsubs[i] = n.qsubs[last]
+			n.qsubs[last] = nil
+			n.qsubs = n.qsubs[:last]
+			if len(n.qsubs) == 0 {
+				n.qsubs = nil
+			}
 		}
+		return found
 	}
 	return false
 }
@@ -424,8 +511,8 @@ func (s *Sublist) Stats() *SublistStats {
 	}
 	// whip through cache for fanout stats
 	tot, max := 0, 0
-	for _, results := range s.cache {
-		l := len(results)
+	for _, r := range s.cache {
+		l := len(r.psubs) + len(r.qsubs)
 		tot += l
 		if l > max {
 			max = l

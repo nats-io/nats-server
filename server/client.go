@@ -65,7 +65,8 @@ type readCache struct {
 	genid   uint64
 	inMsgs  int64
 	inBytes int64
-	subs    map[string][]*subscription
+	results map[string]*SublistResult
+	prand   *rand.Rand
 }
 
 func (c *client) String() (id string) {
@@ -744,8 +745,8 @@ func (c *client) processMsg(msg []byte) {
 	srv := c.srv
 
 	// Create cache subs map if needed.
-	if c.cache.subs == nil && srv != nil {
-		c.cache.subs = make(map[string][]*subscription)
+	if c.cache.results == nil && srv != nil {
+		c.cache.results = make(map[string]*SublistResult)
 		c.cache.genid = atomic.LoadUint64(&srv.sl.genid)
 	}
 
@@ -765,7 +766,7 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	var genid uint64
-	var r []*subscription
+	var r *SublistResult
 	var ok bool
 
 	subject := string(c.pa.subject)
@@ -774,19 +775,20 @@ func (c *client) processMsg(msg []byte) {
 		genid = atomic.LoadUint64(&srv.sl.genid)
 	}
 
-	if genid == c.cache.genid && c.cache.subs != nil {
-		r, ok = c.cache.subs[subject]
+	if genid == c.cache.genid && c.cache.results != nil {
+		r, ok = c.cache.results[subject]
 	} else {
 		// reset
-		c.cache.subs = make(map[string][]*subscription)
+		c.cache.results = make(map[string]*SublistResult)
 		c.cache.genid = genid
 	}
 	if !ok {
 		r = srv.sl.Match(subject)
-		c.cache.subs[subject] = r
+		c.cache.results[subject] = r
 	}
 
-	if len(r) <= 0 {
+	// Check for no interest, short circuit if so.
+	if len(r.psubs) <= 0 && len(r.qsubs) <= 0 {
 		return
 	}
 
@@ -799,7 +801,6 @@ func (c *client) processMsg(msg []byte) {
 	si := len(msgh)
 
 	isRoute := c.typ == ROUTER
-	var rmap map[string]struct{}
 
 	// If we are a route and we have a queue subscription, deliver direct
 	// since they are sent direct via L2 semantics. If the match is a queue
@@ -814,37 +815,15 @@ func (c *client) processMsg(msg []byte) {
 		}
 	}
 
-	var qmap map[string][]*subscription
+	// Used to only send normal subscriptions once across a given route.
+	var rmap map[string]struct{}
 
-	// Loop over all subscriptions that match.
-	for _, sub := range r {
-		// Process queue group subscriptions by gathering them all up
-		// here. We will pick the winners when we are done processing
-		// all of the subscriptions.
-		if sub.queue != nil {
-			// Queue subscriptions handled from routes directly above.
-			if isRoute {
-				continue
-			}
-			// FIXME(dlc), this can be more efficient
-			if qmap == nil {
-				qmap = make(map[string][]*subscription)
-			}
-			qname := string(sub.queue)
-			qsubs := qmap[qname]
-			if qsubs == nil {
-				qsubs = make([]*subscription, 0, 4)
-			}
-			qsubs = append(qsubs, sub)
-			qmap[qname] = qsubs
-			continue
-		}
+	// Loop over all normal subscriptions that match.
 
-		// Process normal, non-queue group subscriptions.
-
-		// If this is a send to a ROUTER, make sure we only send it
-		// once. The other side will handle the appropriate re-processing.
-		// Also enforce 1-Hop.
+	for _, sub := range r.psubs {
+		// Check if this is a send to a ROUTER, make sure we only send it
+		// once. The other side will handle the appropriate re-processing
+		// and fan-out. Also enforce 1-Hop semantics, so no routing to another.
 		if sub.client.typ == ROUTER {
 			// Skip if sourced from a ROUTER and going to another ROUTER.
 			// This is 1-Hop semantics for ROUTERs.
@@ -870,14 +849,22 @@ func (c *client) processMsg(msg []byte) {
 			rmap[sub.client.route.remoteID] = routeSeen
 			sub.client.mu.Unlock()
 		}
-
+		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub)
 		c.deliverMsg(sub, mh, msg)
 	}
 
-	if qmap != nil {
-		for _, qsubs := range qmap {
-			index := rand.Intn(len(qsubs))
+	// Now process any queue subs we have if not a route
+	if !isRoute {
+		// Check to see if we have our own rand yet. Global rand
+		// has contention with lots of clients, etc.
+		if c.cache.prand == nil {
+			c.cache.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		}
+		// Process queue subs
+		for i := 0; i < len(r.qsubs); i++ {
+			qsubs := r.qsubs[i]
+			index := c.cache.prand.Intn(len(qsubs))
 			sub := qsubs[index]
 			mh := c.msgHeader(msgh[:si], sub)
 			c.deliverMsg(sub, mh, msg)
