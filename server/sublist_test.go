@@ -35,8 +35,14 @@ func verifyCount(s *Sublist, count uint32, t *testing.T) {
 }
 
 func verifyLen(r []*subscription, l int, t *testing.T) {
-	if r == nil || len(r) != l {
+	if len(r) != l {
 		stackFatalf(t, "Results len is %d, should be %d", len(r), l)
+	}
+}
+
+func verifyQLen(r [][]*subscription, l int, t *testing.T) {
+	if len(r) != l {
+		stackFatalf(t, "Queue Results len is %d, should be %d", len(r), l)
 	}
 }
 
@@ -59,9 +65,13 @@ func verifyMember(r []*subscription, val *subscription, t *testing.T) {
 	stackFatalf(t, "Value '%+v' not found in results", val)
 }
 
-// Helper to generate test subscriptions.
+// Helpera to generate test subscriptions.
 func newSub(subject string) *subscription {
 	return &subscription{subject: []byte(subject)}
+}
+
+func newQSub(subject, queue string) *subscription {
+	return &subscription{subject: []byte(subject), queue: []byte(queue)}
 }
 
 func TestSublistInit(t *testing.T) {
@@ -83,8 +93,8 @@ func TestSublistSimple(t *testing.T) {
 	sub := newSub(subject)
 	s.Insert(sub)
 	r := s.Match(subject)
-	verifyLen(r, 1, t)
-	verifyMember(r, sub, t)
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub, t)
 }
 
 func TestSublistSimpleMultiTokens(t *testing.T) {
@@ -93,8 +103,8 @@ func TestSublistSimpleMultiTokens(t *testing.T) {
 	sub := newSub(subject)
 	s.Insert(sub)
 	r := s.Match(subject)
-	verifyLen(r, 1, t)
-	verifyMember(r, sub, t)
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub, t)
 }
 
 func TestSublistPartialWildcard(t *testing.T) {
@@ -104,9 +114,9 @@ func TestSublistPartialWildcard(t *testing.T) {
 	s.Insert(lsub)
 	s.Insert(psub)
 	r := s.Match("a.b.c")
-	verifyLen(r, 2, t)
-	verifyMember(r, lsub, t)
-	verifyMember(r, psub, t)
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, lsub, t)
+	verifyMember(r.psubs, psub, t)
 }
 
 func TestSublistPartialWildcardAtEnd(t *testing.T) {
@@ -116,9 +126,9 @@ func TestSublistPartialWildcardAtEnd(t *testing.T) {
 	s.Insert(lsub)
 	s.Insert(psub)
 	r := s.Match("a.b.c")
-	verifyLen(r, 2, t)
-	verifyMember(r, lsub, t)
-	verifyMember(r, psub, t)
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, lsub, t)
+	verifyMember(r.psubs, psub, t)
 }
 
 func TestSublistFullWildcard(t *testing.T) {
@@ -128,9 +138,9 @@ func TestSublistFullWildcard(t *testing.T) {
 	s.Insert(lsub)
 	s.Insert(fsub)
 	r := s.Match("a.b.c")
-	verifyLen(r, 2, t)
-	verifyMember(r, lsub, t)
-	verifyMember(r, fsub, t)
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, lsub, t)
+	verifyMember(r.psubs, fsub, t)
 }
 
 func TestSublistRemove(t *testing.T) {
@@ -140,13 +150,13 @@ func TestSublistRemove(t *testing.T) {
 	s.Insert(sub)
 	verifyCount(s, 1, t)
 	r := s.Match(subject)
-	verifyLen(r, 1, t)
+	verifyLen(r.psubs, 1, t)
 	s.Remove(newSub("a.b.c"))
 	verifyCount(s, 1, t)
 	s.Remove(sub)
 	verifyCount(s, 0, t)
 	r = s.Match(subject)
-	verifyLen(r, 0, t)
+	verifyLen(r.psubs, 0, t)
 }
 
 func TestSublistRemoveWildcard(t *testing.T) {
@@ -160,7 +170,7 @@ func TestSublistRemoveWildcard(t *testing.T) {
 	s.Insert(fsub)
 	verifyCount(s, 3, t)
 	r := s.Match(subject)
-	verifyLen(r, 3, t)
+	verifyLen(r.psubs, 3, t)
 	s.Remove(sub)
 	verifyCount(s, 2, t)
 	s.Remove(fsub)
@@ -168,7 +178,7 @@ func TestSublistRemoveWildcard(t *testing.T) {
 	s.Remove(psub)
 	verifyCount(s, 0, t)
 	r = s.Match(subject)
-	verifyLen(r, 0, t)
+	verifyLen(r.psubs, 0, t)
 }
 
 func TestSublistRemoveCleanup(t *testing.T) {
@@ -234,12 +244,12 @@ func TestSublistCache(t *testing.T) {
 	fsub := newSub("a.b.>")
 	s.Insert(sub)
 	r := s.Match(subject)
-	verifyLen(r, 1, t)
+	verifyLen(r.psubs, 1, t)
 	s.Insert(psub)
 	s.Insert(fsub)
 	verifyCount(s, 3, t)
 	r = s.Match(subject)
-	verifyLen(r, 3, t)
+	verifyLen(r.psubs, 3, t)
 	s.Remove(sub)
 	verifyCount(s, 2, t)
 	s.Remove(fsub)
@@ -253,7 +263,7 @@ func TestSublistCache(t *testing.T) {
 	}
 
 	r = s.Match(subject)
-	verifyLen(r, 0, t)
+	verifyLen(r.psubs, 0, t)
 
 	for i := 0; i < 2*slCacheMax; i++ {
 		s.Match(fmt.Sprintf("foo-%d\n", i))
@@ -262,6 +272,87 @@ func TestSublistCache(t *testing.T) {
 	if cc := s.CacheCount(); cc > slCacheMax {
 		t.Fatalf("Cache should be constrained by cacheMax, got %d for current count\n", cc)
 	}
+}
+
+func TestSublistBasicQueueResults(t *testing.T) {
+	s := NewSublist()
+
+	// Test some basics
+	subject := "foo"
+	sub := newSub(subject)
+	sub1 := newQSub(subject, "bar")
+	sub2 := newQSub(subject, "baz")
+
+	s.Insert(sub1)
+	r := s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 1, t)
+	verifyMember(r.qsubs[0], sub1, t)
+
+	s.Insert(sub2)
+	r = s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 2, t)
+	verifyLen(r.qsubs[0], 1, t)
+	verifyLen(r.qsubs[1], 1, t)
+	verifyMember(r.qsubs[0], sub1, t)
+	verifyMember(r.qsubs[1], sub2, t)
+
+	s.Insert(sub)
+	r = s.Match(subject)
+	verifyLen(r.psubs, 1, t)
+	verifyQLen(r.qsubs, 2, t)
+	verifyLen(r.qsubs[0], 1, t)
+	verifyLen(r.qsubs[1], 1, t)
+	verifyMember(r.qsubs[0], sub1, t)
+	verifyMember(r.qsubs[1], sub2, t)
+	verifyMember(r.psubs, sub, t)
+
+	s.Insert(sub1)
+	s.Insert(sub2)
+
+	r = s.Match(subject)
+	verifyLen(r.psubs, 1, t)
+	verifyQLen(r.qsubs, 2, t)
+	verifyLen(r.qsubs[0], 2, t)
+	verifyLen(r.qsubs[1], 2, t)
+	verifyMember(r.qsubs[0], sub1, t)
+	verifyMember(r.qsubs[1], sub2, t)
+	verifyMember(r.psubs, sub, t)
+
+	// Now removal
+	s.Remove(sub)
+
+	r = s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 2, t)
+	verifyLen(r.qsubs[0], 2, t)
+	verifyLen(r.qsubs[1], 2, t)
+	verifyMember(r.qsubs[0], sub1, t)
+	verifyMember(r.qsubs[1], sub2, t)
+
+	s.Remove(sub1)
+	r = s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 2, t)
+	verifyLen(r.qsubs[0], 1, t)
+	verifyLen(r.qsubs[1], 2, t)
+	verifyMember(r.qsubs[0], sub1, t)
+	verifyMember(r.qsubs[1], sub2, t)
+
+	s.Remove(sub1) // Last one
+	r = s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 2, t) // this is sub2/baz now
+	verifyMember(r.qsubs[0], sub2, t)
+
+	s.Remove(sub2)
+	s.Remove(sub2)
+	r = s.Match(subject)
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 0, t)
 }
 
 func checkBool(b, expected bool, t *testing.T) {
@@ -322,10 +413,10 @@ func TestSublistTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 	sub := newSub("foo")
 	s.Insert(sub)
 	r := s.Match("foo")
-	verifyLen(r, 1, t)
-	verifyMember(r, sub, t)
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub, t)
 	r = s.Match("foo.bar")
-	verifyLen(r, 0, t)
+	verifyLen(r.psubs, 0, t)
 }
 
 // -- Benchmarks Setup --

@@ -183,7 +183,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 		for i := 0; i < numSent; i++ {
 			if results[i] != ExpectedMsgCount {
-				t.Fatalf("Received incorrect number of messages, [%d] for seq: %d\n", results[i], i)
+				t.Fatalf("Received incorrect number of messages, [%d] vs [%d] for seq: %d\n", results[i], ExpectedMsgCount, i)
 			}
 		}
 

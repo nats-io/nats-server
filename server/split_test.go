@@ -33,10 +33,10 @@ func TestSplitBufferSubOp(t *testing.T) {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
 	r := s.sl.Match("foo")
-	if r == nil || len(r) != 1 {
+	if r == nil || len(r.psubs) != 1 {
 		t.Fatalf("Did not match subscription properly: %+v\n", r)
 	}
-	sub := r[0]
+	sub := r.psubs[0]
 	if !bytes.Equal(sub.subject, []byte("foo")) {
 		t.Fatalf("Subject did not match expected 'foo' : '%s'\n", sub.subject)
 	}
@@ -77,7 +77,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
 	r := s.sl.Match("foo")
-	if r != nil && len(r) != 0 {
+	if r != nil && len(r.psubs) != 0 {
 		t.Fatalf("Should be no subscriptions in results: %+v\n", r)
 	}
 }
