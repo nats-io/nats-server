@@ -3,23 +3,22 @@
 
 - [ ] Multiple listen endpoints
 - [ ] Listen configure key vs addr and port
-- [ ] Multiple Auth
-- [ ] Authorization / Access
+- [ ] Multiple Authorization / Access
 - [ ] T series reservations
 - [ ] _SYS. server events?
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
-- [ ] Dynamic socket buffer sizes
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Add ability to reload config on signal
-- [ ] Add ENV and variable support to dconf
+- [ ] Add ENV and variable support to dconf? ucl?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Pedantic state
+- [X] Dynamic socket buffer sizes
 - [X] Info updates contain other implicit route servers
 - [X] Sublist better at high concurrency, cache uses writelock always currently
 - [X] Switch to 1.4/1.5 and use maps vs hashmaps in sublist

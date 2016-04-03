@@ -537,10 +537,20 @@ func (c *client) parse(buf []byte) error {
 			case '\r':
 				c.drop = 1
 			case '\n':
-				if err := c.processInfo(buf[c.as : i-c.drop]); err != nil {
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processInfo(arg); err != nil {
 					return err
 				}
-				c.drop, c.state = 0, OP_START
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
 			}
 		case OP_PLUS:
 			switch b {
@@ -623,7 +633,7 @@ func (c *client) parse(buf []byte) error {
 	// Check for split buffer scenarios for any ARG state.
 	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
-		c.state == CONNECT_ARG) && c.argBuf == nil {
+		c.state == CONNECT_ARG || c.state == INFO_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
 		// FIXME(dlc), check max control line len

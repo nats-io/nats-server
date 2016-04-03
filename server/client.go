@@ -23,6 +23,13 @@ const (
 	msgHeadProto   = "MSG "
 )
 
+// For controlling dynamic buffer sizes.
+const (
+	startReadBufSize = 512 // For INFO JSON block
+	minReadBufSize   = 128
+	maxReadBufSize   = 65536
+)
+
 // Type of client
 const (
 	// CLIENT is an end user.
@@ -164,9 +171,8 @@ func (c *client) readLoop() {
 		return
 	}
 
-	// read buffer
-	// FIXME(dlc) make dynamic
-	b := make([]byte, s.opts.BufSize)
+	// Start read buffer.
+	b := make([]byte, startReadBufSize)
 
 	for {
 		n, err := nc.Read(b)
@@ -225,6 +231,18 @@ func (c *client) readLoop() {
 		c.mu.Unlock()
 		if nc == nil {
 			return
+		}
+
+		// Update buffer size as/if needed.
+
+		// Grow
+		if n == len(b) && len(b) < maxReadBufSize {
+			b = make([]byte, len(b)*2)
+		}
+
+		// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
+		if n < len(b)/2 && len(b) > minReadBufSize {
+			b = make([]byte, len(b)/2)
 		}
 	}
 }
