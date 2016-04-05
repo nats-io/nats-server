@@ -787,20 +787,19 @@ func (c *client) processMsg(msg []byte) {
 	var r *SublistResult
 	var ok bool
 
-	subject := string(c.pa.subject)
-
 	if srv != nil {
 		genid = atomic.LoadUint64(&srv.sl.genid)
 	}
 
 	if genid == c.cache.genid && c.cache.results != nil {
-		r, ok = c.cache.results[subject]
+		r, ok = c.cache.results[string(c.pa.subject)]
 	} else {
 		// reset
 		c.cache.results = make(map[string]*SublistResult)
 		c.cache.genid = genid
 	}
 	if !ok {
+		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)
 		c.cache.results[subject] = r
 	}
