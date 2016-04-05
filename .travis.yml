@@ -1,7 +1,6 @@
 language: go
 go:
 - 1.6
-- 1.5
 install:
 - go get github.com/nats-io/nats
 - go get golang.org/x/crypto/bcrypt
@@ -16,5 +15,3 @@ script:
 - go test -i -race ./...
 - go test -v -race ./...
 - ./scripts/cov.sh TRAVIS
-after_script:
-- if [ "$TRAVIS_GO_VERSION" = "1.6" ] && [ "$BUILD_GOOS" = "linux" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
