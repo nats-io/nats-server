@@ -464,6 +464,9 @@ on installation, including pre-built binaries, is available at
 <http://golang.org/doc/install>.  Stable branches of operating system
 packagers provided by your OS vendor may not be sufficient.
 
+Note that we now support vendored dependencies, which are fully supported on Go1.6.
+For Go1.5, please build with GO15VENDOREXPERIMENT=1.
+
 Run `go version` to see the version of Go which you have installed.
 
 Run `go build` inside the directory to build.
