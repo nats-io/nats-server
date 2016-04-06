@@ -83,7 +83,7 @@ func NewSublist() *Sublist {
 // Insert adds a subscription into the sublist
 func (s *Sublist) Insert(sub *subscription) error {
 	// copy the subject since we hold this and this might be part of a large byte slice.
-	subject := string(append([]byte(nil), sub.subject...))
+	subject := string(sub.subject)
 	tsa := [32]string{}
 	tokens := tsa[:0]
 	start := 0
