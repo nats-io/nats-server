@@ -48,7 +48,7 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
-		Host:           "apcera.me",
+		Host:           "localhost",
 		Port:           4242,
 		Username:       "derek",
 		Password:       "bella",
@@ -81,7 +81,7 @@ func TestConfigFile(t *testing.T) {
 
 func TestTLSConfigFile(t *testing.T) {
 	golden := &Options{
-		Host:        "apcera.me",
+		Host:        "localhost",
 		Port:        4443,
 		Username:    "derek",
 		Password:    "buckley",
@@ -168,7 +168,7 @@ func TestTLSConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
-		Host:           "apcera.me",
+		Host:           "localhost",
 		Port:           2222,
 		Username:       "derek",
 		Password:       "spooky",

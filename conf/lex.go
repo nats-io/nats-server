@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 // Customized heavily from
 // https://github.com/BurntSushi/toml/blob/master/lex.go, which is based on
@@ -347,7 +347,7 @@ func lexValue(lx *lexer) stateFn {
 		return lexBlock
 	case isDigit(r):
 		lx.backup() // avoid an extra state and use the same as above
-		return lexNumberOrDateStart
+		return lexNumberOrDateOrIPStart
 	case r == '.': // special error case, be kind to users
 		return lx.errorf("Floats must start with a digit, not '.'.")
 	case isNL(r):
@@ -376,8 +376,7 @@ func lexArrayValue(lx *lexer) stateFn {
 		lx.backup()
 		fallthrough
 	case r == arrayValTerm:
-		return lx.errorf("Unexpected array value terminator '%v'.",
-			arrayValTerm)
+		return lx.errorf("Unexpected array value terminator '%v'.", arrayValTerm)
 	case r == arrayEnd:
 		return lexArrayEnd
 	}
@@ -603,15 +602,17 @@ func lexDubQuotedString(lx *lexer) stateFn {
 	return lexDubQuotedString
 }
 
-// lexString consumes the inner contents of a string. It assumes that the
-// beginning '"' has already been consumed and ignored.
+// lexString consumes the inner contents of a raw string.
 func lexString(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
 	case r == '\\':
 		return lexStringEscape
 	// Termination of non-quoted strings
-	case isNL(r) || r == eof || r == optValTerm || isWhitespace(r):
+	case isNL(r) || r == eof || r == optValTerm ||
+		r == arrayValTerm || r == arrayEnd ||
+		isWhitespace(r):
+
 		lx.backup()
 		if lx.isBool() {
 			lx.emit(itemBool)
@@ -702,9 +703,9 @@ func lexStringBinary(lx *lexer) stateFn {
 	return lexString
 }
 
-// lexNumberOrDateStart consumes either a (positive) integer, float or datetime.
-// It assumes that NO negative sign has been consumed.
-func lexNumberOrDateStart(lx *lexer) stateFn {
+// lexNumberOrDateStart consumes either a (positive) integer, a float, a datetime, or IP.
+// It assumes that NO negative sign has been consumed, that is triggered above.
+func lexNumberOrDateOrIPStart(lx *lexer) stateFn {
 	r := lx.next()
 	if !isDigit(r) {
 		if r == '.' {
@@ -712,11 +713,11 @@ func lexNumberOrDateStart(lx *lexer) stateFn {
 		}
 		return lx.errorf("Expected a digit but got '%v'.", r)
 	}
-	return lexNumberOrDate
+	return lexNumberOrDateOrIP
 }
 
-// lexNumberOrDate consumes either a (positive) integer, float or datetime.
-func lexNumberOrDate(lx *lexer) stateFn {
+// lexNumberOrDateOrIP consumes either a (positive) integer, float, datetime or IP.
+func lexNumberOrDateOrIP(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
 	case r == '-':
@@ -725,7 +726,7 @@ func lexNumberOrDate(lx *lexer) stateFn {
 		}
 		return lexDateAfterYear
 	case isDigit(r):
-		return lexNumberOrDate
+		return lexNumberOrDateOrIP
 	case r == '.':
 		return lexFloatStart
 	}
@@ -786,7 +787,6 @@ func lexNumber(lx *lexer) stateFn {
 	case r == '.':
 		return lexFloatStart
 	}
-
 	lx.backup()
 	lx.emit(itemInteger)
 	return lx.pop()
@@ -811,8 +811,24 @@ func lexFloat(lx *lexer) stateFn {
 		return lexFloat
 	}
 
+	// Not a digit, if its another '.', need to see if we falsely assumed a float.
+	if r == '.' {
+		return lexIPAddr
+	}
+
 	lx.backup()
 	lx.emit(itemFloat)
+	return lx.pop()
+}
+
+// lexIPAddr consumes IP addrs, like 127.0.0.1:4222
+func lexIPAddr(lx *lexer) stateFn {
+	r := lx.next()
+	if isDigit(r) || r == '.' || r == ':' {
+		return lexIPAddr
+	}
+	lx.backup()
+	lx.emit(itemString)
 	return lx.pop()
 }
 
