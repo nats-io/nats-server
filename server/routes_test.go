@@ -19,7 +19,7 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	golden := &Options{
-		Host:               "apcera.me",
+		Host:               "localhost",
 		Port:               4242,
 		Username:           "derek",
 		Password:           "bella",
@@ -34,8 +34,8 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	// Setup URLs
-	r1, _ := url.Parse("nats-route://foo:bar@apcera.me:4245")
-	r2, _ := url.Parse("nats-route://foo:bar@apcera.me:4246")
+	r1, _ := url.Parse("nats-route://foo:bar@localhost:4245")
+	r2, _ := url.Parse("nats-route://foo:bar@localhost:4246")
 
 	golden.Routes = []*url.URL{r1, r2}
 
