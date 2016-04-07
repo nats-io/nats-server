@@ -3,8 +3,6 @@ go:
 - 1.6
 install:
 - go get github.com/nats-io/nats
-- go get golang.org/x/tools/cmd/vet
-- go get golang.org/x/tools/cmd/cover
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
 script:
