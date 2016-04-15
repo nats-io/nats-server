@@ -159,8 +159,11 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	defer rc.Close()
 
 	expectAuthRequired(t, rc)
-	routeSend, _ := setupRouteEx(t, rc, opts, "ROUTER:xyz")
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, "ROUTER:xyz")
 	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
+
+	routeSend("PING\r\n")
+	routeExpect(pongRe)
 
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")

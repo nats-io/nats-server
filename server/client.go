@@ -550,6 +550,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)
 	if c.subs[sid] == nil {
+		c.subs[sid] = sub
 		if c.srv != nil {
 			err = c.srv.sl.Insert(sub)
 			if err != nil {
@@ -569,11 +570,6 @@ func (c *client) processSub(argo []byte) (err error) {
 	if shouldForward {
 		c.srv.broadcastSubscribe(sub)
 	}
-
-	// We add it to local client map here to avoid race with new routers and sendLocalSubsToRoute().
-	c.mu.Lock()
-	c.subs[sid] = sub
-	c.mu.Unlock()
 
 	return nil
 }
