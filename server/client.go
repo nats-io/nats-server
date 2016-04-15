@@ -143,13 +143,6 @@ func (c *client) initClient(tlsConn bool) {
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
 	}
 
-	// No clue why, but this stalls and kills performance on Mac (Mavericks).
-	//
-	//	if ip, ok := c.nc.(*net.TCPConn); ok {
-	//		ip.SetReadBuffer(s.opts.BufSize)
-	//		ip.SetWriteBuffer(2 * s.opts.BufSize)
-	//	}
-
 	if !tlsConn {
 		// Set the Ping timer
 		c.setPingTimer()
@@ -557,7 +550,6 @@ func (c *client) processSub(argo []byte) (err error) {
 	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)
 	if c.subs[sid] == nil {
-		c.subs[sid] = sub
 		if c.srv != nil {
 			err = c.srv.sl.Insert(sub)
 			if err != nil {
@@ -570,12 +562,19 @@ func (c *client) processSub(argo []byte) (err error) {
 	c.mu.Unlock()
 	if err != nil {
 		c.sendErr("Invalid Subject")
+		return nil
 	} else if c.opts.Verbose {
 		c.sendOK()
 	}
 	if shouldForward {
 		c.srv.broadcastSubscribe(sub)
 	}
+
+	// We add it to local client map here to avoid race with new routers and sendLocalSubsToRoute().
+	c.mu.Lock()
+	c.subs[sid] = sub
+	c.mu.Unlock()
+
 	return nil
 }
 
@@ -798,6 +797,7 @@ func (c *client) processMsg(msg []byte) {
 		c.cache.results = make(map[string]*SublistResult)
 		c.cache.genid = genid
 	}
+
 	if !ok {
 		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)

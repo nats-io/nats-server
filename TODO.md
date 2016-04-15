@@ -2,6 +2,7 @@
 # General
 
 - [ ] Multiple listen endpoints
+- [ ] Websocket / HTTP2 strategy
 - [ ] Listen configure key vs addr and port
 - [ ] Multiple Authorization / Access
 - [ ] T series reservations

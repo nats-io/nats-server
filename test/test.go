@@ -331,13 +331,9 @@ const (
 	msgIndex   = 6
 )
 
-// Reuse expect buffer
-// TODO(dlc) - This may be too simplistic in the long run, may need
-// to consider holding onto data from previous reads matched by conn.
-var expBuf = make([]byte, 32768)
-
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
+	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := c.Read(expBuf)
@@ -355,6 +351,7 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 }
 
 func expectNothing(t tLogger, c net.Conn) {
+	expBuf := make([]byte, 32)
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})

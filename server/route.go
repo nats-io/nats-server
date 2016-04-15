@@ -36,6 +36,7 @@ type route struct {
 	url          *url.URL
 	authRequired bool
 	tlsRequired  bool
+	didSubs      bool
 }
 
 type connectInfo struct {
@@ -231,7 +232,6 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 // and large subscription space. Plus buffering in place not a good idea.
 func (s *Server) sendLocalSubsToRoute(route *client) {
 	b := bytes.Buffer{}
-
 	s.mu.Lock()
 	for _, client := range s.clients {
 		client.mu.Lock()
@@ -249,6 +249,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	s.mu.Unlock()
 
 	route.mu.Lock()
+	route.route.didSubs = true
 	defer route.mu.Unlock()
 	route.bw.Write(b.Bytes())
 	route.bw.Flush()
@@ -480,8 +481,10 @@ func (s *Server) broadcastToRoutes(proto string) {
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
 		route.mu.Lock()
-		route.bw.WriteString(proto)
-		route.bw.Flush()
+		if route.route.didSubs {
+			route.bw.WriteString(proto)
+			route.bw.Flush()
+		}
 		route.mu.Unlock()
 		route.traceOutOp("", arg)
 	}
