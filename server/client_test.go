@@ -52,7 +52,7 @@ var defaultServerOptions = Options{
 
 func rawSetup(serverOptions Options) (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
-	cr := bufio.NewReaderSize(cli, DEFAULT_BUF_SIZE)
+	cr := bufio.NewReaderSize(cli, maxBufSize)
 	s := New(&serverOptions)
 	if serverOptions.Authorization != "" {
 		s.SetClientAuthMethod(&mockAuth{})

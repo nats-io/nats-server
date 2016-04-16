@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -331,7 +331,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 
 		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 
 		// Do final client initialization
 

@@ -67,10 +67,6 @@ func main() {
 	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
 
-	// Not public per se, will be replaced with dynamic system, but can be used to lower memory footprint when
-	// lots of connections present.
-	flag.IntVar(&opts.BufSize, "bs", 0, "Read/Write buffer size per client connection.")
-
 	flag.Usage = server.Usage
 
 	flag.Parse()

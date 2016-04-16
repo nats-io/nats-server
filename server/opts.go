@@ -53,7 +53,6 @@ type Options struct {
 	RemoteSyslog       string        `json:"-"`
 	Routes             []*url.URL    `json:"-"`
 	RoutesStr          string        `json:"-"`
-	BufSize            int           `json:"-"`
 	TLSTimeout         float64       `json:"tls_timeout"`
 	TLS                bool          `json:"-"`
 	TLSVerify          bool          `json:"-"`
@@ -571,8 +570,5 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxPending == 0 {
 		opts.MaxPending = MAX_PENDING_SIZE
-	}
-	if opts.BufSize == 0 {
-		opts.BufSize = DEFAULT_BUF_SIZE
 	}
 }
