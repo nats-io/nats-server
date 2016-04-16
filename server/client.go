@@ -58,6 +58,7 @@ type client struct {
 	atmr  *time.Timer
 	ptmr  *time.Timer
 	pout  int
+	wfc   int
 	msgb  [msgScratchSize]byte
 	last  time.Time
 	parseState
@@ -74,7 +75,6 @@ type readCache struct {
 	inBytes int64
 	results map[string]*SublistResult
 	prand   *rand.Rand
-	wfc     int64
 }
 
 func (c *client) String() (id string) {
@@ -204,8 +204,8 @@ func (c *client) readLoop() {
 			if cp.nc != nil {
 				// Gather the flush calls that happened before now.
 				// This is a signal into us about dynamic buffer allocation tuning.
-				wfc := atomic.LoadInt64(&cp.cache.wfc)
-				atomic.StoreInt64(&cp.cache.wfc, 0)
+				wfc := cp.wfc
+				cp.wfc = 0
 
 				cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 				err := cp.bw.Flush()
@@ -725,7 +725,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 
 	deadlineSet := false
 	if client.bw.Available() < (len(mh) + len(msg) + len(CR_LF)) {
-		atomic.AddInt64(&c.cache.wfc, 1)
+		client.wfc += 1
 		client.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 		deadlineSet = true
 	}
