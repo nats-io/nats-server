@@ -25,9 +25,9 @@ const (
 
 // For controlling dynamic buffer sizes.
 const (
-	startReadBufSize = 512 // For INFO JSON block
-	minReadBufSize   = 128
-	maxReadBufSize   = 65536
+	startBufSize = 512 // For INFO/CONNECT block
+	minBufSize   = 128
+	maxBufSize   = 65536
 )
 
 // Type of client
@@ -74,6 +74,7 @@ type readCache struct {
 	inBytes int64
 	results map[string]*SublistResult
 	prand   *rand.Rand
+	wfc     int64
 }
 
 func (c *client) String() (id string) {
@@ -115,7 +116,7 @@ func init() {
 func (c *client) initClient(tlsConn bool) {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-	c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	c.subs = make(map[string]*subscription)
 	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
@@ -165,7 +166,7 @@ func (c *client) readLoop() {
 	}
 
 	// Start read buffer.
-	b := make([]byte, startReadBufSize)
+	b := make([]byte, startBufSize)
 
 	for {
 		n, err := nc.Read(b)
@@ -201,6 +202,11 @@ func (c *client) readLoop() {
 			// Flush those in the set
 			cp.mu.Lock()
 			if cp.nc != nil {
+				// Gather the flush calls that happened before now.
+				// This is a signal into us about dynamic buffer allocation tuning.
+				wfc := atomic.LoadInt64(&cp.cache.wfc)
+				atomic.StoreInt64(&cp.cache.wfc, 0)
+
 				cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 				err := cp.bw.Flush()
 				cp.nc.SetWriteDeadline(time.Time{})
@@ -212,6 +218,16 @@ func (c *client) readLoop() {
 				} else {
 					// Update outbound last activity.
 					cp.last = last
+					// Check if we should tune the buffer.
+					sz := cp.bw.Available()
+					// Check for expansion opportunity.
+					if wfc > 2 && sz <= maxBufSize/2 {
+						cp.bw = bufio.NewWriterSize(cp.nc, sz*2)
+					}
+					// Check for shrinking opportunity.
+					if wfc == 0 && sz >= minBufSize*2 {
+						cp.bw = bufio.NewWriterSize(cp.nc, sz/2)
+					}
 				}
 			}
 			cp.mu.Unlock()
@@ -229,12 +245,12 @@ func (c *client) readLoop() {
 		// Update buffer size as/if needed.
 
 		// Grow
-		if n == len(b) && len(b) < maxReadBufSize {
+		if n == len(b) && len(b) < maxBufSize {
 			b = make([]byte, len(b)*2)
 		}
 
 		// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
-		if n < len(b)/2 && len(b) > minReadBufSize {
+		if n < len(b)/2 && len(b) > minBufSize {
 			b = make([]byte, len(b)/2)
 		}
 	}
@@ -709,6 +725,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 
 	deadlineSet := false
 	if client.bw.Available() < (len(mh) + len(msg) + len(CR_LF)) {
+		atomic.AddInt64(&c.cache.wfc, 1)
 		client.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 		deadlineSet = true
 	}
@@ -879,8 +896,10 @@ func (c *client) processMsg(msg []byte) {
 			qsubs := r.qsubs[i]
 			index := c.cache.prand.Intn(len(qsubs))
 			sub := qsubs[index]
-			mh := c.msgHeader(msgh[:si], sub)
-			c.deliverMsg(sub, mh, msg)
+			if sub != nil {
+				mh := c.msgHeader(msgh[:si], sub)
+				c.deliverMsg(sub, mh, msg)
+			}
 		}
 	}
 }

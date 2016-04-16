@@ -19,7 +19,7 @@
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Pedantic state
-- [ ] Write dynamic socket buffer sizes
+- [X] Write dynamic socket buffer sizes
 - [X] Read dynamic socket buffer sizes
 - [X] Info updates contain other implicit route servers
 - [X] Sublist better at high concurrency, cache uses writelock always currently

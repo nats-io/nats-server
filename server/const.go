@@ -82,8 +82,4 @@ const (
 
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
-
-	// DEFAULT_BUF_SIZE is the default buffer size for reads and writes per connection.
-	// It will be replaced by a dynamic system in the long run.
-	DEFAULT_BUF_SIZE = 32768
 )

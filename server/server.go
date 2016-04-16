@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -530,7 +530,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.mu.Lock()
 
 		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 
 		// Do final client initialization
 
