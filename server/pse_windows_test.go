@@ -31,18 +31,45 @@ func checkValues(t *testing.T, pcpu, tPcpu float64, rss, tRss int64) {
 	}
 }
 
-func TestWinPSEmulation(t *testing.T) {
+func testParseValues(t *testing.T) {
+	var pid int
+	var pcpu float64
+	var rss, vss int64
+
+	err := parseValues("invalid", &pid, &pcpu, &rss, &vss)
+	if err == nil {
+		t.Fatal("Did not receive expected error.")
+	}
+	err = parseValues(
+		"\"date time\",\"invalid float\",\"invalid float\",\"invalid float\"",
+		&pid, &pcpu, &rss, &vss)
+	if err == nil {
+		t.Fatal("Did not receive expected error.")
+	}
+	err = parseValues(
+		"\"date time\",\"1234.00000\",\"invalid float\",\"invalid float\"",
+		&pid, &pcpu, &rss, &vss)
+	if err == nil {
+		t.Fatal("Did not receive expected error.")
+	}
+	err = parseValues(
+		"\"date time\",\"1234.00000\",\"1234.00000\",\"invalid float\"",
+		&pid, &pcpu, &rss, &vss)
+	if err == nil {
+		t.Fatal("Did not receive expected error.")
+	}
+}
+
+func TestPSEmulationWin(t *testing.T) {
 	var pcpu, tPcpu float64
 	var rss, vss, tRss int64
 
-	// set the image prefix for our test.
-	SetWinPSEImagePrefix("server.test")
-
+	imageName := getProcessImageName()
 	// query the counters using typeperf
-	out, err := exec.Command("typeperf",
-		fmt.Sprintf("\\Process(%s)\\%% Processor Time", imagePrefix),
-		fmt.Sprintf("\\Process(%s)\\Working Set - Private", imagePrefix),
-		fmt.Sprintf("\\Process(%s)\\Virtual Bytes", imagePrefix),
+	out, err := exec.Command("typeperf.exe",
+		fmt.Sprintf("\\Process(%s)\\%% Processor Time", imageName),
+		fmt.Sprintf("\\Process(%s)\\Working Set - Private", imageName),
+		fmt.Sprintf("\\Process(%s)\\Virtual Bytes", imageName),
 		"-sc", "1").Output()
 	if err != nil {
 		t.Fatal("unable to run command", err)
@@ -65,20 +92,21 @@ func TestWinPSEmulation(t *testing.T) {
 	}
 	tRss = int64(fval)
 
-	if err = procUsage(&pcpu, &rss, &vss); err == nil {
+	if err = procUsage(&pcpu, &rss, &vss); err != nil {
 		t.Fatal("Error:  %v", err)
 	}
 	checkValues(t, pcpu, tPcpu, rss, tRss)
 
-	// Again to test image name cacheing
-	if err = procUsage(&pcpu, &rss, &vss); err == nil {
+	// Again to test image name caching
+	if err = procUsage(&pcpu, &rss, &vss); err != nil {
 		t.Fatal("Error:  %v", err)
 	}
 	checkValues(t, pcpu, tPcpu, rss, tRss)
 
-	// Test not finding an image
-	SetWinPSEImagePrefix("invalid")
-	if err = procUsage(&pcpu, &rss, &vss); err == nil {
-		t.Fatal("Expected an error for an invalid image name.")
+	testParseValues(t)
+
+	var ppid int
+	if err = getStatsForProcess("invalid", &pcpu, &rss, &vss, &ppid); err != nil {
+		t.Fatal("Did not receive expected error.")
 	}
 }

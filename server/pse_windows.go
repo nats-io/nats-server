@@ -10,18 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"path/filepath"
 )
 
 // cache the image name to optimize repeated calls
 var imageName string
 var imageLock sync.Mutex
-var imagePrefix string = "gnatsd"
-
-// SetWinPSEImagePrefix sets image prefix to lookup performance counters.
-// caller ensures thread safety
-func SetWinPSEImagePrefix(value string) {
-	imagePrefix = value
-}
 
 // parseValues parses the results of data returned by typeperf.exe.  This
 // is a series of comma delimited quoted strings, containing date time,
@@ -104,6 +98,14 @@ func getStatsForProcess(name string, pcpu *float64, rss, vss *int64, pid *int) (
 	return nil
 }
 
+// getProcessImageName returns the name of the process image, as expected by
+// typeperf.
+func getProcessImageName() (name string) {
+	name = filepath.Base(os.Args[0])
+	name = strings.TrimRight(name, ".exe")
+	return
+}
+
 // procUsage retrieves process cpu and memory information.
 // Under the hood, typeperf is called.  Notably, typeperf cannot search
 // using a pid, but instead uses a somewhat volatile process image name.
@@ -139,8 +141,9 @@ func procUsage(pcpu *float64, rss, vss *int64) error {
 	// node. An alternative is using a wildcard to first lookup up pids,
 	// and parse those to find instance name, then lookup the
 	// performance counters.
+	prefix := getProcessImageName()
 	for i := 0; ppid != procPid; i++ {
-		name = fmt.Sprintf("%s#%d", imagePrefix, i)
+		name = fmt.Sprintf("%s#%d", prefix, i)
 		err := getStatsForProcess(name, pcpu, rss, vss, &ppid)
 		if err != nil {
 			return err
@@ -150,7 +153,7 @@ func procUsage(pcpu *float64, rss, vss *int64) error {
 		if ppid < 0 {
 			break
 		}
-		
+
 		// if the pids equal, this is the right process and cache our
 		// image name
 		if ppid == procPid {
