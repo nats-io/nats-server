@@ -45,7 +45,7 @@ func TestPSEmulation(t *testing.T) {
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta > 200*1024 { // 200k
+		if delta > 512*1024 { // 512k
 			t.Fatalf("RSSs did not match close enough: %d vs %d", rss, psRss)
 		}
 	}
