@@ -1,6 +1,15 @@
 language: go
 go:
+- 1.5
 - 1.6
+env:
+  global:
+    - BUILD_GOARCH=amd64
+    - GO15VENDOREXPERIMENT=1
+  matrix:
+    - BUILD_GOOS=linux
+    - BUILD_GOOS=darwin
+    - BUILD_GOOS=windows
 install:
 - go get github.com/nats-io/nats
 - go get github.com/mattn/goveralls
@@ -11,4 +20,6 @@ script:
 - go vet ./...
 - go test -i -race ./...
 - go test -v -race ./...
-- ./scripts/cov.sh TRAVIS
+after_script:
+- if [ "$TRAVIS_GO_VERSION" = "1.6" ] && [ "$BUILD_GOOS" = "linux" ]; then ./scripts/cov.sh TRAVIS; fi
+- if [ "$TRAVIS_GO_VERSION" = "1.6" ] && [ "$BUILD_GOOS" = "linux" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
