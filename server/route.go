@@ -191,6 +191,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	if info.AuthRequired {
 		r.User = url.UserPassword(s.opts.ClusterUsername, s.opts.ClusterPassword)
 	}
+	s.routeWG.Add(1)
 	go s.connectToRoute(r, false)
 }
 
@@ -598,6 +599,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 }
 
 func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+	defer s.routeWG.Done()
 	for s.isRunning() && rURL != nil {
 		Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
@@ -627,7 +629,10 @@ func (c *client) isSolicitedRoute() bool {
 }
 
 func (s *Server) solicitRoutes() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, r := range s.opts.Routes {
+		s.routeWG.Add(1)
 		go s.connectToRoute(r, true)
 	}
 }

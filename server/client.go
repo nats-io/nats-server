@@ -1054,6 +1054,12 @@ func (c *client) closeConnection() {
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
 
+		// It is possible that the server is being shutdown.
+		// If so, don't try to reconnect
+		if !srv.running {
+			return
+		}
+
 		if rid != "" && srv.remotes[rid] != nil {
 			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
@@ -1062,6 +1068,9 @@ func (c *client) closeConnection() {
 			return
 		} else if rtype != Implicit || retryImplicit {
 			Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
+			// Keep track of this go-routine so we can wait for it on
+			// server shutdown.
+			srv.routeWG.Add(1)
 			go srv.reConnectToRoute(rurl, rtype)
 		}
 	}

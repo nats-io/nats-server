@@ -64,6 +64,7 @@ type Server struct {
 	routeListener net.Listener
 	routeInfo     Info
 	routeInfoJSON []byte
+	routeWG       sync.WaitGroup // to wait on (re)connect go routines, etc..
 	rcQuit        chan bool
 }
 
@@ -302,6 +303,9 @@ func (s *Server) Shutdown() {
 		<-s.done
 		doneExpected--
 	}
+
+	// Wait for route (re)connect go routines to be done.
+	s.routeWG.Wait()
 }
 
 // AcceptLoop is exported for easier testing.
@@ -757,7 +761,7 @@ func (s *Server) GetRouteListenEndpoint() string {
 	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
 }
 
-// Id returns the server's ID
+// ID returns the server's ID
 func (s *Server) ID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
