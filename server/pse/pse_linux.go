@@ -1,6 +1,6 @@
 // Copyright 2015 Apcera Inc. All rights reserved.
 
-package server
+package pse
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ func init() {
 	procStatFile = fmt.Sprintf("/proc/%d/stat", os.Getpid())
 }
 
-func procUsage(pcpu *float64, rss, vss *int64) error {
+func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	contents, err := ioutil.ReadFile(procStatFile)
 	if err != nil {
 		return err
@@ -55,4 +55,25 @@ func procUsage(pcpu *float64, rss, vss *int64) error {
 	}
 
 	return nil
+}
+
+// Ascii numbers 0-9
+const (
+	asciiZero = 48
+	asciiNine = 57
+)
+
+// parseInt64 expects decimal positive numbers. We
+// return -1 to signal error
+func parseInt64(d []byte) (n int64) {
+	if len(d) == 0 {
+		return -1
+	}
+	for _, dec := range d {
+		if dec < asciiZero || dec > asciiNine {
+			return -1
+		}
+		n = n*10 + (int64(dec) - asciiZero)
+	}
+	return n
 }

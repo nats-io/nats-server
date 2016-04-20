@@ -1,6 +1,6 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
-package server
+package pse
 
 import (
 	"fmt"
@@ -29,7 +29,7 @@ func TestPSEmulation(t *testing.T) {
 	psVss *= 1024 // 1k blocks, want bytes.
 
 	// Our internal version
-	procUsage(&pcpu, &rss, &vss)
+	ProcUsage(&pcpu, &rss, &vss)
 
 	if pcpu != psPcpu {
 		delta := int64(pcpu - psPcpu)

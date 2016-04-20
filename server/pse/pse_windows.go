@@ -1,16 +1,16 @@
 // Copyright 2015-2016 Apcera Inc. All rights reserved.
 
-package server
+package pse
 
 import (
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"path/filepath"
 )
 
 // cache the image name to optimize repeated calls
@@ -112,7 +112,7 @@ func getProcessImageName() (name string) {
 // If there is more than one instance, "#<instancecount>" is appended to
 // the image name. Wildcard filters are supported, but result in a very
 // complex data set to parse.
-func procUsage(pcpu *float64, rss, vss *int64) error {
+func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	var ppid int = -1
 
 	imageLock.Lock()

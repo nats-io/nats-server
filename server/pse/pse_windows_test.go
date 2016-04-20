@@ -1,6 +1,7 @@
 // Copyright 2016 Apcera Inc. All rights reserved.
 // +build win
-package server
+
+package pse
 
 import (
 	"fmt"

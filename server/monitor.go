@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/gnatsd/server/pse"
 )
 
 // Snapshot this
@@ -462,7 +464,7 @@ func updateUsage(v *Varz) {
 	var rss, vss int64
 	var pcpu float64
 
-	procUsage(&pcpu, &rss, &vss)
+	pse.ProcUsage(&pcpu, &rss, &vss)
 
 	v.Mem = rss
 	v.CPU = pcpu

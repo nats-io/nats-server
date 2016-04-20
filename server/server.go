@@ -162,7 +162,7 @@ func PrintAndDie(msg string) {
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("gnatsd version %s\n", VERSION)
+	fmt.Printf("nats-server version %s\n", VERSION)
 	os.Exit(0)
 }
 
@@ -201,7 +201,7 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	Noticef("Starting gnatsd version %s", VERSION)
+	Noticef("Starting nats-server version %s", VERSION)
 	Debugf("Go build version %s", s.info.GoVersion)
 
 	s.running = true
@@ -319,8 +319,8 @@ func (s *Server) AcceptLoop() {
 		Noticef("TLS required for client connections")
 	}
 
-	Debugf("server id is %s", s.info.ID)
-	Noticef("server is ready")
+	Debugf("Server id is %s", s.info.ID)
+	Noticef("Server is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()

@@ -1,6 +1,6 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
-package server
+package pse
 
 /*
 #include <sys/types.h>
@@ -56,7 +56,7 @@ import (
 )
 
 // This is a placeholder for now.
-func procUsage(pcpu *float64, rss, vss *int64) error {
+func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	var r, v C.uint
 	var c C.double
 
