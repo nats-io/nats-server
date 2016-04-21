@@ -4,12 +4,7 @@ go:
 - 1.6
 env:
   global:
-    - BUILD_GOARCH=amd64
     - GO15VENDOREXPERIMENT=1
-  matrix:
-    - BUILD_GOOS=linux
-    - BUILD_GOOS=darwin
-    - BUILD_GOOS=windows
 install:
 - go get github.com/nats-io/nats
 - go get github.com/mattn/goveralls

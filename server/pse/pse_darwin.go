@@ -1,6 +1,6 @@
 // Copyright 2015-2016 Apcera Inc. All rights reserved.
 
-package server
+package pse
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"os/exec"
 )
 
-func procUsage(pcpu *float64, rss, vss *int64) error {
+func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	pidStr := fmt.Sprintf("%d", os.Getpid())
 	out, err := exec.Command("ps", "o", "pcpu=,rss=,vsz=", "-p", pidStr).Output()
 	if err != nil {
