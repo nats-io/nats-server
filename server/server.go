@@ -64,8 +64,11 @@ type Server struct {
 	routeListener net.Listener
 	routeInfo     Info
 	routeInfoJSON []byte
-	routeWG       sync.WaitGroup // to wait on (re)connect go routines, etc..
 	rcQuit        chan bool
+	grMu          sync.Mutex
+	grTmpClients  map[uint64]*client
+	grRunning     bool
+	grWG          sync.WaitGroup // to wait on various go routines
 }
 
 // Make sure all are 64bits for atomic use
@@ -113,6 +116,10 @@ func New(opts *Options) *Server {
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
+
+	// For tracking connections that are not yet registered
+	// in s.routes, but for which readLoop has started.
+	s.grTmpClients = make(map[uint64]*client)
 
 	// For tracking routes and their remote ids
 	s.routes = make(map[uint64]*client)
@@ -206,6 +213,9 @@ func (s *Server) Start() {
 	Debugf("Go build version %s", s.info.GoVersion)
 
 	s.running = true
+	s.grMu.Lock()
+	s.grRunning = true
+	s.grMu.Unlock()
 
 	// Log the pid to a file
 	if s.opts.PidFile != _EMPTY_ {
@@ -252,6 +262,9 @@ func (s *Server) Shutdown() {
 	}
 
 	s.running = false
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
 
 	conns := make(map[uint64]*client)
 
@@ -259,6 +272,13 @@ func (s *Server) Shutdown() {
 	for i, c := range s.clients {
 		conns[i] = c
 	}
+	// Copy off the connections that are not yet registered
+	// in s.routes, but for which the readLoop has started
+	s.grMu.Lock()
+	for i, c := range s.grTmpClients {
+		conns[i] = c
+	}
+	s.grMu.Unlock()
 	// Copy off the routes
 	for i, r := range s.routes {
 		conns[i] = r
@@ -304,8 +324,8 @@ func (s *Server) Shutdown() {
 		doneExpected--
 	}
 
-	// Wait for route (re)connect go routines to be done.
-	s.routeWG.Wait()
+	// Wait for go routines to be done.
+	s.grWG.Wait()
 }
 
 // AcceptLoop is exported for easier testing.
@@ -369,7 +389,10 @@ func (s *Server) AcceptLoop() {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		go s.createClient(conn)
+		s.startGoRoutine(func() {
+			s.createClient(conn)
+			s.grWG.Done()
+		})
 	}
 	Noticef("Server Exiting..")
 	s.done <- true
@@ -484,7 +507,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient(tlsRequired)
+	c.initClient()
 
 	c.Debugf("Client connection created")
 
@@ -502,14 +525,22 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Register with the server.
 	s.mu.Lock()
+	// If server is not running, Shutdown() may have already gathered the
+	// list of connections to close. It won't contain this one, so we need
+	// to bail out now otherwise the readLoop started down there would not
+	// be interrupted.
+	if !s.running {
+		s.mu.Unlock()
+		return c
+	}
 	s.clients[c.cid] = c
 	s.mu.Unlock()
 
+	// Re-Grab lock
+	c.mu.Lock()
+
 	// Check for TLS
 	if tlsRequired {
-		// Re-Grab lock
-		c.mu.Lock()
-
 		c.Debugf("Starting TLS client connection handshake")
 		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
@@ -532,23 +563,34 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Re-Grab lock
 		c.mu.Lock()
+	}
 
+	// The connection may have been closed
+	if c.nc == nil {
+		c.mu.Unlock()
+		return c
+	}
+
+	if tlsRequired {
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
-
-		// Do final client initialization
-
-		// Set the Ping timer
-		c.setPingTimer()
-
-		// Spin up the read loop.
-		go c.readLoop()
-
-		c.Debugf("TLS handshake complete")
-		cs := conn.ConnectionState()
-		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
-		c.mu.Unlock()
 	}
+
+	// Do final client initialization
+
+	// Set the Ping timer
+	c.setPingTimer()
+
+	// Spin up the read loop.
+	s.startGoRoutine(func() { c.readLoop() })
+
+	if tlsRequired {
+		c.Debugf("TLS handshake complete")
+		cs := c.nc.(*tls.Conn).ConnectionState()
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+	}
+
+	c.mu.Unlock()
 
 	return c
 }
@@ -766,4 +808,13 @@ func (s *Server) ID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.info.ID
+}
+
+func (s *Server) startGoRoutine(f func()) {
+	s.grMu.Lock()
+	if s.grRunning {
+		s.grWG.Add(1)
+		go f()
+	}
+	s.grMu.Unlock()
 }

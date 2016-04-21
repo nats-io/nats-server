@@ -108,6 +108,10 @@ func TestBasicClusterPubSub(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	sendB, expectB := setupConn(t, clientB)
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
