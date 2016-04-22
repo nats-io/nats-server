@@ -79,7 +79,7 @@ func getStatsForProcess(name string, pcpu *float64, rss, vss *int64, pid *int) (
 			return nil
 		} else {
 			// something went wrong executing the command
-			Debugf("exec failure: %s\n", string(out))
+			// Debugf("exec failure: %s\n", string(out))
 			return errors.New(fmt.Sprintf("typeperf failed: %v", err))
 		}
 	}
