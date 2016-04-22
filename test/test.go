@@ -117,47 +117,6 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	panic("Unable to start NATS Server in Go Routine")
 }
 
-func startServer(t tLogger, port int, other string) *natsServer {
-	var s natsServer
-	args := fmt.Sprintf("-p %d %s", port, other)
-	s.args = strings.Split(args, " ")
-	s.cmd = exec.Command(natsServerExe, s.args...)
-	err := s.cmd.Start()
-	if err != nil {
-		s.cmd = nil
-		t.Errorf("Could not start <%s> [%s], is NATS installed and in path?", natsServerExe, err)
-		return &s
-	}
-	// Give it time to start up
-	start := time.Now()
-	for {
-		addr := fmt.Sprintf("localhost:%d", port)
-		c, err := net.Dial("tcp", addr)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			if time.Since(start) > (5 * time.Second) {
-				t.Fatalf("Timed out trying to connect to %s", natsServerExe)
-				return nil
-			}
-		} else {
-			c.Close()
-			// Wait a bit to give a chance to the server to remove this
-			// "client" from its state, which may otherwise interfere with
-			// some tests.
-			time.Sleep(25 * time.Millisecond)
-			break
-		}
-	}
-	return &s
-}
-
-func (s *natsServer) stopServer() {
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		s.cmd.Process.Wait()
-	}
-}
-
 func stackFatalf(t tLogger, f string, args ...interface{}) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
