@@ -5,6 +5,7 @@ go:
 env:
   global:
     - GO15VENDOREXPERIMENT=1
+    - BUILD_GOOS=linux
 install:
 - go get github.com/nats-io/nats
 - go get github.com/mattn/goveralls
