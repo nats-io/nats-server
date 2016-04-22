@@ -7,6 +7,7 @@ go test -v -covermode=atomic -coverprofile=./cov/auth.out ./auth
 go test -v -covermode=atomic -coverprofile=./cov/conf.out ./conf
 go test -v -covermode=atomic -coverprofile=./cov/log.out ./logger
 go test -v -covermode=atomic -coverprofile=./cov/server.out ./server
+go test -v -covermode=atomic -coverprofile=./cov/test.out ./test
 go test -v -covermode=atomic -coverprofile=./cov/test.out -coverpkg=./server ./test
 gocovmerge ./cov/*.out > acc.out
 rm -rf ./cov
