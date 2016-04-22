@@ -380,3 +380,29 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 		t.Fatal("Timeout waiting for message across route")
 	}
 }
+
+func TestRouteTLSHandshakeError(t *testing.T) {
+	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
+	srvSeed := RunServer(optsSeed)
+	defer srvSeed.Shutdown()
+
+	opts := DefaultOptions
+	opts.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+
+	srv := RunServer(&opts)
+	defer srv.Shutdown()
+
+	time.Sleep(500 * time.Millisecond)
+
+	maxTime := time.Now().Add(1 * time.Second)
+	for time.Now().Before(maxTime) {
+		if srv.NumRoutes() > 0 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	if srv.NumRoutes() > 0 {
+		t.Fatal("Route should have failed")
+	}
+}
