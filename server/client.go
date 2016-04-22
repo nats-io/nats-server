@@ -113,7 +113,7 @@ func init() {
 }
 
 // Lock should be held
-func (c *client) initClient(tlsConn bool) {
+func (c *client) initClient() {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
@@ -143,14 +143,6 @@ func (c *client) initClient(tlsConn bool) {
 	case ROUTER:
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
 	}
-
-	if !tlsConn {
-		// Set the Ping timer
-		c.setPingTimer()
-
-		// Spin up the read loop.
-		go c.readLoop()
-	}
 }
 
 func (c *client) readLoop() {
@@ -159,6 +151,7 @@ func (c *client) readLoop() {
 	c.mu.Lock()
 	nc := c.nc
 	s := c.srv
+	defer s.grWG.Done()
 	c.mu.Unlock()
 
 	if nc == nil {
@@ -1054,6 +1047,12 @@ func (c *client) closeConnection() {
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
 
+		// It is possible that the server is being shutdown.
+		// If so, don't try to reconnect
+		if !srv.running {
+			return
+		}
+
 		if rid != "" && srv.remotes[rid] != nil {
 			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
@@ -1062,7 +1061,9 @@ func (c *client) closeConnection() {
 			return
 		} else if rtype != Implicit || retryImplicit {
 			Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
-			go srv.reConnectToRoute(rurl, rtype)
+			// Keep track of this go-routine so we can wait for it on
+			// server shutdown.
+			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
 		}
 	}
 }

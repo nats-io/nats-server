@@ -191,7 +191,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	if info.AuthRequired {
 		r.User = url.UserPassword(s.opts.ClusterUsername, s.opts.ClusterPassword)
 	}
-	go s.connectToRoute(r, false)
+	s.startGoRoutine(func() { s.connectToRoute(r, false) })
 }
 
 // hasThisRouteConfigured returns true if info.Host:info.Port is present
@@ -277,7 +277,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	c.mu.Lock()
 
 	// Initialize
-	c.initClient(tlsRequired)
+	c.initClient()
 
 	c.Debugf("Route connection created")
 
@@ -332,17 +332,29 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
+	}
 
-		// Do final client initialization
+	// Do final client initialization
 
-		// Set the Ping timer
-		c.setPingTimer()
+	// Set the Ping timer
+	c.setPingTimer()
 
-		// Spin up the read loop.
-		go c.readLoop()
+	// For routes, the "client" is added to s.routes only when processing
+	// the INFO protocol, that is much later.
+	// In the meantime, if the server shutsdown, there would be no reference
+	// to the client (connection) to be closed, leaving this readLoop
+	// uinterrupted, causing the Shutdown() to wait indefinitively.
+	// We need to store the client in a special map, under a special lock.
+	s.grMu.Lock()
+	s.grTmpClients[c.cid] = c
+	s.grMu.Unlock()
 
+	// Spin up the read loop.
+	s.startGoRoutine(func() { c.readLoop() })
+
+	if tlsRequired {
 		c.Debugf("TLS handshake complete")
-		cs := conn.ConnectionState()
+		cs := c.nc.(*tls.Conn).ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
 	}
 
@@ -436,6 +448,11 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	}
 	remote, exists := s.remotes[id]
 	if !exists {
+		// Remove from the temporary map
+		s.grMu.Lock()
+		delete(s.grTmpClients, c.cid)
+		s.grMu.Unlock()
+
 		s.routes[c.cid] = c
 		s.remotes[id] = c
 
@@ -550,7 +567,10 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		go s.createRoute(conn, nil)
+		s.startGoRoutine(func() {
+			s.createRoute(conn, nil)
+			s.grWG.Done()
+		})
 	}
 	Debugf("Router accept loop exiting..")
 	s.done <- true
@@ -598,6 +618,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 }
 
 func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+	defer s.grWG.Done()
 	for s.isRunning() && rURL != nil {
 		Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
@@ -628,7 +649,8 @@ func (c *client) isSolicitedRoute() bool {
 
 func (s *Server) solicitRoutes() {
 	for _, r := range s.opts.Routes {
-		go s.connectToRoute(r, true)
+		route := r
+		s.startGoRoutine(func() { s.connectToRoute(route, true) })
 	}
 }
 

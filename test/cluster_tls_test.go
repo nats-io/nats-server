@@ -42,6 +42,10 @@ func TestBasicTLSClusterPubSub(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	expectMsgs := expectMsgsCommand(t, expectA)
 
 	matches := expectMsgs(1)
