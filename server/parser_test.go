@@ -490,3 +490,31 @@ func TestProtoSnippet(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOK(t *testing.T) {
+	c := dummyClient()
+	if c.state != OP_START {
+		t.Fatalf("Expected OP_START vs %d\n", c.state)
+	}
+	okProto := []byte("+OK\r\n")
+	err := c.parse(okProto[:1])
+	if err != nil || c.state != OP_PLUS {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(okProto[1:2])
+	if err != nil || c.state != OP_PLUS_O {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(okProto[2:3])
+	if err != nil || c.state != OP_PLUS_OK {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(okProto[3:4])
+	if err != nil || c.state != OP_PLUS_OK {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	err = c.parse(okProto[4:5])
+	if err != nil || c.state != OP_START {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+}
