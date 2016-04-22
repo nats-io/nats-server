@@ -342,80 +342,37 @@ func TestParseMsgSpace(t *testing.T) {
 func TestShouldFail(t *testing.T) {
 	c := dummyClient()
 
-	if err := c.parse([]byte(" PING")); err == nil {
-		t.Fatal("Should have received a parse error")
+	wrongProtos := []string{
+		"xxx",
+		"Px", "PIx", "PINx", " PING",
+		"POx", "PONx",
+		"+x", "+Ox",
+		"-x", "-Ex", "-ERx", "-ERRx",
+		"Cx", "COx", "CONx", "CONNx", "CONNEx", "CONNECx", "CONNECx", "CONNECT \r\n",
+		"PUx", "PUB foo\r\n", "PUB  \r\n", "PUB foo bar       \r\n",
+		"PUB foo 2\r\nok \r\n", "PUB foo 2\r\nok\r \n",
+		"Sx", "SUx", "SUB\r\n", "SUB  \r\n", "SUB foo\r\n",
+		"SUB foo bar baz 22\r\n",
+		"Ux", "UNx", "UNSx", "UNSUx", "UNSUBx", "UNSUBUNSUB 1\r\n", "UNSUB_2\r\n",
+		"UNSUB_UNSUB_UNSUB 2\r\n", "UNSUB_\t2\r\n", "UNSUB\r\n", "UNSUB \r\n",
+		"UNSUB          \t       \r\n",
+		"Ix", "INx", "INFx", "INFO  \r\n",
 	}
-	c.state = OP_START
-	if err := c.parse([]byte("CONNECT \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
+	for _, proto := range wrongProtos {
+		c.state = OP_START
+		if err := c.parse([]byte(proto)); err == nil {
+			t.Fatalf("Should have received a parse error for: %v", proto)
+		}
 	}
-	c.state = OP_START
-	if err := c.parse([]byte("POO")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("PUB foo\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("PUB \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("PUB foo bar       \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("SUB\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("SUB \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("SUB foo\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("SUB foo bar baz 22\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("PUB foo 2\r\nok \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("PUB foo 2\r\nok\r \n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUBUNSUB 1\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB_2\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB_UNSUB_UNSUB 2\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB_\t2\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB\r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
-	}
-	c.state = OP_START
-	if err := c.parse([]byte("UNSUB          \t       \r\n")); err == nil {
-		t.Fatal("Should have received a parse error")
+
+	// Special case for MSG, type needs to not be client.
+	c.typ = ROUTER
+	wrongProtos = []string{"Mx", "MSx", "MSGx", "MSG  \r\n"}
+	for _, proto := range wrongProtos {
+		c.state = OP_START
+		if err := c.parse([]byte(proto)); err == nil {
+			t.Fatalf("Should have received a parse error for: %v", proto)
+		}
 	}
 }
 
