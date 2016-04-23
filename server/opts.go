@@ -79,6 +79,26 @@ type TLSConfigOpts struct {
 	Ciphers  []uint16
 }
 
+var tlsUsage = `
+TLS configuration is specified in the tls section of a configuration file:
+
+e.g.
+
+    tls {
+        cert_file: "./certs/server-cert.pem"
+        key_file:  "./certs/server-key.pem"
+        ca_file:   "./certs/ca.pem"
+        verify:    true
+
+        cipher_suites: [
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        ]
+    }
+
+Available cipher suites include:
+`
+
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
@@ -228,33 +248,11 @@ func parseAuthorization(am map[string]interface{}) authorization {
 
 // PrintTLSHelpAndDie prints TLS usage and exits.
 func PrintTLSHelpAndDie() {
-
-	var tlsUsage = `
-TLS configuration is specified in the tls section of a configuration file:
-
-e.g.
-
-    tls {
-        cert_file: "./certs/server-cert.pem"
-        key_file:  "./certs/server-key.pem"
-        ca_file:   "./certs/ca.pem"
-        verify:    true
-
-        cipher_suites: [
-            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-        ]
-    }
-
-Available cipher suites include:
-`
-
 	fmt.Printf("%s\n", tlsUsage)
 	for k := range cipherMap {
 		fmt.Printf("    %s\n", k)
 	}
 	fmt.Printf("\n")
-
 	os.Exit(0)
 }
 
