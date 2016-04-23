@@ -690,10 +690,14 @@ func (s *Server) checkAuth(c *client) bool {
 
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
+	var rID string
 	c.mu.Lock()
 	cid := c.cid
 	typ := c.typ
 	r := c.route
+	if r != nil {
+		rID = r.remoteID
+	}
 	c.mu.Unlock()
 
 	s.mu.Lock()
@@ -703,10 +707,10 @@ func (s *Server) removeClient(c *client) {
 	case ROUTER:
 		delete(s.routes, cid)
 		if r != nil {
-			rc, ok := s.remotes[r.remoteID]
+			rc, ok := s.remotes[rID]
 			// Only delete it if it is us..
 			if ok && c == rc {
-				delete(s.remotes, r.remoteID)
+				delete(s.remotes, rID)
 			}
 		}
 	}
