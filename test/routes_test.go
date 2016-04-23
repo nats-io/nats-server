@@ -9,6 +9,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -610,4 +611,48 @@ func TestAutoUnsubPropagation(t *testing.T) {
 	clientExpect(pongRe)
 
 	routeExpect(unsubnomaxRe)
+}
+
+type ignoreLogger struct {
+}
+
+func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {
+}
+func (l *ignoreLogger) Errorf(f string, args ...interface{}) {
+}
+
+func TestRouteConnectOnShutdownRace(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	l := &ignoreLogger{}
+
+	var wg sync.WaitGroup
+
+	cQuit := make(chan bool, 1)
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		for {
+			route := createRouteConn(l, opts.ClusterHost, opts.ClusterPort)
+			if route != nil {
+				setupRouteEx(l, route, opts, "ROUTE:4222")
+				route.Close()
+			}
+			select {
+			case <-cQuit:
+				return
+			default:
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+	s.Shutdown()
+
+	cQuit <- true
+
+	wg.Wait()
 }

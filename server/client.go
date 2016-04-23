@@ -310,23 +310,28 @@ func (c *client) processConnect(arg []byte) error {
 	c.mu.Lock()
 	c.clearAuthTimer()
 	c.last = time.Now()
+	typ := c.typ
+	r := c.route
+	srv := c.srv
 	c.mu.Unlock()
 
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
 		return err
 	}
 
-	if c.srv != nil {
+	if srv != nil {
 		// Check for Auth
-		if ok := c.srv.checkAuth(c); !ok {
+		if ok := srv.checkAuth(c); !ok {
 			c.authViolation()
 			return ErrAuthorization
 		}
 	}
 
 	// Grab connection name of remote route.
-	if c.typ == ROUTER && c.route != nil {
+	if typ == ROUTER && r != nil {
+		c.mu.Lock()
 		c.route.remoteID = c.opts.Name
+		c.mu.Unlock()
 	}
 
 	if c.opts.Verbose {
