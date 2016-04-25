@@ -12,7 +12,6 @@
 - [ ] brew, apt-get, rpm, chocately (windows)
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
-- [ ] Add ability to reload config on signal
 - [ ] Add ENV and variable support to dconf? ucl?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
