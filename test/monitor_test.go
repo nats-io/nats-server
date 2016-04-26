@@ -152,6 +152,9 @@ func TestConnz(t *testing.T) {
 	if c.NumConns != 0 {
 		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
 	}
+	if c.TotalLive != 0 {
+		t.Fatalf("Expected 0 live connections, got %d\n", c.TotalLive)
+	}
 	if c.Conns == nil || len(c.Conns) != 0 {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
@@ -176,10 +179,13 @@ func TestConnz(t *testing.T) {
 	}
 
 	if c.NumConns != 1 {
-		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+		t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
+	}
+	if c.TotalLive != 1 {
+		t.Fatalf("Expected 1 live connection, got %d\n", c.TotalLive)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %p\n", c.Conns)
+		t.Fatalf("Expected 1 connection in array, got %p\n", c.Conns)
 	}
 
 	if c.Limit != server.DefaultConnListSize {
@@ -281,10 +287,13 @@ func TestTLSConnz(t *testing.T) {
 	}
 
 	if c.NumConns != 1 {
-		t.Fatalf("Expected 1 connections, got %d\n", c.NumConns)
+		t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
+	}
+	if c.TotalLive != 1 {
+		t.Fatalf("Expected 1 live connection, got %d\n", c.TotalLive)
 	}
 	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connections in array, got %d\n", len(c.Conns))
+		t.Fatalf("Expected 1 connection in array, got %d\n", len(c.Conns))
 	}
 
 	// Test inside details of each connection
