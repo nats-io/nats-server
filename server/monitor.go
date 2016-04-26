@@ -92,6 +92,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	// number total of clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
 	totalClients := len(s.clients)
+	c.TotalLive = len(s.clients)
 
 	i := 0
 	pairs := make(Pairs, totalClients)
@@ -147,7 +148,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	// Now we have the real number of ConnInfo objects, we can set c.NumConns
 	// and allocate the array
 	c.NumConns = len(pairs)
-	c.TotalLive = len(s.clients)
 	c.Conns = make([]ConnInfo, c.NumConns)
 
 	i = 0
