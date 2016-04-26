@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -9,7 +9,7 @@ import (
 
 var usageStr = `
 Usage: gnatsd [options]
- 
+
 Server Options:
     -a, --addr <host>                Bind to host address (default: 0.0.0.0)
     -p, --port <port>                Use port for clients (default: 4222)
@@ -46,7 +46,7 @@ Cluster Options:
 Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
-        --help_tls                   TLS help.
+        --help_tls                   TLS help
 `
 
 // Usage will print out the flag options for the server.

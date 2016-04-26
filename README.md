@@ -7,33 +7,33 @@ A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang
 
 ## Getting Started
 
-The best way to get the nats server is to use one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
+The best way to get the NATS server is to use one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), Windows, and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
 You can also connect to a public server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443).
 
-Of course you can build the latest version of gnatsd from the `master` branch. The master branch will always build and pass tests, but may not work correctly in your environment.
-You will first need [*Go*](https://golang.org/) installed on your machine (version 1.4+ is required) to build gnatsd.
+Of course you can build the latest version of the server from the `master` branch. The master branch will always build and pass tests, but may not work correctly in your environment.
+You will first need [*Go*](https://golang.org/) installed on your machine (version 1.4+ is required) to build the NATS server.
 
 ### Running
 
-The nats server is lightweight and very performant. Starting one with no arguments will give you a server with sane default settings.
+The NATS server is lightweight and very performant. Starting one with no arguments will give you a server with sane default settings.
 
 ```sh
-> gnatsd
-[35572] 2016/01/10 08:54:16.178798 [INF] Starting gnatsd version 0.7.3
-[35572] 2016/01/10 08:54:16.178940 [INF] Listening for client connections on 0.0.0.0:4222
-[35572] 2016/01/10 08:54:16.179115 [INF] gnatsd is ready
+> ./gnatsd
+[2842] 2016/04/26 13:21:20.379640 [INF] Starting nats-server version 0.8.0
+[2842] 2016/04/26 13:21:20.379745 [INF] Listening for client connections on 0.0.0.0:4222
+[2842] 2016/04/26 13:21:20.379865 [INF] Server is ready
 ```
 
-The server will be started and listening for client connections on port 4222 from all interfaces. The logs will be displayed to stdout
+The server will be started and listening for client connections on port 4222 (the default) from all available interfaces. The logs will be displayed to stdout
 as shown above. There are a large range of supported clients that can be found at [https://nats.io/clients](https://nats.io/download).
 The server uses a text based protocol, so interacting with it can be as simple as using telnet.
 
 ```sh
-> telnet localhost 4222
-Trying ::1...
-Connected to localhost.
+> telnet demo.nats.io 4222
+Trying 107.170.221.32...
+Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"3d13165236fe601c863b6714e819fc36","version":"0.7.3","go":"go1.5.2","host":"0.0.0.0","port":4222, ...}
+INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.8.0.beta","go":"go1.6.2","host":"0.0.0.0","port":4222, ...}
 SUB foo 1
 +OK
 PUB foo 11
@@ -43,11 +43,11 @@ MSG foo 1 11
 Hello World
 ```
 
-More information on the protocol can be found at [http://nats.io/documentation/internals/nats-protocol](http://nats.io/documentation/internals/nats-protocol/).
+More information on the NATS protocol can be found at [http://nats.io/documentation/internals/nats-protocol](http://nats.io/documentation/internals/nats-protocol/).
 
 ## Configuring
 
-gnatsd accepts command line arguments to control its behavior. An example  configuration file is listed below. Note that
+The server accepts command line arguments to control its behavior. An example  configuration file is listed below. Note that
 command line arguments will override those items in the configuration file.
 
 
@@ -87,6 +87,7 @@ Cluster Options:
 Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
+        --help_tls                   TLS help
 ```
 
 ## Sample Configuration File
@@ -101,7 +102,8 @@ http_port: 8222 # HTTP monitoring port
 # Authorization for client connections
 authorization {
   user:     derek
-  password: T0pS3cr3t
+  # ./util/mkpassword -p T0pS3cr3t
+  password: $2a$11$W2zko751KUvVy59mUTWmpOdWjpEm5qhcCZRd05GjI/sSOT.xtiHyG
   timeout:  1
 }
 
@@ -115,7 +117,8 @@ cluster {
   # Authorization for route connections
   authorization {
     user: route_user
-    password: T0pS3cr3tT00!
+    # ./util/mkpassword -p T0pS3cr3tT00!
+    password: $2a$11$xH8dkGrty1cBNtZjhPeWJewu/YPbSU.rXJWmS6SFilOBXzmZoMk9m
     timeout: 0.5
   }
 
@@ -133,10 +136,10 @@ cluster {
 debug:   false
 trace:   true
 logtime: false
-log_file: "/tmp/gnatsd.log"
+log_file: "/tmp/nats-server.log"
 
 # pid file
-pid_file: "/tmp/gnatsd.pid"
+pid_file: "/tmp/nats-server.pid"
 
 # Some system overides
 
@@ -165,7 +168,7 @@ server's preferences when building with Go1.5 are as follows.
 ```go
 func defaultCipherSuites() []uint16 {
 	return []uint16{
-		// The SHA384 versions are only in Go1.5
+		// The SHA384 versions are only in Go1.5+
 		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -174,7 +177,7 @@ func defaultCipherSuites() []uint16 {
 }
 ```
 
-Generating self signed certs and intermediary certificate authotities is beyond the scope here, but this document can be helpful in addition to Google Search:
+Generating self signed certs and intermediary certificate authorities is beyond the scope here, but this document can be helpful in addition to Google Search:
 <a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>
 
 The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured
@@ -183,18 +186,18 @@ with a CA authority to verify the client certificates.
 ```
 # Simple TLS config file
 
+net:  127.0.0.1
 port: 4443
-net: apcera.me # net interface
 
 tls {
   cert_file:  "./configs/certs/server-cert.pem"
   key_file:   "./configs/certs/server-key.pem"
-  timeout:    0.5
+  timeout:    2
 }
 
 authorization {
   user:     derek
-  password: s3cr3t!
+  password: $2a$11$W2zko751KUvVy59mUTWmpOdWjpEm5qhcCZRd05GjI/sSOT.xtiHyG
   timeout:  1
 }
 ```
@@ -247,12 +250,12 @@ The server can be run using command line arguments to enable TLS functionality.
 
 Examples using the test certicates which are self signed for localhost and 127.0.0.1.
 ```bash
-gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
+> ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
-[15139] 2015/12/03 12:37:18.963635 [INF] Starting gnatsd version 0.7.0
-[15139] 2015/12/03 12:37:18.963710 [INF] Listening for client connections on 0.0.0.0:4222
-[15139] 2015/12/03 12:37:18.963874 [INF] TLS required for client connections
-[15139] 2015/12/03 12:37:18.963878 [INF] gnatsd is ready
+[2935] 2016/04/26 13:34:30.685413 [INF] Starting nats-server version 0.8.0.beta
+[2935] 2016/04/26 13:34:30.685509 [INF] Listening for client connections on 0.0.0.0:4222
+[2935] 2016/04/26 13:34:30.685656 [INF] TLS required for client connections
+[2935] 2016/04/26 13:34:30.685660 [INF] Server is ready
 ```
 
 Notice that the log  indicates that the client connections will be required to use TLS. If you run the server in Debug mode with -D or -DV, the logs will show the cipher suite selection for each connected client.
@@ -266,7 +269,7 @@ Notice that the log  indicates that the client connections will be required to u
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
 
 ```
-gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
+> ./gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
 ```
 
 
@@ -302,43 +305,46 @@ To test, run '``gnatsd -m 8222``', then go to <a href="http://localhost:8222/" t
 
 ```json
 {
-  "server_id": "ec933edcd2bd86bcf71d555fc8b4fb2c",
-  "version": "0.6.6",
-  "go": "go1.5.0",
+  "server_id": "kG19DsXX1UVeSyEjhl3RFw",
+  "version": "0.8.0.beta",
+  "go": "go1.6.2",
   "host": "0.0.0.0",
-  "port": 4222,
   "auth_required": false,
   "ssl_required": false,
-  "max_payload": 1048576,
+  "tls_required": false,
+  "tls_verify": false,
   "max_connections": 65536,
   "ping_interval": 120000000000,
   "ping_max": 2,
   "http_port": 8222,
-  "ssl_timeout": 0.5,
+  "https_port": 0,
   "max_control_line": 1024,
   "max_pending_size": 10485760,
+  "cluster_port": 0,
+  "tls_timeout": 0.5,
+  "port": 4222,
   "max_payload": 1048576,
-  "start": "2015-07-14T13:29:26.426805508-07:00",
-  "now": "2015-07-14T13:30:59.349179963-07:00",
-  "uptime": "1m33s",
-  "mem": 8445952,
-  "cores": 4,
+  "start": "2016-04-25T22:09:34.684376796-04:00",
+  "now": "2016-04-26T16:39:47.332681784-04:00",
+  "uptime": "18h30m12s",
+  "mem": 21131264,
+  "cores": 8,
   "cpu": 0,
-  "connections": 39,
-  "total_connections": 122,
+  "connections": 1002,
+  "total_connections": 1831,
   "routes": 0,
   "remotes": 0,
-  "in_msgs": 100000,
-  "out_msgs": 100000,
-  "in_bytes": 1600000,
-  "out_bytes": 1600000,
+  "in_msgs": 5501151,
+  "out_msgs": 11001275,
+  "in_bytes": 27645750,
+  "out_bytes": 55162353,
   "slow_consumers": 0,
   "http_req_stats": {
-    "/": 8,
-    "/connz": 2,
-    "/routez": 0,
-    "/subsz": 0,
-    "/varz": 8
+    "/": 223,
+    "/connz": 31,
+    "/routez": 1,
+    "/subsz": 7,
+    "/varz": 35
   }
 }
 ```
@@ -351,46 +357,44 @@ You can also report detailed subscription information on a per connection basis 
 
 ```json
 {
-  "now": "2016-01-10T08:17:29.970134607-08:00",
+  "now": "2016-04-26T16:40:59.926732854-04:00",
   "num_connections": 2,
   "offset": 0,
   "limit": 1024,
   "connections": [
     {
-      "cid": 571,
-      "ip": "127.0.0.1",
-      "port": 61572,
-      "start": "2016-01-10T08:15:07.970134607-08:00",
-      "uptime": "2m22s",
+      "cid": 1,
+      "ip": "73.170.105.42",
+      "port": 46422,
+      "start": "2016-04-25T22:09:34.715492478-04:00",
+      "last_activity": "2016-04-26T16:40:56.17467432-04:00",
+      "uptime": "18h31m25s",
+      "idle": "3s",
       "pending_bytes": 0,
-      "in_msgs": 0,
+      "in_msgs": 1112,
       "out_msgs": 0,
-      "in_bytes": 0,
+      "in_bytes": 139101,
       "out_bytes": 0,
       "subscriptions": 1,
       "lang": "go",
-      "version": "1.0.9",
-      "subscriptions_list": [
-        "hello.world"
-      ]
+      "version": "1.1.9"
     },
     {
-      "cid": 574,
-      "ip": "127.0.0.1",
-      "port": 61577,
-      "start": "2016-01-10T08:17:09.970134607-08:00",
-      "uptime": "22m22s",
+      "cid": 3,
+      "ip": "129.192.191.2",
+      "port": 55072,
+      "start": "2016-04-25T22:09:36.685630786-04:00",
+      "last_activity": "2016-04-26T16:40:56.17467432-04:00",
+      "uptime": "18h31m23s",
+      "idle": "3s",
       "pending_bytes": 0,
       "in_msgs": 0,
-      "out_msgs": 0,
+      "out_msgs": 1112,
       "in_bytes": 0,
-      "out_bytes": 0,
+      "out_bytes": 139101,
       "subscriptions": 1,
-      "lang": "ruby",
-      "version": "0.5.0",
-      "subscriptions_list": [
-        "hello.world"
-      ]
+      "lang": "go",
+      "version": "1.1.9"
     }
   ]
 }
@@ -428,15 +432,14 @@ You can also report detailed subscription information on a per connection basis 
 
 ```json
 {
-  "num_subscriptions": 3,
-  "num_cache": 0,
-  "num_inserts": 572,
-  "num_removes": 569,
-  "num_matches": 200000,
-  "cache_hit_rate": 0.99999,
-  "max_fanout": 0,
-  "avg_fanout": 0,
-  "stats_time": "2015-07-14T12:55:25.564818051-07:00"
+  "num_subscriptions": 2,
+  "num_cache": 1,
+  "num_inserts": 3539,
+  "num_removes": 3537,
+  "num_matches": 103,
+  "cache_hit_rate": 0.6504854368932039,
+  "max_fanout": 1,
+  "avg_fanout": 1
 }
 ```
 
@@ -458,7 +461,7 @@ $.getJSON('http://localhost:8222/connz?callback=?', function(data) {
 This code currently requires at _least_ version 1.4 of Go, but we encourage
 the use of the latest stable release.  We will be moving to requiring at _least_ 1.5
 in the near future. Go is still young and improving
-rapidly, new releases provide performance improvements and fixes.  Information
+rapidly, new releases provide performance improvements and fixes. Information
 on installation, including pre-built binaries, is available at
 <http://golang.org/doc/install>.  Stable branches of operating system
 packagers provided by your OS vendor may not be sufficient.
@@ -485,20 +488,27 @@ presentations, references and more.
 
 Here is a sample of client language bindings for NATS. For a complete and updated list, please visit <https://nats.io/download>.
 
+### Apcera Supported
 - [Go](https://github.com/nats-io/nats)
 - [Node.js](https://github.com/nats-io/node-nats)
 - [Java](https://github.com/nats-io/jnats)
-- [Spring](https://github.com/cloudfoundry-community/java-nats)
 - [C/C++](https://github.com/nats-io/cnats)
 - [C#/.NET](https://github.com/nats-io/csnats)
+- [Python Asyncio](https://github.com/nats-io/asyncio-nats)
 - [Ruby](https://github.com/nats-io/ruby-nats)
+- [Elixir](https://github.com/nats-io/elixir-nats)
+- [NGINX](https://github.com/nats-io/nginx-nats)
+
+### Community
+- [Scala](https://github.com/tyagihas/scala_nats)
+- [Arduino](https://github.com/joshglendenning/arduino-nats)
 - [Lua](https://github.com/DawnAngel/lua-nats)
 - [PHP](https://github.com/repejota/phpnats)
+- [Python Twisted](https://github.com/johnwlockwood/txnats)
 - [Python](https://github.com/mcuadros/pynats)
-- [Scala](https://github.com/tyagihas/scala_nats)
 - [Haskell](https://github.com/ondrap/nats-queue)
 - [Rust](https://github.com/jedisct1/rust-nats)
-- [NGINX](https://github.com/nats-io/nginx-nats)
+
 
 ## License
 
