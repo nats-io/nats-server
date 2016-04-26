@@ -28,6 +28,7 @@ func init() {
 type Connz struct {
 	Now      time.Time  `json:"now"`
 	NumConns int        `json:"num_connections"`
+	Total    int        `json:"total"`
 	Offset   int        `json:"offset"`
 	Limit    int        `json:"limit"`
 	Conns    []ConnInfo `json:"connections"`
@@ -91,6 +92,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	// number total of clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
 	totalClients := len(s.clients)
+	c.Total = totalClients
 
 	i := 0
 	pairs := make(Pairs, totalClients)
