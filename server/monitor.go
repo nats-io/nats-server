@@ -26,12 +26,12 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
-	Now       time.Time  `json:"now"`
-	NumConns  int        `json:"num_connections"`
-	TotalLive int        `json:"total_live"`
-	Offset    int        `json:"offset"`
-	Limit     int        `json:"limit"`
-	Conns     []ConnInfo `json:"connections"`
+	Now      time.Time  `json:"now"`
+	NumConns int        `json:"num_connections"`
+	Total    int        `json:"total"`
+	Offset   int        `json:"offset"`
+	Limit    int        `json:"limit"`
+	Conns    []ConnInfo `json:"connections"`
 }
 
 // ConnInfo has detailed information on a per connection basis.
@@ -92,7 +92,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	// number total of clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
 	totalClients := len(s.clients)
-	c.TotalLive = len(s.clients)
+	c.Total = totalClients
 
 	i := 0
 	pairs := make(Pairs, totalClients)
