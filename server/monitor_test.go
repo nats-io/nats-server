@@ -389,11 +389,9 @@ func TestConnzLastActivity(t *testing.T) {
 		t.Fatalf("Expected LastActivity to be valid\n")
 	}
 
-	// On Windows, looks like the precision is too low, and if we
-	// don't wait, first and last would be equal.
-	if runtime.GOOS == "windows" {
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Just wait a bit to make sure that there is a difference
+	// between first and last.
+	time.Sleep(100 * time.Millisecond)
 
 	// Sub should trigger update.
 	nc.Subscribe("hello.world", func(m *nats.Msg) {})
