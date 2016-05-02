@@ -1,5 +1,5 @@
 // Copyright 2016 Apcera Inc. All rights reserved.
-// +build win
+// +build windows
 
 package pse
 
@@ -93,13 +93,13 @@ func TestPSEmulationWin(t *testing.T) {
 	}
 	tRss = int64(fval)
 
-	if err = procUsage(&pcpu, &rss, &vss); err != nil {
+	if err = ProcUsage(&pcpu, &rss, &vss); err != nil {
 		t.Fatal("Error:  %v", err)
 	}
 	checkValues(t, pcpu, tPcpu, rss, tRss)
 
 	// Again to test image name caching
-	if err = procUsage(&pcpu, &rss, &vss); err != nil {
+	if err = ProcUsage(&pcpu, &rss, &vss); err != nil {
 		t.Fatal("Error:  %v", err)
 	}
 	checkValues(t, pcpu, tPcpu, rss, tRss)
