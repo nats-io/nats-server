@@ -22,6 +22,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
 		MaxPending:         MAX_PENDING_SIZE,
+		ClusterHost:        DEFAULT_HOST,
 		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
 		ClusterTLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
 	}
