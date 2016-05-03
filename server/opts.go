@@ -554,6 +554,9 @@ func processOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
+	if opts.ClusterHost == "" {
+		opts.ClusterHost = DEFAULT_HOST
+	}
 	if opts.ClusterTLSTimeout == 0 {
 		opts.ClusterTLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
