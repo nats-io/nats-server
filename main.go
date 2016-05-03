@@ -67,7 +67,7 @@ func main() {
 	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
 
-	flag.Usage = server.Usage
+	flag.Usage = Usage
 
 	flag.Parse()
 
@@ -92,7 +92,7 @@ func main() {
 		case "version":
 			server.PrintServerAndExit()
 		case "help":
-			server.Usage()
+			Usage()
 		}
 	}
 
