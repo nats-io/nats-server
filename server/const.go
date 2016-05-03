@@ -8,7 +8,7 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "0.8.0.beta"
+	VERSION = "0.8.0.beta2"
 
 	// DEFAULT_PORT is the deault port for client connections.
 	DEFAULT_PORT = 4222
