@@ -3,6 +3,7 @@ package conf
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // Test to make sure we get what we expect.
@@ -129,4 +130,19 @@ func TestSample4(t *testing.T) {
 		},
 	}
 	test(t, sample4, ex)
+}
+
+var sample5 = `
+  now = 2016-05-04T18:53:41Z
+  gmt = false
+
+`
+
+func TestSample5(t *testing.T) {
+	dt, _ := time.Parse("2006-01-02T15:04:05Z", "2016-05-04T18:53:41Z")
+	ex := map[string]interface{}{
+		"now": dt,
+		"gmt": false,
+	}
+	test(t, sample5, ex)
 }
