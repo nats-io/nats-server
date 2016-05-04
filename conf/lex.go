@@ -246,7 +246,7 @@ func lexKeyStart(lx *lexer) stateFn {
 	r := lx.peek()
 	switch {
 	case isKeySeparator(r):
-		return lx.errorf("Unexpected key separator '%v'.", r)
+		return lx.errorf("Unexpected key separator '%v'", r)
 	case isWhitespace(r) || isNL(r):
 		lx.next()
 		return lexSkip(lx, lexKeyStart)
@@ -349,7 +349,7 @@ func lexValue(lx *lexer) stateFn {
 		lx.backup() // avoid an extra state and use the same as above
 		return lexNumberOrDateOrIPStart
 	case r == '.': // special error case, be kind to users
-		return lx.errorf("Floats must start with a digit, not '.'.")
+		return lx.errorf("Floats must start with a digit")
 	case isNL(r):
 		return lx.errorf("Expected value but found new line")
 	}
