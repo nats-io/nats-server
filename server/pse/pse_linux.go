@@ -7,11 +7,18 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sync/atomic"
 	"syscall"
+	"time"
 )
 
-var procStatFile string
-var ticks int64
+var (
+	procStatFile string
+	ticks        int64
+	lastTotal    int64
+	lastSeconds  int64
+	ipcpu        int64
+)
 
 const (
 	utimePos = 13
@@ -25,6 +32,47 @@ func init() {
 	// Avoiding to generate docker image without CGO
 	ticks = 100 // int64(C.sysconf(C._SC_CLK_TCK))
 	procStatFile = fmt.Sprintf("/proc/%d/stat", os.Getpid())
+	periodic()
+}
+
+// Sampling function to keep pcpu relevant.
+func periodic() {
+	contents, err := ioutil.ReadFile(procStatFile)
+	if err != nil {
+		return
+	}
+	fields := bytes.Fields(contents)
+
+	// PCPU
+	pstart := parseInt64(fields[startPos])
+	utime := parseInt64(fields[utimePos])
+	stime := parseInt64(fields[stimePos])
+	total := utime + stime
+
+	var sysinfo syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&sysinfo); err != nil {
+		return
+	}
+
+	seconds := int64(sysinfo.Uptime) - (pstart / ticks)
+
+	// Save off temps
+	lt := lastTotal
+	ls := lastSeconds
+
+	// Update last sample
+	lastTotal = total
+	lastSeconds = seconds
+
+	// Adjust to current time window
+	total -= lt
+	seconds -= ls
+
+	if seconds > 0 {
+		atomic.StoreInt64(&ipcpu, (total*1000/ticks)/seconds)
+	}
+
+	time.AfterFunc(1*time.Second, periodic)
 }
 
 func ProcUsage(pcpu *float64, rss, vss *int64) error {
@@ -34,25 +82,13 @@ func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	}
 	fields := bytes.Fields(contents)
 
+	// Memory
 	*rss = (parseInt64(fields[rssPos])) << 12
 	*vss = parseInt64(fields[vssPos])
 
-	startTime := parseInt64(fields[startPos])
-	utime := parseInt64(fields[utimePos])
-	stime := parseInt64(fields[stimePos])
-	totalTime := utime + stime
-
-	var sysinfo syscall.Sysinfo_t
-	if err := syscall.Sysinfo(&sysinfo); err != nil {
-		return err
-	}
-
-	seconds := int64(sysinfo.Uptime) - (startTime / ticks)
-
-	if seconds > 0 {
-		ipcpu := (totalTime * 1000 / ticks) / seconds
-		*pcpu = float64(ipcpu) / 10.0
-	}
+	// PCPU
+	// We track this with periodic sampling, so just load and go.
+	*pcpu = float64(atomic.LoadInt64(&ipcpu)) / 10.0
 
 	return nil
 }
