@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -255,7 +256,12 @@ func ProcUsage(pcpu *float64, rss, vss *int64) error {
 		return fmt.Errorf("could not find pid in performance counter results")
 	}
 	// assign values from the performance counters
-	*pcpu = cpuAry[idx]
+	cpu := cpuAry[idx]
+	if cpu > 0.0 {
+		cpu /= float64(runtime.NumCPU())
+	}
+
+	*pcpu = cpu
 	*rss = int64(rssAry[idx])
 	*vss = int64(vssAry[idx])
 
