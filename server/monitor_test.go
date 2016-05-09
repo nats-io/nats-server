@@ -394,7 +394,7 @@ func TestConnzLastActivity(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Sub should trigger update.
-	nc.Subscribe("hello.world", func(m *nats.Msg) {})
+	sub, _ := nc.Subscribe("hello.world", func(m *nats.Msg) {})
 	nc.Flush()
 	ci = pollConz().Conns[0]
 	subLast := ci.LastActivity
@@ -413,6 +413,19 @@ func TestConnzLastActivity(t *testing.T) {
 	pubLast := ci.LastActivity
 	if subLast.Equal(pubLast) {
 		t.Fatalf("Publish should have triggered update to LastActivity\n")
+	}
+
+	// Just wait a bit to make sure that there is a difference
+	// between first and last.
+	time.Sleep(100 * time.Millisecond)
+
+	// Unsub should trigger as well
+	sub.Unsubscribe()
+	nc.Flush()
+	ci = pollConz().Conns[0]
+	pubLast = ci.LastActivity
+	if subLast.Equal(pubLast) {
+		t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
 	}
 
 	// On Windows, looks like the precision is too low, and if we

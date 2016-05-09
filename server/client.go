@@ -71,10 +71,11 @@ type client struct {
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
 	genid   uint64
-	inMsgs  int64
-	inBytes int64
 	results map[string]*SublistResult
 	prand   *rand.Rand
+	inMsgs  int
+	inBytes int
+	subs    int
 }
 
 func (c *client) String() (id string) {
@@ -185,10 +186,10 @@ func (c *client) readLoop() {
 		}
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
-		atomic.AddInt64(&c.inMsgs, c.cache.inMsgs)
-		atomic.AddInt64(&c.inBytes, c.cache.inBytes)
-		atomic.AddInt64(&s.inMsgs, c.cache.inMsgs)
-		atomic.AddInt64(&s.inBytes, c.cache.inBytes)
+		atomic.AddInt64(&c.inMsgs, int64(c.cache.inMsgs))
+		atomic.AddInt64(&c.inBytes, int64(c.cache.inBytes))
+		atomic.AddInt64(&s.inMsgs, int64(c.cache.inMsgs))
+		atomic.AddInt64(&s.inBytes, int64(c.cache.inBytes))
 
 		// Check pending clients for flush.
 		for cp := range c.pcd {
@@ -229,7 +230,10 @@ func (c *client) readLoop() {
 		// Check to see if we got closed, e.g. slow consumer
 		c.mu.Lock()
 		nc := c.nc
-		c.last = last
+		// Activity based on interest changes or data/msgs.
+		if c.cache.inMsgs > 0 || c.cache.subs > 0 {
+			c.last = last
+		}
 		c.mu.Unlock()
 		if nc == nil {
 			return
@@ -534,6 +538,10 @@ func splitArg(arg []byte) [][]byte {
 
 func (c *client) processSub(argo []byte) (err error) {
 	c.traceInOp("SUB", argo)
+
+	// Indicate activity.
+	c.cache.subs += 1
+
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
 	copy(arg, argo)
@@ -619,6 +627,9 @@ func (c *client) processUnsub(arg []byte) error {
 	default:
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
+
+	// Indicate activity.
+	c.cache.subs += 1
 
 	var sub *subscription
 
@@ -781,7 +792,7 @@ func (c *client) processMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.cache.inMsgs += 1
-	c.cache.inBytes += int64(len(msg) - LEN_CR_LF)
+	c.cache.inBytes += len(msg) - LEN_CR_LF
 
 	if c.trace {
 		c.traceMsg(msg)
