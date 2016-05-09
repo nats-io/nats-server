@@ -174,6 +174,7 @@ func (c *client) readLoop() {
 		// Clear inbound stats cache
 		c.cache.inMsgs = 0
 		c.cache.inBytes = 0
+		c.cache.subs = 0
 
 		if err := c.parse(b[:n]); err != nil {
 			// handled inline
