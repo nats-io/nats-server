@@ -314,7 +314,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	c.parse(pubop[:22])
 	c.parse(pubop[22:25])
 	if c.argBuf == nil {
-		t.Fatal("Expected a nil argBuf!")
+		t.Fatal("Expected a non-nil argBuf!")
 	}
 	c.parse(pubop[25:])
 	if c.argBuf != nil {
@@ -334,6 +334,14 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 	c.parse(connop[:22])
 	c.parse(connop[22:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
+	}
+
+	// INFO_ARG
+	infoop := []byte("INFO {\"server_id\":\"id\"}\r\n")
+	c.parse(infoop[:8])
+	c.parse(infoop[8:])
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
