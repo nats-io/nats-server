@@ -23,6 +23,7 @@ const CLUSTER_PORT = 12444
 var DefaultMonitorOptions = Options{
 	Host:        "localhost",
 	Port:        CLIENT_PORT,
+	HTTPHost:    "127.0.0.1",
 	HTTPPort:    MONITOR_PORT,
 	ClusterHost: "localhost",
 	ClusterPort: CLUSTER_PORT,

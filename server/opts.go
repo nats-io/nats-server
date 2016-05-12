@@ -32,6 +32,7 @@ type Options struct {
 	Authorization      string        `json:"-"`
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
+	HTTPHost           string        `json:"http_host"`
 	HTTPPort           int           `json:"http_port"`
 	HTTPSPort          int           `json:"https_port"`
 	AuthTimeout        float64       `json:"auth_timeout"`
@@ -120,6 +121,13 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 
 	for k, v := range m {
 		switch strings.ToLower(k) {
+		case "listen":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.Host = hp.host
+			opts.Port = hp.port
 		case "port":
 			opts.Port = int(v.(int64))
 		case "host", "net":
@@ -136,6 +144,20 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Username = auth.user
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
+		case "http":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.HTTPHost = hp.host
+			opts.HTTPPort = hp.port
+		case "https":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.HTTPHost = hp.host
+			opts.HTTPSPort = hp.port
 		case "http_port", "monitor_port":
 			opts.HTTPPort = int(v.(int64))
 		case "https_port":
@@ -178,10 +200,44 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 	return opts, nil
 }
 
+// hostPort is simple struct to hold parsed listen/addr strings.
+type hostPort struct {
+	host string
+	port int
+}
+
+// parseListen will parse listen option which is replacing host/net and port
+func parseListen(v interface{}) (*hostPort, error) {
+	hp := &hostPort{}
+	switch v.(type) {
+	// Only a port
+	case int64:
+		hp.port = int(v.(int64))
+	case string:
+		host, port, err := net.SplitHostPort(v.(string))
+		if err != nil {
+			return nil, fmt.Errorf("Could not parse address string %q", v)
+		}
+		hp.port, err = strconv.Atoi(port)
+		if err != nil {
+			return nil, fmt.Errorf("Could not parse port %q", port)
+		}
+		hp.host = host
+	}
+	return hp, nil
+}
+
 // parseCluster will parse the cluster config.
 func parseCluster(cm map[string]interface{}, opts *Options) error {
 	for mk, mv := range cm {
 		switch strings.ToLower(mk) {
+		case "listen":
+			hp, err := parseListen(mv)
+			if err != nil {
+				return err
+			}
+			opts.ClusterHost = hp.host
+			opts.ClusterPort = hp.port
 		case "port":
 			opts.ClusterPort = int(mv.(int64))
 		case "host", "net":

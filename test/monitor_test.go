@@ -25,6 +25,7 @@ func runMonitorServer() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = MONITOR_PORT
+	opts.HTTPHost = "localhost"
 
 	return RunServer(&opts)
 }
@@ -447,6 +448,40 @@ func TestSubsz(t *testing.T) {
 	// Do some sanity checks on values
 	if su.NumSubs != 1 {
 		t.Fatalf("Expected num_subs of 1, got %v\n", su.NumSubs)
+	}
+}
+
+func TestHTTPHost(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// Grab non-localhost address and try to use that to connect.
+	// Should fail.
+	var ip net.IP
+	ifaces, _ := net.Interfaces()
+	for _, i := range ifaces {
+		addrs, _ := i.Addrs()
+		for _, addr := range addrs {
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			// Skip loopback/localhost or any ipv6 for now.
+			if ip.IsLoopback() || ip.To4() == nil {
+				ip = nil
+				continue
+			}
+			break
+		}
+	}
+	if ip == nil {
+		t.Fatalf("Could not find non-loopback IPV4 address")
+	}
+	url := fmt.Sprintf("http://%v:%d/", ip, MONITOR_PORT)
+	if resp, err := http.Get(url + "varz"); err == nil {
+		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
 }
 

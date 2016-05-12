@@ -445,14 +445,14 @@ func (s *Server) startMonitoring(secure bool) {
 	var err error
 
 	if secure {
-		hp = net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.HTTPSPort))
+		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
 		config := *s.opts.TLSConfig
 		config.ClientAuth = tls.NoClientCert
 		s.http, err = tls.Listen("tcp", hp, &config)
 
 	} else {
-		hp = net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.HTTPPort))
+		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
 		Noticef("Starting http monitor on %s", hp)
 		s.http, err = net.Listen("tcp", hp)
 	}
