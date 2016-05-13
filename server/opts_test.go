@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -306,5 +306,86 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	if !reflect.DeepEqual(golden, merged) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, merged)
+	}
+}
+
+func TestListenConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	// Normal clients
+	host := "10.0.1.22"
+	port := 4422
+
+	if opts.Host != host {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+
+	// Clustering
+	clusterHost := "127.0.0.1"
+	clusterPort := 4244
+
+	if opts.ClusterHost != clusterHost {
+		t.Fatalf("Received incorrect cluster host %q, expected %q\n", opts.ClusterHost, clusterHost)
+	}
+	if opts.ClusterPort != clusterPort {
+		t.Fatalf("Received incorrect cluster port %v, expected %v\n", opts.ClusterPort, clusterPort)
+	}
+
+	// HTTP
+	httpHost := "127.0.0.1"
+	httpPort := 8422
+
+	if opts.HTTPHost != httpHost {
+		t.Fatalf("Received incorrect http host %q, expected %q\n", opts.HTTPHost, httpHost)
+	}
+	if opts.HTTPPort != httpPort {
+		t.Fatalf("Received incorrect http port %v, expected %v\n", opts.HTTPPort, httpPort)
+	}
+
+	// HTTPS
+	httpsPort := 9443
+	if opts.HTTPSPort != httpsPort {
+		t.Fatalf("Received incorrect https port %v, expected %v\n", opts.HTTPSPort, httpsPort)
+	}
+}
+
+func TestListenPortOnlyConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen_port.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	port := 8922
+
+	if opts.Host != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+}
+
+func TestListenPortWithColonConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen_port_with_colon.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	port := 8922
+
+	if opts.Host != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
 	}
 }
