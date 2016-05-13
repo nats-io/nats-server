@@ -610,7 +610,7 @@ func lexString(lx *lexer) stateFn {
 		return lexStringEscape
 	// Termination of non-quoted strings
 	case isNL(r) || r == eof || r == optValTerm ||
-		r == arrayValTerm || r == arrayEnd ||
+		r == arrayValTerm || r == arrayEnd || r == mapEnd ||
 		isWhitespace(r):
 
 		lx.backup()

@@ -1,10 +1,11 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -17,6 +18,12 @@ import (
 	"github.com/nats-io/gnatsd/conf"
 )
 
+// For multiple accounts/users.
+type User struct {
+	Username string `json:"user"`
+	Password string `json:"password"`
+}
+
 // Options block for gnatsd server.
 type Options struct {
 	Host               string        `json:"addr"`
@@ -27,7 +34,8 @@ type Options struct {
 	NoSigs             bool          `json:"-"`
 	Logtime            bool          `json:"-"`
 	MaxConn            int           `json:"max_connections"`
-	Username           string        `json:"user,omitempty"`
+	Users              []User        `json:"-"`
+	Username           string        `json:"-"`
 	Password           string        `json:"-"`
 	Authorization      string        `json:"-"`
 	PingInterval       time.Duration `json:"ping_interval"`
@@ -64,8 +72,11 @@ type Options struct {
 }
 
 type authorization struct {
-	user    string
-	pass    string
+	// Singles
+	user string
+	pass string
+	// Multiple Users
+	users   []User
 	timeout float64
 }
 
@@ -140,10 +151,20 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Logtime = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
-			auth := parseAuthorization(am)
+			auth, err := parseAuthorization(am)
+			if err != nil {
+				return nil, err
+			}
 			opts.Username = auth.user
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
+			// Check for multiple users defined
+			if auth.users != nil {
+				if auth.user != "" {
+					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
+				}
+				opts.Users = auth.users
+			}
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
@@ -244,7 +265,13 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.ClusterHost = mv.(string)
 		case "authorization":
 			am := mv.(map[string]interface{})
-			auth := parseAuthorization(am)
+			auth, err := parseAuthorization(am)
+			if err != nil {
+				return err
+			}
+			if auth.users != nil {
+				return fmt.Errorf("Cluster authorization does not allow multiple users")
+			}
 			opts.ClusterUsername = auth.user
 			opts.ClusterPassword = auth.pass
 			opts.ClusterAuthTimeout = auth.timeout
@@ -280,8 +307,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(am map[string]interface{}) authorization {
-	auth := authorization{}
+func parseAuthorization(am map[string]interface{}) (*authorization, error) {
+	auth := &authorization{}
 	for mk, mv := range am {
 		switch strings.ToLower(mk) {
 		case "user", "username":
@@ -297,9 +324,16 @@ func parseAuthorization(am map[string]interface{}) authorization {
 				at = mv.(float64)
 			}
 			auth.timeout = at
+		case "users":
+			b, _ := json.Marshal(mv)
+			users := []User{}
+			if err := json.Unmarshal(b, &users); err != nil {
+				return nil, fmt.Errorf("Could not parse user array properly, %v", err)
+			}
+			auth.users = users
 		}
 	}
-	return auth
+	return auth, nil
 }
 
 // PrintTLSHelpAndDie prints TLS usage and exits.

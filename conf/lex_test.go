@@ -698,3 +698,41 @@ func TestUnquotedIPAddr(t *testing.T) {
 	lx = lex("listen = [localhost:4222, localhost:4333]")
 	expect(t, lx, expectedItems)
 }
+
+var arrayOfMaps = `
+authorization {
+    users = [
+      {user: alice, password: foo}
+      {user: bob,   password: bar}
+    ]
+    timeout: 0.5
+}
+`
+
+func TestArrayOfMaps(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "authorization", 2},
+		{itemMapStart, "", 2},
+		{itemKey, "users", 3},
+		{itemArrayStart, "", 3},
+		{itemMapStart, "", 4},
+		{itemKey, "user", 4},
+		{itemString, "alice", 4},
+		{itemKey, "password", 4},
+		{itemString, "foo", 4},
+		{itemMapEnd, "", 4},
+		{itemMapStart, "", 5},
+		{itemKey, "user", 5},
+		{itemString, "bob", 5},
+		{itemKey, "password", 5},
+		{itemString, "bar", 5},
+		{itemMapEnd, "", 5},
+		{itemArrayEnd, "", 6},
+		{itemKey, "timeout", 7},
+		{itemFloat, "0.5", 7},
+		{itemMapEnd, "", 8},
+		{itemEOF, "", 9},
+	}
+	lx := lex(arrayOfMaps)
+	expect(t, lx, expectedItems)
+}
