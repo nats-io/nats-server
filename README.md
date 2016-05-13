@@ -94,10 +94,9 @@ Common Options:
 
 ```
 
-port: 4242      # port to listen for client connections
-net: apcera.me  # net interface to listen
+listen: localhost:4242 # host/port to listen for client connections
 
-http_port: 8222 # HTTP monitoring port
+http: localhost:8222 # HTTP monitoring port
 
 # Authorization for client connections
 authorization {
@@ -111,8 +110,7 @@ authorization {
 
 cluster {
 
-  host: '127.0.0.1'  # host/net interface
-  port: 4244         # port for inbound route connections
+  listen: localhost:4244 # host/port for inbound route connections
 
   # Authorization for route connections
   authorization {
@@ -179,14 +177,11 @@ Alternatively, you could use a configuration file, let's call it `seed.conf`, wi
 ```
 # Cluster Seed Node
 
-port: 4222
-net: 127.0.0.1
-
-http_port: 8222
+listen: 127.0.0.1:4222
+http: 8222
 
 cluster {
-  host: 127.0.0.1
-  port: 4248
+  listen: 127.0.0.1:4248
 }
 ```
 and start the server like this:
@@ -196,8 +191,8 @@ gnatsd -config ./seed.conf -D
 
 This will produce an output similar to:
 ```
-[75653] 2016/04/26 15:14:47.339321 [INF] Listening for route connections on localhost:4248
-[75653] 2016/04/26 15:14:47.340787 [INF] Listening for client connections on 0.0.0.0:4222
+[75653] 2016/04/26 15:14:47.339321 [INF] Listening for route connections on 127.0.0.1:4248
+[75653] 2016/04/26 15:14:47.340787 [INF] Listening for client connections on 127.0.0.1:4222
 [75653] 2016/04/26 15:14:47.340822 [DBG] server id is xZfu3u7usAPWkuThomoGzM
 [75653] 2016/04/26 15:14:47.340825 [INF] server is ready
 ```
@@ -307,8 +302,7 @@ with a CA authority to verify the client certificates.
 ```
 # Simple TLS config file
 
-net:  127.0.0.1
-port: 4443
+listen: 127.0.0.1:4443
 
 tls {
   cert_file:  "./configs/certs/server-cert.pem"
@@ -339,8 +333,7 @@ both directions. Certificates can be configured only for the server's cluster id
 
 ```
 cluster {
-  host: '127.0.0.1'
-  port: 4244
+  listen: 127.0.0.1:4244
 
   tls {
     # Route cert
