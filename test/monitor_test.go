@@ -377,6 +377,54 @@ func TestConnzWithSubs(t *testing.T) {
 	}
 }
 
+func TestConnzWithAuth(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/multi_user.conf")
+	defer srv.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	curl := fmt.Sprintf("nats://%s:%s@%s/", opts.Users[0].Username, opts.Users[0].Password, endpoint)
+	nc, err := nats.Connect(curl)
+	if err != nil {
+		t.Fatalf("Got an error on Connect: %+v\n", err)
+	}
+	defer nc.Close()
+
+	ch := make(chan struct{})
+	nc.Subscribe("foo", func(m *nats.Msg) { ch <- struct{}{} })
+	nc.Publish("foo", []byte("Hello"))
+
+	// Wait for message
+	<-ch
+
+	url := fmt.Sprintf("http://localhost:%d/", opts.HTTPPort)
+
+	resp, err := http.Get(url + "connz?auth=1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	c := server.Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	// Test that we have authorized_user and its Alice.
+	ci := c.Conns[0]
+	if ci.AuthorizedUser != opts.Users[0].Username {
+		t.Fatalf("Expected authorized_user to be %q, got %q\n",
+			opts.Users[0].Username, ci.AuthorizedUser)
+	}
+
+}
+
 func TestConnzWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()

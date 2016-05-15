@@ -36,25 +36,26 @@ type Connz struct {
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid          uint64    `json:"cid"`
-	IP           string    `json:"ip"`
-	Port         int       `json:"port"`
-	Start        time.Time `json:"start"`
-	LastActivity time.Time `json:"last_activity"`
-	Uptime       string    `json:"uptime"`
-	Idle         string    `json:"idle"`
-	Pending      int       `json:"pending_bytes"`
-	InMsgs       int64     `json:"in_msgs"`
-	OutMsgs      int64     `json:"out_msgs"`
-	InBytes      int64     `json:"in_bytes"`
-	OutBytes     int64     `json:"out_bytes"`
-	NumSubs      uint32    `json:"subscriptions"`
-	Name         string    `json:"name,omitempty"`
-	Lang         string    `json:"lang,omitempty"`
-	Version      string    `json:"version,omitempty"`
-	TLSVersion   string    `json:"tls_version,omitempty"`
-	TLSCipher    string    `json:"tls_cipher_suite,omitempty"`
-	Subs         []string  `json:"subscriptions_list,omitempty"`
+	Cid            uint64    `json:"cid"`
+	IP             string    `json:"ip"`
+	Port           int       `json:"port"`
+	Start          time.Time `json:"start"`
+	LastActivity   time.Time `json:"last_activity"`
+	Uptime         string    `json:"uptime"`
+	Idle           string    `json:"idle"`
+	Pending        int       `json:"pending_bytes"`
+	InMsgs         int64     `json:"in_msgs"`
+	OutMsgs        int64     `json:"out_msgs"`
+	InBytes        int64     `json:"in_bytes"`
+	OutBytes       int64     `json:"out_bytes"`
+	NumSubs        uint32    `json:"subscriptions"`
+	Name           string    `json:"name,omitempty"`
+	Lang           string    `json:"lang,omitempty"`
+	Version        string    `json:"version,omitempty"`
+	TLSVersion     string    `json:"tls_version,omitempty"`
+	TLSCipher      string    `json:"tls_cipher_suite,omitempty"`
+	AuthorizedUser string    `json:"authorized_user,omitempty"`
+	Subs           []string  `json:"subscriptions_list,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -76,6 +77,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	c := &Connz{}
 	c.Now = time.Now()
 
+	auth, _ := strconv.Atoi(r.URL.Query().Get("auth"))
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
@@ -216,12 +218,18 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 			ci.IP = addr.IP.String()
 		}
 
+		// Fill in subscription data if requested.
 		if subs == 1 {
 			sublist := make([]*subscription, 0, len(client.subs))
 			for _, sub := range client.subs {
 				sublist = append(sublist, sub)
 			}
 			ci.Subs = castToSliceString(sublist)
+		}
+
+		// Fill in user if auth requested.
+		if auth == 1 {
+			ci.AuthorizedUser = client.opts.Username
 		}
 
 		client.mu.Unlock()
