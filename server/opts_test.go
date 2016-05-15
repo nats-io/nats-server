@@ -389,3 +389,11 @@ func TestListenPortWithColonConfig(t *testing.T) {
 		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
 	}
 }
+
+func TestMultipleUsersConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/multiple_users.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+}

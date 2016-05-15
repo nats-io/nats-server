@@ -72,6 +72,9 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	if opts.Username != "" {
 		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
 	}
+	if opts.Users != nil {
+		a = auth.NewMultiUser(opts.Users)
+	}
 	srv = RunServerWithAuth(opts, a)
 	return
 }
