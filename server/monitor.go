@@ -356,25 +356,25 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 type Varz struct {
 	*Info
 	*Options
-	Port             int       `json:"port"`
-	MaxPayload       int       `json:"max_payload"`
-	Start            time.Time `json:"start"`
-	Now              time.Time `json:"now"`
-	Uptime           string    `json:"uptime"`
-	Mem              int64     `json:"mem"`
-	Cores            int       `json:"cores"`
-	CPU              float64   `json:"cpu"`
-	Connections      int       `json:"connections"`
-	TotalConnections uint64    `json:"total_connections"`
-	Routes           int       `json:"routes"`
-	Remotes          int       `json:"remotes"`
-	InMsgs           int64     `json:"in_msgs"`
-	OutMsgs          int64     `json:"out_msgs"`
-	InBytes          int64     `json:"in_bytes"`
-	OutBytes         int64     `json:"out_bytes"`
-	SlowConsumers    int64     `json:"slow_consumers"`
-
-	HTTPReqStats map[string]uint64 `json:"http_req_stats"`
+	Port             int               `json:"port"`
+	MaxPayload       int               `json:"max_payload"`
+	Start            time.Time         `json:"start"`
+	Now              time.Time         `json:"now"`
+	Uptime           string            `json:"uptime"`
+	Mem              int64             `json:"mem"`
+	Cores            int               `json:"cores"`
+	CPU              float64           `json:"cpu"`
+	Connections      int               `json:"connections"`
+	TotalConnections uint64            `json:"total_connections"`
+	Routes           int               `json:"routes"`
+	Remotes          int               `json:"remotes"`
+	InMsgs           int64             `json:"in_msgs"`
+	OutMsgs          int64             `json:"out_msgs"`
+	InBytes          int64             `json:"in_bytes"`
+	OutBytes         int64             `json:"out_bytes"`
+	SlowConsumers    int64             `json:"slow_consumers"`
+	Subscriptions    uint32            `json:"subscriptions"`
+	HTTPReqStats     map[string]uint64 `json:"http_req_stats"`
 }
 
 type usage struct {
@@ -456,6 +456,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v.OutMsgs = s.outMsgs
 	v.OutBytes = s.outBytes
 	v.SlowConsumers = s.slowConsumers
+	v.Subscriptions = s.sl.Count()
 	s.httpReqStats[VarzPath]++
 	v.HTTPReqStats = s.httpReqStats
 	s.mu.Unlock()

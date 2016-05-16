@@ -168,6 +168,9 @@ func TestVarz(t *testing.T) {
 	if v.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 	}
+	if v.Subscriptions != 1 {
+		t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+	}
 
 	// Test JSONP
 	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "varz?callback=callback")
