@@ -160,7 +160,7 @@ max_pending_size: 10000000
 Setting up a full mesh cluster is really easy. When running NATS Servers in different hosts, the command line parameters for all servers could be as simple as:
 
 ```
-gnatsd -cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT -routes://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
+gnatsd -cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT -routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
 ```
 
 Even on the host where the "seed" is running, the above command would work. The server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
