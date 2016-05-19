@@ -423,7 +423,10 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	}
 	sid := matches[RSID_SID_INDEX]
 
-	if sub, ok := client.subs[string(sid)]; ok {
+	client.mu.Lock()
+	sub, ok := client.subs[string(sid)]
+	client.mu.Unlock()
+	if ok {
 		return sub, true
 	}
 	return nil, true
