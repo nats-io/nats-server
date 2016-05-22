@@ -432,11 +432,9 @@ func TestConnzLastActivity(t *testing.T) {
 		t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
 	}
 
-	// On Windows, looks like the precision is too low, and if we
-	// don't wait, first and last would be equal.
-	if runtime.GOOS == "windows" {
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Just wait a bit to make sure that there is a difference
+	// between first and last.
+	time.Sleep(100 * time.Millisecond)
 
 	// Message delivery should trigger as well
 	nc2.Publish("foo", []byte("Hello"))
