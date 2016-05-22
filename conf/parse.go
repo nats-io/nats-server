@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -173,12 +174,20 @@ func (p *parser) processItem(it item) error {
 // Used to map an environment value into a temporary map to pass to secondary Parse call.
 const pkey = "pk"
 
+// We special case raw strings here that are bcrypt'd. This allows us not to force quoting the strings
+const bcryptPrefix = "2a$"
+
 // lookupVariable will lookup a variable reference. It will use block scoping on keys
 // it has seen before, with the top level scoping being the environment variables. We
 // ignore array contexts and only process the map contexts..
 //
 // Returns true for ok if it finds something, similar to map.
 func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
+	// Do special check to see if it is a raw bcrypt string.
+	if strings.HasPrefix(varReference, bcryptPrefix) {
+		return "$" + varReference, true
+	}
+
 	// Loop through contexts currently on the stack.
 	for i := len(p.ctxs) - 1; i >= 0; i -= 1 {
 		ctx := p.ctxs[i]

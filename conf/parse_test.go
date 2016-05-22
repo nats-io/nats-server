@@ -89,6 +89,13 @@ func TestEnvVariable(t *testing.T) {
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 
+func TestBcryptVariable(t *testing.T) {
+	ex := map[string]interface{}{
+		"password": "$2a$11$ooo",
+	}
+	test(t, "password: $2a$11$ooo", ex)
+}
+
 var sample1 = `
 foo  {
   host {
