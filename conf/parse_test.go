@@ -1,7 +1,10 @@
 package conf
 
 import (
+	"fmt"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +33,60 @@ func TestSimpleTopLevel(t *testing.T) {
 		"boo": int64(22),
 	}
 	test(t, "foo='1'; bar=2.2; baz=true; boo=22", ex)
+}
+
+var varSample = `
+  index = 22
+  foo = $index
+`
+
+func TestSimpleVariable(t *testing.T) {
+	ex := map[string]interface{}{
+		"index": int64(22),
+		"foo":   int64(22),
+	}
+	test(t, varSample, ex)
+}
+
+var varNestedSample = `
+  index = 22
+  nest {
+    index = 11
+    foo = $index
+  }
+  bar = $index
+`
+
+func TestNestedVariable(t *testing.T) {
+	ex := map[string]interface{}{
+		"index": int64(22),
+		"nest": map[string]interface{}{
+			"index": int64(11),
+			"foo":   int64(11),
+		},
+		"bar": int64(22),
+	}
+	test(t, varNestedSample, ex)
+}
+
+func TestMissingVariable(t *testing.T) {
+	_, err := Parse("foo=$index")
+	if err == nil {
+		t.Fatalf("Expected an error for a missing variable, got none")
+	}
+	if !strings.HasPrefix(err.Error(), "Variable reference") {
+		t.Fatalf("Wanted a variable reference err, got %q\n", err)
+	}
+}
+
+func TestEnvVariable(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": int64(22),
+	}
+	evar := "__UNIQ22__"
+	os.Setenv(evar, "22")
+	defer os.Unsetenv(evar)
+	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 
 var sample1 = `

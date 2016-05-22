@@ -38,6 +38,7 @@ const (
 	itemMapStart
 	itemMapEnd
 	itemCommentStart
+	itemVariable
 )
 
 const (
@@ -178,7 +179,7 @@ func (lx *lexer) errorf(format string, values ...interface{}) stateFn {
 	return nil
 }
 
-// lexTop consumes elements at the top level of TOML data.
+// lexTop consumes elements at the top level of data structure.
 func lexTop(lx *lexer) stateFn {
 	r := lx.next()
 	if isWhitespace(r) || isNL(r) {
@@ -290,7 +291,7 @@ func lexQuotedKey(lx *lexer) stateFn {
 // is not whitespace) has already been consumed.
 func lexKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if isWhitespace(r) || isNL(r) || isKeySeparator(r) {
+	if isWhitespace(r) || isNL(r) || isKeySeparator(r) || r == eof {
 		lx.emit(itemKey)
 		return lexKeyEnd
 	}
@@ -308,6 +309,9 @@ func lexKeyEnd(lx *lexer) stateFn {
 		return lexSkip(lx, lexKeyEnd)
 	case isKeySeparator(r):
 		return lexSkip(lx, lexValue)
+	case r == eof:
+		lx.emit(itemEOF)
+		return nil
 	}
 	// We start the value here
 	lx.backup()
@@ -570,6 +574,15 @@ func (lx *lexer) isBool() bool {
 	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
 }
 
+// Check if the unquoted string is a variable reference, starting with $.
+func (lx *lexer) isVariable() bool {
+	if lx.input[lx.start] == '$' {
+		lx.start += 1
+		return true
+	}
+	return false
+}
+
 // lexQuotedString consumes the inner contents of a string. It assumes that the
 // beginning '"' has already been consumed and ignored. It will not interpret any
 // internal contents.
@@ -616,6 +629,8 @@ func lexString(lx *lexer) stateFn {
 		lx.backup()
 		if lx.isBool() {
 			lx.emit(itemBool)
+		} else if lx.isVariable() {
+			lx.emit(itemVariable)
 		} else {
 			lx.emit(itemString)
 		}
@@ -918,6 +933,8 @@ func (itype itemType) String() string {
 		return "MapEnd"
 	case itemCommentStart:
 		return "CommentStart"
+	case itemVariable:
+		return "Variable"
 	}
 	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype.String()))
 }

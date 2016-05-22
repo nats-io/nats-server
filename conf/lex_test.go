@@ -20,6 +20,15 @@ func expect(t *testing.T, lx *lexer, items []item) {
 	}
 }
 
+func TestPlainValue(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo")
+	expect(t, lx, expectedItems)
+}
+
 func TestSimpleKeyStringValues(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
@@ -189,6 +198,20 @@ func TestDateValues(t *testing.T) {
 	}
 
 	lx := lex("foo = 2016-05-04T18:53:41Z")
+	expect(t, lx, expectedItems)
+}
+
+func TestVariableValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemVariable, "bar", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = $bar")
+	expect(t, lx, expectedItems)
+	lx = lex("foo =$bar")
+	expect(t, lx, expectedItems)
+	lx = lex("foo $bar")
 	expect(t, lx, expectedItems)
 }
 
