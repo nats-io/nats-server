@@ -16,7 +16,9 @@ package conf
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -157,9 +159,56 @@ func (p *parser) processItem(it item) error {
 		array := p.ctx
 		p.popContext()
 		p.setValue(array)
+	case itemVariable:
+		if value, ok := p.lookupVariable(it.val); ok {
+			p.setValue(value)
+		} else {
+			return fmt.Errorf("Variable reference for '%s' on line %d can not be found.",
+				it.val, it.line)
+		}
 	}
 
 	return nil
+}
+
+// Used to map an environment value into a temporary map to pass to secondary Parse call.
+const pkey = "pk"
+
+// We special case raw strings here that are bcrypt'd. This allows us not to force quoting the strings
+const bcryptPrefix = "2a$"
+
+// lookupVariable will lookup a variable reference. It will use block scoping on keys
+// it has seen before, with the top level scoping being the environment variables. We
+// ignore array contexts and only process the map contexts..
+//
+// Returns true for ok if it finds something, similar to map.
+func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
+	// Do special check to see if it is a raw bcrypt string.
+	if strings.HasPrefix(varReference, bcryptPrefix) {
+		return "$" + varReference, true
+	}
+
+	// Loop through contexts currently on the stack.
+	for i := len(p.ctxs) - 1; i >= 0; i -= 1 {
+		ctx := p.ctxs[i]
+		// Process if it is a map context
+		if m, ok := ctx.(map[string]interface{}); ok {
+			if v, ok := m[varReference]; ok {
+				return v, ok
+			}
+		}
+	}
+
+	// If we are here, we have exhausted our context maps and still not found anything.
+	// Parse from the environment.
+	if vStr, ok := os.LookupEnv(varReference); ok {
+		// Everything we get here will be a string value, so we need to process as a parser would.
+		if vmap, err := Parse(fmt.Sprintf("%s=%s", pkey, vStr)); err == nil {
+			v, ok := vmap[pkey]
+			return v, ok
+		}
+	}
+	return nil, false
 }
 
 func (p *parser) setValue(val interface{}) {
