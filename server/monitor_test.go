@@ -357,9 +357,11 @@ func TestConnzLastActivity(t *testing.T) {
 
 	nc := createClientConnSubscribeAndPublish(t)
 	defer nc.Close()
+	nc.Flush()
 
 	nc2 := createClientConnSubscribeAndPublish(t)
 	defer nc2.Close()
+	nc2.Flush()
 
 	pollConz := func() *Connz {
 		url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
