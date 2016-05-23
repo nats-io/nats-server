@@ -422,11 +422,12 @@ func (s *Server) StartHTTPSMonitoring() {
 
 // HTTP endpoints
 const (
-	RootPath   = "/"
-	VarzPath   = "/varz"
-	ConnzPath  = "/connz"
-	RoutezPath = "/routez"
-	SubszPath  = "/subsz"
+	RootPath    = "/"
+	VarzPath    = "/varz"
+	ConnzPath   = "/connz"
+	RoutezPath  = "/routez"
+	SubszPath   = "/subsz"
+	StackszPath = "/stacksz"
 )
 
 // Start the monitoring server
@@ -476,6 +477,8 @@ func (s *Server) startMonitoring(secure bool) {
 	mux.HandleFunc(SubszPath, s.HandleSubsz)
 	// Subz alias for backwards compatibility
 	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
+	// Stacksz
+	mux.HandleFunc(StackszPath, s.HandleStacksz)
 
 	srv := &http.Server{
 		Addr:           hp,

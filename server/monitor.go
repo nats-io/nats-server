@@ -352,6 +352,26 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
+// HandleStacksz processes HTTP requests for getting stacks
+func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
+	// Do not get any lock here that would prevent gettign the stacks
+	// if we were to have a deadlock somewhere.
+	var buf []byte
+	size := 10000
+	n := 0
+	for {
+		buf = make([]byte, size)
+		n = runtime.Stack(buf, true)
+		if n < size {
+			break
+		}
+
+		size = 2 * size
+	}
+	// Handle response
+	ResponseHandler(w, r, buf[:n])
+}
+
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
 	*Info

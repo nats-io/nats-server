@@ -1206,3 +1206,41 @@ func createClientConnWithName(t *testing.T, name string) *nats.Conn {
 
 	return nc
 }
+
+func TestStacksz(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
+	resp, err := http.Get(url + "stacksz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Fatalf("Expected application/json content-type, got %s\n", ct)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	// Check content
+	str := string(body)
+	if !strings.Contains(str, "HandleStacksz") {
+		t.Fatalf("Result does not seem to contain server's stacks:\n%v", str)
+	}
+	// Test JSONP
+	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", MONITOR_PORT) + "subscriptionsz?callback=callback")
+	ct = respj.Header.Get("Content-Type")
+	if errj != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if ct != "application/javascript" {
+		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
+	}
+	defer respj.Body.Close()
+}
