@@ -523,6 +523,9 @@ func TestHTTPHost(t *testing.T) {
 			}
 			break
 		}
+		if ip != nil {
+			break
+		}
 	}
 	if ip == nil {
 		t.Fatalf("Could not find non-loopback IPV4 address")
