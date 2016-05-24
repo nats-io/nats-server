@@ -364,25 +364,39 @@ func (c *client) maxPayloadViolation(sz int) {
 }
 
 // Assume the lock is held upon entry.
+func (c *client) sendProto(info []byte, doFlush bool) error {
+	var err error
+	if c.bw != nil && c.nc != nil {
+		deadlineSet := false
+		if doFlush || c.bw.Available() < len(info) {
+			c.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+			deadlineSet = true
+		}
+		_, err = c.bw.Write(info)
+		if err == nil && doFlush {
+			err = c.bw.Flush()
+		}
+		if deadlineSet {
+			c.nc.SetWriteDeadline(time.Time{})
+		}
+	}
+	return err
+}
+
+// Assume the lock is held upon entry.
 func (c *client) sendInfo(info []byte) {
-	c.bw.Write(info)
-	c.bw.Flush()
+	c.sendProto(info, true)
 }
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	if c.bw != nil {
-		c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", err))
-		// Flush errors in place.
-		c.bw.Flush()
-		//c.pcd[c] = needFlush
-	}
+	c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", err)), true)
 	c.mu.Unlock()
 }
 
 func (c *client) sendOK() {
 	c.mu.Lock()
-	c.bw.WriteString("+OK\r\n")
+	c.sendProto([]byte("+OK\r\n"), false)
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
@@ -395,8 +409,7 @@ func (c *client) processPing() {
 		return
 	}
 	c.traceOutOp("PONG", nil)
-	c.bw.WriteString("PONG\r\n")
-	err := c.bw.Flush()
+	err := c.sendProto([]byte("PONG\r\n"), true)
 	if err != nil {
 		c.clearConnection()
 		c.Debugf("Error on Flush, error %s", err.Error())
@@ -734,7 +747,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	// will wait for flush to complete.
 
 	deadlineSet := false
-	if client.bw.Available() < (len(mh) + len(msg) + len(CR_LF)) {
+	if client.bw.Available() < (len(mh) + len(msg)) {
 		client.wfc += 1
 		client.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 		deadlineSet = true
@@ -929,10 +942,7 @@ func (c *client) processPingTimer() {
 	c.pout++
 	if c.pout > c.srv.opts.MaxPingsOut {
 		c.Debugf("Stale Client Connection - Closing")
-		if c.bw != nil {
-			c.bw.WriteString(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection"))
-			c.bw.Flush()
-		}
+		c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
 		c.clearConnection()
 		return
 	}
@@ -940,8 +950,7 @@ func (c *client) processPingTimer() {
 	c.traceOutOp("PING", nil)
 
 	// Send PING
-	c.bw.WriteString("PING\r\n")
-	err := c.bw.Flush()
+	err := c.sendProto([]byte("PING\r\n"), true)
 	if err != nil {
 		c.Debugf("Error on Client Ping Flush, error %s", err)
 		c.clearConnection()
@@ -994,8 +1003,13 @@ func (c *client) clearConnection() {
 	if c.nc == nil {
 		return
 	}
+	// With TLS, Close() is sending an alert (that is doing a write).
+	// Need to set a deadline otherwise the server could block there
+	// if the peer is not reading from socket.
+	c.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
 	c.bw.Flush()
 	c.nc.Close()
+	c.nc.SetWriteDeadline(time.Time{})
 }
 
 func (c *client) typeString() string {
