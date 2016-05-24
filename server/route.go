@@ -74,8 +74,7 @@ func (c *client) sendConnect(tlsRequired bool) {
 		c.closeConnection()
 		return
 	}
-	c.bw.WriteString(fmt.Sprintf(ConProto, b))
-	c.bw.Flush()
+	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
 }
 
 // Process the info message if we are a route.
@@ -249,8 +248,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 
 	route.mu.Lock()
 	defer route.mu.Unlock()
-	route.bw.Write(b.Bytes())
-	route.bw.Flush()
+	route.sendProto(b.Bytes(), true)
 
 	route.Debugf("Route sent local subscriptions")
 }
@@ -495,12 +493,12 @@ func (s *Server) broadcastInterestToRoutes(proto string) {
 	if atomic.LoadInt32(&trace) == 1 {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
+	protoAsBytes := []byte(proto)
 	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
 		route.mu.Lock()
-		route.bw.WriteString(proto)
-		route.bw.Flush()
+		route.sendProto(protoAsBytes, true)
 		route.mu.Unlock()
 		route.traceOutOp("", arg)
 	}
