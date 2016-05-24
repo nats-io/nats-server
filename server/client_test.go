@@ -618,12 +618,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	}
 	opts.Authorization = ""
 	opts.TLSTimeout = 100
-	s := New(opts)
-	if s == nil {
-		panic("No NATS Server object returned.")
-	}
-	// Run server in Go routine.
-	go s.Start()
+	s := RunServer(opts)
 	defer s.Shutdown()
 
 	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
