@@ -61,6 +61,8 @@ type ConnInfo struct {
 // DefaultConnListSize is the default size of the connection list.
 const DefaultConnListSize = 1024
 
+const defaultStackBufSize = 10000
+
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
@@ -356,17 +358,17 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 	// Do not get any lock here that would prevent getting the stacks
 	// if we were to have a deadlock somewhere.
-	var buf []byte
-	size := 10000
+	var defaultBuf [defaultStackBufSize]byte
+	size := defaultStackBufSize
+	buf := defaultBuf[:size]
 	n := 0
 	for {
-		buf = make([]byte, size)
 		n = runtime.Stack(buf, true)
 		if n < size {
 			break
 		}
-
 		size *= 2
+		buf = make([]byte, size)
 	}
 	// Handle response
 	ResponseHandler(w, r, buf[:n])
