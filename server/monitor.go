@@ -354,7 +354,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 
 // HandleStacksz processes HTTP requests for getting stacks
 func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
-	// Do not get any lock here that would prevent gettign the stacks
+	// Do not get any lock here that would prevent getting the stacks
 	// if we were to have a deadlock somewhere.
 	var buf []byte
 	size := 10000
@@ -366,7 +366,7 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		size = 2 * size
+		size *= 2
 	}
 	// Handle response
 	ResponseHandler(w, r, buf[:n])
