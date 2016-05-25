@@ -15,12 +15,13 @@ const (
 	byInBytes          = "bytes_from"
 	byLast             = "last"
 	byIdle             = "idle"
+	byUptime           = "uptime"
 )
 
 // IsValid determines if a sort option is valid
 func (s SortOpt) IsValid() bool {
 	switch s {
-	case "", byCid, bySubs, byPending, byOutMsgs, byInMsgs, byOutBytes, byInBytes, byLast, byIdle:
+	case "", byCid, bySubs, byPending, byOutMsgs, byInMsgs, byOutBytes, byInBytes, byLast, byIdle, byUptime:
 		return true
 	default:
 		return false
