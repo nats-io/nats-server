@@ -67,8 +67,8 @@ const defaultStackBufSize = 10000
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 
-	// If no sort option given, sort by cid
-	if sortOpt == "" {
+	// If no sort option given or sort is by uptime, then sort by cid
+	if sortOpt == "" || sortOpt == byUptime {
 		sortOpt = byCid
 	} else if !sortOpt.IsValid() {
 		w.WriteHeader(http.StatusBadRequest)
