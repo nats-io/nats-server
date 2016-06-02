@@ -197,6 +197,14 @@ This will produce an output similar to:
 [75653] 2016/04/26 15:14:47.340825 [INF] server is ready
 ```
 
+It is also possible to specify the hostname and port independently. At least the port is required. If you leave the hostname off it will bind to all the interfaces ('0.0.0.0').
+```
+cluster {
+  host: 127.0.0.1
+  port: 4248
+}
+```
+
 Now let's start two more servers, each one connecting to the seed server.
 
 ```
