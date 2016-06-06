@@ -310,10 +310,19 @@ func (c *client) processErr(errStr string) {
 func (c *client) processConnect(arg []byte) error {
 	c.traceInOp("CONNECT", arg)
 
-	// This will be resolved regardless before we exit this func,
-	// so we can just clear it here.
 	c.mu.Lock()
-	c.clearAuthTimer()
+	// If we can't stop the timer because the callback is in progress...
+	if !c.clearAuthTimer() {
+		// wait for it to finish and handle sending the failure back to
+		// the client.
+		for c.nc != nil {
+			c.mu.Unlock()
+			time.Sleep(25 * time.Millisecond)
+			c.mu.Lock()
+		}
+		c.mu.Unlock()
+		return nil
+	}
 	c.last = time.Now()
 	typ := c.typ
 	r := c.route
@@ -983,12 +992,13 @@ func (c *client) setAuthTimer(d time.Duration) {
 }
 
 // Lock should be held
-func (c *client) clearAuthTimer() {
+func (c *client) clearAuthTimer() bool {
 	if c.atmr == nil {
-		return
+		return true
 	}
-	c.atmr.Stop()
+	stopped := c.atmr.Stop()
 	c.atmr = nil
+	return stopped
 }
 
 func (c *client) isAuthTimerSet() bool {
