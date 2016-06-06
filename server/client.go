@@ -797,12 +797,6 @@ func (c *client) processMsg(msg []byte) {
 	// Snapshot server.
 	srv := c.srv
 
-	// Create cache subs map if needed.
-	if c.cache.results == nil && srv != nil {
-		c.cache.results = make(map[string]*SublistResult)
-		c.cache.genid = atomic.LoadUint64(&srv.sl.genid)
-	}
-
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.cache.inMsgs += 1
@@ -818,13 +812,10 @@ func (c *client) processMsg(msg []byte) {
 		return
 	}
 
-	var genid uint64
 	var r *SublistResult
 	var ok bool
 
-	if srv != nil {
-		genid = atomic.LoadUint64(&srv.sl.genid)
-	}
+	genid := atomic.LoadUint64(&srv.sl.genid)
 
 	if genid == c.cache.genid && c.cache.results != nil {
 		r, ok = c.cache.results[string(c.pa.subject)]
@@ -841,7 +832,7 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	// Check for no interest, short circuit if so.
-	if len(r.psubs) <= 0 && len(r.qsubs) <= 0 {
+	if len(r.psubs) == 0 && len(r.qsubs) == 0 {
 		return
 	}
 
