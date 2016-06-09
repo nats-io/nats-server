@@ -397,3 +397,11 @@ func TestMultipleUsersConfig(t *testing.T) {
 	}
 	processOptions(opts)
 }
+
+func TestAuthorizationConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/authorization.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+}

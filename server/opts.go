@@ -20,8 +20,26 @@ import (
 
 // For multiple accounts/users.
 type User struct {
-	Username string `json:"user"`
-	Password string `json:"password"`
+	Username    string        `json:"user"`
+	Password    string        `json:"password"`
+	Permissions Authorization `json:"permissions"`
+	MaxConns    int           `json:"max_connections"`
+	MaxSubs     int           `json:"max_subscriptions"`
+}
+
+// Authorization are the allowed subjects on a per
+// publish or subscribe basis.
+type Authorization struct {
+	pub *Permission `json:"publish"`
+	sub *Permission `json:"subscribe"`
+}
+
+// Permission is for describing the subjects and rate limits
+// that an account connection can publish or subscribe to and
+// what limits if any exist for message and/or byte rates.
+type Permission struct {
+	Subjects []string `json:"subjects"`
+	// FIXME(dlc) figure out rates.
 }
 
 // Options block for gnatsd server.
