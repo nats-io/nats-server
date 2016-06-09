@@ -11,7 +11,7 @@ The best way to get the NATS server is to use one of the pre-built release binar
 You can also connect to a public server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443).
 
 Of course you can build the latest version of the server from the `master` branch. The master branch will always build and pass tests, but may not work correctly in your environment.
-You will first need [*Go*](https://golang.org/) installed on your machine (version 1.4+ is required) to build the NATS server.
+You will first need [*Go*](https://golang.org/) installed on your machine (version 1.5+ is required) to build the NATS server.
 
 ### Running
 
