@@ -845,6 +845,11 @@ func (c *client) processMsg(msg []byte) {
 		return
 	}
 
+	// Check for pedantic and bad subject.
+	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
+		return
+	}
+
 	// Scratch buffer..
 	msgh := c.msgb[:len(msgHeadProto)]
 
