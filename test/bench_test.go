@@ -72,44 +72,47 @@ func sizedString(sz int) string {
 	return string(sizedBytes(sz))
 }
 
+// Publish subject for pub benchmarks.
+var psub = "a"
+
 func Benchmark____PubNo_Payload(b *testing.B) {
-	benchPub(b, "a", "")
+	benchPub(b, psub, "")
 }
 
 func Benchmark____Pub8b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func Benchmark___Pub32b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(32)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func Benchmark__Pub256B_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(256)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func Benchmark____Pub1K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(1024)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func Benchmark____Pub4K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(4 * 1024)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func Benchmark____Pub8K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8 * 1024)
-	benchPub(b, "a", s)
+	benchPub(b, psub, s)
 }
 
 func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
