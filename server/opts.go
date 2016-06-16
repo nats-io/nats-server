@@ -5,7 +5,6 @@ package server
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -20,26 +19,16 @@ import (
 
 // For multiple accounts/users.
 type User struct {
-	Username    string        `json:"user"`
-	Password    string        `json:"password"`
-	Permissions Authorization `json:"permissions"`
-	MaxConns    int           `json:"max_connections"`
-	MaxSubs     int           `json:"max_subscriptions"`
+	Username    string       `json:"user"`
+	Password    string       `json:"password"`
+	Permissions *Permissions `json:"permissions"`
 }
 
 // Authorization are the allowed subjects on a per
 // publish or subscribe basis.
-type Authorization struct {
-	pub *Permission `json:"publish"`
-	sub *Permission `json:"subscribe"`
-}
-
-// Permission is for describing the subjects and rate limits
-// that an account connection can publish or subscribe to and
-// what limits if any exist for message and/or byte rates.
-type Permission struct {
-	Subjects []string `json:"subjects"`
-	// FIXME(dlc) figure out rates.
+type Permissions struct {
+	Publish   []string `json:"publish"`
+	Subscribe []string `json:"subscribe"`
 }
 
 // Options block for gnatsd server.
@@ -52,7 +41,7 @@ type Options struct {
 	NoSigs             bool          `json:"-"`
 	Logtime            bool          `json:"-"`
 	MaxConn            int           `json:"max_connections"`
-	Users              []User        `json:"-"`
+	Users              []*User       `json:"-"`
 	Username           string        `json:"-"`
 	Password           string        `json:"-"`
 	Authorization      string        `json:"-"`
@@ -89,13 +78,15 @@ type Options struct {
 	TLSConfig          *tls.Config   `json:"-"`
 }
 
+// Configuration file  quthorization section.
 type authorization struct {
 	// Singles
 	user string
 	pass string
 	// Multiple Users
-	users   []User
-	timeout float64
+	users              []*User
+	timeout            float64
+	defaultPermissions *Permissions
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -343,15 +334,132 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			}
 			auth.timeout = at
 		case "users":
-			b, _ := json.Marshal(mv)
-			users := []User{}
-			if err := json.Unmarshal(b, &users); err != nil {
-				return nil, fmt.Errorf("Could not parse user array properly, %v", err)
+			users, err := parseUsers(mv)
+			if err != nil {
+				return nil, err
 			}
 			auth.users = users
+		case "default_permission", "default_permissions":
+			pm, ok := mv.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("Expected default permissions to be a map/struct, got %+v", mv)
+			}
+			permissions, err := parseUserPermissions(pm)
+			if err != nil {
+				return nil, err
+			}
+			auth.defaultPermissions = permissions
 		}
+
+		// Now check for permission defaults with multiple users, etc.
+		if auth.users != nil && auth.defaultPermissions != nil {
+			for _, user := range auth.users {
+				if user.Permissions == nil {
+					user.Permissions = auth.defaultPermissions
+				}
+			}
+		}
+
 	}
 	return auth, nil
+}
+
+// Helper function to parse multiple users array with optional permissions.
+func parseUsers(mv interface{}) ([]*User, error) {
+	// Make sure we have an array
+	uv, ok := mv.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+	}
+	users := []*User{}
+	for _, u := range uv {
+		// Check its a map/struct
+		um, ok := u.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
+		}
+		user := &User{}
+		for k, v := range um {
+			switch strings.ToLower(k) {
+			case "user", "username":
+				user.Username = v.(string)
+			case "pass", "password":
+				user.Password = v.(string)
+			case "permission", "permissions", "authroization":
+				pm, ok := v.(map[string]interface{})
+				if !ok {
+					return nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
+				}
+				permissions, err := parseUserPermissions(pm)
+				if err != nil {
+					return nil, err
+				}
+				user.Permissions = permissions
+			}
+		}
+		// Check to make sure we have at least username and password
+		if user.Username == "" || user.Password == "" {
+			return nil, fmt.Errorf("User entry requires a user and a password")
+		}
+		users = append(users, user)
+	}
+	return users, nil
+}
+
+// Helper function to parse user/account permissions
+func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
+	p := &Permissions{}
+	for k, v := range pm {
+		switch strings.ToLower(k) {
+		case "pub", "publish":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Publish = subjects
+		case "sub", "subscribe":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Subscribe = subjects
+		default:
+			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
+		}
+	}
+	return p, nil
+}
+
+// Helper function to parse subject singeltons and/or arrays
+func parseSubjects(v interface{}) ([]string, error) {
+	var subjects []string
+	switch v.(type) {
+	case string:
+		subjects = append(subjects, v.(string))
+	case []string:
+		subjects = v.([]string)
+	case []interface{}:
+		for _, i := range v.([]interface{}) {
+			subject, ok := i.(string)
+			if !ok {
+				return nil, fmt.Errorf("Subject in permissions array can not be cast to string")
+			}
+			subjects = append(subjects, subject)
+		}
+	default:
+		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
+	}
+	return checkSubjectArray(subjects)
+}
+
+// Helper function to validate subjects, etc for account permissioning.
+func checkSubjectArray(sa []string) ([]string, error) {
+	for _, s := range sa {
+		if !IsValidSubject(s) {
+			return nil, fmt.Errorf("Subject %q is not a valid subject", s)
+		}
+	}
+	return sa, nil
 }
 
 // PrintTLSHelpAndDie prints TLS usage and exits.
