@@ -29,6 +29,11 @@ func TestUserAuthorizationProto(t *testing.T) {
 	// Check that we now reserve _SYS.> though for internal, so no clients.
 	sendProto(t, c, "PUB _SYS.HB 2\r\nok\r\n")
 	expectResult(t, c, permErrRe)
+
+	// Check that _ is ok
+	sendProto(t, c, "PUB _ 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+
 	c.Close()
 
 	// Bob is a requestor only, e.g. req.foo, req.bar for publish, subscribe only to INBOXes.

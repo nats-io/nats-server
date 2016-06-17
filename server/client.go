@@ -876,8 +876,9 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	// Disallow publish to _SYS.>, these are reserved for internals.
-	if c.pa.subject[0] == '_' && c.pa.subject[1] == 'S' &&
-		c.pa.subject[2] == 'Y' && c.pa.subject[3] == 'S' {
+	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
+		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&
+		c.pa.subject[3] == 'S' && c.pa.subject[4] == '.' {
 		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
