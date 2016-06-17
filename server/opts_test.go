@@ -399,7 +399,7 @@ func TestMultipleUsersConfig(t *testing.T) {
 }
 
 // Test highly depends on contents of the config file listed below. Any changes to that file
-// may very weel break this test.
+// may very well break this test.
 func TestAuthorizationConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/authorization.conf")
 	if err != nil {

@@ -17,6 +17,6 @@ var (
 	// ErrMaxPayload represents an error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
 
-	// ErrReservedPublish represents an error condition when the payload is too big.
+	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
 	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
 )

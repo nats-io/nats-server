@@ -78,7 +78,7 @@ type Options struct {
 	TLSConfig          *tls.Config   `json:"-"`
 }
 
-// Configuration file  quthorization section.
+// Configuration file authorization section.
 type authorization struct {
 	// Singles
 	user string
@@ -442,7 +442,7 @@ func parseSubjects(v interface{}) ([]string, error) {
 		for _, i := range v.([]interface{}) {
 			subject, ok := i.(string)
 			if !ok {
-				return nil, fmt.Errorf("Subject in permissions array can not be cast to string")
+				return nil, fmt.Errorf("Subject in permissions array cannot be cast to string")
 			}
 			subjects = append(subjects, subject)
 		}

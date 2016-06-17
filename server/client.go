@@ -171,6 +171,7 @@ func (c *client) RegisterUser(user *User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Pre-allocate all to simplify checks later.
 	c.perms = &permissions{}
 	c.perms.sub = NewSublist()
 	c.perms.pub = NewSublist()
@@ -641,7 +642,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if c.perms != nil && c.perms.sub != nil {
+	if c.perms != nil {
 		r := c.perms.sub.Match(string(sub.subject))
 		if len(r.psubs) == 0 {
 			c.mu.Unlock()
@@ -884,7 +885,7 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	// Check if published subject is allowed if we have permissions in place.
-	if c.perms != nil && c.perms.pub != nil {
+	if c.perms != nil {
 		allowed, ok := c.perms.pcache[string(c.pa.subject)]
 		if ok && !allowed {
 			c.pubPermissionViolation(c.pa.subject)

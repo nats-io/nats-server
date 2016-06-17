@@ -1,6 +1,7 @@
 
 # General
 
+- [ ] Blacklist or ERR escalation to close connection for auth/permissions
 - [ ] Protocol updates, MAP, MPUB, etc
 - [ ] Multiple listen endpoints
 - [ ] Websocket / HTTP2 strategy
