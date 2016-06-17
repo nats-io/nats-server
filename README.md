@@ -665,5 +665,5 @@ IN THE SOFTWARE.
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://img.shields.io/coveralls/nats-io/gnatsd.svg
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
-[ReportCard-Image]: http://goreportcard.com/badge/nats-io/gnatsd
+[ReportCard-Image]: http://goreportcard.com/badge/github.com/nats-io/gnatsd
 [github-release]: https://github.com/nats-io/gnatsd/releases/
