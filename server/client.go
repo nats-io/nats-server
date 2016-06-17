@@ -876,6 +876,8 @@ func (c *client) processMsg(msg []byte) {
 		c.traceMsg(msg)
 	}
 
+	// defintely
+
 	// Disallow publish to _SYS.>, these are reserved for internals.
 	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
 		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&

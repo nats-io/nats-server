@@ -28,7 +28,7 @@ func TestMultipleUserAuth(t *testing.T) {
 
 	nc, err := nats.Connect(url)
 	if err != nil {
-		t.Fatalf("Expected a succesful connect, got %v\n", err)
+		t.Fatalf("Expected a successful connect, got %v\n", err)
 	}
 	defer nc.Close()
 

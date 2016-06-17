@@ -119,7 +119,7 @@ func getCounterArrayData(counter PDH_HCOUNTER) ([]float64, error) {
 	var bufCount uint32
 
 	// Retrieving array data requires two calls, the first which
-	// requires an adressable empty buffer, and sets size fields.
+	// requires an addressable empty buffer, and sets size fields.
 	// The second call returns the data.
 	initialBuf := make([]PDH_FMT_COUNTERVALUE_ITEM_DOUBLE, 1)
 	ret := pdhGetFormattedCounterArrayDouble(counter, &bufSize, &bufCount, &initialBuf[0])
