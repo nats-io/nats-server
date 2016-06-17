@@ -404,7 +404,13 @@ func (c *client) authTimeout() {
 }
 
 func (c *client) authViolation() {
-	c.Errorf(ErrAuthorization.Error())
+	if c.srv != nil && c.srv.opts.Users != nil {
+		c.Errorf("%s - User %q",
+			ErrAuthorization.Error(),
+			c.opts.Username)
+	} else {
+		c.Errorf(ErrAuthorization.Error())
+	}
 	c.sendErr("Authorization Violation")
 	c.closeConnection()
 }
@@ -640,7 +646,7 @@ func (c *client) processSub(argo []byte) (err error) {
 		if len(r.psubs) == 0 {
 			c.mu.Unlock()
 			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-			c.Debugf("Permissions Violation for Subcription to %q", sub.subject)
+			c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
 			return nil
 		}
 	}
@@ -872,8 +878,7 @@ func (c *client) processMsg(msg []byte) {
 	// Disallow publish to _SYS.>, these are reserved for internals.
 	if c.pa.subject[0] == '_' && c.pa.subject[1] == 'S' &&
 		c.pa.subject[2] == 'Y' && c.pa.subject[3] == 'S' {
-		c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", c.pa.subject))
-		c.Debugf("Permissions Violation for Publish to %q", c.pa.subject)
+		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
 
@@ -881,15 +886,13 @@ func (c *client) processMsg(msg []byte) {
 	if c.perms != nil && c.perms.pub != nil {
 		allowed, ok := c.perms.pcache[string(c.pa.subject)]
 		if ok && !allowed {
-			c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", c.pa.subject))
-			c.Debugf("Permissions Violation for Publish to %q", c.pa.subject)
+			c.pubPermissionViolation(c.pa.subject)
 			return
 		}
 		if !ok {
 			r := c.perms.pub.Match(string(c.pa.subject))
 			if len(r.psubs) == 0 {
-				c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", c.pa.subject))
-				c.Debugf("Permissions Violation for Publish to %q", c.pa.subject)
+				c.pubPermissionViolation(c.pa.subject)
 				c.perms.pcache[string(c.pa.subject)] = false
 				return
 			} else {
@@ -1039,6 +1042,11 @@ func (c *client) processMsg(msg []byte) {
 			}
 		}
 	}
+}
+
+func (c *client) pubPermissionViolation(subject []byte) {
+	c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subject))
+	c.Errorf("Publish Violation - User %q, Subject %q", c.opts.Username, subject)
 }
 
 func (c *client) processPingTimer() {

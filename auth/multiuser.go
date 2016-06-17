@@ -3,9 +3,8 @@
 package auth
 
 import (
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/nats-io/gnatsd/server"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Plain authentication is a basic username and password
