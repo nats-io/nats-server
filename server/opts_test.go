@@ -415,6 +415,8 @@ func TestAuthorizationConfig(t *testing.T) {
 	for _, u := range opts.Users {
 		mu[u.Username] = u
 	}
+
+	// Alice
 	alice, ok := mu["alice"]
 	if !ok {
 		t.Fatalf("Expected to see user Alice\n")
@@ -446,6 +448,7 @@ func TestAuthorizationConfig(t *testing.T) {
 		t.Fatalf("Expected Alice's subscribe permissions to be '>', got %q\n", subPerm)
 	}
 
+	// Bob
 	bob, ok := mu["bob"]
 	if !ok {
 		t.Fatalf("Expected to see user Bob\n")
@@ -454,6 +457,7 @@ func TestAuthorizationConfig(t *testing.T) {
 		t.Fatalf("Expected Bob's permissions to be non-nil\n")
 	}
 
+	// Susan
 	susan, ok := mu["susan"]
 	if !ok {
 		t.Fatalf("Expected to see user Susan\n")

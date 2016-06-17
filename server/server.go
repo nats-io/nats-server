@@ -516,8 +516,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Check for Auth
 	if authRequired {
-		ttl := secondsToDuration(s.opts.AuthTimeout)
-		c.setAuthTimer(ttl)
+		c.setAuthTimer(secondsToDuration(s.opts.AuthTimeout))
 	}
 
 	// Send our information.
