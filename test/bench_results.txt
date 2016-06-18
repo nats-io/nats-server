@@ -1,4 +1,23 @@
 2015 iMac5k 4Ghz i7 Haswell
+OSX El Capitan 10.11.3
+
+===================
+Go version go1.6
+===================
+
+Benchmark____PubNo_Payload-8	20000000	        88.6 ns/op	 124.11 MB/s
+Benchmark____Pub8b_Payload-8	20000000	        89.8 ns/op	 211.63 MB/s
+Benchmark___Pub32b_Payload-8	20000000	        97.3 ns/op	 452.20 MB/s
+Benchmark__Pub256B_Payload-8	10000000	       129 ns/op	2078.43 MB/s
+Benchmark____Pub1K_Payload-8	 5000000	       216 ns/op	4791.00 MB/s
+Benchmark____Pub4K_Payload-8	 1000000	      1123 ns/op	3657.53 MB/s
+Benchmark____Pub8K_Payload-8	  500000	      2309 ns/op	3553.09 MB/s
+Benchmark___________PubSub-8	10000000	       210 ns/op
+Benchmark___PubSubTwoConns-8	10000000	       205 ns/op
+Benchmark___PubTwoQueueSub-8	10000000	       231 ns/op
+Benchmark__PubFourQueueSub-8	10000000	       233 ns/op
+Benchmark_PubEightQueueSub-8	 5000000	       231 ns/op
+
 OSX Yosemite 10.10.5
 
 ===================

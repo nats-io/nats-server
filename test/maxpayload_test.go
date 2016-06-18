@@ -5,8 +5,10 @@ package test
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats"
 )
@@ -34,6 +36,7 @@ func TestMaxPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not make a raw connection to the server: %v", err)
 	}
+	defer conn.Close()
 	info := make([]byte, 512)
 	_, err = conn.Read(info)
 	if err != nil {
@@ -51,7 +54,7 @@ func TestMaxPayload(t *testing.T) {
 		t.Fatalf("Expected an error message to be sent by the server: %s", err)
 	}
 
-	if strings.Contains(string(errMsg), "Maximum Payload Violation") != true {
+	if !strings.Contains(string(errMsg), "Maximum Payload Violation") {
 		t.Errorf("Received wrong error message (%v)\n", string(errMsg))
 	}
 
@@ -65,7 +68,21 @@ func TestMaxPayload(t *testing.T) {
 	// publishing the bytes following what is suggested by server
 	// in the info message has its connection closed.
 	_, err = conn.Write(big)
-	if err == nil {
+	if err == nil && runtime.GOOS != "windows" {
 		t.Errorf("Expected error due to maximum payload transgression.")
+	}
+
+	// On windows, the previous write will not fail because the connection
+	// is not fully closed at this stage.
+	if runtime.GOOS == "windows" {
+		// Issuing a PING and not expecting the PONG.
+		_, err = conn.Write([]byte("PING\r\n"))
+		if err == nil {
+			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			_, err = conn.Read(big)
+			if err == nil {
+				t.Errorf("Expected closed connection due to maximum payload transgression.")
+			}
+		}
 	}
 }

@@ -39,8 +39,9 @@ func TestProtoBasics(t *testing.T) {
 	// 2 Messages
 	send("SUB * 2\r\nPUB foo 2\r\nok\r\n")
 	matches = expectMsgs(2)
-	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
+	// Could arrive in any order
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
 }
 
 func TestProtoErr(t *testing.T) {
@@ -102,7 +103,7 @@ func TestQueueSub(t *testing.T) {
 	matches := expectMsgs(sent)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 2 {
 		t.Fatalf("Expected only 2 sids, got %d\n", len(sids))
@@ -139,7 +140,7 @@ func TestMultipleQueueSub(t *testing.T) {
 	matches := expectMsgs(sent * 2)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 4 {
 		t.Fatalf("Expected 4 sids, got %d\n", len(sids))
@@ -228,4 +229,38 @@ func TestDuplicateProtoSub(t *testing.T) {
 	if ns != 1 {
 		t.Fatalf("Expected 1 subscription, got %d\n", ns)
 	}
+}
+
+func TestIncompletePubArg(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+	send, expect := setupConn(t, c)
+
+	size := 10000
+	goodBuf := ""
+	for i := 0; i < size; i++ {
+		goodBuf += "A"
+	}
+	goodBuf += "\r\n"
+
+	badSize := 3371
+	badBuf := ""
+	for i := 0; i < badSize; i++ {
+		badBuf += "B"
+	}
+	// Message is corrupted and since we are still reading from client,
+	// next PUB accidentally becomes part of the payload of the
+	// incomplete message thus breaking the protocol.
+	badBuf2 := ""
+	for i := 0; i < size; i++ {
+		badBuf2 += "C"
+	}
+	badBuf2 += "\r\n"
+
+	pub := "PUB example 10000\r\n"
+	send(pub + goodBuf + pub + goodBuf + pub + badBuf + pub + badBuf2)
+	expect(errRe)
 }

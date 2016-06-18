@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -19,8 +19,6 @@ import (
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
-
-	"github.com/nats-io/gnatsd/sublist"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -32,10 +30,11 @@ type Info struct {
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
 	AuthRequired bool   `json:"auth_required"`
-	SSLRequired  bool   `json:"ssl_required"` // ssl json used for older clients
+	SSLRequired  bool   `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
 	TLSRequired  bool   `json:"tls_required"`
 	TLSVerify    bool   `json:"tls_verify"`
 	MaxPayload   int    `json:"max_payload"`
+	IP           string `json:"ip,omitempty"`
 }
 
 // Server is our main struct.
@@ -43,29 +42,36 @@ type Server struct {
 	gcid uint64
 	grid uint64
 	stats
-	mu       sync.Mutex
-	info     Info
-	infoJSON []byte
-	sl       *sublist.Sublist
-	opts     *Options
-	auth     Auth
-	trace    bool
-	debug    bool
-	running  bool
-	listener net.Listener
-	clients  map[uint64]*client
-	routes   map[uint64]*client
-	remotes  map[string]*client
-	done     chan bool
-	start    time.Time
-	http     net.Listener
-
+	mu            sync.Mutex
+	info          Info
+	infoJSON      []byte
+	sl            *Sublist
+	opts          *Options
+	cAuth         Auth
+	rAuth         Auth
+	trace         bool
+	debug         bool
+	running       bool
+	listener      net.Listener
+	clients       map[uint64]*client
+	routes        map[uint64]*client
+	remotes       map[string]*client
+	totalClients  uint64
+	done          chan bool
+	start         time.Time
+	http          net.Listener
+	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
 	routeInfoJSON []byte
 	rcQuit        chan bool
+	grMu          sync.Mutex
+	grTmpClients  map[uint64]*client
+	grRunning     bool
+	grWG          sync.WaitGroup // to wait on various go routines
 }
 
+// Make sure all are 64bits for atomic use
 type stats struct {
 	inMsgs        int64
 	outMsgs       int64
@@ -80,7 +86,7 @@ func New(opts *Options) *Server {
 
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
-	verify := (tlsReq == true && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
+	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
 
 	info := Info{
 		ID:           genID(),
@@ -97,7 +103,7 @@ func New(opts *Options) *Server {
 
 	s := &Server{
 		info:  info,
-		sl:    sublist.New(),
+		sl:    NewSublist(),
 		opts:  opts,
 		debug: opts.Debug,
 		trace: opts.Trace,
@@ -110,6 +116,10 @@ func New(opts *Options) *Server {
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
+
+	// For tracking connections that are not yet registered
+	// in s.routes, but for which readLoop has started.
+	s.grTmpClients = make(map[uint64]*client)
 
 	// For tracking routes and their remote ids
 	s.routes = make(map[uint64]*client)
@@ -124,15 +134,22 @@ func New(opts *Options) *Server {
 	return s
 }
 
-// Sets the authentication method
-func (s *Server) SetAuthMethod(authMethod Auth) {
+// SetClientAuthMethod sets the authentication method for clients.
+func (s *Server) SetClientAuthMethod(authMethod Auth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.info.AuthRequired = true
-	s.auth = authMethod
+	s.cAuth = authMethod
 
 	s.generateServerInfoJSON()
+}
+
+// SetRouteAuthMethod sets the authentication method for routes.
+func (s *Server) SetRouteAuthMethod(authMethod Auth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rAuth = authMethod
 }
 
 func (s *Server) generateServerInfoJSON() {
@@ -140,6 +157,7 @@ func (s *Server) generateServerInfoJSON() {
 	b, err := json.Marshal(s.info)
 	if err != nil {
 		Fatalf("Error marshalling INFO JSON: %+v\n", err)
+		return
 	}
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 }
@@ -152,7 +170,7 @@ func PrintAndDie(msg string) {
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("gnatsd version %s\n", VERSION)
+	fmt.Printf("nats-server version %s\n", VERSION)
 	os.Exit(0)
 }
 
@@ -191,8 +209,13 @@ func (s *Server) logPid() {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	Noticef("Starting gnatsd version %s", VERSION)
+	Noticef("Starting nats-server version %s", VERSION)
+	Debugf("Go build version %s", s.info.GoVersion)
+
 	s.running = true
+	s.grMu.Lock()
+	s.grRunning = true
+	s.grMu.Unlock()
 
 	// Log the pid to a file
 	if s.opts.PidFile != _EMPTY_ {
@@ -202,6 +225,15 @@ func (s *Server) Start() {
 	// Start up the http server if needed.
 	if s.opts.HTTPPort != 0 {
 		s.StartHTTPMonitoring()
+	}
+
+	// Start up the https server if needed.
+	if s.opts.HTTPSPort != 0 {
+		if s.opts.TLSConfig == nil {
+			Fatalf("TLS cert and key required for HTTPS")
+			return
+		}
+		s.StartHTTPSMonitoring()
 	}
 
 	// Start up routing as well if needed.
@@ -230,6 +262,9 @@ func (s *Server) Shutdown() {
 	}
 
 	s.running = false
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
 
 	conns := make(map[uint64]*client)
 
@@ -237,6 +272,13 @@ func (s *Server) Shutdown() {
 	for i, c := range s.clients {
 		conns[i] = c
 	}
+	// Copy off the connections that are not yet registered
+	// in s.routes, but for which the readLoop has started
+	s.grMu.Lock()
+	for i, c := range s.grTmpClients {
+		conns[i] = c
+	}
+	s.grMu.Unlock()
 	// Copy off the routes
 	for i, r := range s.routes {
 		conns[i] = r
@@ -281,15 +323,17 @@ func (s *Server) Shutdown() {
 		<-s.done
 		doneExpected--
 	}
+
+	// Wait for go routines to be done.
+	s.grWG.Wait()
 }
 
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop() {
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.Port)
+	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		fmt.Printf("could not listen on port for %s, %v\n", hp, e)
 		Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
@@ -299,25 +343,32 @@ func (s *Server) AcceptLoop() {
 		Noticef("TLS required for client connections")
 	}
 
-	Noticef("gnatsd is ready")
+	Debugf("Server id is %s", s.info.ID)
+	Noticef("Server is ready")
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.listener = l
-	s.mu.Unlock()
 
-	// Write resolved port back to options.
-	_, port, err := net.SplitHostPort(l.Addr().String())
-	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-		return
+	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
+	// to 0 at the beginning this function. So we need to get the actual port
+	if s.opts.Port == 0 {
+		// Write resolved port back to options.
+		_, port, err := net.SplitHostPort(l.Addr().String())
+		if err != nil {
+			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			s.mu.Unlock()
+			return
+		}
+		portNum, err := strconv.Atoi(port)
+		if err != nil {
+			Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
+			s.mu.Unlock()
+			return
+		}
+		s.opts.Port = portNum
 	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-		return
-	}
-	s.opts.Port = portNum
+	s.mu.Unlock()
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
@@ -338,7 +389,10 @@ func (s *Server) AcceptLoop() {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		go s.createClient(conn)
+		s.startGoRoutine(func() {
+			s.createClient(conn)
+			s.grWG.Done()
+		})
 	}
 	Noticef("Server Exiting..")
 	s.done <- true
@@ -347,8 +401,7 @@ func (s *Server) AcceptLoop() {
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
 	Noticef("Starting profiling on http port %d", s.opts.ProfPort)
-
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.ProfPort)
+	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.ProfPort))
 	go func() {
 		err := http.ListenAndServe(hp, nil)
 		if err != nil {
@@ -359,31 +412,73 @@ func (s *Server) StartProfiler() {
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
 func (s *Server) StartHTTPMonitoring() {
-	Noticef("Starting http monitor on port %d", s.opts.HTTPPort)
+	s.startMonitoring(false)
+}
 
-	hp := fmt.Sprintf("%s:%d", s.opts.Host, s.opts.HTTPPort)
+// StartHTTPSMonitoring will enable the HTTPS monitoring port.
+func (s *Server) StartHTTPSMonitoring() {
+	s.startMonitoring(true)
+}
 
-	l, err := net.Listen("tcp", hp)
+// HTTP endpoints
+const (
+	RootPath    = "/"
+	VarzPath    = "/varz"
+	ConnzPath   = "/connz"
+	RoutezPath  = "/routez"
+	SubszPath   = "/subsz"
+	StackszPath = "/stacksz"
+)
+
+// Start the monitoring server
+func (s *Server) startMonitoring(secure bool) {
+
+	// Used to track HTTP requests
+	s.httpReqStats = map[string]uint64{
+		RootPath:   0,
+		VarzPath:   0,
+		ConnzPath:  0,
+		RoutezPath: 0,
+		SubszPath:  0,
+	}
+
+	var hp string
+	var err error
+
+	if secure {
+		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
+		Noticef("Starting https monitor on %s", hp)
+		config := *s.opts.TLSConfig
+		config.ClientAuth = tls.NoClientCert
+		s.http, err = tls.Listen("tcp", hp, &config)
+
+	} else {
+		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
+		Noticef("Starting http monitor on %s", hp)
+		s.http, err = net.Listen("tcp", hp)
+	}
+
 	if err != nil {
 		Fatalf("Can't listen to the monitor port: %v", err)
+		return
 	}
 
 	mux := http.NewServeMux()
 
 	// Root
-	mux.HandleFunc("/", s.HandleRoot)
-
+	mux.HandleFunc(RootPath, s.HandleRoot)
 	// Varz
-	mux.HandleFunc("/varz", s.HandleVarz)
-
+	mux.HandleFunc(VarzPath, s.HandleVarz)
 	// Connz
-	mux.HandleFunc("/connz", s.HandleConnz)
-
+	mux.HandleFunc(ConnzPath, s.HandleConnz)
 	// Routez
-	mux.HandleFunc("/routez", s.HandleRoutez)
-
+	mux.HandleFunc(RoutezPath, s.HandleRoutez)
 	// Subz
+	mux.HandleFunc(SubszPath, s.HandleSubsz)
+	// Subz alias for backwards compatibility
 	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
+	// Stacksz
+	mux.HandleFunc(StackszPath, s.HandleStacksz)
 
 	srv := &http.Server{
 		Addr:           hp,
@@ -393,8 +488,6 @@ func (s *Server) StartHTTPMonitoring() {
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	s.http = l
-
 	go func() {
 		srv.Serve(s.http)
 		srv.Handler = nil
@@ -403,13 +496,14 @@ func (s *Server) StartHTTPMonitoring() {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
 
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.infoJSON
 	authRequired := s.info.AuthRequired
 	tlsRequired := s.info.TLSRequired
+	s.totalClients++
 	s.mu.Unlock()
 
 	// Grab lock
@@ -427,21 +521,29 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 
 	// Send our information.
-	s.sendInfo(c, info)
+	c.sendInfo(info)
 
 	// Unlock to register
 	c.mu.Unlock()
 
 	// Register with the server.
 	s.mu.Lock()
+	// If server is not running, Shutdown() may have already gathered the
+	// list of connections to close. It won't contain this one, so we need
+	// to bail out now otherwise the readLoop started down there would not
+	// be interrupted.
+	if !s.running {
+		s.mu.Unlock()
+		return c
+	}
 	s.clients[c.cid] = c
 	s.mu.Unlock()
 
+	// Re-Grab lock
+	c.mu.Lock()
+
 	// Check for TLS
 	if tlsRequired {
-		// Re-Grab lock
-		c.mu.Lock()
-
 		c.Debugf("Starting TLS client connection handshake")
 		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
@@ -464,15 +566,34 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Re-Grab lock
 		c.mu.Lock()
-
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
-
-		c.Debugf("TLS handshake complete")
-		cs := conn.ConnectionState()
-		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
-		c.mu.Unlock()
 	}
+
+	// The connection may have been closed
+	if c.nc == nil {
+		c.mu.Unlock()
+		return c
+	}
+
+	if tlsRequired {
+		// Rewrap bw
+		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
+	}
+
+	// Do final client initialization
+
+	// Set the Ping timer
+	c.setPingTimer()
+
+	// Spin up the read loop.
+	s.startGoRoutine(func() { c.readLoop() })
+
+	if tlsRequired {
+		c.Debugf("TLS handshake complete")
+		cs := c.nc.(*tls.Conn).ConnectionState()
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+	}
+
+	c.mu.Unlock()
 
 	return c
 }
@@ -487,7 +608,7 @@ func tlsTimeout(c *client, conn *tls.Conn) {
 		return
 	}
 	cs := conn.ConnectionState()
-	if cs.HandshakeComplete == false {
+	if !cs.HandshakeComplete {
 		c.Debugf("TLS handshake timeout")
 		c.sendErr("Secure Connection - TLS Required")
 		c.closeConnection()
@@ -544,28 +665,18 @@ func tlsCipher(cs uint16) string {
 	return fmt.Sprintf("Unknown [%x]", cs)
 }
 
-// Assume the lock is held upon entry.
-func (s *Server) sendInfo(c *client, info []byte) {
-	c.nc.Write(info)
-}
-
 func (s *Server) checkClientAuth(c *client) bool {
-	if s.auth == nil {
+	if s.cAuth == nil {
 		return true
 	}
-
-	return s.auth.Check(c)
+	return s.cAuth.Check(c)
 }
 
 func (s *Server) checkRouterAuth(c *client) bool {
-	if !s.routeInfo.AuthRequired {
+	if s.rAuth == nil {
 		return true
 	}
-	if s.opts.ClusterUsername != c.opts.Username ||
-		s.opts.ClusterPassword != c.opts.Password {
-		return false
-	}
-	return true
+	return s.rAuth.Check(c)
 }
 
 // Check auth and return boolean indicating if client is ok
@@ -582,9 +693,14 @@ func (s *Server) checkAuth(c *client) bool {
 
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
+	var rID string
 	c.mu.Lock()
 	cid := c.cid
 	typ := c.typ
+	r := c.route
+	if r != nil {
+		rID = r.remoteID
+	}
 	c.mu.Unlock()
 
 	s.mu.Lock()
@@ -593,11 +709,11 @@ func (s *Server) removeClient(c *client) {
 		delete(s.clients, cid)
 	case ROUTER:
 		delete(s.routes, cid)
-		if c.route != nil {
-			rc, ok := s.remotes[c.route.remoteID]
+		if r != nil {
+			rc, ok := s.remotes[rID]
 			// Only delete it if it is us..
 			if ok && c == rc {
-				delete(s.remotes, c.route.remoteID)
+				delete(s.remotes, rID)
 			}
 		}
 	}
@@ -632,9 +748,9 @@ func (s *Server) NumClients() int {
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	stats := s.sl.Stats()
-	return stats.NumSubs
+	subs := s.sl.Count()
+	s.mu.Unlock()
+	return subs
 }
 
 // Addr will return the net.Addr object for the current listener.
@@ -645,4 +761,67 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.listener.Addr()
+}
+
+// GetListenEndpoint will return a string of the form host:port suitable for
+// a connect. Will return empty string if the server is not ready to accept
+// client connections.
+func (s *Server) GetListenEndpoint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Wait for the listener to be set, see note about RANDOM_PORT below
+	if s.listener == nil {
+		return ""
+	}
+
+	host := s.opts.Host
+
+	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
+	// We replace it with "localhost" when that's the case.
+	if host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "localhost"
+	}
+
+	// Return the opts's Host and Port. Note that the Port may be set
+	// when the listener is started, due to the use of RANDOM_PORT
+	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
+}
+
+// GetRouteListenEndpoint will return a string of the form host:port suitable
+// for a connect. Will return empty string if the server is not configured for
+// routing or not ready to accept route connections.
+func (s *Server) GetRouteListenEndpoint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.routeListener == nil {
+		return ""
+	}
+
+	host := s.opts.ClusterHost
+
+	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
+	// We replace it with "localhost" when that's the case.
+	if host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "localhost"
+	}
+
+	// Return the cluster's Host and Port.
+	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
+}
+
+// ID returns the server's ID
+func (s *Server) ID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info.ID
+}
+
+func (s *Server) startGoRoutine(f func()) {
+	s.grMu.Lock()
+	if s.grRunning {
+		s.grWG.Add(1)
+		go f()
+	}
+	s.grMu.Unlock()
 }

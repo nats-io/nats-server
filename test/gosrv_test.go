@@ -12,7 +12,7 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 	base := runtime.NumGoroutine()
 	s := RunDefaultServer()
 	s.Shutdown()
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 1 {
 		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
@@ -27,7 +27,7 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 	}
 	s.Shutdown()
 	// Wait longer for client connections
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 	delta := (runtime.NumGoroutine() - base)
 	// There may be some finalizers or IO, but in general more than
 	// 2 as a delta represents a problem.

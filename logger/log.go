@@ -1,4 +1,6 @@
 // Copyright 2012-2015 Apcera Inc. All rights reserved.
+
+//Package logger provides logging facilities for the NATS server
 package logger
 
 import (
@@ -7,6 +9,7 @@ import (
 	"os"
 )
 
+// Logger is the server logger
 type Logger struct {
 	logger     *log.Logger
 	debug      bool
@@ -18,6 +21,7 @@ type Logger struct {
 	traceLabel string
 }
 
+// NewStdLogger creates a logger with output directed to Stderr
 func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 	flags := 0
 	if time {
@@ -44,6 +48,7 @@ func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 	return l
 }
 
+// NewFileLogger creates a logger with output directed to a file
 func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	f, err := os.OpenFile(filename, fileflags, 0660)
@@ -93,26 +98,31 @@ func setColoredLabelFormats(l *Logger) {
 	l.traceLabel = fmt.Sprintf(colorFormat, 33, "TRC")
 }
 
+// Noticef logs a notice statement
 func (l *Logger) Noticef(format string, v ...interface{}) {
 	l.logger.Printf(l.infoLabel+format, v...)
 }
 
+// Errorf logs an error statement
 func (l *Logger) Errorf(format string, v ...interface{}) {
 	l.logger.Printf(l.errorLabel+format, v...)
 }
 
+// Fatalf logs a fatal error
 func (l *Logger) Fatalf(format string, v ...interface{}) {
 	l.logger.Fatalf(l.fatalLabel+format, v...)
 }
 
+// Debugf logs a debug statement
 func (l *Logger) Debugf(format string, v ...interface{}) {
-	if l.debug == true {
+	if l.debug {
 		l.logger.Printf(l.debugLabel+format, v...)
 	}
 }
 
+// Tracef logs a trace statement
 func (l *Logger) Tracef(format string, v ...interface{}) {
-	if l.trace == true {
+	if l.trace {
 		l.logger.Printf(l.traceLabel+format, v...)
 	}
 }

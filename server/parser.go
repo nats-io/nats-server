@@ -24,6 +24,7 @@ type parseState struct {
 	scratch [MAX_CONTROL_LINE_SIZE]byte
 }
 
+// Parser constants
 const (
 	OP_START = iota
 	OP_PLUS
@@ -66,6 +67,7 @@ const (
 	OP_UNS
 	OP_UNSU
 	OP_UNSUB
+	OP_UNSUB_SPC
 	UNSUB_ARG
 	OP_M
 	OP_MS
@@ -306,6 +308,13 @@ func (c *client) parse(buf []byte) error {
 		case OP_UNSUB:
 			switch b {
 			case ' ', '\t':
+				c.state = OP_UNSUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_UNSUB_SPC:
+			switch b {
+			case ' ', '\t':
 				continue
 			default:
 				c.state = UNSUB_ARG
@@ -528,10 +537,21 @@ func (c *client) parse(buf []byte) error {
 			case '\r':
 				c.drop = 1
 			case '\n':
-				if err := c.processInfo(buf[c.as : i-c.drop]); err != nil {
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processInfo(arg); err != nil {
 					return err
 				}
-				c.drop, c.state = 0, OP_START
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
 			}
 		case OP_PLUS:
 			switch b {
@@ -614,7 +634,7 @@ func (c *client) parse(buf []byte) error {
 	// Check for split buffer scenarios for any ARG state.
 	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
-		c.state == CONNECT_ARG) && c.argBuf == nil {
+		c.state == CONNECT_ARG || c.state == INFO_ARG) && c.argBuf == nil {
 		c.argBuf = c.scratch[:0]
 		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
 		// FIXME(dlc), check max control line len
@@ -631,6 +651,13 @@ func (c *client) parse(buf []byte) error {
 		// new buffer to hold the split message.
 		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
 			lrem := len(buf[c.as:])
+
+			// Consider it a protocol error when the remaining payload
+			// is larger than the reported size for PUB. It can happen
+			// when processing incomplete messages from rogue clients.
+			if lrem > c.pa.size+LEN_CR_LF {
+				goto parseErr
+			}
 			c.msgBuf = make([]byte, lrem, c.pa.size+LEN_CR_LF)
 			copy(c.msgBuf, buf[c.as:])
 		} else {
@@ -655,8 +682,12 @@ parseErr:
 
 func protoSnippet(start int, buf []byte) string {
 	stop := start + PROTO_SNIPPET_SIZE
-	if stop > len(buf) {
-		stop = len(buf) - 1
+	bufSize := len(buf)
+	if start >= bufSize {
+		return `""`
+	}
+	if stop > bufSize {
+		stop = bufSize - 1
 	}
 	return fmt.Sprintf("%q", buf[start:stop])
 }

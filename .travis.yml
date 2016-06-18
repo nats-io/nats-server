@@ -1,20 +1,20 @@
 language: go
 go:
-- 1.5
-install:
-- DST=~/gopath/src/github.com/nats-io
-- mkdir -p "$DST"
-- git clone --depth=1 --quiet https://github.com/nats-io/nats.git "$DST"/nats
-- go get golang.org/x/tools/cmd/vet
-- go get golang.org/x/tools/cmd/cover
-- go get github.com/mattn/goveralls
-script:
-- go build
-- ./travis/gofmt.sh
-- ./travis/govet.sh
-- go test -i -race ./...
-- go test -v -race ./...
-- ./travis/coveralls-script.sh
+- 1.5.4
+- 1.6.2
 env:
   global:
-    secure: fi/zxSp5eF6Mt8yrgJakBVinDpCDFy3zPZ4Jy7jsyoKWgF7CdSFmh0WBcN932KOLCRaVm7ZqD2RwO9SifIsBcDtZqML4RKg3Q+T+Uqt4LpskVobMYkPKDcA5i3c3ifhJu/wzl7Y/jnysvjxCwQrH/nGAc4+AwyH6x2TjKF7UFoY=
+    - GO15VENDOREXPERIMENT=1
+install:
+- go get github.com/nats-io/nats
+- go get github.com/mattn/goveralls
+- go get github.com/wadey/gocovmerge
+script:
+- go build
+- go fmt ./...
+- go vet ./...
+- go test -i -race ./...
+- go test -v -race ./...
+after_script:
+- if [ "$TRAVIS_GO_VERSION" = "1.6.2" ]; then ./scripts/cov.sh TRAVIS; fi
+- if [ "$TRAVIS_GO_VERSION" = "1.6.2" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi

@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -22,9 +22,9 @@ func TestDefaultOptions(t *testing.T) {
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
 		MaxPending:         MAX_PENDING_SIZE,
+		ClusterHost:        DEFAULT_HOST,
 		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
 		ClusterTLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
-		BufSize:            DEFAULT_BUF_SIZE,
 	}
 
 	opts := &Options{}
@@ -48,7 +48,7 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
-		Host:           "apcera.me",
+		Host:           "localhost",
 		Port:           4242,
 		Username:       "derek",
 		Password:       "bella",
@@ -81,12 +81,12 @@ func TestConfigFile(t *testing.T) {
 
 func TestTLSConfigFile(t *testing.T) {
 	golden := &Options{
-		Host:        "apcera.me",
+		Host:        "localhost",
 		Port:        4443,
 		Username:    "derek",
 		Password:    "buckley",
 		AuthTimeout: 1.0,
-		TLSTimeout:  0.5,
+		TLSTimeout:  2.0,
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
@@ -110,7 +110,7 @@ func TestTLSConfigFile(t *testing.T) {
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("Expected MinVersion of 1.2 [%v], got [%v]", tls.VersionTLS12, tlsConfig.MinVersion)
 	}
-	if tlsConfig.PreferServerCipherSuites != true {
+	if !tlsConfig.PreferServerCipherSuites {
 		t.Fatal("Expected PreferServerCipherSuites to be true")
 	}
 	// Verify hostname is correct in certificate
@@ -168,7 +168,7 @@ func TestTLSConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
-		Host:           "apcera.me",
+		Host:           "localhost",
 		Port:           2222,
 		Username:       "derek",
 		Password:       "spooky",
@@ -248,6 +248,7 @@ func TestRouteFlagOverride(t *testing.T) {
 	rurl, _ := url.Parse(routeFlag)
 
 	golden := &Options{
+		Host:               "127.0.0.1",
 		Port:               7222,
 		ClusterHost:        "127.0.0.1",
 		ClusterPort:        7244,
@@ -280,6 +281,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	rurls := RoutesFromStr(routeFlag)
 
 	golden := &Options{
+		Host:               "127.0.0.1",
 		Port:               7222,
 		ClusterHost:        "127.0.0.1",
 		ClusterPort:        7244,
@@ -305,4 +307,93 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, merged)
 	}
+}
+
+func TestListenConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	// Normal clients
+	host := "10.0.1.22"
+	port := 4422
+
+	if opts.Host != host {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+
+	// Clustering
+	clusterHost := "127.0.0.1"
+	clusterPort := 4244
+
+	if opts.ClusterHost != clusterHost {
+		t.Fatalf("Received incorrect cluster host %q, expected %q\n", opts.ClusterHost, clusterHost)
+	}
+	if opts.ClusterPort != clusterPort {
+		t.Fatalf("Received incorrect cluster port %v, expected %v\n", opts.ClusterPort, clusterPort)
+	}
+
+	// HTTP
+	httpHost := "127.0.0.1"
+	httpPort := 8422
+
+	if opts.HTTPHost != httpHost {
+		t.Fatalf("Received incorrect http host %q, expected %q\n", opts.HTTPHost, httpHost)
+	}
+	if opts.HTTPPort != httpPort {
+		t.Fatalf("Received incorrect http port %v, expected %v\n", opts.HTTPPort, httpPort)
+	}
+
+	// HTTPS
+	httpsPort := 9443
+	if opts.HTTPSPort != httpsPort {
+		t.Fatalf("Received incorrect https port %v, expected %v\n", opts.HTTPSPort, httpsPort)
+	}
+}
+
+func TestListenPortOnlyConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen_port.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	port := 8922
+
+	if opts.Host != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+}
+
+func TestListenPortWithColonConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen_port_with_colon.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	port := 8922
+
+	if opts.Host != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
+	if opts.Port != port {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+}
+
+func TestMultipleUsersConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/multiple_users.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
 }

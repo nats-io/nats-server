@@ -1,24 +1,38 @@
 
 # General
 
-- [ ] SSL/TLS support
-- [ ] Better user/pass support using bcrypt etc.
-- [ ] Pedantic state
+- [ ] Multiple listen endpoints
+- [ ] Websocket / HTTP2 strategy
+- [ ] Listen configure key vs addr and port
+- [ ] Multiple Authorization / Access
+- [ ] T series reservations
+- [ ] _SYS. server events?
+- [ ] No downtime restart
+- [ ] Signal based reload of configuration
 - [ ] brew, apt-get, rpm, chocately (windows)
-- [ ] Dynamic socket buffer sizes
-- [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
-- [ ] Sublist better at high concurrency, cache uses writelock currently
 - [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
-- [ ] Add ability to reload config on signal
-- [ ] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
-- [ ] Add ENV and variable support to dconf
+- [ ] Add ENV and variable support to dconf? ucl?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
-- [ ] Gossip Protocol for discovery for clustering
-- [ ] Info updates contain other implicit route servers
+- [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Add to varz, time for slow consumers, peek connections, memory, etc.
+- [ ] Pedantic state
+- [X] Write dynamic socket buffer sizes
+- [X] Read dynamic socket buffer sizes
+- [X] Info updates contain other implicit route servers
+- [X] Sublist better at high concurrency, cache uses writelock always currently
+- [X] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
+- [X] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
+- [X] Default sort by cid on connz
+- [X] Track last activity time per connection?
+- [X] Add total connections to varz so we won't miss spikes, etc.
+- [X] Add starttime and uptime to connz list.
+- [X] Gossip Protocol for discovery for clustering
+- [X] Add in HTTP requests to varz?
+- [X] Add favico and help link for monitoring?
+- [X] Better user/pass support using bcrypt etc.
+- [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..
 - [X] Support sort options for /connz via nats-top
 - [X] Dropped message statistics (slow consumers)

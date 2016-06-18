@@ -1,24 +1,22 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"io"
 	"time"
+
+	"github.com/nats-io/nuid"
 )
 
+// Use nuid.
 func genID() string {
-	u := make([]byte, 16)
-	io.ReadFull(rand.Reader, u)
-	return hex.EncodeToString(u)
+	return nuid.Next()
 }
 
 // Ascii numbers 0-9
 const (
-	ascii_0 = 48
-	ascii_9 = 57
+	asciiZero = 48
+	asciiNine = 57
 )
 
 // parseSize expects decimal positive numbers. We
@@ -28,10 +26,10 @@ func parseSize(d []byte) (n int) {
 		return -1
 	}
 	for _, dec := range d {
-		if dec < ascii_0 || dec > ascii_9 {
+		if dec < asciiZero || dec > asciiNine {
 			return -1
 		}
-		n = n*10 + (int(dec) - ascii_0)
+		n = n*10 + (int(dec) - asciiZero)
 	}
 	return n
 }
@@ -43,10 +41,10 @@ func parseInt64(d []byte) (n int64) {
 		return -1
 	}
 	for _, dec := range d {
-		if dec < ascii_0 || dec > ascii_9 {
+		if dec < asciiZero || dec > asciiNine {
 			return -1
 		}
-		n = n*10 + (int64(dec) - ascii_0)
+		n = n*10 + (int64(dec) - asciiZero)
 	}
 	return n
 }

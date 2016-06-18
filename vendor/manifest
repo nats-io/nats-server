@@ -1,0 +1,28 @@
+{
+	"version": 0,
+	"dependencies": [
+		{
+			"importpath": "github.com/nats-io/nuid",
+			"repository": "https://github.com/nats-io/nuid",
+			"revision": "a5152d67cf63cbfb5d992a395458722a45194715",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/crypto/bcrypt",
+			"repository": "https://go.googlesource.com/crypto",
+			"revision": "9e7f5dc375abeb9619ea3c5c58502c428f457aa2",
+			"branch": "master",
+			"path": "/bcrypt",
+			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/crypto/blowfish",
+			"repository": "https://go.googlesource.com/crypto",
+			"revision": "9e7f5dc375abeb9619ea3c5c58502c428f457aa2",
+			"branch": "master",
+			"path": "/blowfish",
+			"notests": true
+		}
+	]
+}

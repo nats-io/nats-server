@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -11,14 +11,31 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
 
+// RouteType designates the router type
+type RouteType int
+
+// Type of Route
+const (
+	// This route we learned from speaking to other routes.
+	Implicit RouteType = iota
+	// This route was explicitly configured.
+	Explicit
+)
+
 type route struct {
-	remoteID   string
-	didSolicit bool
-	url        *url.URL
+	remoteID     string
+	didSolicit   bool
+	retry        bool
+	routeType    RouteType
+	url          *url.URL
+	authRequired bool
+	tlsRequired  bool
 }
 
 type connectInfo struct {
@@ -30,7 +47,11 @@ type connectInfo struct {
 	Name     string `json:"name"`
 }
 
-const conProto = "CONNECT %s" + _CRLF_
+// Route protocol constants
+const (
+	ConProto  = "CONNECT %s" + _CRLF_
+	InfoProto = "INFO %s" + _CRLF_
+)
 
 // Lock should be held entering here.
 func (c *client) sendConnect(tlsRequired bool) {
@@ -49,35 +70,158 @@ func (c *client) sendConnect(tlsRequired bool) {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		Errorf("Error marshalling CONNECT to route: %v\n", err)
+		c.Errorf("Error marshalling CONNECT to route: %v\n", err)
 		c.closeConnection()
 		return
 	}
-	c.bw.WriteString(fmt.Sprintf(conProto, b))
-	c.bw.Flush()
+	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
 }
 
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
 	c.mu.Lock()
-	if c.route == nil {
+	// Connection can be closed at any time (by auth timeout, etc).
+	// Does not make sense to continue here if connection is gone.
+	if c.route == nil || c.nc == nil {
 		c.mu.Unlock()
 		return
 	}
+
+	s := c.srv
+	remoteID := c.route.remoteID
+
+	// We receive an INFO from a server that informs us about another server,
+	// so the info.ID in the INFO protocol does not match the ID of this route.
+	if remoteID != "" && remoteID != info.ID {
+		c.mu.Unlock()
+
+		// Process this implicit route. We will check that it is not an explicit
+		// route and/or that it has not been connected already.
+		s.processImplicitRoute(info)
+		return
+	}
+
+	// Need to set this for the detection of the route to self to work
+	// in closeConnection().
 	c.route.remoteID = info.ID
+
+	// Detect route to self.
+	if c.route.remoteID == s.info.ID {
+		c.mu.Unlock()
+		c.closeConnection()
+		return
+	}
+
+	// Copy over important information.
+	c.route.authRequired = info.AuthRequired
+	c.route.tlsRequired = info.TLSRequired
+
+	// If we do not know this route's URL, construct one on the fly
+	// from the information provided.
+	if c.route.url == nil {
+		// Add in the URL from host and port
+		hp := net.JoinHostPort(info.Host, strconv.Itoa(info.Port))
+		url, err := url.Parse(fmt.Sprintf("nats-route://%s/", hp))
+		if err != nil {
+			c.Errorf("Error parsing URL from INFO: %v\n", err)
+			c.mu.Unlock()
+			c.closeConnection()
+			return
+		}
+		c.route.url = url
+	}
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
-	s := c.srv
 	c.mu.Unlock()
 
-	if s.addRoute(c) {
+	if added, sendInfo := s.addRoute(c, info); added {
 		c.Debugf("Registering remote route %q", info.ID)
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
+		if sendInfo {
+			// Need to get the remote IP address.
+			c.mu.Lock()
+			switch conn := c.nc.(type) {
+			case *net.TCPConn, *tls.Conn:
+				addr := conn.RemoteAddr().(*net.TCPAddr)
+				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
+			default:
+				info.IP = fmt.Sprintf("%s", c.route.url)
+			}
+			c.mu.Unlock()
+			// Now let the known servers know about this new route
+			s.forwardNewRouteInfoToKnownServers(info)
+		}
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection()
+	}
+}
+
+// This will process implicit route information received from another server.
+// We will check to see if we have configured or are already connected,
+// and if so we will ignore. Otherwise we will attempt to connect.
+func (s *Server) processImplicitRoute(info *Info) {
+	remoteID := info.ID
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Don't connect to ourself
+	if remoteID == s.info.ID {
+		return
+	}
+	// Check if this route already exists
+	if _, exists := s.remotes[remoteID]; exists {
+		return
+	}
+	// Check if we have this route as a configured route
+	if s.hasThisRouteConfigured(info) {
+		return
+	}
+
+	// Initiate the connection, using info.IP instead of info.URL here...
+	r, err := url.Parse(info.IP)
+	if err != nil {
+		Debugf("Error parsing URL from INFO: %v\n", err)
+		return
+	}
+	if info.AuthRequired {
+		r.User = url.UserPassword(s.opts.ClusterUsername, s.opts.ClusterPassword)
+	}
+	s.startGoRoutine(func() { s.connectToRoute(r, false) })
+}
+
+// hasThisRouteConfigured returns true if info.Host:info.Port is present
+// in the server's opts.Routes, false otherwise.
+// Server lock is assumed to be held by caller.
+func (s *Server) hasThisRouteConfigured(info *Info) bool {
+	urlToCheckExplicit := strings.ToLower(net.JoinHostPort(info.Host, strconv.Itoa(info.Port)))
+	for _, ri := range s.opts.Routes {
+		if strings.ToLower(ri.Host) == urlToCheckExplicit {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardNewRouteInfoToKnownServers sends the INFO protocol of the new route
+// to all routes known by this server. In turn, each server will contact this
+// new route.
+func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, _ := json.Marshal(info)
+	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
+
+	for _, r := range s.routes {
+		r.mu.Lock()
+		if r.route.remoteID != info.ID {
+			r.sendInfo(infoJSON)
+		}
+		r.mu.Unlock()
 	}
 }
 
@@ -86,38 +230,25 @@ func (c *client) processRouteInfo(info *Info) {
 // and large subscription space. Plus buffering in place not a good idea.
 func (s *Server) sendLocalSubsToRoute(route *client) {
 	b := bytes.Buffer{}
-
 	s.mu.Lock()
-	if s.routes[route.cid] == nil {
-
-		// We are too early, let createRoute call this function.
-		route.mu.Lock()
-		route.sendLocalSubs = true
-		route.mu.Unlock()
-
-		s.mu.Unlock()
-
-		return
-	}
-
 	for _, client := range s.clients {
 		client.mu.Lock()
-		subs := client.subs.All()
+		subs := make([]*subscription, 0, len(client.subs))
+		for _, sub := range client.subs {
+			subs = append(subs, sub)
+		}
 		client.mu.Unlock()
-		for _, s := range subs {
-			if sub, ok := s.(*subscription); ok {
-				rsid := routeSid(sub)
-				proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-				b.WriteString(proto)
-			}
+		for _, sub := range subs {
+			rsid := routeSid(sub)
+			proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+			b.WriteString(proto)
 		}
 	}
 	s.mu.Unlock()
 
 	route.mu.Lock()
 	defer route.mu.Unlock()
-	route.bw.Write(b.Bytes())
-	route.bw.Flush()
+	route.sendProto(b.Bytes(), true)
 
 	route.Debugf("Route sent local subscriptions")
 }
@@ -125,11 +256,17 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
+	for _, route := range s.opts.Routes {
+		if rURL != nil && (strings.ToLower(rURL.Host) == strings.ToLower(route.Host)) {
+			r.routeType = Explicit
+		}
+	}
+
 	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
-	// Grab server variables.
+	// Grab server variables
 	s.mu.Lock()
-	info := s.routeInfoJSON
+	infoJSON := s.routeInfoJSON
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
 	s.mu.Unlock()
@@ -141,6 +278,12 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	c.initClient()
 
 	c.Debugf("Route connection created")
+
+	if didSolicit {
+		// Do this before the TLS code, otherwise, in case of failure
+		// and if route is explicit, it would try to reconnect to 'nil'...
+		r.url = rURL
+	}
 
 	// Check for TLS
 	if tlsRequired {
@@ -179,23 +322,48 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Re-Grab lock
 		c.mu.Lock()
 
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, s.opts.BufSize)
+		// Verify that the connection did not go away while we released the lock.
+		if c.nc == nil {
+			c.mu.Unlock()
+			return nil
+		}
 
+		// Rewrap bw
+		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
+	}
+
+	// Do final client initialization
+
+	// Set the Ping timer
+	c.setPingTimer()
+
+	// For routes, the "client" is added to s.routes only when processing
+	// the INFO protocol, that is much later.
+	// In the meantime, if the server shutsdown, there would be no reference
+	// to the client (connection) to be closed, leaving this readLoop
+	// uinterrupted, causing the Shutdown() to wait indefinitively.
+	// We need to store the client in a special map, under a special lock.
+	s.grMu.Lock()
+	s.grTmpClients[c.cid] = c
+	s.grMu.Unlock()
+
+	// Spin up the read loop.
+	s.startGoRoutine(func() { c.readLoop() })
+
+	if tlsRequired {
 		c.Debugf("TLS handshake complete")
-		cs := conn.ConnectionState()
+		cs := c.nc.(*tls.Conn).ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
 	}
 
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
-		r.url = rURL
 		c.Debugf("Route connect msg sent")
 		c.sendConnect(tlsRequired)
 	}
 
 	// Send our info to the other side.
-	s.sendInfo(c, info)
+	c.sendInfo(infoJSON)
 
 	// Check for Auth required state for incoming connections.
 	if authRequired && !didSolicit {
@@ -203,24 +371,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		c.setAuthTimer(ttl)
 	}
 
-	// Unlock to register.
 	c.mu.Unlock()
-
-	// Register with the server.
-	s.mu.Lock()
-	s.routes[c.cid] = c
-	s.mu.Unlock()
-
-	// Now that the route is registered, we need to make sure that
-	// the send of the local subs was not done too early (from
-	// processRouteInfo). If it was, then send again.
-	c.mu.Lock()
-	sendLocalSubs := c.sendLocalSubs
-	c.mu.Unlock()
-
-	if sendLocalSubs {
-		s.sendLocalSubsToRoute(c)
-	}
 
 	return c
 }
@@ -238,7 +389,7 @@ const (
 
 // FIXME(dlc) - Make these reserved and reject if they come in as a sid
 // from a client connection.
-
+// Route constants
 const (
 	RSID  = "RSID"
 	QRSID = "QRSID"
@@ -270,7 +421,10 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	}
 	sid := matches[RSID_SID_INDEX]
 
-	if sub, ok := (client.subs.Get(sid)).(*subscription); ok {
+	client.mu.Lock()
+	sub, ok := client.subs[string(sid)]
+	client.mu.Unlock()
+	if ok {
 		return sub, true
 	}
 	return nil, true
@@ -284,36 +438,67 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
-func (s *Server) addRoute(c *client) bool {
+func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	id := c.route.remoteID
+	sendInfo := false
+
 	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return false, false
+	}
 	remote, exists := s.remotes[id]
 	if !exists {
+		// Remove from the temporary map
+		s.grMu.Lock()
+		delete(s.grTmpClients, c.cid)
+		s.grMu.Unlock()
+
+		s.routes[c.cid] = c
 		s.remotes[id] = c
+
+		// If this server's ID is (alpha) less than the peer, then we will
+		// make sure that if we are disconnected, we will try to connect once
+		// more. This is to mitigate the issue where both sides add the route
+		// on the opposite connection, and therefore we end-up with both
+		// being dropped.
+		if s.info.ID < id {
+			c.mu.Lock()
+			// Make this as a retry (otherwise, only explicit are retried).
+			c.route.retry = true
+			c.mu.Unlock()
+		}
+
+		// we don't need to send if the only route is the one we just accepted.
+		sendInfo = len(s.routes) > 1
 	}
 	s.mu.Unlock()
 
 	if exists && c.route.didSolicit {
 		// upgrade to solicited?
 		remote.mu.Lock()
+		// the existing route (remote) should keep its 'retry' value, and
+		// not be replaced with c.route.retry.
+		retry := remote.route.retry
 		remote.route = c.route
+		remote.route.retry = retry
 		remote.mu.Unlock()
 	}
 
-	return !exists
+	return !exists, sendInfo
 }
 
-func (s *Server) broadcastToRoutes(proto string) {
+func (s *Server) broadcastInterestToRoutes(proto string) {
 	var arg []byte
 	if atomic.LoadInt32(&trace) == 1 {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
+	protoAsBytes := []byte(proto)
 	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
 		route.mu.Lock()
-		route.bw.WriteString(proto)
-		route.bw.Flush()
+		route.sendProto(protoAsBytes, true)
 		route.mu.Unlock()
 		route.traceOutOp("", arg)
 	}
@@ -328,7 +513,7 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 	}
 	rsid := routeSid(sub)
 	proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-	s.broadcastToRoutes(proto)
+	s.broadcastInterestToRoutes(proto)
 }
 
 // broadcastUnSubscribe will forward a client unsubscribe
@@ -344,7 +529,7 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 		maxStr = fmt.Sprintf(" %d", sub.max)
 	}
 	proto := fmt.Sprintf(unsubProto, rsid, maxStr)
-	s.broadcastToRoutes(proto)
+	s.broadcastInterestToRoutes(proto)
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
@@ -383,7 +568,10 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		go s.createRoute(conn, nil)
+		s.startGoRoutine(func() {
+			s.createRoute(conn, nil)
+			s.grWG.Done()
+		})
 	}
 	Debugf("Router accept loop exiting..")
 	s.done <- true
@@ -410,12 +598,8 @@ func (s *Server) StartRouting() {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
-	// Generate the info json
-	b, err := json.Marshal(info)
-	if err != nil {
-		Fatalf("Error marshalling Route INFO JSON: %+v\n", err)
-	}
-	s.routeInfoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
+	b, _ := json.Marshal(info)
+	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
 
 	// Spin up the accept loop
 	ch := make(chan struct{})
@@ -426,27 +610,34 @@ func (s *Server) StartRouting() {
 	s.solicitRoutes()
 }
 
-func (s *Server) reConnectToRoute(rUrl *url.URL) {
-	time.Sleep(DEFAULT_ROUTE_RECONNECT)
-	s.connectToRoute(rUrl)
+func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
+	tryForEver := rtype == Explicit
+	if tryForEver {
+		time.Sleep(DEFAULT_ROUTE_RECONNECT)
+	}
+	s.connectToRoute(rURL, tryForEver)
 }
 
-func (s *Server) connectToRoute(rUrl *url.URL) {
-	for s.isRunning() && rUrl != nil {
-		Debugf("Trying to connect to route on %s", rUrl.Host)
-		conn, err := net.DialTimeout("tcp", rUrl.Host, DEFAULT_ROUTE_DIAL)
+func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+	defer s.grWG.Done()
+	for s.isRunning() && rURL != nil {
+		Debugf("Trying to connect to route on %s", rURL.Host)
+		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
 			select {
 			case <-s.rcQuit:
 				return
 			case <-time.After(DEFAULT_ROUTE_CONNECT):
+				if !tryForEver {
+					return
+				}
 				continue
 			}
 		}
 		// We have a route connection here.
 		// Go ahead and create it and exit this func.
-		s.createRoute(conn, rUrl)
+		s.createRoute(conn, rURL)
 		return
 	}
 }
@@ -459,7 +650,8 @@ func (c *client) isSolicitedRoute() bool {
 
 func (s *Server) solicitRoutes() {
 	for _, r := range s.opts.Routes {
-		go s.connectToRoute(r)
+		route := r
+		s.startGoRoutine(func() { s.connectToRoute(route, true) })
 	}
 }
 

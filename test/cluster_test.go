@@ -1,8 +1,9 @@
-// Copyright 2013-2014 Apcera Inc. All rights reserved.
+// Copyright 2013-2016 Apcera Inc. All rights reserved.
 
 package test
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"testing"
@@ -11,16 +12,67 @@ import (
 	"github.com/nats-io/gnatsd/server"
 )
 
+// Helper function to check that a cluster is formed
+func checkClusterFormed(t *testing.T, servers ...*server.Server) {
+	// Wait for the cluster to form
+	var err string
+	expectedNumRoutes := len(servers) - 1
+	maxTime := time.Now().Add(5 * time.Second)
+	for time.Now().Before(maxTime) {
+		err = ""
+		for _, s := range servers {
+			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
+				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
+				break
+			}
+		}
+		if err != "" {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	if err != "" {
+		t.Fatalf("%s", err)
+	}
+}
+
+// Helper function to check that a server (or list of servers) have the
+// expected number of subscriptions
+func checkExpectedSubs(expected int, servers ...*server.Server) error {
+	var err string
+	maxTime := time.Now().Add(5 * time.Second)
+	for time.Now().Before(maxTime) {
+		err = ""
+		for _, s := range servers {
+			if numSubs := int(s.NumSubscriptions()); numSubs != expected {
+				err = fmt.Sprintf("Expected %d subscriptions for server %q, got %d", expected, s.ID(), numSubs)
+				break
+			}
+		}
+		if err != "" {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	if err != "" {
+		return errors.New(err)
+	}
+	return nil
+}
+
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
 	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
+
+	checkClusterFormed(t, srvA, srvB)
 	return
 }
 
 func TestProperServerWithRoutesShutdown(t *testing.T) {
 	before := runtime.NumGoroutine()
 	srvA, srvB, _, _ := runServers(t)
-	time.Sleep(100 * time.Millisecond)
 	srvA.Shutdown()
 	srvB.Shutdown()
 	time.Sleep(100 * time.Millisecond)
@@ -38,16 +90,6 @@ func TestDoubleRouteConfig(t *testing.T) {
 	srvA, srvB, _, _ := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
-
-	// Wait for the setup
-	time.Sleep(1 * time.Second)
-
-	if numRoutesA := srvA.NumRoutes(); numRoutesA != 1 {
-		t.Fatalf("Expected one route for srvA, got %d\n", numRoutesA)
-	}
-	if numRoutesB := srvB.NumRoutes(); numRoutesB != 1 {
-		t.Fatalf("Expected one route for srvB, got %d\n", numRoutesB)
-	}
 }
 
 func TestBasicClusterPubSub(t *testing.T) {
@@ -65,6 +107,10 @@ func TestBasicClusterPubSub(t *testing.T) {
 	sendA("SUB foo 22\r\n")
 	sendA("PING\r\n")
 	expectA(pongRe)
+
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	sendB, expectB := setupConn(t, clientB)
 	sendB("PUB foo 2\r\nok\r\n")
@@ -95,14 +141,19 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectMsgsB := expectMsgsCommand(t, expectB)
 
 	// Capture sids for checking later.
-	qg1Sids_a := []string{"1", "2", "3"}
+	qg1SidsA := []string{"1", "2", "3"}
 
 	// Three queue subscribers
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
+
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
@@ -126,6 +177,11 @@ func TestClusterQueueSubs(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
@@ -133,7 +189,7 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Send to A
@@ -141,42 +197,52 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Now add queue subscribers to B
-	qg2Sids_b := []string{"1", "2", "3"}
-	for _, sid := range qg2Sids_b {
+	qg2SidsB := []string{"1", "2", "3"}
+	for _, sid := range qg2SidsB {
 		sendB(fmt.Sprintf("SUB foo qg2 %s\r\n", sid))
 	}
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	// Make sure the subs have propagated to srvA before continuing
+	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids)+len(qg2SidsB), srvA); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
-	checkForQueueSid(t, matches, qg2Sids_b)
+	checkForQueueSid(t, matches, qg2SidsB)
 
 	// Should receive 5 still from A.
 	matches = expectMsgsA(5)
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 	checkForPubSids(t, matches, pSids)
 
 	// Now drop queue subscribers from A
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA(fmt.Sprintf("UNSUB %s\r\n", sid))
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
 
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(pSids)+len(qg2SidsB), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
-	checkForQueueSid(t, matches, qg2Sids_b)
+	checkForQueueSid(t, matches, qg2SidsB)
 
 	sendB("PING\r\n")
 	expectB(pongRe)
@@ -199,8 +265,6 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	time.Sleep(50 * time.Millisecond)
-
 	clientA1 := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA1.Close()
 
@@ -218,14 +282,19 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	expectMsgsA2 := expectMsgsCommand(t, expectA2)
 
 	// Capture sids for checking later.
-	qg1Sids_a := []string{"1", "2", "3"}
+	qg1SidsA := []string{"1", "2", "3"}
 
 	// Three queue subscribers
-	for _, sid := range qg1Sids_a {
+	for _, sid := range qg1SidsA {
 		sendA1(fmt.Sprintf("SUB foo qg1 %s\r\n", sid))
 	}
 	sendA1("PING\r\n")
 	expectA1(pongRe)
+
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
@@ -234,7 +303,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	// Make sure we get only 1.
 	matches := expectMsgsA1(1)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 
 	// Add a FWC subscriber on A2
 	sendA2("SUB > 1\r\n")
@@ -243,13 +312,18 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	expectA2(pongRe)
 	pSids := []string{"1", "2"}
 
+	// Make sure the subs have propagated to srvB before continuing
+	if err := checkExpectedSubs(len(qg1SidsA)+2, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	sendB("PUB foo 2\r\nok\r\n")
 	sendB("PING\r\n")
 	expectB(pongRe)
 
 	matches = expectMsgsA1(1)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
-	checkForQueueSid(t, matches, qg1Sids_a)
+	checkForQueueSid(t, matches, qg1SidsA)
 
 	matches = expectMsgsA2(2)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
@@ -283,7 +357,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
@@ -298,7 +372,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 2 {
@@ -313,7 +387,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 
 	if sc := srvA.NumSubscriptions(); sc != 1 {
@@ -326,7 +400,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 	// Close the client and make sure we remove subscription state.
 	clientA.Close()
 
-	// Wait for propogation.
+	// Wait for propagation.
 	time.Sleep(100 * time.Millisecond)
 	if sc := srvA.NumSubscriptions(); sc != 0 {
 		t.Fatalf("Expected no subscriptions for srvA, got %d\n", sc)
@@ -337,7 +411,7 @@ func TestClusterDropsRemoteSids(t *testing.T) {
 }
 
 // This will test that we drop remote sids correctly.
-func TestAutoUnsubscribePropogation(t *testing.T) {
+func TestAutoUnsubscribePropagation(t *testing.T) {
 	srvA, srvB, optsA, _ := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
