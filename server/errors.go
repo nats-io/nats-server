@@ -1,19 +1,22 @@
-// Copyright 2012 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
 import "errors"
 
 var (
-	// ErrConnectionClosed represents error condition on a closed connection.
+	// ErrConnectionClosed represents an error condition on a closed connection.
 	ErrConnectionClosed = errors.New("Connection Closed")
 
-	// ErrAuthorization represents error condition on failed authorization.
+	// ErrAuthorization represents an error condition on failed authorization.
 	ErrAuthorization = errors.New("Authorization Error")
 
-	// ErrAuthTimeout represents error condition on failed authorization due to timeout.
+	// ErrAuthTimeout represents an error condition on failed authorization due to timeout.
 	ErrAuthTimeout = errors.New("Authorization Timeout")
 
-	// ErrMaxPayload represents error condition when the payload is too big.
+	// ErrMaxPayload represents an error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
+
+	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
+	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
 )

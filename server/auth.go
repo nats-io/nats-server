@@ -12,4 +12,6 @@ type Auth interface {
 type ClientAuth interface {
 	// Get options associated with a client
 	GetOpts() *clientOpts
+	// Optionally map a user after auth.
+	RegisterUser(*User)
 }

@@ -75,41 +75,41 @@ func sizedString(sz int) string {
 // Publish subject for pub benchmarks.
 var psub = "a"
 
-func Benchmark____PubNo_Payload(b *testing.B) {
+func Benchmark_____PubNo_Payload(b *testing.B) {
 	benchPub(b, psub, "")
 }
 
-func Benchmark____Pub8b_Payload(b *testing.B) {
+func Benchmark_____Pub8b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8)
 	benchPub(b, psub, s)
 }
 
-func Benchmark___Pub32b_Payload(b *testing.B) {
+func Benchmark____Pub32b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(32)
 	benchPub(b, psub, s)
 }
 
-func Benchmark__Pub256B_Payload(b *testing.B) {
+func Benchmark___Pub256B_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(256)
 	benchPub(b, psub, s)
 }
 
-func Benchmark____Pub1K_Payload(b *testing.B) {
+func Benchmark_____Pub1K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(1024)
 	benchPub(b, psub, s)
 }
 
-func Benchmark____Pub4K_Payload(b *testing.B) {
+func Benchmark_____Pub4K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(4 * 1024)
 	benchPub(b, psub, s)
 }
 
-func Benchmark____Pub8K_Payload(b *testing.B) {
+func Benchmark_____Pub8K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8 * 1024)
 	benchPub(b, psub, s)
@@ -137,7 +137,33 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	ch <- true
 }
 
-func Benchmark___________PubSub(b *testing.B) {
+// Benchmark the authorization code path.
+func Benchmark_AuthPubNo_Payload(b *testing.B) {
+	b.StopTimer()
+
+	srv, opts := RunServerWithConfig("./configs/authorization.conf")
+	defer srv.Shutdown()
+
+	c := createClientConn(b, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(b, c)
+
+	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\"}\r\n", "bench", DefaultPass)
+	sendProto(b, c, cs)
+
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	sendOp := []byte("PUB a 0\r\n\r\n")
+	b.SetBytes(int64(len(sendOp)))
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		bw.Write(sendOp)
+	}
+	bw.Flush()
+	flushConnection(b, c)
+	b.StopTimer()
+}
+
+func Benchmark____________PubSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -169,7 +195,7 @@ func Benchmark___________PubSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark___PubSubTwoConns(b *testing.B) {
+func Benchmark____PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -205,7 +231,7 @@ func Benchmark___PubSubTwoConns(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark___PubTwoQueueSub(b *testing.B) {
+func Benchmark____PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -238,7 +264,7 @@ func Benchmark___PubTwoQueueSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark__PubFourQueueSub(b *testing.B) {
+func Benchmark___PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -273,7 +299,7 @@ func Benchmark__PubFourQueueSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark_PubEightQueueSub(b *testing.B) {
+func Benchmark__PubEightQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)

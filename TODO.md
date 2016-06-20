@@ -1,23 +1,26 @@
 
 # General
 
+- [ ] Blacklist or ERR escalation to close connection for auth/permissions
+- [ ] Protocol updates, MAP, MPUB, etc
 - [ ] Multiple listen endpoints
 - [ ] Websocket / HTTP2 strategy
-- [ ] Listen configure key vs addr and port
-- [ ] Multiple Authorization / Access
 - [ ] T series reservations
 - [ ] _SYS. server events?
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
 - [ ] brew, apt-get, rpm, chocately (windows)
-- [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
-- [ ] Add ENV and variable support to dconf? ucl?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
 - [ ] Multi-tenant accounts with isolation of subject space
 - [ ] Pedantic state
+- [X] _SYS.> reserved for server events?
+- [X] Listen configure key vs addr and port
+- [X] Add ENV and variable support to dconf? ucl?
+- [X] Buffer pools/sync pools?
+- [X] Multiple Authorization / Access
 - [X] Write dynamic socket buffer sizes
 - [X] Read dynamic socket buffer sizes
 - [X] Info updates contain other implicit route servers

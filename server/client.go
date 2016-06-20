@@ -53,6 +53,7 @@ type client struct {
 	bw    *bufio.Writer
 	srv   *Server
 	subs  map[string]*subscription
+	perms *permissions
 	cache readCache
 	pcd   map[*client]struct{}
 	atmr  *time.Timer
@@ -67,6 +68,18 @@ type client struct {
 	debug bool
 	trace bool
 }
+
+type permissions struct {
+	sub    *Sublist
+	pub    *Sublist
+	pcache map[string]bool
+}
+
+const (
+	maxResultCacheSize = 512
+	maxPermCacheSize   = 32
+	pruneSize          = 16
+)
 
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
@@ -143,6 +156,37 @@ func (c *client) initClient() {
 		c.ncs = fmt.Sprintf("%s - cid:%d", conn, c.cid)
 	case ROUTER:
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
+	}
+}
+
+// RegisterUser allows auth to call back into a new client
+// with the authenticated user. This is used to map any permissions
+// into the client.
+func (c *client) RegisterUser(user *User) {
+	if user.Permissions == nil {
+		return
+	}
+
+	// Process Permissions and map into client connection structures.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Pre-allocate all to simplify checks later.
+	c.perms = &permissions{}
+	c.perms.sub = NewSublist()
+	c.perms.pub = NewSublist()
+	c.perms.pcache = make(map[string]bool)
+
+	// Loop over publish permissions
+	for _, pubSubject := range user.Permissions.Publish {
+		sub := &subscription{subject: []byte(pubSubject)}
+		c.perms.pub.Insert(sub)
+	}
+
+	// Loop over subscribe permissions
+	for _, subSubject := range user.Permissions.Subscribe {
+		sub := &subscription{subject: []byte(subSubject)}
+		c.perms.sub.Insert(sub)
 	}
 }
 
@@ -361,7 +405,13 @@ func (c *client) authTimeout() {
 }
 
 func (c *client) authViolation() {
-	c.Errorf(ErrAuthorization.Error())
+	if c.srv != nil && c.srv.opts.Users != nil {
+		c.Errorf("%s - User %q",
+			ErrAuthorization.Error(),
+			c.opts.Username)
+	} else {
+		c.Errorf(ErrAuthorization.Error())
+	}
 	c.sendErr("Authorization Violation")
 	c.closeConnection()
 }
@@ -591,6 +641,17 @@ func (c *client) processSub(argo []byte) (err error) {
 		return nil
 	}
 
+	// Check permissions if applicable.
+	if c.perms != nil {
+		r := c.perms.sub.Match(string(sub.subject))
+		if len(r.psubs) == 0 {
+			c.mu.Unlock()
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
+			return nil
+		}
+	}
+
 	// We can have two SUB protocols coming from a route due to some
 	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)
@@ -814,9 +875,57 @@ func (c *client) processMsg(msg []byte) {
 	if c.trace {
 		c.traceMsg(msg)
 	}
+
+	// defintely
+
+	// Disallow publish to _SYS.>, these are reserved for internals.
+	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
+		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&
+		c.pa.subject[3] == 'S' && c.pa.subject[4] == '.' {
+		c.pubPermissionViolation(c.pa.subject)
+		return
+	}
+
+	// Check if published subject is allowed if we have permissions in place.
+	if c.perms != nil {
+		allowed, ok := c.perms.pcache[string(c.pa.subject)]
+		if ok && !allowed {
+			c.pubPermissionViolation(c.pa.subject)
+			return
+		}
+		if !ok {
+			r := c.perms.pub.Match(string(c.pa.subject))
+			notAllowed := len(r.psubs) == 0
+			if notAllowed {
+				c.pubPermissionViolation(c.pa.subject)
+				c.perms.pcache[string(c.pa.subject)] = false
+			} else {
+				c.perms.pcache[string(c.pa.subject)] = true
+			}
+			// Prune if needed.
+			if len(c.perms.pcache) > maxPermCacheSize {
+				// Prune the permissions cache. Keeps us from unbounded growth.
+				r := 0
+				for subject, _ := range c.perms.pcache {
+					delete(c.cache.results, subject)
+					r++
+					if r > pruneSize {
+						break
+					}
+				}
+			}
+			// Return here to allow the pruning code to run if needed.
+			if notAllowed {
+				return
+			}
+		}
+	}
+
 	if c.opts.Verbose {
 		c.sendOK()
 	}
+
+	// Mostly under testing scenarios.
 	if srv == nil {
 		return
 	}
@@ -838,6 +947,17 @@ func (c *client) processMsg(msg []byte) {
 		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)
 		c.cache.results[subject] = r
+		if len(c.cache.results) > maxResultCacheSize {
+			// Prune the results cache. Keeps us from unbounded growth.
+			r := 0
+			for subject, _ := range c.cache.results {
+				delete(c.cache.results, subject)
+				r++
+				if r > pruneSize {
+					break
+				}
+			}
+		}
 	}
 
 	// Check for no interest, short circuit if so.
@@ -930,6 +1050,11 @@ func (c *client) processMsg(msg []byte) {
 			}
 		}
 	}
+}
+
+func (c *client) pubPermissionViolation(subject []byte) {
+	c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subject))
+	c.Errorf("Publish Violation - User %q, Subject %q", c.opts.Username, subject)
 }
 
 func (c *client) processPingTimer() {
