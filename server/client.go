@@ -895,10 +895,10 @@ func (c *client) processMsg(msg []byte) {
 		}
 		if !ok {
 			r := c.perms.pub.Match(string(c.pa.subject))
-			if len(r.psubs) == 0 {
+			notAllowed := len(r.psubs) == 0
+			if notAllowed {
 				c.pubPermissionViolation(c.pa.subject)
 				c.perms.pcache[string(c.pa.subject)] = false
-				return
 			} else {
 				c.perms.pcache[string(c.pa.subject)] = true
 			}
@@ -913,6 +913,10 @@ func (c *client) processMsg(msg []byte) {
 						break
 					}
 				}
+			}
+			// Return here to allow the pruning code to run if needed.
+			if notAllowed {
+				return
 			}
 		}
 	}
