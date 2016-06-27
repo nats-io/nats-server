@@ -3,19 +3,49 @@
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
 
-**Note**: The `master` branch may be in an *unstable or even in a broken state* during development. Please use [releases][github-release] instead of the `master` branch in order to get stable binaries.
+## Quickstart
 
-## Getting Started
+If you just want to start using NATS, and you have [installed Go](https://golang.org/doc/install) 1.5+ and set your $GOPATH:
 
-The best way to get the NATS server is to use one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), Windows, and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
-You can also connect to a public server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443).
+Install and run the NATS server:
 
-Of course you can build the latest version of the server from the `master` branch. The master branch will always build and pass tests, but may not work correctly in your environment.
-You will first need [*Go*](https://golang.org/) installed on your machine (version 1.5+ is required) to build the NATS server.
+```
+go get github.com/nats-io/gnatsd
+gnatsd -D -V
+```
 
-### Running
+Install the [Go NATS client](https://github.com/nats-io/nats/blob/master/README.md):
 
-The NATS server is lightweight and very performant. Starting one with no arguments will give you a server with sane default settings.
+```
+go get github.com/nats-io/nats
+```
+
+## Installation
+
+You can install the NATS server binary or Docker image, connect to a NATS service, or build the server from source.
+
+### Download
+
+The recommended way to install the NATS server is to [download](http://nats.io/download/) one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), Windows, and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
+
+### Demo
+
+You can connect to a public NATS server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443). See the [protocol](#protocol) section for usage.
+
+### Build
+
+You can build the latest version of the server from the `master` branch. The master branch generally should build and pass tests, but may not work correctly in your environment. Note that stable branches of operating system packagers provided by your OS vendor may not be sufficient.
+
+You need [*Go*](http://golang.org/) version 1.5+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies, which are fully supported in Go 1.6. For Go 1.5, build with `GO15VENDOREXPERIMENT=1`.
+
+- Run `go version` to verify that you are running Go 1.5+. (Run `go help` for more guidance.)
+- Clone the <https://github.com/nats-io/gnatsd> repository. 
+- Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory. 
+- Run `go test ./...` to run the unit regression tests.
+
+## Running
+
+To start the NATS server with default settings (and no authentication or clustering), you can invoke the `gnatsd` binary with no [command line options](#command-line-arguments) or [configuration file](#configuration-file). 
 
 ```sh
 > ./gnatsd
@@ -24,9 +54,15 @@ The NATS server is lightweight and very performant. Starting one with no argumen
 [2842] 2016/04/26 13:21:20.379865 [INF] Server is ready
 ```
 
-The server will be started and listening for client connections on port 4222 (the default) from all available interfaces. The logs will be displayed to stdout
-as shown above. There are a large range of supported clients that can be found at [https://nats.io/clients](https://nats.io/download).
-The server uses a text based protocol, so interacting with it can be as simple as using telnet.
+The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
+
+### Clients
+
+The NATS ecosystem provides a large range of supported and community [clients](http://nats.io/documentation/clients/nats-clients/), including Go, Java, Node, and many more. For the complete up-to-date list, visit the [NATS download site]](https://nats.io/download).
+
+### Protocol
+
+The NATS server uses a [text based protocol](http://nats.io/documentation/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/documentation/internals/nats-protocol-demo/).
 
 ```sh
 > telnet demo.nats.io 4222
@@ -43,13 +79,9 @@ MSG foo 1 11
 Hello World
 ```
 
-More information on the NATS protocol can be found at [http://nats.io/documentation/internals/nats-protocol](http://nats.io/documentation/internals/nats-protocol/).
+## Command line arguments
 
-## Configuring
-
-The server accepts command line arguments to control its behavior. An example  configuration file is listed below. Note that
-command line arguments will override those items in the configuration file.
-
+The NATS server accepts command line arguments to control its behavior. Usage is shown below. Note that command line arguments override those items in the [configuration file](#configuration-file).
 
 ```
 Server Options:
@@ -90,10 +122,11 @@ Common Options:
         --help_tls                   TLS help
 ```
 
-## Sample Configuration File
+## Configuration file
+
+Typically you configure the NATS server using a configuration file, an example of which is shown below. See also the [server configuration file](http://nats.io/documentation/server/gnatsd-config/) documentation for details on the configuration language.
 
 ```
-
 listen: localhost:4242 # host/port to listen for client connections
 
 http: localhost:8222 # HTTP monitoring port
@@ -152,12 +185,32 @@ max_payload: 65536
 
 # slow consumer threshold
 max_pending_size: 10000000
-
 ```
+
+## Variables
+
+The NATS sever configuration language supports block-scoped variables that can be used for templating in the configuration file, and specifically to ease setting of group values for [permission fields](#authorization) and [user authentication](#authentication).
+
+Variables can be referenced by the prefix `$`, for example: `$PASSWORD`. Variables can be defined in the configuration file itself or reference environment variables.
+
+Any value in the configuration language can be a variable reference (`key=$VALUE`). Note that the variable identifier (name) is not case sensitive, but is capitalized by convention for readability.
 
 ## Clustering
 
-Setting up a full mesh cluster is really easy. When running NATS Servers in different hosts, the command line parameters for all servers could be as simple as:
+NATS supports running each server in clustered mode. You can cluster servers together for high volume messaging systems and resiliency and high availability. Clients are cluster-aware. See also the [clustered NATS](http://nats.io/documentation/server/gnatsd-cluster/) documentation.
+
+The following cluster options are supported:
+
+    --routes [rurl-1, rurl-2]   Routes to solicit and connect
+    --cluster [cluster url]     Cluster URL for solicited routes
+
+### Full mesh recommended
+
+NATS clustered servers have a forwarding limit of one hop. This means that each `gnatsd` instance will **only** forward messages that it has received **from a client** to the immediately adjacent `gnatsd` instances to which it has routes. Messages received **from** a route will only be distributed to local clients. Therefore a full mesh cluster, or complete graph, is recommended for NATS to function as intended and as described here. 
+
+### Basic example
+
+Setting up a full mesh cluster is easy. When running NATS Servers in different hosts, the command line parameters for all servers can be as simple as:
 
 ```
 gnatsd -cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT -routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
@@ -165,15 +218,20 @@ gnatsd -cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT -routes nats://$NATS_SEED_HO
 
 Even on the host where the "seed" is running, the above command would work. The server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
 
-Note that you don't have to connect all servers to the same "seed" server, any server accepting a connection will inform other servers in the mesh about that new server so that they can connect to it. The advantage of the seed approach, is that you can "deploy" the same configuration (as shown above) on all hosts.
+Note that you don't have to connect all servers to the same "seed" server, any server accepting a connection will inform other servers in the mesh about that new server so that they can connect to it. The advantage of the seed approach, is that you can "deploy" the same configuration on all hosts.
 
-Now let's have a look at running a cluster of 3 servers on the same host. We will start with the seed server and use the `-D` command line parameter to produce debug information.
+### 3-node example
+
+The following example demonstrates how to run a cluster of 3 servers on the same host. We will start with the seed server and use the `-D` command line parameter to produce debug information.
+
+See also [clustered NATS](http://nats.io/documentation/server/gnatsd-cluster/) for clustered NATS examples using Docker.
 
 ```
 gnatsd -p 4222 -cluster nats://localhost:4248 -D
 ```
 
 Alternatively, you could use a configuration file, let's call it `seed.conf`, with a content similar to this:
+
 ```
 # Cluster Seed Node
 
@@ -184,12 +242,15 @@ cluster {
   listen: 127.0.0.1:4248
 }
 ```
-and start the server like this:
+
+And start the server like this:
+
 ```
 gnatsd -config ./seed.conf -D
 ```
 
 This will produce an output similar to:
+
 ```
 [75653] 2016/04/26 15:14:47.339321 [INF] Listening for route connections on 127.0.0.1:4248
 [75653] 2016/04/26 15:14:47.340787 [INF] Listening for client connections on 127.0.0.1:4222
@@ -198,6 +259,7 @@ This will produce an output similar to:
 ```
 
 It is also possible to specify the hostname and port independently. At least the port is required. If you leave the hostname off it will bind to all the interfaces ('0.0.0.0').
+
 ```
 cluster {
   host: 127.0.0.1
@@ -280,8 +342,123 @@ And the log from the second server shows that it connected to the third.
 
 At this point, there is a full mesh cluster of NATS servers.
 
-
 ## Securing NATS
+
+This section describes how to secure the NATS server, including authentication, authorization, and encryption using TLS and bcrypt.
+
+### Authentication
+
+The NATS server supports single and multi-user/client authentication. See also the [server authentication](http://nats.io/documentation/server/gnatsd-authentication/) documentation.
+
+**Single user authentication**
+
+For single-user authentication, you can start the NATS server with authentication enabled by passing in the required credentials on the command line, or by passing in a token.
+
+```
+gnatsd -DV --user foo --pass bar
+```
+
+```
+gnatsd -DV -auth 'S3Cr3T0k3n!'
+```
+
+Clients can connect using:
+
+```
+nats://foo:bar@localhost:4222
+```
+
+```
+nats://S3Cr3T0k3n!@localhost:4222
+```
+
+You can also enable single-user authentication and set the credentials in the server configuration file as follows:
+
+```
+authorization {
+  user:     derek
+  password: T0pS3cr3t
+  timeout:  1
+}
+```
+
+**Multi-user authentication**
+
+You can enable multi-user authentication using a NATS server configuration file that defines user credentials (`user` and `password`), and optionally `permissions`, for two or more users. Multi-user authentication leverages [variables](#variables).
+
+```
+authorization {
+  users = [
+    {user: value or $VARIABLE, password: value or $VARIABLE}
+    {user: value or $VARIABLE, password: value or $VARIABLE, [permissions: $PERMISSION]}
+    ...
+  ]
+}
+```
+
+For example:
+
+```
+authorization {
+  PASS: abcdefghijklmnopqrstuvwxwz0123456789
+  users = [
+    {user: alice, password: foo, permissions: $ADMIN}
+    {user: bob,   password: bar, permissions: $REQUESTOR}
+    {user: joe,   password: $PASS}
+  ]
+}
+```
+
+### Authorization
+
+The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/server/gnatsd-authorization) documentation.
+
+Each permission grant is an object with two fields: what subject(s) the authenticated user can publish to, and what subject(s) the authenticated user can subscribe to. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
+
+You set permissions by creating an entry inside of the `authorization` configuration block that conforms to the following syntax:
+
+```
+authorization { 
+  PERMISSION_NAME = {
+    publish = "singleton" or ["array", ...]
+    subscribe = "singleton" or ["array", ...]
+  }
+}
+```
+
+Here is an example authorization configuration that defines three users, two of whom are assigned explicit permissions. 
+
+```
+authorization { 
+  ADMIN = {
+    publish = ">"
+    subscribe = ">"
+  }
+  REQUESTOR = {
+    publish = ["req.foo", "req.bar"]
+    subscribe = "_INBOX.*"
+  } 
+  DEFAULT_PERMISSIONS = {
+    publish = "SANDBOX.*"
+    subscribe = ["PUBLIC.>", "_INBOX.>"]
+  }
+  
+  PASS: abcdefghijklmnopqrstuvwxwz0123456789
+  users = [
+    {user: alice, password: foo, permissions: $ADMIN}
+    {user: bob,   password: bar, permissions: $REQUESTOR}
+    {user: joe,   password: $PASS}
+  ]
+}
+```
+
+Since Alice is an ADMIN she can publish/subscribe on any subject. We use the wildcard “>” to match any subject.
+
+Bob is REQUESTOR and can publish requests on subjects "req.foo" or "req.bar", and subscribe to anything that is a response ("_INBOX.*").
+
+Joe has no permission grant and therefore inherits the default permission set. You set the inherited default permissions by assigning them to the `default_permissions` entry inside of the `authorization` configuration block.
+
+Note that `_INBOX.*` subscribe permissions must be granted in order to use the request APIs in Apcera supported clients. If an unauthorized client publishes or attempts to subscribe to a subject, the action fails and is logged at the server, and an error message is returned to the client.
 
 ### TLS
 
@@ -301,11 +478,9 @@ func defaultCipherSuites() []uint16 {
 }
 ```
 
-Generating self signed certs and intermediary certificate authorities is beyond the scope here, but this document can be helpful in addition to Google Search:
-<a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>
+Generating self signed certs and intermediary certificate authorities is beyond the scope here, but this document can be helpful in addition to Google Search: <a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>
 
-The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured
-with a CA authority to verify the client certificates.
+The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured with a CA authority to verify the client certificates.
 
 ```
 # Simple TLS config file
@@ -336,8 +511,7 @@ tls {
 }
 ```
 
-When setting up clusters, all servers in the cluster, if using TLS, will both verify the connecting endpoints and the server responses. So certificates are checked in
-both directions. Certificates can be configured only for the server's cluster identity, keeping client and server certificates separate from cluster formation.
+When setting up clusters, all servers in the cluster, if using TLS, will both verify the connecting endpoints and the server responses. So certificates are checked in both directions. Certificates can be configured only for the server's cluster identity, keeping client and server certificates separate from cluster formation.
 
 ```
 cluster {
@@ -360,6 +534,7 @@ cluster {
   ]
 }
 ```
+
 The server can be run using command line arguments to enable TLS functionality.
 
 ```
@@ -370,7 +545,8 @@ The server can be run using command line arguments to enable TLS functionality.
 --tlscacert FILE             Client certificate CA for verification
 ```
 
-Examples using the test certicates which are self signed for localhost and 127.0.0.1.
+Examples using the test certificates which are self signed for localhost and 127.0.0.1.
+
 ```bash
 > ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
@@ -381,19 +557,18 @@ Examples using the test certicates which are self signed for localhost and 127.0
 ```
 
 Notice that the log  indicates that the client connections will be required to use TLS. If you run the server in Debug mode with -D or -DV, the logs will show the cipher suite selection for each connected client.
+
 ```
 [15146] 2015/12/03 12:38:37.733139 [DBG] ::1:63330 - cid:1 - Starting TLS client connection handshake
 [15146] 2015/12/03 12:38:37.751948 [DBG] ::1:63330 - cid:1 - TLS handshake complete
 [15146] 2015/12/03 12:38:37.751959 [DBG] ::1:63330 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 ```
 
-
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
 
 ```
 > ./gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
 ```
-
 
 ### Bcrypt
 
@@ -417,220 +592,31 @@ Add into the server configuration file's authorization section.
 
 ## Monitoring
 
-If the monitoring port is enabled, the server will run a lightweight http server that has several endpoints defined, **[/varz, /connz, /routez, /subsz]**. All endpoints return a JSON object.
+If the monitoring port is enabled, the NATS server runs a lightweight HTTP server that has the following endpoints: /varz, /connz, /routez, and /subsz. All endpoints return a JSON object. See [NATS Server monitoring](http://nats.io/documentation/server/gnatsd-monitoring/) for endpoint examples.
 
-To test, run '``gnatsd -m 8222``', then go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>
-
-### /varz
-
-<a href="http://localhost:8222/varz" target="_blank">http://localhost:8222/varz</a> reports various general statistics.
-
-```json
-{
-  "server_id": "kG19DsXX1UVeSyEjhl3RFw",
-  "version": "0.8.0.beta",
-  "go": "go1.6.2",
-  "host": "0.0.0.0",
-  "auth_required": false,
-  "ssl_required": false,
-  "tls_required": false,
-  "tls_verify": false,
-  "max_connections": 65536,
-  "ping_interval": 120000000000,
-  "ping_max": 2,
-  "http_port": 8222,
-  "https_port": 0,
-  "max_control_line": 1024,
-  "max_pending_size": 10485760,
-  "cluster_port": 0,
-  "tls_timeout": 0.5,
-  "port": 4222,
-  "max_payload": 1048576,
-  "start": "2016-04-25T22:09:34.684376796-04:00",
-  "now": "2016-04-26T16:39:47.332681784-04:00",
-  "uptime": "18h30m12s",
-  "mem": 21131264,
-  "cores": 8,
-  "cpu": 0,
-  "connections": 1002,
-  "total_connections": 1831,
-  "routes": 0,
-  "remotes": 0,
-  "in_msgs": 5501151,
-  "out_msgs": 11001275,
-  "in_bytes": 27645750,
-  "out_bytes": 55162353,
-  "slow_consumers": 0,
-  "http_req_stats": {
-    "/": 223,
-    "/connz": 31,
-    "/routez": 1,
-    "/subsz": 7,
-    "/varz": 35
-  }
-}
-```
-
-### /connz
-
-<a href="http://localhost:8222/connz" target="_blank">http://localhost:8222/connz</a> reports more detailed information on current connections. It uses a paging mechanism which defaults to 1024 connections.
-You can control these via url arguments (limit and offset), e.g. <a href="http://localhost:8222/connz?limit=1&offset=1" target="_blank">http://localhost:8222/connz?limit=1&offset=1</a>.
-You can also report detailed subscription information on a per connection basis using subs=1, e.g. <a href="http://localhost:8222/connz?limit=1&offset=1&subs=1" target="_blank">http://localhost:8222/connz?limit=1&offset=1&subs=1</a>.
-
-```json
-{
-  "now": "2016-04-26T16:40:59.926732854-04:00",
-  "num_connections": 2,
-  "offset": 0,
-  "limit": 1024,
-  "connections": [
-    {
-      "cid": 1,
-      "ip": "73.170.105.42",
-      "port": 46422,
-      "start": "2016-04-25T22:09:34.715492478-04:00",
-      "last_activity": "2016-04-26T16:40:56.17467432-04:00",
-      "uptime": "18h31m25s",
-      "idle": "3s",
-      "pending_bytes": 0,
-      "in_msgs": 1112,
-      "out_msgs": 0,
-      "in_bytes": 139101,
-      "out_bytes": 0,
-      "subscriptions": 1,
-      "lang": "go",
-      "version": "1.1.9"
-    },
-    {
-      "cid": 3,
-      "ip": "129.192.191.2",
-      "port": 55072,
-      "start": "2016-04-25T22:09:36.685630786-04:00",
-      "last_activity": "2016-04-26T16:40:56.17467432-04:00",
-      "uptime": "18h31m23s",
-      "idle": "3s",
-      "pending_bytes": 0,
-      "in_msgs": 0,
-      "out_msgs": 1112,
-      "in_bytes": 0,
-      "out_bytes": 139101,
-      "subscriptions": 1,
-      "lang": "go",
-      "version": "1.1.9"
-    }
-  ]
-}
-```
-
-### /routez
-
-<a href="http://localhost:8222/routez" target="_blank">http://localhost:8222/routez</a> reports information on active routes for a cluster. Routes are expected to be low, so there is no paging mechanism currently with this endpoint. It does support the subs arg line /connz, e.g. <a href="http://localhost:8222/routez?subs=1" target="_blank">http://localhost:8222/routez?subs=1</a>
-
-```json
-{
-  "now": "2015-07-14T13:30:59.349179963-07:00",
-  "num_routes": 1,
-  "routes": [
-    {
-      "rid": 1,
-      "remote_id": "de475c0041418afc799bccf0fdd61b47",
-      "did_solicit": true,
-      "ip": "127.0.0.1",
-      "port": 61791,
-      "pending_size": 0,
-      "in_msgs": 0,
-      "out_msgs": 0,
-      "in_bytes": 0,
-      "out_bytes": 0,
-      "subscriptions": 0
-    }
-  ]
-}
-```
-
-### /subsz
-
-<a href="http://localhost:8222/subsz" target="_blank">http://localhost:8222/subsz</a> reports detailed information about the current subscriptions and the routing data structure.
-
-```json
-{
-  "num_subscriptions": 2,
-  "num_cache": 1,
-  "num_inserts": 3539,
-  "num_removes": 3537,
-  "num_matches": 103,
-  "cache_hit_rate": 0.6504854368932039,
-  "max_fanout": 1,
-  "avg_fanout": 1
-}
-```
-
-Monitoring endpoints support JSONP for CORS so you can easily create single page
-web applications for monitoring. Simply pass `callback` query parameter to any
-endpoint. For example; `http://localhost:8222/connz?callback=cb`
-
-```javascript
-// JQuery example
-
-$.getJSON('http://localhost:8222/connz?callback=?', function(data) {
-  console.log(data);
-});
+To see a demonstration of NATS monitoring, run a command similar to the following for each desired endpoint:
 
 ```
+curl demo.nats.io:8222/varz
+```
 
-## Building
+To enable the monitoring server, start the NATS server with the monitoring flag `-m` (or `-ms`) and specify the monitoring port.
 
-This code currently requires at _least_ version 1.4 of Go, but we encourage
-the use of the latest stable release.  We will be moving to requiring at _least_ 1.5
-in the near future. Go is still young and improving
-rapidly, new releases provide performance improvements and fixes. Information
-on installation, including pre-built binaries, is available at
-<http://golang.org/doc/install>.  Stable branches of operating system
-packagers provided by your OS vendor may not be sufficient.
+Monitoring options
 
-Note that we now support vendored dependencies, which are fully supported on Go1.6.
-For Go1.5, please build with GO15VENDOREXPERIMENT=1.
+    -m, --http_port PORT             HTTP PORT for monitoring
+    -ms,--https_port PORT            Use HTTPS PORT for monitoring (requires TLS cert and key)
 
-Run `go version` to see the version of Go which you have installed.
+To enable monitoring via the configuration file, use `host:port` (there is no explicit configuration flag for the monitoring interface).
 
-Run `go build` inside the directory to build.
+For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
-Run `go test ./...` to run the unit regression tests.
-
-A successful build run produces no messages and creates an executable called
-`gnatsd` in this directory.  You can invoke that binary, with no options and
-no configuration file, to start a server with acceptable standalone defaults
-(no authentication, no clustering).
-
-Run `go help` for more guidance, and visit <http://golang.org/> for tutorials,
-presentations, references and more.
-
-
-## Client libraries
-
-Here is a sample of client language bindings for NATS. For a complete and updated list, please visit <https://nats.io/download>.
-
-### Apcera Supported
-- [Go](https://github.com/nats-io/nats)
-- [Node.js](https://github.com/nats-io/node-nats)
-- [Java](https://github.com/nats-io/jnats)
-- [C/C++](https://github.com/nats-io/cnats)
-- [C#/.NET](https://github.com/nats-io/csnats)
-- [Python Asyncio](https://github.com/nats-io/asyncio-nats)
-- [Ruby](https://github.com/nats-io/ruby-nats)
-- [Elixir](https://github.com/nats-io/elixir-nats)
-- [NGINX](https://github.com/nats-io/nginx-nats)
-
-### Community
-- [Scala](https://github.com/tyagihas/scala_nats)
-- [Arduino](https://github.com/joshglendenning/arduino-nats)
-- [Lua](https://github.com/DawnAngel/lua-nats)
-- [PHP](https://github.com/repejota/phpnats)
-- [Python Twisted](https://github.com/johnwlockwood/txnats)
-- [Python](https://github.com/mcuadros/pynats)
-- [Haskell](https://github.com/ondrap/nats-queue)
-- [Rust](https://github.com/jedisct1/rust-nats)
-
+```
+[83249] 2016/06/23 19:39:35.173557 [INF] Starting nats-server version 0.8.0
+[83249] 2016/06/23 19:39:35.173835 [INF] Starting http monitor on 0.0.0.0:8222
+[83249] 2016/06/23 19:39:35.175193 [INF] Listening for client connections on 0.0.0.0:4222
+[83249] 2016/06/23 19:39:35.175226 [INF] Server is ready
+```
 
 ## License
 
