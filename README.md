@@ -58,7 +58,7 @@ The server is started and listening for client connections on port 4222 (the def
 
 ### Clients
 
-The NATS ecosystem provides a large range of supported and community [clients](http://nats.io/documentation/clients/nats-clients/), including Go, Java, Node, and many more. For the complete up-to-date list, visit the [NATS download site]](https://nats.io/download).
+The NATS ecosystem provides a large range of supported and community [clients](http://nats.io/documentation/clients/nats-clients/), including Go, Java, Node, and many more. For the complete up-to-date list, visit the [NATS download site](https://nats.io/download).
 
 ### Protocol
 
