@@ -197,23 +197,27 @@ Any value in the configuration language can be a variable reference (`key=$VALUE
 
 ## Clustering
 
-NATS supports running each server in clustered mode. You can cluster servers together for high volume messaging systems and resiliency and high availability. Clients are cluster-aware. See also the [clustered NATS](http://nats.io/documentation/server/gnatsd-cluster/) documentation.
+Clustering lets you scale NATS messaging by having multiple NATS servers communicate with each other. Clustering lets messages published to one server be routed and received by a subscriber on another server. See also the [clustered NATS](http://nats.io/documentation/server/gnatsd-cluster/) documentation.
 
-The following cluster options are supported:
+### Full mesh recommended
+
+NATS servers have a forwarding limit of one hop. This means that each `gnatsd` instance will **only** forward messages that it has received **from a client** to the immediately adjacent `gnatsd` instances to which it has routes. Messages received **from** a route will only be distributed to local clients. Therefore a full mesh cluster, or complete graph, is recommended for NATS to function as intended and as described here. 
+
+### Configuration options
+
+NATS supports running each server in clustered mode. The following command line options are supported:
 
     --routes [rurl-1, rurl-2]   Routes to solicit and connect
     --cluster [cluster url]     Cluster URL for solicited routes
 
-### Full mesh recommended
-
-NATS clustered servers have a forwarding limit of one hop. This means that each `gnatsd` instance will **only** forward messages that it has received **from a client** to the immediately adjacent `gnatsd` instances to which it has routes. Messages received **from** a route will only be distributed to local clients. Therefore a full mesh cluster, or complete graph, is recommended for NATS to function as intended and as described here. 
+To achieve a full mesh, in previous releases clustering was configured using the `--routes` flag in the cli or by use of the `routes` element in the configuration file. To make cluster configuration easier, the `--cluster` flag is now available. You can use the `--cluster <nats_url>` cli option, or `cluster { listen: hostport }` in the configuration file, to designate a port that the NATS server will listen on for route requests. Any NATS server that routes to the seed's route, that server will advertise its own cluster address to all other servers using that route. This creates a full-mesh cluster that is much easier to configure and maintain.
 
 ### Basic example
 
-Setting up a full mesh cluster is easy. When running NATS Servers in different hosts, the command line parameters for all servers can be as simple as:
+When running NATS Servers in different hosts, the command line parameters for all servers could be as simple as:
 
 ```
-gnatsd -cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT -routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
+gnatsd --cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT --routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
 ```
 
 Even on the host where the "seed" is running, the above command would work. The server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
