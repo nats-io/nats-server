@@ -85,7 +85,10 @@ func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
 
-	mcl := c.srv.opts.MaxControlLine
+	mcl := MAX_CONTROL_LINE_SIZE
+	if c.srv != nil && c.srv.opts != nil {
+		mcl = c.srv.opts.MaxControlLine
+	}
 
 	// snapshot this, and reset when we receive a
 	// proper CONNECT if needed.
