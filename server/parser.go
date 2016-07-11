@@ -85,6 +85,8 @@ func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
 
+	mcl := c.srv.opts.MaxControlLine
+
 	// snapshot this, and reset when we receive a
 	// proper CONNECT if needed.
 	authSet := c.isAuthTimerSet()
@@ -169,7 +171,7 @@ func (c *client) parse(buf []byte) error {
 				if err := c.processPub(arg); err != nil {
 					return err
 				}
-				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+				c.drop, c.as, c.state = OP_START, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out
 				// and process split buffer.
@@ -631,14 +633,26 @@ func (c *client) parse(buf []byte) error {
 			goto parseErr
 		}
 	}
+
 	// Check for split buffer scenarios for any ARG state.
-	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
+	if c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
-		c.state == CONNECT_ARG || c.state == INFO_ARG) && c.argBuf == nil {
-		c.argBuf = c.scratch[:0]
-		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
-		// FIXME(dlc), check max control line len
+		c.state == CONNECT_ARG || c.state == INFO_ARG {
+		// Setup a holder buffer to deal with split buffer scenario.
+		if c.argBuf == nil {
+			c.argBuf = c.scratch[:0]
+			c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
+		}
+		// Check for violations of control line length here. Note that this is not
+		// exact at all but the performance hit is too great to be precise, and
+		// catching here should prevent memory exhaustion attacks.
+		if len(c.argBuf) > mcl {
+			c.sendErr("Maximum Control Line Exceeded")
+			c.closeConnection()
+			return ErrMaxControlLine
+		}
 	}
+
 	// Check for split msg
 	if (c.state == MSG_PAYLOAD || c.state == MSG_END) && c.msgBuf == nil {
 		// We need to clone the pubArg if it is still referencing the
