@@ -188,7 +188,7 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
 func (s *Sublist) removeFromCache(subject string, sub *subscription) {
-	for k, _ := range s.cache {
+	for k := range s.cache {
 		if !matchLiteral(k, subject) {
 			continue
 		}
@@ -231,7 +231,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	s.cache[subject] = result
 	// Bound the number of entries to sublistMaxCache
 	if len(s.cache) > slCacheMax {
-		for k, _ := range s.cache {
+		for k := range s.cache {
 			delete(s.cache, k)
 			break
 		}
