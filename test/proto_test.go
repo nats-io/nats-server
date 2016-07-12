@@ -264,3 +264,20 @@ func TestIncompletePubArg(t *testing.T) {
 	send(pub + goodBuf + pub + goodBuf + pub + badBuf + pub + badBuf2)
 	expect(errRe)
 }
+
+func TestControlLineMaximums(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+
+	pubTooLong := "PUB foo "
+	for i := 0; i < 32; i++ {
+		pubTooLong += "2222222222"
+	}
+	send(pubTooLong)
+	expect(errRe)
+}

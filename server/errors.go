@@ -17,6 +17,9 @@ var (
 	// ErrMaxPayload represents an error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
 
+	// ErrMaxControlLine represents an error condition when the control line is too big.
+	ErrMaxControlLine = errors.New("Maximum Control Line Exceeded")
+
 	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
 	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
 )

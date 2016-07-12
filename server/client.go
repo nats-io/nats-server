@@ -906,7 +906,7 @@ func (c *client) processMsg(msg []byte) {
 			if len(c.perms.pcache) > maxPermCacheSize {
 				// Prune the permissions cache. Keeps us from unbounded growth.
 				r := 0
-				for subject, _ := range c.perms.pcache {
+				for subject := range c.perms.pcache {
 					delete(c.cache.results, subject)
 					r++
 					if r > pruneSize {
@@ -950,7 +950,7 @@ func (c *client) processMsg(msg []byte) {
 		if len(c.cache.results) > maxResultCacheSize {
 			// Prune the results cache. Keeps us from unbounded growth.
 			r := 0
-			for subject, _ := range c.cache.results {
+			for subject := range c.cache.results {
 				delete(c.cache.results, subject)
 				r++
 				if r > pruneSize {
