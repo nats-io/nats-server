@@ -201,7 +201,9 @@ Clustering lets you scale NATS messaging by having multiple NATS servers communi
 
 ### Full mesh required
 
-In order for clustering to work correctly, all NATS servers must be connected to each other. NATS makes building the full mesh easy. Simply designate a server to be a *seed* server. All other servers in the cluster simply specify the *seed* server as in the server's cluster option as indicated below.
+In order for clustering to work correctly, all NATS servers must be connected to each other.
+
+NATS servers have a forwarding limit of one hop. This means that each server will **only** forward a message that it has received **from a client** to  all connected servers that expressed interest in the message's published subject. A message received **from** a route will only be distributed to local clients.
 
 ### Configuration options
 
@@ -210,14 +212,15 @@ NATS supports running each server in clustered mode. The following command line 
     --cluster [cluster url]     Cluster URL for solicited routes
     --routes [rurl-1, rurl-2]   Routes to solicit and connect
 
+The `--cluster` flag specifies the NATS URL where the server listens for connections from other servers.
 
-The `--cluster` flag specifies a nats URL where the server will listen connections from other servers.
+The `--routes` flag specifies the NATS URL for one or more servers in the cluster. When a server connects to a specified route, it will advertise its own cluster URL to other servers. Note that when the `--routes` option is specified a `--cluster` option is also required.
 
-The `--routes` flag specifies the NATS URL where the server will connect to the cluster. When a server connects to the specified cluster route, it will advertise its own cluster route to other other servers in the mesh can connect to it. Note that when the `--route` option is specified a `--cluster` option is also required.
-
-Previous releases required you to build the complete mesh using the `--routes` flag. To define your cluster in the current release, please follow the "Basic Exmaple" as described below.
+Previous releases required you to build the complete mesh using the `--routes` flag. To define your cluster in the current release, please follow the "Basic example" as described below.
 
 ### Basic example
+
+NATS makes building the full mesh easy. Simply designate a server to be a *seed* server. All other servers in the cluster simply specify the *seed* server as its server's routes option as indicated below.
 
 When running NATS Servers in different hosts, the command line parameters for all servers could be as simple as:
 
@@ -225,9 +228,9 @@ When running NATS Servers in different hosts, the command line parameters for al
 gnatsd --cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT --routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
 ```
 
-Even on the host where the "seed" is running, the above would work as the server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
+Even on the host where the *seed* is running, the above would work as the server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
 
-Note that you don't have to connect all servers to the same "seed" server, any server accepting a connection will inform other servers in the mesh about that new server so that they can connect to it. The advantage of the seed approach, is that you can "deploy" the same configuration on all hosts.
+Note that you don't have to connect all servers to the same *seed* server, any server accepting a connection will inform other servers in the mesh about that new server so that they can connect to it. The advantage of the seed approach, is that you can deploy the same configuration to all hosts.
 
 ### 3-node example
 
