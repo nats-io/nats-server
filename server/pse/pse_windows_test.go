@@ -6,6 +6,7 @@ package pse
 import (
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func checkValues(t *testing.T, pcpu, tPcpu float64, rss, tRss int64) {
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta > 200*1024 { // 200k - basically sanity check
+		if delta > 1024*1024 { // 1MB
 			t.Fatalf("RSSs did not match close enough: %d vs %d", rss, tRss)
 		}
 	}
@@ -36,9 +37,13 @@ func TestPSEmulationWin(t *testing.T) {
 	var pcpu, tPcpu float64
 	var rss, vss, tRss int64
 
+	runtime.GC()
+
 	if err := ProcUsage(&pcpu, &rss, &vss); err != nil {
 		t.Fatalf("Error:  %v", err)
 	}
+
+	runtime.GC()
 
 	imageName := getProcessImageName()
 	// query the counters using typeperf
@@ -69,6 +74,8 @@ func TestPSEmulationWin(t *testing.T) {
 	tRss = int64(fval)
 
 	checkValues(t, pcpu, tPcpu, rss, tRss)
+
+	runtime.GC()
 
 	// Again to test caching
 	if err = ProcUsage(&pcpu, &rss, &vss); err != nil {
