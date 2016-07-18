@@ -17,6 +17,8 @@ func TestPSEmulation(t *testing.T) {
 	var rss, vss, psRss, psVss int64
 	var pcpu, psPcpu float64
 
+	runtime.GC()
+
 	// PS version first
 	pidStr := fmt.Sprintf("%d", os.Getpid())
 	out, err := exec.Command("ps", "o", "pcpu=,rss=,vsz=", "-p", pidStr).Output()
@@ -27,6 +29,8 @@ func TestPSEmulation(t *testing.T) {
 	fmt.Sscanf(string(out), "%f %d %d", &psPcpu, &psRss, &psVss)
 	psRss *= 1024 // 1k blocks, want bytes.
 	psVss *= 1024 // 1k blocks, want bytes.
+
+	runtime.GC()
 
 	// Our internal version
 	ProcUsage(&pcpu, &rss, &vss)
@@ -45,7 +49,7 @@ func TestPSEmulation(t *testing.T) {
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta > 512*1024 { // 512k
+		if delta > 1024*1024 { // 1MB
 			t.Fatalf("RSSs did not match close enough: %d vs %d", rss, psRss)
 		}
 	}
