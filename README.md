@@ -39,13 +39,13 @@ You can build the latest version of the server from the `master` branch. The mas
 You need [*Go*](http://golang.org/) version 1.5+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies, which are fully supported in Go 1.6. For Go 1.5, build with `GO15VENDOREXPERIMENT=1`.
 
 - Run `go version` to verify that you are running Go 1.5+. (Run `go help` for more guidance.)
-- Clone the <https://github.com/nats-io/gnatsd> repository. 
-- Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory. 
+- Clone the <https://github.com/nats-io/gnatsd> repository.
+- Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory.
 - Run `go test ./...` to run the unit regression tests.
 
 ## Running
 
-To start the NATS server with default settings (and no authentication or clustering), you can invoke the `gnatsd` binary with no [command line options](#command-line-arguments) or [configuration file](#configuration-file). 
+To start the NATS server with default settings (and no authentication or clustering), you can invoke the `gnatsd` binary with no [command line options](#command-line-arguments) or [configuration file](#configuration-file).
 
 ```sh
 > ./gnatsd
@@ -430,7 +430,7 @@ Each permission grant is an object with two fields: what subject(s) the authenti
 You set permissions by creating an entry inside of the `authorization` configuration block that conforms to the following syntax:
 
 ```
-authorization { 
+authorization {
   PERMISSION_NAME = {
     publish = "singleton" or ["array", ...]
     subscribe = "singleton" or ["array", ...]
@@ -438,10 +438,10 @@ authorization {
 }
 ```
 
-Here is an example authorization configuration that defines three users, two of whom are assigned explicit permissions. 
+Here is an example authorization configuration that defines three users, two of whom are assigned explicit permissions.
 
 ```
-authorization { 
+authorization {
   ADMIN = {
     publish = ">"
     subscribe = ">"
@@ -449,12 +449,12 @@ authorization {
   REQUESTOR = {
     publish = ["req.foo", "req.bar"]
     subscribe = "_INBOX.*"
-  } 
+  }
   DEFAULT_PERMISSIONS = {
     publish = "SANDBOX.*"
     subscribe = ["PUBLIC.>", "_INBOX.>"]
   }
-  
+
   PASS: abcdefghijklmnopqrstuvwxwz0123456789
   users = [
     {user: alice, password: foo, permissions: $ADMIN}
@@ -661,7 +661,7 @@ IN THE SOFTWARE.
 [Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.8.0
 [Release-image]: http://img.shields.io/badge/release-v0.8.0-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
-[Coverage-image]: https://img.shields.io/coveralls/nats-io/gnatsd.svg
+[Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
 [ReportCard-Image]: http://goreportcard.com/badge/github.com/nats-io/gnatsd
 [github-release]: https://github.com/nats-io/gnatsd/releases/
