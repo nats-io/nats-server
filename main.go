@@ -44,7 +44,7 @@ TLS Options:
         --tls                        Enable TLS, do not verify clients (default: false)
         --tlscert <file>             Server certificate file
         --tlskey <file>              Private key for server certificate
-        --tlsverify                  Enable TLS, very client certificates
+        --tlsverify                  Enable TLS, verify client certificates
         --tlscacert <file>           Client certificate CA for verification
 
 Cluster Options:
