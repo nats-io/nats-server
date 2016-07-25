@@ -109,7 +109,7 @@ TLS Options:
         --tls                        Enable TLS, do not verify clients (default: false)
         --tlscert FILE               Server certificate file
         --tlskey FILE                Private key for server certificate
-        --tlsverify                  Enable TLS, very client certificates
+        --tlsverify                  Enable TLS, verify client certificates
         --tlscacert FILE             Client certificate CA for verification
 
 Cluster Options:
@@ -553,7 +553,7 @@ The server can be run using command line arguments to enable TLS functionality.
 --tls                        Enable TLS, do not verify clients (default: false)
 --tlscert FILE               Server certificate file
 --tlskey FILE                Private key for server certificate
---tlsverify                  Enable TLS, very client certificates
+--tlsverify                  Enable TLS, verify client certificates
 --tlscacert FILE             Client certificate CA for verification
 ```
 
