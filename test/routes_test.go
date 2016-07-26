@@ -767,8 +767,18 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 	rc, routeSend, routeExpect = createRoute()
 	defer rc.Close()
 
+	// Create a client not sending the CONNECT until after route is added
+	clientNoConnect := createClientConn(t, opts.Host, opts.Port)
+	defer clientNoConnect.Close()
+
+	// Create a client that does not send the first PING yet
+	clientNoPing := createClientConn(t, opts.Host, opts.Port)
+	defer clientNoPing.Close()
+	clientNoPingSend, clientNoPingExpect := setupConnWithProto(t, clientNoPing, clientProtoInfo)
+
 	// The route now has an additional URL
 	routeConnectURLs = append(routeConnectURLs, "localhost:7777")
+	// This causes the server to add the route and send INFO to clients
 	sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
 
 	// Expect nothing for old clients
@@ -776,4 +786,40 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 
 	// Expect new client to receive an INFO, and verify content as expected.
 	checkINFOReceived(newClientExpect, routeConnectURLs)
+
+	// Expect nothing yet for client that did not send the PING
+	expectNothing(t, clientNoPing)
+
+	// Now send the first PING
+	clientNoPingSend("PING\r\n")
+	// Should receive PONG followed by INFO
+	// Receive PONG only first
+	pongBuf := make([]byte, len("PONG\r\n"))
+	clientNoPing.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := clientNoPing.Read(pongBuf)
+	clientNoPing.SetReadDeadline(time.Time{})
+	if n <= 0 && err != nil {
+		t.Fatalf("Error reading from conn: %v\n", err)
+	}
+	if !pongRe.Match(pongBuf) {
+		t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+	}
+	checkINFOReceived(clientNoPingExpect, routeConnectURLs)
+
+	// Have the client that did not send the connect do it now
+	clientNoConnectSend, clientNoConnectExpect := setupConnWithProto(t, clientNoConnect, clientProtoInfo)
+	// Send the PING
+	clientNoConnectSend("PING\r\n")
+	// Should receive PONG followed by INFO
+	// Receive PONG only first
+	clientNoConnect.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = clientNoConnect.Read(pongBuf)
+	clientNoConnect.SetReadDeadline(time.Time{})
+	if n <= 0 && err != nil {
+		t.Fatalf("Error reading from conn: %v\n", err)
+	}
+	if !pongRe.Match(pongBuf) {
+		t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+	}
+	checkINFOReceived(clientNoConnectExpect, routeConnectURLs)
 }
