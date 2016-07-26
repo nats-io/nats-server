@@ -110,6 +110,7 @@ type client struct {
 	parseState
 
 	route *route
+	debug bool
 	trace bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
@@ -179,6 +180,7 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	c.subs = make(map[string]*subscription)
+	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
 
 	// This is a scratch buffer used for processMsg()

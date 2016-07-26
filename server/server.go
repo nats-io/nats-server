@@ -341,7 +341,7 @@ func (s *Server) Shutdown() {
 }
 
 // AcceptLoop is exported for easier testing.
-func (s *Server) AcceptLoop(clientListenReady chan struct{}) {
+func (s *Server) AcceptLoop(clr chan struct{}) {
 	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
@@ -383,7 +383,7 @@ func (s *Server) AcceptLoop(clientListenReady chan struct{}) {
 	s.mu.Unlock()
 
 	// Let the caller know that we are ready
-	close(clientListenReady)
+	close(clr)
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
