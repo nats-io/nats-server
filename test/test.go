@@ -244,6 +244,13 @@ func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
+func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
+	checkInfoMsg(t, c)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v,\"protocol\":%d}\r\n", false, false, false, proto)
+	sendProto(t, c, cs)
+	return sendCommand(t, c), expectCommand(t, c)
+}
+
 type sendFun func(string)
 type expectFun func(*regexp.Regexp) []byte
 

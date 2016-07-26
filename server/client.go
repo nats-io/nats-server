@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+// Type of client connection.
+const (
+	// CLIENT is an end user.
+	CLIENT = iota
+	// ROUTER is another router in the cluster.
+	ROUTER
+)
+
+const (
+	// Original Client protocol from 2009.
+	// http://nats.io/documentation/internals/nats-protocol/
+	ClientProtoZero = iota
+	// This signals a client can receive more then the original INFO block.
+	// This can be used to update clients on other cluster members, etc.
+	ClientProtoInfo
+)
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
@@ -30,13 +47,41 @@ const (
 	maxBufSize   = 65536
 )
 
-// Type of client
+// Represent client booleans with a bitmask
+type clientFlag byte
+
+// Some client state represented as flags
 const (
-	// CLIENT is an end user.
-	CLIENT = iota
-	// ROUTER is another router in the cluster.
-	ROUTER
+	connectReceived clientFlag = 1 << iota // The CONNECT proto has been received
+	firstPongSent                          // The first PONG has been sent
+	infoUpdated                            // The server's Info object has changed before first PONG was sent
 )
+
+// set the flag (would be equivalent to set the boolean to true)
+func (cf *clientFlag) set(c clientFlag) {
+	*cf |= c
+}
+
+// isSet returns true if the flag is set, false otherwise
+func (cf clientFlag) isSet(c clientFlag) bool {
+	return cf&c != 0
+}
+
+// setIfNotSet will set the flag `c` only if that flag was not already
+// set and return true to indicate that the flag has been set. Returns
+// false otherwise.
+func (cf *clientFlag) setIfNotSet(c clientFlag) bool {
+	if *cf&c == 0 {
+		*cf |= c
+		return true
+	}
+	return false
+}
+
+// clear unset the flag (would be equivalent to set the boolean to false)
+func (cf *clientFlag) clear(c clientFlag) {
+	*cf &= ^c
+}
 
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
@@ -65,8 +110,9 @@ type client struct {
 	parseState
 
 	route *route
-	debug bool
 	trace bool
+
+	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 }
 
 type permissions struct {
@@ -118,6 +164,7 @@ type clientOpts struct {
 	Name          string `json:"name"`
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
+	Protocol      int    `json:"protocol"`
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
@@ -132,7 +179,6 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	c.subs = make(map[string]*subscription)
-	c.debug = (atomic.LoadInt32(&debug) != 0)
 	c.trace = (atomic.LoadInt32(&trace) != 0)
 
 	// This is a scratch buffer used for processMsg()
@@ -371,18 +417,44 @@ func (c *client) processConnect(arg []byte) error {
 	typ := c.typ
 	r := c.route
 	srv := c.srv
-	c.mu.Unlock()
-
+	// Moved unmarshalling of clients' Options under the lock.
+	// The client has already been added to the server map, so it is possible
+	// that other routines lookup the client, and access its options under
+	// the client's lock, so unmarshalling the options outside of the lock
+	// would cause data RACEs.
 	if err := json.Unmarshal(arg, &c.opts); err != nil {
+		c.mu.Unlock()
 		return err
 	}
+	// Indicate that the CONNECT protocol has been received, and that the
+	// server now knows which protocol this client supports.
+	c.flags.set(connectReceived)
+	// Capture these under lock
+	proto := c.opts.Protocol
+	verbose := c.opts.Verbose
+	c.mu.Unlock()
 
 	if srv != nil {
+		// As soon as c.opts is unmarshalled and if the proto is at
+		// least ClientProtoInfo, we need to increment the following counter.
+		// This is decremented when client is removed from the server's
+		// clients map.
+		if proto >= ClientProtoInfo {
+			srv.mu.Lock()
+			srv.cproto++
+			srv.mu.Unlock()
+		}
+
 		// Check for Auth
 		if ok := srv.checkAuth(c); !ok {
 			c.authViolation()
 			return ErrAuthorization
 		}
+	}
+
+	// Check client protocol request if it exists.
+	if typ == CLIENT && (proto < ClientProtoZero || proto > ClientProtoInfo) {
+		return ErrBadClientProtocol
 	}
 
 	// Grab connection name of remote route.
@@ -392,7 +464,7 @@ func (c *client) processConnect(arg []byte) error {
 		c.mu.Unlock()
 	}
 
-	if c.opts.Verbose {
+	if verbose {
 		c.sendOK()
 	}
 	return nil
@@ -449,12 +521,15 @@ func (c *client) sendInfo(info []byte) {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
+	c.traceOutOp("-ERR", []byte(err))
 	c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", err)), true)
 	c.mu.Unlock()
 }
 
 func (c *client) sendOK() {
 	c.mu.Lock()
+	c.traceOutOp("OK", nil)
+	// Can not autoflush this one, needs to be async.
 	c.sendProto([]byte("+OK\r\n"), false)
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
@@ -473,7 +548,33 @@ func (c *client) processPing() {
 		c.clearConnection()
 		c.Debugf("Error on Flush, error %s", err.Error())
 	}
+	srv := c.srv
+	sendUpdateINFO := false
+	// Check if this is the first PONG, if so...
+	if c.flags.setIfNotSet(firstPongSent) {
+		// Check if server should send an async INFO protocol to the client
+		if c.opts.Protocol >= ClientProtoInfo &&
+			srv != nil && c.flags.isSet(infoUpdated) {
+			sendUpdateINFO = true
+		}
+		// We can now clear the flag
+		c.flags.clear(infoUpdated)
+	}
 	c.mu.Unlock()
+
+	// Some clients send an initial PING as part of the synchronous connect process.
+	// They can't be receiving anything until the first PONG is received.
+	// So we delay the possible updated INFO after this point.
+	if sendUpdateINFO {
+		srv.mu.Lock()
+		// Use the cached protocol
+		proto := srv.infoJSON
+		srv.mu.Unlock()
+
+		c.mu.Lock()
+		c.sendInfo(proto)
+		c.mu.Unlock()
+	}
 }
 
 func (c *client) processPong() {

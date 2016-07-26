@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -136,5 +136,38 @@ func TestTlsCipher(t *testing.T) {
 	}
 	if !strings.Contains(tlsCipher(0x9999), "Unknown") {
 		t.Fatalf("Expected an unknown cipher.")
+	}
+}
+
+func TestGetConnectURLs(t *testing.T) {
+	opts := DefaultOptions
+	opts.Host = "0.0.0.0"
+	opts.Port = 4222
+	s := New(&opts)
+	defer s.Shutdown()
+
+	urls := s.getClientConnectURLs()
+	if len(urls) == 0 {
+		t.Fatal("Expected to get a list of urls, got none")
+	}
+	for _, u := range urls {
+		if strings.HasPrefix(u, opts.Host) {
+			t.Fatalf("This URL looks wrong: %v", u)
+		}
+	}
+	s.Shutdown()
+
+	opts.Host = "localhost"
+	opts.Port = 4222
+	s = New(&opts)
+	defer s.Shutdown()
+
+	expectedURL := "localhost:4222"
+	urls = s.getClientConnectURLs()
+	if len(urls) == 0 {
+		t.Fatal("Expected to get a list of urls, got none")
+	}
+	if urls[0] != expectedURL {
+		t.Fatalf("Expected to get %v, got %v", expectedURL, urls[0])
 	}
 }
