@@ -14,7 +14,11 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
+	"reflect"
+	"strconv"
 )
+
+const clientProtoInfo = 1
 
 func shutdownServerAndWait(t *testing.T, s *server.Server) bool {
 	listenSpec := s.GetListenEndpoint()
@@ -655,4 +659,167 @@ func TestRouteConnectOnShutdownRace(t *testing.T) {
 	cQuit <- true
 
 	wg.Wait()
+}
+
+func TestRouteSendAsyncINFOToClients(t *testing.T) {
+	s, opts := runRouteServer(t)
+	defer s.Shutdown()
+
+	clientURL := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
+
+	oldClient := createClientConn(t, opts.Host, opts.Port)
+	defer oldClient.Close()
+
+	oldClientSend, oldClientExpect := setupConn(t, oldClient)
+	oldClientSend("PING\r\n")
+	oldClientExpect(pongRe)
+
+	newClient := createClientConn(t, opts.Host, opts.Port)
+	defer newClient.Close()
+
+	newClientSend, newClientExpect := setupConnWithProto(t, newClient, clientProtoInfo)
+	newClientSend("PING\r\n")
+	newClientExpect(pongRe)
+
+	// Check that even a new client does not receive an async INFO at this point
+	// since there is no route created yet.
+	expectNothing(t, newClient)
+
+	routeID := "Server-B"
+
+	createRoute := func() (net.Conn, sendFun, expectFun) {
+		rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+		routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
+
+		buf := routeExpect(infoRe)
+		info := server.Info{}
+		if err := json.Unmarshal(buf[4:], &info); err != nil {
+			t.Fatalf("Could not unmarshal route info: %v", err)
+		}
+		if len(info.ClientConnectURLs) == 0 {
+			t.Fatal("Expected a list of URLs, got none")
+		}
+		if info.ClientConnectURLs[0] != clientURL {
+			t.Fatalf("Expected ClientConnectURLs to be %q, got %q", clientURL, info.ClientConnectURLs[0])
+		}
+
+		return rc, routeSend, routeExpect
+	}
+
+	sendRouteINFO := func(routeSend sendFun, routeExpect expectFun, urls []string) {
+		routeInfo := server.Info{}
+		routeInfo.ID = routeID
+		routeInfo.Host = "localhost"
+		routeInfo.Port = 5222
+		routeInfo.ClientConnectURLs = urls
+		b, err := json.Marshal(routeInfo)
+		if err != nil {
+			t.Fatalf("Could not marshal test route info: %v", err)
+		}
+		infoJSON := fmt.Sprintf("INFO %s\r\n", b)
+		routeSend(infoJSON)
+		routeSend("PING\r\n")
+		routeExpect(pongRe)
+	}
+
+	checkINFOReceived := func(clientExpect expectFun, expectedURLs []string) {
+		buf := clientExpect(infoRe)
+		info := server.Info{}
+		if err := json.Unmarshal(buf[4:], &info); err != nil {
+			t.Fatalf("Could not unmarshal route info: %v", err)
+		}
+		if !reflect.DeepEqual(info.ClientConnectURLs, expectedURLs) {
+			t.Fatalf("Expected ClientConnectURLs to be %v, got %v", expectedURLs, info.ClientConnectURLs)
+		}
+	}
+
+	// Create a route
+	rc, routeSend, routeExpect := createRoute()
+	defer rc.Close()
+
+	// Send an INFO with single URL
+	routeConnectURLs := []string{"localhost:5222"}
+	sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+
+	// Expect nothing for old clients
+	expectNothing(t, oldClient)
+
+	// Expect new client to receive an INFO
+	checkINFOReceived(newClientExpect, routeConnectURLs)
+
+	// Disconnect and reconnect the route.
+	rc.Close()
+	rc, routeSend, routeExpect = createRoute()
+	defer rc.Close()
+
+	// Resend the same route INFO json, since there is no new URL,
+	// no client should receive an INFO
+	sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+
+	// Expect nothing for old clients
+	expectNothing(t, oldClient)
+
+	// Expect nothing for new clients as well (no real update)
+	expectNothing(t, newClient)
+
+	// Now stop the route and restart with an additional URL
+	rc.Close()
+	rc, routeSend, routeExpect = createRoute()
+	defer rc.Close()
+
+	// Create a client not sending the CONNECT until after route is added
+	clientNoConnect := createClientConn(t, opts.Host, opts.Port)
+	defer clientNoConnect.Close()
+
+	// Create a client that does not send the first PING yet
+	clientNoPing := createClientConn(t, opts.Host, opts.Port)
+	defer clientNoPing.Close()
+	clientNoPingSend, clientNoPingExpect := setupConnWithProto(t, clientNoPing, clientProtoInfo)
+
+	// The route now has an additional URL
+	routeConnectURLs = append(routeConnectURLs, "localhost:7777")
+	// This causes the server to add the route and send INFO to clients
+	sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+
+	// Expect nothing for old clients
+	expectNothing(t, oldClient)
+
+	// Expect new client to receive an INFO, and verify content as expected.
+	checkINFOReceived(newClientExpect, routeConnectURLs)
+
+	// Expect nothing yet for client that did not send the PING
+	expectNothing(t, clientNoPing)
+
+	// Now send the first PING
+	clientNoPingSend("PING\r\n")
+	// Should receive PONG followed by INFO
+	// Receive PONG only first
+	pongBuf := make([]byte, len("PONG\r\n"))
+	clientNoPing.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := clientNoPing.Read(pongBuf)
+	clientNoPing.SetReadDeadline(time.Time{})
+	if n <= 0 && err != nil {
+		t.Fatalf("Error reading from conn: %v\n", err)
+	}
+	if !pongRe.Match(pongBuf) {
+		t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+	}
+	checkINFOReceived(clientNoPingExpect, routeConnectURLs)
+
+	// Have the client that did not send the connect do it now
+	clientNoConnectSend, clientNoConnectExpect := setupConnWithProto(t, clientNoConnect, clientProtoInfo)
+	// Send the PING
+	clientNoConnectSend("PING\r\n")
+	// Should receive PONG followed by INFO
+	// Receive PONG only first
+	clientNoConnect.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = clientNoConnect.Read(pongBuf)
+	clientNoConnect.SetReadDeadline(time.Time{})
+	if n <= 0 && err != nil {
+		t.Fatalf("Error reading from conn: %v\n", err)
+	}
+	if !pongRe.Match(pongBuf) {
+		t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+	}
+	checkINFOReceived(clientNoConnectExpect, routeConnectURLs)
 }

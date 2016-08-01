@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"crypto/tls"
+
 	"github.com/nats-io/nats"
 )
 
@@ -164,6 +165,49 @@ func TestClientConnect(t *testing.T) {
 
 	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
+	}
+}
+
+func TestClientConnectProto(t *testing.T) {
+	_, c, _ := setupClient()
+
+	// Basic Connect setting flags, proto should be zero (original proto)
+	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	err := c.parse(connectOp)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
+	}
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Protocol: ClientProtoZero}) {
+		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
+	}
+
+	// ProtoInfo
+	connectOp = []byte(fmt.Sprintf("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false,\"protocol\":%d}\r\n", ClientProtoInfo))
+	err = c.parse(connectOp)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
+	}
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Protocol: ClientProtoInfo}) {
+		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
+	}
+	if c.opts.Protocol != ClientProtoInfo {
+		t.Fatalf("Protocol should have been set to %v, but is set to %v", ClientProtoInfo, c.opts.Protocol)
+	}
+
+	// Illegal Option
+	connectOp = []byte("CONNECT {\"protocol\":22}\r\n")
+	err = c.parse(connectOp)
+	if err == nil {
+		t.Fatalf("Expected to receive an error\n")
+	}
+	if err != ErrBadClientProtocol {
+		t.Fatalf("Expected err of %q, got  %q\n", ErrBadClientProtocol, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 
 # General
 
+- [ ] Auth for queue groups?
 - [ ] Blacklist or ERR escalation to close connection for auth/permissions
 - [ ] Protocol updates, MAP, MPUB, etc
 - [ ] Multiple listen endpoints

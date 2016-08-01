@@ -22,4 +22,7 @@ var (
 
 	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
 	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
+
+	// ErrBadClientProtocol signals a client requested an invalud client protocol.
+	ErrBadClientProtocol = errors.New("Invalid Client Protocol")
 )

@@ -24,17 +24,21 @@ import (
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
-	ID           string `json:"server_id"`
-	Version      string `json:"version"`
-	GoVersion    string `json:"go"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	AuthRequired bool   `json:"auth_required"`
-	SSLRequired  bool   `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
-	TLSRequired  bool   `json:"tls_required"`
-	TLSVerify    bool   `json:"tls_verify"`
-	MaxPayload   int    `json:"max_payload"`
-	IP           string `json:"ip,omitempty"`
+	ID                string   `json:"server_id"`
+	Version           string   `json:"version"`
+	GoVersion         string   `json:"go"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	AuthRequired      bool     `json:"auth_required"`
+	SSLRequired       bool     `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
+	TLSRequired       bool     `json:"tls_required"`
+	TLSVerify         bool     `json:"tls_verify"`
+	MaxPayload        int      `json:"max_payload"`
+	IP                string   `json:"ip,omitempty"`
+	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
+
+	// Used internally for quick look-ups.
+	clientConnectURLs map[string]struct{}
 }
 
 // Server is our main struct.
@@ -69,6 +73,7 @@ type Server struct {
 	grTmpClients  map[uint64]*client
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
+	cproto        int64          // number of clients supporting async INFO
 }
 
 // Make sure all are 64bits for atomic use
@@ -89,16 +94,17 @@ func New(opts *Options) *Server {
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
 
 	info := Info{
-		ID:           genID(),
-		Version:      VERSION,
-		GoVersion:    runtime.Version(),
-		Host:         opts.Host,
-		Port:         opts.Port,
-		AuthRequired: false,
-		TLSRequired:  tlsReq,
-		SSLRequired:  tlsReq,
-		TLSVerify:    verify,
-		MaxPayload:   opts.MaxPayload,
+		ID:                genID(),
+		Version:           VERSION,
+		GoVersion:         runtime.Version(),
+		Host:              opts.Host,
+		Port:              opts.Port,
+		AuthRequired:      false,
+		TLSRequired:       tlsReq,
+		SSLRequired:       tlsReq,
+		TLSVerify:         verify,
+		MaxPayload:        opts.MaxPayload,
+		clientConnectURLs: make(map[string]struct{}),
 	}
 
 	s := &Server{
@@ -236,9 +242,15 @@ func (s *Server) Start() {
 		s.StartHTTPSMonitoring()
 	}
 
+	// The Routing routine needs to wait for the client listen
+	// port to be opened and potential ephemeral port selected.
+	clientListenReady := make(chan struct{})
+
 	// Start up routing as well if needed.
 	if s.opts.ClusterPort != 0 {
-		s.StartRouting()
+		s.startGoRoutine(func() {
+			s.StartRouting(clientListenReady)
+		})
 	}
 
 	// Pprof http endpoint for the profiler.
@@ -247,7 +259,7 @@ func (s *Server) Start() {
 	}
 
 	// Wait for clients.
-	s.AcceptLoop()
+	s.AcceptLoop(clientListenReady)
 }
 
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
@@ -329,7 +341,7 @@ func (s *Server) Shutdown() {
 }
 
 // AcceptLoop is exported for easier testing.
-func (s *Server) AcceptLoop() {
+func (s *Server) AcceptLoop(clr chan struct{}) {
 	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
@@ -369,6 +381,9 @@ func (s *Server) AcceptLoop() {
 		s.opts.Port = portNum
 	}
 	s.mu.Unlock()
+
+	// Let the caller know that we are ready
+	close(clr)
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
@@ -597,6 +612,30 @@ func (s *Server) createClient(conn net.Conn) *client {
 	return c
 }
 
+// updateServerINFO updates the server's Info object with the given
+// array of URLs and re-generate the infoJSON byte array, only if the
+// given URLs were not already recorded.
+// Returns a boolean indicating if server's Info was updated.
+func (s *Server) updateServerINFO(urls []string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Will be set to true if we alter the server's Info object.
+	wasUpdated := false
+	for _, url := range urls {
+		if _, present := s.info.clientConnectURLs[url]; !present {
+
+			s.info.clientConnectURLs[url] = struct{}{}
+			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
+			wasUpdated = true
+		}
+	}
+	if wasUpdated {
+		s.generateServerInfoJSON()
+	}
+	return wasUpdated
+}
+
 // Handle closing down a connection when the handshake has timedout.
 func tlsTimeout(c *client, conn *tls.Conn) {
 	c.mu.Lock()
@@ -700,12 +739,19 @@ func (s *Server) removeClient(c *client) {
 	if r != nil {
 		rID = r.remoteID
 	}
+	updateProtoInfoCount := false
+	if typ == CLIENT && c.opts.Protocol >= ClientProtoInfo {
+		updateProtoInfoCount = true
+	}
 	c.mu.Unlock()
 
 	s.mu.Lock()
 	switch typ {
 	case CLIENT:
 		delete(s.clients, cid)
+		if updateProtoInfoCount {
+			s.cproto--
+		}
 	case ROUTER:
 		delete(s.routes, cid)
 		if r != nil {
@@ -823,4 +869,46 @@ func (s *Server) startGoRoutine(f func()) {
 		go f()
 	}
 	s.grMu.Unlock()
+}
+
+// getClientConnectURLs returns suitable URLs for clients to connect to the listen
+// port based on the server options' Host and Port. If the Host corresponds to
+// "any" interfaces, this call returns the list of resolved IP addresses.
+func (s *Server) getClientConnectURLs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sPort := strconv.Itoa(s.opts.Port)
+	urls := make([]string, 0, 1)
+
+	ipAddr, err := net.ResolveIPAddr("ip", s.opts.Host)
+	// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
+	// interfaces.
+	if err == nil && ipAddr.IP.IsUnspecified() {
+		var ip net.IP
+		ifaces, _ := net.Interfaces()
+		for _, i := range ifaces {
+			addrs, _ := i.Addrs()
+			for _, addr := range addrs {
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				// Skip loopback/localhost
+				if ip.IsLoopback() {
+					ip = nil
+					continue
+				}
+				urls = append(urls, net.JoinHostPort(ip.String(), sPort))
+			}
+		}
+	}
+	if err != nil || len(urls) == 0 {
+		// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
+		// reason we could not add any URL in the loop above.
+		urls = append(urls, net.JoinHostPort(s.opts.Host, sPort))
+	}
+	return urls
 }
