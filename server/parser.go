@@ -503,6 +503,11 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+
+				// jump ahead with the index. If this overruns
+				// what is left we fall out and process split
+				// buffer.
+				i = c.as + c.pa.size - 1
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -661,6 +666,7 @@ func (c *client) parse(buf []byte) error {
 		// We need to clone the pubArg if it is still referencing the
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
+			// Works also for MSG_ARG, when message comes from ROUTE.
 			c.clonePubArg()
 		}
 
