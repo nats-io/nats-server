@@ -337,3 +337,60 @@ func Benchmark__PubEightQueueSub(b *testing.B) {
 	c.Close()
 	s.Shutdown()
 }
+
+func routePubSub(b *testing.B, size int) {
+	b.StopTimer()
+
+	s1, o1 := RunServerWithConfig("./configs/srv_a.conf")
+	defer s1.Shutdown()
+	s2, o2 := RunServerWithConfig("./configs/srv_b.conf")
+	defer s2.Shutdown()
+
+	sub := createClientConn(b, o1.Host, o1.Port)
+	doDefaultConnect(b, sub)
+	sendProto(b, sub, "SUB foo 1\r\n")
+	flushConnection(b, sub)
+
+	payload := sizedString(size)
+
+	pub := createClientConn(b, o2.Host, o2.Port)
+	doDefaultConnect(b, pub)
+	bw := bufio.NewWriterSize(pub, defaultSendBufSize)
+
+	ch := make(chan bool)
+	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", len(payload), payload))
+	expected := len(fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", len(payload), payload)) * b.N
+	go drainConnection(b, sub, ch, expected)
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := bw.Write(sendOp)
+		if err != nil {
+			b.Fatalf("Received error on PUB write: %v\n", err)
+		}
+
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Errorf("Received error on FLUSH write: %v\n", err)
+	}
+
+	// Wait for connection to be drained
+	<-ch
+
+	b.StopTimer()
+	pub.Close()
+	sub.Close()
+}
+
+func Benchmark_RoutePubSub_NoPayload(b *testing.B) {
+	routePubSub(b, 2)
+}
+
+func Benchmark_RoutePubSub_1K(b *testing.B) {
+	routePubSub(b, 1024)
+}
+
+func Benchmark_RoutePubSub_100K(b *testing.B) {
+	routePubSub(b, 100*1024)
+}

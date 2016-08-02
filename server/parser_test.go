@@ -340,8 +340,6 @@ func TestParseMsgSpace(t *testing.T) {
 }
 
 func TestShouldFail(t *testing.T) {
-	c := dummyClient()
-
 	wrongProtos := []string{
 		"xxx",
 		"Px", "PIx", "PINx", " PING",
@@ -359,17 +357,17 @@ func TestShouldFail(t *testing.T) {
 		"Ix", "INx", "INFx", "INFO  \r\n",
 	}
 	for _, proto := range wrongProtos {
-		c.state = OP_START
+		c := dummyClient()
 		if err := c.parse([]byte(proto)); err == nil {
 			t.Fatalf("Should have received a parse error for: %v", proto)
 		}
 	}
 
 	// Special case for MSG, type needs to not be client.
-	c.typ = ROUTER
 	wrongProtos = []string{"Mx", "MSx", "MSGx", "MSG  \r\n"}
 	for _, proto := range wrongProtos {
-		c.state = OP_START
+		c := dummyClient()
+		c.typ = ROUTER
 		if err := c.parse([]byte(proto)); err == nil {
 			t.Fatalf("Should have received a parse error for: %v", proto)
 		}

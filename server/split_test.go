@@ -345,6 +345,57 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
+
+	// MSG (the client has to be a ROUTE)
+	c = &client{subs: make(map[string]*subscription), typ: ROUTER}
+	msgop := []byte("MSG foo RSID:2:1 5\r\nhello\r\n")
+	c.parse(msgop[:5])
+	c.parse(msgop[5:10])
+	if c.argBuf == nil {
+		t.Fatal("Expected a non-nil argBuf")
+	}
+	if string(c.argBuf) != "foo RS" {
+		t.Fatalf("Expected argBuf to be \"foo 1 \", got %q", string(c.argBuf))
+	}
+	c.parse(msgop[10:])
+	if c.argBuf != nil {
+		t.Fatalf("Expected argBuf to be nil: %q", c.argBuf)
+	}
+	if c.msgBuf != nil {
+		t.Fatalf("Expected msgBuf to be nil: %q", c.msgBuf)
+	}
+
+	c.state = OP_START
+	// Parse up-to somewhere in the middle of the payload.
+	// Verify that we have saved the MSG_ARG info
+	c.parse(msgop[:23])
+	if c.argBuf == nil {
+		t.Fatal("Expected a non-nil argBuf")
+	}
+	if string(c.pa.subject) != "foo" {
+		t.Fatalf("Expected subject to be \"foo\", got %q", c.pa.subject)
+	}
+	if string(c.pa.reply) != "" {
+		t.Fatalf("Expected reply to be \"\", got %q", c.pa.reply)
+	}
+	if string(c.pa.sid) != "RSID:2:1" {
+		t.Fatalf("Expected sid to \"RSID:2:1\", got %q", c.pa.sid)
+	}
+	if c.pa.size != 5 {
+		t.Fatalf("Expected sid to 5, got %v", c.pa.size)
+	}
+	// msg buffer should be
+	if c.msgBuf == nil || string(c.msgBuf) != "hel" {
+		t.Fatalf("Expected msgBuf to be \"hel\", got %q", c.msgBuf)
+	}
+	c.parse(msgop[23:])
+	// At the end, we should have cleaned-up both arg and msg buffers.
+	if c.argBuf != nil {
+		t.Fatalf("Expected argBuf to be nil: %q", c.argBuf)
+	}
+	if c.msgBuf != nil {
+		t.Fatalf("Expected msgBuf to be nil: %q", c.msgBuf)
+	}
 }
 
 func TestSplitMsgArg(t *testing.T) {
