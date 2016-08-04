@@ -260,33 +260,45 @@ func configureTLS(opts *server.Options) {
 }
 
 func configureClusterOpts(opts *server.Options) error {
-	if opts.ClusterListenStr == "" {
+	// If we don't have cluster defined in the configuration
+	// file and no cluster listen string override, but we do
+	// have a routes override, we need to report misconfiguration.
+	if opts.ClusterListenStr == "" && opts.ClusterHost == "" &&
+		opts.ClusterPort == 0 {
 		if opts.RoutesStr != "" {
 			server.PrintAndDie("Solicited routes require cluster capabilities, e.g. --cluster.")
 		}
 		return nil
 	}
 
-	clusterURL, err := url.Parse(opts.ClusterListenStr)
-	h, p, err := net.SplitHostPort(clusterURL.Host)
-	if err != nil {
-		return err
-	}
-	opts.ClusterHost = h
-	_, err = fmt.Sscan(p, &opts.ClusterPort)
-	if err != nil {
-		return err
-	}
-
-	if clusterURL.User != nil {
-		pass, hasPassword := clusterURL.User.Password()
-		if !hasPassword {
-			return fmt.Errorf("Expected cluster password to be set.")
+	// If cluster flag override, process it
+	if opts.ClusterListenStr != "" {
+		clusterURL, err := url.Parse(opts.ClusterListenStr)
+		h, p, err := net.SplitHostPort(clusterURL.Host)
+		if err != nil {
+			return err
 		}
-		opts.ClusterPassword = pass
+		opts.ClusterHost = h
+		_, err = fmt.Sscan(p, &opts.ClusterPort)
+		if err != nil {
+			return err
+		}
 
-		user := clusterURL.User.Username()
-		opts.ClusterUsername = user
+		if clusterURL.User != nil {
+			pass, hasPassword := clusterURL.User.Password()
+			if !hasPassword {
+				return fmt.Errorf("Expected cluster password to be set.")
+			}
+			opts.ClusterPassword = pass
+
+			user := clusterURL.User.Username()
+			opts.ClusterUsername = user
+		} else {
+			// Since we override from flag and there is no user/pwd, make
+			// sure we clear what we may have gotten from config file.
+			opts.ClusterUsername = ""
+			opts.ClusterPassword = ""
+		}
 	}
 
 	// If we have routes but no config file, fill in here.
