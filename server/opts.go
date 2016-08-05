@@ -637,6 +637,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
+	if flagOpts.ClusterListenStr != "" {
+		opts.ClusterListenStr = flagOpts.ClusterListenStr
+	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}

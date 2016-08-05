@@ -276,6 +276,45 @@ func TestRouteFlagOverride(t *testing.T) {
 	}
 }
 
+func TestClusterFlagsOverride(t *testing.T) {
+	routeFlag := "nats-route://ruser:top_secret@127.0.0.1:7246"
+	rurl, _ := url.Parse(routeFlag)
+
+	// In this test, we override the cluster listen string. Note that in
+	// the golden options, the cluster other infos correspond to what
+	// is recovered from the configuration file, this explains the
+	// discrepency between ClusterListenStr and the rest.
+	// The server would then process the ClusterListenStr override and
+	// correctly override ClusterHost/ClustherPort/etc..
+	golden := &Options{
+		Host:               "127.0.0.1",
+		Port:               7222,
+		ClusterHost:        "127.0.0.1",
+		ClusterPort:        7244,
+		ClusterListenStr:   "nats://127.0.0.1:8224",
+		ClusterUsername:    "ruser",
+		ClusterPassword:    "top_secret",
+		ClusterAuthTimeout: 0.5,
+		Routes:             []*url.URL{rurl},
+	}
+
+	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	// Overrides via flags
+	opts := &Options{
+		ClusterListenStr: "nats://127.0.0.1:8224",
+	}
+	merged := MergeOptions(fopts, opts)
+
+	if !reflect.DeepEqual(golden, merged) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, merged)
+	}
+}
+
 func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	routeFlag := "nats-route://ruser:top_secret@127.0.0.1:8246, nats-route://ruser:top_secret@127.0.0.1:8266"
 	rurls := RoutesFromStr(routeFlag)
