@@ -201,3 +201,18 @@ func TestGetConnectURLs(t *testing.T) {
 		checkConnectURLsHasOnlyOne()
 	}
 }
+
+func TestNoDeadlockOnStartFailure(t *testing.T) {
+	opts := DefaultOptions
+	opts.Host = "x.x.x.x" // bad host
+	opts.Port = 4222
+	opts.ClusterHost = "localhost"
+	opts.ClusterPort = 6222
+
+	s := New(&opts)
+	// This should return since it should fail to start a listener
+	// on x.x.x.x:4222
+	s.Start()
+	// We should be able to shutdown
+	s.Shutdown()
+}
