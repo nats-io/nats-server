@@ -896,8 +896,8 @@ func (s *Server) getClientConnectURLs() []string {
 				case *net.IPAddr:
 					ip = v.IP
 				}
-				// Skip loopback/localhost
-				if ip.IsLoopback() {
+				// Skip non global unicast addresses
+				if !ip.IsGlobalUnicast() {
 					ip = nil
 					continue
 				}
