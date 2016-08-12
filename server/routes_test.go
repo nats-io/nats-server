@@ -4,12 +4,14 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats"
+	"strconv"
 )
 
 func TestRouteConfig(t *testing.T) {
@@ -404,5 +406,60 @@ func TestRouteTLSHandshakeError(t *testing.T) {
 	}
 	if srv.NumRoutes() > 0 {
 		t.Fatal("Route should have failed")
+	}
+}
+
+func TestBlockedShutdownOnRouteAcceptLoopFailure(t *testing.T) {
+	opts := DefaultOptions
+	opts.ClusterHost = "x.x.x.x"
+	opts.ClusterPort = 7222
+
+	s := New(&opts)
+	go s.Start()
+	// Wait a second
+	time.Sleep(time.Second)
+	ch := make(chan bool)
+	go func() {
+		s.Shutdown()
+		ch <- true
+	}()
+
+	timeout := time.NewTimer(5 * time.Second)
+	select {
+	case <-ch:
+		return
+	case <-timeout.C:
+		t.Fatal("Shutdown did not complete")
+	}
+}
+
+func TestRouteUseIPv6(t *testing.T) {
+	opts := DefaultOptions
+	opts.ClusterHost = "::"
+	opts.ClusterPort = 6222
+
+	// I believe that there is no IPv6 support on Travis...
+	// Regardless, cannot have this test fail simply because IPv6 is disabled
+	// on the host.
+	hp := net.JoinHostPort(opts.ClusterHost, strconv.Itoa(opts.ClusterPort))
+	_, err := net.ResolveTCPAddr("tcp", hp)
+	if err != nil {
+		t.Skipf("Skipping this test since there is no IPv6 support on this host: %v", err)
+	}
+
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	routeUp := false
+	timeout := time.Now().Add(5 * time.Second)
+	for time.Now().Before(timeout) && !routeUp {
+		if s.GetRouteListenEndpoint() == "" {
+			time.Sleep(time.Second)
+			continue
+		}
+		routeUp = true
+	}
+	if !routeUp {
+		t.Fatal("Server failed to start route accept loop")
 	}
 }

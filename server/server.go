@@ -218,7 +218,11 @@ func (s *Server) Start() {
 	Noticef("Starting nats-server version %s", VERSION)
 	Debugf("Go build version %s", s.info.GoVersion)
 
+	// Avoid RACE between Start() and Shutdown()
+	s.mu.Lock()
 	s.running = true
+	s.mu.Unlock()
+
 	s.grMu.Lock()
 	s.grRunning = true
 	s.grMu.Unlock()
@@ -342,6 +346,14 @@ func (s *Server) Shutdown() {
 
 // AcceptLoop is exported for easier testing.
 func (s *Server) AcceptLoop(clr chan struct{}) {
+	// If we were to exit before the listener is setup properly,
+	// make sure we close the channel.
+	defer func() {
+		if clr != nil {
+			close(clr)
+		}
+	}()
+
 	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
@@ -384,6 +396,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// Let the caller know that we are ready
 	close(clr)
+	clr = nil
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
