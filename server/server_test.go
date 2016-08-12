@@ -141,33 +141,63 @@ func TestTlsCipher(t *testing.T) {
 
 func TestGetConnectURLs(t *testing.T) {
 	opts := DefaultOptions
-	opts.Host = "0.0.0.0"
 	opts.Port = 4222
-	s := New(&opts)
-	defer s.Shutdown()
 
-	urls := s.getClientConnectURLs()
-	if len(urls) == 0 {
-		t.Fatal("Expected to get a list of urls, got none")
-	}
-	for _, u := range urls {
-		if strings.HasPrefix(u, opts.Host) {
-			t.Fatalf("This URL looks wrong: %v", u)
+	var globalIP net.IP
+
+	checkGlobalConnectURLs := func() {
+		s := New(&opts)
+		defer s.Shutdown()
+
+		urls := s.getClientConnectURLs()
+		if len(urls) == 0 {
+			t.Fatalf("Expected to get a list of urls, got none for listen addr: %v", opts.Host)
+		}
+		for _, u := range urls {
+			tcpaddr, err := net.ResolveTCPAddr("tcp", u)
+			if err != nil {
+				t.Fatalf("Error resolving: %v", err)
+			}
+			ip := tcpaddr.IP
+			if !ip.IsGlobalUnicast() {
+				t.Fatalf("IP %v is not global", ip.String())
+			}
+			if globalIP == nil {
+				globalIP = ip
+			}
 		}
 	}
-	s.Shutdown()
 
-	opts.Host = "localhost"
-	opts.Port = 4222
-	s = New(&opts)
-	defer s.Shutdown()
-
-	expectedURL := "localhost:4222"
-	urls = s.getClientConnectURLs()
-	if len(urls) == 0 {
-		t.Fatal("Expected to get a list of urls, got none")
+	listenAddrs := []string{"0.0.0.0", "::"}
+	for _, listenAddr := range listenAddrs {
+		opts.Host = listenAddr
+		checkGlobalConnectURLs()
 	}
-	if urls[0] != expectedURL {
-		t.Fatalf("Expected to get %v, got %v", expectedURL, urls[0])
+
+	checkConnectURLsHasOnlyOne := func() {
+		s := New(&opts)
+		defer s.Shutdown()
+
+		urls := s.getClientConnectURLs()
+		if len(urls) != 1 {
+			t.Fatalf("Expected one URL, got %v", urls)
+		}
+		tcpaddr, err := net.ResolveTCPAddr("tcp", urls[0])
+		if err != nil {
+			t.Fatalf("Error resolving: %v", err)
+		}
+		ip := tcpaddr.IP
+		if ip.String() != opts.Host {
+			t.Fatalf("Expected connect URL to be %v, got %v", opts.Host, ip.String())
+		}
+	}
+
+	singleConnectReturned := []string{"127.0.0.1", "::1"}
+	if globalIP != nil {
+		singleConnectReturned = append(singleConnectReturned, globalIP.String())
+	}
+	for _, listenAddr := range singleConnectReturned {
+		opts.Host = listenAddr
+		checkConnectURLsHasOnlyOne()
 	}
 }
