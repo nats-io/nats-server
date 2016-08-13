@@ -154,7 +154,7 @@ func (c *client) processRouteInfo(info *Info) {
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
 		// If the server Info did not have these URLs, update and send an INFO
-		// protocol to all clients that support it.
+		// protocol to all clients that support it (unless the feature is disabled).
 		if s.updateServerINFO(info.ClientConnectURLs) {
 			s.sendAsyncInfoToClients()
 		}

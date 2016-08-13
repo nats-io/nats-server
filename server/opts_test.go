@@ -168,24 +168,25 @@ func TestTLSConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
-		Host:           "localhost",
-		Port:           2222,
-		Username:       "derek",
-		Password:       "spooky",
-		AuthTimeout:    1.0,
-		Debug:          true,
-		Trace:          true,
-		Logtime:        false,
-		HTTPPort:       DEFAULT_HTTP_PORT,
-		LogFile:        "/tmp/gnatsd.log",
-		PidFile:        "/tmp/gnatsd.pid",
-		ProfPort:       6789,
-		Syslog:         true,
-		RemoteSyslog:   "udp://foo.com:33",
-		MaxControlLine: 2048,
-		MaxPayload:     65536,
-		MaxConn:        100,
-		MaxPending:     10000000,
+		Host:               "localhost",
+		Port:               2222,
+		Username:           "derek",
+		Password:           "spooky",
+		AuthTimeout:        1.0,
+		Debug:              true,
+		Trace:              true,
+		Logtime:            false,
+		HTTPPort:           DEFAULT_HTTP_PORT,
+		LogFile:            "/tmp/gnatsd.log",
+		PidFile:            "/tmp/gnatsd.pid",
+		ProfPort:           6789,
+		Syslog:             true,
+		RemoteSyslog:       "udp://foo.com:33",
+		MaxControlLine:     2048,
+		MaxPayload:         65536,
+		MaxConn:            100,
+		MaxPending:         10000000,
+		ClusterNoAdvertise: true,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -194,11 +195,12 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:     2222,
-		Password: "spooky",
-		Debug:    true,
-		HTTPPort: DEFAULT_HTTP_PORT,
-		ProfPort: 6789,
+		Port:               2222,
+		Password:           "spooky",
+		Debug:              true,
+		HTTPPort:           DEFAULT_HTTP_PORT,
+		ProfPort:           6789,
+		ClusterNoAdvertise: true,
 	}
 	merged := MergeOptions(fopts, opts)
 

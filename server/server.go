@@ -627,11 +627,17 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 // updateServerINFO updates the server's Info object with the given
 // array of URLs and re-generate the infoJSON byte array, only if the
-// given URLs were not already recorded.
+// given URLs were not already recorded and if the feature is not
+// disabled.
 // Returns a boolean indicating if server's Info was updated.
 func (s *Server) updateServerINFO(urls []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Feature disabled, do not update.
+	if s.opts.ClusterNoAdvertise {
+		return false
+	}
 
 	// Will be set to true if we alter the server's Info object.
 	wasUpdated := false

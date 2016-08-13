@@ -50,6 +50,8 @@ TLS Options:
 Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
+        --no_advertise <bool>        Advertise known cluster IPs to clients
+		
 
 Common Options:
     -h, --help                       Show this message
@@ -108,6 +110,7 @@ func main() {
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	flag.StringVar(&opts.ClusterListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
+	flag.BoolVar(&opts.ClusterNoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	flag.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
