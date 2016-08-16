@@ -62,6 +62,7 @@ type Options struct {
 	ClusterTLSTimeout  float64       `json:"-"`
 	ClusterTLSConfig   *tls.Config   `json:"-"`
 	ClusterListenStr   string        `json:"-"`
+	ClusterNoAdvertise bool          `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
@@ -310,6 +311,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
 			opts.ClusterTLSConfig.ClientCAs = opts.ClusterTLSConfig.RootCAs
 			opts.ClusterTLSTimeout = tc.Timeout
+		case "no_advertise":
+			opts.ClusterNoAdvertise = mv.(bool)
 		}
 	}
 	return nil
@@ -639,6 +642,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.ClusterListenStr != "" {
 		opts.ClusterListenStr = flagOpts.ClusterListenStr
+	}
+	if flagOpts.ClusterNoAdvertise {
+		opts.ClusterNoAdvertise = true
 	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
