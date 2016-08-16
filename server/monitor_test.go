@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats"
+	"sync"
 )
 
 const CLIENT_PORT = 11224
@@ -1282,4 +1283,40 @@ func TestStacksz(t *testing.T) {
 		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
 	}
 	defer respj.Body.Close()
+}
+
+func TestConcurrentMonitoring(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
+	// Get some endpoints. Make sure we have at least varz,
+	// and the more the merrier.
+	endpoints := []string{"varz", "varz", "varz", "connz", "connz", "subsz", "subsz", "routez", "routez"}
+	wg := &sync.WaitGroup{}
+	wg.Add(len(endpoints))
+	for _, e := range endpoints {
+		go func(endpoint string) {
+			defer wg.Done()
+			for i := 0; i < 150; i++ {
+				resp, err := http.Get(url + endpoint)
+				if err != nil {
+					t.Fatalf("Expected no error: Got %v\n", err)
+				}
+				if resp.StatusCode != 200 {
+					t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+				}
+				ct := resp.Header.Get("Content-Type")
+				if ct != "application/json" {
+					t.Fatalf("Expected application/json content-type, got %s\n", ct)
+				}
+				defer resp.Body.Close()
+				if _, err := ioutil.ReadAll(resp.Body); err != nil {
+					t.Fatalf("Got an error reading the body: %v\n", err)
+				}
+				resp.Body.Close()
+			}
+		}(e)
+	}
+	wg.Wait()
 }

@@ -480,7 +480,12 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	v.SlowConsumers = s.slowConsumers
 	v.Subscriptions = s.sl.Count()
 	s.httpReqStats[VarzPath]++
-	v.HTTPReqStats = s.httpReqStats
+	// Need a copy here since s.httpReqStas can change while doing
+	// the marshaling down below.
+	v.HTTPReqStats = make(map[string]uint64, len(s.httpReqStats))
+	for key, val := range s.httpReqStats {
+		v.HTTPReqStats[key] = val
+	}
 	s.mu.Unlock()
 
 	b, err := json.MarshalIndent(v, "", "  ")
