@@ -916,7 +916,7 @@ func (s *Server) getClientConnectURLs() []string {
 					ip = v.IP
 				}
 				// Skip non global unicast addresses
-				if !ip.IsGlobalUnicast() {
+				if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
 					ip = nil
 					continue
 				}
@@ -927,6 +927,14 @@ func (s *Server) getClientConnectURLs() []string {
 	if err != nil || len(urls) == 0 {
 		// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
 		// reason we could not add any URL in the loop above.
+		if err == nil && ipAddr.IP.IsUnspecified() {
+			// We had a case where a Windows VM was hosed and would have err == nil
+			// and not add any address in the array in the loop above, and we
+			// ended-up returning 0.0.0.0, which is problematic for Windows clients.
+			// If that happens, I think we should panic to let the user know that there
+			// is something wrong...
+			panic(fmt.Errorf("address %q can not be resolved properly", ipAddr.IP.String()))
+		}
 		urls = append(urls, net.JoinHostPort(s.opts.Host, sPort))
 	}
 	return urls
