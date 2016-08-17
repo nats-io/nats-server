@@ -162,6 +162,13 @@ func TestGetConnectURLs(t *testing.T) {
 			if !ip.IsGlobalUnicast() {
 				t.Fatalf("IP %v is not global", ip.String())
 			}
+			if ip.IsUnspecified() {
+				t.Fatalf("IP %v is unspecified", ip.String())
+			}
+			addr := strings.TrimSuffix(u, ":4222")
+			if addr == opts.Host {
+				t.Fatalf("Returned url is not right: %v", u)
+			}
 			if globalIP == nil {
 				globalIP = ip
 			}
