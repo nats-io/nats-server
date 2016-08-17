@@ -575,10 +575,12 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	}
 	rsid := routeSid(sub)
 	maxStr := _EMPTY_
+	sub.client.mu.Lock()
 	// Set max if we have it set and have not tripped auto-unsubscribe
 	if sub.max > 0 && sub.nm < sub.max {
 		maxStr = fmt.Sprintf(" %d", sub.max)
 	}
+	sub.client.mu.Unlock()
 	proto := fmt.Sprintf(unsubProto, rsid, maxStr)
 	s.broadcastInterestToRoutes(proto)
 }
