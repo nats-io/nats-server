@@ -931,9 +931,9 @@ func (s *Server) getClientConnectURLs() []string {
 			// We had a case where a Windows VM was hosed and would have err == nil
 			// and not add any address in the array in the loop above, and we
 			// ended-up returning 0.0.0.0, which is problematic for Windows clients.
-			// If that happens, I think we should panic to let the user that there
+			// If that happens, I think we should panic to let the user know that there
 			// is something wrong...
-			panic(fmt.Errorf("Resolved address seem wrong: %v", ipAddr.IP.String()))
+			panic(fmt.Errorf("address %q can not be resolved properly", ipAddr.IP.String()))
 		}
 		urls = append(urls, net.JoinHostPort(s.opts.Host, sPort))
 	}
