@@ -658,8 +658,8 @@ IN THE SOFTWARE.
 [License-Image]: https://img.shields.io/npm/l/express.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.2
-[Release-image]: http://img.shields.io/badge/release-v0.9.2-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.4
+[Release-image]: http://img.shields.io/badge/release-v0.9.4-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
