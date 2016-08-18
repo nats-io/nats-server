@@ -758,6 +758,10 @@ func processOptions(opts *Options) {
 	if opts.Host == "" {
 		opts.Host = DEFAULT_HOST
 	}
+	if opts.HTTPHost == "" {
+		// Default to same bind from server if left undefined
+		opts.HTTPHost = opts.Host
+	}
 	if opts.Port == 0 {
 		opts.Port = DEFAULT_PORT
 	} else if opts.Port == RANDOM_PORT {
