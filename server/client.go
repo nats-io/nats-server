@@ -882,10 +882,12 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		// unsubscribe and drop message on the floor.
 		if sub.nm == sub.max {
 			c.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'\n", sub.max, string(sub.sid))
-			defer client.unsubscribe(sub)
+			// Due to defer, reverse the code order so that execution
+			// is consistent with other cases where we unsubscribe.
 			if shouldForward {
 				defer client.srv.broadcastUnSubscribe(sub)
 			}
+			defer client.unsubscribe(sub)
 		} else if sub.nm > sub.max {
 			c.Debugf("Auto-unsubscribe limit [%d] exceeded\n", sub.max)
 			client.mu.Unlock()
