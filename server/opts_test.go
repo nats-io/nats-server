@@ -15,6 +15,7 @@ func TestDefaultOptions(t *testing.T) {
 		Host:               DEFAULT_HOST,
 		Port:               DEFAULT_PORT,
 		MaxConn:            DEFAULT_MAX_CONNECTIONS,
+		HTTPHost:           DEFAULT_HOST,
 		PingInterval:       DEFAULT_PING_INTERVAL,
 		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
 		TLSTimeout:         float64(TLS_TIMEOUT) / float64(time.Second),
@@ -360,9 +361,12 @@ func TestListenConfig(t *testing.T) {
 	// Normal clients
 	host := "10.0.1.22"
 	port := 4422
-
+	monHost := "127.0.0.1"
 	if opts.Host != host {
 		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+	}
+	if opts.HTTPHost != monHost {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.HTTPHost, monHost)
 	}
 	if opts.Port != port {
 		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
@@ -409,6 +413,9 @@ func TestListenPortOnlyConfig(t *testing.T) {
 	if opts.Host != DEFAULT_HOST {
 		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
 	}
+	if opts.HTTPHost != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
 	if opts.Port != port {
 		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
 	}
@@ -426,8 +433,29 @@ func TestListenPortWithColonConfig(t *testing.T) {
 	if opts.Host != DEFAULT_HOST {
 		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
 	}
+	if opts.HTTPHost != DEFAULT_HOST {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+	}
 	if opts.Port != port {
 		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+	}
+}
+
+func TestListenMonitoringDefault(t *testing.T) {
+	opts := &Options{
+		Host: "10.0.1.22",
+	}
+	processOptions(opts)
+
+	host := "10.0.1.22"
+	if opts.Host != host {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+	}
+	if opts.HTTPHost != host {
+		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+	}
+	if opts.Port != DEFAULT_PORT {
+		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, DEFAULT_PORT)
 	}
 }
 
