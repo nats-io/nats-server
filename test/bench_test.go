@@ -75,7 +75,7 @@ func sizedString(sz int) string {
 // Publish subject for pub benchmarks.
 var psub = "a"
 
-func Benchmark_____PubNo_Payload(b *testing.B) {
+func Benchmark_____Pub0b_Payload(b *testing.B) {
 	benchPub(b, psub, "")
 }
 
@@ -88,6 +88,12 @@ func Benchmark_____Pub8b_Payload(b *testing.B) {
 func Benchmark____Pub32b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(32)
+	benchPub(b, psub, s)
+}
+
+func Benchmark___Pub128B_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(128)
 	benchPub(b, psub, s)
 }
 
@@ -138,7 +144,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 }
 
 // Benchmark the authorization code path.
-func Benchmark_AuthPubNo_Payload(b *testing.B) {
+func Benchmark_AuthPub0b_Payload(b *testing.B) {
 	b.StopTimer()
 
 	srv, opts := RunServerWithConfig("./configs/authorization.conf")
@@ -383,14 +389,14 @@ func routePubSub(b *testing.B, size int) {
 	sub.Close()
 }
 
-func Benchmark_RoutePubSub_NoPayload(b *testing.B) {
+func Benchmark___RoutedPubSub_0b(b *testing.B) {
 	routePubSub(b, 2)
 }
 
-func Benchmark_RoutePubSub_1K(b *testing.B) {
+func Benchmark___RoutedPubSub_1K(b *testing.B) {
 	routePubSub(b, 1024)
 }
 
-func Benchmark_RoutePubSub_100K(b *testing.B) {
+func Benchmark_RoutedPubSub_100K(b *testing.B) {
 	routePubSub(b, 100*1024)
 }
