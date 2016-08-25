@@ -91,7 +91,7 @@ func New(opts *Options) *Server {
 
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
-	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAnyClientCert)
+	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
 	info := Info{
 		ID:                genID(),

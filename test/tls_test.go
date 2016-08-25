@@ -65,11 +65,6 @@ func TestTLSClientCertificate(t *testing.T) {
 		t.Fatalf("Expected error trying to connect to secure server without a certificate")
 	}
 
-	_, err = nats.Connect(nurl)
-	if err == nil {
-		t.Fatalf("Expected error trying to secure connect to secure server without a certificate")
-	}
-
 	// Load client certificate to successfully connect.
 	certFile := "./configs/certs/client-cert.pem"
 	keyFile := "./configs/certs/client-key.pem"
@@ -107,6 +102,23 @@ func TestTLSClientCertificate(t *testing.T) {
 	}
 	nc.Flush()
 	defer nc.Close()
+}
+
+func TestTLSVerifyClientCertificate(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
+	defer srv.Shutdown()
+
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	// The client is configured properly, but the server has no CA
+	// to verify the client certificate. Connection should fail.
+	nc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/client-cert.pem", "./configs/certs/client-key.pem"),
+		nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected failure to connect, did not")
+	}
 }
 
 func TestTLSConnectionTimeout(t *testing.T) {
