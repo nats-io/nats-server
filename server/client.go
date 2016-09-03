@@ -162,6 +162,8 @@ type clientOpts struct {
 	Authorization string `json:"auth_token"`
 	Username      string `json:"user"`
 	Password      string `json:"pass"`
+	Token         string `json:"token"`
+	Authenticator string `json:"authenticator"`
 	Name          string `json:"name"`
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
