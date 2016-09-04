@@ -52,3 +52,9 @@
 - [X] Client support for language and version
 - [X] Fix benchmarks on linux
 - [X] Daemon mode? Won't fix
+
+# Dynamic User
+- [ ] Test file for dynamic user
+- [ ] Cluster and route support??
+- [ ] Nats client used in nats server??
+- [X] Token wildcard??

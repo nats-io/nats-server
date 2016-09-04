@@ -421,6 +421,58 @@ authorization {
 }
 ```
 
+**Dynamic-user authentication**
+
+You can enable dynamic-user authentication using a NATS server configuration file, that allows you to use both multiuser-auth and token-auth. At the same time,  `authenticator` defines to get your permissions from another NATS server by `authenticator_hub`.
+
+```
+dynamic_user: true
+
+oauth2_authenticator1 = "nats://localhost:4333"
+oauth2_authenticator2 = "nats://localhost:4222"
+oauth2_authenticator3 = "nats://localhost:4222"
+
+authenticator_hub = [
+  $oauth2_authenticator1
+]
+
+users = [
+  {user: alice, password: foo, permissions: $super_user}
+  {user: bob,   password: bar, permissions: $req_pub_user}
+  {user: susan, password: baz}
+  {user: super, password: super, permissions: $super_user}
+  {token: foo, permissions: $oauth2_user}
+  {user: vincent.*, password: foo, authenticator:"oauth.replier"}
+  {user: zhigao.*, password: foo, authenticator:"oauth2.replier"}
+  {token: zhigao*, authenticator:"oauth2.replier"}
+]
+```
+
+For example:
+
+```
+dynamic_user: true
+
+oauth2_authenticator1 = "nats://localhost:4222"
+oauth2_authenticator2 = "nats://localhost:4333"
+oauth2_authenticator3 = "nats://localhost:4444"
+
+authenticator_hub = [
+  $oauth2_authenticator1
+  $oauth2_authenticator2
+  $oauth2_authenticator3
+]
+
+users = [
+  {user: alice, password: foo, permissions: $ADMIN}
+  {user: bob,   password: bar, permissions: $REQUESTOR}
+  {token: foo, permissions: $PASS}
+  {user: vincent.*, password: foo, authenticator:"oauth.replier"}
+  {user: zhigao.*, password: foo, authenticator:"oauth2.replier"}
+  {token: zhigao*, authenticator:"oauth2.replier"}
+]
+```
+
 ### Authorization
 
 The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/server/gnatsd-authorization) documentation.
