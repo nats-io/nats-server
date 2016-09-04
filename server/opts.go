@@ -23,7 +23,6 @@ type User struct {
 	Password      string       `json:"password"`
 	Permissions   *Permissions `json:"permissions"`
 	Authenticator string       `json:"authenticator"`
-	UserType      string       `json:"user_type"`
 	Token         string       `json:"token"`
 }
 
@@ -185,6 +184,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 					opts.AuthenticatorHub = auth.authenticatorHub
 				}
 			}
+			opts.DynamicUser = auth.dynamicUser
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
@@ -363,7 +363,13 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			}
 			auth.defaultPermissions = permissions
 		case "authenticator_hub", "authenticator_hubs":
-			auth.authenticatorHub = mv.([]string)
+			uv, ok := mv.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+			}
+			for _, u := range uv {
+				auth.authenticatorHub = append(auth.authenticatorHub, u.(string))
+			}
 		case "dynamic_user":
 			auth.dynamicUser = mv.(bool)
 		}
@@ -414,15 +420,13 @@ func parseUsers(mv interface{}) ([]*User, error) {
 				user.Permissions = permissions
 			case "authenticator", "authenticators":
 				user.Authenticator = v.(string)
-			case "user_type", "user_types":
-				user.UserType = v.(string)
 			case "token", "tokens":
 				user.Token = v.(string)
 			}
 		}
 		// Check to make sure we have at least username and password
-		if user.Username == "" || user.Token == "" {
-			return nil, fmt.Errorf("User entry requires a user or a token")
+		if (user.Username == "" || user.Password == "") && user.Token == "" {
+			return nil, fmt.Errorf("User entry requires a user and a password, or just a token")
 		}
 		users = append(users, user)
 	}

@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -26,27 +27,19 @@ type Permissions struct {
 
 // Plain authentication is a basic username and password
 type DynamicUser struct {
-	users            map[string]*server.User
-	authenticatorhub *nats.Conn
-	Token            string
+	users                map[string]*server.User
+	authenticatorhub     []string
+	authenticatorHubConn *nats.Conn
 }
 
 // Create a new multi-user
 func NewDynamicUser(users []*server.User, authenticatorhub []string) *DynamicUser {
-	servers := strings.Join(authenticatorhub, ",")
-	nc, _ := nats.Connect(servers,
-		nats.DisconnectHandler(func(nc *nats.Conn) {
-			fmt.Printf("Got disconnected!\n")
-		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			fmt.Printf("Got reconnected to %v!\n", nc.ConnectedUrl())
-		}),
-		nats.ClosedHandler(func(nc *nats.Conn) {
-			fmt.Printf("Connection closed. Reason: %q\n", nc.LastError())
-		}),
-	)
+	nc, err := authenticatorHubConnect(authenticatorhub)
+	if err != nil {
+		fmt.Errorf("AuthenticatorHub Connection Failed: ", err)
+	}
 
-	m := &DynamicUser{users: make(map[string]*server.User), authenticatorhub: nc, Token: ""}
+	m := &DynamicUser{users: make(map[string]*server.User), authenticatorHubConn: nc}
 	for _, u := range users {
 		if u.Username != "" {
 			m.users[u.Username] = u
@@ -55,12 +48,12 @@ func NewDynamicUser(users []*server.User, authenticatorhub []string) *DynamicUse
 		}
 	}
 
-	m.authenticatorhub = nc
-
+	m.authenticatorhub = authenticatorhub
+	m.authenticatorHubConn = nc
 	return m
 }
 
-// Check authenticates the client using a username and password against a list of multiple users.
+// Check authenticates the server using dynamic auth.
 func (m *DynamicUser) Check(c server.ClientAuth) bool {
 	opts := c.GetOpts()
 
@@ -69,7 +62,7 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 	pass, optsPass := "", ""
 	if opts.Username != "" {
 		for k, _ := range m.users {
-			if matchLiteral(k, opts.Username) {
+			if matchLiteral(opts.Username, k) {
 				if user, ok = m.users[k]; ok {
 					pass = user.Password
 					optsPass = opts.Password
@@ -77,12 +70,12 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 				}
 			}
 		}
-	} else if opts.Token != "" {
+	} else if opts.Authorization != "" {
 		for k, _ := range m.users {
-			if matchLiteral(k, opts.Token) {
+			if matchLiteral(opts.Authorization, k) {
 				if user, ok = m.users[k]; ok {
 					pass = user.Password
-					optsPass = opts.Token
+					optsPass = opts.Authorization
 					break
 				}
 			}
@@ -94,12 +87,6 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 		return false
 	}
 
-	if opts.Authenticator != "" {
-		msg, err := m.authenticatorhub.Request(opts.Authenticator, []byte(opts.Authenticator), 10*time.Millisecond)
-		fmt.Println(err)
-		fmt.Println(msg)
-		// user.Permissions = &Permissions{} //parseUserPermissions(msg) //
-	} else
 	// Check to see if the password is a bcrypt hash
 	if isBcrypt(pass) {
 		if err := bcrypt.CompareHashAndPassword([]byte(pass), []byte(optsPass)); err != nil {
@@ -109,15 +96,48 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 		return false
 	}
 
+	if user.Authenticator != "" {
+		if m.authenticatorHubConn == nil {
+			fmt.Println("IamIN    d")
+			nc, err := authenticatorHubConnect(m.authenticatorhub)
+			if err != nil {
+				server.Errorf("AuthenticatorHub Connection Failed: ", err)
+				return false
+			}
+			m.authenticatorHubConn = nc
+		}
+		server.Noticef("Dynamic Auth, Authenticator: %v", user.Authenticator)
+		msg, err := m.authenticatorHubConn.Request(user.Authenticator, []byte(user.Authenticator), 10*time.Millisecond)
+		if err != nil {
+			server.Errorf("Authenticator Request Error: %v", err)
+			return false
+		}
+		err = json.Unmarshal(msg.Data, &user.Permissions)
+		if err != nil {
+			server.Errorf("Authenticator Reply Msg Json Error: %v", err)
+			return false
+		}
+	}
+
 	c.RegisterUser(user)
 
 	return true
 }
 
-// Todo
-func parseUserPermissions(msg *nats.Msg) *Permissions {
-	p := &Permissions{}
-	return p
+func authenticatorHubConnect(authenticatorhub []string) (*nats.Conn, error) {
+	servers := strings.Join(authenticatorhub, ",")
+	nc, err := nats.Connect(servers,
+		nats.DisconnectHandler(func(nc *nats.Conn) {
+			fmt.Errorf("Got disconnected!\n")
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			fmt.Errorf("Got reconnected to %v!\n", nc.ConnectedUrl())
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			fmt.Errorf("Connection closed. Reason: %q\n", nc.LastError())
+		}),
+	)
+	return nc, err
 }
 
 // from github.com/nats-io/gnatsd/server/sublist.go
