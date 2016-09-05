@@ -57,4 +57,5 @@
 - [ ] Test file for dynamic user
 - [ ] Cluster and route support??
 - [ ] Nats client used in nats server??
+- [ ] Dynamic user service stable and robust??
 - [X] Token wildcard??

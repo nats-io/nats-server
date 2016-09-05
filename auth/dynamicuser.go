@@ -20,11 +20,6 @@ const (
 	btsep = '.'
 )
 
-type Permissions struct {
-	Publish   []string `json:"publish"`
-	Subscribe []string `json:"subscribe"`
-}
-
 // Plain authentication is a basic username and password
 type DynamicUser struct {
 	users                map[string]*server.User
@@ -59,23 +54,34 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 
 	ok := false
 	user, ok := m.users[opts.Username]
-	pass, optsPass := "", ""
 	if opts.Username != "" {
 		for k, _ := range m.users {
 			if matchLiteral(opts.Username, k) {
 				if user, ok = m.users[k]; ok {
-					pass = user.Password
-					optsPass = opts.Password
+					if isBcrypt(user.Token) && user.Authenticator == "" {
+						if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(opts.Password)); err != nil {
+							return false
+						}
+					} else if user.Password != opts.Password {
+						return false
+					}
 					break
 				}
 			}
 		}
 	} else if opts.Authorization != "" {
-		for k, _ := range m.users {
-			if matchLiteral(opts.Authorization, k) {
+		for k, v := range m.users {
+			// token auth
+			if isBcrypt(v.Token) && v.Authenticator == "" {
+				if err := bcrypt.CompareHashAndPassword([]byte(v.Token), []byte(opts.Authorization)); err == nil {
+					user, ok = m.users[k]
+					break
+				}
+			} else if matchLiteral(opts.Authorization, k) {
 				if user, ok = m.users[k]; ok {
-					pass = user.Password
-					optsPass = opts.Authorization
+					if user.Authenticator == "" && user.Password != opts.Password {
+						return false
+					}
 					break
 				}
 			}
@@ -83,22 +89,9 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 	} else {
 		return false
 	}
-	if !ok {
-		return false
-	}
-
-	// Check to see if the password is a bcrypt hash
-	if isBcrypt(pass) {
-		if err := bcrypt.CompareHashAndPassword([]byte(pass), []byte(optsPass)); err != nil {
-			return false
-		}
-	} else if pass != optsPass {
-		return false
-	}
 
 	if user.Authenticator != "" {
 		if m.authenticatorHubConn == nil {
-			fmt.Println("IamIN    d")
 			nc, err := authenticatorHubConnect(m.authenticatorhub)
 			if err != nil {
 				server.Errorf("AuthenticatorHub Connection Failed: ", err)
@@ -107,14 +100,21 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 			m.authenticatorHubConn = nc
 		}
 		server.Noticef("Dynamic Auth, Authenticator: %v", user.Authenticator)
-		msg, err := m.authenticatorHubConn.Request(user.Authenticator, []byte(user.Authenticator), 10*time.Millisecond)
+		user.Password = opts.Password
+		user.Token = opts.Authorization
+		byteMsg, _ := json.Marshal(user)
+		msg, err := m.authenticatorHubConn.Request(user.Authenticator, byteMsg, 10*time.Millisecond)
 		if err != nil {
 			server.Errorf("Authenticator Request Error: %v", err)
 			return false
 		}
-		err = json.Unmarshal(msg.Data, &user.Permissions)
+		err = json.Unmarshal(msg.Data, &user)
 		if err != nil {
 			server.Errorf("Authenticator Reply Msg Json Error: %v", err)
+			return false
+		}
+		if user.Password != opts.Password || user.Token != opts.Authorization {
+			server.Errorf("Auth Failed")
 			return false
 		}
 	}
