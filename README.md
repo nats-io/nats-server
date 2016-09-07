@@ -423,17 +423,13 @@ authorization {
 
 **Dynamic-user authentication**
 
-You can enable dynamic-user authentication using a NATS server configuration file, that allows you to use both multiuser-auth and token-auth. At the same time,  `authenticator` defines to get your permissions from another NATS server by `authenticator_hub`.
+You can enable dynamic-user authentication using a NATS server configuration file, that allows you to use both multiuser-auth and token-auth. At the same time,  `authenticator` defines to get your permissions from another NATS server by `authenticator_hub`. To enable dynamic-user authentication, you need to set `dynamic_user` as true.
 
 ```
 dynamic_user: true
 
-oauth2_authenticator1 = "nats://localhost:4333"
-oauth2_authenticator2 = "nats://localhost:4222"
-oauth2_authenticator3 = "nats://localhost:4222"
-
 authenticator_hub = [
-  $oauth2_authenticator1
+  $oauth2_authenticator
 ]
 
 users = [
@@ -442,8 +438,8 @@ users = [
   {user: susan, password: baz}
   {user: super, password: super, permissions: $super_user}
   {token: foo, permissions: $oauth2_user}
-  {user: vincent.*, password: foo, authenticator:"oauth.replier"}
-  {user: zhigao.*, password: foo, authenticator:"oauth2.replier"}
+  {user: regex("vincent(.*)"), password: foo, authenticator:"oauth.replier"}
+  {user: wildcard("zhigao.*"), password: foo, authenticator:"oauth2.replier"}
   {token: zhigao*, authenticator:"oauth2.replier"}
 ]
 ```
@@ -453,24 +449,46 @@ For example:
 ```
 dynamic_user: true
 
-oauth2_authenticator1 = "nats://localhost:4222"
-oauth2_authenticator2 = "nats://localhost:4333"
-oauth2_authenticator3 = "nats://localhost:4444"
+oauth2_authenticator1_url = "nats://localhost:4333"
+oauth2_authenticator2_url = "nats://alice:foo@localhost:4222"
+oauth2_authenticator3_url = "nats://localhost:4222"
 
 authenticator_hub = [
-  $oauth2_authenticator1
-  $oauth2_authenticator2
-  $oauth2_authenticator3
+  $oauth2_authenticator1_url
+  $oauth2_authenticator2_url
+  $oauth2_authenticator3_url
 ]
+
+PASS: $2a$11$b0PUYclUQ3YOdqI3PkosC.tbbmTTAUCKb5xJwFtQIokrxPFeiIoae
 
 users = [
   {user: alice, password: foo, permissions: $ADMIN}
   {user: bob,   password: bar, permissions: $REQUESTOR}
   {token: foo, permissions: $PASS}
-  {user: vincent.*, password: foo, authenticator:"oauth.replier"}
-  {user: zhigao.*, password: foo, authenticator:"oauth2.replier"}
-  {token: zhigao*, authenticator:"oauth2.replier"}
+  {user: regex("vincent(.*)"), password: foo, authenticator:"oauth.replier"}
+  {user: wildcard("zhigao.*"), password: foo, authenticator:"oauth2.replier"}
+  {token: 2323*, authenticator:"oauth3.replier"}
 ]
+```
+
+And if you enable your user authentication with `authenticator`, such as `oauth.replier`. For example, for user `vincent.1`, when he requests to connect a NATS reply server using this configuration file, the reply server will request another NATS server defined by `authenticator_hub` with the payload as below. If authentication succeeded, the reply server will return the same password and token with customized permission.
+
+```
+{
+  "user": "vincent.1",
+  "password": "foo",
+  "permissions": {
+    "subscribe": [
+      "req.foo"
+    ],
+    "publish": [
+      "req.foo",
+      "req.bar"
+    ]
+  },
+  "authenticator": "oauth.replier",
+  "token": ""
+}
 ```
 
 ### Authorization
