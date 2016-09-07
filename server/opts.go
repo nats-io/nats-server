@@ -407,7 +407,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 			case "user", "username":
 				user.Username = v.(string)
 			case "pass", "password":
-				user.Password = v.(string)
+				user.Password = fmt.Sprintf("%v", v)
 			case "permission", "permissions", "authroization":
 				pm, ok := v.(map[string]interface{})
 				if !ok {
@@ -421,7 +421,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 			case "authenticator", "authenticators":
 				user.Authenticator = v.(string)
 			case "token", "tokens":
-				user.Token = v.(string)
+				user.Token = fmt.Sprintf("%v", v)
 			}
 		}
 		// Check to make sure we have at least username and password

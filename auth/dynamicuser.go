@@ -5,6 +5,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -54,39 +55,40 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 
 	ok := false
 	user, ok := m.users[opts.Username]
+	pass, optsPass := "", ""
 	if opts.Username != "" {
 		for k, _ := range m.users {
+			if m.users[k].Username == "" {
+				continue
+			}
 			if matchLiteral(opts.Username, k) {
 				if user, ok = m.users[k]; ok {
-					if isBcrypt(user.Token) && user.Authenticator == "" {
-						if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(opts.Password)); err != nil {
-							return false
-						}
-					} else if user.Password != opts.Password {
-						return false
-					}
+					pass = user.Password
+					optsPass = opts.Password
 					break
 				}
 			}
 		}
 	} else if opts.Authorization != "" {
-		for k, v := range m.users {
-			// token auth
-			if isBcrypt(v.Token) && v.Authenticator == "" {
-				if err := bcrypt.CompareHashAndPassword([]byte(v.Token), []byte(opts.Authorization)); err == nil {
-					user, ok = m.users[k]
-					break
-				}
-			} else if matchLiteral(opts.Authorization, k) {
+		for k, _ := range m.users {
+			if m.users[k].Token == "" {
+				continue
+			}
+			if matchLiteral(opts.Authorization, k) {
 				if user, ok = m.users[k]; ok {
-					if user.Authenticator == "" && user.Password != opts.Password {
-						return false
-					}
 					break
 				}
+			} else if cryptAuth(k, opts.Authorization) {
+				if user, ok = m.users[k]; ok {
+					break
+				}
+				break
 			}
 		}
 	} else {
+		return false
+	}
+	if !ok {
 		return false
 	}
 
@@ -100,10 +102,11 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 			m.authenticatorHubConn = nc
 		}
 		server.Noticef("Dynamic Auth, Authenticator: %v", user.Authenticator)
+
 		user.Password = opts.Password
 		user.Token = opts.Authorization
 		byteMsg, _ := json.Marshal(user)
-		msg, err := m.authenticatorHubConn.Request(user.Authenticator, byteMsg, 10*time.Millisecond)
+		msg, err := m.authenticatorHubConn.Request(user.Authenticator, byteMsg, 15*time.Millisecond)
 		if err != nil {
 			server.Errorf("Authenticator Request Error: %v", err)
 			return false
@@ -117,6 +120,10 @@ func (m *DynamicUser) Check(c server.ClientAuth) bool {
 			server.Errorf("Auth Failed")
 			return false
 		}
+	} else if cryptAuth(pass, optsPass) {
+		return false
+	} else if pass != optsPass {
+		return false
 	}
 
 	c.RegisterUser(user)
@@ -140,40 +147,69 @@ func authenticatorHubConnect(authenticatorhub []string) (*nats.Conn, error) {
 	return nc, err
 }
 
-// from github.com/nats-io/gnatsd/server/sublist.go
-// matchLiteral is used to test literal subjects, those that do not have any
-// wildcards, with a target subject. This is used in the cache layer.
-func matchLiteral(literal, subject string) bool {
-	li := 0
-	ll := len(literal)
-	for i := 0; i < len(subject); i++ {
-		if li >= ll {
+// matchLiteral is used to test literal subjects,
+// it may slow if too many users are using regex match,
+// wildcard is reused from github.com/nats-io/gnatsd/server/sublist.go
+func matchLiteral(literal string, subject string) bool {
+	if strings.HasPrefix(subject, "regex(\"") && strings.HasSuffix(subject, "\")") {
+		pattern := string([]byte(subject)[len("regex(\"") : len(subject)-2])
+		r, err := regexp.Compile(pattern)
+		if err != nil {
+			server.Debugf("user pattern", err)
 			return false
 		}
-		b := subject[i]
-		switch b {
-		case pwc:
-			// Skip token in literal
-			ll := len(literal)
-			for {
-				if li >= ll || literal[li] == btsep {
-					li--
-					break
-				}
-				li++
-			}
-		case fwc:
+		if r.MatchString(literal) {
 			return true
-		default:
-			if b != literal[li] {
+		}
+		return false
+	} else if strings.HasPrefix(subject, "wildcard(\"") && strings.HasSuffix(subject, "\")") {
+		subject = string([]byte(subject)[len("wildcard(\"") : len(subject)-2])
+		li := 0
+		ll := len(literal)
+		for i := 0; i < len(subject); i++ {
+			if li >= ll {
 				return false
 			}
+			b := subject[i]
+			switch b {
+			case pwc:
+				// Skip token in literal
+				ll := len(literal)
+				for {
+					if li >= ll || literal[li] == btsep {
+						li--
+						break
+					}
+					li++
+				}
+			case fwc:
+				return true
+			default:
+				if b != literal[li] {
+					return false
+				}
+			}
+			li++
 		}
-		li++
-	}
-	// Make sure we have processed all of the literal's chars..
-	if li < ll {
+		// Make sure we have processed all of the literal's chars..
+		if li < ll {
+			return false
+		}
+		return true
+	} else if literal != subject {
 		return false
 	}
+
 	return true
+}
+
+func cryptAuth(passConfig string, pass string) bool {
+	if isBcrypt(passConfig) {
+		if err := bcrypt.CompareHashAndPassword([]byte(passConfig), []byte(pass)); err != nil {
+			return false
+		}
+		return true
+	}
+
+	return false
 }
