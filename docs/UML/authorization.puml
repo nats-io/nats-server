@@ -1,8 +1,8 @@
 @startuml
 participant "APP" as app
-box "Internal Service"
 participant "NATS" as  nats
-participant "Authenticator" as ar
+box "Internal Components"
+participant "Oauth \nAccess Manager" as ar
 participant "Data server" as ds
 end box
 participant "Oauth2" as oauth
@@ -17,7 +17,7 @@ app -> oauth : user authorize application to access data for certain scopes (eg.
 oauth-->app: token
 app->nats : connect(token)
 nats->nats: request(authenticator, token)
-nats->ar : authenticate user based on token
+nats->ar : authenticate user and get permission based on token
 ar->oauth:validate token
 oauth-->ar: scope for this app
 ar-->nats:User and permission(eg myvechile.telematics.<uid>)
