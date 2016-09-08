@@ -74,7 +74,11 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
 	}
 	if opts.Users != nil {
-		a = auth.NewMultiUser(opts.Users)
+		if opts.DynamicUser != true {
+			a = auth.NewMultiUser(opts.Users)
+		} else {
+			a = auth.NewDynamicUser(opts.Users, opts.AuthenticatorHub)
+		}
 	}
 	srv = RunServerWithAuth(opts, a)
 	return
