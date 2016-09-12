@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/nats"
 	"sync"
@@ -1167,6 +1168,17 @@ func TestHandleRoot(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Expected no error reading body: Got %v\n", err)
+	}
+	for _, b := range body {
+		if b > unicode.MaxASCII {
+			t.Fatalf("Expected body to contain only ASCII characters, but got %v\n", b)
+		}
+	}
+
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "text/html") {
 		t.Fatalf("Expected text/html response, got %s\n", ct)
