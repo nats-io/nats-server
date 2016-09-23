@@ -1,11 +1,12 @@
 language: go
 go:
-- 1.5
+- 1.5.4
+- 1.6.3
+env:
+  global:
+    - GO15VENDOREXPERIMENT=1
 install:
 - go get github.com/nats-io/nats
-- go get golang.org/x/crypto/bcrypt
-- go get golang.org/x/tools/cmd/vet
-- go get golang.org/x/tools/cmd/cover
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
 script:
@@ -14,4 +15,6 @@ script:
 - go vet ./...
 - go test -i -race ./...
 - go test -v -race ./...
-- ./scripts/cov.sh TRAVIS
+after_script:
+- if [ "$TRAVIS_GO_VERSION" = "1.6.3" ]; then ./scripts/cov.sh TRAVIS; fi
+- if [ "$TRAVIS_GO_VERSION" = "1.6.3" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi

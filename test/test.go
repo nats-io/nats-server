@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package test
 
@@ -32,22 +32,26 @@ type tLogger interface {
 	Errorf(format string, args ...interface{})
 }
 
+// DefaultTestOptions are default options for the unit tests.
 var DefaultTestOptions = server.Options{
-	Host:   "localhost",
-	Port:   4222,
-	NoLog:  true,
-	NoSigs: true,
+	Host:           "localhost",
+	Port:           4222,
+	NoLog:          true,
+	NoSigs:         true,
+	MaxControlLine: 256,
 }
 
+// RunDefaultServer starts a new Go routine based server using the default options
 func RunDefaultServer() *server.Server {
 	return RunServer(&DefaultTestOptions)
 }
 
-// New Go Routine based server
+// RunServer starts a new Go routine based server
 func RunServer(opts *server.Options) *server.Server {
 	return RunServerWithAuth(opts, nil)
 }
 
+// LoadConfig loads a configuration from a filename
 func LoadConfig(configFile string) (opts *server.Options) {
 	opts, err := server.ProcessConfigFile(configFile)
 	if err != nil {
@@ -57,6 +61,7 @@ func LoadConfig(configFile string) (opts *server.Options) {
 	return
 }
 
+// RunServerWithConfig starts a new Go routine based server with a configuration file.
 func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
 	opts = LoadConfig(configFile)
 
@@ -68,11 +73,14 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	if opts.Username != "" {
 		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
 	}
+	if opts.Users != nil {
+		a = auth.NewMultiUser(opts.Users)
+	}
 	srv = RunServerWithAuth(opts, a)
 	return
 }
 
-// New Go Routine based server with auth
+// RunServerWithAuth starts a new Go routine based server with auth
 func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
@@ -83,7 +91,7 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	}
 
 	if auth != nil {
-		s.SetAuthMethod(auth)
+		s.SetClientAuthMethod(auth)
 	}
 
 	// Run server in Go routine.
@@ -104,46 +112,13 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 			continue
 		}
 		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return s
 	}
 	panic("Unable to start NATS Server in Go Routine")
-}
-
-func startServer(t tLogger, port int, other string) *natsServer {
-	var s natsServer
-	args := fmt.Sprintf("-p %d %s", port, other)
-	s.args = strings.Split(args, " ")
-	s.cmd = exec.Command(natsServerExe, s.args...)
-	err := s.cmd.Start()
-	if err != nil {
-		s.cmd = nil
-		t.Errorf("Could not start <%s> [%s], is NATS installed and in path?", natsServerExe, err)
-		return &s
-	}
-	// Give it time to start up
-	start := time.Now()
-	for {
-		addr := fmt.Sprintf("localhost:%d", port)
-		c, err := net.Dial("tcp", addr)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			if time.Since(start) > (5 * time.Second) {
-				t.Fatalf("Timed out trying to connect to %s", natsServerExe)
-				return nil
-			}
-		} else {
-			c.Close()
-			break
-		}
-	}
-	return &s
-}
-
-func (s *natsServer) stopServer() {
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		s.cmd.Process.Wait()
-	}
 }
 
 func stackFatalf(t tLogger, f string, args ...interface{}) {
@@ -157,7 +132,7 @@ func stackFatalf(t tLogger, f string, args ...interface{}) {
 	// Generate the Stack of callers:
 	for i := 0; true; i++ {
 		_, file, line, ok := runtime.Caller(i)
-		if ok == false {
+		if !ok {
 			break
 		}
 		if file == testFile {
@@ -210,8 +185,11 @@ func checkSocket(t tLogger, addr string, wait time.Duration) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		// We bound to the addr, so close and return.
 		conn.Close()
+		// Wait a bit to give a chance to the server to remove this
+		// "client" from its state, which may otherwise interfere with
+		// some tests.
+		time.Sleep(25 * time.Millisecond)
 		return
 	}
 	// We have failed to bind the socket in the time allowed.
@@ -240,10 +218,10 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
-const CONNECT_F = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
+const connectProto = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
 
 func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
-	cs := fmt.Sprintf(CONNECT_F, user, pass, id)
+	cs := fmt.Sprintf(connectProto, user, pass, id)
 	sendProto(t, c, cs)
 }
 
@@ -263,6 +241,13 @@ func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 	doDefaultConnect(t, c)
+	return sendCommand(t, c), expectCommand(t, c)
+}
+
+func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
+	checkInfoMsg(t, c)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v,\"protocol\":%d}\r\n", false, false, false, proto)
+	sendProto(t, c, cs)
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
@@ -309,22 +294,18 @@ var (
 )
 
 const (
-	SUB_INDEX   = 1
-	SID_INDEX   = 2
-	REPLY_INDEX = 4
-	LEN_INDEX   = 5
-	MSG_INDEX   = 6
+	subIndex   = 1
+	sidIndex   = 2
+	replyIndex = 4
+	lenIndex   = 5
+	msgIndex   = 6
 )
-
-// Reuse expect buffer
-// TODO(dlc) - This may be too simplistic in the long run, may need
-// to consider holding onto data from previous reads matched by conn.
-var expBuf = make([]byte, 32768)
 
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
+	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(1 * time.Second))
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 
@@ -340,6 +321,7 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 }
 
 func expectNothing(t tLogger, c net.Conn) {
+	expBuf := make([]byte, 32)
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
@@ -350,20 +332,20 @@ func expectNothing(t tLogger, c net.Conn) {
 
 // This will check that we got what we expected.
 func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
-	if string(m[SUB_INDEX]) != subject {
-		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[SUB_INDEX])
+	if string(m[subIndex]) != subject {
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[subIndex])
 	}
-	if sid != "" && string(m[SID_INDEX]) != sid {
-		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[SID_INDEX])
+	if sid != "" && string(m[sidIndex]) != sid {
+		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[sidIndex])
 	}
-	if string(m[REPLY_INDEX]) != reply {
-		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[REPLY_INDEX])
+	if string(m[replyIndex]) != reply {
+		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[replyIndex])
 	}
-	if string(m[LEN_INDEX]) != len {
-		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[LEN_INDEX])
+	if string(m[lenIndex]) != len {
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[lenIndex])
 	}
-	if string(m[MSG_INDEX]) != msg {
-		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[MSG_INDEX])
+	if string(m[msgIndex]) != msg {
+		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[msgIndex])
 	}
 }
 
@@ -387,9 +369,9 @@ func checkForQueueSid(t tLogger, matches [][][]byte, sids []string) {
 		seen[sid] = 0
 	}
 	for _, m := range matches {
-		sid := string(m[SID_INDEX])
+		sid := string(m[sidIndex])
 		if _, ok := seen[sid]; ok {
-			seen[sid] += 1
+			seen[sid]++
 		}
 	}
 	// Make sure we only see one and exactly one.
@@ -410,9 +392,9 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 		seen[sid] = 0
 	}
 	for _, m := range matches {
-		sid := string(m[SID_INDEX])
+		sid := string(m[sidIndex])
 		if _, ok := seen[sid]; ok {
-			seen[sid] += 1
+			seen[sid]++
 		}
 	}
 	// Make sure we only see one and exactly one for each sid.
@@ -427,8 +409,8 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 // Helper function to generate next opts to make sure no port conflicts etc.
 func nextServerOpts(opts *server.Options) *server.Options {
 	nopts := *opts
-	nopts.Port += 1
-	nopts.ClusterPort += 1
-	nopts.HTTPPort += 1
+	nopts.Port++
+	nopts.ClusterPort++
+	nopts.HTTPPort++
 	return &nopts
 }

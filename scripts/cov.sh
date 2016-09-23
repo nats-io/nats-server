@@ -5,12 +5,10 @@ rm -rf ./cov
 mkdir cov
 go test -v -covermode=atomic -coverprofile=./cov/auth.out ./auth
 go test -v -covermode=atomic -coverprofile=./cov/conf.out ./conf
-go test -v -covermode=atomic -coverprofile=./cov/hash.out ./hash
-go test -v -covermode=atomic -coverprofile=./cov/hashmap.out ./hashmap
 go test -v -covermode=atomic -coverprofile=./cov/log.out ./logger
 go test -v -covermode=atomic -coverprofile=./cov/server.out ./server
-go test -v -covermode=atomic -coverprofile=./cov/sublist.out ./sublist
 go test -v -covermode=atomic -coverprofile=./cov/test.out ./test
+go test -v -covermode=atomic -coverprofile=./cov/test2.out -coverpkg=./server ./test
 gocovmerge ./cov/*.out > acc.out
 rm -rf ./cov
 

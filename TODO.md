@@ -1,22 +1,35 @@
 
 # General
 
-- [ ] Dynamic socket buffer sizes
-- [ ] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
+- [ ] Auth for queue groups?
+- [ ] Blacklist or ERR escalation to close connection for auth/permissions
+- [ ] Protocol updates, MAP, MPUB, etc
+- [ ] Multiple listen endpoints
+- [ ] Websocket / HTTP2 strategy
+- [ ] T series reservations
+- [ ] _SYS. server events?
+- [ ] No downtime restart
+- [ ] Signal based reload of configuration
 - [ ] brew, apt-get, rpm, chocately (windows)
-- [ ] Sublist better at high concurrency, cache uses writelock currently
-- [ ] Buffer pools/sync pools?
 - [ ] IOVec pools and writev for high fanout?
-- [ ] Add ability to reload config on signal
-- [ ] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
-- [ ] Add ENV and variable support to dconf
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
 - [ ] Limit number of subscriptions a client can have, total memory usage etc.
-- [ ] Info updates contain other implicit route servers
-- [ ] Pedantic state
 - [ ] Multi-tenant accounts with isolation of subject space
-- [ ] Track last activity time per connection?
+- [ ] Pedantic state
+- [X] _SYS.> reserved for server events?
+- [X] Listen configure key vs addr and port
+- [X] Add ENV and variable support to dconf? ucl?
+- [X] Buffer pools/sync pools?
+- [X] Multiple Authorization / Access
+- [X] Write dynamic socket buffer sizes
+- [X] Read dynamic socket buffer sizes
+- [X] Info updates contain other implicit route servers
+- [X] Sublist better at high concurrency, cache uses writelock always currently
+- [X] Switch to 1.4/1.5 and use maps vs hashmaps in sublist
+- [X] NewSource on Rand to lower lock contention on QueueSubs, or redesign!
+- [X] Default sort by cid on connz
+- [X] Track last activity time per connection?
 - [X] Add total connections to varz so we won't miss spikes, etc.
 - [X] Add starttime and uptime to connz list.
 - [X] Gossip Protocol for discovery for clustering

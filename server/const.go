@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -8,9 +8,9 @@ import (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "0.7.3"
+	VERSION = "0.9.4"
 
-	// DEFAULT_PORT is the deault port for client connections.
+	// DEFAULT_PORT is the default port for client connections.
 	DEFAULT_PORT = 4222
 
 	// RANDOM_PORT is the value for port that, when supplied, will cause the
@@ -47,7 +47,7 @@ const (
 	// DEFAULT_PING_MAX_OUT is maximum allowed pings outstanding before disconnect.
 	DEFAULT_PING_MAX_OUT = 2
 
-	// CRLF string
+	// CR_LF string
 	CR_LF = "\r\n"
 
 	// LEN_CR_LF hold onto the computed size.
@@ -82,8 +82,4 @@ const (
 
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
-
-	// Default Buffer size for reads and writes per connection. Will be replaced by dynamic
-	// system in the long run.
-	DEFAULT_BUF_SIZE = 32768
 )

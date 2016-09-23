@@ -39,6 +39,8 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 		reconnectsDone <- true
 	}
 
+	clients := make([]*nats.Conn, numClients)
+
 	// Create 20 random clients.
 	// Half connected to A and half to B..
 	for i := 0; i < numClients; i++ {
@@ -47,6 +49,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create connection: %v\n", err)
 		}
+		clients[i] = nc
 		defer nc.Close()
 
 		// Create 10 subscriptions each..
@@ -79,11 +82,26 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	srvB = RunServer(optsB)
 	defer srvB.Shutdown()
 
-	select {
-	case <-reconnectsDone:
-		break
-	case <-time.After(3 * time.Second):
-		t.Fatalf("Expected %d reconnects, got %d\n", numClients/2, reconnects)
+	// Check that all expected clients have reconnected
+	for i := 0; i < numClients/2; i++ {
+		select {
+		case <-reconnectsDone:
+			break
+		case <-time.After(3 * time.Second):
+			t.Fatalf("Expected %d reconnects, got %d\n", numClients/2, reconnects)
+		}
+	}
+
+	// Since srvB was restarted, its defer Shutdown() was last, so will
+	// exectue first, which would cause clients that have reconnected to
+	// it to try to reconnect (causing delays on Windows). So let's
+	// explicitly close them here.
+	// NOTE: With fix of NATS GO client (reconnect loop yields to Close()),
+	//       this change would not be required, however, it still speeeds up
+	//       the test, from more than 7s to less than one.
+	for i := 0; i < numClients; i++ {
+		nc := clients[i]
+		nc.Close()
 	}
 }
 
@@ -147,7 +165,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 		// Wait for processing.
 		c1.Flush()
 		c2.Flush()
-		// Wait for a short bit for cluster propogation.
+		// Wait for a short bit for cluster propagation.
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -165,7 +183,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 		for i := 0; i < numSent; i++ {
 			if results[i] != ExpectedMsgCount {
-				t.Fatalf("Received incorrect number of messages, [%d] for seq: %d\n", results[i], i)
+				t.Fatalf("Received incorrect number of messages, [%d] vs [%d] for seq: %d\n", results[i], ExpectedMsgCount, i)
 			}
 		}
 
@@ -211,6 +229,11 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	// Base Test
 	////////////////////////////////////////////////////////////////////////////
 
+	// Make sure subscriptions are propagated in the cluster
+	if err := checkExpectedSubs(4, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	// Now send 10 messages, from each client..
 	sendAndCheckMsgs(10)
 
@@ -228,10 +251,23 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 	waitOnReconnect()
 
-	time.Sleep(50 * time.Millisecond)
+	// Make sure the cluster is reformed
+	checkClusterFormed(t, srvA, srvB)
+
+	// Make sure subscriptions are propagated in the cluster
+	if err := checkExpectedSubs(4, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
 
 	// Now send another 10 messages, from each client..
 	sendAndCheckMsgs(10)
+
+	// Since servers are restarted after all client's close defer calls,
+	// their defer Shutdown() are last, and so will be executed first,
+	// which would cause clients to try to reconnect on exit, causing
+	// delays on Windows. So let's explicitly close them here.
+	c1.Close()
+	c2.Close()
 }
 
 // This will test request semantics across a route
@@ -263,7 +299,7 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	nc1.Subscribe("foo-req", func(m *nats.Msg) {
 		nc1.Publish(m.Reply, response)
 	})
-	// Make sure the route and the subscription are propogated.
+	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
 	var resp string
@@ -305,7 +341,7 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	nc1.QueueSubscribe("foo-req", "booboo", func(m *nats.Msg) {
 		nc1.Publish(m.Reply, response)
 	})
-	// Make sure the route and the subscription are propogated.
+	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
 	// Connect the other responder to srvB

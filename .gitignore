@@ -34,3 +34,7 @@ gnatsd
 
 # coverage
 coverage.out
+
+# Cross compiled binaries
+pkg
+

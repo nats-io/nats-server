@@ -39,8 +39,9 @@ func TestProtoBasics(t *testing.T) {
 	// 2 Messages
 	send("SUB * 2\r\nPUB foo 2\r\nok\r\n")
 	matches = expectMsgs(2)
-	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
+	// Could arrive in any order
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
 }
 
 func TestProtoErr(t *testing.T) {
@@ -102,7 +103,7 @@ func TestQueueSub(t *testing.T) {
 	matches := expectMsgs(sent)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 2 {
 		t.Fatalf("Expected only 2 sids, got %d\n", len(sids))
@@ -139,7 +140,7 @@ func TestMultipleQueueSub(t *testing.T) {
 	matches := expectMsgs(sent * 2)
 	sids := make(map[string]int)
 	for _, m := range matches {
-		sids[string(m[SID_INDEX])]++
+		sids[string(m[sidIndex])]++
 	}
 	if len(sids) != 4 {
 		t.Fatalf("Expected 4 sids, got %d\n", len(sids))
@@ -261,5 +262,22 @@ func TestIncompletePubArg(t *testing.T) {
 
 	pub := "PUB example 10000\r\n"
 	send(pub + goodBuf + pub + goodBuf + pub + badBuf + pub + badBuf2)
+	expect(errRe)
+}
+
+func TestControlLineMaximums(t *testing.T) {
+	s := runProtoServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+
+	pubTooLong := "PUB foo "
+	for i := 0; i < 32; i++ {
+		pubTooLong += "2222222222"
+	}
+	send(pubTooLong)
 	expect(errRe)
 }

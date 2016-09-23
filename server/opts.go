@@ -1,4 +1,4 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -17,6 +17,20 @@ import (
 	"github.com/nats-io/gnatsd/conf"
 )
 
+// For multiple accounts/users.
+type User struct {
+	Username    string       `json:"user"`
+	Password    string       `json:"password"`
+	Permissions *Permissions `json:"permissions"`
+}
+
+// Authorization are the allowed subjects on a per
+// publish or subscribe basis.
+type Permissions struct {
+	Publish   []string `json:"publish"`
+	Subscribe []string `json:"subscribe"`
+}
+
 // Options block for gnatsd server.
 type Options struct {
 	Host               string        `json:"addr"`
@@ -27,11 +41,13 @@ type Options struct {
 	NoSigs             bool          `json:"-"`
 	Logtime            bool          `json:"-"`
 	MaxConn            int           `json:"max_connections"`
-	Username           string        `json:"user,omitempty"`
+	Users              []*User       `json:"-"`
+	Username           string        `json:"-"`
 	Password           string        `json:"-"`
 	Authorization      string        `json:"-"`
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
+	HTTPHost           string        `json:"http_host"`
 	HTTPPort           int           `json:"http_port"`
 	HTTPSPort          int           `json:"https_port"`
 	AuthTimeout        float64       `json:"auth_timeout"`
@@ -46,6 +62,7 @@ type Options struct {
 	ClusterTLSTimeout  float64       `json:"-"`
 	ClusterTLSConfig   *tls.Config   `json:"-"`
 	ClusterListenStr   string        `json:"-"`
+	ClusterNoAdvertise bool          `json:"-"`
 	ProfPort           int           `json:"-"`
 	PidFile            string        `json:"-"`
 	LogFile            string        `json:"-"`
@@ -53,7 +70,6 @@ type Options struct {
 	RemoteSyslog       string        `json:"-"`
 	Routes             []*url.URL    `json:"-"`
 	RoutesStr          string        `json:"-"`
-	BufSize            int           `json:"-"`
 	TLSTimeout         float64       `json:"tls_timeout"`
 	TLS                bool          `json:"-"`
 	TLSVerify          bool          `json:"-"`
@@ -63,14 +79,19 @@ type Options struct {
 	TLSConfig          *tls.Config   `json:"-"`
 }
 
+// Configuration file authorization section.
 type authorization struct {
-	user    string
-	pass    string
-	timeout float64
+	// Singles
+	user string
+	pass string
+	// Multiple Users
+	users              []*User
+	timeout            float64
+	defaultPermissions *Permissions
 }
 
-// This struct holds the parsed tls config information.
-// It's public so we can use it for flag parsing
+// TLSConfigOpts holds the parsed tls config information,
+// used with flag parsing
 type TLSConfigOpts struct {
 	CertFile string
 	KeyFile  string
@@ -79,6 +100,26 @@ type TLSConfigOpts struct {
 	Timeout  float64
 	Ciphers  []uint16
 }
+
+var tlsUsage = `
+TLS configuration is specified in the tls section of a configuration file:
+
+e.g.
+
+    tls {
+        cert_file: "./certs/server-cert.pem"
+        key_file:  "./certs/server-key.pem"
+        ca_file:   "./certs/ca.pem"
+        verify:    true
+
+        cipher_suites: [
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        ]
+    }
+
+Available cipher suites include:
+`
 
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
@@ -101,6 +142,13 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 
 	for k, v := range m {
 		switch strings.ToLower(k) {
+		case "listen":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.Host = hp.host
+			opts.Port = hp.port
 		case "port":
 			opts.Port = int(v.(int64))
 		case "host", "net":
@@ -113,10 +161,34 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Logtime = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
-			auth := parseAuthorization(am)
+			auth, err := parseAuthorization(am)
+			if err != nil {
+				return nil, err
+			}
 			opts.Username = auth.user
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
+			// Check for multiple users defined
+			if auth.users != nil {
+				if auth.user != "" {
+					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
+				}
+				opts.Users = auth.users
+			}
+		case "http":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.HTTPHost = hp.host
+			opts.HTTPPort = hp.port
+		case "https":
+			hp, err := parseListen(v)
+			if err != nil {
+				return nil, err
+			}
+			opts.HTTPHost = hp.host
+			opts.HTTPSPort = hp.port
 		case "http_port", "monitor_port":
 			opts.HTTPPort = int(v.(int64))
 		case "https_port":
@@ -159,17 +231,57 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 	return opts, nil
 }
 
+// hostPort is simple struct to hold parsed listen/addr strings.
+type hostPort struct {
+	host string
+	port int
+}
+
+// parseListen will parse listen option which is replacing host/net and port
+func parseListen(v interface{}) (*hostPort, error) {
+	hp := &hostPort{}
+	switch v.(type) {
+	// Only a port
+	case int64:
+		hp.port = int(v.(int64))
+	case string:
+		host, port, err := net.SplitHostPort(v.(string))
+		if err != nil {
+			return nil, fmt.Errorf("Could not parse address string %q", v)
+		}
+		hp.port, err = strconv.Atoi(port)
+		if err != nil {
+			return nil, fmt.Errorf("Could not parse port %q", port)
+		}
+		hp.host = host
+	}
+	return hp, nil
+}
+
 // parseCluster will parse the cluster config.
 func parseCluster(cm map[string]interface{}, opts *Options) error {
 	for mk, mv := range cm {
 		switch strings.ToLower(mk) {
+		case "listen":
+			hp, err := parseListen(mv)
+			if err != nil {
+				return err
+			}
+			opts.ClusterHost = hp.host
+			opts.ClusterPort = hp.port
 		case "port":
 			opts.ClusterPort = int(mv.(int64))
 		case "host", "net":
 			opts.ClusterHost = mv.(string)
 		case "authorization":
 			am := mv.(map[string]interface{})
-			auth := parseAuthorization(am)
+			auth, err := parseAuthorization(am)
+			if err != nil {
+				return err
+			}
+			if auth.users != nil {
+				return fmt.Errorf("Cluster authorization does not allow multiple users")
+			}
 			opts.ClusterUsername = auth.user
 			opts.ClusterPassword = auth.pass
 			opts.ClusterAuthTimeout = auth.timeout
@@ -197,16 +309,18 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			// as both client and server, so will mirror the rootCA to the
 			// clientCA pool.
 			opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			opts.ClusterTLSConfig.ClientCAs = opts.ClusterTLSConfig.RootCAs
+			opts.ClusterTLSConfig.RootCAs = opts.ClusterTLSConfig.ClientCAs
 			opts.ClusterTLSTimeout = tc.Timeout
+		case "no_advertise":
+			opts.ClusterNoAdvertise = mv.(bool)
 		}
 	}
 	return nil
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(am map[string]interface{}) authorization {
-	auth := authorization{}
+func parseAuthorization(am map[string]interface{}) (*authorization, error) {
+	auth := &authorization{}
 	for mk, mv := range am {
 		switch strings.ToLower(mk) {
 		case "user", "username":
@@ -222,40 +336,142 @@ func parseAuthorization(am map[string]interface{}) authorization {
 				at = mv.(float64)
 			}
 			auth.timeout = at
+		case "users":
+			users, err := parseUsers(mv)
+			if err != nil {
+				return nil, err
+			}
+			auth.users = users
+		case "default_permission", "default_permissions":
+			pm, ok := mv.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("Expected default permissions to be a map/struct, got %+v", mv)
+			}
+			permissions, err := parseUserPermissions(pm)
+			if err != nil {
+				return nil, err
+			}
+			auth.defaultPermissions = permissions
 		}
+
+		// Now check for permission defaults with multiple users, etc.
+		if auth.users != nil && auth.defaultPermissions != nil {
+			for _, user := range auth.users {
+				if user.Permissions == nil {
+					user.Permissions = auth.defaultPermissions
+				}
+			}
+		}
+
 	}
-	return auth
+	return auth, nil
 }
 
-// For Usage...
-func PrintTlsHelpAndDie() {
+// Helper function to parse multiple users array with optional permissions.
+func parseUsers(mv interface{}) ([]*User, error) {
+	// Make sure we have an array
+	uv, ok := mv.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+	}
+	users := []*User{}
+	for _, u := range uv {
+		// Check its a map/struct
+		um, ok := u.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
+		}
+		user := &User{}
+		for k, v := range um {
+			switch strings.ToLower(k) {
+			case "user", "username":
+				user.Username = v.(string)
+			case "pass", "password":
+				user.Password = v.(string)
+			case "permission", "permissions", "authroization":
+				pm, ok := v.(map[string]interface{})
+				if !ok {
+					return nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
+				}
+				permissions, err := parseUserPermissions(pm)
+				if err != nil {
+					return nil, err
+				}
+				user.Permissions = permissions
+			}
+		}
+		// Check to make sure we have at least username and password
+		if user.Username == "" || user.Password == "" {
+			return nil, fmt.Errorf("User entry requires a user and a password")
+		}
+		users = append(users, user)
+	}
+	return users, nil
+}
 
-	var tlsUsage = `
-TLS configuration is specified in the tls section of a configuration file:
+// Helper function to parse user/account permissions
+func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
+	p := &Permissions{}
+	for k, v := range pm {
+		switch strings.ToLower(k) {
+		case "pub", "publish":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Publish = subjects
+		case "sub", "subscribe":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Subscribe = subjects
+		default:
+			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
+		}
+	}
+	return p, nil
+}
 
-e.g.
+// Helper function to parse subject singeltons and/or arrays
+func parseSubjects(v interface{}) ([]string, error) {
+	var subjects []string
+	switch v.(type) {
+	case string:
+		subjects = append(subjects, v.(string))
+	case []string:
+		subjects = v.([]string)
+	case []interface{}:
+		for _, i := range v.([]interface{}) {
+			subject, ok := i.(string)
+			if !ok {
+				return nil, fmt.Errorf("Subject in permissions array cannot be cast to string")
+			}
+			subjects = append(subjects, subject)
+		}
+	default:
+		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
+	}
+	return checkSubjectArray(subjects)
+}
 
-    tls {
-        cert_file: "./certs/server-cert.pem"
-        key_file:  "./certs/server-key.pem"
-        ca_file:   "./certs/ca.pem"
-        verify:    true
+// Helper function to validate subjects, etc for account permissioning.
+func checkSubjectArray(sa []string) ([]string, error) {
+	for _, s := range sa {
+		if !IsValidSubject(s) {
+			return nil, fmt.Errorf("Subject %q is not a valid subject", s)
+		}
+	}
+	return sa, nil
+}
 
-        cipher_suites: [
-            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-        ]
-    }
-
-Available cipher suites include:
-`
-
+// PrintTLSHelpAndDie prints TLS usage and exits.
+func PrintTLSHelpAndDie() {
 	fmt.Printf("%s\n", tlsUsage)
-	for k, _ := range cipherMap {
+	for k := range cipherMap {
 		fmt.Printf("    %s\n", k)
 	}
 	fmt.Printf("\n")
-
 	os.Exit(0)
 }
 
@@ -301,7 +517,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 		case "cipher_suites":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {
-				return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' cannot be empty.")
+				return nil, fmt.Errorf("error parsing tls config, 'cipher_suites' cannot be empty")
 			}
 			tc.Ciphers = make([]uint16, 0, len(ra))
 			for _, r := range ra {
@@ -333,6 +549,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 	return &tc, nil
 }
 
+// GenTLSConfig loads TLS related configuration parameters.
 func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 
 	// Now load in cert and private key
@@ -355,8 +572,8 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	// Require client certificates as needed
-	if tc.Verify == true {
-		config.ClientAuth = tls.RequireAnyClientCert
+	if tc.Verify {
+		config.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	// Add in CAs if applicable.
 	if tc.CaFile != "" {
@@ -369,7 +586,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		if !ok {
 			return nil, fmt.Errorf("failed to parse root ca certificate")
 		}
-		config.RootCAs = pool
+		config.ClientCAs = pool
 	}
 
 	return &config, nil
@@ -423,12 +640,19 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
+	if flagOpts.ClusterListenStr != "" {
+		opts.ClusterListenStr = flagOpts.ClusterListenStr
+	}
+	if flagOpts.ClusterNoAdvertise {
+		opts.ClusterNoAdvertise = true
+	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
 	return &opts
 }
 
+// RoutesFromStr parses route URLs from a string
 func RoutesFromStr(routesStr string) []*url.URL {
 	routes := strings.Split(routesStr, ",")
 	if len(routes) == 0 {
@@ -453,6 +677,7 @@ func mergeRoutes(opts, flagOpts *Options) {
 	opts.RoutesStr = flagOpts.RoutesStr
 }
 
+// RemoveSelfReference removes this server from an array of routes
 func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error) {
 	var cleanRoutes []*url.URL
 	cport := strconv.Itoa(clusterPort)
@@ -464,7 +689,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 			return nil, err
 		}
 
-		if cport == port && isIpInList(selfIPs, getUrlIp(host)) {
+		if cport == port && isIPInList(selfIPs, getURLIP(host)) {
 			Noticef("Self referencing IP found: ", r)
 			continue
 		}
@@ -474,7 +699,7 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 	return cleanRoutes, nil
 }
 
-func isIpInList(list1 []net.IP, list2 []net.IP) bool {
+func isIPInList(list1 []net.IP, list2 []net.IP) bool {
 	for _, ip1 := range list1 {
 		for _, ip2 := range list2 {
 			if ip1.Equal(ip2) {
@@ -485,7 +710,7 @@ func isIpInList(list1 []net.IP, list2 []net.IP) bool {
 	return false
 }
 
-func getUrlIp(ipStr string) []net.IP {
+func getURLIP(ipStr string) []net.IP {
 	ipList := []net.IP{}
 
 	ip := net.ParseIP(ipStr)
@@ -533,6 +758,10 @@ func processOptions(opts *Options) {
 	if opts.Host == "" {
 		opts.Host = DEFAULT_HOST
 	}
+	if opts.HTTPHost == "" {
+		// Default to same bind from server if left undefined
+		opts.HTTPHost = opts.Host
+	}
 	if opts.Port == 0 {
 		opts.Port = DEFAULT_PORT
 	} else if opts.Port == RANDOM_PORT {
@@ -554,6 +783,9 @@ func processOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
+	if opts.ClusterHost == "" {
+		opts.ClusterHost = DEFAULT_HOST
+	}
 	if opts.ClusterTLSTimeout == 0 {
 		opts.ClusterTLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
@@ -568,8 +800,5 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxPending == 0 {
 		opts.MaxPending = MAX_PENDING_SIZE
-	}
-	if opts.BufSize == 0 {
-		opts.BufSize = DEFAULT_BUF_SIZE
 	}
 }

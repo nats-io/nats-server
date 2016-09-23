@@ -1,10 +1,8 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 package test
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestServerConfig(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/override.conf")
@@ -28,7 +26,7 @@ func TestTLSConfig(t *testing.T) {
 	defer c.Close()
 
 	sinfo := checkInfoMsg(t, c)
-	if sinfo.TLSRequired != true {
+	if !sinfo.TLSRequired {
 		t.Fatal("Expected TLSRequired to be true when configured")
 	}
 }

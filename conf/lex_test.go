@@ -1,23 +1,32 @@
 package conf
 
-import (
-	"testing"
-)
+import "testing"
 
 // Test to make sure we get what we expect.
 func expect(t *testing.T, lx *lexer, items []item) {
 	for i := 0; i < len(items); i++ {
 		item := lx.nextItem()
+		_ = item.String()
 		if item.typ == itemEOF {
 			break
-		} else if item.typ == itemError {
-			t.Fatal(item.val)
 		}
 		if item != items[i] {
 			t.Fatalf("Testing: '%s'\nExpected %q, received %q\n",
 				lx.input, items[i], item)
 		}
+		if item.typ == itemError {
+			break
+		}
 	}
+}
+
+func TestPlainValue(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo")
+	expect(t, lx, expectedItems)
 }
 
 func TestSimpleKeyStringValues(t *testing.T) {
@@ -77,6 +86,20 @@ func TestSimpleKeyIntegerValues(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestSimpleKeyNegativeIntegerValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "-123", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = -123")
+	expect(t, lx, expectedItems)
+	lx = lex("foo=-123")
+	expect(t, lx, expectedItems)
+	lx = lex("foo=-123\r\n")
+	expect(t, lx, expectedItems)
+}
+
 func TestSimpleKeyFloatValues(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
@@ -88,6 +111,25 @@ func TestSimpleKeyFloatValues(t *testing.T) {
 	lx = lex("foo=22.2")
 	expect(t, lx, expectedItems)
 	lx = lex("foo=22.2\r\n")
+	expect(t, lx, expectedItems)
+}
+
+func TestBadFloatValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Floats must start with a digit", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = .2")
+	expect(t, lx, expectedItems)
+}
+
+func TestBadKey(t *testing.T) {
+	expectedItems := []item{
+		{itemError, "Unexpected key separator ':'", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex(" :foo = 22")
 	expect(t, lx, expectedItems)
 }
 
@@ -134,6 +176,45 @@ func TestTopValuesWithComments(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestRawString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "bar", 1},
+		{itemEOF, "", 1},
+	}
+
+	lx := lex("foo = bar")
+	expect(t, lx, expectedItems)
+
+	lx = lex(`foo = bar' `)
+	expect(t, lx, expectedItems)
+}
+
+func TestDateValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemDatetime, "2016-05-04T18:53:41Z", 1},
+		{itemEOF, "", 1},
+	}
+
+	lx := lex("foo = 2016-05-04T18:53:41Z")
+	expect(t, lx, expectedItems)
+}
+
+func TestVariableValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemVariable, "bar", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = $bar")
+	expect(t, lx, expectedItems)
+	lx = lex("foo =$bar")
+	expect(t, lx, expectedItems)
+	lx = lex("foo $bar")
+	expect(t, lx, expectedItems)
+}
+
 func TestArrays(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
@@ -158,7 +239,7 @@ var mlArray = `
 foo = [
  1, # One
  2, // Two
- 3 , // Three
+ 3 # Three
  'bar'     ,
  "bar"
 ]
@@ -345,6 +426,32 @@ func TestWhitespaceKeySep(t *testing.T) {
 	lx = lex("foo\t123")
 	expect(t, lx, expectedItems)
 	lx = lex("foo\t\t123\r\n")
+	expect(t, lx, expectedItems)
+}
+
+var escString = `
+foo  = \t
+bar  = \r
+baz  = \n
+q    = \"
+bs   = \\
+`
+
+func TestEscapedString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 2},
+		{itemString, `\t`, 2},
+		{itemKey, "bar", 3},
+		{itemString, `\r`, 3},
+		{itemKey, "baz", 4},
+		{itemString, `\n`, 4},
+		{itemKey, "q", 5},
+		{itemString, `\"`, 5},
+		{itemKey, "bs", 6},
+		{itemString, `\\`, 6},
+		{itemEOF, "", 6},
+	}
+	lx := lex(escString)
 	expect(t, lx, expectedItems)
 }
 
@@ -567,5 +674,88 @@ func TestBlockStringMultiLine(t *testing.T) {
 		{itemString, "\n  12(34)56\n  (\n    7890\n  )\n", 7},
 	}
 	lx := lex(mlblockexample)
+	expect(t, lx, expectedItems)
+}
+
+func TestUnquotedIPAddr(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "listen", 1},
+		{itemString, "127.0.0.1:4222", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("listen: 127.0.0.1:4222")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "listen", 1},
+		{itemString, "127.0.0.1", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("listen: 127.0.0.1")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "listen", 1},
+		{itemString, "apcera.me:80", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("listen: apcera.me:80")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "listen", 1},
+		{itemString, ":80", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("listen = :80")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "listen", 1},
+		{itemArrayStart, "", 1},
+		{itemString, "localhost:4222", 1},
+		{itemString, "localhost:4333", 1},
+		{itemArrayEnd, "", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("listen = [localhost:4222, localhost:4333]")
+	expect(t, lx, expectedItems)
+}
+
+var arrayOfMaps = `
+authorization {
+    users = [
+      {user: alice, password: foo}
+      {user: bob,   password: bar}
+    ]
+    timeout: 0.5
+}
+`
+
+func TestArrayOfMaps(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "authorization", 2},
+		{itemMapStart, "", 2},
+		{itemKey, "users", 3},
+		{itemArrayStart, "", 3},
+		{itemMapStart, "", 4},
+		{itemKey, "user", 4},
+		{itemString, "alice", 4},
+		{itemKey, "password", 4},
+		{itemString, "foo", 4},
+		{itemMapEnd, "", 4},
+		{itemMapStart, "", 5},
+		{itemKey, "user", 5},
+		{itemString, "bob", 5},
+		{itemKey, "password", 5},
+		{itemString, "bar", 5},
+		{itemMapEnd, "", 5},
+		{itemArrayEnd, "", 6},
+		{itemKey, "timeout", 7},
+		{itemFloat, "0.5", 7},
+		{itemMapEnd, "", 8},
+		{itemEOF, "", 9},
+	}
+	lx := lex(arrayOfMaps)
 	expect(t, lx, expectedItems)
 }

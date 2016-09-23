@@ -65,12 +65,7 @@ func TestTLSClientCertificate(t *testing.T) {
 		t.Fatalf("Expected error trying to connect to secure server without a certificate")
 	}
 
-	_, err = nats.Connect(nurl)
-	if err == nil {
-		t.Fatalf("Expected error trying to secure connect to secure server without a certificate")
-	}
-
-	// Load client certificate to sucessfully connect.
+	// Load client certificate to successfully connect.
 	certFile := "./configs/certs/client-cert.pem"
 	keyFile := "./configs/certs/client-key.pem"
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -107,6 +102,23 @@ func TestTLSClientCertificate(t *testing.T) {
 	}
 	nc.Flush()
 	defer nc.Close()
+}
+
+func TestTLSVerifyClientCertificate(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
+	defer srv.Shutdown()
+
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	// The client is configured properly, but the server has no CA
+	// to verify the client certificate. Connection should fail.
+	nc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/client-cert.pem", "./configs/certs/client-key.pem"),
+		nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected failure to connect, did not")
+	}
 }
 
 func TestTLSConnectionTimeout(t *testing.T) {
@@ -151,7 +163,7 @@ func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url strin
 
 	subName := fmt.Sprintf("foo.%d", index)
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 33; i++ {
 		nc, err := nats.Connect(url, nats.RootCAs("./configs/certs/ca.pem"))
 		if err != nil {
 			errCh <- fmt.Errorf("Unable to create TLS connection: %v\n", err)
@@ -221,5 +233,21 @@ func TestTLSStressConnect(t *testing.T) {
 
 	if lastError != nil {
 		t.Fatalf("%v\n", lastError)
+	}
+}
+
+func TestTLSBadAuthError(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, "NOT_THE_PASSWORD", endpoint)
+
+	_, err := nats.Connect(nurl, nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server")
+	}
+	if err.Error() != nats.ErrAuthorization.Error() {
+		t.Fatalf("Excpected and auth violation, got %v\n", err)
 	}
 }

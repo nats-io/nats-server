@@ -24,6 +24,7 @@ type parseState struct {
 	scratch [MAX_CONTROL_LINE_SIZE]byte
 }
 
+// Parser constants
 const (
 	OP_START = iota
 	OP_PLUS
@@ -66,6 +67,7 @@ const (
 	OP_UNS
 	OP_UNSU
 	OP_UNSUB
+	OP_UNSUB_SPC
 	UNSUB_ARG
 	OP_M
 	OP_MS
@@ -82,6 +84,11 @@ const (
 func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
+
+	mcl := MAX_CONTROL_LINE_SIZE
+	if c.srv != nil && c.srv.opts != nil {
+		mcl = c.srv.opts.MaxControlLine
+	}
 
 	// snapshot this, and reset when we receive a
 	// proper CONNECT if needed.
@@ -167,7 +174,7 @@ func (c *client) parse(buf []byte) error {
 				if err := c.processPub(arg); err != nil {
 					return err
 				}
-				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+				c.drop, c.as, c.state = OP_START, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out
 				// and process split buffer.
@@ -304,6 +311,13 @@ func (c *client) parse(buf []byte) error {
 				goto parseErr
 			}
 		case OP_UNSUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_UNSUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_UNSUB_SPC:
 			switch b {
 			case ' ', '\t':
 				continue
@@ -489,6 +503,11 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+
+				// jump ahead with the index. If this overruns
+				// what is left we fall out and process split
+				// buffer.
+				i = c.as + c.pa.size - 1
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -528,10 +547,21 @@ func (c *client) parse(buf []byte) error {
 			case '\r':
 				c.drop = 1
 			case '\n':
-				if err := c.processInfo(buf[c.as : i-c.drop]); err != nil {
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processInfo(arg); err != nil {
 					return err
 				}
-				c.drop, c.state = 0, OP_START
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
 			}
 		case OP_PLUS:
 			switch b {
@@ -611,19 +641,32 @@ func (c *client) parse(buf []byte) error {
 			goto parseErr
 		}
 	}
+
 	// Check for split buffer scenarios for any ARG state.
-	if (c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
+	if c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
-		c.state == CONNECT_ARG) && c.argBuf == nil {
-		c.argBuf = c.scratch[:0]
-		c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
-		// FIXME(dlc), check max control line len
+		c.state == CONNECT_ARG || c.state == INFO_ARG {
+		// Setup a holder buffer to deal with split buffer scenario.
+		if c.argBuf == nil {
+			c.argBuf = c.scratch[:0]
+			c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
+		}
+		// Check for violations of control line length here. Note that this is not
+		// exact at all but the performance hit is too great to be precise, and
+		// catching here should prevent memory exhaustion attacks.
+		if len(c.argBuf) > mcl {
+			c.sendErr("Maximum Control Line Exceeded")
+			c.closeConnection()
+			return ErrMaxControlLine
+		}
 	}
+
 	// Check for split msg
 	if (c.state == MSG_PAYLOAD || c.state == MSG_END) && c.msgBuf == nil {
 		// We need to clone the pubArg if it is still referencing the
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
+			// Works also for MSG_ARG, when message comes from ROUTE.
 			c.clonePubArg()
 		}
 
