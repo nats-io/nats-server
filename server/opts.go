@@ -439,7 +439,7 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 		case "trace":
 			trace, ok := v.(bool)
 			if !ok {
-				return nil, fmt.Errorf("error parsing tls config, expected 'verify' to be a boolean")
+				return nil, fmt.Errorf("Expected trace to be a bool, got %+v", v)
 			}
 			p.Trace = trace
 		default:
