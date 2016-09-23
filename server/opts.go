@@ -29,6 +29,7 @@ type User struct {
 type Permissions struct {
 	Publish   []string `json:"publish"`
 	Subscribe []string `json:"subscribe"`
+	Trace     bool     `json:"trace"`
 }
 
 // Options block for gnatsd server.
@@ -36,6 +37,7 @@ type Options struct {
 	Host               string        `json:"addr"`
 	Port               int           `json:"port"`
 	Trace              bool          `json:"-"`
+	OptInTrace         bool          `json:"-"`
 	Debug              bool          `json:"-"`
 	NoLog              bool          `json:"-"`
 	NoSigs             bool          `json:"-"`
@@ -88,6 +90,7 @@ type authorization struct {
 	users              []*User
 	timeout            float64
 	defaultPermissions *Permissions
+	trace              bool
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -168,6 +171,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Username = auth.user
 			opts.Password = auth.pass
 			opts.AuthTimeout = auth.timeout
+			opts.OptInTrace = auth.trace
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
@@ -336,6 +340,12 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 				at = mv.(float64)
 			}
 			auth.timeout = at
+		case "trace":
+			trace, ok := mv.(bool)
+			if !ok {
+				return nil, fmt.Errorf("Expected trace to be a bool, got %+v", mv)
+			}
+			auth.trace = trace
 		case "users":
 			users, err := parseUsers(mv)
 			if err != nil {
@@ -426,6 +436,12 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 				return nil, err
 			}
 			p.Subscribe = subjects
+		case "trace":
+			trace, ok := v.(bool)
+			if !ok {
+				return nil, fmt.Errorf("error parsing tls config, expected 'verify' to be a boolean")
+			}
+			p.Trace = trace
 		default:
 			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
 		}

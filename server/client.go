@@ -120,6 +120,7 @@ type permissions struct {
 	sub    *Sublist
 	pub    *Sublist
 	pcache map[string]bool
+	trace  bool
 }
 
 const (
@@ -225,6 +226,7 @@ func (c *client) RegisterUser(user *User) {
 	c.perms.sub = NewSublist()
 	c.perms.pub = NewSublist()
 	c.perms.pcache = make(map[string]bool)
+	c.perms.trace = user.Permissions.Trace
 
 	// Loop over publish permissions
 	for _, pubSubject := range user.Permissions.Publish {
@@ -437,12 +439,6 @@ func (c *client) processConnect(arg []byte) error {
 	verbose := c.opts.Verbose
 	c.mu.Unlock()
 
-	// Client-enabled tracing.
-	// TODO: This probably needs to support some kind of authorization?
-	if c.opts.Trace {
-		c.trace = true
-	}
-
 	if srv != nil {
 		// As soon as c.opts is unmarshalled and if the proto is at
 		// least ClientProtoInfo, we need to increment the following counter.
@@ -458,6 +454,16 @@ func (c *client) processConnect(arg []byte) error {
 		if ok := srv.checkAuth(c); !ok {
 			c.authViolation()
 			return ErrAuthorization
+		}
+
+		// Client-enabled tracing. Check permissions if applicable.
+		if c.opts.Trace {
+			if srv.opts.OptInTrace || (c.perms != nil && c.perms.trace) {
+				c.trace = true
+			} else {
+				c.authViolation()
+				return ErrAuthorization
+			}
 		}
 	}
 
