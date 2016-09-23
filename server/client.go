@@ -461,8 +461,7 @@ func (c *client) processConnect(arg []byte) error {
 			if srv.opts.OptInTrace || (c.perms != nil && c.perms.trace) {
 				c.trace = true
 			} else {
-				c.authViolation()
-				return ErrAuthorization
+				c.sendErr("Permissions Violation for trace option")
 			}
 		}
 	}

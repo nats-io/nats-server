@@ -19,7 +19,7 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c := createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "alice", DefaultPass)
+	doAuthConnect(t, c, "", "alice", DefaultPass, true)
 	expectResult(t, c, okRe)
 	sendProto(t, c, "PUB foo 2\r\nok\r\n")
 	expectResult(t, c, okRe)
@@ -40,7 +40,12 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c = createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "bob", DefaultPass)
+
+	// Bob cannot opt in to tracing.
+	doAuthConnect(t, c, "", "bob", DefaultPass, true)
+	expectResult(t, c, permErrRe)
+
+	doAuthConnect(t, c, "", "bob", DefaultPass, false)
 	expectResult(t, c, okRe)
 
 	// These should error.
@@ -62,7 +67,7 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c = createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "joe", DefaultPass)
+	doAuthConnect(t, c, "", "joe", DefaultPass, false)
 	expectResult(t, c, okRe)
 
 	// These should error.
