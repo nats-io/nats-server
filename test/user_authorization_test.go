@@ -19,7 +19,7 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c := createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "alice", DefaultPass, true)
+	doAuthConnectWithTrace(t, c, "", "alice", DefaultPass, true)
 	expectResult(t, c, okRe)
 	sendProto(t, c, "PUB foo 2\r\nok\r\n")
 	expectResult(t, c, okRe)
@@ -38,14 +38,18 @@ func TestUserAuthorizationProto(t *testing.T) {
 
 	// Bob is a requestor only, e.g. req.foo, req.bar for publish, subscribe only to INBOXes.
 	c = createClientConn(t, opts.Host, opts.Port)
-	defer c.Close()
 	expectAuthRequired(t, c)
 
 	// Bob cannot opt in to tracing.
-	doAuthConnect(t, c, "", "bob", DefaultPass, true)
+	doAuthConnectWithTrace(t, c, "", "bob", DefaultPass, true)
 	expectResult(t, c, permErrRe)
 
-	doAuthConnect(t, c, "", "bob", DefaultPass, false)
+	// The authorization failure above should close the connection, so create a new one.
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+
+	doAuthConnect(t, c, "", "bob", DefaultPass)
 	expectResult(t, c, okRe)
 
 	// These should error.
@@ -67,7 +71,7 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c = createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "joe", DefaultPass, false)
+	doAuthConnect(t, c, "", "joe", DefaultPass)
 	expectResult(t, c, okRe)
 
 	// These should error.

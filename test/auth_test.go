@@ -13,7 +13,12 @@ import (
 	"github.com/nats-io/gnatsd/server"
 )
 
-func doAuthConnect(t tLogger, c net.Conn, token, user, pass string, trace bool) {
+func doAuthConnect(t tLogger, c net.Conn, token, user, pass string) {
+	cs := fmt.Sprintf("CONNECT {\"verbose\":true,\"auth_token\":\"%s\",\"user\":\"%s\",\"pass\":\"%s\"}\r\n", token, user, pass)
+	sendProto(t, c, cs)
+}
+
+func doAuthConnectWithTrace(t tLogger, c net.Conn, token, user, pass string, trace bool) {
 	cs := fmt.Sprintf("CONNECT {\"verbose\":true,\"auth_token\":\"%s\",\"user\":\"%s\",\"pass\":\"%s\",\"trace\":%t}\r\n", token, user, pass, trace)
 	sendProto(t, c, cs)
 }
@@ -55,7 +60,7 @@ func TestNoAuthClient(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "", "", false)
+	doAuthConnect(t, c, "", "", "")
 	expectResult(t, c, errRe)
 }
 
@@ -65,7 +70,7 @@ func TestAuthClientBadToken(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "ZZZ", "", "", false)
+	doAuthConnect(t, c, "ZZZ", "", "")
 	expectResult(t, c, errRe)
 }
 
@@ -86,7 +91,7 @@ func TestAuthClientGoodConnect(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, AUTH_TOKEN, "", "", false)
+	doAuthConnect(t, c, AUTH_TOKEN, "", "")
 	expectResult(t, c, okRe)
 }
 
@@ -123,7 +128,7 @@ func TestNoUserOrPasswordClient(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "", "", false)
+	doAuthConnect(t, c, "", "", "")
 	expectResult(t, c, errRe)
 }
 
@@ -133,7 +138,7 @@ func TestBadUserClient(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", "derekzz", AUTH_PASS, false)
+	doAuthConnect(t, c, "", "derekzz", AUTH_PASS)
 	expectResult(t, c, errRe)
 }
 
@@ -143,7 +148,7 @@ func TestBadPasswordClient(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", AUTH_USER, "ZZ", false)
+	doAuthConnect(t, c, "", AUTH_USER, "ZZ")
 	expectResult(t, c, errRe)
 }
 
@@ -153,7 +158,7 @@ func TestPasswordClientGoodConnect(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", AUTH_USER, AUTH_PASS, false)
+	doAuthConnect(t, c, "", AUTH_USER, AUTH_PASS)
 	expectResult(t, c, okRe)
 }
 
@@ -181,7 +186,7 @@ func TestBadBcryptPassword(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", AUTH_USER, BCRYPT_AUTH_HASH, false)
+	doAuthConnect(t, c, "", AUTH_USER, BCRYPT_AUTH_HASH)
 	expectResult(t, c, errRe)
 }
 
@@ -191,7 +196,7 @@ func TestGoodBcryptPassword(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, "", AUTH_USER, BCRYPT_AUTH_PASS, false)
+	doAuthConnect(t, c, "", AUTH_USER, BCRYPT_AUTH_PASS)
 	expectResult(t, c, okRe)
 }
 
@@ -215,7 +220,7 @@ func TestBadBcryptToken(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, BCRYPT_AUTH_TOKEN_HASH, "", "", false)
+	doAuthConnect(t, c, BCRYPT_AUTH_TOKEN_HASH, "", "")
 	expectResult(t, c, errRe)
 }
 
@@ -225,6 +230,6 @@ func TestGoodBcryptToken(t *testing.T) {
 	c := createClientConn(t, "localhost", AUTH_PORT)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnect(t, c, BCRYPT_AUTH_TOKEN, "", "", false)
+	doAuthConnect(t, c, BCRYPT_AUTH_TOKEN, "", "")
 	expectResult(t, c, okRe)
 }

@@ -437,6 +437,7 @@ func (c *client) processConnect(arg []byte) error {
 	// Capture these under lock
 	proto := c.opts.Protocol
 	verbose := c.opts.Verbose
+	trace := c.opts.Trace
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -456,12 +457,23 @@ func (c *client) processConnect(arg []byte) error {
 			return ErrAuthorization
 		}
 
+		// Check if opt-in tracing is enabled globally.
+		srv.mu.Lock()
+		globalOptInTrace := srv.opts.OptInTrace
+		srv.mu.Unlock()
+
+		// Check if opt-in tracing is enabled for this client.
+		c.mu.Lock()
+		clientOptInTrace := c.perms != nil && c.perms.trace
+		c.mu.Unlock()
+
 		// Client-enabled tracing. Check permissions if applicable.
-		if c.opts.Trace {
-			if srv.opts.OptInTrace || (c.perms != nil && c.perms.trace) {
+		if trace {
+			if globalOptInTrace || clientOptInTrace {
 				c.trace = true
 			} else {
 				c.sendErr("Permissions Violation for trace option")
+				return ErrAuthorization
 			}
 		}
 	}
