@@ -120,6 +120,6 @@ func TestGlobalOptInTracingAuthorization(t *testing.T) {
 	c = createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 	expectAuthRequired(t, c)
-	doAuthConnectWithTrace(t, c, "", "alice", DefaultPass, true)
+	doAuthConnectWithTrace(t, c, "", "bob", "bar", true)
 	expectResult(t, c, okRe)
 }

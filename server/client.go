@@ -470,7 +470,9 @@ func (c *client) processConnect(arg []byte) error {
 		// Client-enabled tracing. Check permissions if applicable.
 		if trace {
 			if globalOptInTrace || clientOptInTrace {
+				c.mu.Lock()
 				c.trace = true
+				c.mu.Unlock()
 			} else {
 				c.sendErr("Permissions Violation for trace option")
 				return ErrAuthorization
