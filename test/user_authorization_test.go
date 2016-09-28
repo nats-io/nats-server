@@ -98,3 +98,28 @@ func TestUserAuthorizationProto(t *testing.T) {
 	c.Close()
 
 }
+
+func TestGlobalOptInTracingAuthorization(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/multi_user.conf")
+	defer srv.Shutdown()
+
+	if opts.Users == nil {
+		t.Fatal("Expected a user array that is not nil")
+	}
+	if len(opts.Users) != 2 {
+		t.Fatal("Expected a user array that had 2 users")
+	}
+
+	// Both users should be able to opt in to tracing.
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnectWithTrace(t, c, "", "alice", DefaultPass, true)
+	expectResult(t, c, okRe)
+
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnectWithTrace(t, c, "", "alice", DefaultPass, true)
+	expectResult(t, c, okRe)
+}
