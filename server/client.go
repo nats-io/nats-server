@@ -460,6 +460,7 @@ func (c *client) processConnect(arg []byte) error {
 		// Check if opt-in tracing is enabled globally.
 		srv.mu.Lock()
 		globalOptInTrace := srv.opts.OptInTrace
+		serverTrace := srv.opts.Trace
 		srv.mu.Unlock()
 
 		// Check if opt-in tracing is enabled for this client.
@@ -469,7 +470,7 @@ func (c *client) processConnect(arg []byte) error {
 
 		// Client-enabled tracing. Check permissions if applicable.
 		if trace {
-			if globalOptInTrace || clientOptInTrace {
+			if serverTrace || globalOptInTrace || clientOptInTrace {
 				c.mu.Lock()
 				c.trace = true
 				c.mu.Unlock()
