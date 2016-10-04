@@ -31,8 +31,11 @@ type Logger interface {
 	// Log a debug statement
 	Debugf(format string, v ...interface{})
 
-	// Log a trace statement
+	// Log a trace statement if tracing is enabled
 	Tracef(format string, v ...interface{})
+
+	// Log a trace statement
+	ForceTracef(format string, v ...interface{})
 }
 
 // SetLogger sets the logger of the server
@@ -82,7 +85,7 @@ func Debugf(format string, v ...interface{}) {
 	}, format, v...)
 }
 
-// Tracef logs a trace statement
+// Tracef logs a trace statement if tracing is enabled
 func Tracef(format string, v ...interface{}) {
 	if atomic.LoadInt32(&trace) == 0 {
 		return
@@ -93,9 +96,10 @@ func Tracef(format string, v ...interface{}) {
 	}, format, v...)
 }
 
-func tracef(format string, v ...interface{}) {
+// Tracef logs a trace statement
+func ForceTracef(format string, v ...interface{}) {
 	executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Tracef(format, v...)
+		logger.ForceTracef(format, v...)
 	}, format, v...)
 }
 

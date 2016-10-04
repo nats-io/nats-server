@@ -1380,5 +1380,5 @@ func (c *client) Noticef(format string, v ...interface{}) {
 
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	tracef(format, v...)
+	ForceTracef(format, v...)
 }

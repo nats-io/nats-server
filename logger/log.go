@@ -120,7 +120,14 @@ func (l *Logger) Debugf(format string, v ...interface{}) {
 	}
 }
 
-// Tracef logs a trace statement
-func (l *Logger) Tracef(format string, v ...interface{}) {
+// ForceTracef logs a trace statement
+func (l *Logger) ForceTracef(format string, v ...interface{}) {
 	l.logger.Printf(l.traceLabel+format, v...)
+}
+
+// Tracef logs a trace statement if tracing is enabled
+func (l *Logger) Tracef(format string, v ...interface{}) {
+	if l.trace {
+		l.ForceTracef(format, v...)
+	}
 }

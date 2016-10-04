@@ -87,9 +87,14 @@ func (l *SysLogger) Debugf(format string, v ...interface{}) {
 	}
 }
 
-// Tracef logs a trace statement
+// Tracef logs a trace statement if tracing is enabled
 func (l *SysLogger) Tracef(format string, v ...interface{}) {
 	if l.trace {
-		l.writer.Notice(fmt.Sprintf(format, v...))
+		l.ForceTracef(format, v...)
 	}
+}
+
+// Tracef logs a trace statement
+func (l *SysLogger) ForceTracef(format string, v ...interface{}) {
+	l.writer.Notice(fmt.Sprintf(format, v...))
 }
