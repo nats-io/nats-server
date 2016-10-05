@@ -37,13 +37,17 @@ type Logger interface {
 
 // SetLogger sets the logger of the server
 func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
+	debugVal := 0
 	if debugFlag {
-		atomic.StoreInt32(&debug, 1)
+		debugVal = 1
 	}
+	atomic.StoreInt32(&debug, int32(debugVal))
 
+	traceVal := 0
 	if traceFlag {
-		atomic.StoreInt32(&trace, 1)
+		traceVal = 1
 	}
+	atomic.StoreInt32(&trace, int32(traceVal))
 
 	log.Lock()
 	log.logger = logger
