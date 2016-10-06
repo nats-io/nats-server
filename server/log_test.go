@@ -8,7 +8,8 @@ import (
 
 func TestSetLogger(t *testing.T) {
 	server := &Server{}
-	server.SetLogger(&DummyLogger{}, true, true)
+	dl := &DummyLogger{}
+	server.SetLogger(dl, true, true)
 
 	// We assert that the logger has change to the DummyLogger
 	_ = log.logger.(*DummyLogger)
@@ -19,6 +20,15 @@ func TestSetLogger(t *testing.T) {
 
 	if trace != 1 {
 		t.Fatalf("Expected trace 1, received value %d\n", trace)
+	}
+
+	// Make sure that we can reset to fal
+	server.SetLogger(dl, false, false)
+	if debug != 0 {
+		t.Fatalf("Expected debug 0, got %v", debug)
+	}
+	if trace != 0 {
+		t.Fatalf("Expected trace 0, got %v", trace)
 	}
 }
 

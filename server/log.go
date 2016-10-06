@@ -39,10 +39,13 @@ type Logger interface {
 func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	if debugFlag {
 		atomic.StoreInt32(&debug, 1)
+	} else {
+		atomic.StoreInt32(&debug, 0)
 	}
-
 	if traceFlag {
 		atomic.StoreInt32(&trace, 1)
+	} else {
+		atomic.StoreInt32(&trace, 0)
 	}
 
 	log.Lock()
