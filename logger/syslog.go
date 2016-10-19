@@ -9,6 +9,8 @@ import (
 	"log"
 	"log/syslog"
 	"net/url"
+	"os"
+	"strings"
 )
 
 // SysLogger provides a system logger facility
@@ -18,9 +20,24 @@ type SysLogger struct {
 	trace  bool
 }
 
+// GetSysLoggerTag generates the tag name for use in syslog statements. If
+// the executable is linked, the name of the link will be used as the tag,
+// otherwise, the name of the executable is used.  "gnatsd" is the default
+// for the NATS server.
+func GetSysLoggerTag() string {
+	procName := os.Args[0]
+	if strings.ContainsRune(procName, os.PathSeparator) {
+		parts := strings.FieldsFunc(procName, func(c rune) bool {
+			return c == os.PathSeparator
+		})
+		procName = parts[len(parts)-1]
+	}
+	return procName
+}
+
 // NewSysLogger creates a new system logger
 func NewSysLogger(debug, trace bool) *SysLogger {
-	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "gnatsd")
+	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, GetSysLoggerTag())
 	if err != nil {
 		log.Fatalf("error connecting to syslog: %q", err.Error())
 	}
@@ -35,7 +52,7 @@ func NewSysLogger(debug, trace bool) *SysLogger {
 // NewRemoteSysLogger creates a new remote system logger
 func NewRemoteSysLogger(fqn string, debug, trace bool) *SysLogger {
 	network, addr := getNetworkAndAddr(fqn)
-	w, err := syslog.Dial(network, addr, syslog.LOG_DEBUG, "gnatsd")
+	w, err := syslog.Dial(network, addr, syslog.LOG_DEBUG, GetSysLoggerTag())
 	if err != nil {
 		log.Fatalf("error connecting to syslog: %q", err.Error())
 	}
