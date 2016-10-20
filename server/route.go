@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/gnatsd/util"
 )
 
 // RouteType designates the router type
@@ -339,7 +341,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Check for TLS
 	if tlsRequired {
 		// Copy off the config to add in ServerName if we
-		tlsConfig := *s.opts.ClusterTLSConfig
+		tlsConfig := util.CloneTLSConfig(s.opts.ClusterTLSConfig)
 
 		// If we solicited, we will act like the client, otherwise the server.
 		if didSolicit {
@@ -347,10 +349,10 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 			// Specify the ServerName we are expecting.
 			host, _, _ := net.SplitHostPort(rURL.Host)
 			tlsConfig.ServerName = host
-			c.nc = tls.Client(c.nc, &tlsConfig)
+			c.nc = tls.Client(c.nc, tlsConfig)
 		} else {
 			c.Debugf("Starting TLS route server handshake")
-			c.nc = tls.Server(c.nc, &tlsConfig)
+			c.nc = tls.Server(c.nc, tlsConfig)
 		}
 
 		conn := c.nc.(*tls.Conn)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	// Allow dynamic profiling.
+	"github.com/nats-io/gnatsd/util"
 	_ "net/http/pprof"
 )
 
@@ -476,9 +477,9 @@ func (s *Server) startMonitoring(secure bool) {
 	if secure {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
-		config := *s.opts.TLSConfig
+		config := util.CloneTLSConfig(s.opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
-		s.http, err = tls.Listen("tcp", hp, &config)
+		s.http, err = tls.Listen("tcp", hp, config)
 
 	} else {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
