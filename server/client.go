@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"math"
 )
 
 // Type of client connection.
@@ -1147,7 +1148,13 @@ func (c *client) processMsg(msg []byte) {
 		// Process queue subs
 		for i := 0; i < len(r.qsubs); i++ {
 			qsubs := r.qsubs[i]
-			index := c.cache.prand.Intn(len(qsubs))
+			var index int
+			if srv.roundRobin {
+				r.currIndex[i] = int(math.Mod(float64(r.currIndex[i] + 1), float64(len(qsubs))))
+				index = r.currIndex[i]
+			}else {
+				index = c.cache.prand.Intn(len(qsubs))
+			}
 			sub := qsubs[index]
 			if sub != nil {
 				mh := c.msgHeader(msgh[:si], sub)

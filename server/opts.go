@@ -77,6 +77,7 @@ type Options struct {
 	TLSKey             string        `json:"-"`
 	TLSCaCert          string        `json:"-"`
 	TLSConfig          *tls.Config   `json:"-"`
+	UseRoundRobin      bool		  `json:"-"`
 }
 
 // Configuration file authorization section.
