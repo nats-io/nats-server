@@ -160,6 +160,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Trace = v.(bool)
 		case "logtime":
 			opts.Logtime = v.(bool)
+		case "round_robin":
+			opts.UseRoundRobin = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
 			auth, err := parseAuthorization(am)
@@ -650,6 +652,10 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
+	if flagOpts.UseRoundRobin {
+		opts.UseRoundRobin = true
+	}
+
 	return &opts
 }
 
