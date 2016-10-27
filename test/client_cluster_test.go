@@ -83,10 +83,11 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 	defer srvB.Shutdown()
 
 	// Check that all expected clients have reconnected
-	for i := 0; i < numClients/2; i++ {
+	done := false
+	for i := 0; i < numClients/2 && !done; i++ {
 		select {
 		case <-reconnectsDone:
-			break
+			done = true
 		case <-time.After(3 * time.Second):
 			t.Fatalf("Expected %d reconnects, got %d\n", numClients/2, reconnects)
 		}
