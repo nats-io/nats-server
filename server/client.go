@@ -4,6 +4,7 @@ package server
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -144,6 +145,15 @@ func (c *client) String() (id string) {
 
 func (c *client) GetOpts() *clientOpts {
 	return &c.opts
+}
+
+func (c *client) GetTLSConnectionState() *tls.ConnectionState {
+	tc, ok := c.nc.(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	state := tc.ConnectionState()
+	return &state
 }
 
 type subscription struct {
