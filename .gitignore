@@ -21,6 +21,9 @@ _testmain.go
 
 *.exe
 
+# Eclipse
+.project
+
 # Emacs
 *~
 \#*\#
