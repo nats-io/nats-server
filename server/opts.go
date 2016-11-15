@@ -217,7 +217,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		case "max_connections", "max_conn":
 			opts.MaxConn = int(v.(int64))
 		case "ping_interval":
-			opts.PingInterval = time.Duration(int(v.(int64)))
+			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
 		case "ping_max":
 			opts.MaxPingsOut = int(v.(int64))
 		case "tls":
