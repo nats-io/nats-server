@@ -216,6 +216,10 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxPending = int(v.(int64))
 		case "max_connections", "max_conn":
 			opts.MaxConn = int(v.(int64))
+		case "ping_interval":
+			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
+		case "ping_max":
+			opts.MaxPingsOut = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
 			tc, err := parseTLS(tlsm)

@@ -67,6 +67,8 @@ func TestConfigFile(t *testing.T) {
 		MaxPayload:     65536,
 		MaxConn:        100,
 		MaxPending:     10000000,
+		PingInterval:   60 * time.Second,
+		MaxPingsOut:    3,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -187,6 +189,8 @@ func TestMergeOverrides(t *testing.T) {
 		MaxPayload:         65536,
 		MaxConn:            100,
 		MaxPending:         10000000,
+		PingInterval:       60 * time.Second,
+		MaxPingsOut:        3,
 		ClusterNoAdvertise: true,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
