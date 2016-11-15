@@ -1313,18 +1313,18 @@ func TestConcurrentMonitoring(t *testing.T) {
 			for i := 0; i < 150; i++ {
 				resp, err := http.Get(url + endpoint)
 				if err != nil {
-					t.Fatalf("Expected no error: Got %v\n", err)
+					t.Errorf("Expected no error: Got %v\n", err)
 				}
 				if resp.StatusCode != 200 {
-					t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+					t.Errorf("Expected a 200 response, got %d\n", resp.StatusCode)
 				}
 				ct := resp.Header.Get("Content-Type")
 				if ct != "application/json" {
-					t.Fatalf("Expected application/json content-type, got %s\n", ct)
+					t.Errorf("Expected application/json content-type, got %s\n", ct)
 				}
 				defer resp.Body.Close()
 				if _, err := ioutil.ReadAll(resp.Body); err != nil {
-					t.Fatalf("Got an error reading the body: %v\n", err)
+					t.Errorf("Got an error reading the body: %v\n", err)
 				}
 				resp.Body.Close()
 			}
