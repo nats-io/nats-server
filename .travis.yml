@@ -6,7 +6,7 @@ env:
   global:
     - GO15VENDOREXPERIMENT=1
 install:
-- go get github.com/nats-io/nats
+- go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
 - go get honnef.co/go/staticcheck/cmd/staticcheck
