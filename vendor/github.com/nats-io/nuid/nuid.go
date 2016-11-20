@@ -19,6 +19,9 @@ import (
 // that is started at a pseudo random number and increments with a pseudo-random increment.
 // Total is 22 bytes of base 62 ascii text :)
 
+// Version of the library
+const Version = "1.0.0"
+
 const (
 	digits   = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	base     = 62

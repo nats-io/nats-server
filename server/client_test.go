@@ -17,7 +17,7 @@ import (
 
 	"crypto/tls"
 
-	"github.com/nats-io/nats"
+	"github.com/nats-io/go-nats"
 )
 
 type serverInfo struct {
@@ -658,7 +658,7 @@ func TestUnsubRace(t *testing.T) {
 func TestTLSCloseClientConnection(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
-		t.Fatalf("Error processign config file: %v", err)
+		t.Fatalf("Error processing config file: %v", err)
 	}
 	opts.Authorization = ""
 	opts.TLSTimeout = 100

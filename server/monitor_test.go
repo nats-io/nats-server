@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode"
 
-	"github.com/nats-io/nats"
-	"sync"
+	"github.com/nats-io/go-nats"
 )
 
 const CLIENT_PORT = 11224
