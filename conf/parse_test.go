@@ -96,6 +96,27 @@ func TestBcryptVariable(t *testing.T) {
 	test(t, "password: $2a$11$ooo", ex)
 }
 
+var easynum = `
+k = 8k
+kb = 4kb
+m = 1m
+mb = 2MB
+g = 2g
+gb = 22GB
+`
+
+func TestConvenientNumbers(t *testing.T) {
+	ex := map[string]interface{}{
+		"k":  int64(8 * 1000),
+		"kb": int64(4 * 1024),
+		"m":  int64(1000 * 1000),
+		"mb": int64(2 * 1024 * 1024),
+		"g":  int64(2 * 1000 * 1000 * 1000),
+		"gb": int64(22 * 1024 * 1024 * 1024),
+	}
+	test(t, easynum, ex)
+}
+
 var sample1 = `
 foo  {
   host {
