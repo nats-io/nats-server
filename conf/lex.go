@@ -17,6 +17,7 @@ package conf
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -40,6 +41,7 @@ const (
 	itemMapEnd
 	itemCommentStart
 	itemVariable
+	itemInclude
 )
 
 const (
@@ -288,11 +290,118 @@ func lexQuotedKey(lx *lexer) stateFn {
 	return lexQuotedKey
 }
 
+// keyCheckKeyword will check for reserved keywords as the key value when the key is
+// separated with a space.
+func (lx *lexer) keyCheckKeyword(fallThrough, push stateFn) stateFn {
+	key := strings.ToLower(lx.input[lx.start:lx.pos])
+	switch key {
+	case "include":
+		lx.ignore()
+		if push != nil {
+			lx.push(push)
+		}
+		return lexIncludeStart
+	}
+	lx.emit(itemKey)
+	return fallThrough
+}
+
+// lexIncludeStart will consume the whitespace til the start of the value.
+func lexIncludeStart(lx *lexer) stateFn {
+	r := lx.next()
+	if isWhitespace(r) {
+		return lexSkip(lx, lexIncludeStart)
+	}
+	lx.backup()
+	return lexInclude
+}
+
+// lexIncludeQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexIncludeQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeQuotedString
+}
+
+// lexIncludeDubQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexIncludeDubQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == dqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeDubQuotedString
+}
+
+// lexIncludeString consumes the inner contents of a raw string.
+func lexIncludeString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case isNL(r) || r == eof || r == optValTerm || r == mapEnd || isWhitespace(r):
+		lx.backup()
+		lx.emit(itemInclude)
+		return lx.pop()
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeString
+}
+
+// lexInclude will consume the include value.
+func lexInclude(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeQuotedString
+	case r == dqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeDubQuotedString
+	case r == arrayStart:
+		return lx.errorf("Expected include value but found start of an array")
+	case r == mapStart:
+		return lx.errorf("Expected include value but found start of a map")
+	case r == blockStart:
+		return lx.errorf("Expected include value but found start of a block")
+	case unicode.IsDigit(r), r == '-':
+		return lx.errorf("Expected include value but found start of a number")
+	case r == '\\':
+		return lx.errorf("Expected include value but found escape sequence")
+	case isNL(r):
+		return lx.errorf("Expected include value but found new line")
+	}
+	lx.backup()
+	return lexIncludeString
+}
+
 // lexKey consumes the text of a key. Assumes that the first character (which
 // is not whitespace) has already been consumed.
 func lexKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if unicode.IsSpace(r) || isKeySeparator(r) || r == eof {
+	if unicode.IsSpace(r) {
+		// Spaces signal we could be looking at a keyword, e.g. include.
+		// Keywords will eat the keyword and set the appropriate return stateFn.
+		return lx.keyCheckKeyword(lexKeyEnd, nil)
+	} else if isKeySeparator(r) || r == eof {
 		lx.emit(itemKey)
 		return lexKeyEnd
 	}
@@ -492,7 +601,11 @@ func lexMapDubQuotedKey(lx *lexer) stateFn {
 // is not whitespace) has already been consumed.
 func lexMapKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if unicode.IsSpace(r) || isKeySeparator(r) {
+	if unicode.IsSpace(r) {
+		// Spaces signal we could be looking at a keyword, e.g. include.
+		// Keywords will eat the keyword and set the appropriate return stateFn.
+		return lx.keyCheckKeyword(lexMapKeyEnd, lexMapValueEnd)
+	} else if isKeySeparator(r) {
 		lx.emit(itemKey)
 		return lexMapKeyEnd
 	}
@@ -571,8 +684,10 @@ func lexMapEnd(lx *lexer) stateFn {
 
 // Checks if the unquoted string was actually a boolean
 func (lx *lexer) isBool() bool {
-	str := lx.input[lx.start:lx.pos]
-	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+	str := strings.ToLower(lx.input[lx.start:lx.pos])
+	return str == "true" || str == "false" ||
+		str == "on" || str == "off" ||
+		str == "yes" || str == "no"
 }
 
 // Check if the unquoted string is a variable reference, starting with $.
@@ -953,6 +1068,8 @@ func (itype itemType) String() string {
 		return "CommentStart"
 	case itemVariable:
 		return "Variable"
+	case itemInclude:
+		return "Include"
 	}
 	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype.String()))
 }

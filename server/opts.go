@@ -130,12 +130,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		return opts, nil
 	}
 
-	data, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		return nil, fmt.Errorf("error opening config file: %v", err)
-	}
-
-	m, err := conf.Parse(string(data))
+	m, err := conf.ParseFile(configFile)
 	if err != nil {
 		return nil, err
 	}
