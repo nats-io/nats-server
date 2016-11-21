@@ -35,6 +35,17 @@ func TestSimpleTopLevel(t *testing.T) {
 	test(t, "foo='1'; bar=2.2; baz=true; boo=22", ex)
 }
 
+func TestBools(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": true,
+	}
+	test(t, "foo=true", ex)
+	test(t, "foo=TRUE", ex)
+	test(t, "foo=true", ex)
+	test(t, "foo=yes", ex)
+	test(t, "foo=on", ex)
+}
+
 var varSample = `
   index = 22
   foo = $index

@@ -684,8 +684,10 @@ func lexMapEnd(lx *lexer) stateFn {
 
 // Checks if the unquoted string was actually a boolean
 func (lx *lexer) isBool() bool {
-	str := lx.input[lx.start:lx.pos]
-	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+	str := strings.ToLower(lx.input[lx.start:lx.pos])
+	return str == "true" || str == "false" ||
+		str == "on" || str == "off" ||
+		str == "yes" || str == "no"
 }
 
 // Check if the unquoted string is a variable reference, starting with $.

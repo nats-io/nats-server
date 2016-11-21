@@ -183,10 +183,10 @@ func (p *parser) processItem(it item) error {
 		}
 		p.setValue(num)
 	case itemBool:
-		switch it.val {
-		case "true":
+		switch strings.ToLower(it.val) {
+		case "true", "yes", "on":
 			p.setValue(true)
-		case "false":
+		case "false", "no", "off":
 			p.setValue(false)
 		default:
 			return fmt.Errorf("Expected boolean value, but got '%s'.", it.val)
