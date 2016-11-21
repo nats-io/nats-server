@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type parser struct {
@@ -117,7 +118,15 @@ func (p *parser) processItem(it item) error {
 	case itemString:
 		p.setValue(it.val) // FIXME(dlc) sanitize string?
 	case itemInteger:
-		num, err := strconv.ParseInt(it.val, 10, 64)
+		lastDigit := 0
+		for _, r := range it.val {
+			if !unicode.IsDigit(r) {
+				break
+			}
+			lastDigit++
+		}
+		numStr := it.val[:lastDigit]
+		num, err := strconv.ParseInt(numStr, 10, 64)
 		if err != nil {
 			if e, ok := err.(*strconv.NumError); ok &&
 				e.Err == strconv.ErrRange {
@@ -125,7 +134,25 @@ func (p *parser) processItem(it item) error {
 			}
 			return fmt.Errorf("Expected integer, but got '%s'.", it.val)
 		}
-		p.setValue(num)
+		// Process a suffix
+		suffix := strings.ToLower(strings.TrimSpace(it.val[lastDigit:]))
+		switch suffix {
+		case "":
+			p.setValue(num)
+		case "k":
+			p.setValue(num * 1000)
+		case "kb":
+			p.setValue(num * 1024)
+		case "m":
+			p.setValue(num * 1000 * 1000)
+		case "mb":
+			p.setValue(num * 1024 * 1024)
+		case "g":
+			p.setValue(num * 1000 * 1000 * 1000)
+		case "gb":
+			p.setValue(num * 1024 * 1024 * 1024)
+		}
+
 	case itemFloat:
 		num, err := strconv.ParseFloat(it.val, 64)
 		if err != nil {

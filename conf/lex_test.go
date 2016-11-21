@@ -100,6 +100,89 @@ func TestSimpleKeyNegativeIntegerValues(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestConvenientIntegerValues(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1k", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = 1k")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1K", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1K")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1m", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1m")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1M", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1M")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1g", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1g")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1G", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1G")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1MB", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1MB")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "1Gb", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = 1Gb")
+	expect(t, lx, expectedItems)
+
+	// Negative versions
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "-1m", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = -1m")
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1},
+		{itemInteger, "-1GB", 1},
+		{itemEOF, "", 1},
+	}
+	lx = lex("foo = -1GB ")
+	expect(t, lx, expectedItems)
+}
+
 func TestSimpleKeyFloatValues(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
