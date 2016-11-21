@@ -231,3 +231,34 @@ func TestSample5(t *testing.T) {
 	}
 	test(t, sample5, ex)
 }
+
+func TestIncludes(t *testing.T) {
+	ex := map[string]interface{}{
+		"listen": "127.0.0.1:4222",
+		"authorization": map[string]interface{}{
+			"ALICE_PASS": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q",
+			"BOB_PASS":   "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly",
+			"users": []interface{}{
+				map[string]interface{}{
+					"user":     "alice",
+					"password": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q"},
+				map[string]interface{}{
+					"user":     "bob",
+					"password": "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly"},
+			},
+			"timeout": float64(0.5),
+		},
+	}
+
+	m, err := ParseFile("simple.conf")
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if m == nil {
+		t.Fatal("Received nil map")
+	}
+
+	if !reflect.DeepEqual(m, ex) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
+	}
+}

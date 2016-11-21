@@ -842,3 +842,40 @@ func TestArrayOfMaps(t *testing.T) {
 	lx := lex(arrayOfMaps)
 	expect(t, lx, expectedItems)
 }
+
+func TestInclude(t *testing.T) {
+	expectedItems := []item{
+		{itemInclude, "users.conf", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("include \"users.conf\"")
+	expect(t, lx, expectedItems)
+
+	lx = lex("include 'users.conf'")
+	expect(t, lx, expectedItems)
+
+	lx = lex("include users.conf")
+	expect(t, lx, expectedItems)
+}
+
+func TestMapInclude(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemMapStart, "", 1},
+		{itemInclude, "users.conf", 1},
+		{itemMapEnd, "", 1},
+		{itemEOF, "", 1},
+	}
+
+	lx := lex("foo { include users.conf }")
+	expect(t, lx, expectedItems)
+
+	lx = lex("foo {include users.conf}")
+	expect(t, lx, expectedItems)
+
+	lx = lex("foo { include 'users.conf' }")
+	expect(t, lx, expectedItems)
+
+	lx = lex("foo { include \"users.conf\"}")
+	expect(t, lx, expectedItems)
+}
