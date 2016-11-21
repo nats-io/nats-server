@@ -17,7 +17,7 @@ gnatsd -D -V
 Install the [Go NATS client](https://github.com/nats-io/nats/blob/master/README.md):
 
 ```
-go get github.com/nats-io/nats
+go get github.com/nats-io/go-nats
 ```
 
 ## Installation
@@ -30,7 +30,7 @@ The recommended way to install the NATS server is to [download](http://nats.io/d
 
 ### Demo
 
-You can connect to a public NATS server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443). See the [protocol](#protocol) section for usage.
+You can connect to a public NATS server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [tls://demo.nats.io:4443](nats://demo.nats.io:4443). See the [protocol](#protocol) section for usage.
 
 ### Build
 
@@ -49,9 +49,9 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[2842] 2016/04/26 13:21:20.379640 [INF] Starting nats-server version 0.8.0
-[2842] 2016/04/26 13:21:20.379745 [INF] Listening for client connections on 0.0.0.0:4222
-[2842] 2016/04/26 13:21:20.379865 [INF] Server is ready
+[37274] 2016/11/20 18:33:12.119961 [INF] Starting nats-server version 0.9.4
+[37274] 2016/11/20 18:33:12.120060 [INF] Listening for client connections on 0.0.0.0:4222
+[37274] 2016/11/20 18:33:12.120154 [INF] Server is ready
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
@@ -69,7 +69,7 @@ The NATS server uses a [text based protocol](http://nats.io/documentation/intern
 Trying 107.170.221.32...
 Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.8.0.beta","go":"go1.6.2","host":"0.0.0.0","port":4222, ...}
+INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.9.4","go":"go1.6.3","host":"0.0.0.0","port":4222, ...}
 SUB foo 1
 +OK
 PUB foo 11
