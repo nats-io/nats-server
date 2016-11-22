@@ -5,7 +5,6 @@ package server
 import (
 	"os"
 	"os/signal"
-	"syscall"
 )
 
 // Signal Handling
@@ -15,16 +14,13 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, syscall.SIGINT)
+	signal.Notify(c, os.Interrupt)
 
 	go func() {
 		for sig := range c {
 			Debugf("Trapped %q signal", sig)
-			switch sig {
-			case syscall.SIGINT:
-				Noticef("Server Exiting..")
-				os.Exit(0)
-			}
+			Noticef("Server Exiting..")
+			os.Exit(0)
 		}
 	}()
 }
