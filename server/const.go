@@ -29,9 +29,6 @@ const (
 	// something different if > 1MB payloads are needed.
 	MAX_PAYLOAD_SIZE = (1024 * 1024)
 
-	// MAX_PENDING_SIZE is the maximum outbound size (in bytes) per client.
-	MAX_PENDING_SIZE = (10 * 1024 * 1024)
-
 	// DEFAULT_MAX_CONNECTIONS is the default maximum connections allowed.
 	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
 

@@ -53,7 +53,6 @@ type Options struct {
 	AuthTimeout        float64       `json:"auth_timeout"`
 	MaxControlLine     int           `json:"max_control_line"`
 	MaxPayload         int           `json:"max_payload"`
-	MaxPending         int           `json:"max_pending_size"`
 	ClusterHost        string        `json:"addr"`
 	ClusterPort        int           `json:"cluster_port"`
 	ClusterUsername    string        `json:"-"`
@@ -207,8 +206,6 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxControlLine = int(v.(int64))
 		case "max_payload":
 			opts.MaxPayload = int(v.(int64))
-		case "max_pending_size", "max_pending":
-			opts.MaxPending = int(v.(int64))
 		case "max_connections", "max_conn":
 			opts.MaxConn = int(v.(int64))
 		case "ping_interval":
@@ -796,8 +793,5 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxPayload == 0 {
 		opts.MaxPayload = MAX_PAYLOAD_SIZE
-	}
-	if opts.MaxPending == 0 {
-		opts.MaxPending = MAX_PENDING_SIZE
 	}
 }
