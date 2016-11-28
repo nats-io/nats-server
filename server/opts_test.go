@@ -22,7 +22,6 @@ func TestDefaultOptions(t *testing.T) {
 		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
 		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
 		MaxPayload:         MAX_PAYLOAD_SIZE,
-		MaxPending:         MAX_PENDING_SIZE,
 		ClusterHost:        DEFAULT_HOST,
 		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
 		ClusterTLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
@@ -66,7 +65,6 @@ func TestConfigFile(t *testing.T) {
 		MaxControlLine: 2048,
 		MaxPayload:     65536,
 		MaxConn:        100,
-		MaxPending:     10000000,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 	}
@@ -188,7 +186,6 @@ func TestMergeOverrides(t *testing.T) {
 		MaxControlLine:     2048,
 		MaxPayload:         65536,
 		MaxConn:            100,
-		MaxPending:         10000000,
 		PingInterval:       60 * time.Second,
 		MaxPingsOut:        3,
 		ClusterNoAdvertise: true,
