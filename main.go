@@ -138,11 +138,14 @@ func main() {
 
 	// Process args looking for non-flag options,
 	// 'version' and 'help' only for now
-	for _, arg := range flag.Args() {
-		switch strings.ToLower(arg) {
+	if len(flag.Args()) > 0 {
+		switch strings.ToLower(flag.Args()[0]) {
 		case "version":
 			server.PrintServerAndExit()
 		case "help":
+			usage()
+		default:
+			// Unrecognized command
 			usage()
 		}
 	}
