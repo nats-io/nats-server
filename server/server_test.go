@@ -242,9 +242,7 @@ func TestMaxConnections(t *testing.T) {
 
 	nc2, err := nats.Connect(addr)
 	if err == nil {
-		if nc2 != nil {
-			nc2.Close()
-		}
+		nc2.Close()
 		t.Fatal("Expected connection to fail")
 	}
 }

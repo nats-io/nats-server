@@ -28,5 +28,5 @@ var (
 
 	// ErrTooManyConnections signals a client that the maximum number of connections supported by the
 	// server has been reached.
-	ErrTooManyConnections = errors.New("Too many connections")
+	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
 )

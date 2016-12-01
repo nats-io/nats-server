@@ -447,12 +447,6 @@ func (c *client) processConnect(arg []byte) error {
 			srv.mu.Unlock()
 		}
 
-		// Check for max connections
-		if ok := srv.checkMaxConn(c); !ok {
-			c.maxConnLimit()
-			return ErrTooManyConnections
-		}
-
 		// Check for Auth
 		if ok := srv.checkAuth(c); !ok {
 			c.authViolation()
@@ -496,14 +490,8 @@ func (c *client) authViolation() {
 	c.closeConnection()
 }
 
-func (c *client) maxConnLimit() {
-	if c.srv != nil && c.srv.opts.Users != nil {
-		c.Errorf("%s - User %q",
-			ErrTooManyConnections.Error(),
-			c.opts.Username)
-	} else {
-		c.Errorf(ErrTooManyConnections.Error())
-	}
+func (c *client) maxConnExceeded() {
+	c.Errorf(ErrTooManyConnections.Error())
 	c.sendErr(ErrTooManyConnections.Error())
 	c.closeConnection()
 }
