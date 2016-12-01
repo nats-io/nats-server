@@ -14,7 +14,7 @@ go get github.com/nats-io/gnatsd
 gnatsd -D -V
 ```
 
-Install the [Go NATS client](https://github.com/nats-io/nats/blob/master/README.md):
+Install the [Go NATS client](https://github.com/nats-io/go-nats/blob/master/README.md):
 
 ```
 go get github.com/nats-io/go-nats
