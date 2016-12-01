@@ -731,6 +731,17 @@ func (s *Server) checkAuth(c *client) bool {
 	}
 }
 
+// Check that number of clients is below Max connection setting.
+func (s *Server) checkMaxConn(c *client) bool {
+	if c.typ == CLIENT {
+		s.mu.Lock()
+		ok := len(s.clients) <= s.opts.MaxConn
+		s.mu.Unlock()
+		return ok
+	}
+	return true
+}
+
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
 	var rID string

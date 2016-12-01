@@ -3,10 +3,13 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/go-nats"
 )
 
 var DefaultOptions = Options{
@@ -222,4 +225,26 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	s.Start()
 	// We should be able to shutdown
 	s.Shutdown()
+}
+
+func TestMaxConnections(t *testing.T) {
+	opts := DefaultOptions
+	opts.MaxConn = 1
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc.Close()
+
+	nc2, err := nats.Connect(addr)
+	if err == nil {
+		if nc2 != nil {
+			nc2.Close()
+		}
+		t.Fatal("Expected connection to fail")
+	}
 }
