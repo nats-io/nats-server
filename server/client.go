@@ -270,7 +270,7 @@ func (c *client) readLoop() {
 
 		if err := c.parse(b[:n]); err != nil {
 			// handled inline
-			if err != ErrMaxPayload && err != ErrAuthorization {
+			if err != ErrMaxPayload && err != ErrAuthorization && err != ErrTooManyConnections {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
 				c.closeConnection()
@@ -487,6 +487,12 @@ func (c *client) authViolation() {
 		c.Errorf(ErrAuthorization.Error())
 	}
 	c.sendErr("Authorization Violation")
+	c.closeConnection()
+}
+
+func (c *client) maxConnExceeded() {
+	c.Errorf(ErrTooManyConnections.Error())
+	c.sendErr(ErrTooManyConnections.Error())
 	c.closeConnection()
 }
 
@@ -1243,7 +1249,9 @@ func (c *client) clearConnection() {
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
 	c.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
-	c.bw.Flush()
+	if c.bw != nil {
+		c.bw.Flush()
+	}
 	c.nc.Close()
 	c.nc.SetWriteDeadline(time.Time{})
 }

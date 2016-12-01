@@ -546,6 +546,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 		s.mu.Unlock()
 		return c
 	}
+	// If there is a max connections specified, check that adding
+	// this new client would not push us over the max
+	if s.opts.MaxConn > 0 && len(s.clients) >= s.opts.MaxConn {
+		s.mu.Unlock()
+		c.maxConnExceeded()
+		return nil
+	}
 	s.clients[c.cid] = c
 	s.mu.Unlock()
 
