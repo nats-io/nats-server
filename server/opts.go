@@ -67,31 +67,20 @@ type Options struct {
 	MaxControlLine int           `json:"max_control_line"`
 	MaxPayload     int           `json:"max_payload"`
 	Cluster        ClusterOpts   `json:"cluster"`
-	/*
-		ClusterHost        string        `json:"addr"`
-		ClusterPort        int           `json:"cluster_port"`
-		ClusterUsername    string        `json:"-"`
-		ClusterPassword    string        `json:"-"`
-		ClusterAuthTimeout float64       `json:"auth_timeout"`
-		ClusterTLSTimeout  float64       `json:"-"`
-		ClusterTLSConfig   *tls.Config   `json:"-"`
-		ClusterListenStr   string        `json:"-"`
-		ClusterNoAdvertise bool          `json:"-"`
-	*/
-	ProfPort     int         `json:"-"`
-	PidFile      string      `json:"-"`
-	LogFile      string      `json:"-"`
-	Syslog       bool        `json:"-"`
-	RemoteSyslog string      `json:"-"`
-	Routes       []*url.URL  `json:"-"`
-	RoutesStr    string      `json:"-"`
-	TLSTimeout   float64     `json:"tls_timeout"`
-	TLS          bool        `json:"-"`
-	TLSVerify    bool        `json:"-"`
-	TLSCert      string      `json:"-"`
-	TLSKey       string      `json:"-"`
-	TLSCaCert    string      `json:"-"`
-	TLSConfig    *tls.Config `json:"-"`
+	ProfPort       int           `json:"-"`
+	PidFile        string        `json:"-"`
+	LogFile        string        `json:"-"`
+	Syslog         bool          `json:"-"`
+	RemoteSyslog   string        `json:"-"`
+	Routes         []*url.URL    `json:"-"`
+	RoutesStr      string        `json:"-"`
+	TLSTimeout     float64       `json:"tls_timeout"`
+	TLS            bool          `json:"-"`
+	TLSVerify      bool          `json:"-"`
+	TLSCert        string        `json:"-"`
+	TLSKey         string        `json:"-"`
+	TLSCaCert      string        `json:"-"`
+	TLSConfig      *tls.Config   `json:"-"`
 }
 
 // Configuration file authorization section.
