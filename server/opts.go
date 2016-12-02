@@ -19,9 +19,11 @@ import (
 
 // For multiple accounts/users.
 type User struct {
-	Username    string       `json:"user"`
-	Password    string       `json:"password"`
-	Permissions *Permissions `json:"permissions"`
+	Username      string       `json:"user"`
+	Password      string       `json:"password"`
+	Permissions   *Permissions `json:"permissions"`
+	Authenticator string       `json:"authenticator"`
+	Token         string       `json:"token"`
 }
 
 // Authorization are the allowed subjects on a per
@@ -44,6 +46,8 @@ type Options struct {
 	Users              []*User       `json:"-"`
 	Username           string        `json:"-"`
 	Password           string        `json:"-"`
+	AuthenticatorHub   []string      `json:"-"`
+	DynamicUser        bool          `json:"-"`
 	Authorization      string        `json:"-"`
 	PingInterval       time.Duration `json:"ping_interval"`
 	MaxPingsOut        int           `json:"ping_max"`
@@ -87,6 +91,8 @@ type authorization struct {
 	users              []*User
 	timeout            float64
 	defaultPermissions *Permissions
+	authenticatorHub   []string
+	dynamicUser        bool
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -168,7 +174,11 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
 				}
 				opts.Users = auth.users
+				if auth.authenticatorHub != nil {
+					opts.AuthenticatorHub = auth.authenticatorHub
+				}
 			}
+			opts.DynamicUser = auth.dynamicUser
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
@@ -348,6 +358,16 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 				return nil, err
 			}
 			auth.defaultPermissions = permissions
+		case "authenticator_hub", "authenticator_hubs":
+			uv, ok := mv.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+			}
+			for _, u := range uv {
+				auth.authenticatorHub = append(auth.authenticatorHub, u.(string))
+			}
+		case "dynamic_user":
+			auth.dynamicUser = mv.(bool)
 		}
 
 		// Now check for permission defaults with multiple users, etc.
@@ -383,7 +403,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 			case "user", "username":
 				user.Username = v.(string)
 			case "pass", "password":
-				user.Password = v.(string)
+				user.Password = fmt.Sprintf("%v", v)
 			case "permission", "permissions", "authroization":
 				pm, ok := v.(map[string]interface{})
 				if !ok {
@@ -394,11 +414,15 @@ func parseUsers(mv interface{}) ([]*User, error) {
 					return nil, err
 				}
 				user.Permissions = permissions
+			case "authenticator", "authenticators":
+				user.Authenticator = v.(string)
+			case "token", "tokens":
+				user.Token = fmt.Sprintf("%v", v)
 			}
 		}
 		// Check to make sure we have at least username and password
-		if user.Username == "" || user.Password == "" {
-			return nil, fmt.Errorf("User entry requires a user and a password")
+		if (user.Username == "" || user.Password == "") && user.Token == "" {
+			return nil, fmt.Errorf("User entry requires a user and a password, or just a token")
 		}
 		users = append(users, user)
 	}
