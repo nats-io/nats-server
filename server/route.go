@@ -241,7 +241,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 		return
 	}
 	if info.AuthRequired {
-		r.User = url.UserPassword(s.opts.ClusterUsername, s.opts.ClusterPassword)
+		r.User = url.UserPassword(s.opts.Cluster.Username, s.opts.Cluster.Password)
 	}
 	s.startGoRoutine(func() { s.connectToRoute(r, false) })
 }
@@ -341,7 +341,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Check for TLS
 	if tlsRequired {
 		// Copy off the config to add in ServerName if we
-		tlsConfig := util.CloneTLSConfig(s.opts.ClusterTLSConfig)
+		tlsConfig := util.CloneTLSConfig(s.opts.Cluster.TLSConfig)
 
 		// If we solicited, we will act like the client, otherwise the server.
 		if didSolicit {
@@ -358,7 +358,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		conn := c.nc.(*tls.Conn)
 
 		// Setup the timeout
-		ttl := secondsToDuration(s.opts.ClusterTLSTimeout)
+		ttl := secondsToDuration(s.opts.Cluster.TLSTimeout)
 		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
 		conn.SetReadDeadline(time.Now().Add(ttl))
 
@@ -420,7 +420,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Check for Auth required state for incoming connections.
 	if authRequired && !didSolicit {
-		ttl := secondsToDuration(s.opts.ClusterAuthTimeout)
+		ttl := secondsToDuration(s.opts.Cluster.AuthTimeout)
 		c.setAuthTimer(ttl)
 	}
 
@@ -588,13 +588,13 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
-	hp := net.JoinHostPort(s.opts.ClusterHost, strconv.Itoa(s.opts.ClusterPort))
+	hp := net.JoinHostPort(s.opts.Cluster.Host, strconv.Itoa(s.opts.Cluster.Port))
 	Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		// We need to close this channel to avoid a deadlock
 		close(ch)
-		Fatalf("Error listening on router port: %d - %v", s.opts.ClusterPort, e)
+		Fatalf("Error listening on router port: %d - %v", s.opts.Cluster.Port, e)
 		return
 	}
 
@@ -649,12 +649,12 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	clientConnectURLs := s.getClientConnectURLs()
 
 	// Check for TLSConfig
-	tlsReq := s.opts.ClusterTLSConfig != nil
+	tlsReq := s.opts.Cluster.TLSConfig != nil
 	info := Info{
 		ID:                s.info.ID,
 		Version:           s.info.Version,
-		Host:              s.opts.ClusterHost,
-		Port:              s.opts.ClusterPort,
+		Host:              s.opts.Cluster.Host,
+		Port:              s.opts.Cluster.Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -663,7 +663,7 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 		ClientConnectURLs: clientConnectURLs,
 	}
 	// Check for Auth items
-	if s.opts.ClusterUsername != "" {
+	if s.opts.Cluster.Username != "" {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info

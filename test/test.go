@@ -226,8 +226,8 @@ func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
 }
 
 func setupRouteEx(t tLogger, c net.Conn, opts *server.Options, id string) (sendFun, expectFun) {
-	user := opts.ClusterUsername
-	pass := opts.ClusterPassword
+	user := opts.Cluster.Username
+	pass := opts.Cluster.Password
 	doRouteAuthConnect(t, c, user, pass, id)
 	return sendCommand(t, c), expectCommand(t, c)
 }
@@ -410,7 +410,7 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 func nextServerOpts(opts *server.Options) *server.Options {
 	nopts := *opts
 	nopts.Port++
-	nopts.ClusterPort++
+	nopts.Cluster.Port++
 	nopts.HTTPPort++
 	return &nopts
 }

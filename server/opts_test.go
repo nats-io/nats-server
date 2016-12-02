@@ -12,19 +12,21 @@ import (
 
 func TestDefaultOptions(t *testing.T) {
 	golden := &Options{
-		Host:               DEFAULT_HOST,
-		Port:               DEFAULT_PORT,
-		MaxConn:            DEFAULT_MAX_CONNECTIONS,
-		HTTPHost:           DEFAULT_HOST,
-		PingInterval:       DEFAULT_PING_INTERVAL,
-		MaxPingsOut:        DEFAULT_PING_MAX_OUT,
-		TLSTimeout:         float64(TLS_TIMEOUT) / float64(time.Second),
-		AuthTimeout:        float64(AUTH_TIMEOUT) / float64(time.Second),
-		MaxControlLine:     MAX_CONTROL_LINE_SIZE,
-		MaxPayload:         MAX_PAYLOAD_SIZE,
-		ClusterHost:        DEFAULT_HOST,
-		ClusterAuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
-		ClusterTLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
+		Host:           DEFAULT_HOST,
+		Port:           DEFAULT_PORT,
+		MaxConn:        DEFAULT_MAX_CONNECTIONS,
+		HTTPHost:       DEFAULT_HOST,
+		PingInterval:   DEFAULT_PING_INTERVAL,
+		MaxPingsOut:    DEFAULT_PING_MAX_OUT,
+		TLSTimeout:     float64(TLS_TIMEOUT) / float64(time.Second),
+		AuthTimeout:    float64(AUTH_TIMEOUT) / float64(time.Second),
+		MaxControlLine: MAX_CONTROL_LINE_SIZE,
+		MaxPayload:     MAX_PAYLOAD_SIZE,
+		Cluster: ClusterOpts{
+			Host:        DEFAULT_HOST,
+			AuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
+			TLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
+		},
 	}
 
 	opts := &Options{}
@@ -169,26 +171,28 @@ func TestTLSConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
-		Host:               "localhost",
-		Port:               2222,
-		Username:           "derek",
-		Password:           "spooky",
-		AuthTimeout:        1.0,
-		Debug:              true,
-		Trace:              true,
-		Logtime:            false,
-		HTTPPort:           DEFAULT_HTTP_PORT,
-		LogFile:            "/tmp/gnatsd.log",
-		PidFile:            "/tmp/gnatsd.pid",
-		ProfPort:           6789,
-		Syslog:             true,
-		RemoteSyslog:       "udp://foo.com:33",
-		MaxControlLine:     2048,
-		MaxPayload:         65536,
-		MaxConn:            100,
-		PingInterval:       60 * time.Second,
-		MaxPingsOut:        3,
-		ClusterNoAdvertise: true,
+		Host:           "localhost",
+		Port:           2222,
+		Username:       "derek",
+		Password:       "spooky",
+		AuthTimeout:    1.0,
+		Debug:          true,
+		Trace:          true,
+		Logtime:        false,
+		HTTPPort:       DEFAULT_HTTP_PORT,
+		LogFile:        "/tmp/gnatsd.log",
+		PidFile:        "/tmp/gnatsd.pid",
+		ProfPort:       6789,
+		Syslog:         true,
+		RemoteSyslog:   "udp://foo.com:33",
+		MaxControlLine: 2048,
+		MaxPayload:     65536,
+		MaxConn:        100,
+		PingInterval:   60 * time.Second,
+		MaxPingsOut:    3,
+		Cluster: ClusterOpts{
+			NoAdvertise: true,
+		},
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -197,12 +201,14 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:               2222,
-		Password:           "spooky",
-		Debug:              true,
-		HTTPPort:           DEFAULT_HTTP_PORT,
-		ProfPort:           6789,
-		ClusterNoAdvertise: true,
+		Port:     2222,
+		Password: "spooky",
+		Debug:    true,
+		HTTPPort: DEFAULT_HTTP_PORT,
+		ProfPort: 6789,
+		Cluster: ClusterOpts{
+			NoAdvertise: true,
+		},
 	}
 	merged := MergeOptions(fopts, opts)
 
@@ -252,15 +258,17 @@ func TestRouteFlagOverride(t *testing.T) {
 	rurl, _ := url.Parse(routeFlag)
 
 	golden := &Options{
-		Host:               "127.0.0.1",
-		Port:               7222,
-		ClusterHost:        "127.0.0.1",
-		ClusterPort:        7244,
-		ClusterUsername:    "ruser",
-		ClusterPassword:    "top_secret",
-		ClusterAuthTimeout: 0.5,
-		Routes:             []*url.URL{rurl},
-		RoutesStr:          routeFlag,
+		Host: "127.0.0.1",
+		Port: 7222,
+		Cluster: ClusterOpts{
+			Host:        "127.0.0.1",
+			Port:        7244,
+			Username:    "ruser",
+			Password:    "top_secret",
+			AuthTimeout: 0.5,
+		},
+		Routes:    []*url.URL{rurl},
+		RoutesStr: routeFlag,
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -291,15 +299,17 @@ func TestClusterFlagsOverride(t *testing.T) {
 	// The server would then process the ClusterListenStr override and
 	// correctly override ClusterHost/ClustherPort/etc..
 	golden := &Options{
-		Host:               "127.0.0.1",
-		Port:               7222,
-		ClusterHost:        "127.0.0.1",
-		ClusterPort:        7244,
-		ClusterListenStr:   "nats://127.0.0.1:8224",
-		ClusterUsername:    "ruser",
-		ClusterPassword:    "top_secret",
-		ClusterAuthTimeout: 0.5,
-		Routes:             []*url.URL{rurl},
+		Host: "127.0.0.1",
+		Port: 7222,
+		Cluster: ClusterOpts{
+			Host:        "127.0.0.1",
+			Port:        7244,
+			ListenStr:   "nats://127.0.0.1:8224",
+			Username:    "ruser",
+			Password:    "top_secret",
+			AuthTimeout: 0.5,
+		},
+		Routes: []*url.URL{rurl},
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -309,7 +319,9 @@ func TestClusterFlagsOverride(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		ClusterListenStr: "nats://127.0.0.1:8224",
+		Cluster: ClusterOpts{
+			ListenStr: "nats://127.0.0.1:8224",
+		},
 	}
 	merged := MergeOptions(fopts, opts)
 
@@ -324,15 +336,17 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	rurls := RoutesFromStr(routeFlag)
 
 	golden := &Options{
-		Host:               "127.0.0.1",
-		Port:               7222,
-		ClusterHost:        "127.0.0.1",
-		ClusterPort:        7244,
-		ClusterUsername:    "ruser",
-		ClusterPassword:    "top_secret",
-		ClusterAuthTimeout: 0.5,
-		Routes:             rurls,
-		RoutesStr:          routeFlag,
+		Host: "127.0.0.1",
+		Port: 7222,
+		Cluster: ClusterOpts{
+			Host:        "127.0.0.1",
+			Port:        7244,
+			Username:    "ruser",
+			Password:    "top_secret",
+			AuthTimeout: 0.5,
+		},
+		Routes:    rurls,
+		RoutesStr: routeFlag,
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -377,11 +391,11 @@ func TestListenConfig(t *testing.T) {
 	clusterHost := "127.0.0.1"
 	clusterPort := 4244
 
-	if opts.ClusterHost != clusterHost {
-		t.Fatalf("Received incorrect cluster host %q, expected %q\n", opts.ClusterHost, clusterHost)
+	if opts.Cluster.Host != clusterHost {
+		t.Fatalf("Received incorrect cluster host %q, expected %q\n", opts.Cluster.Host, clusterHost)
 	}
-	if opts.ClusterPort != clusterPort {
-		t.Fatalf("Received incorrect cluster port %v, expected %v\n", opts.ClusterPort, clusterPort)
+	if opts.Cluster.Port != clusterPort {
+		t.Fatalf("Received incorrect cluster port %v, expected %v\n", opts.Cluster.Port, clusterPort)
 	}
 
 	// HTTP

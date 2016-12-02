@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
 	"reflect"
 	"strconv"
+
+	"github.com/nats-io/gnatsd/server"
 )
 
 const clientProtoInfo = 1
@@ -66,7 +67,7 @@ func TestRouterListeningSocket(t *testing.T) {
 	defer s.Shutdown()
 
 	// Check that the cluster socket is able to be connected.
-	addr := fmt.Sprintf("%s:%d", opts.ClusterHost, opts.ClusterPort)
+	addr := fmt.Sprintf("%s:%d", opts.Cluster.Host, opts.Cluster.Port)
 	checkSocket(t, addr, 2*time.Second)
 }
 
@@ -85,7 +86,7 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
-	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc.Close()
 
 	routeSend, routeExpect := setupRoute(t, rc, opts)
@@ -99,9 +100,9 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	if !info.AuthRequired {
 		t.Fatal("Expected to see AuthRequired")
 	}
-	if info.Port != opts.ClusterPort {
+	if info.Port != opts.Cluster.Port {
 		t.Fatalf("Received wrong information for port, expected %d, got %d",
-			info.Port, opts.ClusterPort)
+			info.Port, opts.Cluster.Port)
 	}
 
 	// Need to send a different INFO than the one received, otherwise the server
@@ -121,7 +122,7 @@ func TestRouteToSelf(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
-	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc.Close()
 
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, s.ID())
@@ -135,9 +136,9 @@ func TestRouteToSelf(t *testing.T) {
 	if !info.AuthRequired {
 		t.Fatal("Expected to see AuthRequired")
 	}
-	if info.Port != opts.ClusterPort {
+	if info.Port != opts.Cluster.Port {
 		t.Fatalf("Received wrong information for port, expected %d, got %d",
-			info.Port, opts.ClusterPort)
+			info.Port, opts.Cluster.Port)
 	}
 
 	// Now send it back and that should be detected as a route to self and the
@@ -160,7 +161,7 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	send, _ := setupConn(t, c)
 
 	// We connect to the route.
-	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc.Close()
 
 	expectAuthRequired(t, rc)
@@ -268,7 +269,7 @@ func TestRouteForwardsMsgToClients(t *testing.T) {
 	clientSend, clientExpect := setupConn(t, client)
 	expectMsgs := expectMsgsCommand(t, clientExpect)
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 	expectAuthRequired(t, route)
 	routeSend, _ := setupRoute(t, route, opts)
@@ -290,7 +291,7 @@ func TestRouteOneHopSemantics(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
 	expectAuthRequired(t, route)
@@ -315,7 +316,7 @@ func TestRouteOnlySendOnce(t *testing.T) {
 
 	clientSend, clientExpect := setupConn(t, client)
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
 	expectAuthRequired(t, route)
@@ -354,7 +355,7 @@ func TestRouteQueueSemantics(t *testing.T) {
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
 	expectAuthRequired(t, route)
@@ -467,13 +468,13 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	s, opts := runRouteServer(t)
 	defer s.Shutdown()
 
-	route1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route1 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route1.Close()
 
 	expectAuthRequired(t, route1)
 	route1Send, _ := setupRouteEx(t, route1, opts, "ROUTE:2222")
 
-	route2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route2 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route2.Close()
 
 	expectAuthRequired(t, route2)
@@ -536,7 +537,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
 
@@ -564,7 +565,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	// Close and then re-open
 	route.Close()
 
-	route = createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route = createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
 	routeSend, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
@@ -584,7 +585,7 @@ func TestAutoUnsubPropagation(t *testing.T) {
 
 	clientSend, clientExpect := setupConn(t, client)
 
-	route := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
 	expectAuthRequired(t, route)
@@ -640,7 +641,7 @@ func TestRouteConnectOnShutdownRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for {
-			route := createRouteConn(l, opts.ClusterHost, opts.ClusterPort)
+			route := createRouteConn(l, opts.Cluster.Host, opts.Cluster.Port)
 			if route != nil {
 				setupRouteEx(l, route, opts, "ROUTE:4222")
 				route.Close()
@@ -689,7 +690,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		routeID := "Server-B"
 
 		createRoute := func() (net.Conn, sendFun, expectFun) {
-			rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+			rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 			routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
 			buf := routeExpect(infoRe)
@@ -724,7 +725,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		}
 
 		checkINFOReceived := func(client net.Conn, clientExpect expectFun, expectedURLs []string) {
-			if opts.ClusterNoAdvertise {
+			if opts.Cluster.NoAdvertise {
 				expectNothing(t, client)
 				return
 			}
@@ -839,7 +840,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Could not unmarshal INFO json: %v\n", err)
 		}
-		if opts.ClusterNoAdvertise {
+		if opts.Cluster.NoAdvertise {
 			if len(sinfo.ClientConnectURLs) != 0 {
 				t.Fatalf("Expected ClientConnectURLs to be empty, got %v", sinfo.ClientConnectURLs)
 			}
@@ -851,7 +852,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 	opts := LoadConfig("./configs/cluster.conf")
 	for i := 0; i < 2; i++ {
 		if i == 1 {
-			opts.ClusterNoAdvertise = true
+			opts.Cluster.NoAdvertise = true
 		}
 		f(opts)
 	}
