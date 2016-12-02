@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"flag"
 
 	"github.com/nats-io/go-nats"
 )
@@ -244,5 +245,52 @@ func TestMaxConnections(t *testing.T) {
 	if err == nil {
 		nc2.Close()
 		t.Fatal("Expected connection to fail")
+	}
+}
+
+func TestProcessCommandLineArgs(t *testing.T) {
+	var host string
+	var port int
+	cmd := flag.NewFlagSet("gnatsd", flag.ExitOnError)
+	cmd.StringVar(&host, "a", "0.0.0.0", "Host.")
+	cmd.IntVar(&port, "p", 4222, "Port.")
+
+	cmd.Parse([]string{"-a", "127.0.0.1", "-p", "9090"})
+	showVersion, showHelp, err := ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if showVersion || showHelp {
+		t.Errorf("Expected not having to handle subcommands")
+	}
+
+	cmd.Parse([]string{"version"})
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if !showVersion {
+		t.Errorf("Expected having to handle version command")
+	}
+	if showHelp {
+		t.Errorf("Expected not having to handle help command")
+	}
+
+	cmd.Parse([]string{"help"})
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if showVersion {
+		t.Errorf("Expected not having to handle version command")
+	}
+	if !showHelp {
+		t.Errorf("Expected having to handle help command")
+	}
+
+	cmd.Parse([]string{"foo", "-p", "9090"})
+	_, _, err = ProcessCommandLineArgs(cmd)
+	if err == nil {
+		t.Errorf("Expected an error handling the command arguments")
 	}
 }

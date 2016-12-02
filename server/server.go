@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,6 +180,25 @@ func PrintAndDie(msg string) {
 func PrintServerAndExit() {
 	fmt.Printf("nats-server version %s\n", VERSION)
 	os.Exit(0)
+}
+
+// ProcessCommandLineArgs takes the command line arguments
+// validating and setting flags for handling in case any
+// sub command was present.
+func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, err error) {
+	if len(cmd.Args()) > 0 {
+		arg := cmd.Args()[0]
+		switch strings.ToLower(arg) {
+		case "version":
+			return true, false, nil
+		case "help":
+			return false, true, nil
+		default:
+			return false, false, fmt.Errorf("Unrecognized command: %q\n", arg)
+		}
+	}
+
+	return false, false, nil
 }
 
 // Protected check on running state
