@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/logger"
@@ -138,13 +137,13 @@ func main() {
 
 	// Process args looking for non-flag options,
 	// 'version' and 'help' only for now
-	for _, arg := range flag.Args() {
-		switch strings.ToLower(arg) {
-		case "version":
-			server.PrintServerAndExit()
-		case "help":
-			usage()
-		}
+	showVersion, showHelp, err := server.ProcessCommandLineArgs(flag.CommandLine)
+	if err != nil {
+		server.PrintAndDie(err.Error() + usageStr)
+	} else if showVersion {
+		server.PrintServerAndExit()
+	} else if showHelp {
+		usage()
 	}
 
 	// Parse config if given
