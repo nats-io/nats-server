@@ -58,6 +58,7 @@ type Server struct {
 	trace         bool
 	debug         bool
 	running       bool
+	roundRobin    bool
 	listener      net.Listener
 	clients       map[uint64]*client
 	routes        map[uint64]*client
@@ -115,6 +116,7 @@ func New(opts *Options) *Server {
 		opts:  opts,
 		debug: opts.Debug,
 		trace: opts.Trace,
+		roundRobin: opts.UseRoundRobin,
 		done:  make(chan bool, 1),
 		start: time.Now(),
 	}

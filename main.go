@@ -24,6 +24,7 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
+    --roundrobin		     Use round robin for queued subscriptions
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -95,6 +96,7 @@ func main() {
 	flag.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
 	flag.StringVar(&configFile, "c", "", "Configuration file.")
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
+	flag.BoolVar(&opts.UseRoundRobin,"roundrobin", false,"Use Round Robin for Queued Subscriptions")
 	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")

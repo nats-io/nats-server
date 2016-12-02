@@ -35,6 +35,7 @@ const slCacheMax = 1024
 type SublistResult struct {
 	psubs []*subscription
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
+	currIndex []int
 }
 
 // A Sublist stores and efficiently retrieves subscriptions.
@@ -157,6 +158,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 func copyResult(r *SublistResult) *SublistResult {
 	nr := &SublistResult{}
 	nr.psubs = append([]*subscription(nil), r.psubs...)
+	nr.currIndex = append([]int(nil), r.currIndex...)
 	for _, qr := range r.qsubs {
 		nqr := append([]*subscription(nil), qr...)
 		nr.qsubs = append(nr.qsubs, nqr)
@@ -251,8 +253,15 @@ func addNodeToResults(n *node, results *SublistResult) {
 		// Need to find matching list in results
 		if i := findQSliceForSub(qr[0], results.qsubs); i >= 0 {
 			results.qsubs[i] = append(results.qsubs[i], qr...)
+			if i > len(results.currIndex) {
+				diff := i - len(results.currIndex)
+				results.currIndex = append(results.currIndex, make([]int,diff)...)
+			}else {
+				results.currIndex = append(results.currIndex, 0)
+			}
 		} else {
 			results.qsubs = append(results.qsubs, qr)
+			results.currIndex = append(results.currIndex, 0)
 		}
 	}
 }
