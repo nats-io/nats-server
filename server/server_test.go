@@ -3,24 +3,24 @@
 package server
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
-	"flag"
 
 	"github.com/nats-io/go-nats"
 )
 
 var DefaultOptions = Options{
-	Host:        "localhost",
-	Port:        11222,
-	HTTPPort:    11333,
-	ClusterPort: 11444,
-	ProfPort:    11280,
-	NoLog:       true,
-	NoSigs:      true,
+	Host:     "localhost",
+	Port:     11222,
+	HTTPPort: 11333,
+	Cluster:  ClusterOpts{Port: 11444},
+	ProfPort: 11280,
+	NoLog:    true,
+	NoSigs:   true,
 }
 
 // New Go Routine based server
@@ -217,8 +217,8 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	opts := DefaultOptions
 	opts.Host = "x.x.x.x" // bad host
 	opts.Port = 4222
-	opts.ClusterHost = "localhost"
-	opts.ClusterPort = 6222
+	opts.Cluster.Host = "localhost"
+	opts.Cluster.Port = 6222
 
 	s := New(&opts)
 	// This should return since it should fail to start a listener

@@ -19,8 +19,9 @@ import (
 	"time"
 
 	// Allow dynamic profiling.
-	"github.com/nats-io/gnatsd/util"
 	_ "net/http/pprof"
+
+	"github.com/nats-io/gnatsd/util"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -255,7 +256,7 @@ func (s *Server) Start() {
 	clientListenReady := make(chan struct{})
 
 	// Start up routing as well if needed.
-	if s.opts.ClusterPort != 0 {
+	if s.opts.Cluster.Port != 0 {
 		s.startGoRoutine(func() {
 			s.StartRouting(clientListenReady)
 		})
@@ -646,7 +647,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	defer s.mu.Unlock()
 
 	// Feature disabled, do not update.
-	if s.opts.ClusterNoAdvertise {
+	if s.opts.Cluster.NoAdvertise {
 		return false
 	}
 
@@ -873,7 +874,7 @@ func (s *Server) GetRouteListenEndpoint() string {
 		return ""
 	}
 
-	host := s.opts.ClusterHost
+	host := s.opts.Cluster.Host
 
 	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
 	// We replace it with "localhost" when that's the case.
@@ -882,7 +883,7 @@ func (s *Server) GetRouteListenEndpoint() string {
 	}
 
 	// Return the cluster's Host and Port.
-	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
+	return net.JoinHostPort(host, strconv.Itoa(s.opts.Cluster.Port))
 }
 
 // ID returns the server's ID

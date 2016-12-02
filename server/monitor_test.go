@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -22,14 +22,16 @@ const MONITOR_PORT = 11424
 const CLUSTER_PORT = 12444
 
 var DefaultMonitorOptions = Options{
-	Host:        "localhost",
-	Port:        CLIENT_PORT,
-	HTTPHost:    "127.0.0.1",
-	HTTPPort:    MONITOR_PORT,
-	ClusterHost: "localhost",
-	ClusterPort: CLUSTER_PORT,
-	NoLog:       true,
-	NoSigs:      true,
+	Host:     "localhost",
+	Port:     CLIENT_PORT,
+	HTTPHost: "127.0.0.1",
+	HTTPPort: MONITOR_PORT,
+	Cluster: ClusterOpts{
+		Host: "localhost",
+		Port: CLUSTER_PORT,
+	},
+	NoLog:  true,
+	NoSigs: true,
 }
 
 func runMonitorServer() *Server {
@@ -1009,12 +1011,14 @@ func TestConnzWithRoutes(t *testing.T) {
 	defer s.Shutdown()
 
 	var opts = Options{
-		Host:        "localhost",
-		Port:        CLIENT_PORT + 1,
-		ClusterHost: "localhost",
-		ClusterPort: CLUSTER_PORT + 1,
-		NoLog:       true,
-		NoSigs:      true,
+		Host: "localhost",
+		Port: CLIENT_PORT + 1,
+		Cluster: ClusterOpts{
+			Host: "localhost",
+			Port: CLUSTER_PORT + 1,
+		},
+		NoLog:  true,
+		NoSigs: true,
 	}
 	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
 	opts.Routes = []*url.URL{routeURL}

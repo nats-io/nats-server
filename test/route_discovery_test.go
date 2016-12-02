@@ -29,7 +29,7 @@ func TestSeedFirstRouteInfo(t *testing.T) {
 	s, opts := runSeedServer(t)
 	defer s.Shutdown()
 
-	rc := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc.Close()
 
 	_, routeExpect := setupRoute(t, rc, opts)
@@ -49,7 +49,7 @@ func TestSeedMultipleRouteInfo(t *testing.T) {
 	s, opts := runSeedServer(t)
 	defer s.Shutdown()
 
-	rc1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc1 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc1.Close()
 
 	rc1ID := "2222"
@@ -67,7 +67,7 @@ func TestSeedMultipleRouteInfo(t *testing.T) {
 	routeSend1("PING\r\n")
 	route1Expect(pongRe)
 
-	rc2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc2 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc2.Close()
 
 	rc2ID := "2224"
@@ -108,7 +108,7 @@ func TestSeedMultipleRouteInfo(t *testing.T) {
 	route2Expect(pongRe)
 
 	// Now let's do a third.
-	rc3 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc3 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc3.Close()
 
 	rc3ID := "2226"
@@ -153,7 +153,7 @@ func TestSeedSolicitWorks(t *testing.T) {
 	defer s1.Shutdown()
 
 	// Create the routes string for others to connect to the seed.
-	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.ClusterHost, opts.ClusterPort)
+	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.Cluster.Host, opts.Cluster.Port)
 
 	// Run Server #2
 	s2Opts := nextServerOpts(opts)
@@ -249,7 +249,7 @@ func TestStressSeedSolicitWorks(t *testing.T) {
 	defer s1.Shutdown()
 
 	// Create the routes string for others to connect to the seed.
-	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.ClusterHost, opts.ClusterPort)
+	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.Cluster.Host, opts.Cluster.Port)
 
 	s2Opts := nextServerOpts(opts)
 	s2Opts.Routes = server.RoutesFromStr(routesStr)
@@ -326,7 +326,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	defer s1.Shutdown()
 
 	// Create the routes string for others to connect to the seed.
-	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.ClusterHost, opts.ClusterPort)
+	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.Cluster.Host, opts.Cluster.Port)
 
 	// Run Server #2
 	s2Opts := nextServerOpts(opts)
@@ -338,7 +338,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	// Run Server #3
 	s3Opts := nextServerOpts(s2Opts)
 	// We will have s3 connect to s2, not the seed.
-	routesStr = fmt.Sprintf("nats-route://%s:%d/", s2Opts.ClusterHost, s2Opts.ClusterPort)
+	routesStr = fmt.Sprintf("nats-route://%s:%d/", s2Opts.Cluster.Host, s2Opts.Cluster.Port)
 	s3Opts.Routes = server.RoutesFromStr(routesStr)
 
 	s3 := RunServer(s3Opts)
@@ -384,18 +384,18 @@ func TestStressChainedSolicitWorks(t *testing.T) {
 	defer s1.Shutdown()
 
 	// Create the routes string for s2 to connect to the seed
-	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.ClusterHost, opts.ClusterPort)
+	routesStr := fmt.Sprintf("nats-route://%s:%d/", opts.Cluster.Host, opts.Cluster.Port)
 	s2Opts := nextServerOpts(opts)
 	s2Opts.Routes = server.RoutesFromStr(routesStr)
 
 	s3Opts := nextServerOpts(s2Opts)
 	// Create the routes string for s3 to connect to s2
-	routesStr = fmt.Sprintf("nats-route://%s:%d/", s2Opts.ClusterHost, s2Opts.ClusterPort)
+	routesStr = fmt.Sprintf("nats-route://%s:%d/", s2Opts.Cluster.Host, s2Opts.Cluster.Port)
 	s3Opts.Routes = server.RoutesFromStr(routesStr)
 
 	s4Opts := nextServerOpts(s3Opts)
 	// Create the routes string for s4 to connect to s3
-	routesStr = fmt.Sprintf("nats-route://%s:%d/", s3Opts.ClusterHost, s3Opts.ClusterPort)
+	routesStr = fmt.Sprintf("nats-route://%s:%d/", s3Opts.Cluster.Host, s3Opts.Cluster.Port)
 	s4Opts.Routes = server.RoutesFromStr(routesStr)
 
 	for i := 0; i < 10; i++ {
@@ -467,7 +467,7 @@ func TestAuthSeedSolicitWorks(t *testing.T) {
 	defer s1.Shutdown()
 
 	// Create the routes string for others to connect to the seed.
-	routesStr := fmt.Sprintf("nats-route://%s:%s@%s:%d/", opts.ClusterUsername, opts.ClusterPassword, opts.ClusterHost, opts.ClusterPort)
+	routesStr := fmt.Sprintf("nats-route://%s:%s@%s:%d/", opts.Cluster.Username, opts.Cluster.Password, opts.Cluster.Host, opts.Cluster.Port)
 
 	// Run Server #2
 	s2Opts := nextServerOpts(opts)
@@ -580,7 +580,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 	s, opts := runSeedServer(t)
 	defer s.Shutdown()
 
-	rc1 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc1 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc1.Close()
 
 	rc1ID := "2222"
@@ -598,7 +598,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 	routeSend1("PING\r\n")
 	route1Expect(pongRe)
 
-	rc2 := createRouteConn(t, opts.ClusterHost, opts.ClusterPort)
+	rc2 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc2.Close()
 
 	rc2ID := "2224"

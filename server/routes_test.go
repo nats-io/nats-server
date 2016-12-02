@@ -21,18 +21,20 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	golden := &Options{
-		Host:               "localhost",
-		Port:               4242,
-		Username:           "derek",
-		Password:           "bella",
-		AuthTimeout:        1.0,
-		ClusterHost:        "127.0.0.1",
-		ClusterPort:        4244,
-		ClusterUsername:    "route_user",
-		ClusterPassword:    "top_secret",
-		ClusterAuthTimeout: 1.0,
-		LogFile:            "/tmp/nats_cluster_test.log",
-		PidFile:            "/tmp/nats_cluster_test.pid",
+		Host:        "localhost",
+		Port:        4242,
+		Username:    "derek",
+		Password:    "bella",
+		AuthTimeout: 1.0,
+		Cluster: ClusterOpts{
+			Host:        "127.0.0.1",
+			Port:        4244,
+			Username:    "route_user",
+			Password:    "top_secret",
+			AuthTimeout: 1.0,
+		},
+		LogFile: "/tmp/nats_cluster_test.log",
+		PidFile: "/tmp/nats_cluster_test.pid",
 	}
 
 	// Setup URLs
@@ -164,7 +166,7 @@ func checkClusterFormed(t *testing.T, servers ...*Server) {
 func nextServerOpts(opts *Options) *Options {
 	nopts := *opts
 	nopts.Port++
-	nopts.ClusterPort++
+	nopts.Cluster.Port++
 	nopts.HTTPPort++
 	return &nopts
 }
@@ -178,7 +180,7 @@ func TestSeedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -197,7 +199,7 @@ func TestSeedSolicitWorks(t *testing.T) {
 	nc1.Flush()
 
 	optsB := nextServerOpts(optsA)
-	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -231,7 +233,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -250,7 +252,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	nc1.Flush()
 
 	optsB := nextServerOpts(optsA)
-	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -284,7 +286,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -304,7 +306,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 
 	optsB := nextServerOpts(optsA)
 	// Server B connects to A
-	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.ClusterHost, optsA.ClusterPort))
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -338,7 +340,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -358,7 +360,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 
 	optsB := nextServerOpts(optsA)
 	// Server B connects to A
-	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.ClusterHost, optsA.ClusterPort))
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -389,7 +391,7 @@ func TestRouteTLSHandshakeError(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	opts := DefaultOptions
-	opts.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.ClusterHost, optsSeed.ClusterPort))
+	opts.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
 
 	srv := RunServer(&opts)
 	defer srv.Shutdown()
@@ -411,8 +413,8 @@ func TestRouteTLSHandshakeError(t *testing.T) {
 
 func TestBlockedShutdownOnRouteAcceptLoopFailure(t *testing.T) {
 	opts := DefaultOptions
-	opts.ClusterHost = "x.x.x.x"
-	opts.ClusterPort = 7222
+	opts.Cluster.Host = "x.x.x.x"
+	opts.Cluster.Port = 7222
 
 	s := New(&opts)
 	go s.Start()
@@ -435,13 +437,13 @@ func TestBlockedShutdownOnRouteAcceptLoopFailure(t *testing.T) {
 
 func TestRouteUseIPv6(t *testing.T) {
 	opts := DefaultOptions
-	opts.ClusterHost = "::"
-	opts.ClusterPort = 6222
+	opts.Cluster.Host = "::"
+	opts.Cluster.Port = 6222
 
 	// I believe that there is no IPv6 support on Travis...
 	// Regardless, cannot have this test fail simply because IPv6 is disabled
 	// on the host.
-	hp := net.JoinHostPort(opts.ClusterHost, strconv.Itoa(opts.ClusterPort))
+	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(opts.Cluster.Port))
 	_, err := net.ResolveTCPAddr("tcp", hp)
 	if err != nil {
 		t.Skipf("Skipping this test since there is no IPv6 support on this host: %v", err)
