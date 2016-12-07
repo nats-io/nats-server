@@ -1,7 +1,7 @@
 language: go
 go:
-- 1.6.3
-- 1.7.3
+- 1.6.4
+- 1.7.4
 env:
   global:
     - GO15VENDOREXPERIMENT=1
@@ -18,5 +18,5 @@ script:
 - go test -v -race ./...
 - staticcheck -ignore="github.com/nats-io/gnatsd/*/*_test.go:SA2002" ./...
 after_script:
-- if [ "$TRAVIS_GO_VERSION" = "1.7.3" ]; then ./scripts/cov.sh TRAVIS; fi
-- if [ "$TRAVIS_GO_VERSION" = "1.7.3" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
+- if [ "$TRAVIS_GO_VERSION" = "1.7" ]; then ./scripts/cov.sh TRAVIS; fi
+- if [ "$TRAVIS_GO_VERSION" = "1.7" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
