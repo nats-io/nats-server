@@ -2,21 +2,19 @@ language: go
 go:
 - 1.6.4
 - 1.7.4
-env:
-  global:
-    - GO15VENDOREXPERIMENT=1
 install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
 - go get honnef.co/go/staticcheck/cmd/staticcheck
 script:
+- EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
 - go build
 - go fmt ./...
-- go vet ./...
-- go test -i -race ./...
-- go test -v -race ./...
-- staticcheck -ignore="github.com/nats-io/gnatsd/*/*_test.go:SA2002" ./...
+- go vet $EXCLUDE_VENDOR
+- go test -i -race $EXCLUDE_VENDOR
+- go test -v -race $EXCLUDE_VENDOR
+- staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
 after_script:
-- if [ "$TRAVIS_GO_VERSION" = "1.7" ]; then ./scripts/cov.sh TRAVIS; fi
-- if [ "$TRAVIS_GO_VERSION" = "1.7" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
+- if [ "$TRAVIS_GO_VERSION" \> "1.7." ]; then ./scripts/cov.sh TRAVIS; fi
+- if [ "$TRAVIS_GO_VERSION" \> "1.7." ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
