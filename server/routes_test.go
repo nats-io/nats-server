@@ -455,9 +455,19 @@ func TestRouteUseIPv6(t *testing.T) {
 	routeUp := false
 	timeout := time.Now().Add(5 * time.Second)
 	for time.Now().Before(timeout) && !routeUp {
-		if s.GetRouteListenEndpoint() == "" {
-			time.Sleep(time.Second)
-			continue
+		// We know that the server is local and listening to
+		// all IPv6 interfaces. Try connect using IPv6 loopback.
+		if conn, err := net.Dial("tcp", "[::1]:6222"); err != nil {
+			// Travis seem to have the server actually listening to 0.0.0.0,
+			// so try with 127.0.0.1
+			if conn, err := net.Dial("tcp", "127.0.0.1:6222"); err != nil {
+				time.Sleep(time.Second)
+				continue
+			} else {
+				conn.Close()
+			}
+		} else {
+			conn.Close()
 		}
 		routeUp = true
 	}
