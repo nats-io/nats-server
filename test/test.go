@@ -97,28 +97,11 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	// Run server in Go routine.
 	go s.Start()
 
-	end := time.Now().Add(10 * time.Second)
-	for time.Now().Before(end) {
-		addr := s.GetListenEndpoint()
-		if addr == "" {
-			time.Sleep(50 * time.Millisecond)
-			// Retry. We might take a little while to open a connection.
-			continue
-		}
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			// Retry after 50ms
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		conn.Close()
-		// Wait a bit to give a chance to the server to remove this
-		// "client" from its state, which may otherwise interfere with
-		// some tests.
-		time.Sleep(25 * time.Millisecond)
-		return s
+	// Wait for accept loop(s) to be started
+	if !s.ReadyForConnections(10 * time.Second) {
+		panic("Unable to start NATS Server in Go Routine")
 	}
-	panic("Unable to start NATS Server in Go Routine")
+	return s
 }
 
 func stackFatalf(t tLogger, f string, args ...interface{}) {

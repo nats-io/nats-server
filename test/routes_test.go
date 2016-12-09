@@ -21,43 +21,6 @@ import (
 
 const clientProtoInfo = 1
 
-func shutdownServerAndWait(t *testing.T, s *server.Server) bool {
-	listenSpec := s.GetListenEndpoint()
-	routeListenSpec := s.GetRouteListenEndpoint()
-
-	s.Shutdown()
-
-	// For now, do this only on Windows. Lots of tests would fail
-	// without this because the listen port would linger from one
-	// test to another causing failures.
-	checkShutdown := func(listen string) bool {
-		down := false
-		maxTime := time.Now().Add(5 * time.Second)
-		for time.Now().Before(maxTime) {
-			conn, err := net.Dial("tcp", listen)
-			if err != nil {
-				down = true
-				break
-			}
-			conn.Close()
-			// Retry after 50ms
-			time.Sleep(50 * time.Millisecond)
-		}
-		return down
-	}
-	if listenSpec != "" {
-		if !checkShutdown(listenSpec) {
-			return false
-		}
-	}
-	if routeListenSpec != "" {
-		if !checkShutdown(routeListenSpec) {
-			return false
-		}
-	}
-	return true
-}
-
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 	return RunServerWithConfig("./configs/cluster.conf")
 }
@@ -196,9 +159,7 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 
 	// Explicitly shutdown the server, otherwise this test would
 	// cause following test to fail.
-	if down := shutdownServerAndWait(t, s); !down {
-		t.Fatal("Unable to verify server was shutdown")
-	}
+	s.Shutdown()
 }
 
 func TestSendRouteSolicit(t *testing.T) {
@@ -349,12 +310,6 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	defer client.Close()
 
-	// Make sure client connection is fully processed before creating route
-	// connection, so we are sure that client ID will be "2" ("1" being used
-	// by the connection created to check the server is started)
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
 	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
@@ -364,9 +319,9 @@ func TestRouteQueueSemantics(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
-	qrsid1 := "QRSID:2:1"
+	qrsid1 := "QRSID:1:1"
 	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid1))
-	qrsid2 := "QRSID:2:2"
+	qrsid2 := "QRSID:1:2"
 	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid2))
 
 	// Use ping roundtrip to make sure its processed.
@@ -384,7 +339,7 @@ func TestRouteQueueSemantics(t *testing.T) {
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
 
 	// Add normal Interest as well to route interest.
-	routeSend("SUB foo RSID:2:4\r\n")
+	routeSend("SUB foo RSID:1:4\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
@@ -400,8 +355,8 @@ func TestRouteQueueSemantics(t *testing.T) {
 	matches = expectMsgs(2)
 
 	// Expect first to be the normal subscriber, next will be the queue one.
-	if string(matches[0][sidIndex]) != "RSID:2:4" &&
-		string(matches[1][sidIndex]) != "RSID:2:4" {
+	if string(matches[0][sidIndex]) != "RSID:1:4" &&
+		string(matches[1][sidIndex]) != "RSID:1:4" {
 		t.Fatalf("Did not received routed sid\n")
 	}
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
@@ -432,9 +387,9 @@ func TestRouteQueueSemantics(t *testing.T) {
 	routeExpect(subRe)
 
 	// Deliver a MSG from the route itself, make sure the client receives both.
-	routeSend("MSG foo RSID:2:1 2\r\nok\r\n")
+	routeSend("MSG foo RSID:1:1 2\r\nok\r\n")
 	// Queue group one.
-	routeSend("MSG foo QRSID:2:2 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:1:2 2\r\nok\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")

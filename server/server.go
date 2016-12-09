@@ -839,51 +839,21 @@ func (s *Server) Addr() net.Addr {
 	return s.listener.Addr()
 }
 
-// GetListenEndpoint will return a string of the form host:port suitable for
-// a connect. Will return empty string if the server is not ready to accept
-// client connections.
-func (s *Server) GetListenEndpoint() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Wait for the listener to be set, see note about RANDOM_PORT below
-	if s.listener == nil {
-		return ""
+// ReadyForConnections returns `true` if the server is ready to accept client
+// and, if routing is enabled, route connections. If after the duration
+// `dur` the server is still not ready, returns `false`.
+func (s *Server) ReadyForConnections(dur time.Duration) bool {
+	end := time.Now().Add(dur)
+	for time.Now().Before(end) {
+		s.mu.Lock()
+		ok := s.listener != nil && (s.opts.Cluster.Port == 0 || s.routeListener != nil)
+		s.mu.Unlock()
+		if ok {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-
-	host := s.opts.Host
-
-	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
-	// We replace it with "localhost" when that's the case.
-	if host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "localhost"
-	}
-
-	// Return the opts's Host and Port. Note that the Port may be set
-	// when the listener is started, due to the use of RANDOM_PORT
-	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
-}
-
-// GetRouteListenEndpoint will return a string of the form host:port suitable
-// for a connect. Will return empty string if the server is not configured for
-// routing or not ready to accept route connections.
-func (s *Server) GetRouteListenEndpoint() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.routeListener == nil {
-		return ""
-	}
-
-	host := s.opts.Cluster.Host
-
-	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
-	// We replace it with "localhost" when that's the case.
-	if host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "localhost"
-	}
-
-	// Return the cluster's Host and Port.
-	return net.JoinHostPort(host, strconv.Itoa(s.opts.Cluster.Port))
+	return false
 }
 
 // ID returns the server's ID

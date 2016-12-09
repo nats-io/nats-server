@@ -598,13 +598,13 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		return
 	}
 
-	// Let them know we are up
-	close(ch)
-
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	s.routeListener = l
 	s.mu.Unlock()
+
+	// Let them know we are up
+	close(ch)
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
