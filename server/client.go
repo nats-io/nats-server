@@ -107,6 +107,11 @@ type client struct {
 	wfc   int
 	msgb  [msgScratchSize]byte
 	last  time.Time
+	rate  bool
+	ram   int
+	rab   int64
+	rlc   time.Time
+	rq    chan struct{}
 	parseState
 
 	route *route
@@ -192,6 +197,9 @@ func (c *client) initClient() {
 	// after we process inbound msgs from our own connection.
 	c.pcd = make(map[*client]struct{})
 
+	// Channel to kick out a client from a sleep due to rate limit
+	c.rq = make(chan struct{}, 1)
+
 	// snapshot the string version of the connection
 	conn := "-"
 	if ip, ok := c.nc.(*net.TCPConn); ok {
@@ -244,6 +252,10 @@ func (c *client) readLoop() {
 	c.mu.Lock()
 	nc := c.nc
 	s := c.srv
+	c.rate = s.opts.RateMaxMsgs > 0 || s.opts.RateMaxBytes > 0
+	if c.rate {
+		c.rlc = time.Now()
+	}
 	defer s.grWG.Done()
 	c.mu.Unlock()
 
@@ -980,8 +992,9 @@ func (c *client) processMsg(msg []byte) {
 
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.cache.inMsgs += 1
-	c.cache.inBytes += len(msg) - LEN_CR_LF
+	msgSize := len(msg) - LEN_CR_LF
+	c.cache.inMsgs++
+	c.cache.inBytes += msgSize
 
 	if c.trace {
 		c.traceMsg(msg)
@@ -1029,6 +1042,31 @@ func (c *client) processMsg(msg []byte) {
 			if notAllowed {
 				return
 			}
+		}
+	}
+
+	if c.rate {
+		now := time.Now()
+		delta := now.Sub(c.rlc)
+		if delta < time.Second {
+			c.ram++
+			c.rab += int64(msgSize)
+			if (srv.opts.RateMaxMsgs > 0 && c.ram >= srv.opts.RateMaxMsgs) ||
+				(srv.opts.RateMaxBytes > 0 && c.rab >= srv.opts.RateMaxBytes) {
+				select {
+				case <-c.rq:
+					// Stop rate limiting in case processMsg is called again.
+					// This will allow for fast drainage of the socket.
+					c.mu.Lock()
+					c.rate = false
+					c.mu.Unlock()
+					return
+				case <-time.After(time.Second - delta):
+				}
+				c.ram, c.rab, c.rlc = 0, int64(0), time.Now()
+			}
+		} else {
+			c.ram, c.rab, c.rlc = 1, int64(msgSize), now
 		}
 	}
 
@@ -1254,6 +1292,13 @@ func (c *client) clearConnection() {
 	}
 	c.nc.Close()
 	c.nc.SetWriteDeadline(time.Time{})
+	if c.rate {
+		// Kick out processMsg() if it is in a sleep (doing rate limiting).
+		select {
+		case c.rq <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (c *client) typeString() string {
