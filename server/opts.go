@@ -42,6 +42,7 @@ type ClusterOpts struct {
 	TLSConfig   *tls.Config `json:"-"`
 	ListenStr   string      `json:"-"`
 	NoAdvertise bool        `json:"-"`
+	ConnRetries int         `json:"-"`
 }
 
 // Options block for gnatsd server.
@@ -314,6 +315,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.TLSTimeout = tc.Timeout
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
+		case "conn_retries":
+			opts.Cluster.ConnRetries = int(mv.(int64))
 		}
 	}
 	return nil
@@ -646,6 +649,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.Cluster.NoAdvertise {
 		opts.Cluster.NoAdvertise = true
+	}
+	if flagOpts.Cluster.ConnRetries != 0 {
+		opts.Cluster.ConnRetries = flagOpts.Cluster.ConnRetries
 	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)

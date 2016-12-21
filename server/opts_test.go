@@ -192,6 +192,7 @@ func TestMergeOverrides(t *testing.T) {
 		MaxPingsOut:    3,
 		Cluster: ClusterOpts{
 			NoAdvertise: true,
+			ConnRetries: 2,
 		},
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
@@ -208,6 +209,7 @@ func TestMergeOverrides(t *testing.T) {
 		ProfPort: 6789,
 		Cluster: ClusterOpts{
 			NoAdvertise: true,
+			ConnRetries: 2,
 		},
 	}
 	merged := MergeOptions(fopts, opts)
