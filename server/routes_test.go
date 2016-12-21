@@ -32,6 +32,8 @@ func TestRouteConfig(t *testing.T) {
 			Username:    "route_user",
 			Password:    "top_secret",
 			AuthTimeout: 1.0,
+			NoAdvertise: true,
+			ConnRetries: 2,
 		},
 		LogFile: "/tmp/nats_cluster_test.log",
 		PidFile: "/tmp/nats_cluster_test.pid",
