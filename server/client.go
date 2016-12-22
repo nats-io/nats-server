@@ -147,6 +147,8 @@ func (c *client) GetOpts() *clientOpts {
 	return &c.opts
 }
 
+// GetTLSConnectionState returns the TLS ConnectionState if TLS is enabled, nil
+// otherwise. Implements the ClientAuth interface.
 func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 	tc, ok := c.nc.(*tls.Conn)
 	if !ok {
