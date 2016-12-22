@@ -107,6 +107,14 @@ func TestClientCreateAndInfo(t *testing.T) {
 	}
 }
 
+func TestNonTLSConnectionState(t *testing.T) {
+	_, c, _ := setupClient()
+	state := c.GetTLSConnectionState()
+	if state != nil {
+		t.Error("GetTLSConnectionState() returned non-nil")
+	}
+}
+
 func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
@@ -712,6 +720,11 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	}
 	if cli == nil {
 		t.Fatal("Did not register client on time")
+	}
+	// Test GetTLSConnectionState
+	state := cli.GetTLSConnectionState()
+	if state == nil {
+		t.Error("GetTLSConnectionState() returned nil")
 	}
 	// Fill the buffer. Need to send 1 byte at a time so that we timeout here
 	// the nc.Close() would block due to a write that can not complete.

@@ -2,6 +2,10 @@
 
 package server
 
+import (
+	"crypto/tls"
+)
+
 // Auth is an interface for implementing authentication
 type Auth interface {
 	// Check if a client is authorized to connect
@@ -12,6 +16,8 @@ type Auth interface {
 type ClientAuth interface {
 	// Get options associated with a client
 	GetOpts() *clientOpts
+	// If TLS is enabled, TLS ConnectionState, nil otherwise
+	GetTLSConnectionState() *tls.ConnectionState
 	// Optionally map a user after auth.
 	RegisterUser(*User)
 }
