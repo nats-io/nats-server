@@ -191,7 +191,8 @@ func TestMergeOverrides(t *testing.T) {
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 		Cluster: ClusterOpts{
-			NoAdvertise: true,
+			NoAdvertise:    true,
+			ConnectRetries: 2,
 		},
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
@@ -207,7 +208,8 @@ func TestMergeOverrides(t *testing.T) {
 		HTTPPort: DEFAULT_HTTP_PORT,
 		ProfPort: 6789,
 		Cluster: ClusterOpts{
-			NoAdvertise: true,
+			NoAdvertise:    true,
+			ConnectRetries: 2,
 		},
 	}
 	merged := MergeOptions(fopts, opts)

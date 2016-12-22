@@ -689,18 +689,25 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 
 func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 	defer s.grWG.Done()
+	attempts := 0
 	for s.isRunning() && rURL != nil {
 		Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
+			if !tryForEver {
+				if s.opts.Cluster.ConnectRetries <= 0 {
+					return
+				}
+				attempts++
+				if attempts > s.opts.Cluster.ConnectRetries {
+					return
+				}
+			}
 			select {
 			case <-s.rcQuit:
 				return
 			case <-time.After(DEFAULT_ROUTE_CONNECT):
-				if !tryForEver {
-					return
-				}
 				continue
 			}
 		}

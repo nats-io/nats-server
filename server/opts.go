@@ -33,15 +33,16 @@ type Permissions struct {
 
 // Options for clusters.
 type ClusterOpts struct {
-	Host        string      `json:"addr"`
-	Port        int         `json:"cluster_port"`
-	Username    string      `json:"-"`
-	Password    string      `json:"-"`
-	AuthTimeout float64     `json:"auth_timeout"`
-	TLSTimeout  float64     `json:"-"`
-	TLSConfig   *tls.Config `json:"-"`
-	ListenStr   string      `json:"-"`
-	NoAdvertise bool        `json:"-"`
+	Host           string      `json:"addr"`
+	Port           int         `json:"cluster_port"`
+	Username       string      `json:"-"`
+	Password       string      `json:"-"`
+	AuthTimeout    float64     `json:"auth_timeout"`
+	TLSTimeout     float64     `json:"-"`
+	TLSConfig      *tls.Config `json:"-"`
+	ListenStr      string      `json:"-"`
+	NoAdvertise    bool        `json:"-"`
+	ConnectRetries int         `json:"-"`
 }
 
 // Options block for gnatsd server.
@@ -314,6 +315,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.TLSTimeout = tc.Timeout
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
+		case "connect_retries":
+			opts.Cluster.ConnectRetries = int(mv.(int64))
 		}
 	}
 	return nil
@@ -646,6 +649,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.Cluster.NoAdvertise {
 		opts.Cluster.NoAdvertise = true
+	}
+	if flagOpts.Cluster.ConnectRetries != 0 {
+		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
 	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)

@@ -3,6 +3,7 @@
 package test
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -636,5 +637,67 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 	s2 := strings.ToLower(rip)
 	if s1 != s2 {
 		t.Fatalf("Expected IP %s, got %s", s1, s2)
+	}
+}
+
+func TestImplicitRouteRetry(t *testing.T) {
+	srvSeed, optsSeed := runSeedServer(t)
+	defer srvSeed.Shutdown()
+
+	optsA := nextServerOpts(optsSeed)
+	optsA.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
+	optsA.Cluster.ConnectRetries = 5
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB := nextServerOpts(optsA)
+	rcb := createRouteConn(t, optsSeed.Cluster.Host, optsSeed.Cluster.Port)
+	defer rcb.Close()
+	rcbID := "ServerB"
+	routeBSend, routeBExpect := setupRouteEx(t, rcb, optsB, rcbID)
+	routeBExpect(infoRe)
+	// register ourselves via INFO
+	rbInfo := server.Info{ID: rcbID, Host: optsB.Cluster.Host, Port: optsB.Cluster.Port}
+	b, _ := json.Marshal(rbInfo)
+	infoJSON := fmt.Sprintf(server.InfoProto, b)
+	routeBSend(infoJSON)
+	routeBSend("PING\r\n")
+	routeBExpect(pongRe)
+
+	// srvA should try to connect. Wait to make sure that it fails.
+	time.Sleep(1200 * time.Millisecond)
+
+	// Setup a fake route listen for routeB
+	rbListen, err := net.Listen("tcp", fmt.Sprintf("%s:%d", optsB.Cluster.Host, optsB.Cluster.Port))
+	if err != nil {
+		t.Fatalf("Error during listen: %v", err)
+	}
+	c, err := rbListen.Accept()
+	if err != nil {
+		t.Fatalf("Error during accept: %v", err)
+	}
+	defer c.Close()
+
+	br := bufio.NewReaderSize(c, 32768)
+	// Consume CONNECT and INFO
+	for i := 0; i < 2; i++ {
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf, _, err := br.ReadLine()
+		c.SetReadDeadline(time.Time{})
+		if err != nil {
+			t.Fatalf("Error reading: %v", err)
+		}
+		if i == 0 {
+			continue
+		}
+		buf = buf[len("INFO "):]
+		info := &server.Info{}
+		if err := json.Unmarshal(buf, info); err != nil {
+			t.Fatalf("Error during unmarshal: %v", err)
+		}
+		// Check INFO is from server A.
+		if info.ID != srvA.ID() {
+			t.Fatalf("Expected CONNECT from %v, got CONNECT from %v", srvA.ID(), info.ID)
+		}
 	}
 }
