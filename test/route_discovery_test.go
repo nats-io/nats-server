@@ -646,7 +646,7 @@ func TestImplicitRouteRetry(t *testing.T) {
 
 	optsA := nextServerOpts(optsSeed)
 	optsA.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host, optsSeed.Cluster.Port))
-	optsA.Cluster.ConnRetries = 5
+	optsA.Cluster.ConnectRetries = 5
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 

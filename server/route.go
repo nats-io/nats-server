@@ -696,11 +696,11 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
 			if !tryForEver {
-				if s.opts.Cluster.ConnRetries <= 0 {
+				if s.opts.Cluster.ConnectRetries <= 0 {
 					return
 				}
 				attempts++
-				if attempts > s.opts.Cluster.ConnRetries {
+				if attempts > s.opts.Cluster.ConnectRetries {
 					return
 				}
 			}
