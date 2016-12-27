@@ -98,12 +98,13 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile string
-	KeyFile  string
-	CaFile   string
-	Verify   bool
-	Timeout  float64
-	Ciphers  []uint16
+	CertFile         string
+	KeyFile          string
+	CaFile           string
+	Verify           bool
+	Timeout          float64
+	Ciphers          []uint16
+	CurvePreferences []tls.CurveID
 }
 
 var tlsUsage = `
@@ -120,6 +121,11 @@ e.g.
         cipher_suites: [
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
             "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        ]
+        curve_preferences: [
+            "CurveP256",
+            "CurveP384",
+            "CurveP521"
         ]
     }
 
@@ -471,11 +477,14 @@ func checkSubjectArray(sa []string) ([]string, error) {
 
 // PrintTLSHelpAndDie prints TLS usage and exits.
 func PrintTLSHelpAndDie() {
-	fmt.Printf("%s\n", tlsUsage)
+	fmt.Printf("%s", tlsUsage)
 	for k := range cipherMap {
 		fmt.Printf("    %s\n", k)
 	}
-	fmt.Printf("\n")
+	fmt.Printf("\nAvailable curve preferences include:\n")
+	for k := range curvePreferenceMap {
+		fmt.Printf("    %s\n", k)
+	}
 	os.Exit(0)
 }
 
@@ -487,6 +496,14 @@ func parseCipher(cipherName string) (uint16, error) {
 	}
 
 	return cipher, nil
+}
+
+func parseCurvePreferences(curveName string) (tls.CurveID, error) {
+	curve, exists := curvePreferenceMap[curveName]
+	if !exists {
+		return 0, fmt.Errorf("Unrecognized curve preference %s", curveName)
+	}
+	return curve, nil
 }
 
 // Helper function to parse TLS configs.
@@ -531,6 +548,19 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 				}
 				tc.Ciphers = append(tc.Ciphers, cipher)
 			}
+		case "curve_preferences":
+			ra := mv.([]interface{})
+			if len(ra) == 0 {
+				return nil, fmt.Errorf("error parsing tls config, 'curve_preferences' cannot be empty")
+			}
+			tc.CurvePreferences = make([]tls.CurveID, 0, len(ra))
+			for _, r := range ra {
+				cps, err := parseCurvePreferences(r.(string))
+				if err != nil {
+					return nil, err
+				}
+				tc.CurvePreferences = append(tc.CurvePreferences, cps)
+			}
 		case "timeout":
 			at := float64(0)
 			switch mv.(type) {
@@ -548,6 +578,11 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 	// If cipher suites were not specified then use the defaults
 	if tc.Ciphers == nil {
 		tc.Ciphers = defaultCipherSuites()
+	}
+
+	// If curve preferences were not specified, then use the defaults
+	if tc.CurvePreferences == nil {
+		tc.CurvePreferences = defaultCurvePreferences()
 	}
 
 	return &tc, nil
@@ -569,6 +604,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	// Create TLSConfig
 	// We will determine the cipher suites that we prefer.
 	config := tls.Config{
+		CurvePreferences:         tc.CurvePreferences,
 		Certificates:             []tls.Certificate{cert},
 		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,

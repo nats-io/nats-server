@@ -159,13 +159,49 @@ func TestTLSConfigFile(t *testing.T) {
 	// Test an unrecognized/bad cipher
 	opts, err = ProcessConfigFile("./configs/tls_bad_cipher.conf")
 	if err == nil {
-		t.Fatalf("Did not receive an error from a unrecognized cipher.")
+		t.Fatal("Did not receive an error from a unrecognized cipher.")
 	}
 
 	// Test an empty cipher entry in a config file.
 	opts, err = ProcessConfigFile("./configs/tls_empty_cipher.conf")
 	if err == nil {
-		t.Fatalf("Did not receive an error from empty cipher_suites.")
+		t.Fatal("Did not receive an error from empty cipher_suites.")
+	}
+
+	// Test a curve preference from the config.
+	curves := []tls.CurveID{
+		tls.CurveP256,
+	}
+
+	// test on a file that  will load the curve preference defaults
+	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+
+	if !reflect.DeepEqual(opts.TLSConfig.CurvePreferences, defaultCurvePreferences()) {
+		t.Fatalf("Got incorrect curve preference list: [%+v]", tlsConfig.CurvePreferences)
+	}
+
+	// Test specifying a single curve preference
+	opts, err = ProcessConfigFile("./configs/tls_curve_prefs.conf")
+	if err != nil {
+		t.Fatal("Did not receive an error from a unrecognized cipher.")
+	}
+
+	if !reflect.DeepEqual(opts.TLSConfig.CurvePreferences, curves) {
+		t.Fatalf("Got incorrect cipher suite list: [%+v]", tlsConfig.CurvePreferences)
+	}
+
+	// Test an unrecognized/bad curve preference
+	opts, err = ProcessConfigFile("./configs/tls_bad_curve_prefs.conf")
+	if err == nil {
+		t.Fatal("Did not receive an error from a unrecognized curve preference.")
+	}
+	// Test an empty curve preference
+	opts, err = ProcessConfigFile("./configs/tls_empty_curve_prefs.conf")
+	if err == nil {
+		t.Fatal("Did not receive an error from empty curve preferences.")
 	}
 }
 
