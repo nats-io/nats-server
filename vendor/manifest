@@ -26,6 +26,15 @@
 			"branch": "master",
 			"path": "/blowfish",
 			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/sys/windows",
+			"repository": "https://go.googlesource.com/sys",
+			"vcs": "git",
+			"revision": "d75a52659825e75fff6158388dddc6a5b04f9ba5",
+			"branch": "master",
+			"path": "windows",
+			"notests": true
 		}
 	]
 }
