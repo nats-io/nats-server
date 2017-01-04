@@ -251,3 +251,47 @@ func TestTLSBadAuthError(t *testing.T) {
 		t.Fatalf("Excpected and auth violation, got %v\n", err)
 	}
 }
+
+func TestTLSConnectionCurvePref(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls_curve_pref.conf")
+	defer srv.Shutdown()
+
+	if len(opts.TLSConfig.CurvePreferences) != 1 {
+		t.Fatal("Invalid curve preference loaded.")
+	}
+
+	if opts.TLSConfig.CurvePreferences[0] != tls.CurveP256 {
+		t.Fatalf("Invalid curve preference loaded [%v].", opts.TLSConfig.CurvePreferences[0])
+	}
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
+	nc, err := nats.Connect(nurl)
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server")
+	}
+
+	// Do simple SecureConnect
+	nc, err = nats.Connect(fmt.Sprintf("tls://%s/", endpoint))
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server with no auth")
+	}
+
+	// Now do more advanced checking, verifying servername and using rootCA.
+
+	nc, err = nats.Connect(nurl, nats.RootCAs("./configs/certs/ca.pem"))
+	if err != nil {
+		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
+	}
+	defer nc.Close()
+
+	subj := "foo-tls"
+	sub, _ := nc.SubscribeSync(subj)
+
+	nc.Publish(subj, []byte("We are Secure!"))
+	nc.Flush()
+	nmsgs, _ := sub.QueuedMsgs()
+	if nmsgs != 1 {
+		t.Fatalf("Expected to receive a message over the TLS connection")
+	}
+}

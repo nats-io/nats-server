@@ -478,7 +478,7 @@ Note that `_INBOX.*` subscribe permissions must be granted in order to use the r
 ### TLS
 
 As of Release 0.7.0, the server can use modern TLS semantics for client connections, route connections, and the HTTPS monitoring port.
-The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vunerabilities. The
+The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vulnerabilities. The
 server's preferences when building with Go1.5 are as follows.
 
 ```go
@@ -492,7 +492,17 @@ func defaultCipherSuites() []uint16 {
 	}
 }
 ```
-
+The curve preferences are also re-ordered to provide the most secure
+environment available, and are as follows:
+```go
+func defaultCurvePreferences() []tls.CurveID {
+	return []tls.CurveID{
+		tls.CurveP521,
+		tls.CurveP384,
+		tls.CurveP256,
+	}
+}
+```
 Generating self signed certs and intermediary certificate authorities is beyond the scope here, but this document can be helpful in addition to Google Search: <a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>.
 
 The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured with a CA authority to verify the client certificates.
