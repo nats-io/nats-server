@@ -1020,7 +1020,7 @@ func TestConnzWithRoutes(t *testing.T) {
 		NoLog:  true,
 		NoSigs: true,
 	}
-	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
+	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", CLUSTER_PORT))
 	opts.Routes = []*url.URL{routeURL}
 
 	sc := RunServer(&opts)
