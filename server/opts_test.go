@@ -69,6 +69,8 @@ func TestConfigFile(t *testing.T) {
 		MaxConn:        100,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
+		RateMaxMsgs:    1000000,
+		RateMaxBytes:   100 * 1024 * 1024,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -230,6 +232,8 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		RateMaxMsgs:  10000,
+		RateMaxBytes: 10000 * 1024,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -247,6 +251,8 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		RateMaxMsgs:  10000,
+		RateMaxBytes: 10000 * 1024,
 	}
 	merged := MergeOptions(fopts, opts)
 

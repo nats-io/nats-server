@@ -188,6 +188,10 @@ max_payload: 65536
 
 # slow consumer threshold
 max_pending_size: 10000000
+
+# rate limit
+rate_msgs: 100
+rate_bytes: 100KB
 ```
 
 ## Variables

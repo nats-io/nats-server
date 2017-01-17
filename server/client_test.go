@@ -5,17 +5,17 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"crypto/tls"
 
 	"github.com/nats-io/go-nats"
 )
@@ -749,4 +749,162 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	// Close the client
 	cli.closeConnection()
 	ch <- true
+}
+
+func TestRateLimiting(t *testing.T) {
+	var nc *nats.Conn
+	msg := []byte("hello")
+	ch := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+
+	createConnFunc := func() *nats.Conn {
+		nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
+			DefaultOptions.Host, DefaultOptions.Port),
+			nats.NoReconnect())
+		if err != nil {
+			t.Fatalf("Error creating client: %v\n", err)
+		}
+		return nc
+	}
+	sendFunc := func() {
+		for i := 0; i < 300; i++ {
+			if err := nc.Publish("foo", msg); err != nil {
+				errCh <- fmt.Errorf("Error on publish: %v", err)
+				return
+			}
+		}
+		nc.Flush()
+		ch <- struct{}{}
+	}
+	checkRateFunc := func(rateShouldBeLimited bool) {
+		select {
+		case err := <-errCh:
+			stackFatalf(t, err.Error())
+		case <-ch:
+			if rateShouldBeLimited {
+				stackFatalf(t, "Rate should have been limited")
+			}
+		case <-time.After(time.Second):
+			if rateShouldBeLimited {
+				nc.Close()
+				<-ch
+				// Consume possible error
+				select {
+				case <-errCh:
+				default:
+				}
+			} else {
+				stackFatalf(t, "Rate should not have been limited")
+			}
+		}
+		if !rateShouldBeLimited {
+			nc.Close()
+		}
+	}
+
+	// No rate limiting
+	s := RunServer(nil)
+	defer s.Shutdown()
+	nc = createConnFunc()
+	go sendFunc()
+	checkRateFunc(false)
+	s.Shutdown()
+
+	// Rate limited to 100 msgs/sec
+	opts := DefaultOptions
+	opts.RateMaxMsgs = 100
+	s = RunServer(&opts)
+	defer s.Shutdown()
+	nc = createConnFunc()
+	go sendFunc()
+	checkRateFunc(true)
+	s.Shutdown()
+
+	// Rate limited to 500 bytes/sec
+	opts = DefaultOptions
+	opts.RateMaxBytes = 500
+	s = RunServer(&opts)
+	defer s.Shutdown()
+	nc = createConnFunc()
+	go sendFunc()
+	checkRateFunc(true)
+	s.Shutdown()
+
+	// Check that we can kick out processMsg from a sleep
+	opts = DefaultOptions
+	opts.RateMaxMsgs = 1
+	s = RunServer(&opts)
+	defer s.Shutdown()
+	nc = createConnFunc()
+	defer nc.Close()
+	nc.Flush()
+	// There should be 1 client only, with CID==1
+	s.mu.Lock()
+	cli := s.clients[1]
+	s.mu.Unlock()
+	// Since we set the rate to 1, sending this message
+	// should cause processMsg to go into a sleep
+	start := time.Now()
+	if err := nc.Publish("foo", msg); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	// Give time to get into processMsg
+	time.Sleep(100 * time.Millisecond)
+	// Check that we are in processMsg()
+	buf := make([]byte, 10000)
+	timeout := start.Add(time.Second)
+	inProcessMsg := false
+	for time.Now().Before(timeout) {
+		n := runtime.Stack(buf, true)
+		if strings.Contains(string(buf[:n]), "processMsg") {
+			inProcessMsg = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let's not fail the test for that. Travis can introduce
+	// delays that one would not get running local.
+	if inProcessMsg {
+		// Clear the connection - note that nc.Close() is not
+		// helping since the connection is still half opened,
+		// which means server can still read from socket.
+		cli.mu.Lock()
+		cli.clearConnection()
+		cli.mu.Unlock()
+		// Check the duration, it should be less than a second
+		dur := time.Now().Sub(start)
+		if dur >= 990*time.Millisecond {
+			t.Fatalf("May not have been kicked out from sleep")
+		}
+	}
+	s.Shutdown()
+
+	// Check counts are cleared when crossing over the 1 second period
+	opts = DefaultOptions
+	opts.RateMaxMsgs = 10000
+	s = RunServer(&opts)
+	defer s.Shutdown()
+	nc = createConnFunc()
+	defer nc.Close()
+	nc.Flush()
+	// There should be 1 client only, with CID==1
+	s.mu.Lock()
+	cli = s.clients[1]
+	s.mu.Unlock()
+	if err := nc.Publish("foo", msg); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := nc.Publish("foo", msg); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	nc.Flush()
+	cli.mu.Lock()
+	accumulatedMsgs := cli.ram
+	cli.mu.Unlock()
+	// Should be 1
+	if accumulatedMsgs != 1 {
+		t.Fatalf("Unexpected accumulated messages: %v", accumulatedMsgs)
+	}
+	s.Shutdown()
 }
