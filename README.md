@@ -185,9 +185,6 @@ max_control_line: 512
 
 # maximum payload
 max_payload: 65536
-
-# slow consumer threshold
-max_pending_size: 10000000
 ```
 
 ## Variables
