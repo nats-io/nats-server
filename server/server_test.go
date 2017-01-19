@@ -275,3 +275,53 @@ func TestProcessCommandLineArgs(t *testing.T) {
 		t.Errorf("Expected an error handling the command arguments")
 	}
 }
+
+func TestWriteDeadline(t *testing.T) {
+	opts := DefaultOptions
+	opts.WriteDeadline = 20 * time.Millisecond
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("CONNECT {}\r\nPING\r\nSUB foo 1\r\n")); err != nil {
+		t.Fatalf("Error sending protocols to server: %v", err)
+	}
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 1000000)
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		if err := sender.Publish("foo", payload); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	dur := time.Now().Sub(start)
+	if dur > 100*time.Millisecond {
+		t.Fatalf("Flush should have returned sooner, took: %v", dur)
+	}
+	// Wait for connection to be marked as closed: we need to read
+	// all available data in the socket before getting an error indicating
+	// that the socket is closed (EOF)
+	for {
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, err := c.Read(payload)
+		c.SetReadDeadline(time.Time{})
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				t.Fatal("Expected connection to be closed, not to timeout")
+			}
+			// test ok!
+			break
+		}
+	}
+}
