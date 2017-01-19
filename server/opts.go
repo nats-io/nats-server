@@ -82,6 +82,7 @@ type Options struct {
 	TLSKey         string        `json:"-"`
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
+	WriteDeadline  time.Duration `json:"-"`
 }
 
 // Configuration file authorization section.
@@ -234,6 +235,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 				return nil, err
 			}
 			opts.TLSTimeout = tc.Timeout
+		case "write_deadline":
+			opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
 		}
 	}
 	return opts, nil
@@ -840,5 +843,8 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxPayload == 0 {
 		opts.MaxPayload = MAX_PAYLOAD_SIZE
+	}
+	if opts.WriteDeadline == time.Duration(0) {
+		opts.WriteDeadline = DEFAULT_FLUSH_DEADLINE
 	}
 }

@@ -27,6 +27,7 @@ func TestDefaultOptions(t *testing.T) {
 			AuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
 			TLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
 		},
+		WriteDeadline: DEFAULT_FLUSH_DEADLINE,
 	}
 
 	opts := &Options{}
@@ -69,6 +70,7 @@ func TestConfigFile(t *testing.T) {
 		MaxConn:        100,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
+		WriteDeadline:  3 * time.Second,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -230,6 +232,7 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		WriteDeadline: 3 * time.Second,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

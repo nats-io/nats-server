@@ -275,3 +275,56 @@ func TestProcessCommandLineArgs(t *testing.T) {
 		t.Errorf("Expected an error handling the command arguments")
 	}
 }
+
+func TestWriteDeadline(t *testing.T) {
+	opts := DefaultOptions
+	opts.WriteDeadline = 20 * time.Millisecond
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("CONNECT {}\r\nPING\r\nSUB foo 1\r\n")); err != nil {
+		t.Fatalf("Error sending protocols to server: %v", err)
+	}
+	// Reduce socket buffer to increase reliability of getting
+	// write deadline errors.
+	c.(*net.TCPConn).SetReadBuffer(10)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 1000000)
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		if err := sender.Publish("foo", payload); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	dur := time.Now().Sub(start)
+	// user more than the write deadline to account for calls
+	// overhead, running with -race, etc...
+	if dur > 100*time.Millisecond {
+		t.Fatalf("Flush should have returned sooner, took: %v", dur)
+	}
+	// Flush sender connection to ensure that all data has been sent.
+	sender.Flush()
+	// At this point server should have closed connection c.
+
+	// On certain platforms, it may take more than one call before
+	// getting the error.
+	for i := 0; i < 100; i++ {
+		if _, err := c.Write([]byte("PUB bar 5\r\nhello\r\n")); err != nil {
+			// ok
+			return
+		}
+	}
+	t.Fatal("Connection should have been closed")
+}
