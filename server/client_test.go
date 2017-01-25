@@ -177,7 +177,7 @@ func TestClientConnect(t *testing.T) {
 }
 
 func TestClientConnectProto(t *testing.T) {
-	_, c, _ := setupClient()
+	_, c, r := setupClient()
 
 	// Basic Connect setting flags, proto should be zero (original proto)
 	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
@@ -210,6 +210,19 @@ func TestClientConnectProto(t *testing.T) {
 
 	// Illegal Option
 	connectOp = []byte("CONNECT {\"protocol\":22}\r\n")
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	// The client here is using a pipe, we need to be dequeuing
+	// data otherwise the server would be blocked trying to send
+	// the error back to it.
+	go func() {
+		defer wg.Done()
+		for {
+			if _, _, err := r.ReadLine(); err != nil {
+				return
+			}
+		}
+	}()
 	err = c.parse(connectOp)
 	if err == nil {
 		t.Fatalf("Expected to receive an error\n")
@@ -217,6 +230,7 @@ func TestClientConnectProto(t *testing.T) {
 	if err != ErrBadClientProtocol {
 		t.Fatalf("Expected err of %q, got  %q\n", ErrBadClientProtocol, err)
 	}
+	wg.Wait()
 }
 
 func TestClientPing(t *testing.T) {

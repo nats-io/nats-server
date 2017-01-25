@@ -281,8 +281,12 @@ func (c *client) readLoop() {
 		c.cache.subs = 0
 
 		if err := c.parse(b[:n]); err != nil {
-			// handled inline
-			if err != ErrMaxPayload && err != ErrAuthorization {
+			// If client connection has been closed, simply return,
+			// otherwise report a generic parsing error.
+			c.mu.Lock()
+			closed := c.nc == nil
+			c.mu.Unlock()
+			if !closed {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
 				c.closeConnection()
@@ -446,6 +450,7 @@ func (c *client) processConnect(arg []byte) error {
 	// Capture these under lock
 	proto := c.opts.Protocol
 	verbose := c.opts.Verbose
+	lang := c.opts.Lang
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -468,7 +473,15 @@ func (c *client) processConnect(arg []byte) error {
 
 	// Check client protocol request if it exists.
 	if typ == CLIENT && (proto < ClientProtoZero || proto > ClientProtoInfo) {
+		c.sendErr(ErrBadClientProtocol.Error())
+		c.closeConnection()
 		return ErrBadClientProtocol
+	} else if typ == ROUTER && lang != "" {
+		// Way to detect clients that incorrectly connect to the route listen
+		// port. Client provide Lang in the CONNECT protocol while ROUTEs don't.
+		c.sendErr(ErrClientConnectedToRoutePort.Error())
+		c.closeConnection()
+		return ErrClientConnectedToRoutePort
 	}
 
 	// Grab connection name of remote route.

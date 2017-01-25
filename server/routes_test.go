@@ -477,3 +477,46 @@ func TestRouteUseIPv6(t *testing.T) {
 		t.Fatal("Server failed to start route accept loop")
 	}
 }
+
+func TestClientConnectToRoutePort(t *testing.T) {
+	opts := DefaultOptions
+	opts.Cluster.NoAdvertise = true
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	clientURL := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	total := 100
+	for i := 0; i < total; i++ {
+		nc, err := nats.Connect(url)
+		if err == nil {
+			// It is possible that the client reconnects because
+			// it gets from the initial connect to the route the
+			// connectedUrl array and may be able to reconnects
+			// to the client URL.
+			// If connected, it should be to the client URL
+			if nc.ConnectedUrl() != clientURL {
+				t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
+			}
+			nc.Close()
+		}
+		// If error, it could be ErrClientConnectingToRoutePort or
+		// other (EOF, etc)... so not checking for specific one.
+	}
+
+	// When disabling randomization, the client URL is added to the server
+	// pool and so should be tried after the connection is closed trying
+	// to connect to the route port. Connect must always succeed and
+	// must be connected to client URL.
+	for i := 0; i < total; i++ {
+		nc, err := nats.Connect(url, nats.DontRandomize())
+		if err == nil {
+			if nc.ConnectedUrl() != clientURL {
+				t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
+			}
+			nc.Close()
+			continue
+		}
+		t.Fatalf("Error on connect: %v", err)
+	}
+}
