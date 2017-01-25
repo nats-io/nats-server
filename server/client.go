@@ -281,12 +281,8 @@ func (c *client) readLoop() {
 		c.cache.subs = 0
 
 		if err := c.parse(b[:n]); err != nil {
-			// If client connection has been closed, simply return,
-			// otherwise report a generic parsing error.
-			c.mu.Lock()
-			closed := c.nc == nil
-			c.mu.Unlock()
-			if !closed {
+			// handled inline
+			if err != ErrMaxPayload && err != ErrAuthorization {
 				c.Errorf("Error reading from client: %s", err.Error())
 				c.sendErr("Parser Error")
 				c.closeConnection()
