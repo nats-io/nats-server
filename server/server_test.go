@@ -308,7 +308,7 @@ func TestWriteDeadline(t *testing.T) {
 			t.Fatalf("Error on publish: %v", err)
 		}
 	}
-	dur := time.Now().Sub(start)
+	dur := time.Since(start)
 	// user more than the write deadline to account for calls
 	// overhead, running with -race, etc...
 	if dur > 100*time.Millisecond {
