@@ -159,15 +159,13 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 
 	// Test an unrecognized/bad cipher
-	opts, err = ProcessConfigFile("./configs/tls_bad_cipher.conf")
-	if err == nil {
-		t.Fatal("Did not receive an error from a unrecognized cipher.")
+	if _, err := ProcessConfigFile("./configs/tls_bad_cipher.conf"); err == nil {
+		t.Fatal("Did not receive an error from a unrecognized cipher")
 	}
 
 	// Test an empty cipher entry in a config file.
-	opts, err = ProcessConfigFile("./configs/tls_empty_cipher.conf")
-	if err == nil {
-		t.Fatal("Did not receive an error from empty cipher_suites.")
+	if _, err := ProcessConfigFile("./configs/tls_empty_cipher.conf"); err == nil {
+		t.Fatal("Did not receive an error from empty cipher_suites")
 	}
 
 	// Test a curve preference from the config.
@@ -196,14 +194,12 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 
 	// Test an unrecognized/bad curve preference
-	opts, err = ProcessConfigFile("./configs/tls_bad_curve_prefs.conf")
-	if err == nil {
-		t.Fatal("Did not receive an error from a unrecognized curve preference.")
+	if _, err := ProcessConfigFile("./configs/tls_bad_curve_prefs.conf"); err == nil {
+		t.Fatal("Did not receive an error from a unrecognized curve preference")
 	}
 	// Test an empty curve preference
-	opts, err = ProcessConfigFile("./configs/tls_empty_curve_prefs.conf")
-	if err == nil {
-		t.Fatal("Did not receive an error from empty curve preferences.")
+	if _, err := ProcessConfigFile("./configs/tls_empty_curve_prefs.conf"); err == nil {
+		t.Fatal("Did not receive an error from empty curve preferences")
 	}
 }
 

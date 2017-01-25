@@ -19,6 +19,9 @@ func TestPidFile(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	file, err := ioutil.TempFile(tmpDir, "gnatsd:pid_")
+	if err != nil {
+		t.Fatalf("Unable to create temp file: %v", err)
+	}
 	file.Close()
 	opts.PidFile = file.Name()
 
