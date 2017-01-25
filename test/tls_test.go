@@ -26,12 +26,14 @@ func TestTLSConnection(t *testing.T) {
 	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
 	nc, err := nats.Connect(nurl)
 	if err == nil {
+		nc.Close()
 		t.Fatalf("Expected error trying to connect to secure server")
 	}
 
 	// Do simple SecureConnect
 	nc, err = nats.Connect(fmt.Sprintf("tls://%s/", endpoint))
 	if err == nil {
+		nc.Close()
 		t.Fatalf("Expected error trying to connect to secure server with no auth")
 	}
 
@@ -268,12 +270,14 @@ func TestTLSConnectionCurvePref(t *testing.T) {
 	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
 	nc, err := nats.Connect(nurl)
 	if err == nil {
+		nc.Close()
 		t.Fatalf("Expected error trying to connect to secure server")
 	}
 
 	// Do simple SecureConnect
 	nc, err = nats.Connect(fmt.Sprintf("tls://%s/", endpoint))
 	if err == nil {
+		nc.Close()
 		t.Fatalf("Expected error trying to connect to secure server with no auth")
 	}
 

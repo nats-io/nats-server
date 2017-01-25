@@ -13,9 +13,9 @@ script:
 - go build
 - go fmt ./...
 - go vet $EXCLUDE_VENDOR
+- staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
 - go test -i -race $EXCLUDE_VENDOR
 - go test -v -race $EXCLUDE_VENDOR
-- staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
 after_success:
 - if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]]; then ./scripts/cov.sh TRAVIS; fi
 - if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
