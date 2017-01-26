@@ -7,13 +7,16 @@ install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
-- go get honnef.co/go/staticcheck/cmd/staticcheck
-script:
+- go get honnef.co/go/tools/cmd/staticcheck
+- go get honnef.co/go/tools/cmd/gosimple
+before_script:
 - EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
 - go build
 - go fmt ./...
 - go vet $EXCLUDE_VENDOR
+- gosimple $EXCLUDE_VENDOR
 - staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
+script:
 - go test -i -race $EXCLUDE_VENDOR
 - go test -v -race $EXCLUDE_VENDOR
 after_success:
