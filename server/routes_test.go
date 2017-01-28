@@ -486,37 +486,22 @@ func TestClientConnectToRoutePort(t *testing.T) {
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port)
 	clientURL := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	total := 100
+	// When connecting to the ROUTE port, the client library will receive the
+	// CLIENT port in the INFO protocol. This URL is added to the client's pool
+	// and will be tried after the initial connect failure. So all those
+	// nats.Connect() should succeed.
+	// The only reason for a failure would be if there are too many FDs in time-wait
+	// which would delay the creation of TCP connection. So keep the total of
+	// attempts rather small.
+	total := 10
 	for i := 0; i < total; i++ {
 		nc, err := nats.Connect(url)
-		if err == nil {
-			// It is possible that the client reconnects because
-			// it gets from the initial connect to the route the
-			// connectedUrl array and may be able to reconnects
-			// to the client URL.
-			// If connected, it should be to the client URL
-			if nc.ConnectedUrl() != clientURL {
-				t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
-			}
-			nc.Close()
+		if err != nil {
+			t.Fatalf("Unexepected error on connect: %v", err)
 		}
-		// If error, it could be ErrClientConnectingToRoutePort or
-		// other (EOF, etc)... so not checking for specific one.
-	}
-
-	// When disabling randomization, the client URL is added to the server
-	// pool and so should be tried after the connection is closed trying
-	// to connect to the route port. Connect must always succeed and
-	// must be connected to client URL.
-	for i := 0; i < total; i++ {
-		nc, err := nats.Connect(url, nats.DontRandomize())
-		if err == nil {
-			if nc.ConnectedUrl() != clientURL {
-				t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
-			}
-			nc.Close()
-			continue
+		defer nc.Close()
+		if nc.ConnectedUrl() != clientURL {
+			t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
 		}
-		t.Fatalf("Error on connect: %v", err)
 	}
 }
