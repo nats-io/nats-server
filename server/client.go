@@ -231,6 +231,11 @@ func (c *client) RegisterUser(user *User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// If the endpoint defined the Username, set it here:
+	if user.Username != "" {
+		c.opts.Username = user.Username
+	}
+
 	// Pre-allocate all to simplify checks later.
 	c.perms = &permissions{}
 	c.perms.sub = NewSublist()
