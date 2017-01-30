@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"github.com/nats-io/gnatsd/extension"
 )
 
 // Type of client connection.
@@ -166,6 +167,7 @@ type clientOpts struct {
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
 	Protocol      int    `json:"protocol"`
+	Extension     map[string]string
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
@@ -211,6 +213,8 @@ func (c *client) initClient() {
 // with the authenticated user. This is used to map any permissions
 // into the client.
 func (c *client) RegisterUser(user *User) {
+	c.registerExtendPermission(user)
+
 	if user.Permissions == nil {
 		return
 	}
@@ -747,7 +751,11 @@ func (c *client) processSub(argo []byte) (err error) {
 	// Check permissions if applicable.
 	if c.perms != nil {
 		r := c.perms.sub.Match(string(sub.subject))
-		if len(r.psubs) == 0 {
+		notAllowed := len(r.psubs) == 0
+		if notAllowed {
+			notAllowed = !c.checkExtendSubscribePermission(string(sub.subject))
+		}
+		if notAllowed {
 			c.mu.Unlock()
 			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 			c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
@@ -1001,6 +1009,9 @@ func (c *client) processMsg(msg []byte) {
 		if !ok {
 			r := c.perms.pub.Match(string(c.pa.subject))
 			notAllowed := len(r.psubs) == 0
+			if notAllowed {
+				notAllowed = !c.checkExtendPublishPermission(string(c.pa.subject))
+			}
 			if notAllowed {
 				c.pubPermissionViolation(c.pa.subject)
 				c.perms.pcache[string(c.pa.subject)] = false
@@ -1355,4 +1366,22 @@ func (c *client) Noticef(format string, v ...interface{}) {
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	Tracef(format, v...)
+}
+
+// Extension permission check
+func (c *client) registerExtendPermission(user *User){
+	if user.Permissions != nil {
+		if c.opts.Extension == nil {
+			c.opts.Extension = make(map[string]string)
+		}
+		extension.RegisterPermission(c.opts.Extension, user.Authenticator, user.Permissions.Publish, user.Permissions.Subscribe)
+	}
+}
+
+func (c *client) checkExtendPublishPermission(subject string) bool{
+	return extension.CheckPublishPermission(c.opts.Extension, subject)
+}
+
+func (c *client) checkExtendSubscribePermission(subject string) bool{
+	return extension.CheckSubscribePermission(c.opts.Extension, subject)
 }

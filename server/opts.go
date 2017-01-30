@@ -19,11 +19,10 @@ import (
 
 // For multiple accounts/users.
 type User struct {
-	Username      string       `json:"user"`
-	Password      string       `json:"password"`
-	Permissions   *Permissions `json:"permissions"`
-	Authenticator string       `json:"authenticator"`
-	Token         string       `json:"token"`
+	Username    string       `json:"user"`
+	Password    string       `json:"password"`
+	Permissions *Permissions `json:"permissions"`
+	Authenticator   []string     `json:"authenticator"`
 }
 
 // Authorization are the allowed subjects on a per
@@ -35,52 +34,50 @@ type Permissions struct {
 
 // Options block for gnatsd server.
 type Options struct {
-	Host               string        `json:"addr"`
-	Port               int           `json:"port"`
-	Trace              bool          `json:"-"`
-	Debug              bool          `json:"-"`
-	NoLog              bool          `json:"-"`
-	NoSigs             bool          `json:"-"`
-	Logtime            bool          `json:"-"`
-	MaxConn            int           `json:"max_connections"`
-	Users              []*User       `json:"-"`
-	Username           string        `json:"-"`
-	Password           string        `json:"-"`
-	AuthenticatorHub   []string      `json:"-"`
-	DynamicUser        bool          `json:"-"`
-	Authorization      string        `json:"-"`
-	PingInterval       time.Duration `json:"ping_interval"`
-	MaxPingsOut        int           `json:"ping_max"`
-	HTTPHost           string        `json:"http_host"`
-	HTTPPort           int           `json:"http_port"`
-	HTTPSPort          int           `json:"https_port"`
-	AuthTimeout        float64       `json:"auth_timeout"`
-	MaxControlLine     int           `json:"max_control_line"`
-	MaxPayload         int           `json:"max_payload"`
-	MaxPending         int           `json:"max_pending_size"`
-	ClusterHost        string        `json:"addr"`
-	ClusterPort        int           `json:"cluster_port"`
-	ClusterUsername    string        `json:"-"`
-	ClusterPassword    string        `json:"-"`
-	ClusterAuthTimeout float64       `json:"auth_timeout"`
-	ClusterTLSTimeout  float64       `json:"-"`
-	ClusterTLSConfig   *tls.Config   `json:"-"`
-	ClusterListenStr   string        `json:"-"`
-	ClusterNoAdvertise bool          `json:"-"`
-	ProfPort           int           `json:"-"`
-	PidFile            string        `json:"-"`
-	LogFile            string        `json:"-"`
-	Syslog             bool          `json:"-"`
-	RemoteSyslog       string        `json:"-"`
-	Routes             []*url.URL    `json:"-"`
-	RoutesStr          string        `json:"-"`
-	TLSTimeout         float64       `json:"tls_timeout"`
-	TLS                bool          `json:"-"`
-	TLSVerify          bool          `json:"-"`
-	TLSCert            string        `json:"-"`
-	TLSKey             string        `json:"-"`
-	TLSCaCert          string        `json:"-"`
-	TLSConfig          *tls.Config   `json:"-"`
+	Host               string            `json:"addr"`
+	Port               int               `json:"port"`
+	Trace              bool              `json:"-"`
+	Debug              bool              `json:"-"`
+	NoLog              bool              `json:"-"`
+	NoSigs             bool              `json:"-"`
+	Logtime            bool              `json:"-"`
+	MaxConn            int               `json:"max_connections"`
+	Users              []*User           `json:"-"`
+	Username           string            `json:"-"`
+	Password           string            `json:"-"`
+	Authorization      string            `json:"-"`
+	PingInterval       time.Duration     `json:"ping_interval"`
+	MaxPingsOut        int               `json:"ping_max"`
+	HTTPHost           string            `json:"http_host"`
+	HTTPPort           int               `json:"http_port"`
+	HTTPSPort          int               `json:"https_port"`
+	AuthTimeout        float64           `json:"auth_timeout"`
+	MaxControlLine     int               `json:"max_control_line"`
+	MaxPayload         int               `json:"max_payload"`
+	MaxPending         int               `json:"max_pending_size"`
+	ClusterHost        string            `json:"addr"`
+	ClusterPort        int               `json:"cluster_port"`
+	ClusterUsername    string            `json:"-"`
+	ClusterPassword    string            `json:"-"`
+	ClusterAuthTimeout float64           `json:"auth_timeout"`
+	ClusterTLSTimeout  float64           `json:"-"`
+	ClusterTLSConfig   *tls.Config       `json:"-"`
+	ClusterListenStr   string            `json:"-"`
+	ClusterNoAdvertise bool              `json:"-"`
+	ProfPort           int               `json:"-"`
+	PidFile            string            `json:"-"`
+	LogFile            string            `json:"-"`
+	Syslog             bool              `json:"-"`
+	RemoteSyslog       string            `json:"-"`
+	Routes             []*url.URL        `json:"-"`
+	RoutesStr          string            `json:"-"`
+	TLSTimeout         float64           `json:"tls_timeout"`
+	TLS                bool              `json:"-"`
+	TLSVerify          bool              `json:"-"`
+	TLSCert            string            `json:"-"`
+	TLSKey             string            `json:"-"`
+	TLSCaCert          string            `json:"-"`
+	TLSConfig          *tls.Config       `json:"-"`
 }
 
 // Configuration file authorization section.
@@ -92,8 +89,6 @@ type authorization struct {
 	users              []*User
 	timeout            float64
 	defaultPermissions *Permissions
-	authenticatorHub   []string
-	dynamicUser        bool
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -180,11 +175,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
 				}
 				opts.Users = auth.users
-				if auth.authenticatorHub != nil {
-					opts.AuthenticatorHub = auth.authenticatorHub
-				}
 			}
-			opts.DynamicUser = auth.dynamicUser
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
@@ -362,16 +353,6 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 				return nil, err
 			}
 			auth.defaultPermissions = permissions
-		case "authenticator_hub", "authenticator_hubs":
-			uv, ok := mv.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
-			}
-			for _, u := range uv {
-				auth.authenticatorHub = append(auth.authenticatorHub, u.(string))
-			}
-		case "dynamic_user":
-			auth.dynamicUser = mv.(bool)
 		}
 
 		// Now check for permission defaults with multiple users, etc.
@@ -418,15 +399,31 @@ func parseUsers(mv interface{}) ([]*User, error) {
 					return nil, err
 				}
 				user.Permissions = permissions
-			case "authenticator", "authenticators":
-				user.Authenticator = v.(string)
-			case "token", "tokens":
-				user.Token = fmt.Sprintf("%v", v)
+			case "authenticator":
+				var params []string
+				switch v.(type) {
+				case []string:
+					params = v.([]string)
+				case []interface{}:
+					for _, i := range v.([]interface{}) {
+						data, ok := i.(string)
+						if !ok {
+							return nil, fmt.Errorf("Parameter in authenticator array cannot be cast to string")
+						}
+						params = append(params, data)
+					}
+				default:
+					return nil, fmt.Errorf("Expected authenticator to be a string array, got %T", v)
+				}
+				user.Authenticator = params
 			}
 		}
 		// Check to make sure we have at least username and password
-		if (user.Username == "" || user.Password == "") && user.Token == "" {
-			return nil, fmt.Errorf("User entry requires a user and a password, or just a token")
+		if (user.Username == "" || user.Password == "") && user.Username != "EXTERNAL" {
+			return nil, fmt.Errorf("User entry requires a user and a password")
+		}
+		if user.Username == "EXTERNAL" && user.Authenticator == nil {
+			return nil, fmt.Errorf("External user entry requires authenticator")
 		}
 		users = append(users, user)
 	}

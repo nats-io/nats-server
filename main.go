@@ -188,12 +188,7 @@ func main() {
 func configureAuth(s *server.Server, opts *server.Options) {
 	// Client
 	// Check for multiple users first
-	if opts.DynamicUser == true {
-		if opts.Users != nil {
-			auth := auth.NewDynamicUser(opts.Users, opts.AuthenticatorHub)
-			s.SetClientAuthMethod(auth)
-		}
-	} else if opts.Users != nil {
+	if opts.Users != nil {
 		auth := auth.NewMultiUser(opts.Users)
 		s.SetClientAuthMethod(auth)
 	} else if opts.Username != "" {

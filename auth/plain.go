@@ -38,3 +38,4 @@ func (p *Plain) Check(c server.ClientAuth) bool {
 
 	return true
 }
+
