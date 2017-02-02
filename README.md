@@ -665,7 +665,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 
 [License-Url]: http://opensource.org/licenses/MIT
-[License-Image]: https://img.shields.io/npm/l/express.svg
+[License-Image]: https://img.shields.io/badge/License-MIT-blue.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
 [Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.6
