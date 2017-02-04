@@ -1,4 +1,4 @@
-// Copyright 2015 Apcera Inc. All rights reserved.
+// Copyright 2015-2016 Apcera Inc. All rights reserved.
 
 package server
 
@@ -9,11 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode"
 
-	"github.com/nats-io/nats"
-	"sync"
+	"github.com/nats-io/go-nats"
 )
 
 const CLIENT_PORT = 11224
@@ -21,14 +22,16 @@ const MONITOR_PORT = 11424
 const CLUSTER_PORT = 12444
 
 var DefaultMonitorOptions = Options{
-	Host:        "localhost",
-	Port:        CLIENT_PORT,
-	HTTPHost:    "127.0.0.1",
-	HTTPPort:    MONITOR_PORT,
-	ClusterHost: "localhost",
-	ClusterPort: CLUSTER_PORT,
-	NoLog:       true,
-	NoSigs:      true,
+	Host:     "localhost",
+	Port:     CLIENT_PORT,
+	HTTPHost: "127.0.0.1",
+	HTTPPort: MONITOR_PORT,
+	Cluster: ClusterOpts{
+		Host: "localhost",
+		Port: CLUSTER_PORT,
+	},
+	NoLog:  true,
+	NoSigs: true,
 }
 
 func runMonitorServer() *Server {
@@ -1008,14 +1011,16 @@ func TestConnzWithRoutes(t *testing.T) {
 	defer s.Shutdown()
 
 	var opts = Options{
-		Host:        "localhost",
-		Port:        CLIENT_PORT + 1,
-		ClusterHost: "localhost",
-		ClusterPort: CLUSTER_PORT + 1,
-		NoLog:       true,
-		NoSigs:      true,
+		Host: "localhost",
+		Port: CLIENT_PORT + 1,
+		Cluster: ClusterOpts{
+			Host: "localhost",
+			Port: CLUSTER_PORT + 1,
+		},
+		NoLog:  true,
+		NoSigs: true,
 	}
-	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://localhost:%d", CLUSTER_PORT))
+	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", CLUSTER_PORT))
 	opts.Routes = []*url.URL{routeURL}
 
 	sc := RunServer(&opts)
@@ -1167,6 +1172,17 @@ func TestHandleRoot(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Expected no error reading body: Got %v\n", err)
+	}
+	for _, b := range body {
+		if b > unicode.MaxASCII {
+			t.Fatalf("Expected body to contain only ASCII characters, but got %v\n", b)
+		}
+	}
+
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "text/html") {
 		t.Fatalf("Expected text/html response, got %s\n", ct)

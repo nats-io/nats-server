@@ -1,20 +1,24 @@
 language: go
 go:
-- 1.5.4
-- 1.6.3
-env:
-  global:
-    - GO15VENDOREXPERIMENT=1
+- 1.6.4
+- 1.7.4
+- 1.8beta2
 install:
-- go get github.com/nats-io/nats
+- go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
-script:
+- go get honnef.co/go/tools/cmd/staticcheck
+- go get honnef.co/go/tools/cmd/gosimple
+before_script:
+- EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
 - go build
 - go fmt ./...
-- go vet ./...
-- go test -i -race ./...
-- go test -v -race ./...
-after_script:
-- if [ "$TRAVIS_GO_VERSION" = "1.6.3" ]; then ./scripts/cov.sh TRAVIS; fi
-- if [ "$TRAVIS_GO_VERSION" = "1.6.3" ] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --username nats-io --token $GITHUB_TOKEN --replace $TRAVIS_TAG pkg/; fi
+- go vet $EXCLUDE_VENDOR
+- gosimple $EXCLUDE_VENDOR
+- staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
+script:
+- go test -i -race $EXCLUDE_VENDOR
+- go test -v -race $EXCLUDE_VENDOR
+after_success:
+- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]]; then ./scripts/cov.sh TRAVIS; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi

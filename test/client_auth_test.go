@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nats-io/nats"
+	"github.com/nats-io/go-nats"
 )
 
 func TestMultipleUserAuth(t *testing.T) {

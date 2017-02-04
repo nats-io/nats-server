@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
-	"github.com/nats-io/nats"
+	"github.com/nats-io/go-nats"
 )
 
 const CLIENT_PORT = 11422
@@ -540,7 +540,7 @@ func TestHTTPHost(t *testing.T) {
 func createClientConnSubscribeAndPublish(t *testing.T) net.Conn {
 	cl := createClientConn(t, "localhost", CLIENT_PORT)
 
-	send := sendCommand(t, cl)
+	sendCommand(t, cl)
 	send, expect := setupConn(t, cl)
 	expectMsgs := expectMsgsCommand(t, expect)
 

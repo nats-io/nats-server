@@ -101,28 +101,11 @@ func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
 	// Run server in Go routine.
 	go s.Start()
 
-	end := time.Now().Add(10 * time.Second)
-	for time.Now().Before(end) {
-		addr := s.GetListenEndpoint()
-		if addr == "" {
-			time.Sleep(50 * time.Millisecond)
-			// Retry. We might take a little while to open a connection.
-			continue
-		}
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			// Retry after 50ms
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		conn.Close()
-		// Wait a bit to give a chance to the server to remove this
-		// "client" from its state, which may otherwise interfere with
-		// some tests.
-		time.Sleep(25 * time.Millisecond)
-		return s
+	// Wait for accept loop(s) to be started
+	if !s.ReadyForConnections(10 * time.Second) {
+		panic("Unable to start NATS Server in Go Routine")
 	}
-	panic("Unable to start NATS Server in Go Routine")
+	return s
 }
 
 func stackFatalf(t tLogger, f string, args ...interface{}) {
@@ -173,7 +156,7 @@ func createRouteConn(t tLogger, host string, port int) net.Conn {
 
 func createClientConn(t tLogger, host string, port int) net.Conn {
 	addr := fmt.Sprintf("%s:%d", host, port)
-	c, err := net.DialTimeout("tcp", addr, 1*time.Second)
+	c, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		stackFatalf(t, "Could not connect to server: %v\n", err)
 	}
@@ -230,8 +213,8 @@ func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
 }
 
 func setupRouteEx(t tLogger, c net.Conn, opts *server.Options, id string) (sendFun, expectFun) {
-	user := opts.ClusterUsername
-	pass := opts.ClusterPassword
+	user := opts.Cluster.Username
+	pass := opts.Cluster.Password
 	doRouteAuthConnect(t, c, user, pass, id)
 	return sendCommand(t, c), expectCommand(t, c)
 }
@@ -414,7 +397,7 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 func nextServerOpts(opts *server.Options) *server.Options {
 	nopts := *opts
 	nopts.Port++
-	nopts.ClusterPort++
+	nopts.Cluster.Port++
 	nopts.HTTPPort++
 	return &nopts
 }

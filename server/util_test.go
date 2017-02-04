@@ -49,6 +49,10 @@ func BenchmarkParseSize(b *testing.B) {
 func deferUnlock(mu *sync.Mutex) {
 	mu.Lock()
 	defer mu.Unlock()
+	// see noDeferUnlock
+	if false {
+		return
+	}
 }
 
 func BenchmarkDeferMutex(b *testing.B) {
@@ -61,6 +65,10 @@ func BenchmarkDeferMutex(b *testing.B) {
 
 func noDeferUnlock(mu *sync.Mutex) {
 	mu.Lock()
+	// prevent staticcheck warning about empty critical section
+	if false {
+		return
+	}
 	mu.Unlock()
 }
 

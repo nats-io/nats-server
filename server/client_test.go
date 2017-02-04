@@ -17,7 +17,7 @@ import (
 
 	"crypto/tls"
 
-	"github.com/nats-io/nats"
+	"github.com/nats-io/go-nats"
 )
 
 type serverInfo struct {
@@ -107,6 +107,14 @@ func TestClientCreateAndInfo(t *testing.T) {
 	}
 }
 
+func TestNonTLSConnectionState(t *testing.T) {
+	_, c, _ := setupClient()
+	state := c.GetTLSConnectionState()
+	if state != nil {
+		t.Error("GetTLSConnectionState() returned non-nil")
+	}
+}
+
 func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
@@ -169,7 +177,7 @@ func TestClientConnect(t *testing.T) {
 }
 
 func TestClientConnectProto(t *testing.T) {
-	_, c, _ := setupClient()
+	_, c, r := setupClient()
 
 	// Basic Connect setting flags, proto should be zero (original proto)
 	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
@@ -202,6 +210,19 @@ func TestClientConnectProto(t *testing.T) {
 
 	// Illegal Option
 	connectOp = []byte("CONNECT {\"protocol\":22}\r\n")
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	// The client here is using a pipe, we need to be dequeuing
+	// data otherwise the server would be blocked trying to send
+	// the error back to it.
+	go func() {
+		defer wg.Done()
+		for {
+			if _, _, err := r.ReadLine(); err != nil {
+				return
+			}
+		}
+	}()
 	err = c.parse(connectOp)
 	if err == nil {
 		t.Fatalf("Expected to receive an error\n")
@@ -209,6 +230,7 @@ func TestClientConnectProto(t *testing.T) {
 	if err != ErrBadClientProtocol {
 		t.Fatalf("Expected err of %q, got  %q\n", ErrBadClientProtocol, err)
 	}
+	wg.Wait()
 }
 
 func TestClientPing(t *testing.T) {
@@ -658,7 +680,7 @@ func TestUnsubRace(t *testing.T) {
 func TestTLSCloseClientConnection(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
-		t.Fatalf("Error processign config file: %v", err)
+		t.Fatalf("Error processing config file: %v", err)
 	}
 	opts.Authorization = ""
 	opts.TLSTimeout = 100
@@ -712,6 +734,11 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	}
 	if cli == nil {
 		t.Fatal("Did not register client on time")
+	}
+	// Test GetTLSConnectionState
+	state := cli.GetTLSConnectionState()
+	if state == nil {
+		t.Error("GetTLSConnectionState() returned nil")
 	}
 	// Fill the buffer. Need to send 1 byte at a time so that we timeout here
 	// the nc.Close() would block due to a write that can not complete.

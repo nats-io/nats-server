@@ -1,10 +1,12 @@
-// Copyright 2012-2015 Apcera Inc. All rights reserved.
+// Copyright 2012-2016 Apcera Inc. All rights reserved.
 
 package server
 
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/nats-io/gnatsd/logger"
 )
 
 // Package globals for performance checks
@@ -39,15 +41,41 @@ type Logger interface {
 func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	if debugFlag {
 		atomic.StoreInt32(&debug, 1)
+	} else {
+		atomic.StoreInt32(&debug, 0)
 	}
-
 	if traceFlag {
 		atomic.StoreInt32(&trace, 1)
+	} else {
+		atomic.StoreInt32(&trace, 0)
 	}
 
 	log.Lock()
 	log.logger = logger
 	log.Unlock()
+}
+
+// If the logger is a file based logger, close and re-open the file.
+// This allows for file rotation by 'mv'ing the file then signalling
+// the process to trigger this function.
+func (s *Server) ReOpenLogFile() {
+	// Check to make sure this is a file logger.
+	log.Lock()
+	ll := log.logger
+	log.Unlock()
+
+	if ll == nil {
+		Noticef("File log re-open ignored, no logger")
+		return
+	}
+	if s.opts.LogFile == "" {
+		Noticef("File log re-open ignored, not a file logger")
+	} else {
+		fileLog := logger.NewFileLogger(s.opts.LogFile,
+			s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
+		s.SetLogger(fileLog, s.opts.Debug, s.opts.Trace)
+		Noticef("File log re-opened")
+	}
 }
 
 // Noticef logs a notice statement

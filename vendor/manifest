@@ -4,14 +4,16 @@
 		{
 			"importpath": "github.com/nats-io/nuid",
 			"repository": "https://github.com/nats-io/nuid",
-			"revision": "a5152d67cf63cbfb5d992a395458722a45194715",
+			"vcs": "git",
+			"revision": "289cccf02c178dc782430d534e3c1f5b72af807f",
 			"branch": "master",
 			"notests": true
 		},
 		{
 			"importpath": "golang.org/x/crypto/bcrypt",
 			"repository": "https://go.googlesource.com/crypto",
-			"revision": "9e7f5dc375abeb9619ea3c5c58502c428f457aa2",
+			"vcs": "git",
+			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
 			"branch": "master",
 			"path": "/bcrypt",
 			"notests": true
@@ -19,9 +21,19 @@
 		{
 			"importpath": "golang.org/x/crypto/blowfish",
 			"repository": "https://go.googlesource.com/crypto",
-			"revision": "9e7f5dc375abeb9619ea3c5c58502c428f457aa2",
+			"vcs": "git",
+			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
 			"branch": "master",
 			"path": "/blowfish",
+			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/sys/windows",
+			"repository": "https://go.googlesource.com/sys",
+			"vcs": "git",
+			"revision": "d75a52659825e75fff6158388dddc6a5b04f9ba5",
+			"branch": "master",
+			"path": "windows",
 			"notests": true
 		}
 	]

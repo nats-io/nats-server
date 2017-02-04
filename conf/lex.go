@@ -17,6 +17,8 @@ package conf
 
 import (
 	"fmt"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -39,6 +41,7 @@ const (
 	itemMapEnd
 	itemCommentStart
 	itemVariable
+	itemInclude
 )
 
 const (
@@ -182,7 +185,7 @@ func (lx *lexer) errorf(format string, values ...interface{}) stateFn {
 // lexTop consumes elements at the top level of data structure.
 func lexTop(lx *lexer) stateFn {
 	r := lx.next()
-	if isWhitespace(r) || isNL(r) {
+	if unicode.IsSpace(r) {
 		return lexSkip(lx, lexTop)
 	}
 
@@ -248,7 +251,7 @@ func lexKeyStart(lx *lexer) stateFn {
 	switch {
 	case isKeySeparator(r):
 		return lx.errorf("Unexpected key separator '%v'", r)
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		lx.next()
 		return lexSkip(lx, lexKeyStart)
 	case r == dqStringStart:
@@ -287,11 +290,118 @@ func lexQuotedKey(lx *lexer) stateFn {
 	return lexQuotedKey
 }
 
+// keyCheckKeyword will check for reserved keywords as the key value when the key is
+// separated with a space.
+func (lx *lexer) keyCheckKeyword(fallThrough, push stateFn) stateFn {
+	key := strings.ToLower(lx.input[lx.start:lx.pos])
+	switch key {
+	case "include":
+		lx.ignore()
+		if push != nil {
+			lx.push(push)
+		}
+		return lexIncludeStart
+	}
+	lx.emit(itemKey)
+	return fallThrough
+}
+
+// lexIncludeStart will consume the whitespace til the start of the value.
+func lexIncludeStart(lx *lexer) stateFn {
+	r := lx.next()
+	if isWhitespace(r) {
+		return lexSkip(lx, lexIncludeStart)
+	}
+	lx.backup()
+	return lexInclude
+}
+
+// lexIncludeQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexIncludeQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeQuotedString
+}
+
+// lexIncludeDubQuotedString consumes the inner contents of a string. It assumes that the
+// beginning '"' has already been consumed and ignored. It will not interpret any
+// internal contents.
+func lexIncludeDubQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == dqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeDubQuotedString
+}
+
+// lexIncludeString consumes the inner contents of a raw string.
+func lexIncludeString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case isNL(r) || r == eof || r == optValTerm || r == mapEnd || isWhitespace(r):
+		lx.backup()
+		lx.emit(itemInclude)
+		return lx.pop()
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemInclude)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeString
+}
+
+// lexInclude will consume the include value.
+func lexInclude(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeQuotedString
+	case r == dqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeDubQuotedString
+	case r == arrayStart:
+		return lx.errorf("Expected include value but found start of an array")
+	case r == mapStart:
+		return lx.errorf("Expected include value but found start of a map")
+	case r == blockStart:
+		return lx.errorf("Expected include value but found start of a block")
+	case unicode.IsDigit(r), r == '-':
+		return lx.errorf("Expected include value but found start of a number")
+	case r == '\\':
+		return lx.errorf("Expected include value but found escape sequence")
+	case isNL(r):
+		return lx.errorf("Expected include value but found new line")
+	}
+	lx.backup()
+	return lexIncludeString
+}
+
 // lexKey consumes the text of a key. Assumes that the first character (which
 // is not whitespace) has already been consumed.
 func lexKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if isWhitespace(r) || isNL(r) || isKeySeparator(r) || r == eof {
+	if unicode.IsSpace(r) {
+		// Spaces signal we could be looking at a keyword, e.g. include.
+		// Keywords will eat the keyword and set the appropriate return stateFn.
+		return lx.keyCheckKeyword(lexKeyEnd, nil)
+	} else if isKeySeparator(r) || r == eof {
 		lx.emit(itemKey)
 		return lexKeyEnd
 	}
@@ -305,7 +415,7 @@ func lexKey(lx *lexer) stateFn {
 func lexKeyEnd(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		return lexSkip(lx, lexKeyEnd)
 	case isKeySeparator(r):
 		return lexSkip(lx, lexValue)
@@ -345,11 +455,11 @@ func lexValue(lx *lexer) stateFn {
 		lx.ignore() // ignore the " or '
 		return lexDubQuotedString
 	case r == '-':
-		return lexNumberStart
+		return lexNegNumberStart
 	case r == blockStart:
 		lx.ignore()
 		return lexBlock
-	case isDigit(r):
+	case unicode.IsDigit(r):
 		lx.backup() // avoid an extra state and use the same as above
 		return lexNumberOrDateOrIPStart
 	case r == '.': // special error case, be kind to users
@@ -366,7 +476,7 @@ func lexValue(lx *lexer) stateFn {
 func lexArrayValue(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		return lexSkip(lx, lexArrayValue)
 	case r == commentHashStart:
 		lx.push(lexArrayValue)
@@ -433,7 +543,7 @@ func lexMapKeyStart(lx *lexer) stateFn {
 	switch {
 	case isKeySeparator(r):
 		return lx.errorf("Unexpected key separator '%v'.", r)
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		lx.next()
 		return lexSkip(lx, lexMapKeyStart)
 	case r == mapEnd:
@@ -491,7 +601,11 @@ func lexMapDubQuotedKey(lx *lexer) stateFn {
 // is not whitespace) has already been consumed.
 func lexMapKey(lx *lexer) stateFn {
 	r := lx.peek()
-	if isWhitespace(r) || isNL(r) || isKeySeparator(r) {
+	if unicode.IsSpace(r) {
+		// Spaces signal we could be looking at a keyword, e.g. include.
+		// Keywords will eat the keyword and set the appropriate return stateFn.
+		return lx.keyCheckKeyword(lexMapKeyEnd, lexMapValueEnd)
+	} else if isKeySeparator(r) {
 		lx.emit(itemKey)
 		return lexMapKeyEnd
 	}
@@ -505,7 +619,7 @@ func lexMapKey(lx *lexer) stateFn {
 func lexMapKeyEnd(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		return lexSkip(lx, lexMapKeyEnd)
 	case isKeySeparator(r):
 		return lexSkip(lx, lexMapValue)
@@ -521,7 +635,7 @@ func lexMapKeyEnd(lx *lexer) stateFn {
 func lexMapValue(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isWhitespace(r) || isNL(r):
+	case unicode.IsSpace(r):
 		return lexSkip(lx, lexMapValue)
 	case r == mapValTerm:
 		return lx.errorf("Unexpected map value terminator %q.", mapValTerm)
@@ -570,8 +684,10 @@ func lexMapEnd(lx *lexer) stateFn {
 
 // Checks if the unquoted string was actually a boolean
 func (lx *lexer) isBool() bool {
-	str := lx.input[lx.start:lx.pos]
-	return str == "true" || str == "false" || str == "TRUE" || str == "FALSE"
+	str := strings.ToLower(lx.input[lx.start:lx.pos])
+	return str == "true" || str == "false" ||
+		str == "on" || str == "off" ||
+		str == "yes" || str == "no"
 }
 
 // Check if the unquoted string is a variable reference, starting with $.
@@ -722,7 +838,7 @@ func lexStringBinary(lx *lexer) stateFn {
 // It assumes that NO negative sign has been consumed, that is triggered above.
 func lexNumberOrDateOrIPStart(lx *lexer) stateFn {
 	r := lx.next()
-	if !isDigit(r) {
+	if !unicode.IsDigit(r) {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
 		}
@@ -740,12 +856,26 @@ func lexNumberOrDateOrIP(lx *lexer) stateFn {
 			return lx.errorf("All ISO8601 dates must be in full Zulu form.")
 		}
 		return lexDateAfterYear
-	case isDigit(r):
+	case unicode.IsDigit(r):
 		return lexNumberOrDateOrIP
 	case r == '.':
-		return lexFloatStart
+		return lexFloatStart // Assume float at first, but could be IP
+	case isNumberSuffix(r):
+		return lexConvenientNumber
 	}
 
+	lx.backup()
+	lx.emit(itemInteger)
+	return lx.pop()
+}
+
+// lexConvenientNumber is when we have a suffix, e.g. 1k or 1Mb
+func lexConvenientNumber(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == 'b' || r == 'B':
+		return lexConvenientNumber
+	}
 	lx.backup()
 	lx.emit(itemInteger)
 	return lx.pop()
@@ -765,7 +895,7 @@ func lexDateAfterYear(lx *lexer) stateFn {
 	for _, f := range formats {
 		r := lx.next()
 		if f == '0' {
-			if !isDigit(r) {
+			if !unicode.IsDigit(r) {
 				return lx.errorf("Expected digit in ISO8601 datetime, "+
 					"but found '%v' instead.", r)
 			}
@@ -778,29 +908,31 @@ func lexDateAfterYear(lx *lexer) stateFn {
 	return lx.pop()
 }
 
-// lexNumberStart consumes either an integer or a float. It assumes that a
+// lexNegNumberStart consumes either an integer or a float. It assumes that a
 // negative sign has already been read, but that *no* digits have been consumed.
-// lexNumberStart will move to the appropriate integer or float states.
-func lexNumberStart(lx *lexer) stateFn {
+// lexNegNumberStart will move to the appropriate integer or float states.
+func lexNegNumberStart(lx *lexer) stateFn {
 	// we MUST see a digit. Even floats have to start with a digit.
 	r := lx.next()
-	if !isDigit(r) {
+	if !unicode.IsDigit(r) {
 		if r == '.' {
 			return lx.errorf("Floats must start with a digit, not '.'.")
 		}
 		return lx.errorf("Expected a digit but got '%v'.", r)
 	}
-	return lexNumber
+	return lexNegNumber
 }
 
-// lexNumber consumes an integer or a float after seeing the first digit.
-func lexNumber(lx *lexer) stateFn {
+// lexNumber consumes a negative integer or a float after seeing the first digit.
+func lexNegNumber(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case isDigit(r):
-		return lexNumber
+	case unicode.IsDigit(r):
+		return lexNegNumber
 	case r == '.':
 		return lexFloatStart
+	case isNumberSuffix(r):
+		return lexConvenientNumber
 	}
 	lx.backup()
 	lx.emit(itemInteger)
@@ -811,7 +943,7 @@ func lexNumber(lx *lexer) stateFn {
 // Namely, at least one digit is required.
 func lexFloatStart(lx *lexer) stateFn {
 	r := lx.next()
-	if !isDigit(r) {
+	if !unicode.IsDigit(r) {
 		return lx.errorf("Floats must have a digit after the '.', but got "+
 			"'%v' instead.", r)
 	}
@@ -822,7 +954,7 @@ func lexFloatStart(lx *lexer) stateFn {
 // Assumes that one digit has been consumed after a '.' already.
 func lexFloat(lx *lexer) stateFn {
 	r := lx.next()
-	if isDigit(r) {
+	if unicode.IsDigit(r) {
 		return lexFloat
 	}
 
@@ -839,7 +971,7 @@ func lexFloat(lx *lexer) stateFn {
 // lexIPAddr consumes IP addrs, like 127.0.0.1:4222
 func lexIPAddr(lx *lexer) stateFn {
 	r := lx.next()
-	if isDigit(r) || r == '.' || r == ':' {
+	if unicode.IsDigit(r) || r == '.' || r == ':' {
 		return lexIPAddr
 	}
 	lx.backup()
@@ -876,6 +1008,11 @@ func lexSkip(lx *lexer, nextState stateFn) stateFn {
 	}
 }
 
+// Tests to see if we have a number suffix
+func isNumberSuffix(r rune) bool {
+	return r == 'k' || r == 'K' || r == 'm' || r == 'M' || r == 'g' || r == 'G'
+}
+
 // Tests for both key separators
 func isKeySeparator(r rune) bool {
 	return r == keySepEqual || r == keySepColon
@@ -889,10 +1026,6 @@ func isWhitespace(r rune) bool {
 
 func isNL(r rune) bool {
 	return r == '\n' || r == '\r'
-}
-
-func isDigit(r rune) bool {
-	return r >= '0' && r <= '9'
 }
 
 func isHexadecimal(r rune) bool {
@@ -935,6 +1068,8 @@ func (itype itemType) String() string {
 		return "CommentStart"
 	case itemVariable:
 		return "Variable"
+	case itemInclude:
+		return "Include"
 	}
 	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype.String()))
 }

@@ -32,52 +32,78 @@ type Permissions struct {
 	Subscribe []string `json:"subscribe"`
 }
 
+// Options for clusters.
+type ClusterOpts struct {
+	Host           string      `json:"addr"`
+	Port           int         `json:"cluster_port"`
+	Username       string      `json:"-"`
+	Password       string      `json:"-"`
+	AuthTimeout    float64     `json:"auth_timeout"`
+	TLSTimeout     float64     `json:"-"`
+	TLSConfig      *tls.Config `json:"-"`
+	ListenStr      string      `json:"-"`
+	NoAdvertise    bool        `json:"-"`
+	ConnectRetries int         `json:"-"`
+}
+
 // Options block for gnatsd server.
 type Options struct {
-	Host               string            `json:"addr"`
-	Port               int               `json:"port"`
-	Trace              bool              `json:"-"`
-	Debug              bool              `json:"-"`
-	NoLog              bool              `json:"-"`
-	NoSigs             bool              `json:"-"`
-	Logtime            bool              `json:"-"`
-	MaxConn            int               `json:"max_connections"`
-	Users              []*User           `json:"-"`
-	Username           string            `json:"-"`
-	Password           string            `json:"-"`
-	Authorization      string            `json:"-"`
-	PingInterval       time.Duration     `json:"ping_interval"`
-	MaxPingsOut        int               `json:"ping_max"`
-	HTTPHost           string            `json:"http_host"`
-	HTTPPort           int               `json:"http_port"`
-	HTTPSPort          int               `json:"https_port"`
-	AuthTimeout        float64           `json:"auth_timeout"`
-	MaxControlLine     int               `json:"max_control_line"`
-	MaxPayload         int               `json:"max_payload"`
-	MaxPending         int               `json:"max_pending_size"`
-	ClusterHost        string            `json:"addr"`
-	ClusterPort        int               `json:"cluster_port"`
-	ClusterUsername    string            `json:"-"`
-	ClusterPassword    string            `json:"-"`
-	ClusterAuthTimeout float64           `json:"auth_timeout"`
-	ClusterTLSTimeout  float64           `json:"-"`
-	ClusterTLSConfig   *tls.Config       `json:"-"`
-	ClusterListenStr   string            `json:"-"`
-	ClusterNoAdvertise bool              `json:"-"`
-	ProfPort           int               `json:"-"`
-	PidFile            string            `json:"-"`
-	LogFile            string            `json:"-"`
-	Syslog             bool              `json:"-"`
-	RemoteSyslog       string            `json:"-"`
-	Routes             []*url.URL        `json:"-"`
-	RoutesStr          string            `json:"-"`
-	TLSTimeout         float64           `json:"tls_timeout"`
-	TLS                bool              `json:"-"`
-	TLSVerify          bool              `json:"-"`
-	TLSCert            string            `json:"-"`
-	TLSKey             string            `json:"-"`
-	TLSCaCert          string            `json:"-"`
-	TLSConfig          *tls.Config       `json:"-"`
+	Host           string        `json:"addr"`
+	Port           int           `json:"port"`
+	Trace          bool          `json:"-"`
+	Debug          bool          `json:"-"`
+	NoLog          bool          `json:"-"`
+	NoSigs         bool          `json:"-"`
+	Logtime        bool          `json:"-"`
+	MaxConn        int           `json:"max_connections"`
+	Users          []*User       `json:"-"`
+	Username       string        `json:"-"`
+	Password       string        `json:"-"`
+	Authorization  string        `json:"-"`
+	PingInterval   time.Duration `json:"ping_interval"`
+	MaxPingsOut    int           `json:"ping_max"`
+	HTTPHost       string        `json:"http_host"`
+	HTTPPort       int           `json:"http_port"`
+	HTTPSPort      int           `json:"https_port"`
+	AuthTimeout    float64       `json:"auth_timeout"`
+	MaxControlLine int           `json:"max_control_line"`
+	MaxPayload     int           `json:"max_payload"`
+	Cluster        ClusterOpts   `json:"cluster"`
+	ProfPort       int           `json:"-"`
+	PidFile        string        `json:"-"`
+	LogFile        string        `json:"-"`
+	Syslog         bool          `json:"-"`
+	RemoteSyslog   string        `json:"-"`
+	Routes         []*url.URL    `json:"-"`
+	RoutesStr      string        `json:"-"`
+	TLSTimeout     float64       `json:"tls_timeout"`
+	TLS            bool          `json:"-"`
+	TLSVerify      bool          `json:"-"`
+	TLSCert        string        `json:"-"`
+	TLSKey         string        `json:"-"`
+	TLSCaCert      string        `json:"-"`
+	TLSConfig      *tls.Config   `json:"-"`
+	WriteDeadline  time.Duration `json:"-"`
+	HTTPSPort      int           `json:"https_port"`
+	AuthTimeout    float64       `json:"auth_timeout"`
+	MaxControlLine int           `json:"max_control_line"`
+	MaxPayload     int           `json:"max_payload"`
+	Cluster        ClusterOpts   `json:"cluster"`
+	ProfPort       int           `json:"-"`
+	PidFile        string        `json:"-"`
+	LogFile        string        `json:"-"`
+	Syslog         bool          `json:"-"`
+	RemoteSyslog   string        `json:"-"`
+	Routes         []*url.URL    `json:"-"`
+	RoutesStr      string        `json:"-"`
+	TLSTimeout     float64       `json:"tls_timeout"`
+	TLS            bool          `json:"-"`
+	TLSVerify      bool          `json:"-"`
+	TLSCert        string        `json:"-"`
+	TLSKey         string        `json:"-"`
+	TLSCaCert      string        `json:"-"`
+	TLSConfig      *tls.Config   `json:"-"`
+	WriteDeadline  time.Duration `json:"-"`
 }
 
 // Configuration file authorization section.
@@ -94,12 +120,13 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile string
-	KeyFile  string
-	CaFile   string
-	Verify   bool
-	Timeout  float64
-	Ciphers  []uint16
+	CertFile         string
+	KeyFile          string
+	CaFile           string
+	Verify           bool
+	Timeout          float64
+	Ciphers          []uint16
+	CurvePreferences []tls.CurveID
 }
 
 var tlsUsage = `
@@ -117,6 +144,11 @@ e.g.
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
             "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
         ]
+        curve_preferences: [
+            "CurveP256",
+            "CurveP384",
+            "CurveP521"
+        ]
     }
 
 Available cipher suites include:
@@ -131,12 +163,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		return opts, nil
 	}
 
-	data, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		return nil, fmt.Errorf("error opening config file: %v", err)
-	}
-
-	m, err := conf.Parse(string(data))
+	m, err := conf.ParseFile(configFile)
 	if err != nil {
 		return nil, err
 	}
@@ -213,10 +240,12 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.MaxControlLine = int(v.(int64))
 		case "max_payload":
 			opts.MaxPayload = int(v.(int64))
-		case "max_pending_size", "max_pending":
-			opts.MaxPending = int(v.(int64))
 		case "max_connections", "max_conn":
 			opts.MaxConn = int(v.(int64))
+		case "ping_interval":
+			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
+		case "ping_max":
+			opts.MaxPingsOut = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
 			tc, err := parseTLS(tlsm)
@@ -227,6 +256,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 				return nil, err
 			}
 			opts.TLSTimeout = tc.Timeout
+		case "write_deadline":
+			opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
 		}
 	}
 	return opts, nil
@@ -268,12 +299,12 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			if err != nil {
 				return err
 			}
-			opts.ClusterHost = hp.host
-			opts.ClusterPort = hp.port
+			opts.Cluster.Host = hp.host
+			opts.Cluster.Port = hp.port
 		case "port":
-			opts.ClusterPort = int(mv.(int64))
+			opts.Cluster.Port = int(mv.(int64))
 		case "host", "net":
-			opts.ClusterHost = mv.(string)
+			opts.Cluster.Host = mv.(string)
 		case "authorization":
 			am := mv.(map[string]interface{})
 			auth, err := parseAuthorization(am)
@@ -283,9 +314,9 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			if auth.users != nil {
 				return fmt.Errorf("Cluster authorization does not allow multiple users")
 			}
-			opts.ClusterUsername = auth.user
-			opts.ClusterPassword = auth.pass
-			opts.ClusterAuthTimeout = auth.timeout
+			opts.Cluster.Username = auth.user
+			opts.Cluster.Password = auth.pass
+			opts.Cluster.AuthTimeout = auth.timeout
 		case "routes":
 			ra := mv.([]interface{})
 			opts.Routes = make([]*url.URL, 0, len(ra))
@@ -303,17 +334,19 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			if err != nil {
 				return err
 			}
-			if opts.ClusterTLSConfig, err = GenTLSConfig(tc); err != nil {
+			if opts.Cluster.TLSConfig, err = GenTLSConfig(tc); err != nil {
 				return err
 			}
 			// For clusters, we will force strict verification. We also act
 			// as both client and server, so will mirror the rootCA to the
 			// clientCA pool.
-			opts.ClusterTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			opts.ClusterTLSConfig.RootCAs = opts.ClusterTLSConfig.ClientCAs
-			opts.ClusterTLSTimeout = tc.Timeout
+			opts.Cluster.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			opts.Cluster.TLSConfig.RootCAs = opts.Cluster.TLSConfig.ClientCAs
+			opts.Cluster.TLSTimeout = tc.Timeout
 		case "no_advertise":
-			opts.ClusterNoAdvertise = mv.(bool)
+			opts.Cluster.NoAdvertise = mv.(bool)
+		case "connect_retries":
+			opts.Cluster.ConnectRetries = int(mv.(int64))
 		}
 	}
 	return nil
@@ -488,11 +521,14 @@ func checkSubjectArray(sa []string) ([]string, error) {
 
 // PrintTLSHelpAndDie prints TLS usage and exits.
 func PrintTLSHelpAndDie() {
-	fmt.Printf("%s\n", tlsUsage)
+	fmt.Printf("%s", tlsUsage)
 	for k := range cipherMap {
 		fmt.Printf("    %s\n", k)
 	}
-	fmt.Printf("\n")
+	fmt.Printf("\nAvailable curve preferences include:\n")
+	for k := range curvePreferenceMap {
+		fmt.Printf("    %s\n", k)
+	}
 	os.Exit(0)
 }
 
@@ -504,6 +540,14 @@ func parseCipher(cipherName string) (uint16, error) {
 	}
 
 	return cipher, nil
+}
+
+func parseCurvePreferences(curveName string) (tls.CurveID, error) {
+	curve, exists := curvePreferenceMap[curveName]
+	if !exists {
+		return 0, fmt.Errorf("Unrecognized curve preference %s", curveName)
+	}
+	return curve, nil
 }
 
 // Helper function to parse TLS configs.
@@ -548,6 +592,19 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 				}
 				tc.Ciphers = append(tc.Ciphers, cipher)
 			}
+		case "curve_preferences":
+			ra := mv.([]interface{})
+			if len(ra) == 0 {
+				return nil, fmt.Errorf("error parsing tls config, 'curve_preferences' cannot be empty")
+			}
+			tc.CurvePreferences = make([]tls.CurveID, 0, len(ra))
+			for _, r := range ra {
+				cps, err := parseCurvePreferences(r.(string))
+				if err != nil {
+					return nil, err
+				}
+				tc.CurvePreferences = append(tc.CurvePreferences, cps)
+			}
 		case "timeout":
 			at := float64(0)
 			switch mv.(type) {
@@ -565,6 +622,11 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 	// If cipher suites were not specified then use the defaults
 	if tc.Ciphers == nil {
 		tc.Ciphers = defaultCipherSuites()
+	}
+
+	// If curve preferences were not specified, then use the defaults
+	if tc.CurvePreferences == nil {
+		tc.CurvePreferences = defaultCurvePreferences()
 	}
 
 	return &tc, nil
@@ -586,6 +648,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	// Create TLSConfig
 	// We will determine the cipher suites that we prefer.
 	config := tls.Config{
+		CurvePreferences:         tc.CurvePreferences,
 		Certificates:             []tls.Certificate{cert},
 		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,
@@ -661,11 +724,14 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
-	if flagOpts.ClusterListenStr != "" {
-		opts.ClusterListenStr = flagOpts.ClusterListenStr
+	if flagOpts.Cluster.ListenStr != "" {
+		opts.Cluster.ListenStr = flagOpts.Cluster.ListenStr
 	}
-	if flagOpts.ClusterNoAdvertise {
-		opts.ClusterNoAdvertise = true
+	if flagOpts.Cluster.NoAdvertise {
+		opts.Cluster.NoAdvertise = true
+	}
+	if flagOpts.Cluster.ConnectRetries != 0 {
+		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
 	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
@@ -804,14 +870,14 @@ func processOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
-	if opts.ClusterHost == "" {
-		opts.ClusterHost = DEFAULT_HOST
+	if opts.Cluster.Host == "" {
+		opts.Cluster.Host = DEFAULT_HOST
 	}
-	if opts.ClusterTLSTimeout == 0 {
-		opts.ClusterTLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
+	if opts.Cluster.TLSTimeout == 0 {
+		opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
-	if opts.ClusterAuthTimeout == 0 {
-		opts.ClusterAuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	if opts.Cluster.AuthTimeout == 0 {
+		opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE
@@ -819,7 +885,7 @@ func processOptions(opts *Options) {
 	if opts.MaxPayload == 0 {
 		opts.MaxPayload = MAX_PAYLOAD_SIZE
 	}
-	if opts.MaxPending == 0 {
-		opts.MaxPending = MAX_PENDING_SIZE
+	if opts.WriteDeadline == time.Duration(0) {
+		opts.WriteDeadline = DEFAULT_FLUSH_DEADLINE
 	}
 }

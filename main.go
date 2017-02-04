@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/logger"
@@ -29,7 +28,7 @@ Server Options:
 Logging Options:
     -l, --log <file>                 File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
-    -s, --syslog                     Enable syslog as log method
+    -s, --syslog                     Log to syslog or windows event log
     -r, --remote_syslog <addr>       Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
@@ -51,7 +50,8 @@ Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
-		
+        --connect_retries <number>   For implicit routes, number of connect retries
+
 
 Common Options:
     -h, --help                       Show this message
@@ -108,9 +108,10 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
 	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
 	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
-	flag.StringVar(&opts.ClusterListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
-	flag.StringVar(&opts.ClusterListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	flag.BoolVar(&opts.ClusterNoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
+	flag.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
+	flag.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
+	flag.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
+	flag.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
 	flag.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
@@ -118,7 +119,9 @@ func main() {
 	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
 
-	flag.Usage = usage
+	flag.Usage = func() {
+		fmt.Printf("%s\n", usageStr)
+	}
 
 	flag.Parse()
 
@@ -138,13 +141,13 @@ func main() {
 
 	// Process args looking for non-flag options,
 	// 'version' and 'help' only for now
-	for _, arg := range flag.Args() {
-		switch strings.ToLower(arg) {
-		case "version":
-			server.PrintServerAndExit()
-		case "help":
-			usage()
-		}
+	showVersion, showHelp, err := server.ProcessCommandLineArgs(flag.CommandLine)
+	if err != nil {
+		server.PrintAndDie(err.Error() + usageStr)
+	} else if showVersion {
+		server.PrintServerAndExit()
+	} else if showHelp {
+		usage()
 	}
 
 	// Parse config if given
@@ -157,7 +160,7 @@ func main() {
 	}
 
 	// Remove any host/ip that points to itself in Route
-	newroutes, err := server.RemoveSelfReference(opts.ClusterPort, opts.Routes)
+	newroutes, err := server.RemoveSelfReference(opts.Cluster.Port, opts.Routes)
 	if err != nil {
 		server.PrintAndDie(err.Error())
 	}
@@ -204,10 +207,10 @@ func configureAuth(s *server.Server, opts *server.Options) {
 		s.SetClientAuthMethod(auth)
 	}
 	// Routes
-	if opts.ClusterUsername != "" {
+	if opts.Cluster.Username != "" {
 		auth := &auth.Plain{
-			Username: opts.ClusterUsername,
-			Password: opts.ClusterPassword,
+			Username: opts.Cluster.Username,
+			Password: opts.Cluster.Password,
 		}
 		s.SetRouteAuthMethod(auth)
 	}
@@ -266,8 +269,8 @@ func configureClusterOpts(opts *server.Options) error {
 	// If we don't have cluster defined in the configuration
 	// file and no cluster listen string override, but we do
 	// have a routes override, we need to report misconfiguration.
-	if opts.ClusterListenStr == "" && opts.ClusterHost == "" &&
-		opts.ClusterPort == 0 {
+	if opts.Cluster.ListenStr == "" && opts.Cluster.Host == "" &&
+		opts.Cluster.Port == 0 {
 		if opts.RoutesStr != "" {
 			server.PrintAndDie("Solicited routes require cluster capabilities, e.g. --cluster.")
 		}
@@ -275,14 +278,17 @@ func configureClusterOpts(opts *server.Options) error {
 	}
 
 	// If cluster flag override, process it
-	if opts.ClusterListenStr != "" {
-		clusterURL, err := url.Parse(opts.ClusterListenStr)
+	if opts.Cluster.ListenStr != "" {
+		clusterURL, err := url.Parse(opts.Cluster.ListenStr)
+		if err != nil {
+			return err
+		}
 		h, p, err := net.SplitHostPort(clusterURL.Host)
 		if err != nil {
 			return err
 		}
-		opts.ClusterHost = h
-		_, err = fmt.Sscan(p, &opts.ClusterPort)
+		opts.Cluster.Host = h
+		_, err = fmt.Sscan(p, &opts.Cluster.Port)
 		if err != nil {
 			return err
 		}
@@ -292,15 +298,15 @@ func configureClusterOpts(opts *server.Options) error {
 			if !hasPassword {
 				return fmt.Errorf("Expected cluster password to be set.")
 			}
-			opts.ClusterPassword = pass
+			opts.Cluster.Password = pass
 
 			user := clusterURL.User.Username()
-			opts.ClusterUsername = user
+			opts.Cluster.Username = user
 		} else {
 			// Since we override from flag and there is no user/pwd, make
 			// sure we clear what we may have gotten from config file.
-			opts.ClusterUsername = ""
-			opts.ClusterPassword = ""
+			opts.Cluster.Username = ""
+			opts.Cluster.Password = ""
 		}
 	}
 

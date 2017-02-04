@@ -87,5 +87,4 @@ func TestUserAuthorizationProto(t *testing.T) {
 	expectResult(t, c, permErrRe)
 
 	c.Close()
-
 }

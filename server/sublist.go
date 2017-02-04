@@ -636,8 +636,5 @@ func matchLiteral(literal, subject string) bool {
 		li++
 	}
 	// Make sure we have processed all of the literal's chars..
-	if li < ll {
-		return false
-	}
-	return true
+	return li >= ll
 }

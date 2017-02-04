@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +36,53 @@ func TestSysLoggerWithDebugAndTrace(t *testing.T) {
 
 	if !logger.trace {
 		t.Fatalf("Expected %t, received %t\n", true, logger.trace)
+	}
+}
+
+func testTag(t *testing.T, exePath, expected string) {
+	os.Args[0] = exePath
+	if result := GetSysLoggerTag(); result != expected {
+		t.Fatalf("Expected %s, received %s", expected, result)
+	}
+}
+
+func restoreArg(orig string) {
+	os.Args[0] = orig
+}
+
+func TestSysLoggerTagGen(t *testing.T) {
+	origArg := os.Args[0]
+	defer restoreArg(origArg)
+
+	testTag(t, "gnatsd", "gnatsd")
+	testTag(t, filepath.Join(".", "gnatsd"), "gnatsd")
+	testTag(t, filepath.Join("home", "bin", "gnatsd"), "gnatsd")
+	testTag(t, filepath.Join("..", "..", "gnatsd"), "gnatsd")
+	testTag(t, "gnatsd.service1", "gnatsd.service1")
+	testTag(t, "gnatsd_service1", "gnatsd_service1")
+	testTag(t, "gnatsd-service1", "gnatsd-service1")
+	testTag(t, "gnatsd service1", "gnatsd service1")
+}
+
+func TestSysLoggerTag(t *testing.T) {
+	origArg := os.Args[0]
+	defer restoreArg(origArg)
+
+	os.Args[0] = "ServerLoggerTag"
+
+	done := make(chan string)
+	startServer(done)
+	logger := NewRemoteSysLogger(serverFQN, true, true)
+	logger.Noticef("foo")
+
+	line := <-done
+	data := strings.Split(line, "[")
+	if len(data) != 2 {
+		t.Fatalf("Unexpected syslog line %s\n", line)
+	}
+
+	if !strings.Contains(data[0], os.Args[0]) {
+		t.Fatalf("Expected '%s', received '%s'\n", os.Args[0], data[0])
 	}
 }
 

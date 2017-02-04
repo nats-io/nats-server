@@ -3,20 +3,24 @@
 package server
 
 import (
+	"flag"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/go-nats"
 )
 
 var DefaultOptions = Options{
-	Host:        "localhost",
-	Port:        11222,
-	HTTPPort:    11333,
-	ClusterPort: 11444,
-	ProfPort:    11280,
-	NoLog:       true,
-	NoSigs:      true,
+	Host:     "localhost",
+	Port:     11222,
+	HTTPPort: 11333,
+	Cluster:  ClusterOpts{Port: 11444},
+	ProfPort: 11280,
+	NoLog:    true,
+	NoSigs:   true,
 }
 
 // New Go Routine based server
@@ -32,30 +36,11 @@ func RunServer(opts *Options) *Server {
 	// Run server in Go routine.
 	go s.Start()
 
-	end := time.Now().Add(10 * time.Second)
-	for time.Now().Before(end) {
-		addr := s.GetListenEndpoint()
-		if addr == "" {
-			time.Sleep(10 * time.Millisecond)
-			// Retry. We might take a little while to open a connection.
-			continue
-		}
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			// Retry after 50ms
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		conn.Close()
-		// Wait a bit to give a chance to the server to remove this
-		// "client" from its state, which may otherwise interfere with
-		// some tests.
-		time.Sleep(25 * time.Millisecond)
-
-		return s
+	// Wait for accept loop(s) to be started
+	if !s.ReadyForConnections(10 * time.Second) {
+		panic("Unable to start NATS Server in Go Routine")
 	}
-	panic("Unable to start NATS Server in Go Routine")
-
+	return s
 }
 
 func TestStartupAndShutdown(t *testing.T) {
@@ -213,8 +198,8 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	opts := DefaultOptions
 	opts.Host = "x.x.x.x" // bad host
 	opts.Port = 4222
-	opts.ClusterHost = "localhost"
-	opts.ClusterPort = 6222
+	opts.Cluster.Host = "localhost"
+	opts.Cluster.Port = 6222
 
 	s := New(&opts)
 	// This should return since it should fail to start a listener
@@ -222,4 +207,124 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	s.Start()
 	// We should be able to shutdown
 	s.Shutdown()
+}
+
+func TestMaxConnections(t *testing.T) {
+	opts := DefaultOptions
+	opts.MaxConn = 1
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc.Close()
+
+	nc2, err := nats.Connect(addr)
+	if err == nil {
+		nc2.Close()
+		t.Fatal("Expected connection to fail")
+	}
+}
+
+func TestProcessCommandLineArgs(t *testing.T) {
+	var host string
+	var port int
+	cmd := flag.NewFlagSet("gnatsd", flag.ExitOnError)
+	cmd.StringVar(&host, "a", "0.0.0.0", "Host.")
+	cmd.IntVar(&port, "p", 4222, "Port.")
+
+	cmd.Parse([]string{"-a", "127.0.0.1", "-p", "9090"})
+	showVersion, showHelp, err := ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if showVersion || showHelp {
+		t.Errorf("Expected not having to handle subcommands")
+	}
+
+	cmd.Parse([]string{"version"})
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if !showVersion {
+		t.Errorf("Expected having to handle version command")
+	}
+	if showHelp {
+		t.Errorf("Expected not having to handle help command")
+	}
+
+	cmd.Parse([]string{"help"})
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
+	if err != nil {
+		t.Errorf("Expected no errors, got: %s", err)
+	}
+	if showVersion {
+		t.Errorf("Expected not having to handle version command")
+	}
+	if !showHelp {
+		t.Errorf("Expected having to handle help command")
+	}
+
+	cmd.Parse([]string{"foo", "-p", "9090"})
+	_, _, err = ProcessCommandLineArgs(cmd)
+	if err == nil {
+		t.Errorf("Expected an error handling the command arguments")
+	}
+}
+
+func TestWriteDeadline(t *testing.T) {
+	opts := DefaultOptions
+	opts.WriteDeadline = 20 * time.Millisecond
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("CONNECT {}\r\nPING\r\nSUB foo 1\r\n")); err != nil {
+		t.Fatalf("Error sending protocols to server: %v", err)
+	}
+	// Reduce socket buffer to increase reliability of getting
+	// write deadline errors.
+	c.(*net.TCPConn).SetReadBuffer(10)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 1000000)
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		if err := sender.Publish("foo", payload); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	dur := time.Since(start)
+	// user more than the write deadline to account for calls
+	// overhead, running with -race, etc...
+	if dur > 100*time.Millisecond {
+		t.Fatalf("Flush should have returned sooner, took: %v", dur)
+	}
+	// Flush sender connection to ensure that all data has been sent.
+	sender.Flush()
+	// At this point server should have closed connection c.
+
+	// On certain platforms, it may take more than one call before
+	// getting the error.
+	for i := 0; i < 100; i++ {
+		if _, err := c.Write([]byte("PUB bar 5\r\nhello\r\n")); err != nil {
+			// ok
+			return
+		}
+	}
+	t.Fatal("Connection should have been closed")
 }

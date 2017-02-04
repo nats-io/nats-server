@@ -6,19 +6,22 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
+
+	"github.com/nats-io/gnatsd/util"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -180,21 +183,23 @@ func PrintServerAndExit() {
 	os.Exit(0)
 }
 
-// Signal Handling
-func (s *Server) handleSignals() {
-	if s.opts.NoSigs {
-		return
-	}
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for sig := range c {
-			Debugf("Trapped Signal; %v", sig)
-			// FIXME, trip running?
-			Noticef("Server Exiting..")
-			os.Exit(0)
+// ProcessCommandLineArgs takes the command line arguments
+// validating and setting flags for handling in case any
+// sub command was present.
+func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, err error) {
+	if len(cmd.Args()) > 0 {
+		arg := cmd.Args()[0]
+		switch strings.ToLower(arg) {
+		case "version":
+			return true, false, nil
+		case "help":
+			return false, true, nil
+		default:
+			return false, false, fmt.Errorf("Unrecognized command: %q\n", arg)
 		}
-	}()
+	}
+
+	return false, false, nil
 }
 
 // Protected check on running state
@@ -251,7 +256,7 @@ func (s *Server) Start() {
 	clientListenReady := make(chan struct{})
 
 	// Start up routing as well if needed.
-	if s.opts.ClusterPort != 0 {
+	if s.opts.Cluster.Port != 0 {
 		s.startGoRoutine(func() {
 			s.StartRouting(clientListenReady)
 		})
@@ -476,9 +481,9 @@ func (s *Server) startMonitoring(secure bool) {
 	if secure {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
-		config := *s.opts.TLSConfig
+		config := util.CloneTLSConfig(s.opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
-		s.http, err = tls.Listen("tcp", hp, &config)
+		s.http, err = tls.Listen("tcp", hp, config)
 
 	} else {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
@@ -563,6 +568,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 		s.mu.Unlock()
 		return c
 	}
+	// If there is a max connections specified, check that adding
+	// this new client would not push us over the max
+	if s.opts.MaxConn > 0 && len(s.clients) >= s.opts.MaxConn {
+		s.mu.Unlock()
+		c.maxConnExceeded()
+		return nil
+	}
 	s.clients[c.cid] = c
 	s.mu.Unlock()
 
@@ -635,7 +647,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	defer s.mu.Unlock()
 
 	// Feature disabled, do not update.
-	if s.opts.ClusterNoAdvertise {
+	if s.opts.Cluster.NoAdvertise {
 		return false
 	}
 
@@ -827,51 +839,21 @@ func (s *Server) Addr() net.Addr {
 	return s.listener.Addr()
 }
 
-// GetListenEndpoint will return a string of the form host:port suitable for
-// a connect. Will return empty string if the server is not ready to accept
-// client connections.
-func (s *Server) GetListenEndpoint() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Wait for the listener to be set, see note about RANDOM_PORT below
-	if s.listener == nil {
-		return ""
+// ReadyForConnections returns `true` if the server is ready to accept client
+// and, if routing is enabled, route connections. If after the duration
+// `dur` the server is still not ready, returns `false`.
+func (s *Server) ReadyForConnections(dur time.Duration) bool {
+	end := time.Now().Add(dur)
+	for time.Now().Before(end) {
+		s.mu.Lock()
+		ok := s.listener != nil && (s.opts.Cluster.Port == 0 || s.routeListener != nil)
+		s.mu.Unlock()
+		if ok {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-
-	host := s.opts.Host
-
-	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
-	// We replace it with "localhost" when that's the case.
-	if host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "localhost"
-	}
-
-	// Return the opts's Host and Port. Note that the Port may be set
-	// when the listener is started, due to the use of RANDOM_PORT
-	return net.JoinHostPort(host, strconv.Itoa(s.opts.Port))
-}
-
-// GetRouteListenEndpoint will return a string of the form host:port suitable
-// for a connect. Will return empty string if the server is not configured for
-// routing or not ready to accept route connections.
-func (s *Server) GetRouteListenEndpoint() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.routeListener == nil {
-		return ""
-	}
-
-	host := s.opts.ClusterHost
-
-	// On windows, a connect with host "0.0.0.0" (or "::") will fail.
-	// We replace it with "localhost" when that's the case.
-	if host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "localhost"
-	}
-
-	// Return the cluster's Host and Port.
-	return net.JoinHostPort(host, strconv.Itoa(s.opts.ClusterPort))
+	return false
 }
 
 // ID returns the server's ID

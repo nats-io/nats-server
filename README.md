@@ -14,10 +14,10 @@ go get github.com/nats-io/gnatsd
 gnatsd -D -V
 ```
 
-Install the [Go NATS client](https://github.com/nats-io/nats/blob/master/README.md):
+Install the [Go NATS client](https://github.com/nats-io/go-nats/blob/master/README.md):
 
 ```
-go get github.com/nats-io/nats
+go get github.com/nats-io/go-nats
 ```
 
 ## Installation
@@ -30,7 +30,7 @@ The recommended way to install the NATS server is to [download](http://nats.io/d
 
 ### Demo
 
-You can connect to a public NATS server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [nats://demo.nats.io:4443](nats://demo.nats.io:4443). See the [protocol](#protocol) section for usage.
+You can connect to a public NATS server that is running at our demo site: [nats://demo.nats.io:4222](nats://demo.nats.io:4222), and a secure version at [tls://demo.nats.io:4443](nats://demo.nats.io:4443). See the [protocol](#protocol) section for usage.
 
 ### Build
 
@@ -49,9 +49,9 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[2842] 2016/04/26 13:21:20.379640 [INF] Starting nats-server version 0.8.0
-[2842] 2016/04/26 13:21:20.379745 [INF] Listening for client connections on 0.0.0.0:4222
-[2842] 2016/04/26 13:21:20.379865 [INF] Server is ready
+[37274] 2016/12/15 18:33:12.119961 [INF] Starting nats-server version 0.9.6
+[37274] 2016/12/15 18:33:12.120060 [INF] Listening for client connections on 0.0.0.0:4222
+[37274] 2016/12/15 18:33:12.120154 [INF] Server is ready
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
@@ -69,7 +69,7 @@ The NATS server uses a [text based protocol](http://nats.io/documentation/intern
 Trying 107.170.221.32...
 Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.8.0.beta","go":"go1.6.2","host":"0.0.0.0","port":4222, ...}
+INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.9.6","go":"go1.7.4","host":"0.0.0.0","port":4222, ...}
 SUB foo 1
 +OK
 PUB foo 11
@@ -85,36 +85,39 @@ The NATS server accepts command line arguments to control its behavior. Usage is
 
 ```
 Server Options:
-    -a, --addr HOST                  Bind to HOST address (default: 0.0.0.0)
-    -p, --port PORT                  Use PORT for clients (default: 4222)
-    -P, --pid FILE                   File to store PID
-    -m, --http_port PORT             Use HTTP PORT for monitoring
-    -ms,--https_port PORT            Use HTTPS PORT for monitoring
-    -c, --config FILE                Configuration File
+    -a, --addr <host>                Bind to host address (default: 0.0.0.0)
+    -p, --port <port>                Use port for clients (default: 4222)
+    -P, --pid <file>                 File to store PID
+    -m, --http_port <port>           Use port for http monitoring
+    -ms,--https_port <port>          Use port for https monitoring
+    -c, --config <file>              Configuration file
 
 Logging Options:
-    -l, --log FILE                   File to redirect log output
+    -l, --log <file>                 File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
-    -s, --syslog                     Enable syslog as log method.
-    -r, --remote_syslog              Syslog server addr (udp://localhost:514).
+    -s, --syslog                     Enable syslog as log method
+    -r, --remote_syslog <addr>       Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
-    -DV                              Debug and Trace
+    -DV                              Debug and trace
 
 Authorization Options:
-        --user user                  User required for connections
-        --pass password              Password required for connections
+        --user <user>                User required for connections
+        --pass <password>            Password required for connections
+        --auth <token>               Authorization token required for connections
 
 TLS Options:
         --tls                        Enable TLS, do not verify clients (default: false)
-        --tlscert FILE               Server certificate file
-        --tlskey FILE                Private key for server certificate
+        --tlscert <file>             Server certificate file
+        --tlskey <file>              Private key for server certificate
         --tlsverify                  Enable TLS, verify client certificates
-        --tlscacert FILE             Client certificate CA for verification
+        --tlscacert <file>           Client certificate CA for verification
 
 Cluster Options:
-        --routes [rurl-1, rurl-2]    Routes to solicit and connect
-        --cluster [cluster url]      Cluster URL for solicited routes
+        --routes <rurl-1, rurl-2>    Routes to solicit and connect
+        --cluster <cluster-url>      Cluster URL for solicited routes
+        --no_advertise <bool>        Advertise known cluster IPs to clients
+
 
 Common Options:
     -h, --help                       Show this message
@@ -182,9 +185,6 @@ max_control_line: 512
 
 # maximum payload
 max_payload: 65536
-
-# slow consumer threshold
-max_pending_size: 10000000
 ```
 
 ## Variables
@@ -545,7 +545,7 @@ Note that `_INBOX.*` subscribe permissions must be granted in order to use the r
 ### TLS
 
 As of Release 0.7.0, the server can use modern TLS semantics for client connections, route connections, and the HTTPS monitoring port.
-The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vunerabilities. The
+The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vulnerabilities. The
 server's preferences when building with Go1.5 are as follows.
 
 ```go
@@ -559,7 +559,17 @@ func defaultCipherSuites() []uint16 {
 	}
 }
 ```
-
+The curve preferences are also re-ordered to provide the most secure
+environment available, and are as follows:
+```go
+func defaultCurvePreferences() []tls.CurveID {
+	return []tls.CurveID{
+		tls.CurveP521,
+		tls.CurveP384,
+		tls.CurveP256,
+	}
+}
+```
 Generating self signed certs and intermediary certificate authorities is beyond the scope here, but this document can be helpful in addition to Google Search: <a href="https://docs.docker.com/engine/articles/https/" target="_blank">https://docs.docker.com/engine/articles/https/</a>.
 
 The server **requires** a certificate and private key. Optionally the server can require that clients need to present certificates, and the server can be configured with a CA authority to verify the client certificates.
@@ -725,11 +735,11 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 
 [License-Url]: http://opensource.org/licenses/MIT
-[License-Image]: https://img.shields.io/npm/l/express.svg
+[License-Image]: https://img.shields.io/badge/License-MIT-blue.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.4
-[Release-image]: http://img.shields.io/badge/release-v0.9.4-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.6
+[Release-image]: http://img.shields.io/badge/release-v0.9.6-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd

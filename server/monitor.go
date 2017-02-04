@@ -442,7 +442,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
    <head>
     <link rel="shortcut icon" href="http://nats.io/img/favicon.ico">
     <style type="text/css">
-      body { font-family: “Century Gothic”, CenturyGothic, AppleGothic, sans-serif; font-size: 22; }
+      body { font-family: "Century Gothic", CenturyGothic, AppleGothic, sans-serif; font-size: 22; }
       a { margin-left: 32px; }
     </style>
   </head>
