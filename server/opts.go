@@ -84,15 +84,6 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
-	HTTPSPort      int           `json:"https_port"`
-	AuthTimeout    float64       `json:"auth_timeout"`
-	MaxControlLine int           `json:"max_control_line"`
-	MaxPayload     int           `json:"max_payload"`
-	Cluster        ClusterOpts   `json:"cluster"`
-	ProfPort       int           `json:"-"`
-	PidFile        string        `json:"-"`
-	LogFile        string        `json:"-"`
-	Syslog         bool          `json:"-"`
 	RemoteSyslog   string        `json:"-"`
 	Routes         []*url.URL    `json:"-"`
 	RoutesStr      string        `json:"-"`
