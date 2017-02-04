@@ -84,17 +84,6 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
-	RemoteSyslog   string        `json:"-"`
-	Routes         []*url.URL    `json:"-"`
-	RoutesStr      string        `json:"-"`
-	TLSTimeout     float64       `json:"tls_timeout"`
-	TLS            bool          `json:"-"`
-	TLSVerify      bool          `json:"-"`
-	TLSCert        string        `json:"-"`
-	TLSKey         string        `json:"-"`
-	TLSCaCert      string        `json:"-"`
-	TLSConfig      *tls.Config   `json:"-"`
-	WriteDeadline  time.Duration `json:"-"`
 }
 
 // Configuration file authorization section.
