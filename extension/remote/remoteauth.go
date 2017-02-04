@@ -1,9 +1,9 @@
 package remote
 
 import (
-	"net/http"
-	"io/ioutil"
 	"encoding/json"
+	"io/ioutil"
+	"net/http"
 
 	"bytes"
 	"fmt"
@@ -12,7 +12,7 @@ import (
 type RemoteAuth struct {
 }
 
-func (t *RemoteAuth) Check(authenticator []string, username string, password string, clientToken string) (bool){
+func (t *RemoteAuth) Check(authenticator []string, username string, password string, clientToken string) error {
 	url := authenticator[1]
 
 	var values map[string]string
@@ -26,15 +26,13 @@ func (t *RemoteAuth) Check(authenticator []string, username string, password str
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
 
 	if err != nil {
-		fmt.Errorf("authAuthenticatorRequest Error: %v", err)
-		return false
+		return fmt.Errorf("authAuthenticatorRequest Error: %v", err)
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Errorf("authAuthenticatorRequest Responese Body Error: %v", err)
-		return false
+		return fmt.Errorf("authAuthenticatorRequest Responese Body Error: %v", err)
 	}
 
 	fmt.Println("authAuthenticatorRequest Body: " + string(body))
@@ -42,16 +40,13 @@ func (t *RemoteAuth) Check(authenticator []string, username string, password str
 	authResponse := make(map[string]string)
 	err = json.Unmarshal(body, &authResponse)
 	if err != nil {
-		fmt.Errorf("authAuthenticatorRequest Json Parse Error: %v", err)
-		return false
+		return fmt.Errorf("authAuthenticatorRequest Json Parse Error: %v", err)
 	}
 
 	if resp.StatusCode != 200 || authResponse["token"] == "" {
-		fmt.Errorf("authAuthenticatorRequest Failed")
-		return false
+		return fmt.Errorf("authAuthenticatorRequest Failed")
 	}
 
 	authenticator = append(authenticator, authResponse["token"])
-	return true
+	return nil
 }
-

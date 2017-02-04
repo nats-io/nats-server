@@ -1,15 +1,15 @@
 package remote
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
-	"fmt"
 )
 
 type RemotePermission struct {
 }
 
-func setRemoteToken(clientExtension map[string]string, authenticator []string){
+func setRemoteToken(clientExtension map[string]string, authenticator []string) {
 	// Set remote token to clientAuth
 	if len(authenticator) > 2 && authenticator[2] != "" {
 		clientExtension["token"] = authenticator[2]
@@ -20,15 +20,14 @@ func (r *RemotePermission) RegisterSubscribePermission(clientExtension map[strin
 	clientExtension["subscribe"] = subscribe[1]
 }
 
-
 func (r *RemotePermission) RegisterPublishPermission(clientExtension map[string]string, authenticator []string, publish []string) {
 	setRemoteToken(clientExtension, authenticator)
 	clientExtension["publish"] = publish[1]
 }
 
-func (r *RemotePermission) CheckSubscribe(clientExtension map[string]string, subject string) bool {
+func (r *RemotePermission) CheckSubscribe(clientExtension map[string]string, subject string) error {
 	if clientExtension["token"] == "" || clientExtension["subscribe"] == "" {
-		return false
+		return fmt.Errorf("missing token or subscriber checker")
 	}
 
 	token := clientExtension["token"]
@@ -39,30 +38,27 @@ func (r *RemotePermission) CheckSubscribe(clientExtension map[string]string, sub
 	resp, err := http.Get(values)
 
 	if err != nil {
-		fmt.Errorf("subAuthenticatorRequest Error: %v", err)
-		return false
+		return fmt.Errorf("subAuthenticatorRequest Error: %v", err)
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Errorf("subAuthenticatorRequest Responese Body Error: %v", err)
-		return false
+		return fmt.Errorf("subAuthenticatorRequest Responese Body Error: %v", err)
 	}
 
 	fmt.Println("subAuthenticatorRequest Body: " + string(body))
 
 	if resp.StatusCode != 200 {
-		fmt.Errorf("subAuthenticatorRequest Failed, return %v", resp.StatusCode)
-		return false
+		return fmt.Errorf("subAuthenticatorRequest Failed, return %v", resp.StatusCode)
 	}
 
-	return true
+	return nil
 }
 
-func (r *RemotePermission) CheckPublish(clientExtension map[string]string, subject string) bool {
+func (r *RemotePermission) CheckPublish(clientExtension map[string]string, subject string) error {
 	if clientExtension["token"] == "" || clientExtension["publish"] == "" {
-		return false
+		return fmt.Errorf("token can not be null")
 	}
 
 	token := clientExtension["token"]
@@ -73,22 +69,19 @@ func (r *RemotePermission) CheckPublish(clientExtension map[string]string, subje
 	resp, err := http.Get(values)
 
 	if err != nil {
-		fmt.Errorf("pubAuthenticatorRequest Error: %v", err)
-		return false
+		return fmt.Errorf("pubAuthenticatorRequest Error: %v", err)
 	}
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Errorf("pubAuthenticatorRequest Responese Body Error: %v", err)
-		return false
+		return fmt.Errorf("pubAuthenticatorRequest Responese Body Error: %v", err)
 	}
 
 	fmt.Println("pubAuthenticatorRequest Body: " + string(body))
 	if resp.StatusCode != 200 {
-		fmt.Errorf("subAuthenticatorRequest Failed, return %v", resp.StatusCode)
-		return false
+		return fmt.Errorf("subAuthenticatorRequest Failed, return %v", resp.StatusCode)
 	}
 
-	return true
+	return nil
 }

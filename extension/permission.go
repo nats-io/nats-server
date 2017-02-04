@@ -1,20 +1,20 @@
 package extension
 
 import (
-	"strings"
 	"reflect"
+	"strings"
 )
 
 type Permission interface {
 	RegisterSubscribePermission(clientExtension map[string]string, authenticator []string, subscribe []string)
 	RegisterPublishPermission(clientExtension map[string]string, authenticator []string, publish []string)
-	CheckSubscribe(clientExtension map[string]string, subject string) bool
-	CheckPublish(clientExtension map[string]string, subject string) bool
+	CheckSubscribe(clientExtension map[string]string, subject string) error
+	CheckPublish(clientExtension map[string]string, subject string) error
 }
 
-func RegisterPermission(clientExtension map[string]string, authenticator []string, publish []string, subscribe []string){
+func RegisterPermission(clientExtension map[string]string, authenticator []string, publish []string, subscribe []string) {
 	golangType := publish[0]
-	if strings.HasPrefix(golangType, "golang_type."){
+	if strings.HasPrefix(golangType, "golang_type.") {
 		golangType = strings.Replace(golangType, "golang_type.", "", 1)
 
 		clientExtension["golang_type_pub"] = golangType
@@ -29,7 +29,7 @@ func RegisterPermission(clientExtension map[string]string, authenticator []strin
 	}
 
 	golangType = subscribe[0]
-	if strings.HasPrefix(golangType, "golang_type."){
+	if strings.HasPrefix(golangType, "golang_type.") {
 		golangType = strings.Replace(golangType, "golang_type.", "", 1)
 
 		clientExtension["golang_type_sub"] = golangType

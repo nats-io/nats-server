@@ -1,19 +1,18 @@
 package extension
 
 import (
-	"strings"
-	"reflect"
 	"fmt"
+	"reflect"
+	"strings"
 )
 
 type Auth interface {
-	Check(authenticator []string, username string, password string, clientToken string) (bool)
+	Check(authenticator []string, username string, password string, clientToken string) error
 }
 
-func CheckExternalUser(authenticator []string, username string, password string, clientToken string) ([]string, bool){
-	if authenticator == nil || authenticator[0] == "" || !strings.HasPrefix(authenticator[0], "golang_type"){
-		fmt.Errorf("User authenticator or golang_type can not be nil")
-		return nil, false
+func CheckExternalUser(authenticator []string, username string, password string, clientToken string) ([]string, error) {
+	if authenticator == nil || authenticator[0] == "" || !strings.HasPrefix(authenticator[0], "golang_type") {
+		return nil, fmt.Errorf("User authenticator or golang_type can not be nil")
 	}
 
 	newAuthenticator := make([]string, len(authenticator))
@@ -30,5 +29,5 @@ func CheckExternalUser(authenticator []string, username string, password string,
 	params[3] = reflect.ValueOf(clientToken)
 	result := v.MethodByName("Check").Call(params)
 
-	return newAuthenticator, result[0].Interface().(bool)
+	return newAuthenticator, result[0].Interface().(error)
 }
