@@ -10,9 +10,10 @@ type Auth interface {
 	Check(authenticator []string, username string, password string, clientToken string) error
 }
 
-func CheckExternalUser(authenticator []string, username string, password string, clientToken string) ([]string, error) {
+func CheckExternalUser(authenticator []string, username string, password string, clientToken string) ([]string, bool) {
 	if authenticator == nil || authenticator[0] == "" || !strings.HasPrefix(authenticator[0], "golang_type") {
-		return nil, fmt.Errorf("User authenticator or golang_type can not be nil")
+		fmt.Println("User authenticator or golang_type can not be nil")
+		return nil, false
 	}
 
 	newAuthenticator := make([]string, len(authenticator))
@@ -29,5 +30,5 @@ func CheckExternalUser(authenticator []string, username string, password string,
 	params[3] = reflect.ValueOf(clientToken)
 	result := v.MethodByName("Check").Call(params)
 
-	return newAuthenticator, result[0].Interface().(error)
+	return newAuthenticator, result[0].Interface().(bool)
 }

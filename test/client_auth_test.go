@@ -61,14 +61,14 @@ func TestDynamicUserAuth(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			credential := make(map[string]interface{})
 			if err := json.NewDecoder(req.Body).Decode(&credential); err != nil {
-				return httpmock.NewStringResponse(400, ""), nil
+				return httpmock.NewStringResponse(400, ``), nil
 			}
 			fmt.Println("Authenticating ", credential["username"], credential["password"])
 
 			if credential["username"] == credential["password"] {
-				return httpmock.NewJsonResponse(200, credential)
+				return httpmock.NewStringResponse(200, `{"token": "1234", "username": ""}`), nil
 			}
-			return httpmock.NewStringResponse(401, ""), nil
+			return httpmock.NewStringResponse(401, `{}`), nil
 
 		})
 	srv, opts := RunServerWithConfig("./configs/dynamic_user.conf")
@@ -121,5 +121,7 @@ func TestDynamicUserAuth(t *testing.T) {
 	if err3 == nil {
 		t.Fatalf("Expected an unsuccessful connect to %s, got %v\n", url3, err3)
 	}
-	nc3.Close()
+	if nc3 != nil {
+		t.Fatalf("Shouldnt be connectedn")
+	}
 }
