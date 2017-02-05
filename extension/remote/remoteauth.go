@@ -42,7 +42,5 @@ func (t *RemoteAuth) Check(authenticator []string, username string, password str
 		return false
 	}
 
-	authenticator = append(authenticator, authResponse["token"])
-
 	return true
 }
