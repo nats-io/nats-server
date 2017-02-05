@@ -447,49 +447,49 @@ users = [
 For example:
 
 ```
-dynamic_user: true
+  # Just for EXTERNAL permission, array[0] must be golang_type.
+  # You can implement your own golang_type for customization.
+  external_permission = {
+    publish = ["golang_type.remote.RemotePermission", "http://127.0.0.1:9292/accessmanager/authorization"]
+    subscribe = ["golang_type.remote.RemotePermission", "http://127.0.0.1:9292/accessmanager/authorization"]
+  }
 
-oauth2_authenticator1_url = "nats://localhost:4333"
-oauth2_authenticator2_url = "nats://alice:foo@localhost:4222"
-oauth2_authenticator3_url = "nats://localhost:4222"
+  # Just for EXTERNAL user, array[0] must be golang_type. e.g. remote.RemoteAuth below.
+  # You can implement your own golang_type for customization.
+  authenticate = ["golang_type.remote.RemoteAuth", "http://127.0.0.1:9292/accessmanager/authentication"]
 
-authenticator_hub = [
-  $oauth2_authenticator1_url
-  $oauth2_authenticator2_url
-  $oauth2_authenticator3_url
-]
-
-PASS: $2a$11$b0PUYclUQ3YOdqI3PkosC.tbbmTTAUCKb5xJwFtQIokrxPFeiIoae
-
-users = [
-  {user: alice, password: foo, permissions: $ADMIN}
-  {user: bob,   password: bar, permissions: $REQUESTOR}
-  {token: foo, permissions: $PASS}
-  {user: regex("vincent(.*)"), password: foo, authenticator:"oauth.replier"}
-  {user: wildcard("zhigao.*"), password: foo, authenticator:"oauth2.replier"}
-  {token: 2323*, authenticator:"oauth3.replier"}
-]
+  # Users listed with persmissions.
+  # EXTERNAL user parameter "authenticator" must be placed.
+  users = [
+    {user: alice, password: foo, permissions: $super_user}
+    {user: bob,   password: bar, permissions: $req_pub_user}
+    {user: susan, password: baz}
+    {user: EXTERNAL, authenticator: $authenticate, permissions: $external_permission}
+  ]
 ```
 
-And if you enable your user authentication with `authenticator`, such as `oauth.replier`. For example, for user `vincent.1`, when he requests to connect a NATS reply server using this configuration file, the reply server will request another NATS server defined by `authenticator_hub` with the payload as below. If authentication succeeded, the reply server will return the same password and token with customized permission.
+And if you enable your user authentication with `authenticator` like above, then the NATS server will send a post request to http://127.0.0.1:9292/accessmanager/authentication, then:
+
+  * If the client connect to NATS server using user name and password, then NATS server will invoke the Authenticate REST API endpoint with a post request with body contains:
+  {"username": "NAME_VALUE", "password": "PASSWORD_VALUE"}
+  * If the client connect to NATS server using a token, then NATS server will invoke the REST API endpoint with a post request with body contains:
+  {"token": "TOKEN_VALUE"}
+
+Either way, if the authentication is successful, then the external server should respond with HTTP status code 200 with following response body:
 
 ```
 {
-  "user": "vincent.1",
-  "password": "foo",
-  "permissions": {
-    "subscribe": [
-      "req.foo"
-    ],
-    "publish": [
-      "req.foo",
-      "req.bar"
-    ]
-  },
-  "authenticator": "oauth.replier",
-  "token": ""
+  "token": "TOKEN_VALUE"
 }
 ```
+
+For authorization, if the external authorization is used, then everytime client want to subscribe/publish data to a subject, NATS server will invoke the Authorize REST API endpoint with a GET request with the token and subject name as parameter like:
+
+```
+http://127.0.0.1:9292/accessmanager/authorization?token=TOKEN_VALUE&subject=SUBJECT_NAME
+```
+
+If the client is authorized to subscribe/publish, then the authorize REST API should return 200 as HTTP status code.
 
 ### Authorization
 
