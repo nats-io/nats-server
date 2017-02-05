@@ -30,7 +30,8 @@ func (m *MultiUser) Check(c server.ClientAuth) bool {
 	if !ok {
 		user, ok = m.users["EXTERNAL"]
 		if ok { // check external user
-			if authenticator, err := extension.CheckExternalUser(user.Authenticator, opts.Username, opts.Password, opts.Authorization); err != nil {
+			authenticator, err := extension.CheckExternalUser(user.Authenticator, opts.Username, opts.Password, opts.Authorization)
+			if err != nil {
 				externalUser := &server.User{Username: opts.Username, Password: opts.Password, Permissions: user.Permissions, Authenticator: authenticator}
 				c.RegisterUser(externalUser)
 				return true

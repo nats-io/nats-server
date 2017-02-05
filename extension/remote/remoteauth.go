@@ -42,7 +42,7 @@ func (t *RemoteAuth) Check(authenticator []string, username string, password str
 	if err != nil {
 		return fmt.Errorf("authAuthenticatorRequest Json Parse Error: %v", err)
 	}
-
+	fmt.Println("authAuthenticatorRequest response error: " + string(resp.StatusCode))
 	if resp.StatusCode != 200 || authResponse["token"] == "" {
 		return fmt.Errorf("authAuthenticatorRequest Failed")
 	}
