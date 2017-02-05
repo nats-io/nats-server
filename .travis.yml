@@ -9,6 +9,7 @@ install:
 - go get github.com/wadey/gocovmerge
 - go get honnef.co/go/tools/cmd/staticcheck
 - go get honnef.co/go/tools/cmd/gosimple
+- go get gopkg.in/jarcoal/httpmock.v1
 before_script:
 - EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
 - go build
