@@ -46,7 +46,5 @@ func (t *RemoteAuth) Check(authenticator []string, username string, password str
 	if resp.StatusCode != 200 || authResponse["token"] == "" {
 		return fmt.Errorf("authAuthenticatorRequest Failed")
 	}
-
-	authenticator = append(authenticator, authResponse["token"])
 	return nil
 }
