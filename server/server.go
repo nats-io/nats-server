@@ -39,6 +39,7 @@ type Info struct {
 	MaxPayload        int      `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
+	ServerRank        int      `json:"server_rank"`            // lowest rank wins leader election.
 
 	// Used internally for quick look-ups.
 	clientConnectURLs map[string]struct{}
@@ -77,6 +78,7 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
+	icli          iCli           // in-process internal clients
 }
 
 // Make sure all are 64bits for atomic use
@@ -118,6 +120,7 @@ func New(opts *Options) *Server {
 		trace: opts.Trace,
 		done:  make(chan bool, 1),
 		start: time.Now(),
+		icli:  iCli{configured: opts.InternalCli},
 	}
 
 	s.mu.Lock()
@@ -267,8 +270,51 @@ func (s *Server) Start() {
 		s.StartProfiler()
 	}
 
+	// Run the internal clients in
+	// s.icli.configured.
+	//
+	// Retain only those started
+	// successfully in s.icli.running.
+	//
+	s.icli.mu.Lock()
+	go func(info Info, opts Options) {
+		defer s.icli.mu.Unlock()
+
+		// wait for server to be accepting clients
+		select {
+		case <-s.rcQuit:
+			return
+		case <-clientListenReady:
+		}
+
+		n := len(s.icli.configured)
+		if n == 0 {
+			return
+		}
+		Debugf("Starting the %v internal client(s).", n)
+		for _, ic := range s.icli.configured {
+			srv, err := ic.Start(info, opts, log.logger)
+			if err == nil {
+				if srv != nil {
+					s.InternalCliRegisterCallback(srv)
+				}
+				Noticef("InternalClient ['%s'] started.", ic.Name())
+			} else {
+				Errorf("InternalClient ['%s'] failed to Start(): %s", ic.Name(), err)
+			}
+		}
+	}(s.info, *s.opts)
+
 	// Wait for clients.
 	s.AcceptLoop(clientListenReady)
+}
+
+// InternalCliRegisterCallback is public only for testing.
+func (s *Server) InternalCliRegisterCallback(srv net.Conn) {
+	s.startGoRoutine(func() {
+		s.createClient(srv)
+		s.grWG.Done()
+	})
 }
 
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
@@ -286,6 +332,13 @@ func (s *Server) Shutdown() {
 	s.grMu.Lock()
 	s.grRunning = false
 	s.grMu.Unlock()
+
+	// stop any internal clients
+	s.icli.mu.Lock()
+	for _, ic := range s.icli.configured {
+		ic.Stop()
+	}
+	s.icli.mu.Unlock()
 
 	conns := make(map[uint64]*client)
 
@@ -531,6 +584,11 @@ func (s *Server) startMonitoring(secure bool) {
 func (s *Server) createClient(conn net.Conn) *client {
 	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
 
+	_, isInternal := conn.(LocalInternalClient)
+	if isInternal {
+		c.typ = INTERNALCLI
+	}
+
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.infoJSON
@@ -548,7 +606,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.Debugf("Client connection created")
 
 	// Check for Auth
-	if authRequired {
+	if !isInternal && authRequired {
 		c.setAuthTimer(secondsToDuration(s.opts.AuthTimeout))
 	}
 
@@ -582,7 +640,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Check for TLS
-	if tlsRequired {
+	if !isInternal && tlsRequired {
 		c.Debugf("Starting TLS client connection handshake")
 		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
@@ -613,7 +671,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 		return c
 	}
 
-	if tlsRequired {
+	if !isInternal && tlsRequired {
 		// Rewrap bw
 		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	}
@@ -621,12 +679,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Do final client initialization
 
 	// Set the Ping timer
-	c.setPingTimer()
+	if !isInternal {
+		c.setPingTimer()
+	}
 
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })
 
-	if tlsRequired {
+	if !isInternal && tlsRequired {
 		c.Debugf("TLS handshake complete")
 		cs := c.nc.(*tls.Conn).ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
@@ -755,6 +815,8 @@ func (s *Server) checkAuth(c *client) bool {
 		return s.checkClientAuth(c)
 	case ROUTER:
 		return s.checkRouterAuth(c)
+	case INTERNALCLI:
+		return true
 	default:
 		return false
 	}

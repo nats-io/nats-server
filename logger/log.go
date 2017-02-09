@@ -22,8 +22,7 @@ type Logger struct {
 }
 
 // NewStdLogger creates a logger with output directed to Stderr
-func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
-	flags := 0
+func NewStdLogger(time, debug, trace, colors, pid bool, flags int) *Logger {
 	if time {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}
@@ -49,14 +48,13 @@ func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 }
 
 // NewFileLogger creates a logger with output directed to a file
-func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
+func NewFileLogger(filename string, time, debug, trace, pid bool, flags int) *Logger {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 	f, err := os.OpenFile(filename, fileflags, 0660)
 	if err != nil {
 		log.Fatalf("error opening file: %v", err)
 	}
 
-	flags := 0
 	if time {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}

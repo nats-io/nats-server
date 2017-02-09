@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/nats-io/gnatsd/auth"
+	"github.com/nats-io/gnatsd/health"
 	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/server"
 )
@@ -52,6 +54,11 @@ Cluster Options:
         --no_advertise <bool>        Advertise known cluster IPs to clients
         --connect_retries <number>   For implicit routes, number of connect retries
 
+Cluster Health Monitor:
+        --health                     Run the health monitoring/leader election agent
+        --lease <duration>           Duration of leader leases. default: 12s
+        --beat  <duration>           Time between heartbeats (want 3-4/lease). default: 3s
+        --rank  <number>             Smaller rank gives priority in leader election
 
 Common Options:
     -h, --help                       Show this message
@@ -118,6 +125,10 @@ func main() {
 	flag.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	flag.BoolVar(&opts.HealthAgent, "health", false, "Run the health agent, elect a leader.")
+	flag.IntVar(&opts.HealthRank, "rank", 7, "leader election priority: the smaller the rank, the more preferred the server is as a leader. Negative ranks are allowed. Ties are broken by the random ServerId.")
+	flag.DurationVar(&opts.HealthLease, "lease", time.Second*12, "leader lease duration (should allow 3-4 beats within a lease)")
+	flag.DurationVar(&opts.HealthBeat, "beat", time.Second*3, "heart beat every this often (should get 3-4 beats within a lease)")
 
 	flag.Usage = func() {
 		fmt.Printf("%s\n", usageStr)
@@ -175,6 +186,10 @@ func main() {
 		server.PrintAndDie(err.Error())
 	}
 
+	if opts.HealthAgent {
+		opts.InternalCli = append(opts.InternalCli, health.NewAgent(&opts))
+	}
+
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
@@ -220,7 +235,7 @@ func configureLogger(s *server.Server, opts *server.Options) {
 	var log server.Logger
 
 	if opts.LogFile != "" {
-		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
+		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true, 0)
 	} else if opts.RemoteSyslog != "" {
 		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
 	} else if opts.Syslog {
@@ -233,7 +248,7 @@ func configureLogger(s *server.Server, opts *server.Options) {
 		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
 			colors = false
 		}
-		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
+		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true, 0)
 	}
 
 	s.SetLogger(log, opts.Debug, opts.Trace)

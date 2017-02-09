@@ -35,6 +35,14 @@
 			"branch": "master",
 			"path": "windows",
 			"notests": true
-		}
+		},
+		{
+			"importpath": "github.com/google/btree",
+			"repository": "https://github.com/google/btree",
+			"vcs": "git",
+			"revision": "316fb6d3f031ae8f4d457c6c5186b9e3ded70435",
+			"branch": "master",
+			"notests": true
+		}                
 	]
 }

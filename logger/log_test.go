@@ -13,7 +13,7 @@ import (
 )
 
 func TestStdLogger(t *testing.T) {
-	logger := NewStdLogger(false, false, false, false, false)
+	logger := NewStdLogger(false, false, false, false, false, 0)
 
 	flags := logger.logger.Flags()
 	if flags != 0 {
@@ -30,7 +30,7 @@ func TestStdLogger(t *testing.T) {
 }
 
 func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
-	logger := NewStdLogger(true, true, true, false, false)
+	logger := NewStdLogger(true, true, true, false, false, 0)
 
 	flags := logger.logger.Flags()
 	if flags != log.LstdFlags|log.Lmicroseconds {
@@ -48,42 +48,42 @@ func TestStdLoggerWithDebugTraceAndTime(t *testing.T) {
 
 func TestStdLoggerNotice(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false, 0)
 		logger.Noticef("foo")
 	}, "[INF] foo\n")
 }
 
 func TestStdLoggerNoticeWithColor(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, true, false)
+		logger := NewStdLogger(false, false, false, true, false, 0)
 		logger.Noticef("foo")
 	}, "[\x1b[32mINF\x1b[0m] foo\n")
 }
 
 func TestStdLoggerDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, true, false, false, false)
+		logger := NewStdLogger(false, true, false, false, false, 0)
 		logger.Debugf("foo %s", "bar")
 	}, "[DBG] foo bar\n")
 }
 
 func TestStdLoggerDebugWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false, 0)
 		logger.Debugf("foo")
 	}, "")
 }
 
 func TestStdLoggerTrace(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, true, false, false)
+		logger := NewStdLogger(false, false, true, false, false, 0)
 		logger.Tracef("foo")
 	}, "[TRC] foo\n")
 }
 
 func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 	expectOutput(t, func() {
-		logger := NewStdLogger(false, false, false, false, false)
+		logger := NewStdLogger(false, false, false, false, false, 0)
 		logger.Tracef("foo")
 	}, "")
 }
@@ -101,7 +101,7 @@ func TestFileLogger(t *testing.T) {
 	}
 	file.Close()
 
-	logger := NewFileLogger(file.Name(), false, false, false, false)
+	logger := NewFileLogger(file.Name(), false, false, false, false, 0)
 	logger.Noticef("foo")
 
 	buf, err := ioutil.ReadFile(file.Name())
@@ -122,7 +122,7 @@ func TestFileLogger(t *testing.T) {
 	}
 	file.Close()
 
-	logger = NewFileLogger(file.Name(), true, true, true, true)
+	logger = NewFileLogger(file.Name(), true, true, true, true, 0)
 	logger.Errorf("foo")
 
 	buf, err = ioutil.ReadFile(file.Name())

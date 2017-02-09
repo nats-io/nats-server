@@ -83,6 +83,12 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+
+	InternalCli []InternalClient `json:"-"`
+	HealthAgent bool             `json:"health_agent"`
+	HealthRank  int              `json:"health_rank"`
+	HealthLease time.Duration    `json:"health_lease"`
+	HealthBeat  time.Duration    `json:"health_beat"`
 }
 
 // Configuration file authorization section.
@@ -225,6 +231,14 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
 		case "ping_max":
 			opts.MaxPingsOut = int(v.(int64))
+		case "health_rank":
+			opts.HealthRank = int(v.(int64))
+		case "health_lease":
+			opts.HealthLease = v.(time.Duration)
+		case "health_beat":
+			opts.HealthBeat = v.(time.Duration)
+		case "health_agent":
+			opts.HealthAgent = v.(bool)
 		case "tls":
 			tlsm := v.(map[string]interface{})
 			tc, err := parseTLS(tlsm)

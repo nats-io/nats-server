@@ -72,7 +72,7 @@ func (s *Server) ReOpenLogFile() {
 		Noticef("File log re-open ignored, not a file logger")
 	} else {
 		fileLog := logger.NewFileLogger(s.opts.LogFile,
-			s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
+			s.opts.Logtime, s.opts.Debug, s.opts.Trace, true, 0)
 		s.SetLogger(fileLog, s.opts.Debug, s.opts.Trace)
 		Noticef("File log re-opened")
 	}
