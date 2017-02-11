@@ -250,7 +250,6 @@ func TestValidJwtToken(t *testing.T) {
 	expectAuthRequired(t, c)
 
 	validToken := buildJWT(time.Now().Add(time.Hour))
-	t.Logf("Valid Token: %s", validToken)
 	doAuthConnect(t, c, validToken, "", "")
 	expectResult(t, c, okRe)
 }
@@ -263,7 +262,6 @@ func TestExpiredJwtToken(t *testing.T) {
 	expectAuthRequired(t, c)
 
 	expiredToken := buildJWT(time.Now().Add(-time.Hour))
-	t.Logf("Expired Token: %s", expiredToken)
 	doAuthConnect(t, c, expiredToken, "", "")
 	expectResult(t, c, errRe)
 }
