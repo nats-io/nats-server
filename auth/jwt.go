@@ -16,10 +16,6 @@ type JWTAuth struct {
 func (p *JWTAuth) Check(c server.ClientAuth) bool {
 	opts := c.GetOpts()
 
-	server.Debugf("c:Authorization", opts.Authorization)
-	server.Debugf("c:JwtSecret", opts.JwtSecret)
-	server.Debugf("p:JwtSecret", opts.JwtSecret)
-
 	if p.Secret != "" {
 
 		// If token == JWT secret, let it authenticate with default permissions.
