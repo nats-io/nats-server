@@ -473,13 +473,13 @@ Joe has no permission grant and therefore inherits the default permission set. Y
 
 Note that `_INBOX.*` subscribe permissions must be granted in order to use the request APIs in Apcera supported clients. If an unauthorized client publishes or attempts to subscribe to a subject, the action fails and is logged at the server, and an error message is returned to the client.
 
-### JWT Authentication/Authorization
+### JWT Authorization
 
-The NATS Server support the use of JWT tokens for authenticating and authorizing connections and subjects. In your configuration, you can optionally specify a `jwt_secret` property that is the secret used to validate JWT tokens to permit connections. You can also use the payload inside a JWT token to authorize publish and subscribe actions on subjects in the same manner as described in the Authorization section.
+The NATS server supports the use of [JWT](https://jwt.io/) tokens for authenticating and authorizing connections and subjects. In your configuration, you can specify a `jwt_secret` property that is the secret used to validate JWT tokens to permit connections and actions on subjects. The payload inside a JWT token is used to authorize publish and subscribe actions on NATS subjects in the same manner as described in the Authorization section.
 
-An external application that generates JWT tokens for your clients can add permissions inside the payload of a JWT token. For example:
+An external application that generates JWT tokens for your clients can add permissions inside the payload of a JWT token. Here is an example JWT token payload:
 
-`
+```
 {
  "permissions": {
   "publish": [
@@ -493,9 +493,9 @@ An external application that generates JWT tokens for your clients can add permi
  "iat": 1486690619,
  "exp": 1486831935
 }
-`
+```
 
-The `permissions` JSON property for this JWT token's payload contains permissions described in JSON in the same manner as it would be described in configuration with a list of `string` subjects which this client would have access to publish and/or subscribe.
+The `permissions` JSON property for this JWT token's payload contains permissions described in JSON in the same manner as it would be described in configuration with a list of `string` subjects which this client would have access to publish and/or subscribe. If the token does not validate for any reason (i.e. invalid signature, expired token, etc.) the connection will be refused. Likewise, if a client attempts to perform a subscribe or publish action on a subject that it does not have access to, that action will be refused with an `authorization violation` exception.
 
 ### TLS
 
