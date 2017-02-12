@@ -85,7 +85,6 @@ type Options struct {
 	TLSConfig      *tls.Config       `json:"-"`
 	OCSP           bool              `json:"-"`
 	OCSPAddr       string            `json:"-"`
-	OCSPCert       *x509.Certificate `json:"-"`
 	OCSPCaCert     *x509.Certificate `json:"-"`
 	WriteDeadline  time.Duration     `json:"-"`
 }
@@ -140,9 +139,8 @@ Available cipher suites include:
 
 // OSCPConfigOpts holds config file info
 type OSCPConfigOpts struct {
-	Addr     string
-	CertFile string
-	CaFile   string
+	Addr   string
+	CaFile string
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -253,13 +251,12 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			if err != nil {
 				return nil, err
 			}
-			cert, ca, err := GenOSCPCerts(c)
+			ca, err := GenOSCPCerts(c)
 			if err != nil {
 				return nil, err
 			}
 			opts.OCSP = true
 			opts.OCSPAddr = c.Addr
-			opts.OCSPCert = cert
 			opts.OCSPCaCert = ca
 		case "write_deadline":
 			opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
@@ -668,8 +665,6 @@ func parseOSCP(pm map[string]interface{}) (*OSCPConfigOpts, error) {
 		switch strings.ToLower(k) {
 		case "addr", "address":
 			p.Addr = v.(string)
-		case "cert_file":
-			p.CertFile = v.(string)
 		case "ca_file":
 			p.CaFile = v.(string)
 		default:
@@ -680,16 +675,13 @@ func parseOSCP(pm map[string]interface{}) (*OSCPConfigOpts, error) {
 }
 
 // GenOSCPCerts loads pem certs into memory
-func GenOSCPCerts(c *OSCPConfigOpts) (cert, ca *x509.Certificate, err error) {
-	pemData, _ := ioutil.ReadFile(c.CaFile)
-	b, _ := pem.Decode(pemData)
-	ca, err = x509.ParseCertificate(b.Bytes)
+func GenOSCPCerts(c *OSCPConfigOpts) (ca *x509.Certificate, err error) {
+	pemData, err := ioutil.ReadFile(c.CaFile)
 	if err != nil {
 		return
 	}
-	pemData, _ = ioutil.ReadFile(c.CertFile)
-	b, _ = pem.Decode(pemData)
-	cert, err = x509.ParseCertificate(b.Bytes)
+	b, _ := pem.Decode(pemData)
+	ca, err = x509.ParseCertificate(b.Bytes)
 	if err != nil {
 		return
 	}
