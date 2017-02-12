@@ -5,6 +5,8 @@ package server
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -607,6 +611,21 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.mu.Lock()
 	}
 
+	// OSCP
+	if s.opts.OCSP {
+		s.startGoRoutine(func() {
+			pcerts := c.nc.(*tls.Conn).ConnectionState().PeerCertificates
+
+			if ok, err := checkOcsp(pcerts[0], s.opts.OCSPCaCert, s.opts.OCSPAddr); !ok {
+				c.Debugf("OSCP lookup error: %v", err)
+				c.sendErr("Secure Connection - OSCP Lookup")
+				c.closeConnection()
+			}
+
+			c.Debugf("OSCP lookup complete")
+		})
+	}
+
 	// The connection may have been closed
 	if c.nc == nil {
 		c.mu.Unlock()
@@ -635,6 +654,39 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Unlock()
 
 	return c
+}
+
+func checkOcsp(cert, ca *x509.Certificate, ocspSrv string) (bool, error) {
+
+	data, err := ocsp.CreateRequest(cert, ca, nil)
+	if err != nil {
+		return false, err
+	}
+
+	b64data := base64.StdEncoding.EncodeToString(data)
+
+	// get result
+	client := &http.Client{}
+	httpReq, err := http.NewRequest("GET", ocspSrv+"/"+b64data, nil)
+	httpReq.Header.Add("Content-Language", "application/ocsp-request")
+	httpReq.Header.Add("Accept", "application/ocsp-response")
+	resp, err := client.Do(httpReq)
+
+	if err != nil {
+		return false, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	ocspResp, err := ocsp.ParseResponse(body, ca)
+	if err != nil {
+		return false, err
+	}
+
+	if ocspResp.Status != ocsp.Good {
+		return false, fmt.Errorf("Certificate revoked at %v", ocspResp.RevokedAt)
+	}
+	return true, nil
 }
 
 // updateServerINFO updates the server's Info object with the given
