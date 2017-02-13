@@ -262,6 +262,12 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
 		}
 	}
+
+	// Check that OCSP has TLS
+	if opts.OCSP && opts.TLSConfig == nil {
+		return nil, fmt.Errorf("OCSP present but TLS not configured")
+	}
+
 	return opts, nil
 }
 

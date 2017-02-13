@@ -611,21 +611,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.mu.Lock()
 	}
 
-	// OSCP
-	if s.opts.OCSP {
-		s.startGoRoutine(func() {
-			pcerts := c.nc.(*tls.Conn).ConnectionState().PeerCertificates
-
-			if ok, err := checkOcsp(pcerts[0], s.opts.OCSPCaCert, s.opts.OCSPAddr); !ok {
-				c.Debugf("OSCP lookup error: %v", err)
-				c.sendErr("Secure Connection - OSCP Lookup")
-				c.closeConnection()
-			}
-
-			c.Debugf("OSCP lookup complete")
-		})
-	}
-
 	// The connection may have been closed
 	if c.nc == nil {
 		c.mu.Unlock()
@@ -649,6 +634,21 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.Debugf("TLS handshake complete")
 		cs := c.nc.(*tls.Conn).ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+	}
+
+	// OCSP
+	if s.opts.OCSP {
+		s.startGoRoutine(func() {
+			pcerts := c.nc.(*tls.Conn).ConnectionState().PeerCertificates
+
+			if ok, err := checkOcsp(pcerts[0], s.opts.OCSPCaCert, s.opts.OCSPAddr); !ok {
+				c.Debugf("OCSP lookup error: %v", err)
+				c.sendErr("Secure Connection - OCSP Lookup")
+				c.closeConnection()
+			}
+
+			c.Debugf("OCSP lookup complete")
+		})
 	}
 
 	c.mu.Unlock()
