@@ -225,7 +225,6 @@ func TestTLSStressConnect(t *testing.T) {
 	wg.Wait()
 
 	var lastError error
-	lastError = nil
 	for i := 0; i < threadCount; i++ {
 		err := <-errCh
 		if err != nil {
