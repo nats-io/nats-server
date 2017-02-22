@@ -477,3 +477,31 @@ func TestRouteUseIPv6(t *testing.T) {
 		t.Fatal("Server failed to start route accept loop")
 	}
 }
+
+func TestClientConnectToRoutePort(t *testing.T) {
+	opts := DefaultOptions
+	opts.Cluster.NoAdvertise = true
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	clientURL := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	// When connecting to the ROUTE port, the client library will receive the
+	// CLIENT port in the INFO protocol. This URL is added to the client's pool
+	// and will be tried after the initial connect failure. So all those
+	// nats.Connect() should succeed.
+	// The only reason for a failure would be if there are too many FDs in time-wait
+	// which would delay the creation of TCP connection. So keep the total of
+	// attempts rather small.
+	total := 10
+	for i := 0; i < total; i++ {
+		nc, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Unexepected error on connect: %v", err)
+		}
+		defer nc.Close()
+		if nc.ConnectedUrl() != clientURL {
+			t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
+		}
+	}
+}

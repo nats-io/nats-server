@@ -306,7 +306,7 @@ func (c *client) readLoop() {
 				wfc := cp.wfc
 				cp.wfc = 0
 
-				cp.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+				cp.nc.SetWriteDeadline(time.Now().Add(s.opts.WriteDeadline))
 				err := cp.bw.Flush()
 				cp.nc.SetWriteDeadline(time.Time{})
 				if err != nil {
@@ -446,6 +446,7 @@ func (c *client) processConnect(arg []byte) error {
 	// Capture these under lock
 	proto := c.opts.Protocol
 	verbose := c.opts.Verbose
+	lang := c.opts.Lang
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -468,7 +469,15 @@ func (c *client) processConnect(arg []byte) error {
 
 	// Check client protocol request if it exists.
 	if typ == CLIENT && (proto < ClientProtoZero || proto > ClientProtoInfo) {
+		c.sendErr(ErrBadClientProtocol.Error())
+		c.closeConnection()
 		return ErrBadClientProtocol
+	} else if typ == ROUTER && lang != "" {
+		// Way to detect clients that incorrectly connect to the route listen
+		// port. Client provide Lang in the CONNECT protocol while ROUTEs don't.
+		c.sendErr(ErrClientConnectedToRoutePort.Error())
+		c.closeConnection()
+		return ErrClientConnectedToRoutePort
 	}
 
 	// Grab connection name of remote route.
@@ -520,7 +529,7 @@ func (c *client) sendProto(info []byte, doFlush bool) error {
 	if c.bw != nil && c.nc != nil {
 		deadlineSet := false
 		if doFlush || c.bw.Available() < len(info) {
-			c.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+			c.nc.SetWriteDeadline(time.Now().Add(c.srv.opts.WriteDeadline))
 			deadlineSet = true
 		}
 		_, err = c.bw.Write(info)
@@ -941,8 +950,8 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 
 	deadlineSet := false
 	if client.bw.Available() < (len(mh) + len(msg)) {
-		client.wfc += 1
-		client.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+		client.wfc++
+		client.nc.SetWriteDeadline(time.Now().Add(client.srv.opts.WriteDeadline))
 		deadlineSet = true
 	}
 
@@ -1260,7 +1269,7 @@ func (c *client) clearConnection() {
 	// With TLS, Close() is sending an alert (that is doing a write).
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
-	c.nc.SetWriteDeadline(time.Now().Add(DEFAULT_FLUSH_DEADLINE))
+	c.nc.SetWriteDeadline(time.Now().Add(c.srv.opts.WriteDeadline))
 	if c.bw != nil {
 		c.bw.Flush()
 	}

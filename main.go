@@ -119,7 +119,9 @@ func main() {
 	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
 
-	flag.Usage = usage
+	flag.Usage = func() {
+		fmt.Printf("%s\n", usageStr)
+	}
 
 	flag.Parse()
 
@@ -278,6 +280,9 @@ func configureClusterOpts(opts *server.Options) error {
 	// If cluster flag override, process it
 	if opts.Cluster.ListenStr != "" {
 		clusterURL, err := url.Parse(opts.Cluster.ListenStr)
+		if err != nil {
+			return err
+		}
 		h, p, err := net.SplitHostPort(clusterURL.Host)
 		if err != nil {
 			return err

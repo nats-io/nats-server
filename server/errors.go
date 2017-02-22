@@ -29,4 +29,8 @@ var (
 	// ErrTooManyConnections signals a client that the maximum number of connections supported by the
 	// server has been reached.
 	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
+
+	// ErrClientConnectedToRoutePort represents an error condition when a client
+	// attempted to connect to the route listen port.
+	ErrClientConnectedToRoutePort = errors.New("Attempted To Connect To Route Port")
 )
