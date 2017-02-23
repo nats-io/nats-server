@@ -24,6 +24,9 @@ _testmain.go
 # Eclipse
 .project
 
+# IntelliJ
+.idea/
+
 # Emacs
 *~
 \#*\#
