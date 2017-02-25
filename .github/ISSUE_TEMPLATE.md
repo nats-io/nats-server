@@ -27,6 +27,6 @@ Make sure that these boxes are checked before submitting your issue -- thank you
  
 #### Who Benefits From The Change(s)?
  
-#### Alternative Approaches You've Ruled Out
+#### Alternative Approaches
 
 

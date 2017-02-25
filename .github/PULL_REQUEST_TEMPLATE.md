@@ -1,5 +1,9 @@
+ - [ ] Link to issue, e.g. `Resolves #NNN`
+ - [ ] Documentation added (if applicable)
+ - [ ] Tests added
+ - [ ] Build is green in Travis CI
 
-Fixes #  
+Resolves #  
 
 ### Changes proposed in this pull request: 
 
@@ -7,4 +11,4 @@ Fixes #
  - 
  -
  
- @nats-io/core
+/cc @nats-io/core
