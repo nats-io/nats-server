@@ -503,11 +503,11 @@ func (s *Sublist) Stats() *SublistStats {
 	st := &SublistStats{}
 	st.NumSubs = s.count
 	st.NumCache = uint32(len(s.cache))
-	st.NumInserts = s.inserts
-	st.NumRemoves = s.removes
-	st.NumMatches = s.matches
-	if s.matches > 0 {
-		st.CacheHitRate = float64(s.cacheHits) / float64(s.matches)
+	st.NumInserts = atomic.LoadUint64(&s.inserts)
+	st.NumRemoves = atomic.LoadUint64(&s.removes)
+	st.NumMatches = atomic.LoadUint64(&s.matches)
+	if st.NumMatches > 0 {
+		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
 	}
 	// whip through cache for fanout stats
 	tot, max := 0, 0
