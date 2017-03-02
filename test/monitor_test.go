@@ -34,7 +34,7 @@ func runMonitorServer() *server.Server {
 }
 
 // Runs a clustered pair of monitor servers for testing the /routez endpoint
-func runMonitorServerClusteredPair() (*server.Server, *server.Server) {
+func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server) {
 	resetPreviousHTTPConnections()
 	opts := DefaultTestOptions
 	opts.Port = CLIENT_PORT
@@ -55,6 +55,8 @@ func runMonitorServerClusteredPair() (*server.Server, *server.Server) {
 	opts2.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10223")
 
 	s2 := RunServer(&opts2)
+
+	checkClusterFormed(t, s1, s2)
 
 	return s1, s2
 }
@@ -139,12 +141,9 @@ func testEndpointDataRace(endpoint string, t *testing.T) {
 
 func TestEndpointDataRaces(t *testing.T) {
 	// setup a small cluster to test /routez
-	s1, s2 := runMonitorServerClusteredPair()
+	s1, s2 := runMonitorServerClusteredPair(t)
 	defer s1.Shutdown()
 	defer s2.Shutdown()
-
-	// give some time for a route to form
-	time.Sleep(2 * time.Second)
 
 	// test all of our endpoints
 	testEndpointDataRace("varz", t)

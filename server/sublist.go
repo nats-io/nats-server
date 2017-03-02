@@ -503,8 +503,8 @@ func (s *Sublist) Stats() *SublistStats {
 	st := &SublistStats{}
 	st.NumSubs = s.count
 	st.NumCache = uint32(len(s.cache))
-	st.NumInserts = atomic.LoadUint64(&s.inserts)
-	st.NumRemoves = atomic.LoadUint64(&s.removes)
+	st.NumInserts = s.inserts
+	st.NumRemoves = s.removes
 	st.NumMatches = atomic.LoadUint64(&s.matches)
 	if st.NumMatches > 0 {
 		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
