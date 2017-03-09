@@ -22,7 +22,7 @@ Upcoming features and bugfixes will be added to the relevant milestone. One or m
  in turn be assigned to a release.
 If a feature or bugfix is not part of a milestone, it is currently unscheduled for implementation. 
 
-### Short Term Goals
+### Short Term
 
 #### "Hot" configuration reload
 
@@ -39,14 +39,20 @@ share this work in an upcoming release.
 See [Issue #345](https://github.com/nats-io/gnatsd/issues/345)
 
 
-### Future
+### Further Out
+
+#### Enable external authentication and authorization via extensible auth provider 
+
+We will improve/extend the auth interface(s) and configuration to support external auth endpoints.
+
+See [Issue #434](https://github.com/nats-io/gnatsd/issues/434)
 
 #### Namespace isolation by account/organization
 
 Multi-tenancy is a popular discussion topic, and one of the requirements we often hear is for the 
 ability to isolate/encapsulate the subject namespace by "tenant" (e.g. an account or organization). 
-For example, messages published on "FOO.BAR" by tenant A would not be visible to tenant B's 
-subscribers to "FOO.BAR", and vice versa. We'd like to support this in an efficient and performant way. 
+For example, messages published on `FOO.BAR` by tenant A would not be visible to tenant B's 
+subscribers on `FOO.BAR`, and vice versa. We'd like to support this in an efficient and performant way. 
 
 See [Issue #347](https://github.com/nats-io/gnatsd/issues/347) and [Issue #348](https://github.com/nats-io/gnatsd/issues/348)
 
