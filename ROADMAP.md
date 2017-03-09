@@ -9,7 +9,7 @@ This project's release plan is kept updated on [the wiki](https://github.com/nat
 A master project release plan for all NATS projects can be found on our 
 [NATS master wiki](https://github.com/nats-io/roadmap/wiki)
 
-## Planning and Tracking
+### Planning and Tracking
 
 An [Open-Source Planning Process](https://github.com/nats-io/gnatsd/wiki/Open-Source-Planning-Process) is 
 used to define the Roadmap. 
@@ -22,7 +22,7 @@ Upcoming features and bugfixes will be added to the relevant milestone. One or m
  in turn be assigned to a release.
 If a feature or bugfix is not part of a milestone, it is currently unscheduled for implementation. 
 
-## Short Term Goals
+### Short Term Goals
 
 #### "Hot" configuration reload
 
@@ -39,7 +39,7 @@ share this work in an upcoming release.
 See [Issue #345](https://github.com/nats-io/gnatsd/issues/345)
 
 
-## Future
+### Future
 
 #### Namespace isolation by account/organization
 
