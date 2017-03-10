@@ -6,8 +6,8 @@ the major features we plan to implement in the near future. It is a living docum
 
 This project's release plan is kept updated on [the wiki](https://github.com/nats-io/gnatsd/wiki).
 
-A master project release plan for all NATS projects can be found on our 
-[NATS master wiki](https://github.com/nats-io/roadmap/wiki)
+A master project release plan for all NATS projects can be found
+[here](https://github.com/nats-io/roadmap/wiki)
 
 ### Planning and Tracking
 
