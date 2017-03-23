@@ -1,4 +1,4 @@
-##<img src="logos/nats-server.png" width="300">
+## <img src="logos/nats-server.png" width="300">
 [![License][License-Image]][License-Url] [![ReportCard][ReportCard-Image]][ReportCard-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Coverage][Coverage-Image]][Coverage-Url]
 
 A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
@@ -11,7 +11,7 @@ Install and run the NATS server:
 
 ```
 go get github.com/nats-io/gnatsd
-gnatsd -D -V
+gnatsd
 ```
 
 Install the [Go NATS client](https://github.com/nats-io/go-nats/blob/master/README.md):
@@ -239,7 +239,7 @@ The following example demonstrates how to run a cluster of 3 servers on the same
 See also [clustered NATS](http://nats.io/documentation/server/gnatsd-cluster/) for clustered NATS examples using Docker.
 
 ```
-gnatsd -p 4222 -cluster nats://localhost:4248 -D
+gnatsd -p 4222 -cluster nats://localhost:4248
 ```
 
 Alternatively, you could use a configuration file, let's call it `seed.conf`, with a content similar to this:
@@ -367,11 +367,11 @@ The NATS server supports single and multi-user/client authentication. See also t
 For single-user authentication, you can start the NATS server with authentication enabled by passing in the required credentials on the command line, or by passing in a token.
 
 ```
-gnatsd -DV --user foo --pass bar
+gnatsd --user foo --pass bar
 ```
 
 ```
-gnatsd -DV -auth 'S3Cr3T0k3n!'
+gnatsd -auth 'S3Cr3T0k3n!'
 ```
 
 Clients can connect using:
@@ -578,7 +578,7 @@ Examples using the test certificates which are self signed for localhost and 127
 [2935] 2016/04/26 13:34:30.685660 [INF] Server is ready
 ```
 
-Notice that the log  indicates that the client connections will be required to use TLS. If you run the server in Debug mode with -D or -DV, the logs will show the cipher suite selection for each connected client.
+Notice that the log  indicates that the client connections will be required to use TLS.  If you run the server in Debug mode with `-D` or `-DV`, the logs will show the cipher suite selection for each connected client.
 
 ```
 [15146] 2015/12/03 12:38:37.733139 [DBG] ::1:63330 - cid:1 - Starting TLS client connection handshake
