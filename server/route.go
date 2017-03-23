@@ -149,7 +149,7 @@ func (c *client) processRouteInfo(info *Info) {
 				addr := conn.RemoteAddr().(*net.TCPAddr)
 				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
 			default:
-				info.IP = fmt.Sprintf("%s", c.route.url)
+				info.IP = c.route.url.String()
 			}
 			c.mu.Unlock()
 			// Now let the known servers know about this new route
