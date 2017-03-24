@@ -1193,8 +1193,8 @@ func (c *client) processPingTimer() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ptmr = nil
-	// Check if we are ready yet..
-	if _, ok := c.nc.(*net.TCPConn); !ok {
+	// Check if connection is still opened
+	if c.nc == nil {
 		return
 	}
 
