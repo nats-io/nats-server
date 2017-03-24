@@ -399,12 +399,6 @@ type Varz struct {
 	HTTPReqStats     map[string]uint64 `json:"http_req_stats"`
 }
 
-type usage struct {
-	CPU   float32
-	Cores int
-	Mem   int64
-}
-
 func myUptime(d time.Duration) string {
 	// Just use total seconds for uptime, and display days / years
 	tsecs := d / time.Second

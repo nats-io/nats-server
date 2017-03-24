@@ -625,7 +625,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 			return nil, err
 		}
 		pool := x509.NewCertPool()
-		ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+		ok := pool.AppendCertsFromPEM(rootPEM)
 		if !ok {
 			return nil, fmt.Errorf("failed to parse root ca certificate")
 		}

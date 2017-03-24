@@ -571,7 +571,7 @@ func IsValidSubject(subject string) bool {
 		return false
 	}
 	sfwc := false
-	tokens := strings.Split(string(subject), tsep)
+	tokens := strings.Split(subject, tsep)
 	for _, t := range tokens {
 		if len(t) == 0 || sfwc {
 			return false
@@ -589,7 +589,7 @@ func IsValidSubject(subject string) bool {
 
 // IsValidLiteralSubject returns true if a subject is valid and literal (no wildcards), false otherwise
 func IsValidLiteralSubject(subject string) bool {
-	tokens := strings.Split(string(subject), tsep)
+	tokens := strings.Split(subject, tsep)
 	for _, t := range tokens {
 		if len(t) == 0 {
 			return false
