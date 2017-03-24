@@ -480,6 +480,10 @@ func TestRouteUseIPv6(t *testing.T) {
 
 func TestClientConnectToRoutePort(t *testing.T) {
 	opts := DefaultOptions
+	// Since client will first connect to the route listen port, set the
+	// cluster's Host to localhost so it works on Windows too, since on
+	// Windows, a client can't use 0.0.0.0 in a connect.
+	opts.Cluster.Host = "localhost"
 	opts.Cluster.NoAdvertise = true
 	s := RunServer(&opts)
 	defer s.Shutdown()
