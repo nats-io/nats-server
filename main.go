@@ -205,6 +205,9 @@ func configureAuth(s *server.Server, opts *server.Options) {
 			Token: opts.Authorization,
 		}
 		s.SetClientAuthMethod(auth)
+	}else if opts.Endpoint != "" {
+		auth := auth.NewEndpointAuth(opts.Endpoint)
+		s.SetClientAuthMethod(auth)
 	}
 	// Routes
 	if opts.Cluster.Username != "" {
