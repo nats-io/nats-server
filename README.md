@@ -394,6 +394,16 @@ authorization {
 }
 ```
 
+Or, if you chose to use a token:
+
+```
+authorization {
+  # You can generate the token using /util/mkpassword.go
+  token:   $2a$11$pBwUBpza8vdJ7tWZcP5GRO13qRgh4dwNn8g67k5i/41yIKBp.sHke
+  timeout: 1
+}
+```
+
 **Multi-user authentication**
 
 You can enable multi-user authentication using a NATS server configuration file that defines user credentials (`user` and `password`), and optionally `permissions`, for two or more users. Multi-user authentication leverages [variables](#variables).
