@@ -88,8 +88,9 @@ type Options struct {
 // Configuration file authorization section.
 type authorization struct {
 	// Singles
-	user string
-	pass string
+	user  string
+	pass  string
+	token string
 	// Multiple Users
 	users              []*User
 	timeout            float64
@@ -174,11 +175,18 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			}
 			opts.Username = auth.user
 			opts.Password = auth.pass
+			opts.Authorization = auth.token
+			if (auth.user != "" || auth.pass != "") && auth.token != "" {
+				return nil, fmt.Errorf("Cannot have a user/pass and token")
+			}
 			opts.AuthTimeout = auth.timeout
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
 					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
+				}
+				if auth.token != "" {
+					return nil, fmt.Errorf("Can not have a token and a users array")
 				}
 				opts.Users = auth.users
 			}
@@ -340,6 +348,8 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			auth.user = mv.(string)
 		case "pass", "password":
 			auth.pass = mv.(string)
+		case "token":
+			auth.token = mv.(string)
 		case "timeout":
 			at := float64(1)
 			switch mv.(type) {

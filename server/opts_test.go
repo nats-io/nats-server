@@ -4,8 +4,11 @@ package server
 
 import (
 	"crypto/tls"
+	"io/ioutil"
 	"net/url"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -603,5 +606,48 @@ func TestAuthorizationConfig(t *testing.T) {
 	subPerm = susan.Permissions.Subscribe[0]
 	if subPerm != "PUBLIC.>" {
 		t.Fatalf("Expected Susan's subscribe permissions to be 'PUBLIC.>', got %q\n", subPerm)
+	}
+}
+
+func TestTokenWithUserPass(t *testing.T) {
+	confFileName := "test.conf"
+	defer os.Remove(confFileName)
+	content := `
+	authorization={
+		user: user
+		pass: password
+		token: $2a$11$whatever
+	}`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatal("Expected error, got none")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("Expected error related to token, got %v", err)
+	}
+}
+
+func TestTokenWithUsers(t *testing.T) {
+	confFileName := "test.conf"
+	defer os.Remove(confFileName)
+	content := `
+	authorization={
+		token: $2a$11$whatever
+		users: [
+			{user: test, password: test}
+		]
+	}`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatal("Expected error, got none")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("Expected error related to token, got %v", err)
 	}
 }
