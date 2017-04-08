@@ -59,6 +59,7 @@ type Options struct {
 	Username       string        `json:"-"`
 	Password       string        `json:"-"`
 	Authorization  string        `json:"-"`
+	JwtSecret      string        `json:"jwt_secret"`
 	PingInterval   time.Duration `json:"ping_interval"`
 	MaxPingsOut    int           `json:"ping_max"`
 	HTTPHost       string        `json:"http_host"`

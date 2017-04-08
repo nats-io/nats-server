@@ -105,6 +105,7 @@ Authorization Options:
         --user <user>                User required for connections
         --pass <password>            Password required for connections
         --auth <token>               Authorization token required for connections
+        --jwt_secret <secret>        Secret used to validate JWT tokens
 
 TLS Options:
         --tls                        Enable TLS, do not verify clients (default: false)
@@ -481,6 +482,30 @@ Bob is REQUESTOR and can publish requests on subjects "req.foo" or "req.bar", an
 Joe has no permission grant and therefore inherits the default permission set. You set the inherited default permissions by assigning them to the `default_permissions` entry inside of the `authorization` configuration block.
 
 Note that `_INBOX.*` subscribe permissions must be granted in order to use the request APIs in Apcera supported clients. If an unauthorized client publishes or attempts to subscribe to a subject, the action fails and is logged at the server, and an error message is returned to the client.
+
+### JWT Authorization
+
+The NATS server supports the use of [JWT](https://jwt.io/) tokens for authenticating and authorizing connections and subjects. In your configuration, you can specify a `jwt_secret` property that is the secret used to validate JWT tokens to permit connections and actions on subjects. The payload inside a JWT token is used to authorize publish and subscribe actions on NATS subjects in the same manner as described in the Authorization section.
+
+An external application that generates JWT tokens for your clients can add permissions inside the payload of a JWT token. Here is an example JWT token payload:
+
+```
+{
+ "permissions": {
+  "publish": [
+   "SANDBOX.*", "req.foo"
+  ],
+  "subscribe": [
+   "PUBLIC.>", "_INBOX.>"
+  ]
+ },
+ "jti": "f032476a-6dc7-49c7-9b5d-9b34898e7bed",
+ "iat": 1486690619,
+ "exp": 1486831935
+}
+```
+
+The `permissions` JSON property for this JWT token's payload contains permissions described in JSON in the same manner as it would be described in configuration with a list of `string` subjects which this client would have access to publish and/or subscribe. If the token does not validate for any reason (i.e. invalid signature, expired token, etc.) the connection will be refused. Likewise, if a client attempts to perform a subscribe or publish action on a subject that it does not have access to, that action will be refused with an `authorization violation` exception.
 
 ### TLS
 

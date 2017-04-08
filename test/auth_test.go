@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	jwt "github.com/dgrijalva/jwt-go"
 	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/server"
 )
@@ -227,4 +228,56 @@ func TestGoodBcryptToken(t *testing.T) {
 	expectAuthRequired(t, c)
 	doAuthConnect(t, c, BCRYPT_AUTH_TOKEN, "", "")
 	expectResult(t, c, okRe)
+}
+
+////////////////////////////////////////////////////////////
+// JWT authorization token version
+////////////////////////////////////////////////////////////
+
+const JWT_SECRET = "JWT-S3cr3t"
+
+func runAuthServerWithJwtSecret() *server.Server {
+	opts := DefaultTestOptions
+	opts.Port = AUTH_PORT
+	return RunServerWithAuth(&opts, &auth.JWTAuth{Secret: JWT_SECRET})
+}
+
+func TestValidJwtToken(t *testing.T) {
+	s := runAuthServerWithJwtSecret()
+	defer s.Shutdown()
+	c := createClientConn(t, "localhost", AUTH_PORT)
+	defer c.Close()
+	expectAuthRequired(t, c)
+
+	validToken := buildJWT(time.Now().Add(time.Hour))
+	doAuthConnect(t, c, validToken, "", "")
+	expectResult(t, c, okRe)
+}
+
+func TestExpiredJwtToken(t *testing.T) {
+	s := runAuthServerWithJwtSecret()
+	defer s.Shutdown()
+	c := createClientConn(t, "localhost", AUTH_PORT)
+	defer c.Close()
+	expectAuthRequired(t, c)
+
+	expiredToken := buildJWT(time.Now().Add(-time.Hour))
+	doAuthConnect(t, c, expiredToken, "", "")
+	expectResult(t, c, errRe)
+}
+
+func buildJWT(exp time.Time) string {
+	perms := &server.Permissions{
+		Publish:   []string{">"},
+		Subscribe: []string{">"},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"permissions": perms,
+		"exp":         exp.Unix(),
+	})
+
+	tokenString, _ := token.SignedString([]byte(JWT_SECRET))
+
+	return tokenString
 }

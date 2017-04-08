@@ -70,6 +70,9 @@ func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Op
 	if opts.Authorization != "" {
 		a = &auth.Token{Token: opts.Authorization}
 	}
+	if opts.JwtSecret != "" {
+		a = &auth.JWTAuth{Secret: opts.JwtSecret}
+	}
 	if opts.Username != "" {
 		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
 	}
