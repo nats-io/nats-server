@@ -54,8 +54,6 @@ type Server struct {
 	infoJSON      []byte
 	sl            *Sublist
 	opts          *Options
-	cAuth         Auth
-	rAuth         Auth
 	trace         bool
 	debug         bool
 	running       bool
@@ -63,6 +61,7 @@ type Server struct {
 	clients       map[uint64]*client
 	routes        map[uint64]*client
 	remotes       map[string]*client
+	users         map[string]*User
 	totalClients  uint64
 	done          chan bool
 	start         time.Time
@@ -137,28 +136,14 @@ func New(opts *Options) *Server {
 	// Used to kick out all of the route
 	// connect Go routines.
 	s.rcQuit = make(chan bool)
+
+	// Used to setup Authorization.
+	s.configureAuthorization()
+
 	s.generateServerInfoJSON()
 	s.handleSignals()
 
 	return s
-}
-
-// SetClientAuthMethod sets the authentication method for clients.
-func (s *Server) SetClientAuthMethod(authMethod Auth) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.info.AuthRequired = true
-	s.cAuth = authMethod
-
-	s.generateServerInfoJSON()
-}
-
-// SetRouteAuthMethod sets the authentication method for routes.
-func (s *Server) SetRouteAuthMethod(authMethod Auth) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rAuth = authMethod
 }
 
 func (s *Server) generateServerInfoJSON() {
@@ -732,32 +717,6 @@ func tlsCipher(cs uint16) string {
 		return "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
 	}
 	return fmt.Sprintf("Unknown [%x]", cs)
-}
-
-func (s *Server) checkClientAuth(c *client) bool {
-	if s.cAuth == nil {
-		return true
-	}
-	return s.cAuth.Check(c)
-}
-
-func (s *Server) checkRouterAuth(c *client) bool {
-	if s.rAuth == nil {
-		return true
-	}
-	return s.rAuth.Check(c)
-}
-
-// Check auth and return boolean indicating if client is ok
-func (s *Server) checkAuth(c *client) bool {
-	switch c.typ {
-	case CLIENT:
-		return s.checkClientAuth(c)
-	case ROUTER:
-		return s.checkRouterAuth(c)
-	default:
-		return false
-	}
 }
 
 // Remove a client or route from our internal accounting.

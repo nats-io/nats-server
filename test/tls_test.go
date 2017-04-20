@@ -201,7 +201,8 @@ func TestTLSStressConnect(t *testing.T) {
 	opts.NoSigs, opts.NoLog = true, true
 
 	// For this test, remove the authorization
-	opts.Authorization = ""
+	opts.Username = ""
+	opts.Password = ""
 
 	// Increase ssl timeout
 	opts.TLSTimeout = 2.0

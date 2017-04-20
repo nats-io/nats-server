@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package test
 
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/server"
 )
 
@@ -46,7 +45,7 @@ func runAuthServerWithToken() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Authorization = AUTH_TOKEN
-	return RunServerWithAuth(&opts, &auth.Token{Token: AUTH_TOKEN})
+	return RunServer(&opts)
 }
 
 func TestNoAuthClient(t *testing.T) {
@@ -112,9 +111,7 @@ func runAuthServerWithUserPass() *server.Server {
 	opts.Port = AUTH_PORT
 	opts.Username = AUTH_USER
 	opts.Password = AUTH_PASS
-
-	auth := &auth.Plain{Username: AUTH_USER, Password: AUTH_PASS}
-	return RunServerWithAuth(&opts, auth)
+	return RunServer(&opts)
 }
 
 func TestNoUserOrPasswordClient(t *testing.T) {
@@ -170,9 +167,7 @@ func runAuthServerWithBcryptUserPass() *server.Server {
 	opts.Port = AUTH_PORT
 	opts.Username = AUTH_USER
 	opts.Password = BCRYPT_AUTH_HASH
-
-	auth := &auth.Plain{Username: AUTH_USER, Password: BCRYPT_AUTH_HASH}
-	return RunServerWithAuth(&opts, auth)
+	return RunServer(&opts)
 }
 
 func TestBadBcryptPassword(t *testing.T) {
@@ -206,7 +201,7 @@ func runAuthServerWithBcryptToken() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = AUTH_PORT
 	opts.Authorization = BCRYPT_AUTH_TOKEN_HASH
-	return RunServerWithAuth(&opts, &auth.Token{Token: BCRYPT_AUTH_TOKEN_HASH})
+	return RunServer(&opts)
 }
 
 func TestBadBcryptToken(t *testing.T) {

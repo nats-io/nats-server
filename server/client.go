@@ -461,7 +461,7 @@ func (c *client) processConnect(arg []byte) error {
 		}
 
 		// Check for Auth
-		if ok := srv.checkAuth(c); !ok {
+		if ok := srv.checkAuthorization(c); !ok {
 			c.authViolation()
 			return ErrAuthorization
 		}

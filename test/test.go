@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/server"
 )
 
@@ -48,7 +47,22 @@ func RunDefaultServer() *server.Server {
 
 // RunServer starts a new Go routine based server
 func RunServer(opts *server.Options) *server.Server {
-	return RunServerWithAuth(opts, nil)
+	if opts == nil {
+		opts = &DefaultTestOptions
+	}
+	s := server.New(opts)
+	if s == nil {
+		panic("No NATS Server object returned.")
+	}
+
+	// Run server in Go routine.
+	go s.Start()
+
+	// Wait for accept loop(s) to be started
+	if !s.ReadyForConnections(10 * time.Second) {
+		panic("Unable to start NATS Server in Go Routine")
+	}
+	return s
 }
 
 // LoadConfig loads a configuration from a filename
@@ -64,44 +78,8 @@ func LoadConfig(configFile string) (opts *server.Options) {
 // RunServerWithConfig starts a new Go routine based server with a configuration file.
 func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
 	opts = LoadConfig(configFile)
-
-	// Check for auth
-	var a server.Auth
-	if opts.Authorization != "" {
-		a = &auth.Token{Token: opts.Authorization}
-	}
-	if opts.Username != "" {
-		a = &auth.Plain{Username: opts.Username, Password: opts.Password}
-	}
-	if opts.Users != nil {
-		a = auth.NewMultiUser(opts.Users)
-	}
-	srv = RunServerWithAuth(opts, a)
+	srv = RunServer(opts)
 	return
-}
-
-// RunServerWithAuth starts a new Go routine based server with auth
-func RunServerWithAuth(opts *server.Options, auth server.Auth) *server.Server {
-	if opts == nil {
-		opts = &DefaultTestOptions
-	}
-	s := server.New(opts)
-	if s == nil {
-		panic("No NATS Server object returned.")
-	}
-
-	if auth != nil {
-		s.SetClientAuthMethod(auth)
-	}
-
-	// Run server in Go routine.
-	go s.Start()
-
-	// Wait for accept loop(s) to be started
-	if !s.ReadyForConnections(10 * time.Second) {
-		panic("Unable to start NATS Server in Go Routine")
-	}
-	return s
 }
 
 func stackFatalf(t tLogger, f string, args ...interface{}) {
