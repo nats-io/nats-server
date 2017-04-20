@@ -672,7 +672,6 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
-	opts.Authorization = ""
 	opts.TLSTimeout = 100
 	s := RunServer(opts)
 	defer s.Shutdown()
@@ -694,7 +693,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Fatalf("Unexpected error during handshake: %v", err)
 	}
 	br = bufio.NewReaderSize(tlsConn, 100)
-	connectOp := []byte("CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
 	if _, err := tlsConn.Write(connectOp); err != nil {
 		t.Fatalf("Unexpected error writing CONNECT: %v", err)
 	}

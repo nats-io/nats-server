@@ -92,7 +92,7 @@ func TestTLSConfigFile(t *testing.T) {
 		Host:        "localhost",
 		Port:        4443,
 		Username:    "derek",
-		Password:    "buckley",
+		Password:    "foo",
 		AuthTimeout: 1.0,
 		TLSTimeout:  2.0,
 	}
