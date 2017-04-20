@@ -97,11 +97,8 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/srv_a_bcrypt.conf")
 	optsB, _ := ProcessConfigFile("./configs/srv_b_bcrypt.conf")
 
-	optsA.NoSigs, optsA.NoLog = true, false
-	optsB.NoSigs, optsB.NoLog = true, false
-
-	optsA.Debug, optsA.Trace = true, true
-	optsB.Debug, optsB.Trace = true, true
+	optsA.NoSigs, optsA.NoLog = true, true
+	optsB.NoSigs, optsB.NoLog = true, true
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -113,7 +110,7 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 	urlB := fmt.Sprintf("nats://%s:%s@%s:%d/", optsB.Username, optsB.Password, optsB.Host, optsB.Port)
 
 	// Wait for route to form.
-	time.Sleep(1 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	nc1, err := nats.Connect(urlA)
 	if err != nil {
