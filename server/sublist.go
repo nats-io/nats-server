@@ -1,4 +1,4 @@
-// Copyright 2016 Apcera Inc. All rights reserved.
+// Copyright 2016-2017 Apcera Inc. All rights reserved.
 
 // Package sublist is a routing mechanism to handle subject distribution
 // and provides a facility to match subjects from published messages to
@@ -70,7 +70,7 @@ func newNode() *node {
 }
 
 // Create a new default level. We use FNV1A as the hash
-// algortihm for the tokens, which should be short.
+// algorithm for the tokens, which should be short.
 func newLevel() *level {
 	return &level{nodes: make(map[string]*node)}
 }

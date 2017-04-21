@@ -1,4 +1,4 @@
-// Copyright 2013-2015 Apcera Inc. All rights reserved.
+// Copyright 2013-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -240,7 +240,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		Errorf("Error marshalling response to /connz request: %v", err)
+		Errorf("Error marshaling response to /connz request: %v", err)
 	}
 
 	// Handle response
@@ -331,7 +331,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(rs, "", "  ")
 	if err != nil {
-		Errorf("Error marshalling response to /routez request: %v", err)
+		Errorf("Error marshaling response to /routez request: %v", err)
 	}
 
 	// Handle response
@@ -347,7 +347,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	st := &Subsz{s.sl.Stats()}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
-		Errorf("Error marshalling response to /subscriptionsz request: %v", err)
+		Errorf("Error marshaling response to /subscriptionsz request: %v", err)
 	}
 
 	// Handle response
@@ -484,7 +484,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		Errorf("Error marshalling response to /varz request: %v", err)
+		Errorf("Error marshaling response to /varz request: %v", err)
 	}
 
 	// Handle response

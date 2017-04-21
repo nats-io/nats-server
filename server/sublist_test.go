@@ -208,7 +208,7 @@ func TestSublistRemoveCleanupWildcards(t *testing.T) {
 func TestSublistInvalidSubjectsInsert(t *testing.T) {
 	s := NewSublist()
 
-	// Insert, or subscribtions, can have wildcards, but not empty tokens,
+	// Insert, or subscriptions, can have wildcards, but not empty tokens,
 	// and can not have a FWC that is not the terminal token.
 
 	// beginning empty token

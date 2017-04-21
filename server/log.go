@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -56,7 +56,7 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 }
 
 // If the logger is a file based logger, close and re-open the file.
-// This allows for file rotation by 'mv'ing the file then signalling
+// This allows for file rotation by 'mv'ing the file then signaling
 // the process to trigger this function.
 func (s *Server) ReOpenLogFile() {
 	// Check to make sure this is a file logger.
