@@ -82,7 +82,7 @@ func TestServerRoutesWithClients(t *testing.T) {
 	defer srvB.Shutdown()
 
 	// Wait for route to form.
-	time.Sleep(250 * time.Millisecond)
+	checkClusterFormed(t, srvA, srvB)
 
 	nc2, err := nats.Connect(urlB)
 	if err != nil {
@@ -106,11 +106,11 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
+	// Wait for route to form.
+	checkClusterFormed(t, srvA, srvB)
+
 	urlA := fmt.Sprintf("nats://%s:%s@%s:%d/", optsA.Username, optsA.Password, optsA.Host, optsA.Port)
 	urlB := fmt.Sprintf("nats://%s:%s@%s:%d/", optsB.Username, optsB.Password, optsB.Host, optsB.Port)
-
-	// Wait for route to form.
-	time.Sleep(4 * time.Second)
 
 	nc1, err := nats.Connect(urlA)
 	if err != nil {
