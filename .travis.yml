@@ -16,7 +16,7 @@ before_script:
 - go fmt ./...
 - go vet $EXCLUDE_VENDOR
 - gosimple $EXCLUDE_VENDOR
-- misspell -error -locale US $EXCLUDE_VENDOR
+- misspell -error -locale US .
 - staticcheck $EXCLUDE_VENDOR
 script:
 - go test -i -race $EXCLUDE_VENDOR

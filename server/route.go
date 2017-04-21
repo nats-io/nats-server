@@ -1,4 +1,4 @@
-// Copyright 2013-2016 Apcera Inc. All rights reserved.
+// Copyright 2013-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -72,7 +72,7 @@ func (c *client) sendConnect(tlsRequired bool) {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		c.Errorf("Error marshalling CONNECT to route: %v\n", err)
+		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
 		c.closeConnection()
 		return
 	}

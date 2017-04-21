@@ -150,7 +150,7 @@ func (s *Server) generateServerInfoJSON() {
 	// Generate the info json
 	b, err := json.Marshal(s.info)
 	if err != nil {
-		Fatalf("Error marshalling INFO JSON: %+v\n", err)
+		Fatalf("Error marshaling INFO JSON: %+v\n", err)
 		return
 	}
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
