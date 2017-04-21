@@ -30,12 +30,6 @@ type serverInfo struct {
 	MaxPayload   int64  `json:"max_payload"`
 }
 
-type mockAuth struct{}
-
-func (m *mockAuth) Check(c ClientAuth) bool {
-	return true
-}
-
 func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	go func() {
 		c := s.createClient(cli)
@@ -56,9 +50,6 @@ func rawSetup(serverOptions Options) (*Server, *client, *bufio.Reader, string) {
 	cli, srv := net.Pipe()
 	cr := bufio.NewReaderSize(cli, maxBufSize)
 	s := New(&serverOptions)
-	if serverOptions.Authorization != "" {
-		s.SetClientAuthMethod(&mockAuth{})
-	}
 
 	ch := make(chan *client)
 	createClientAsync(ch, s, srv)
@@ -601,8 +592,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	serverOptions := defaultServerOptions
 	serverOptions.Authorization = "my_token"
 	serverOptions.AuthTimeout = 1
-	s, _, cr, _ := rawSetup(serverOptions)
-	s.SetClientAuthMethod(&mockAuth{})
+	_, _, cr, _ := rawSetup(serverOptions)
 
 	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
 	l, err := cr.ReadString('\n')
@@ -682,7 +672,6 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
-	opts.Authorization = ""
 	opts.TLSTimeout = 100
 	s := RunServer(opts)
 	defer s.Shutdown()
@@ -704,7 +693,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Fatalf("Unexpected error during handshake: %v", err)
 	}
 	br = bufio.NewReaderSize(tlsConn, 100)
-	connectOp := []byte("CONNECT {\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
 	if _, err := tlsConn.Write(connectOp); err != nil {
 		t.Fatalf("Unexpected error writing CONNECT: %v", err)
 	}

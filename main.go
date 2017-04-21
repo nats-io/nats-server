@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/nats-io/gnatsd/auth"
 	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/server"
 )
@@ -178,42 +177,11 @@ func main() {
 	// Create the server with appropriate options.
 	s := server.New(&opts)
 
-	// Configure the authentication mechanism
-	configureAuth(s, &opts)
-
 	// Configure the logger based on the flags
 	configureLogger(s, &opts)
 
 	// Start things up. Block here until done.
 	s.Start()
-}
-
-func configureAuth(s *server.Server, opts *server.Options) {
-	// Client
-	// Check for multiple users first
-	if opts.Users != nil {
-		auth := auth.NewMultiUser(opts.Users)
-		s.SetClientAuthMethod(auth)
-	} else if opts.Username != "" {
-		auth := &auth.Plain{
-			Username: opts.Username,
-			Password: opts.Password,
-		}
-		s.SetClientAuthMethod(auth)
-	} else if opts.Authorization != "" {
-		auth := &auth.Token{
-			Token: opts.Authorization,
-		}
-		s.SetClientAuthMethod(auth)
-	}
-	// Routes
-	if opts.Cluster.Username != "" {
-		auth := &auth.Plain{
-			Username: opts.Cluster.Username,
-			Password: opts.Cluster.Password,
-		}
-		s.SetRouteAuthMethod(auth)
-	}
 }
 
 func configureLogger(s *server.Server, opts *server.Options) {

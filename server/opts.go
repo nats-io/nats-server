@@ -17,20 +17,6 @@ import (
 	"github.com/nats-io/gnatsd/conf"
 )
 
-// For multiple accounts/users.
-type User struct {
-	Username    string       `json:"user"`
-	Password    string       `json:"password"`
-	Permissions *Permissions `json:"permissions"`
-}
-
-// Authorization are the allowed subjects on a per
-// publish or subscribe basis.
-type Permissions struct {
-	Publish   []string `json:"publish"`
-	Subscribe []string `json:"subscribe"`
-}
-
 // Options for clusters.
 type ClusterOpts struct {
 	Host           string      `json:"addr"`
