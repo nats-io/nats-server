@@ -2,20 +2,22 @@ language: go
 go:
 - 1.6.4
 - 1.7.5
-- 1.8
+- 1.8.1
 install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
-- go get honnef.co/go/tools/cmd/staticcheck
-- go get honnef.co/go/tools/cmd/gosimple
+- go get -u honnef.co/go/tools/cmd/staticcheck
+- go get -u honnef.co/go/tools/cmd/gosimple
+- go get -u github.com/client9/misspell/cmd/misspell
 before_script:
 - EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
 - go build
 - go fmt ./...
 - go vet $EXCLUDE_VENDOR
 - gosimple $EXCLUDE_VENDOR
-- staticcheck -ignore "$(cat staticcheck.ignore)" $EXCLUDE_VENDOR
+- misspell -error -locale US $EXCLUDE_VENDOR
+- staticcheck $EXCLUDE_VENDOR
 script:
 - go test -i -race $EXCLUDE_VENDOR
 - go test -v -race $EXCLUDE_VENDOR

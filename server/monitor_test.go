@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Apcera Inc. All rights reserved.
+// Copyright 2015-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -1311,28 +1311,40 @@ func TestConcurrentMonitoring(t *testing.T) {
 	endpoints := []string{"varz", "varz", "varz", "connz", "connz", "subsz", "subsz", "routez", "routez"}
 	wg := &sync.WaitGroup{}
 	wg.Add(len(endpoints))
+	ech := make(chan string, len(endpoints))
+
 	for _, e := range endpoints {
 		go func(endpoint string) {
 			defer wg.Done()
 			for i := 0; i < 150; i++ {
 				resp, err := http.Get(url + endpoint)
 				if err != nil {
-					t.Fatalf("Expected no error: Got %v\n", err)
+					ech <- fmt.Sprintf("Expected no error: Got %v\n", err)
+					return
 				}
 				if resp.StatusCode != 200 {
-					t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+					ech <- fmt.Sprintf("Expected a 200 response, got %d\n", resp.StatusCode)
+					return
 				}
 				ct := resp.Header.Get("Content-Type")
 				if ct != "application/json" {
-					t.Fatalf("Expected application/json content-type, got %s\n", ct)
+					ech <- fmt.Sprintf("Expected application/json content-type, got %s\n", ct)
+					return
 				}
 				defer resp.Body.Close()
 				if _, err := ioutil.ReadAll(resp.Body); err != nil {
-					t.Fatalf("Got an error reading the body: %v\n", err)
+					ech <- fmt.Sprintf("Got an error reading the body: %v\n", err)
+					return
 				}
 				resp.Body.Close()
 			}
 		}(e)
 	}
 	wg.Wait()
+	// Check for any errors
+	select {
+	case err := <-ech:
+		t.Fatal(err)
+	default:
+	}
 }
