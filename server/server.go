@@ -66,6 +66,7 @@ type Server struct {
 	done          chan bool
 	start         time.Time
 	http          net.Listener
+	httpHandler   http.Handler
 	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
@@ -505,12 +506,27 @@ func (s *Server) startMonitoring(secure bool) {
 		WriteTimeout:   2 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
+	s.mu.Lock()
+	s.httpHandler = mux
+	s.mu.Unlock()
 
 	go func() {
 		srv.Serve(s.http)
 		srv.Handler = nil
+		s.mu.Lock()
+		s.httpHandler = nil
+		s.mu.Unlock()
 		s.done <- true
 	}()
+}
+
+// HTTPHandler returns the http.Handler object used to handle monitoring
+// endpoints. It will return nil if the server is not configured for
+// monitoring, or if the server has not been started yet (Server.Start()).
+func (s *Server) HTTPHandler() http.Handler {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.httpHandler
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
