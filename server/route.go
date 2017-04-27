@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -447,23 +446,15 @@ const (
 	RSID  = "RSID"
 	QRSID = "QRSID"
 
-	RSID_CID_INDEX   = 1
-	RSID_SID_INDEX   = 2
-	EXPECTED_MATCHES = 3
+	QRSID_PREFIX     = QRSID + ":"
+	QRSID_PREFIX_LEN = len(QRSID_PREFIX)
 )
 
-// FIXME(dlc) - This may be too slow, check at later date.
-var qrsidRe = regexp.MustCompile(`QRSID:(\d+):([^\s]+)`)
-
 func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
-	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
+	cid, sid, ok := parseRouteSid(rsid)
+	if !ok {
 		return nil, false
 	}
-	matches := qrsidRe.FindSubmatch(rsid)
-	if matches == nil || len(matches) != EXPECTED_MATCHES {
-		return nil, false
-	}
-	cid := uint64(parseInt64(matches[RSID_CID_INDEX]))
 
 	s.mu.Lock()
 	client := s.clients[cid]
@@ -472,7 +463,6 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	if client == nil {
 		return nil, true
 	}
-	sid := matches[RSID_SID_INDEX]
 
 	client.mu.Lock()
 	sub, ok := client.subs[string(sid)]
@@ -489,6 +479,20 @@ func routeSid(sub *subscription) string {
 		qi = "Q"
 	}
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
+}
+
+func parseRouteSid(rsid []byte) (cid uint64, sid []byte, ok bool) {
+	if !bytes.HasPrefix(rsid, []byte(QRSID_PREFIX)) {
+		return
+	}
+
+	for i := QRSID_PREFIX_LEN; i < len(rsid); i++ {
+		switch rsid[i] {
+		case ':':
+			return uint64(parseInt64(rsid[QRSID_PREFIX_LEN:i])), rsid[i+1:], true
+		}
+	}
+	return
 }
 
 func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
