@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,6 +35,7 @@ var (
 	processPid                                     int
 	pcQueryLock                                    sync.Mutex
 	initialSample                                  = true
+	numCPUs                                        int
 )
 
 // maxQuerySize is the number of values to return from a query.
@@ -156,6 +158,10 @@ func getProcessImageName() (name string) {
 func initCounters() (err error) {
 
 	processPid = os.Getpid()
+	numCPUs = runtime.NumCPU()
+	if numCPUs <= 0 {
+		numCPUs = 1
+	}
 	// require an addressible nil pointer
 	var source uint16
 	if err := pdhOpenQuery(&source, 0, &pcHandle); err != nil {
@@ -255,7 +261,7 @@ func ProcUsage(pcpu *float64, rss, vss *int64) error {
 		return fmt.Errorf("could not find pid in performance counter results")
 	}
 	// assign values from the performance counters
-	*pcpu = cpuAry[idx]
+	*pcpu = cpuAry[idx] / float64(numCPUs)
 	*rss = int64(rssAry[idx])
 	*vss = int64(vssAry[idx])
 
