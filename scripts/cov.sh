@@ -3,7 +3,6 @@
 
 rm -rf ./cov
 mkdir cov
-go test -v -covermode=atomic -coverprofile=./cov/auth.out ./auth
 go test -v -covermode=atomic -coverprofile=./cov/conf.out ./conf
 go test -v -covermode=atomic -coverprofile=./cov/log.out ./logger
 go test -v -covermode=atomic -coverprofile=./cov/server.out ./server
