@@ -658,6 +658,16 @@ func TestCompoundStringESE(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestBadStringEscape(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Invalid escape character 'y'. Only the following escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \y`)
+	expect(t, lx, expectedItems)
+}
+
 func TestNonBool(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
