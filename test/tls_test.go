@@ -106,6 +106,74 @@ func TestTLSClientCertificate(t *testing.T) {
 	defer nc.Close()
 }
 
+func TestTLSMultipleCAs(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tlsverify_multipleca.conf")
+	defer srv.Shutdown()
+
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	_, err := nats.Connect(nurl)
+	if err == nil {
+		t.Fatalf("Expected error trying to connect to secure server without a certificate")
+	}
+
+	// Load client certificate to successfully connect.
+	certFile := "./configs/certs/client2-cert.pem"
+	keyFile := "./configs/certs/client2-key.pem"
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("error parsing X509 certificate/key pair: %v", err)
+	}
+
+	// Load in root CA for server verification
+	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	if err != nil || rootPEM == nil {
+		t.Fatalf("failed to read root certificate")
+	}
+	pool := x509.NewCertPool()
+	ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+	if !ok {
+		t.Fatalf("failed to parse root certificate")
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ServerName:   opts.Host,
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	copts := nats.DefaultOptions
+	copts.Url = nurl
+	copts.Secure = true
+	copts.TLSConfig = config
+
+	nc, err := copts.Connect()
+	if err != nil {
+		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
+	}
+	nc.Flush()
+	defer nc.Close()
+
+	// confirm original CA still works.
+	certFile = "./configs/certs/client-cert.pem"
+	keyFile = "./configs/certs/client-key.pem"
+	cert, err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("error parsing X509 certificate/key pair: %v", err)
+	}
+
+	config.Certificates = []tls.Certificate{cert}
+	copts.TLSConfig = config
+
+	nc, err = copts.Connect()
+	if err != nil {
+		t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
+	}
+	nc.Flush()
+	defer nc.Close()
+}
+
 func TestTLSVerifyClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
 	defer srv.Shutdown()
