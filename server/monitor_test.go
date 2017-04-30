@@ -1348,3 +1348,17 @@ func TestConcurrentMonitoring(t *testing.T) {
 	default:
 	}
 }
+
+func TestMonitorHandler(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+	handler := s.HTTPHandler()
+	if handler == nil {
+		t.Fatal("HTTP Handler should be set")
+	}
+	s.Shutdown()
+	handler = s.HTTPHandler()
+	if handler != nil {
+		t.Fatal("HTTP Handler should be nil")
+	}
+}
