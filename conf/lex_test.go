@@ -65,10 +65,20 @@ func TestComplexStringValues(t *testing.T) {
 func TestBinaryString(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
-		{itemString, "\\x22", 1},
+		{itemString, "e", 1},
 		{itemEOF, "", 1},
 	}
-	lx := lex("foo = \\x22")
+	lx := lex("foo = \\x65")
+	expect(t, lx, expectedItems)
+}
+
+func TestBinaryStringLatin1(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "\xe9", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = \\xe9")
 	expect(t, lx, expectedItems)
 }
 
@@ -197,6 +207,46 @@ func TestSimpleKeyFloatValues(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestBadBinaryStringEndingAfterZeroHexChars(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = xyz\\x\n")
+	expect(t, lx, expectedItems)
+}
+
+func TestBadBinaryStringEndingAfterOneHexChar(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2},
+		{itemEOF, "", 1},
+	}
+	lx := lex("foo = xyz\\xF\n")
+	expect(t, lx, expectedItems)
+}
+
+func TestBadBinaryStringWithZeroHexChars(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Expected two hexadecimal digits after '\\x', but got ']\"'", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex(`foo = "[\x]"`)
+	expect(t, lx, expectedItems)
+}
+
+func TestBadBinaryStringWithOneHexChar(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Expected two hexadecimal digits after '\\x', but got 'e]'", 1},
+		{itemEOF, "", 1},
+	}
+	lx := lex(`foo = "[\xe]"`)
+	expect(t, lx, expectedItems)
+}
+
 func TestBadFloatValues(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1},
@@ -269,7 +319,7 @@ func TestRawString(t *testing.T) {
 	lx := lex("foo = bar")
 	expect(t, lx, expectedItems)
 
-	lx = lex(`foo = bar' `)
+	lx = lex(`foo = bar' `) //'single-quote for emacs TODO: Remove me
 	expect(t, lx, expectedItems)
 }
 
@@ -523,18 +573,138 @@ bs   = \\
 func TestEscapedString(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 2},
-		{itemString, `\t`, 2},
+		{itemString, "\t", 2},
 		{itemKey, "bar", 3},
-		{itemString, `\r`, 3},
+		{itemString, "\r", 3},
 		{itemKey, "baz", 4},
-		{itemString, `\n`, 4},
+		{itemString, "\n", 4},
 		{itemKey, "q", 5},
-		{itemString, `\"`, 5},
+		{itemString, "\"", 5},
 		{itemKey, "bs", 6},
-		{itemString, `\\`, 6},
+		{itemString, "\\", 6},
 		{itemEOF, "", 6},
 	}
 	lx := lex(escString)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringES(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "\\end", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = "\\end"`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringSE(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "start\\", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = "start\\"`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringEE(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "Eq", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \x45\x71`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringSEE(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "startEq", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = start\x45\x71`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringSES(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "start|end", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = start\x7Cend`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringEES(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "<>end", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \x3c\x3eend`)
+	expect(t, lx, expectedItems)
+}
+
+func TestCompoundStringESE(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "<middle>", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \x3cmiddle\x3E`)
+	expect(t, lx, expectedItems)
+}
+
+func TestBadStringEscape(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemError, "Invalid escape character 'y'. Only the following escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \y`)
+	expect(t, lx, expectedItems)
+}
+
+func TestNonBool(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "\\true", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \\true`)
+	expect(t, lx, expectedItems)
+}
+
+func TestNonVariable(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "\\$var", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = \\$var`)
+	expect(t, lx, expectedItems)
+}
+
+func TestEmptyStringDQ(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = ""`)
+	expect(t, lx, expectedItems)
+}
+
+func TestEmptyStringSQ(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1},
+		{itemString, "", 1},
+		{itemEOF, "", 2},
+	}
+	lx := lex(`foo = ''`)
 	expect(t, lx, expectedItems)
 }
 

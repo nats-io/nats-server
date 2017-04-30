@@ -16,6 +16,7 @@
 package conf
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"unicode"
@@ -82,6 +83,10 @@ type lexer struct {
 	// nested arrays. The last state on the stack is used after a value has
 	// been lexed. Similarly for comments.
 	stack []stateFn
+
+	// Used for processing escapable substrings in double-quoted and raw strings
+	stringParts   []string
+	stringStateFn stateFn
 }
 
 type item struct {
@@ -103,11 +108,12 @@ func (lx *lexer) nextItem() item {
 
 func lex(input string) *lexer {
 	lx := &lexer{
-		input: input,
-		state: lexTop,
-		line:  1,
-		items: make(chan item, 10),
-		stack: make([]stateFn, 0, 10),
+		input:       input,
+		state:       lexTop,
+		line:        1,
+		items:       make(chan item, 10),
+		stack:       make([]stateFn, 0, 10),
+		stringParts: []string{},
 	}
 	return lx
 }
@@ -127,8 +133,35 @@ func (lx *lexer) pop() stateFn {
 }
 
 func (lx *lexer) emit(typ itemType) {
-	lx.items <- item{typ, lx.input[lx.start:lx.pos], lx.line}
+	lx.items <- item{typ, strings.Join(lx.stringParts, "") + lx.input[lx.start:lx.pos], lx.line}
 	lx.start = lx.pos
+}
+
+func (lx *lexer) emitString() {
+	var finalString string
+	if len(lx.stringParts) > 0 {
+		finalString = strings.Join(lx.stringParts, "") + lx.input[lx.start:lx.pos]
+		lx.stringParts = []string{}
+	} else {
+		finalString = lx.input[lx.start:lx.pos]
+	}
+	lx.items <- item{itemString, finalString, lx.line}
+	lx.start = lx.pos
+}
+
+func (lx *lexer) addCurrentStringPart(offset int) {
+	lx.stringParts = append(lx.stringParts, lx.input[lx.start:lx.pos-offset])
+	lx.start = lx.pos
+}
+
+func (lx *lexer) addStringPart(s string) stateFn {
+	lx.stringParts = append(lx.stringParts, s)
+	lx.start = lx.pos
+	return lx.stringStateFn
+}
+
+func (lx *lexer) hasEscapedParts() bool {
+	return len(lx.stringParts) > 0
 }
 
 func (lx *lexer) next() (r rune) {
@@ -453,6 +486,7 @@ func lexValue(lx *lexer) stateFn {
 		return lexQuotedString
 	case r == dqStringStart:
 		lx.ignore() // ignore the " or '
+		lx.stringStateFn = lexDubQuotedString
 		return lexDubQuotedString
 	case r == '-':
 		return lexNegNumberStart
@@ -468,6 +502,7 @@ func lexValue(lx *lexer) stateFn {
 		return lx.errorf("Expected value but found new line")
 	}
 	lx.backup()
+	lx.stringStateFn = lexString
 	return lexString
 }
 
@@ -721,9 +756,12 @@ func lexQuotedString(lx *lexer) stateFn {
 func lexDubQuotedString(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
+	case r == '\\':
+		lx.addCurrentStringPart(1)
+		return lexStringEscape
 	case r == dqStringEnd:
 		lx.backup()
-		lx.emit(itemString)
+		lx.emitString()
 		lx.next()
 		lx.ignore()
 		return lx.pop()
@@ -736,6 +774,7 @@ func lexString(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
 	case r == '\\':
+		lx.addCurrentStringPart(1)
 		return lexStringEscape
 	// Termination of non-quoted strings
 	case isNL(r) || r == eof || r == optValTerm ||
@@ -743,17 +782,19 @@ func lexString(lx *lexer) stateFn {
 		isWhitespace(r):
 
 		lx.backup()
-		if lx.isBool() {
+		if lx.hasEscapedParts() {
+			lx.emitString()
+		} else if lx.isBool() {
 			lx.emit(itemBool)
 		} else if lx.isVariable() {
 			lx.emit(itemVariable)
 		} else {
-			lx.emit(itemString)
+			lx.emitString()
 		}
 		return lx.pop()
 	case r == sqStringEnd:
 		lx.backup()
-		lx.emit(itemString)
+		lx.emitString()
 		lx.next()
 		lx.ignore()
 		return lx.pop()
@@ -803,15 +844,15 @@ func lexStringEscape(lx *lexer) stateFn {
 	case 'x':
 		return lexStringBinary
 	case 't':
-		fallthrough
+		return lx.addStringPart("\t")
 	case 'n':
-		fallthrough
+		return lx.addStringPart("\n")
 	case 'r':
-		fallthrough
+		return lx.addStringPart("\r")
 	case '"':
-		fallthrough
+		return lx.addStringPart("\"")
 	case '\\':
-		return lexString
+		return lx.addStringPart("\\")
 	}
 	return lx.errorf("Invalid escape character '%v'. Only the following "+
 		"escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", r)
@@ -821,17 +862,20 @@ func lexStringEscape(lx *lexer) stateFn {
 // that the '\x' has already been consumed.
 func lexStringBinary(lx *lexer) stateFn {
 	r := lx.next()
-	if !isHexadecimal(r) {
-		return lx.errorf("Expected two hexadecimal digits after '\\x', but "+
-			"got '%v' instead.", r)
+	if isNL(r) {
+		return lx.errorf("Expected two hexadecimal digits after '\\x', but hit end of line")
 	}
-
 	r = lx.next()
-	if !isHexadecimal(r) {
-		return lx.errorf("Expected two hexadecimal digits after '\\x', but "+
-			"got '%v' instead.", r)
+	if isNL(r) {
+		return lx.errorf("Expected two hexadecimal digits after '\\x', but hit end of line")
 	}
-	return lexString
+	offset := lx.pos - 2
+	byteString, err := hex.DecodeString(lx.input[offset:lx.pos])
+	if err != nil {
+		return lx.errorf("Expected two hexadecimal digits after '\\x', but got '%s'", lx.input[offset:lx.pos])
+	}
+	lx.addStringPart(string(byteString))
+	return lx.stringStateFn
 }
 
 // lexNumberOrDateStart consumes either a (positive) integer, a float, a datetime, or IP.
@@ -1026,12 +1070,6 @@ func isWhitespace(r rune) bool {
 
 func isNL(r rune) bool {
 	return r == '\n' || r == '\r'
-}
-
-func isHexadecimal(r rune) bool {
-	return (r >= '0' && r <= '9') ||
-		(r >= 'a' && r <= 'f') ||
-		(r >= 'A' && r <= 'F')
 }
 
 func (itype itemType) String() string {
