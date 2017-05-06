@@ -390,17 +390,26 @@ func TestRouteQueueSemantics(t *testing.T) {
 	routeSend("MSG foo RSID:1:1 2\r\nok\r\n")
 	// Queue group one.
 	routeSend("MSG foo QRSID:1:2 2\r\nok\r\n")
+	// Invlaid queue sid.
+	routeSend("MSG foo QRSID 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:1 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:1: 2\r\nok\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
-	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
-	matches = clientExpectMsgs(2)
+	// Should be 3 now, 1 for all normal, and one for specific queue subscriber,
+	// others for normal
+	matches = clientExpectMsgs(5)
 
-	// Expect first to be the normal subscriber, next will be the queue one.
+	// Expect first to be the normal subscriber, next will be the queue one,
+	// others to be the normal subscriber
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
 	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
+	checkMsg(t, matches[2], "foo", "1", "", "2", "ok")
+	checkMsg(t, matches[3], "foo", "1", "", "2", "ok")
+	checkMsg(t, matches[4], "foo", "1", "", "2", "ok")
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {

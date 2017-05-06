@@ -481,18 +481,18 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
-func parseRouteSid(rsid []byte) (cid uint64, sid []byte, ok bool) {
+func parseRouteSid(rsid []byte) (uint64, []byte, bool) {
 	if !bytes.HasPrefix(rsid, []byte(QRSID_PREFIX)) {
-		return
+		return 0, nil, false
 	}
 
 	for i := QRSID_PREFIX_LEN; i < len(rsid); i++ {
 		switch rsid[i] {
 		case ':':
-			return uint64(parseInt64(rsid[QRSID_PREFIX_LEN:i])), rsid[i+1:], true
+			return uint64(parseInt64(rsid[QRSID_PREFIX_LEN:i])), rsid[i+1:], len(rsid[i+1:]) > 0
 		}
 	}
-	return
+	return 0, nil, false
 }
 
 func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
