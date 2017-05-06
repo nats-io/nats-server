@@ -651,3 +651,40 @@ func TestTokenWithUsers(t *testing.T) {
 		t.Fatalf("Expected error related to token, got %v", err)
 	}
 }
+
+func TestParseWriteDeadline(t *testing.T) {
+	confFile := "test.conf"
+	defer os.Remove(confFile)
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1x\"\n"), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	_, err := ProcessConfigFile(confFile)
+	if err == nil {
+		t.Fatal("Expected error, got none")
+	}
+	if !strings.Contains(err.Error(), "parsing") {
+		t.Fatalf("Expected error related to parsing, got %v", err)
+	}
+	os.Remove(confFile)
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1s\"\n"), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err := ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.WriteDeadline != time.Second {
+		t.Fatalf("Expected write_deadline to be 1s, got %v", opts.WriteDeadline)
+	}
+	os.Remove(confFile)
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: 2\n"), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.WriteDeadline != 2*time.Second {
+		t.Fatalf("Expected write_deadline to be 2s, got %v", opts.WriteDeadline)
+	}
+}

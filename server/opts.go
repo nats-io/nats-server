@@ -230,7 +230,19 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			}
 			opts.TLSTimeout = tc.Timeout
 		case "write_deadline":
-			opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
+			wd, ok := v.(string)
+			if ok {
+				dur, err := time.ParseDuration(wd)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing write_deadline: %v", err)
+				}
+				opts.WriteDeadline = dur
+			} else {
+				// Backward compatible with old type, assume this is the
+				// number of seconds.
+				opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
+				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
+			}
 		}
 	}
 	return opts, nil
