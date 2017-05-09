@@ -390,6 +390,10 @@ func TestRouteQueueSemantics(t *testing.T) {
 	routeSend("MSG foo RSID:1:1 2\r\nok\r\n")
 	// Queue group one.
 	routeSend("MSG foo QRSID:1:2 2\r\nok\r\n")
+	// Invlaid queue sid.
+	routeSend("MSG foo QRSID 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:1 2\r\nok\r\n")
+	routeSend("MSG foo QRSID:1: 2\r\nok\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
