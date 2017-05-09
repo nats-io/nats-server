@@ -399,17 +399,12 @@ func TestRouteQueueSemantics(t *testing.T) {
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
-	// Should be 3 now, 1 for all normal, and one for specific queue subscriber,
-	// others for normal
-	matches = clientExpectMsgs(5)
+	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
+	matches = clientExpectMsgs(2)
 
-	// Expect first to be the normal subscriber, next will be the queue one,
-	// others to be the normal subscriber
+	// Expect first to be the normal subscriber, next will be the queue one.
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
 	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
-	checkMsg(t, matches[2], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[3], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[4], "foo", "1", "", "2", "ok")
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {

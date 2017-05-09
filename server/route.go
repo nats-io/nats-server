@@ -446,8 +446,7 @@ const (
 	RSID  = "RSID"
 	QRSID = "QRSID"
 
-	QRSID_PREFIX     = QRSID + ":"
-	QRSID_PREFIX_LEN = len(QRSID_PREFIX)
+	QRSID_LEN = len(QRSID)
 )
 
 func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
@@ -482,17 +481,18 @@ func routeSid(sub *subscription) string {
 }
 
 func parseRouteSid(rsid []byte) (uint64, []byte, bool) {
-	if !bytes.HasPrefix(rsid, []byte(QRSID_PREFIX)) {
+	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
 		return 0, nil, false
 	}
 
-	for i := QRSID_PREFIX_LEN; i < len(rsid); i++ {
+	// We don't care what's char of rsid[QRSID_LEN+1], it should be ':'
+	for i, count := QRSID_LEN+1, len(rsid); i < count; i++ {
 		switch rsid[i] {
 		case ':':
-			return uint64(parseInt64(rsid[QRSID_PREFIX_LEN:i])), rsid[i+1:], len(rsid[i+1:]) > 0
+			return uint64(parseInt64(rsid[QRSID_LEN+1 : i])), rsid[i+1:], true
 		}
 	}
-	return 0, nil, false
+	return 0, nil, true
 }
 
 func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
