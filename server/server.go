@@ -548,11 +548,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	c.Debugf("Client connection created")
 
-	// Check for Auth
-	if authRequired {
-		c.setAuthTimer(secondsToDuration(s.opts.AuthTimeout))
-	}
-
 	// Send our information.
 	c.sendInfo(info)
 
@@ -606,6 +601,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Re-Grab lock
 		c.mu.Lock()
+	}
+
+	// Check for Auth. We schedule this timer after the TLS handshake to avoid
+	// the race where the timer fires during the handshake and causes the
+	// server to write bad data to the socket.
+	if authRequired {
+		c.setAuthTimer(secondsToDuration(s.opts.AuthTimeout))
 	}
 
 	// The connection may have been closed

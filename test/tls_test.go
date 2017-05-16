@@ -160,6 +160,28 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	}
 }
 
+// Ensure there is no race between authorization timeout and TLS handshake.
+func TestTLSAuthorizationShortTimeout(t *testing.T) {
+	opts := LoadConfig("./configs/tls.conf")
+	opts.AuthTimeout = 0.001
+
+	srv := RunServer(opts)
+	defer srv.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	nurl := fmt.Sprintf("tls://%s:%s@%s/", opts.Username, opts.Password, endpoint)
+
+	// Expect an error here (no CA) but not a TLS oversized record error which
+	// indicates the authorization timeout fired too soon.
+	_, err := nats.Connect(nurl)
+	if err == nil {
+		t.Fatal("Expected error trying to connect to secure server")
+	}
+	if strings.Contains(err.Error(), "oversized record") {
+		t.Fatal("Corrupted TLS handshake:", err)
+	}
+}
+
 func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url string, index int) {
 	defer wg.Done()
 
