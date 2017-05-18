@@ -480,6 +480,31 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
 
+	// Test that when given negative values, 0 or default is used
+	resp, err = http.Get(url + "connz?offset=-1&limit=-1")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	c = Connz{}
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+	if c.Conns == nil || len(c.Conns) != 0 {
+		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+	}
+	if c.Offset != 0 {
+		t.Fatalf("Expected offset to be 0, and limit to be %v, got %v and %v",
+			DefaultConnListSize, c.Offset, c.Limit)
+	}
+
 	cl1 := createClientConnSubscribeAndPublish(t)
 	defer cl1.Close()
 

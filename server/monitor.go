@@ -82,9 +82,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	auth, _ := strconv.Atoi(r.URL.Query().Get("auth"))
 	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 	c.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	if c.Offset < 0 {
+		c.Offset = 0
+	}
 	c.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-
-	if c.Limit == 0 {
+	if c.Limit <= 0 {
 		c.Limit = DefaultConnListSize
 	}
 
