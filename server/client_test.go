@@ -592,10 +592,19 @@ func TestAuthorizationTimeout(t *testing.T) {
 	serverOptions := defaultServerOptions
 	serverOptions.Authorization = "my_token"
 	serverOptions.AuthTimeout = 1
-	_, _, cr, _ := rawSetup(serverOptions)
+	s := RunServer(&serverOptions)
+	defer s.Shutdown()
 
-	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
-	l, err := cr.ReadString('\n')
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v\n", err)
+	}
+	defer conn.Close()
+	client := bufio.NewReaderSize(conn, maxBufSize)
+	if _, err := client.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	l, err := client.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
 	}
