@@ -10,11 +10,11 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
-	"testing"
-	"time"
-
+	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
+	"time"
 
 	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/go-nats"
@@ -641,4 +641,81 @@ func createClientConnSubscribeAndPublish(t *testing.T) net.Conn {
 	expectMsgs(1)
 
 	return cl
+}
+
+func TestMonitorNoTLSConfig(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = CLIENT_PORT
+	opts.HTTPHost = "localhost"
+	opts.HTTPSPort = MONITOR_PORT
+	s := server.New(&opts)
+	defer s.Shutdown()
+	dl := &dummyLogger{}
+	s.SetLogger(dl, false, false)
+	defer s.SetLogger(nil, false, false)
+	// This should produce a fatal error due to lack of TLS config
+	s.Start()
+	if !strings.Contains(dl.msg, "TLS") {
+		t.Fatalf("Expected error about missing TLS config, got %v", dl.msg)
+	}
+}
+
+func TestMonitorErrorOnListen(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := DefaultTestOptions
+	opts.Port = CLIENT_PORT + 1
+	opts.HTTPHost = "localhost"
+	opts.HTTPPort = MONITOR_PORT
+	s2 := server.New(&opts)
+	defer s2.Shutdown()
+	dl := &dummyLogger{}
+	s2.SetLogger(dl, false, false)
+	defer s2.SetLogger(nil, false, false)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// This will block until server is shutdown
+		s2.Start()
+	}()
+	// Wait for the error to be produced
+	timeout := time.Now().Add(3 * time.Second)
+	ok := false
+	for time.Now().Before(timeout) {
+		dl.Lock()
+		msg := dl.msg
+		dl.Unlock()
+		if msg == "" {
+			continue
+		}
+		if strings.Contains(msg, "listen") {
+			ok = true
+			break
+		}
+	}
+	s2.Shutdown()
+	wg.Wait()
+	if !ok {
+		t.Fatalf("Should have produced a fatal error")
+	}
+}
+
+func TestMonitorBothPortsConfigured(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = CLIENT_PORT
+	opts.HTTPHost = "localhost"
+	opts.HTTPPort = MONITOR_PORT
+	opts.HTTPSPort = MONITOR_PORT + 1
+	s := server.New(&opts)
+	defer s.Shutdown()
+	dl := &dummyLogger{}
+	s.SetLogger(dl, false, false)
+	defer s.SetLogger(nil, false, false)
+	// This should produce a fatal error
+	s.Start()
+	if !strings.Contains(dl.msg, "specify both") {
+		t.Fatalf("Expected error about ports configured, got %v", dl.msg)
+	}
 }
