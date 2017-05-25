@@ -223,6 +223,12 @@ func (s *Server) Start() {
 		s.logPid()
 	}
 
+	// Specifying both HTTP and HTTPS ports is a misconfiguration
+	if s.opts.HTTPPort != 0 && s.opts.HTTPSPort != 0 {
+		Fatalf("Can't specify both HTTP (%v) and HTTPs (%v) ports", s.opts.HTTPPort, s.opts.HTTPSPort)
+		return
+	}
+
 	// Start up the http server if needed.
 	if s.opts.HTTPPort != 0 {
 		s.StartHTTPMonitoring()
