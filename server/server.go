@@ -57,6 +57,7 @@ type Server struct {
 	trace         bool
 	debug         bool
 	running       bool
+	shutdown      bool
 	listener      net.Listener
 	clients       map[uint64]*client
 	routes        map[uint64]*client
@@ -223,24 +224,10 @@ func (s *Server) Start() {
 		s.logPid()
 	}
 
-	// Specifying both HTTP and HTTPS ports is a misconfiguration
-	if s.opts.HTTPPort != 0 && s.opts.HTTPSPort != 0 {
-		Fatalf("Can't specify both HTTP (%v) and HTTPs (%v) ports", s.opts.HTTPPort, s.opts.HTTPSPort)
+	// Start monitoring if needed
+	if err := s.StartMonitoring(); err != nil {
+		Fatalf("Can't start monitoring: %v", err)
 		return
-	}
-
-	// Start up the http server if needed.
-	if s.opts.HTTPPort != 0 {
-		s.StartHTTPMonitoring()
-	}
-
-	// Start up the https server if needed.
-	if s.opts.HTTPSPort != 0 {
-		if s.opts.TLSConfig == nil {
-			Fatalf("TLS cert and key required for HTTPS")
-			return
-		}
-		s.StartHTTPSMonitoring()
 	}
 
 	// The Routing routine needs to wait for the client listen
@@ -269,11 +256,11 @@ func (s *Server) Shutdown() {
 	s.mu.Lock()
 
 	// Prevent issues with multiple calls.
-	if !s.running {
+	if s.shutdown {
 		s.mu.Unlock()
 		return
 	}
-
+	s.shutdown = true
 	s.running = false
 	s.grMu.Lock()
 	s.grRunning = false
@@ -436,13 +423,33 @@ func (s *Server) StartProfiler() {
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
+// DEPRECATED: Should use StartMonitoring.
 func (s *Server) StartHTTPMonitoring() {
 	s.startMonitoring(false)
 }
 
 // StartHTTPSMonitoring will enable the HTTPS monitoring port.
+// DEPRECATED: Should use StartMonitoring.
 func (s *Server) StartHTTPSMonitoring() {
 	s.startMonitoring(true)
+}
+
+// StartMonitoring starts the HTTP or HTTPs server if needed.
+func (s *Server) StartMonitoring() error {
+	// Specifying both HTTP and HTTPS ports is a misconfiguration
+	if s.opts.HTTPPort != 0 && s.opts.HTTPSPort != 0 {
+		return fmt.Errorf("can't specify both HTTP (%v) and HTTPs (%v) ports", s.opts.HTTPPort, s.opts.HTTPSPort)
+	}
+	var err error
+	if s.opts.HTTPPort != 0 {
+		err = s.startMonitoring(false)
+	} else if s.opts.HTTPSPort != 0 {
+		if s.opts.TLSConfig == nil {
+			return fmt.Errorf("TLS cert and key required for HTTPS")
+		}
+		err = s.startMonitoring(true)
+	}
+	return err
 }
 
 // HTTP endpoints
@@ -456,7 +463,7 @@ const (
 )
 
 // Start the monitoring server
-func (s *Server) startMonitoring(secure bool) {
+func (s *Server) startMonitoring(secure bool) error {
 
 	// Used to track HTTP requests
 	s.httpReqStats = map[string]uint64{
@@ -467,25 +474,27 @@ func (s *Server) startMonitoring(secure bool) {
 		SubszPath:  0,
 	}
 
-	var hp string
-	var err error
+	var (
+		hp           string
+		err          error
+		httpListener net.Listener
+	)
 
 	if secure {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
 		config := util.CloneTLSConfig(s.opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
-		s.http, err = tls.Listen("tcp", hp, config)
+		httpListener, err = tls.Listen("tcp", hp, config)
 
 	} else {
 		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
 		Noticef("Starting http monitor on %s", hp)
-		s.http, err = net.Listen("tcp", hp)
+		httpListener, err = net.Listen("tcp", hp)
 	}
 
 	if err != nil {
-		Fatalf("Can't listen to the monitor port: %v", err)
-		return
+		return fmt.Errorf("can't listen to the monitor port: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -513,17 +522,20 @@ func (s *Server) startMonitoring(secure bool) {
 		MaxHeaderBytes: 1 << 20,
 	}
 	s.mu.Lock()
+	s.http = httpListener
 	s.httpHandler = mux
 	s.mu.Unlock()
 
 	go func() {
-		srv.Serve(s.http)
+		srv.Serve(httpListener)
 		srv.Handler = nil
 		s.mu.Lock()
 		s.httpHandler = nil
 		s.mu.Unlock()
 		s.done <- true
 	}()
+
+	return nil
 }
 
 // HTTPHandler returns the http.Handler object used to handle monitoring
