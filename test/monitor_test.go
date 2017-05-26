@@ -650,10 +650,14 @@ func TestMonitorNoTLSConfig(t *testing.T) {
 	opts.HTTPSPort = MONITOR_PORT
 	s := server.New(&opts)
 	defer s.Shutdown()
+	// Check with manually starting the monitoring, which should return an error
+	if err := s.StartMonitoring(); err == nil || !strings.Contains(err.Error(), "TLS") {
+		t.Fatalf("Expected error about missing TLS config, got %v", err)
+	}
+	// Also check by calling Start(), which should produce a fatal error
 	dl := &dummyLogger{}
 	s.SetLogger(dl, false, false)
 	defer s.SetLogger(nil, false, false)
-	// This should produce a fatal error due to lack of TLS config
 	s.Start()
 	if !strings.Contains(dl.msg, "TLS") {
 		t.Fatalf("Expected error about missing TLS config, got %v", dl.msg)
@@ -670,35 +674,8 @@ func TestMonitorErrorOnListen(t *testing.T) {
 	opts.HTTPPort = MONITOR_PORT
 	s2 := server.New(&opts)
 	defer s2.Shutdown()
-	dl := &dummyLogger{}
-	s2.SetLogger(dl, false, false)
-	defer s2.SetLogger(nil, false, false)
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// This will block until server is shutdown
-		s2.Start()
-	}()
-	// Wait for the error to be produced
-	timeout := time.Now().Add(3 * time.Second)
-	ok := false
-	for time.Now().Before(timeout) {
-		dl.Lock()
-		msg := dl.msg
-		dl.Unlock()
-		if msg == "" {
-			continue
-		}
-		if strings.Contains(msg, "listen") {
-			ok = true
-			break
-		}
-	}
-	s2.Shutdown()
-	wg.Wait()
-	if !ok {
-		t.Fatalf("Should have produced a fatal error")
+	if err := s2.StartMonitoring(); err == nil || !strings.Contains(err.Error(), "listen") {
+		t.Fatalf("Expected error about not able to start listener, got %v", err)
 	}
 }
 
@@ -710,12 +687,34 @@ func TestMonitorBothPortsConfigured(t *testing.T) {
 	opts.HTTPSPort = MONITOR_PORT + 1
 	s := server.New(&opts)
 	defer s.Shutdown()
-	dl := &dummyLogger{}
-	s.SetLogger(dl, false, false)
-	defer s.SetLogger(nil, false, false)
-	// This should produce a fatal error
-	s.Start()
-	if !strings.Contains(dl.msg, "specify both") {
-		t.Fatalf("Expected error about ports configured, got %v", dl.msg)
+	if err := s.StartMonitoring(); err == nil || !strings.Contains(err.Error(), "specify both") {
+		t.Fatalf("Expected error about ports configured, got %v", err)
+	}
+}
+
+func TestMonitorStop(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultTestOptions
+	opts.Port = CLIENT_PORT
+	opts.HTTPHost = "localhost"
+	opts.HTTPPort = MONITOR_PORT
+	url := fmt.Sprintf("http://%v:%d/", opts.HTTPHost, MONITOR_PORT)
+	// Create a server instance and start only the monitoring http server.
+	s := server.New(&opts)
+	if err := s.StartMonitoring(); err != nil {
+		t.Fatalf("Error starting monitoring: %v", err)
+	}
+	// Make sure http server is started
+	resp, err := http.Get(url + "varz")
+	if err != nil {
+		t.Fatalf("Error on http request: %v", err)
+	}
+	resp.Body.Close()
+	// Although the server itself was not started (we did not call s.Start()),
+	// Shutdown() should stop the http server.
+	s.Shutdown()
+	// HTTP request should now fail
+	if resp, err := http.Get(url + "varz"); err == nil {
+		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
 }
