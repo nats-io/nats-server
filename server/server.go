@@ -53,9 +53,9 @@ type Server struct {
 	info          Info
 	infoJSON      []byte
 	sl            *Sublist
+	configFile    string
+	optsMu        sync.RWMutex
 	opts          *Options
-	trace         bool
-	debug         bool
 	running       bool
 	shutdown      bool
 	listener      net.Listener
@@ -112,13 +112,12 @@ func New(opts *Options) *Server {
 	}
 
 	s := &Server{
-		info:  info,
-		sl:    NewSublist(),
-		opts:  opts,
-		debug: opts.Debug,
-		trace: opts.Trace,
-		done:  make(chan bool, 1),
-		start: time.Now(),
+		configFile: opts.ConfigFile,
+		info:       info,
+		sl:         NewSublist(),
+		opts:       opts,
+		done:       make(chan bool, 1),
+		start:      time.Now(),
 	}
 
 	s.mu.Lock()
@@ -146,6 +145,18 @@ func New(opts *Options) *Server {
 	s.handleSignals()
 
 	return s
+}
+
+func (s *Server) getOpts() *Options {
+	s.optsMu.RLock()
+	defer s.optsMu.RUnlock()
+	return s.opts
+}
+
+func (s *Server) setOpts(opts *Options) {
+	s.optsMu.Lock()
+	s.opts = opts
+	s.optsMu.Unlock()
 }
 
 func (s *Server) generateServerInfoJSON() {
@@ -198,7 +209,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() {
 	pidStr := strconv.Itoa(os.Getpid())
-	err := ioutil.WriteFile(s.opts.PidFile, []byte(pidStr), 0660)
+	err := ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 	if err != nil {
 		PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
 	}
@@ -220,7 +231,7 @@ func (s *Server) Start() {
 	s.grMu.Unlock()
 
 	// Log the pid to a file
-	if s.opts.PidFile != _EMPTY_ {
+	if s.getOpts().PidFile != _EMPTY_ {
 		s.logPid()
 	}
 
@@ -235,14 +246,14 @@ func (s *Server) Start() {
 	clientListenReady := make(chan struct{})
 
 	// Start up routing as well if needed.
-	if s.opts.Cluster.Port != 0 {
+	if s.getOpts().Cluster.Port != 0 {
 		s.startGoRoutine(func() {
 			s.StartRouting(clientListenReady)
 		})
 	}
 
 	// Pprof http endpoint for the profiler.
-	if s.opts.ProfPort != 0 {
+	if s.getOpts().ProfPort != 0 {
 		s.StartProfiler()
 	}
 
@@ -338,7 +349,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		}
 	}()
 
-	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.Port))
+	hp := net.JoinHostPort(s.getOpts().Host, strconv.Itoa(s.getOpts().Port))
 	Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
@@ -347,7 +358,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	}
 
 	// Alert of TLS enabled.
-	if s.opts.TLSConfig != nil {
+	if s.getOpts().TLSConfig != nil {
 		Noticef("TLS required for client connections")
 	}
 
@@ -360,7 +371,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
 	// to 0 at the beginning this function. So we need to get the actual port
-	if s.opts.Port == 0 {
+	if s.getOpts().Port == 0 {
 		// Write resolved port back to options.
 		_, port, err := net.SplitHostPort(l.Addr().String())
 		if err != nil {
@@ -374,7 +385,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 			s.mu.Unlock()
 			return
 		}
-		s.opts.Port = portNum
+		s.getOpts().Port = portNum
 	}
 	s.mu.Unlock()
 
@@ -412,8 +423,8 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	Noticef("Starting profiling on http port %d", s.opts.ProfPort)
-	hp := net.JoinHostPort(s.opts.Host, strconv.Itoa(s.opts.ProfPort))
+	Noticef("Starting profiling on http port %d", s.getOpts().ProfPort)
+	hp := net.JoinHostPort(s.getOpts().Host, strconv.Itoa(s.getOpts().ProfPort))
 	go func() {
 		err := http.ListenAndServe(hp, nil)
 		if err != nil {
@@ -437,14 +448,14 @@ func (s *Server) StartHTTPSMonitoring() {
 // StartMonitoring starts the HTTP or HTTPs server if needed.
 func (s *Server) StartMonitoring() error {
 	// Specifying both HTTP and HTTPS ports is a misconfiguration
-	if s.opts.HTTPPort != 0 && s.opts.HTTPSPort != 0 {
-		return fmt.Errorf("can't specify both HTTP (%v) and HTTPs (%v) ports", s.opts.HTTPPort, s.opts.HTTPSPort)
+	if s.getOpts().HTTPPort != 0 && s.getOpts().HTTPSPort != 0 {
+		return fmt.Errorf("can't specify both HTTP (%v) and HTTPs (%v) ports", s.getOpts().HTTPPort, s.getOpts().HTTPSPort)
 	}
 	var err error
-	if s.opts.HTTPPort != 0 {
+	if s.getOpts().HTTPPort != 0 {
 		err = s.startMonitoring(false)
-	} else if s.opts.HTTPSPort != 0 {
-		if s.opts.TLSConfig == nil {
+	} else if s.getOpts().HTTPSPort != 0 {
+		if s.getOpts().TLSConfig == nil {
 			return fmt.Errorf("TLS cert and key required for HTTPS")
 		}
 		err = s.startMonitoring(true)
@@ -481,14 +492,14 @@ func (s *Server) startMonitoring(secure bool) error {
 	)
 
 	if secure {
-		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPSPort))
+		hp = net.JoinHostPort(s.getOpts().HTTPHost, strconv.Itoa(s.getOpts().HTTPSPort))
 		Noticef("Starting https monitor on %s", hp)
-		config := util.CloneTLSConfig(s.opts.TLSConfig)
+		config := util.CloneTLSConfig(s.getOpts().TLSConfig)
 		config.ClientAuth = tls.NoClientCert
 		httpListener, err = tls.Listen("tcp", hp, config)
 
 	} else {
-		hp = net.JoinHostPort(s.opts.HTTPHost, strconv.Itoa(s.opts.HTTPPort))
+		hp = net.JoinHostPort(s.getOpts().HTTPHost, strconv.Itoa(s.getOpts().HTTPPort))
 		Noticef("Starting http monitor on %s", hp)
 		httpListener, err = net.Listen("tcp", hp)
 	}
@@ -584,7 +595,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 	// If there is a max connections specified, check that adding
 	// this new client would not push us over the max
-	if s.opts.MaxConn > 0 && len(s.clients) >= s.opts.MaxConn {
+	if s.getOpts().MaxConn > 0 && len(s.clients) >= s.getOpts().MaxConn {
 		s.mu.Unlock()
 		c.maxConnExceeded()
 		return nil
@@ -598,11 +609,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Check for TLS
 	if tlsRequired {
 		c.Debugf("Starting TLS client connection handshake")
-		c.nc = tls.Server(c.nc, s.opts.TLSConfig)
+		c.nc = tls.Server(c.nc, s.getOpts().TLSConfig)
 		conn := c.nc.(*tls.Conn)
 
 		// Setup the timeout
-		ttl := secondsToDuration(s.opts.TLSTimeout)
+		ttl := secondsToDuration(s.getOpts().TLSTimeout)
 		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
 		conn.SetReadDeadline(time.Now().Add(ttl))
 
@@ -631,7 +642,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// the race where the timer fires during the handshake and causes the
 	// server to write bad data to the socket. See issue #432.
 	if authRequired {
-		c.setAuthTimer(secondsToDuration(s.opts.AuthTimeout))
+		c.setAuthTimer(secondsToDuration(s.getOpts().AuthTimeout))
 	}
 
 	if tlsRequired {
@@ -668,7 +679,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	defer s.mu.Unlock()
 
 	// Feature disabled, do not update.
-	if s.opts.Cluster.NoAdvertise {
+	if s.getOpts().Cluster.NoAdvertise {
 		return false
 	}
 
@@ -841,7 +852,7 @@ func (s *Server) ReadyForConnections(dur time.Duration) bool {
 	end := time.Now().Add(dur)
 	for time.Now().Before(end) {
 		s.mu.Lock()
-		ok := s.listener != nil && (s.opts.Cluster.Port == 0 || s.routeListener != nil)
+		ok := s.listener != nil && (s.getOpts().Cluster.Port == 0 || s.routeListener != nil)
 		s.mu.Unlock()
 		if ok {
 			return true
@@ -874,10 +885,10 @@ func (s *Server) getClientConnectURLs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sPort := strconv.Itoa(s.opts.Port)
+	sPort := strconv.Itoa(s.getOpts().Port)
 	urls := make([]string, 0, 1)
 
-	ipAddr, err := net.ResolveIPAddr("ip", s.opts.Host)
+	ipAddr, err := net.ResolveIPAddr("ip", s.getOpts().Host)
 	// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
 	// interfaces.
 	if err == nil && ipAddr.IP.IsUnspecified() {
@@ -908,10 +919,10 @@ func (s *Server) getClientConnectURLs() []string {
 		// and not add any address in the array in the loop above, and we
 		// ended-up returning 0.0.0.0, which is problematic for Windows clients.
 		// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
-		if s.opts.Host == "0.0.0.0" || s.opts.Host == "::" {
-			Errorf("Address %q can not be resolved properly", s.opts.Host)
+		if s.getOpts().Host == "0.0.0.0" || s.getOpts().Host == "::" {
+			Errorf("Address %q can not be resolved properly", s.getOpts().Host)
 		} else {
-			urls = append(urls, net.JoinHostPort(s.opts.Host, sPort))
+			urls = append(urls, net.JoinHostPort(s.getOpts().Host, sPort))
 		}
 	}
 	return urls

@@ -30,13 +30,13 @@ func (s *Server) configureAuthorization() {
 	}
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
-	if s.opts.Users != nil {
+	if s.getOpts().Users != nil {
 		s.users = make(map[string]*User)
-		for _, u := range s.opts.Users {
+		for _, u := range s.getOpts().Users {
 			s.users[u.Username] = u
 		}
 		s.info.AuthRequired = true
-	} else if s.opts.Username != "" || s.opts.Authorization != "" {
+	} else if s.getOpts().Username != "" || s.getOpts().Authorization != "" {
 		s.info.AuthRequired = true
 	}
 }
@@ -71,14 +71,14 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		}
 		return ok
 
-	} else if s.opts.Authorization != "" {
-		return comparePasswords(s.opts.Authorization, c.opts.Authorization)
+	} else if s.getOpts().Authorization != "" {
+		return comparePasswords(s.getOpts().Authorization, c.opts.Authorization)
 
-	} else if s.opts.Username != "" {
-		if s.opts.Username != c.opts.Username {
+	} else if s.getOpts().Username != "" {
+		if s.getOpts().Username != c.opts.Username {
 			return false
 		}
-		return comparePasswords(s.opts.Password, c.opts.Password)
+		return comparePasswords(s.getOpts().Password, c.opts.Password)
 	}
 
 	return true
@@ -86,10 +86,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 
 // checkRouterAuth checks optional router authorization which can be nil or username/password.
 func (s *Server) isRouterAuthorized(c *client) bool {
-	if s.opts.Cluster.Username != c.opts.Username {
+	if s.getOpts().Cluster.Username != c.opts.Username {
 		return false
 	}
-	return comparePasswords(s.opts.Cluster.Password, c.opts.Password)
+	return comparePasswords(s.getOpts().Cluster.Password, c.opts.Password)
 }
 
 // Support for bcrypt stored passwords and tokens.

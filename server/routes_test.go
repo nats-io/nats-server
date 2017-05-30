@@ -21,6 +21,7 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	golden := &Options{
+		ConfigFile:  "./configs/cluster.conf",
 		Host:        "localhost",
 		Port:        4242,
 		Username:    "derek",

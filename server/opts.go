@@ -33,6 +33,7 @@ type ClusterOpts struct {
 
 // Options block for gnatsd server.
 type Options struct {
+	ConfigFile     string        `json:"-"`
 	Host           string        `json:"addr"`
 	Port           int           `json:"port"`
 	Trace          bool          `json:"-"`
@@ -123,7 +124,7 @@ Available cipher suites include:
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
-	opts := &Options{}
+	opts := &Options{ConfigFile: configFile}
 
 	if configFile == "" {
 		return opts, nil

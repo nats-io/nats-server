@@ -240,7 +240,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 		return
 	}
 	if info.AuthRequired {
-		r.User = url.UserPassword(s.opts.Cluster.Username, s.opts.Cluster.Password)
+		r.User = url.UserPassword(s.getOpts().Cluster.Username, s.getOpts().Cluster.Password)
 	}
 	s.startGoRoutine(func() { s.connectToRoute(r, false) })
 }
@@ -250,7 +250,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 // Server lock is assumed to be held by caller.
 func (s *Server) hasThisRouteConfigured(info *Info) bool {
 	urlToCheckExplicit := strings.ToLower(net.JoinHostPort(info.Host, strconv.Itoa(info.Port)))
-	for _, ri := range s.opts.Routes {
+	for _, ri := range s.getOpts().Routes {
 		if strings.ToLower(ri.Host) == urlToCheckExplicit {
 			return true
 		}
@@ -308,7 +308,7 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
-	for _, route := range s.opts.Routes {
+	for _, route := range s.getOpts().Routes {
 		if rURL != nil && (strings.ToLower(rURL.Host) == strings.ToLower(route.Host)) {
 			r.routeType = Explicit
 		}
@@ -340,7 +340,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Check for TLS
 	if tlsRequired {
 		// Copy off the config to add in ServerName if we
-		tlsConfig := util.CloneTLSConfig(s.opts.Cluster.TLSConfig)
+		tlsConfig := util.CloneTLSConfig(s.getOpts().Cluster.TLSConfig)
 
 		// If we solicited, we will act like the client, otherwise the server.
 		if didSolicit {
@@ -357,7 +357,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		conn := c.nc.(*tls.Conn)
 
 		// Setup the timeout
-		ttl := secondsToDuration(s.opts.Cluster.TLSTimeout)
+		ttl := secondsToDuration(s.getOpts().Cluster.TLSTimeout)
 		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
 		conn.SetReadDeadline(time.Now().Add(ttl))
 
@@ -419,7 +419,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Check for Auth required state for incoming connections.
 	if authRequired && !didSolicit {
-		ttl := secondsToDuration(s.opts.Cluster.AuthTimeout)
+		ttl := secondsToDuration(s.getOpts().Cluster.AuthTimeout)
 		c.setAuthTimer(ttl)
 	}
 
@@ -592,13 +592,13 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
-	hp := net.JoinHostPort(s.opts.Cluster.Host, strconv.Itoa(s.opts.Cluster.Port))
+	hp := net.JoinHostPort(s.getOpts().Cluster.Host, strconv.Itoa(s.getOpts().Cluster.Port))
 	Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		// We need to close this channel to avoid a deadlock
 		close(ch)
-		Fatalf("Error listening on router port: %d - %v", s.opts.Cluster.Port, e)
+		Fatalf("Error listening on router port: %d - %v", s.getOpts().Cluster.Port, e)
 		return
 	}
 
@@ -653,12 +653,12 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	clientConnectURLs := s.getClientConnectURLs()
 
 	// Check for TLSConfig
-	tlsReq := s.opts.Cluster.TLSConfig != nil
+	tlsReq := s.getOpts().Cluster.TLSConfig != nil
 	info := Info{
 		ID:                s.info.ID,
 		Version:           s.info.Version,
-		Host:              s.opts.Cluster.Host,
-		Port:              s.opts.Cluster.Port,
+		Host:              s.getOpts().Cluster.Host,
+		Port:              s.getOpts().Cluster.Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -667,7 +667,7 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 		ClientConnectURLs: clientConnectURLs,
 	}
 	// Check for Auth items
-	if s.opts.Cluster.Username != "" {
+	if s.getOpts().Cluster.Username != "" {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
@@ -700,11 +700,11 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		if err != nil {
 			Debugf("Error trying to connect to route: %v", err)
 			if !tryForEver {
-				if s.opts.Cluster.ConnectRetries <= 0 {
+				if s.getOpts().Cluster.ConnectRetries <= 0 {
 					return
 				}
 				attempts++
-				if attempts > s.opts.Cluster.ConnectRetries {
+				if attempts > s.getOpts().Cluster.ConnectRetries {
 					return
 				}
 			}
@@ -729,7 +729,7 @@ func (c *client) isSolicitedRoute() bool {
 }
 
 func (s *Server) solicitRoutes() {
-	for _, r := range s.opts.Routes {
+	for _, r := range s.getOpts().Routes {
 		route := r
 		s.startGoRoutine(func() { s.connectToRoute(route, true) })
 	}

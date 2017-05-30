@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/server"
 )
 
@@ -66,7 +65,7 @@ func usage() {
 
 func main() {
 	// Server Options
-	opts := server.Options{}
+	opts := &server.Options{}
 
 	var showVersion bool
 	var debugAndTrace bool
@@ -149,13 +148,16 @@ func main() {
 		usage()
 	}
 
+	// Snapshot flag options.
+	*server.FlagSnapshot = *opts
+
 	// Parse config if given
 	if configFile != "" {
 		fileOpts, err := server.ProcessConfigFile(configFile)
 		if err != nil {
 			server.PrintAndDie(err.Error())
 		}
-		opts = *server.MergeOptions(fileOpts, &opts)
+		opts = server.MergeOptions(fileOpts, opts)
 	}
 
 	// Remove any host/ip that points to itself in Route
@@ -166,45 +168,22 @@ func main() {
 	opts.Routes = newroutes
 
 	// Configure TLS based on any present flags
-	configureTLS(&opts)
+	configureTLS(opts)
 
 	// Configure cluster opts if explicitly set via flags.
-	err = configureClusterOpts(&opts)
+	err = configureClusterOpts(opts)
 	if err != nil {
 		server.PrintAndDie(err.Error())
 	}
 
 	// Create the server with appropriate options.
-	s := server.New(&opts)
+	s := server.New(opts)
 
 	// Configure the logger based on the flags
-	configureLogger(s, &opts)
+	s.ConfigureLogger()
 
 	// Start things up. Block here until done.
 	s.Start()
-}
-
-func configureLogger(s *server.Server, opts *server.Options) {
-	var log server.Logger
-
-	if opts.LogFile != "" {
-		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
-	} else if opts.RemoteSyslog != "" {
-		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
-	} else if opts.Syslog {
-		log = logger.NewSysLogger(opts.Debug, opts.Trace)
-	} else {
-		colors := true
-		// Check to see if stderr is being redirected and if so turn off color
-		// Also turn off colors if we're running on Windows where os.Stderr.Stat() returns an invalid handle-error
-		stat, err := os.Stderr.Stat()
-		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
-			colors = false
-		}
-		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
-	}
-
-	s.SetLogger(log, opts.Debug, opts.Trace)
 }
 
 func configureTLS(opts *server.Options) {

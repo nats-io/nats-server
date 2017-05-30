@@ -54,6 +54,7 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
+		ConfigFile:     "./configs/test.conf",
 		Host:           "localhost",
 		Port:           4242,
 		Username:       "derek",
@@ -89,6 +90,7 @@ func TestConfigFile(t *testing.T) {
 
 func TestTLSConfigFile(t *testing.T) {
 	golden := &Options{
+		ConfigFile:  "./configs/tls.conf",
 		Host:        "localhost",
 		Port:        4443,
 		Username:    "derek",
@@ -208,6 +210,7 @@ func TestTLSConfigFile(t *testing.T) {
 
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
+		ConfigFile:     "./configs/test.conf",
 		Host:           "localhost",
 		Port:           2222,
 		Username:       "derek",
@@ -298,8 +301,9 @@ func TestRouteFlagOverride(t *testing.T) {
 	rurl, _ := url.Parse(routeFlag)
 
 	golden := &Options{
-		Host: "127.0.0.1",
-		Port: 7222,
+		ConfigFile: "./configs/srv_a.conf",
+		Host:       "127.0.0.1",
+		Port:       7222,
 		Cluster: ClusterOpts{
 			Host:        "127.0.0.1",
 			Port:        7244,
@@ -339,8 +343,9 @@ func TestClusterFlagsOverride(t *testing.T) {
 	// The server would then process the ClusterListenStr override and
 	// correctly override ClusterHost/ClustherPort/etc..
 	golden := &Options{
-		Host: "127.0.0.1",
-		Port: 7222,
+		ConfigFile: "./configs/srv_a.conf",
+		Host:       "127.0.0.1",
+		Port:       7222,
 		Cluster: ClusterOpts{
 			Host:        "127.0.0.1",
 			Port:        7244,
@@ -376,8 +381,9 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	rurls := RoutesFromStr(routeFlag)
 
 	golden := &Options{
-		Host: "127.0.0.1",
-		Port: 7222,
+		ConfigFile: "./configs/srv_a.conf",
+		Host:       "127.0.0.1",
+		Port:       7222,
 		Cluster: ClusterOpts{
 			Host:        "127.0.0.1",
 			Port:        7244,

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -37,6 +38,33 @@ type Logger interface {
 	Tracef(format string, v ...interface{})
 }
 
+// ConfigureLogger configures and sets the logger for the server.
+func (s *Server) ConfigureLogger() {
+	var (
+		log  Logger
+		opts = s.getOpts()
+	)
+
+	if opts.LogFile != "" {
+		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
+	} else if opts.RemoteSyslog != "" {
+		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
+	} else if opts.Syslog {
+		log = logger.NewSysLogger(opts.Debug, opts.Trace)
+	} else {
+		colors := true
+		// Check to see if stderr is being redirected and if so turn off color
+		// Also turn off colors if we're running on Windows where os.Stderr.Stat() returns an invalid handle-error
+		stat, err := os.Stderr.Stat()
+		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
+			colors = false
+		}
+		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
+	}
+
+	s.SetLogger(log, opts.Debug, opts.Trace)
+}
+
 // SetLogger sets the logger of the server
 func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	if debugFlag {
@@ -68,12 +96,12 @@ func (s *Server) ReOpenLogFile() {
 		Noticef("File log re-open ignored, no logger")
 		return
 	}
-	if s.opts.LogFile == "" {
+	if s.getOpts().LogFile == "" {
 		Noticef("File log re-open ignored, not a file logger")
 	} else {
-		fileLog := logger.NewFileLogger(s.opts.LogFile,
-			s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
-		s.SetLogger(fileLog, s.opts.Debug, s.opts.Trace)
+		fileLog := logger.NewFileLogger(s.getOpts().LogFile,
+			s.getOpts().Logtime, s.getOpts().Debug, s.getOpts().Trace, true)
+		s.SetLogger(fileLog, s.getOpts().Debug, s.getOpts().Trace)
 		Noticef("File log re-opened")
 	}
 }
