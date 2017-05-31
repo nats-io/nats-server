@@ -8,11 +8,11 @@ import (
 )
 
 func dummyClient() *client {
-	return &client{}
+	return &client{srv: New(&defaultServerOptions)}
 }
 
 func dummyRouteClient() *client {
-	return &client{typ: ROUTER}
+	return &client{srv: New(&defaultServerOptions), typ: ROUTER}
 }
 
 func TestParsePing(t *testing.T) {

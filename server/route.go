@@ -236,7 +236,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	// Initiate the connection, using info.IP instead of info.URL here...
 	r, err := url.Parse(info.IP)
 	if err != nil {
-		Debugf("Error parsing URL from INFO: %v\n", err)
+		s.Debugf("Error parsing URL from INFO: %v\n", err)
 		return
 	}
 	if info.AuthRequired {
@@ -547,7 +547,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 
 func (s *Server) broadcastInterestToRoutes(proto string) {
 	var arg []byte
-	if atomic.LoadInt32(&trace) == 1 {
+	if atomic.LoadInt32(&s.logging.trace) == 1 {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
 	protoAsBytes := []byte(proto)
@@ -593,12 +593,12 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	hp := net.JoinHostPort(s.opts.Cluster.Host, strconv.Itoa(s.opts.Cluster.Port))
-	Noticef("Listening for route connections on %s", hp)
+	s.Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		// We need to close this channel to avoid a deadlock
 		close(ch)
-		Fatalf("Error listening on router port: %d - %v", s.opts.Cluster.Port, e)
+		s.Fatalf("Error listening on router port: %d - %v", s.opts.Cluster.Port, e)
 		return
 	}
 
@@ -616,7 +616,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				Debugf("Temporary Route Accept Errorf(%v), sleeping %dms",
+				s.Debugf("Temporary Route Accept Errorf(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -624,7 +624,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				Noticef("Accept error: %v", err)
+				s.Noticef("Accept error: %v", err)
 			}
 			continue
 		}
@@ -634,7 +634,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 			s.grWG.Done()
 		})
 	}
-	Debugf("Router accept loop exiting..")
+	s.Debugf("Router accept loop exiting..")
 	s.done <- true
 }
 
@@ -695,10 +695,10 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 	defer s.grWG.Done()
 	attempts := 0
 	for s.isRunning() && rURL != nil {
-		Debugf("Trying to connect to route on %s", rURL.Host)
+		s.Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
-			Debugf("Error trying to connect to route: %v", err)
+			s.Debugf("Error trying to connect to route: %v", err)
 			if !tryForEver {
 				if s.opts.Cluster.ConnectRetries <= 0 {
 					return
