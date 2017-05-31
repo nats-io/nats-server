@@ -28,32 +28,25 @@ func TestConfigReloadUnsupported(t *testing.T) {
 
 	golden := &Options{
 		ConfigFile:     config,
-		Host:           "localhost",
-		Port:           4242,
-		Username:       "derek",
-		Password:       "bella",
+		Host:           "0.0.0.0",
+		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          true,
 		Logtime:        false,
-		HTTPPort:       8222,
-		LogFile:        "/tmp/gnatsd.log",
-		PidFile:        "/tmp/gnatsd.pid",
-		ProfPort:       6543,
-		Syslog:         true,
-		RemoteSyslog:   "udp://foo.com:33",
-		MaxControlLine: 2048,
-		MaxPayload:     65536,
-		MaxConn:        100,
-		PingInterval:   60 * time.Second,
-		MaxPingsOut:    3,
-		WriteDeadline:  3 * time.Second,
+		MaxControlLine: 1024,
+		MaxPayload:     1048576,
+		MaxConn:        65536,
+		PingInterval:   2 * time.Minute,
+		MaxPingsOut:    2,
+		WriteDeadline:  2 * time.Second,
 	}
 	processOptions(golden)
 
 	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
+	defer os.Remove(config)
 	opts, err := ProcessConfigFile(config)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -72,11 +65,6 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	if err := os.Symlink("./configs/reload/reload_unsupported.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
-	defer func() {
-		if err := os.Remove(config); err != nil {
-			t.Fatalf("Error deleting symlink: %v", err)
-		}
-	}()
 
 	// This should fail because `debug` cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -100,32 +88,25 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 	golden := &Options{
 		ConfigFile:     config,
-		Host:           "localhost",
-		Port:           4242,
-		Username:       "derek",
-		Password:       "bella",
+		Host:           "0.0.0.0",
+		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          true,
 		Logtime:        false,
-		HTTPPort:       8222,
-		LogFile:        "/tmp/gnatsd.log",
-		PidFile:        "/tmp/gnatsd.pid",
-		ProfPort:       6543,
-		Syslog:         true,
-		RemoteSyslog:   "udp://foo.com:33",
-		MaxControlLine: 2048,
-		MaxPayload:     65536,
-		MaxConn:        100,
-		PingInterval:   60 * time.Second,
-		MaxPingsOut:    3,
-		WriteDeadline:  3 * time.Second,
+		MaxControlLine: 1024,
+		MaxPayload:     1048576,
+		MaxConn:        65536,
+		PingInterval:   2 * time.Minute,
+		MaxPingsOut:    2,
+		WriteDeadline:  2 * time.Second,
 	}
 	processOptions(golden)
 
 	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
+	defer os.Remove(config)
 	opts, err := ProcessConfigFile(config)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -144,11 +125,6 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	if err := os.Symlink("./configs/reload/invalid.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
-	defer func() {
-		if err := os.Remove(config); err != nil {
-			t.Fatalf("Error deleting symlink: %v", err)
-		}
-	}()
 
 	// This should fail because the new config should not parse.
 	if err := server.Reload(); err == nil {
@@ -164,6 +140,14 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
+	// The server package uses a global logger that gets configured by calls to
+	// server.ConfigureLogger(). We need to restore it to prevent side effects.
+	// TODO: Consider getting rid of global logger.
+	logBefore := log
+	defer func() {
+		log = logBefore
+	}()
+
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Error getting working directory: %v", err)
@@ -172,32 +156,25 @@ func TestConfigReload(t *testing.T) {
 
 	golden := &Options{
 		ConfigFile:     config,
-		Host:           "localhost",
-		Port:           4242,
-		Username:       "derek",
-		Password:       "bella",
+		Host:           "0.0.0.0",
+		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          true,
 		Logtime:        false,
-		HTTPPort:       8222,
-		LogFile:        "/tmp/gnatsd.log",
-		PidFile:        "/tmp/gnatsd.pid",
-		ProfPort:       6543,
-		Syslog:         true,
-		RemoteSyslog:   "udp://foo.com:33",
-		MaxControlLine: 2048,
-		MaxPayload:     65536,
-		MaxConn:        100,
-		PingInterval:   60 * time.Second,
-		MaxPingsOut:    3,
-		WriteDeadline:  3 * time.Second,
+		MaxControlLine: 1024,
+		MaxPayload:     1048576,
+		MaxConn:        65536,
+		PingInterval:   2 * time.Minute,
+		MaxPingsOut:    2,
+		WriteDeadline:  2 * time.Second,
 	}
 	processOptions(golden)
 
 	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
+	defer os.Remove(config)
 	opts, err := ProcessConfigFile(config)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -216,11 +193,6 @@ func TestConfigReload(t *testing.T) {
 	if err := os.Symlink("./configs/reload/reload.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
-	defer func() {
-		if err := os.Remove(config); err != nil {
-			t.Fatalf("Error deleting symlink: %v", err)
-		}
-	}()
 
 	// Should change `trace` to false.
 	if err := server.Reload(); err != nil {

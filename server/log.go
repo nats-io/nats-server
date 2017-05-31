@@ -15,9 +15,9 @@ var trace int32
 var debug int32
 
 var log = struct {
-	sync.Mutex
+	*sync.Mutex
 	logger Logger
-}{}
+}{Mutex: new(sync.Mutex)}
 
 // Logger interface of the NATS Server
 type Logger interface {
