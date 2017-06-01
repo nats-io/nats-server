@@ -604,6 +604,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	if _, err := client.ReadString('\n'); err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
 	}
+	time.Sleep(secondsToDuration(serverOptions.AuthTimeout))
 	l, err := client.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
