@@ -65,7 +65,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	var (
 		oldConfig = reflect.ValueOf(s.opts).Elem()
 		newConfig = reflect.ValueOf(newOpts).Elem()
-		opts      = []option{}
+		diffOpts  = []option{}
 	)
 
 	for i := 0; i < oldConfig.NumField(); i++ {
@@ -80,14 +80,14 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		}
 		switch strings.ToLower(field.Name) {
 		case "trace":
-			opts = append(opts, &traceOption{newValue.(bool)})
+			diffOpts = append(diffOpts, &traceOption{newValue.(bool)})
 		default:
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s", field.Name)
 		}
 	}
 
-	return opts, nil
+	return diffOpts, nil
 }
 
 func (s *Server) applyOptions(opts []option) {
