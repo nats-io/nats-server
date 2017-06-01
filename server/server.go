@@ -149,8 +149,9 @@ func New(opts *Options) *Server {
 
 func (s *Server) getOpts() *Options {
 	s.optsMu.RLock()
-	defer s.optsMu.RUnlock()
-	return s.opts
+	opts := s.opts
+	s.optsMu.RUnlock()
+	return opts
 }
 
 func (s *Server) setOpts(opts *Options) {
