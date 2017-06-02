@@ -20,46 +20,46 @@ func TestSetLogger(t *testing.T) {
 	server.SetLogger(dl, true, true)
 
 	// We assert that the logger has change to the DummyLogger
-	_ = log.logger.(*DummyLogger)
+	_ = server.logging.logger.(*DummyLogger)
 
-	if debug != 1 {
-		t.Fatalf("Expected debug 1, received value %d\n", debug)
+	if server.logging.debug != 1 {
+		t.Fatalf("Expected debug 1, received value %d\n", server.logging.debug)
 	}
 
-	if trace != 1 {
-		t.Fatalf("Expected trace 1, received value %d\n", trace)
+	if server.logging.trace != 1 {
+		t.Fatalf("Expected trace 1, received value %d\n", server.logging.trace)
 	}
 
 	// Check traces
 	expectedStr := "This is a Notice"
-	Noticef(expectedStr)
+	server.Noticef(expectedStr)
 	dl.checkContent(t, expectedStr)
 	expectedStr = "This is an Error"
-	Errorf(expectedStr)
+	server.Errorf(expectedStr)
 	dl.checkContent(t, expectedStr)
 	expectedStr = "This is a Fatal"
-	Fatalf(expectedStr)
+	server.Fatalf(expectedStr)
 	dl.checkContent(t, expectedStr)
 	expectedStr = "This is a Debug"
-	Debugf(expectedStr)
+	server.Debugf(expectedStr)
 	dl.checkContent(t, expectedStr)
 	expectedStr = "This is a Trace"
-	Tracef(expectedStr)
+	server.Tracef(expectedStr)
 	dl.checkContent(t, expectedStr)
 
 	// Make sure that we can reset to fal
 	server.SetLogger(dl, false, false)
-	if debug != 0 {
-		t.Fatalf("Expected debug 0, got %v", debug)
+	if server.logging.debug != 0 {
+		t.Fatalf("Expected debug 0, got %v", server.logging.debug)
 	}
-	if trace != 0 {
-		t.Fatalf("Expected trace 0, got %v", trace)
+	if server.logging.trace != 0 {
+		t.Fatalf("Expected trace 0, got %v", server.logging.trace)
 	}
 	// Now, Debug and Trace should not produce anything
 	dl.msg = ""
-	Debugf("This Debug should not be traced")
+	server.Debugf("This Debug should not be traced")
 	dl.checkContent(t, "")
-	Tracef("This Trace should not be traced")
+	server.Tracef("This Trace should not be traced")
 	dl.checkContent(t, "")
 }
 
@@ -115,7 +115,7 @@ func TestReOpenLogFile(t *testing.T) {
 	s.SetLogger(fileLog, false, false)
 	// Add some log
 	expectedStr := "This is a Notice"
-	Noticef(expectedStr)
+	s.Noticef(expectedStr)
 	// Check content of log
 	buf, err := ioutil.ReadFile(s.opts.LogFile)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestReOpenLogFile(t *testing.T) {
 		t.Fatalf("File should indicate that file log was re-opened, got: %v", string(buf))
 	}
 	// Make sure we can append to the log
-	Noticef("New message")
+	s.Noticef("New message")
 	buf, err = ioutil.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)

@@ -34,7 +34,7 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 
 	// Add a trace
 	expectedStr := "This is a Notice"
-	Noticef(expectedStr)
+	s.Noticef(expectedStr)
 	buf, err := ioutil.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
