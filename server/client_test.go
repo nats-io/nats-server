@@ -591,7 +591,7 @@ func TestClientMapRemoval(t *testing.T) {
 func TestAuthorizationTimeout(t *testing.T) {
 	serverOptions := defaultServerOptions
 	serverOptions.Authorization = "my_token"
-	serverOptions.AuthTimeout = 1
+	serverOptions.AuthTimeout = 0.4
 	s := RunServer(&serverOptions)
 	defer s.Shutdown()
 
@@ -604,6 +604,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	if _, err := client.ReadString('\n'); err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
 	}
+	time.Sleep(2 * secondsToDuration(serverOptions.AuthTimeout))
 	l, err := client.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
