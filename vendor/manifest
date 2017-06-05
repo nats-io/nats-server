@@ -28,6 +28,15 @@
 			"notests": true
 		},
 		{
+			"importpath": "golang.org/x/crypto/ocsp",
+			"repository": "https://go.googlesource.com/ocsp",
+			"vcs": "git",
+			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
+			"branch": "master",
+			"path": "/ocsp",
+			"notests": true
+		},
+		{
 			"importpath": "golang.org/x/sys/windows",
 			"repository": "https://go.googlesource.com/sys",
 			"vcs": "git",

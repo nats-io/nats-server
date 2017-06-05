@@ -5,6 +5,7 @@ package server
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -33,42 +34,45 @@ type ClusterOpts struct {
 
 // Options block for gnatsd server.
 type Options struct {
-	Host           string        `json:"addr"`
-	Port           int           `json:"port"`
-	Trace          bool          `json:"-"`
-	Debug          bool          `json:"-"`
-	NoLog          bool          `json:"-"`
-	NoSigs         bool          `json:"-"`
-	Logtime        bool          `json:"-"`
-	MaxConn        int           `json:"max_connections"`
-	Users          []*User       `json:"-"`
-	Username       string        `json:"-"`
-	Password       string        `json:"-"`
-	Authorization  string        `json:"-"`
-	PingInterval   time.Duration `json:"ping_interval"`
-	MaxPingsOut    int           `json:"ping_max"`
-	HTTPHost       string        `json:"http_host"`
-	HTTPPort       int           `json:"http_port"`
-	HTTPSPort      int           `json:"https_port"`
-	AuthTimeout    float64       `json:"auth_timeout"`
-	MaxControlLine int           `json:"max_control_line"`
-	MaxPayload     int           `json:"max_payload"`
-	Cluster        ClusterOpts   `json:"cluster"`
-	ProfPort       int           `json:"-"`
-	PidFile        string        `json:"-"`
-	LogFile        string        `json:"-"`
-	Syslog         bool          `json:"-"`
-	RemoteSyslog   string        `json:"-"`
-	Routes         []*url.URL    `json:"-"`
-	RoutesStr      string        `json:"-"`
-	TLSTimeout     float64       `json:"tls_timeout"`
-	TLS            bool          `json:"-"`
-	TLSVerify      bool          `json:"-"`
-	TLSCert        string        `json:"-"`
-	TLSKey         string        `json:"-"`
-	TLSCaCert      string        `json:"-"`
-	TLSConfig      *tls.Config   `json:"-"`
-	WriteDeadline  time.Duration `json:"-"`
+	Host           string            `json:"addr"`
+	Port           int               `json:"port"`
+	Trace          bool              `json:"-"`
+	Debug          bool              `json:"-"`
+	NoLog          bool              `json:"-"`
+	NoSigs         bool              `json:"-"`
+	Logtime        bool              `json:"-"`
+	MaxConn        int               `json:"max_connections"`
+	Users          []*User           `json:"-"`
+	Username       string            `json:"-"`
+	Password       string            `json:"-"`
+	Authorization  string            `json:"-"`
+	PingInterval   time.Duration     `json:"ping_interval"`
+	MaxPingsOut    int               `json:"ping_max"`
+	HTTPHost       string            `json:"http_host"`
+	HTTPPort       int               `json:"http_port"`
+	HTTPSPort      int               `json:"https_port"`
+	AuthTimeout    float64           `json:"auth_timeout"`
+	MaxControlLine int               `json:"max_control_line"`
+	MaxPayload     int               `json:"max_payload"`
+	Cluster        ClusterOpts       `json:"cluster"`
+	ProfPort       int               `json:"-"`
+	PidFile        string            `json:"-"`
+	LogFile        string            `json:"-"`
+	Syslog         bool              `json:"-"`
+	RemoteSyslog   string            `json:"-"`
+	Routes         []*url.URL        `json:"-"`
+	RoutesStr      string            `json:"-"`
+	TLSTimeout     float64           `json:"tls_timeout"`
+	TLS            bool              `json:"-"`
+	TLSVerify      bool              `json:"-"`
+	TLSCert        string            `json:"-"`
+	TLSKey         string            `json:"-"`
+	TLSCaCert      string            `json:"-"`
+	TLSConfig      *tls.Config       `json:"-"`
+	OCSP           bool              `json:"-"`
+	OCSPAddr       string            `json:"-"`
+	OCSPCaCert     *x509.Certificate `json:"-"`
+	WriteDeadline  time.Duration     `json:"-"`
 }
 
 // Configuration file authorization section.
@@ -119,6 +123,12 @@ e.g.
 
 Available cipher suites include:
 `
+
+// OSCPConfigOpts holds config file info
+type OSCPConfigOpts struct {
+	Addr   string
+	CaFile string
+}
 
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
@@ -229,6 +239,19 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 				return nil, err
 			}
 			opts.TLSTimeout = tc.Timeout
+		case "ocsp":
+			ocspm := v.(map[string]interface{})
+			c, err := parseOSCP(ocspm)
+			if err != nil {
+				return nil, err
+			}
+			ca, err := GenOSCPCerts(c)
+			if err != nil {
+				return nil, err
+			}
+			opts.OCSP = true
+			opts.OCSPAddr = c.Addr
+			opts.OCSPCaCert = ca
 		case "write_deadline":
 			wd, ok := v.(string)
 			if ok {
@@ -245,6 +268,12 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			}
 		}
 	}
+
+	// Check that OCSP has TLS
+	if opts.OCSP && opts.TLSConfig == nil {
+		return nil, fmt.Errorf("OCSP present but TLS not configured")
+	}
+
 	return opts, nil
 }
 
@@ -641,6 +670,36 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	return &config, nil
+}
+
+// Helper function to parse OSCP options
+func parseOSCP(pm map[string]interface{}) (*OSCPConfigOpts, error) {
+	p := &OSCPConfigOpts{}
+	for k, v := range pm {
+		switch strings.ToLower(k) {
+		case "addr", "address":
+			p.Addr = v.(string)
+		case "ca_file":
+			p.CaFile = v.(string)
+		default:
+			return nil, fmt.Errorf("Unknown field %s parsing oscp", k)
+		}
+	}
+	return p, nil
+}
+
+// GenOSCPCerts loads pem certs into memory
+func GenOSCPCerts(c *OSCPConfigOpts) (ca *x509.Certificate, err error) {
+	pemData, err := ioutil.ReadFile(c.CaFile)
+	if err != nil {
+		return
+	}
+	b, _ := pem.Decode(pemData)
+	ca, err = x509.ParseCertificate(b.Bytes)
+	if err != nil {
+		return
+	}
+	return
 }
 
 // MergeOptions will merge two options giving preference to the flagOpts

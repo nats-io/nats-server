@@ -206,6 +206,39 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 }
 
+func TestOCSPConfigFile(t *testing.T) {
+	golden := &Options{
+		Host:        "localhost",
+		Port:        4443,
+		Username:    "derek",
+		Password:    "buckley",
+		AuthTimeout: 1.0,
+		TLSTimeout:  2.0,
+		OCSP:        true,
+		OCSPAddr:    "http://127.0.0.1:2560",
+	}
+	opts, err := ProcessConfigFile("./configs/ocsp.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	tlsConfig := opts.TLSConfig
+	if tlsConfig == nil {
+		t.Fatal("Expected opts.TLSConfig to be non-nil")
+	}
+
+	// Check if the certificate was loaded
+	if opts.OCSPCaCert == nil {
+		t.Fatal("Expected opts.OCSPCaCert to be non-nil")
+	}
+
+	opts.TLSConfig = nil
+	opts.OCSPCaCert = nil
+	if !reflect.DeepEqual(golden, opts) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
+			golden, opts)
+	}
+}
+
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
 		Host:           "localhost",
