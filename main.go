@@ -149,7 +149,7 @@ func main() {
 	}
 
 	// Snapshot flag options.
-	*server.FlagSnapshot = *opts
+	server.FlagSnapshot = opts.Clone()
 
 	// Parse config if given
 	if configFile != "" {

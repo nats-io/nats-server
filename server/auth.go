@@ -15,11 +15,38 @@ type User struct {
 	Permissions *Permissions `json:"permissions"`
 }
 
+// clone performs a deep copy of the User struct, returning a new clone with
+// all values copied.
+func (u *User) clone() *User {
+	if u == nil {
+		return nil
+	}
+	clone := &User{}
+	*clone = *u
+	clone.Permissions = u.Permissions.clone()
+	return clone
+}
+
 // Permissions are the allowed subjects on a per
 // publish or subscribe basis.
 type Permissions struct {
 	Publish   []string `json:"publish"`
 	Subscribe []string `json:"subscribe"`
+}
+
+// clone performs a deep copy of the Permissions struct, returning a new clone
+// with all values copied.
+func (p *Permissions) clone() *Permissions {
+	if p == nil {
+		return nil
+	}
+	clone := &Permissions{
+		Publish:   make([]string, len(p.Publish)),
+		Subscribe: make([]string, len(p.Subscribe)),
+	}
+	copy(clone.Publish, p.Publish)
+	copy(clone.Subscribe, p.Subscribe)
+	return clone
 }
 
 // configureAuthorization will do any setup needed for authorization.
@@ -28,15 +55,19 @@ func (s *Server) configureAuthorization() {
 	if s.opts == nil {
 		return
 	}
+
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
-	if s.getOpts().Users != nil {
+	if opts.Users != nil {
 		s.users = make(map[string]*User)
-		for _, u := range s.getOpts().Users {
+		for _, u := range opts.Users {
 			s.users[u.Username] = u
 		}
 		s.info.AuthRequired = true
-	} else if s.getOpts().Username != "" || s.getOpts().Authorization != "" {
+	} else if opts.Username != "" || opts.Authorization != "" {
 		s.info.AuthRequired = true
 	}
 }
@@ -57,6 +88,9 @@ func (s *Server) checkAuthorization(c *client) bool {
 // isClientAuthorized will check the client against the proper authorization method and data.
 // This could be token or username/password based.
 func (s *Server) isClientAuthorized(c *client) bool {
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	// Check multiple users first, then token, then single user/pass.
 	if s.users != nil {
 		user, ok := s.users[c.opts.Username]
@@ -71,14 +105,14 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		}
 		return ok
 
-	} else if s.getOpts().Authorization != "" {
-		return comparePasswords(s.getOpts().Authorization, c.opts.Authorization)
+	} else if opts.Authorization != "" {
+		return comparePasswords(opts.Authorization, c.opts.Authorization)
 
-	} else if s.getOpts().Username != "" {
-		if s.getOpts().Username != c.opts.Username {
+	} else if opts.Username != "" {
+		if opts.Username != c.opts.Username {
 			return false
 		}
-		return comparePasswords(s.getOpts().Password, c.opts.Password)
+		return comparePasswords(opts.Password, c.opts.Password)
 	}
 
 	return true
@@ -86,10 +120,13 @@ func (s *Server) isClientAuthorized(c *client) bool {
 
 // checkRouterAuth checks optional router authorization which can be nil or username/password.
 func (s *Server) isRouterAuthorized(c *client) bool {
-	if s.getOpts().Cluster.Username != c.opts.Username {
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	if opts.Cluster.Username != c.opts.Username {
 		return false
 	}
-	return comparePasswords(s.getOpts().Cluster.Password, c.opts.Password)
+	return comparePasswords(opts.Cluster.Password, c.opts.Password)
 }
 
 // Support for bcrypt stored passwords and tokens.

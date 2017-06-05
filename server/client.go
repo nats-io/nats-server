@@ -266,6 +266,9 @@ func (c *client) readLoop() {
 	// Start read buffer.
 	b := make([]byte, startBufSize)
 
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
@@ -306,7 +309,7 @@ func (c *client) readLoop() {
 				wfc := cp.wfc
 				cp.wfc = 0
 
-				cp.nc.SetWriteDeadline(time.Now().Add(s.getOpts().WriteDeadline))
+				cp.nc.SetWriteDeadline(time.Now().Add(opts.WriteDeadline))
 				err := cp.bw.Flush()
 				cp.nc.SetWriteDeadline(time.Time{})
 				if err != nil {

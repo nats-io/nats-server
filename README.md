@@ -664,7 +664,7 @@ Some unit tests make use of temporary symlinks for testing purposes. On Windows,
 FAIL
 ```
 
-Similarly, this can fail when creating a symlink on a network drive, which is typically now allowed by default:
+Similarly, this can fail when creating a symlink on a network drive, which is typically not allowed by default:
 
 ```
 --- FAIL: TestConfigReload (0.00s)

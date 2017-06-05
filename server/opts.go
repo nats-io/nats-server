@@ -72,6 +72,27 @@ type Options struct {
 	WriteDeadline  time.Duration `json:"-"`
 }
 
+// Clone performs a deep copy of the Options struct, returning a new clone
+// with all values copied.
+func (o *Options) Clone() *Options {
+	if o == nil {
+		return nil
+	}
+	clone := &Options{}
+	*clone = *o
+	clone.Users = make([]*User, len(o.Users))
+	for i, user := range o.Users {
+		clone.Users[i] = user.clone()
+	}
+	clone.Routes = make([]*url.URL, len(o.Routes))
+	for i, route := range o.Routes {
+		routeCopy := &url.URL{}
+		*routeCopy = *route
+		clone.Routes[i] = routeCopy
+	}
+	return clone
+}
+
 // Configuration file authorization section.
 type authorization struct {
 	// Singles

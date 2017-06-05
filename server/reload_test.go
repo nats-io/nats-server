@@ -1,3 +1,5 @@
+// Copyright 2017 Apcera Inc. All rights reserved.
+
 package server
 
 import (
@@ -44,7 +46,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	processOptions(golden)
 
 	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v", err)
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
 	}
 	defer os.Remove(config)
 	opts, err := ProcessConfigFile(config)
@@ -63,7 +65,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
 	if err := os.Symlink("./configs/reload/reload_unsupported.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v", err)
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
 	}
 
 	// This should fail because `debug` cannot be changed.

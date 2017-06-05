@@ -239,8 +239,12 @@ func (s *Server) processImplicitRoute(info *Info) {
 		s.Debugf("Error parsing URL from INFO: %v\n", err)
 		return
 	}
+
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	if info.AuthRequired {
-		r.User = url.UserPassword(s.getOpts().Cluster.Username, s.getOpts().Cluster.Password)
+		r.User = url.UserPassword(opts.Cluster.Username, opts.Cluster.Password)
 	}
 	s.startGoRoutine(func() { s.connectToRoute(r, false) })
 }
@@ -306,9 +310,12 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
-	for _, route := range s.getOpts().Routes {
+	for _, route := range opts.Routes {
 		if rURL != nil && (strings.ToLower(rURL.Host) == strings.ToLower(route.Host)) {
 			r.routeType = Explicit
 		}
@@ -340,7 +347,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Check for TLS
 	if tlsRequired {
 		// Copy off the config to add in ServerName if we
-		tlsConfig := util.CloneTLSConfig(s.getOpts().Cluster.TLSConfig)
+		tlsConfig := util.CloneTLSConfig(opts.Cluster.TLSConfig)
 
 		// If we solicited, we will act like the client, otherwise the server.
 		if didSolicit {
@@ -357,7 +364,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		conn := c.nc.(*tls.Conn)
 
 		// Setup the timeout
-		ttl := secondsToDuration(s.getOpts().Cluster.TLSTimeout)
+		ttl := secondsToDuration(opts.Cluster.TLSTimeout)
 		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
 		conn.SetReadDeadline(time.Now().Add(ttl))
 
@@ -419,7 +426,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Check for Auth required state for incoming connections.
 	if authRequired && !didSolicit {
-		ttl := secondsToDuration(s.getOpts().Cluster.AuthTimeout)
+		ttl := secondsToDuration(opts.Cluster.AuthTimeout)
 		c.setAuthTimer(ttl)
 	}
 
@@ -592,13 +599,16 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
-	hp := net.JoinHostPort(s.getOpts().Cluster.Host, strconv.Itoa(s.getOpts().Cluster.Port))
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(opts.Cluster.Port))
 	s.Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		// We need to close this channel to avoid a deadlock
 		close(ch)
-		s.Fatalf("Error listening on router port: %d - %v", s.getOpts().Cluster.Port, e)
+		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
 		return
 	}
 
@@ -652,13 +662,16 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	// clients know about us.
 	clientConnectURLs := s.getClientConnectURLs()
 
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	// Check for TLSConfig
-	tlsReq := s.getOpts().Cluster.TLSConfig != nil
+	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
 		ID:                s.info.ID,
 		Version:           s.info.Version,
-		Host:              s.getOpts().Cluster.Host,
-		Port:              s.getOpts().Cluster.Port,
+		Host:              opts.Cluster.Host,
+		Port:              opts.Cluster.Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -667,7 +680,7 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 		ClientConnectURLs: clientConnectURLs,
 	}
 	// Check for Auth items
-	if s.getOpts().Cluster.Username != "" {
+	if opts.Cluster.Username != "" {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
@@ -692,6 +705,9 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 }
 
 func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	defer s.grWG.Done()
 	attempts := 0
 	for s.isRunning() && rURL != nil {
@@ -700,11 +716,11 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		if err != nil {
 			s.Debugf("Error trying to connect to route: %v", err)
 			if !tryForEver {
-				if s.getOpts().Cluster.ConnectRetries <= 0 {
+				if opts.Cluster.ConnectRetries <= 0 {
 					return
 				}
 				attempts++
-				if attempts > s.getOpts().Cluster.ConnectRetries {
+				if attempts > opts.Cluster.ConnectRetries {
 					return
 				}
 			}

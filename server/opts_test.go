@@ -694,3 +694,55 @@ func TestParseWriteDeadline(t *testing.T) {
 		t.Fatalf("Expected write_deadline to be 2s, got %v", opts.WriteDeadline)
 	}
 }
+
+func TestOptionsClone(t *testing.T) {
+	opts := &Options{
+		ConfigFile:     "./configs/test.conf",
+		Host:           "localhost",
+		Port:           2222,
+		Username:       "derek",
+		Password:       "spooky",
+		AuthTimeout:    1.0,
+		Debug:          true,
+		Trace:          true,
+		Logtime:        false,
+		HTTPPort:       DEFAULT_HTTP_PORT,
+		LogFile:        "/tmp/gnatsd.log",
+		PidFile:        "/tmp/gnatsd.pid",
+		ProfPort:       6789,
+		Syslog:         true,
+		RemoteSyslog:   "udp://foo.com:33",
+		MaxControlLine: 2048,
+		MaxPayload:     65536,
+		MaxConn:        100,
+		PingInterval:   60 * time.Second,
+		MaxPingsOut:    3,
+		Cluster: ClusterOpts{
+			NoAdvertise:    true,
+			ConnectRetries: 2,
+		},
+		WriteDeadline: 3 * time.Second,
+		Routes:        []*url.URL{&url.URL{}},
+		Users:         []*User{&User{Username: "foo", Password: "bar"}},
+	}
+
+	clone := opts.Clone()
+
+	if !reflect.DeepEqual(opts, clone) {
+		t.Fatalf("Cloned Options are incorrect.\nexpected: %+v\ngot: %+v",
+			clone, opts)
+	}
+
+	clone.Users[0].Password = "baz"
+	if reflect.DeepEqual(opts, clone) {
+		t.Fatal("Expected Options to be different")
+	}
+}
+
+func TestOptionsCloneNil(t *testing.T) {
+	opts := (*Options)(nil)
+	clone := opts.Clone()
+	if clone != nil {
+		t.Fatalf("Expected nil, got: %+v", clone)
+	}
+}

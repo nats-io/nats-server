@@ -31,7 +31,9 @@ type Logger interface {
 // ConfigureLogger configures and sets the logger for the server.
 func (s *Server) ConfigureLogger() {
 	var (
-		log  Logger
+		log Logger
+
+		// Snapshot server options.
 		opts = s.getOpts()
 	)
 
@@ -86,12 +88,16 @@ func (s *Server) ReOpenLogFile() {
 		s.Noticef("File log re-open ignored, no logger")
 		return
 	}
-	if s.getOpts().LogFile == "" {
+
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	if opts.LogFile == "" {
 		s.Noticef("File log re-open ignored, not a file logger")
 	} else {
-		fileLog := logger.NewFileLogger(s.getOpts().LogFile,
-			s.getOpts().Logtime, s.getOpts().Debug, s.getOpts().Trace, true)
-		s.SetLogger(fileLog, s.getOpts().Debug, s.getOpts().Trace)
+		fileLog := logger.NewFileLogger(opts.LogFile,
+			opts.Logtime, s.getOpts().Debug, opts.Trace, true)
+		s.SetLogger(fileLog, s.getOpts().Debug, opts.Trace)
 		s.Noticef("File log re-opened")
 	}
 }

@@ -1,3 +1,5 @@
+// Copyright 2017 Apcera Inc. All rights reserved.
+
 package server
 
 import (
@@ -9,7 +11,7 @@ import (
 
 // FlagSnapshot captures the server options as specified by CLI flags at
 // startup. This should not be modified once the server has started.
-var FlagSnapshot = &Options{}
+var FlagSnapshot *Options
 
 // option is a hot-swappable configuration setting.
 type option interface {
@@ -32,6 +34,9 @@ func (t *traceOption) Apply(server *Server) {
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
 func (s *Server) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.configFile == "" {
 		return errors.New("Can only reload config when a file is provided using -c or --config")
 	}
@@ -63,7 +68,7 @@ func (s *Server) reloadOptions(newOpts *Options) error {
 // error.
 func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	var (
-		oldConfig = reflect.ValueOf(s.opts).Elem()
+		oldConfig = reflect.ValueOf(s.getOpts()).Elem()
 		newConfig = reflect.ValueOf(newOpts).Elem()
 		diffOpts  = []option{}
 	)
