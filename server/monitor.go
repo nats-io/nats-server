@@ -242,7 +242,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		Errorf("Error marshaling response to /connz request: %v", err)
+		s.Errorf("Error marshaling response to /connz request: %v", err)
 	}
 
 	// Handle response
@@ -333,7 +333,7 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(rs, "", "  ")
 	if err != nil {
-		Errorf("Error marshaling response to /routez request: %v", err)
+		s.Errorf("Error marshaling response to /routez request: %v", err)
 	}
 
 	// Handle response
@@ -349,7 +349,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	st := &Subsz{s.sl.Stats()}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
-		Errorf("Error marshaling response to /subscriptionsz request: %v", err)
+		s.Errorf("Error marshaling response to /subscriptionsz request: %v", err)
 	}
 
 	// Handle response
@@ -486,7 +486,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		Errorf("Error marshaling response to /varz request: %v", err)
+		s.Errorf("Error marshaling response to /varz request: %v", err)
 	}
 
 	// Handle response

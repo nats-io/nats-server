@@ -288,7 +288,8 @@ func TestSplitConnectArg(t *testing.T) {
 }
 
 func TestSplitDanglingArgBuf(t *testing.T) {
-	c := &client{subs: make(map[string]*subscription)}
+	s := New(&defaultServerOptions)
+	c := &client{srv: s, subs: make(map[string]*subscription)}
 
 	// We test to make sure we do not dangle any argBufs after processing
 	// since that could lead to performance issues.

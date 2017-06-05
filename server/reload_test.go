@@ -140,14 +140,6 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
-	// The server package uses a global logger that gets configured by calls to
-	// server.ConfigureLogger(). We need to restore it to prevent side effects.
-	// TODO: Consider getting rid of global logger.
-	logBefore := log
-	defer func() {
-		log = logBefore
-	}()
-
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Error getting working directory: %v", err)

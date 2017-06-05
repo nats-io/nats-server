@@ -20,10 +20,10 @@ func (s *Server) handleSignals() {
 
 	go func() {
 		for sig := range c {
-			Debugf("Trapped %q signal", sig)
+			s.Debugf("Trapped %q signal", sig)
 			switch sig {
 			case syscall.SIGINT:
-				Noticef("Server Exiting..")
+				s.Noticef("Server Exiting..")
 				os.Exit(0)
 			case syscall.SIGUSR1:
 				// File log re-open for rotating file logs.

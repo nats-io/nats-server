@@ -24,8 +24,8 @@ type traceOption struct {
 
 // Apply the tracing change by reconfiguring the server's logger.
 func (t *traceOption) Apply(server *Server) {
-	Noticef("Reloaded: trace = %v", t.newValue)
 	server.ConfigureLogger()
+	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
 
 // Reload reads the current configuration file and applies any supported
@@ -95,5 +95,5 @@ func (s *Server) applyOptions(opts []option) {
 		opt.Apply(s)
 	}
 
-	Noticef("Reloaded server configuration")
+	s.Noticef("Reloaded server configuration")
 }

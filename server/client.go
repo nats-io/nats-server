@@ -192,8 +192,8 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	c.subs = make(map[string]*subscription)
-	c.debug = (atomic.LoadInt32(&debug) != 0)
-	c.trace = (atomic.LoadInt32(&trace) != 0)
+	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
+	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
 
 	// This is a scratch buffer used for processMsg()
 	// The msg header starts with "MSG ",
@@ -1350,13 +1350,13 @@ func (c *client) closeConnection() {
 		}
 
 		if rid != "" && srv.remotes[rid] != nil {
-			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
+			c.srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
 		} else if rid == srv.info.ID {
-			Debugf("Detected route to self, ignoring \"%s\"", rurl)
+			c.srv.Debugf("Detected route to self, ignoring \"%s\"", rurl)
 			return
 		} else if rtype != Implicit || retryImplicit {
-			Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
+			c.srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
 			// Keep track of this go-routine so we can wait for it on
 			// server shutdown.
 			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
@@ -1368,20 +1368,20 @@ func (c *client) closeConnection() {
 
 func (c *client) Errorf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Errorf(format, v...)
+	c.srv.Errorf(format, v...)
 }
 
 func (c *client) Debugf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Debugf(format, v...)
+	c.srv.Debugf(format, v...)
 }
 
 func (c *client) Noticef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Noticef(format, v...)
+	c.srv.Noticef(format, v...)
 }
 
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Tracef(format, v...)
+	c.srv.Tracef(format, v...)
 }
