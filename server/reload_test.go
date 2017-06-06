@@ -34,7 +34,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
-		Trace:          true,
+		Trace:          false,
 		Logtime:        false,
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
@@ -94,7 +94,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
-		Trace:          true,
+		Trace:          false,
 		Logtime:        false,
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
@@ -154,7 +154,7 @@ func TestConfigReload(t *testing.T) {
 		Port:           4222,
 		AuthTimeout:    1.0,
 		Debug:          false,
-		Trace:          true,
+		Trace:          false,
 		Logtime:        false,
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
@@ -188,7 +188,6 @@ func TestConfigReload(t *testing.T) {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 
-	// Should change `trace` to false.
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -196,9 +195,10 @@ func TestConfigReload(t *testing.T) {
 	// Ensure config changed.
 	var updatedGolden *Options = &Options{}
 	*updatedGolden = *golden
-	updatedGolden.Trace = false
+	updatedGolden.Trace = true
+	updatedGolden.Debug = true
 	if !reflect.DeepEqual(updatedGolden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			updatedGolden, opts)
+			updatedGolden, server.getOpts())
 	}
 }
