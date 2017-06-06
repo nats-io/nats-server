@@ -30,6 +30,17 @@ func (t *traceOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
 
+// debugOption implements the option interface for the `debug` setting.
+type debugOption struct {
+	newValue bool
+}
+
+// Apply the debug change by reconfiguring the server's logger.
+func (d *debugOption) Apply(server *Server) {
+	server.ConfigureLogger()
+	server.Noticef("Reloaded: debug = %v", d.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -86,6 +97,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		switch strings.ToLower(field.Name) {
 		case "trace":
 			diffOpts = append(diffOpts, &traceOption{newValue.(bool)})
+		case "debug":
+			diffOpts = append(diffOpts, &debugOption{newValue.(bool)})
 		default:
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s", field.Name)
