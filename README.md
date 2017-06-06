@@ -650,6 +650,30 @@ For example, running the `gnatsd -m 8222` command, you should see that the NATS 
 [83249] 2016/06/23 19:39:35.175226 [INF] Server is ready
 ```
 
+## Development
+
+This section contains notes for those looking to do development on gnatsd.
+
+### Windows
+
+Some unit tests make use of temporary symlinks for testing purposes. On Windows, this can fail due to insufficient privileges:
+
+```
+--- FAIL: TestConfigReload (0.00s)
+        reload_test.go:175: Error creating symlink: symlink .\configs\reload\test.conf g:\src\github.com\nats-io\gnatsd\server\tmp.conf: A required privilege is not held by the client.
+FAIL
+```
+
+Similarly, this can fail when creating a symlink on a network drive, which is typically not allowed by default:
+
+```
+--- FAIL: TestConfigReload (0.00s)
+        reload_test.go:175: Error creating symlink: symlink .\configs\reload\test.conf g:\src\github.com\nats-io\gnatsd\server\tmp.conf: Incorrect function.
+FAIL
+```
+
+If this is the case, ensure that the tests are run with privileges on a local drive (e.g. running on `C:` as admin).
+
 ## License
 
 (The MIT License)

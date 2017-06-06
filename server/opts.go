@@ -33,6 +33,7 @@ type ClusterOpts struct {
 
 // Options block for gnatsd server.
 type Options struct {
+	ConfigFile     string        `json:"-"`
 	Host           string        `json:"addr"`
 	Port           int           `json:"port"`
 	Trace          bool          `json:"-"`
@@ -69,6 +70,27 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+}
+
+// Clone performs a deep copy of the Options struct, returning a new clone
+// with all values copied.
+func (o *Options) Clone() *Options {
+	if o == nil {
+		return nil
+	}
+	clone := &Options{}
+	*clone = *o
+	clone.Users = make([]*User, len(o.Users))
+	for i, user := range o.Users {
+		clone.Users[i] = user.clone()
+	}
+	clone.Routes = make([]*url.URL, len(o.Routes))
+	for i, route := range o.Routes {
+		routeCopy := &url.URL{}
+		*routeCopy = *route
+		clone.Routes[i] = routeCopy
+	}
+	return clone
 }
 
 // Configuration file authorization section.
@@ -123,7 +145,7 @@ Available cipher suites include:
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
-	opts := &Options{}
+	opts := &Options{ConfigFile: configFile}
 
 	if configFile == "" {
 		return opts, nil

@@ -11,7 +11,7 @@ import (
 
 // Signal Handling
 func (s *Server) handleSignals() {
-	if s.opts.NoSigs {
+	if s.getOpts().NoSigs {
 		return
 	}
 	c := make(chan os.Signal, 1)
