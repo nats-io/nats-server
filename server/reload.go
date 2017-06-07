@@ -3,6 +3,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"reflect"
@@ -39,6 +40,20 @@ type debugOption struct {
 func (d *debugOption) Apply(server *Server) {
 	server.ConfigureLogger()
 	server.Noticef("Reloaded: debug = %v", d.newValue)
+}
+
+// tlsOption implements the option interface for the `tls` setting.
+type tlsOption struct {
+	newValue *tls.Config
+}
+
+// Apply the tls change.
+func (t *tlsOption) Apply(server *Server) {
+	tlsRequired := t.newValue != nil
+	server.info.TLSRequired = tlsRequired
+	server.info.TLSVerify = tlsRequired && t.newValue.ClientAuth == tls.RequireAndVerifyClientCert
+	server.generateServerInfoJSON()
+	server.Noticef("Reloaded: tls")
 }
 
 // Reload reads the current configuration file and applies any supported
@@ -99,6 +114,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &traceOption{newValue.(bool)})
 		case "debug":
 			diffOpts = append(diffOpts, &debugOption{newValue.(bool)})
+		case "tlsconfig":
+			diffOpts = append(diffOpts, &tlsOption{newValue.(*tls.Config)})
 		default:
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s", field.Name)

@@ -193,12 +193,20 @@ func TestConfigReload(t *testing.T) {
 	}
 
 	// Ensure config changed.
-	var updatedGolden *Options = &Options{}
-	*updatedGolden = *golden
-	updatedGolden.Trace = true
-	updatedGolden.Debug = true
-	if !reflect.DeepEqual(updatedGolden, server.getOpts()) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			updatedGolden, server.getOpts())
+	updated := server.getOpts()
+	if !updated.Trace {
+		t.Fatal("Expected Trace to be true")
+	}
+	if !updated.Debug {
+		t.Fatal("Expected Debug to be true")
+	}
+	if updated.TLSConfig == nil {
+		t.Fatal("Expected TLSConfig to be non-nil")
+	}
+	if !server.info.TLSRequired {
+		t.Fatal("Expected TLSRequired to be true")
+	}
+	if !server.info.TLSVerify {
+		t.Fatal("Expected TLSVerify to be true")
 	}
 }
