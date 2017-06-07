@@ -51,7 +51,9 @@ type tlsOption struct {
 func (t *tlsOption) Apply(server *Server) {
 	tlsRequired := t.newValue != nil
 	server.info.TLSRequired = tlsRequired
-	server.info.TLSVerify = tlsRequired && t.newValue.ClientAuth == tls.RequireAndVerifyClientCert
+	if tlsRequired {
+		server.info.TLSVerify = (t.newValue.ClientAuth == tls.RequireAndVerifyClientCert)
+	}
 	server.generateServerInfoJSON()
 	server.Noticef("Reloaded: tls")
 }
