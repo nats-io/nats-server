@@ -42,6 +42,12 @@ You need [*Go*](http://golang.org/) version 1.5+ [installed](https://golang.org/
 - Clone the <https://github.com/nats-io/gnatsd> repository.
 - Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory.
 - Run `go test ./...` to run the unit regression tests.
+- Run `go install ./...` to build and install `gnatsd`, `mkpasswd`, `nats-pub` and `nats-sub` to $GOPATH/bin.
+
+You can invoke `$GOPATH/bin/gnatsd &`, with no options and no configuration file, to start a server
+with acceptable standalone defaults (no authentication, no clustering). And start a subscriber via
+`$GOPATH/bin/nats-sub foo &` and publish a message on the `foo` channel like `$GOPATH/bin/nats-pub foo hello`.
+
 
 ## Running
 
@@ -55,6 +61,8 @@ To start the NATS server with default settings (and no authentication or cluster
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
+
+You can connect and subscribe to the foo channel on the local server by invoking `nats-sub foo &` and publish a message on the `foo` channel by invoking `nats-pub foo hello`.
 
 ### Clients
 
@@ -609,7 +617,7 @@ In addition to TLS functionality, the server now also supports bcrypt for passwo
 There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can supply that on stdin with the -p flag.
 
 ```bash
-~/go/src/github.com/nats-io/gnatsd/util> ./mkpasswd
+> $GOPATH/bin/mkpasswd
 pass: #IclkRPHUpsTmACWzmIGXr
 bcrypt hash: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
 ```
