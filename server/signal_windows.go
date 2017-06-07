@@ -9,7 +9,7 @@ import (
 
 // Signal Handling
 func (s *Server) handleSignals() {
-	if s.opts.NoSigs {
+	if s.getOpts().NoSigs {
 		return
 	}
 	c := make(chan os.Signal, 1)
@@ -18,8 +18,8 @@ func (s *Server) handleSignals() {
 
 	go func() {
 		for sig := range c {
-			Debugf("Trapped %q signal", sig)
-			Noticef("Server Exiting..")
+			s.Debugf("Trapped %q signal", sig)
+			s.Noticef("Server Exiting..")
 			os.Exit(0)
 		}
 	}()
