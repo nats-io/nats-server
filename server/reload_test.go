@@ -244,7 +244,12 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
-	nc.Close()
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	defer sub.Unsubscribe()
 
 	// Rotate cert and enable client verification.
 	if err := os.Remove(config); err != nil {
@@ -264,11 +269,23 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 
 	// Ensure connecting succeeds when client presents cert.
 	cert := nats.ClientCert("./configs/certs/cert.new.pem", "./configs/certs/key.new.pem")
-	nc, err = nats.Connect(addr, cert, nats.RootCAs("./configs/certs/cert.new.pem"))
+	conn, err := nats.Connect(addr, cert, nats.RootCAs("./configs/certs/cert.new.pem"))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
-	nc.Close()
+	conn.Close()
+
+	// Ensure the original connection can still publish/receive.
+	if err := nc.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing: %v", err)
+	}
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
+	}
 }
 
 // Ensure Reload supports enabling TLS. Test this by starting a server without
