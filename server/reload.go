@@ -51,11 +51,13 @@ type tlsOption struct {
 func (t *tlsOption) Apply(server *Server) {
 	tlsRequired := t.newValue != nil
 	server.info.TLSRequired = tlsRequired
+	message := "disabled"
 	if tlsRequired {
 		server.info.TLSVerify = (t.newValue.ClientAuth == tls.RequireAndVerifyClientCert)
+		message = "enabled"
 	}
 	server.generateServerInfoJSON()
-	server.Noticef("Reloaded: tls")
+	server.Noticef("Reloaded: tls = %s", message)
 }
 
 // Reload reads the current configuration file and applies any supported
