@@ -40,12 +40,15 @@ func (p *Permissions) clone() *Permissions {
 	if p == nil {
 		return nil
 	}
-	clone := &Permissions{
-		Publish:   make([]string, len(p.Publish)),
-		Subscribe: make([]string, len(p.Subscribe)),
+	clone := &Permissions{}
+	if p.Publish != nil {
+		clone.Publish = make([]string, len(p.Publish))
+		copy(clone.Publish, p.Publish)
 	}
-	copy(clone.Publish, p.Publish)
-	copy(clone.Subscribe, p.Subscribe)
+	if p.Subscribe != nil {
+		clone.Subscribe = make([]string, len(p.Subscribe))
+		copy(clone.Subscribe, p.Subscribe)
+	}
 	return clone
 }
 

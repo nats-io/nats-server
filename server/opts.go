@@ -80,15 +80,19 @@ func (o *Options) Clone() *Options {
 	}
 	clone := &Options{}
 	*clone = *o
-	clone.Users = make([]*User, len(o.Users))
-	for i, user := range o.Users {
-		clone.Users[i] = user.clone()
+	if o.Users != nil {
+		clone.Users = make([]*User, len(o.Users))
+		for i, user := range o.Users {
+			clone.Users[i] = user.clone()
+		}
 	}
-	clone.Routes = make([]*url.URL, len(o.Routes))
-	for i, route := range o.Routes {
-		routeCopy := &url.URL{}
-		*routeCopy = *route
-		clone.Routes[i] = routeCopy
+	if o.Routes != nil {
+		clone.Routes = make([]*url.URL, len(o.Routes))
+		for i, route := range o.Routes {
+			routeCopy := &url.URL{}
+			*routeCopy = *route
+			clone.Routes[i] = routeCopy
+		}
 	}
 	return clone
 }

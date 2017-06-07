@@ -739,6 +739,19 @@ func TestOptionsClone(t *testing.T) {
 	}
 }
 
+func TestOptionsCloneNilLists(t *testing.T) {
+	opts := &Options{}
+
+	clone := opts.Clone()
+
+	if clone.Routes != nil {
+		t.Fatalf("Expected Routes to be nil, got: %v", clone.Routes)
+	}
+	if clone.Users != nil {
+		t.Fatalf("Expected Users to be nil, got: %v", clone.Users)
+	}
+}
+
 func TestOptionsCloneNil(t *testing.T) {
 	opts := (*Options)(nil)
 	clone := opts.Clone()
