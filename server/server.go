@@ -879,8 +879,8 @@ func (s *Server) Addr() net.Addr {
 	return s.listener.Addr()
 }
 
-// HttpAddr will return the net.Addr object for the http monitoring listener.
-func (s *Server) HttpAddr() net.Addr {
+// MonitorAddr will return the net.Addr object for the monitoring listener.
+func (s *Server) MonitorAddr() net.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.http == nil {

@@ -346,8 +346,21 @@ func TestRandomPorts(t *testing.T) {
 		t.Fatal("Should not have dynamically assigned default port: 4222.")
 	}
 
-	if s.HttpAddr() == nil || s.HttpAddr().(*net.TCPAddr).Port <= 0 {
+	if s.MonitorAddr() == nil || s.MonitorAddr().(*net.TCPAddr).Port <= 0 {
 		t.Fatal("Should have dynamically assigned monitoring port.")
 	}
 
+}
+
+func TestNilMonitoringPort(t *testing.T) {
+	opts := DefaultOptions
+	opts.HTTPPort = 0
+	opts.HTTPSPort = 0
+	s := RunServer(&opts)
+
+	defer s.Shutdown()
+
+	if s.MonitorAddr() != nil {
+		t.Fatal("HttpAddr should be nil.")
+	}
 }
