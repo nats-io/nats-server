@@ -683,6 +683,13 @@ func TestParseWriteDeadline(t *testing.T) {
 		t.Fatalf("Expected write_deadline to be 1s, got %v", opts.WriteDeadline)
 	}
 	os.Remove(confFile)
+	oldStdout := os.Stdout
+	_, w, _ := os.Pipe()
+	defer func() {
+		w.Close()
+		os.Stdout = oldStdout
+	}()
+	os.Stdout = w
 	if err := ioutil.WriteFile(confFile, []byte("write_deadline: 2\n"), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
