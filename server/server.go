@@ -510,7 +510,7 @@ func (s *Server) startMonitoring(secure bool) error {
 		hp           string
 		err          error
 		httpListener net.Listener
-		port   int
+		port         int
 	)
 
 	if secure {
