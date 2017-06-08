@@ -66,6 +66,19 @@ func TestUserClonePermissionsNoLists(t *testing.T) {
 	}
 }
 
+func TestUserCloneNoPermissions(t *testing.T) {
+	user := &User{
+		Username: "foo",
+		Password: "bar",
+	}
+
+	clone := user.clone()
+
+	if clone.Permissions != nil {
+		t.Fatalf("Expected Permissions to be nil, got: %v", clone.Permissions)
+	}
+}
+
 func TestUserCloneNil(t *testing.T) {
 	user := (*User)(nil)
 	clone := user.clone()
