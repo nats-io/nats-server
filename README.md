@@ -111,7 +111,7 @@ TLS Options:
         --tlscert <file>             Server certificate file
         --tlskey <file>              Private key for server certificate
         --tlsverify                  Enable TLS, verify client certificates
-        --tlscacert <file>           Client certificate CA for verification
+        --tlscacert <file1, file2>   Client certificate CA(s) for verification
 
 Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect

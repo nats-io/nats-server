@@ -649,16 +649,24 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		config.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	// Add in CAs if applicable.
-	if tc.CaFile != "" {
-		rootPEM, err := ioutil.ReadFile(tc.CaFile)
-		if err != nil || rootPEM == nil {
-			return nil, err
-		}
+	caFiles := strings.Split(tc.CaFile, ",")
+
+	if len(caFiles) > 0 {
 		pool := x509.NewCertPool()
-		ok := pool.AppendCertsFromPEM(rootPEM)
-		if !ok {
-			return nil, fmt.Errorf("failed to parse root ca certificate")
+		for _, caFile := range caFiles {
+			file := strings.TrimSpace(caFile)
+			if file != "" {
+				rootPEM, err := ioutil.ReadFile(file)
+				if err != nil || rootPEM == nil {
+					return nil, err
+				}
+				ok := pool.AppendCertsFromPEM(rootPEM)
+				if !ok {
+					return nil, fmt.Errorf("failed to parse root ca certificate")
+				}
+			}
 		}
+
 		config.ClientCAs = pool
 	}
 
