@@ -279,6 +279,7 @@ func TestProcessCommandLineArgs(t *testing.T) {
 func TestWriteDeadline(t *testing.T) {
 	opts := DefaultOptions
 	opts.WriteDeadline = 20 * time.Millisecond
+	opts.NoLog = false
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
@@ -327,4 +328,39 @@ func TestWriteDeadline(t *testing.T) {
 		}
 	}
 	t.Fatal("Connection should have been closed")
+}
+
+func TestRandomPorts(t *testing.T) {
+	opts := DefaultOptions
+	opts.HTTPPort = -1
+	opts.Port = -1
+	s := RunServer(&opts)
+
+	defer s.Shutdown()
+
+	if s.Addr() == nil || s.Addr().(*net.TCPAddr).Port <= 0 {
+		t.Fatal("Should have dynamically assigned server port.")
+	}
+
+	if s.Addr() == nil || s.Addr().(*net.TCPAddr).Port == 4222 {
+		t.Fatal("Should not have dynamically assigned default port: 4222.")
+	}
+
+	if s.MonitorAddr() == nil || s.MonitorAddr().(*net.TCPAddr).Port <= 0 {
+		t.Fatal("Should have dynamically assigned monitoring port.")
+	}
+
+}
+
+func TestNilMonitoringPort(t *testing.T) {
+	opts := DefaultOptions
+	opts.HTTPPort = 0
+	opts.HTTPSPort = 0
+	s := RunServer(&opts)
+
+	defer s.Shutdown()
+
+	if s.MonitorAddr() != nil {
+		t.Fatal("HttpAddr should be nil.")
+	}
 }

@@ -510,17 +510,26 @@ func (s *Server) startMonitoring(secure bool) error {
 		hp           string
 		err          error
 		httpListener net.Listener
+		port         int
 	)
 
 	if secure {
-		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(opts.HTTPSPort))
+		port = opts.HTTPSPort
+		if port == -1 {
+			port = 0
+		}
+		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
 		s.Noticef("Starting https monitor on %s", hp)
 		config := util.CloneTLSConfig(opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
 		httpListener, err = tls.Listen("tcp", hp, config)
 
 	} else {
-		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(opts.HTTPPort))
+		port = opts.HTTPPort
+		if port == -1 {
+			port = 0
+		}
+		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
 		s.Noticef("Starting http monitor on %s", hp)
 		httpListener, err = net.Listen("tcp", hp)
 	}
@@ -868,6 +877,16 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.listener.Addr()
+}
+
+// MonitorAddr will return the net.Addr object for the monitoring listener.
+func (s *Server) MonitorAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.http == nil {
+		return nil
+	}
+	return s.http.Addr()
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept client
