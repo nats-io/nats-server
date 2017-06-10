@@ -79,7 +79,7 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
-	fatalError  string // Captures the error string for any fatal error
+	fatalError    string         // Captures the error string for any fatal error
 	logging       struct {
 		sync.RWMutex
 		logger Logger

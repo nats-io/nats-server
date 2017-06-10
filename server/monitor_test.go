@@ -23,15 +23,15 @@ const MONITOR_PORT = -1
 const CLUSTER_PORT = -1
 
 func DefaultMonitorOptions() *Options {
-	return &Options {
+	return &Options{
 		Host:     "localhost",
 		Port:     CLIENT_PORT,
 		HTTPHost: "127.0.0.1",
 		HTTPPort: MONITOR_PORT,
-		NoLog:   true,
-		NoSigs:  true,
-		Debug:   true,
-		Trace:   true,
+		NoLog:    true,
+		NoSigs:   true,
+		Debug:    true,
+		Trace:    true,
 	}
 }
 
