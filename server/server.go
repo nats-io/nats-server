@@ -68,6 +68,7 @@ type Server struct {
 	start         time.Time
 	http          net.Listener
 	httpHandler   http.Handler
+	profiler      net.Listener
 	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
@@ -78,6 +79,7 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
+	fatalError  string // Captures the error string for any fatal error
 	logging       struct {
 		sync.RWMutex
 		logger Logger
@@ -329,6 +331,12 @@ func (s *Server) Shutdown() {
 		s.http = nil
 	}
 
+	// Kick Profiling if its running
+	if s.profiler != nil {
+		doneExpected++
+		s.profiler.Close()
+	}
+
 	// Release the solicited routes connect go routines.
 	close(s.rcQuit)
 
@@ -363,12 +371,12 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	opts := s.getOpts()
 
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	s.Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
+	s.Noticef("Listening for client connections on %s", l.Addr().String())
 
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
@@ -436,16 +444,43 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
+	s.Noticef("in StartProfiler %s", "HOW!?!?")
 	// Snapshot server options.
 	opts := s.getOpts()
+	s.Noticef(opts.HTTPHost)
 
-	s.Noticef("Starting profiling on http port %d", opts.ProfPort)
-	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.ProfPort))
+	port := opts.ProfPort
+
+	// Check for Random Port
+	if port == -1 {
+		port = 0
+	}
+
+	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
+
+	l, err := net.Listen("tcp", hp)
+	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
+
+	if err != nil {
+		s.Fatalf("error starting profiler: %s", err)
+	}
+
+	srv := &http.Server{
+		Addr:           hp,
+		Handler:        http.DefaultServeMux,
+		ReadTimeout:    2 * time.Second,
+		WriteTimeout:   2 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
+	s.mu.Lock()
+	s.profiler = l
+	s.mu.Unlock()
+
 	go func() {
-		err := http.ListenAndServe(hp, nil)
-		if err != nil {
-			s.Fatalf("error starting monitor server: %s", err)
-		}
+		// if this errors out, it's probably because the server is being shutdown
+		srv.Serve(l)
+		s.done <- true
 	}()
 }
 
@@ -889,6 +924,16 @@ func (s *Server) MonitorAddr() net.Addr {
 	return s.http.Addr()
 }
 
+// RouteAddr returns the net.Addr object for the route listener.
+func (s *Server) ClusterAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.routeListener == nil {
+		return nil
+	}
+	return s.routeListener.Addr()
+}
+
 // ReadyForConnections returns `true` if the server is ready to accept client
 // and, if routing is enabled, route connections. If after the duration
 // `dur` the server is still not ready, returns `false`.
@@ -976,4 +1021,9 @@ func (s *Server) getClientConnectURLs() []string {
 		}
 	}
 	return urls
+}
+
+// Return startup error, if there is one. Useful for unit testing.
+func (s *Server) FatalError() string {
+	return s.fatalError
 }

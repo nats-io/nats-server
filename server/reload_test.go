@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nats-io/go-nats"
+	"net"
 )
 
 // Ensure Reload returns an error when attempting to reload a server that did
@@ -225,7 +226,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/tls_test.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -239,7 +240,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
-	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
 	nc, err := nats.Connect(addr, nats.Secure())
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
@@ -255,7 +256,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/tls_verify_test.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/tls_verify_test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -298,7 +299,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -312,7 +313,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
-	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
 	nc, err := nats.Connect(addr)
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
@@ -323,7 +324,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/tls_test.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -354,7 +355,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/tls_test.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -368,7 +369,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
-	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
 	nc, err := nats.Connect(addr, nats.Secure())
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
@@ -379,7 +380,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {

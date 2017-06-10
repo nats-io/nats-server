@@ -13,24 +13,33 @@ import (
 	"github.com/nats-io/go-nats"
 )
 
-var DefaultOptions = Options{
-	Host:     "localhost",
-	Port:     11222,
-	HTTPPort: 11333,
-	Cluster:  ClusterOpts{Port: 11444},
-	ProfPort: 11280,
-	NoLog:    true,
-	NoSigs:   true,
+func DefaultOptions() *Options {
+	return &Options{
+		Host:     "localhost",
+		Port:     -1,
+		HTTPPort: -1,
+		Cluster:  ClusterOpts{Port: -1},
+		ProfPort: -1,
+		NoLog:    true,
+		NoSigs:   true,
+		Debug:    true,
+		Trace:    true,
+	}
 }
 
 // New Go Routine based server
 func RunServer(opts *Options) *Server {
 	if opts == nil {
-		opts = &DefaultOptions
+		opts = DefaultOptions()
 	}
 	s := New(opts)
+
 	if s == nil {
 		panic("No NATS Server object returned.")
+	}
+
+	if !opts.NoLog {
+		s.ConfigureLogger()
 	}
 
 	// Run server in Go routine.
@@ -43,8 +52,19 @@ func RunServer(opts *Options) *Server {
 	return s
 }
 
+func TestStartProfiler(t *testing.T) {
+	s := New(DefaultOptions())
+	s.StartProfiler()
+	s.mu.Lock()
+	s.profiler.Close()
+	s.mu.Unlock()
+}
+
 func TestStartupAndShutdown(t *testing.T) {
-	s := RunServer(&DefaultOptions)
+
+	opts := DefaultOptions()
+
+	s := RunServer(opts)
 	defer s.Shutdown()
 
 	if !s.isRunning() {
@@ -125,13 +145,13 @@ func TestTlsCipher(t *testing.T) {
 }
 
 func TestGetConnectURLs(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.Port = 4222
 
 	var globalIP net.IP
 
 	checkGlobalConnectURLs := func() {
-		s := New(&opts)
+		s := New(opts)
 		defer s.Shutdown()
 
 		urls := s.getClientConnectURLs()
@@ -167,7 +187,7 @@ func TestGetConnectURLs(t *testing.T) {
 	}
 
 	checkConnectURLsHasOnlyOne := func() {
-		s := New(&opts)
+		s := New(opts)
 		defer s.Shutdown()
 
 		urls := s.getClientConnectURLs()
@@ -195,24 +215,27 @@ func TestGetConnectURLs(t *testing.T) {
 }
 
 func TestNoDeadlockOnStartFailure(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.Host = "x.x.x.x" // bad host
 	opts.Port = 4222
+	opts.HTTPHost = opts.Host
 	opts.Cluster.Host = "localhost"
-	opts.Cluster.Port = 6222
+	opts.Cluster.Port = -1
+	opts.ProfPort = -1
+	s := New(opts)
 
-	s := New(&opts)
 	// This should return since it should fail to start a listener
 	// on x.x.x.x:4222
 	s.Start()
+
 	// We should be able to shutdown
 	s.Shutdown()
 }
 
 func TestMaxConnections(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.MaxConn = 1
-	s := RunServer(&opts)
+	s := RunServer(opts)
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
@@ -277,10 +300,9 @@ func TestProcessCommandLineArgs(t *testing.T) {
 }
 
 func TestWriteDeadline(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.WriteDeadline = 20 * time.Millisecond
-	opts.NoLog = false
-	s := RunServer(&opts)
+	s := RunServer(opts)
 	defer s.Shutdown()
 
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
@@ -331,10 +353,10 @@ func TestWriteDeadline(t *testing.T) {
 }
 
 func TestRandomPorts(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.HTTPPort = -1
 	opts.Port = -1
-	s := RunServer(&opts)
+	s := RunServer(opts)
 
 	defer s.Shutdown()
 
@@ -353,10 +375,10 @@ func TestRandomPorts(t *testing.T) {
 }
 
 func TestNilMonitoringPort(t *testing.T) {
-	opts := DefaultOptions
+	opts := DefaultOptions()
 	opts.HTTPPort = 0
 	opts.HTTPSPort = 0
-	s := RunServer(&opts)
+	s := RunServer(opts)
 
 	defer s.Shutdown()
 
