@@ -79,7 +79,6 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
-	fatalError    string         // Captures the error string for any fatal error
 	logging       struct {
 		sync.RWMutex
 		logger Logger
@@ -376,7 +375,8 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
-	s.Noticef("Listening for client connections on %s", l.Addr().String())
+	s.Noticef("Listening for client connections on %s",
+		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
@@ -444,10 +444,8 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
-	s.Noticef("in StartProfiler %s", "HOW!?!?")
 	// Snapshot server options.
 	opts := s.getOpts()
-	s.Noticef(opts.HTTPHost)
 
 	port := opts.ProfPort
 
@@ -548,13 +546,15 @@ func (s *Server) startMonitoring(secure bool) error {
 		port         int
 	)
 
+	monitorProtocol := "http"
+
 	if secure {
+		monitorProtocol += "s"
 		port = opts.HTTPSPort
 		if port == -1 {
 			port = 0
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
-		s.Noticef("Starting https monitor on %s", hp)
 		config := util.CloneTLSConfig(opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
 		httpListener, err = tls.Listen("tcp", hp, config)
@@ -565,13 +565,15 @@ func (s *Server) startMonitoring(secure bool) error {
 			port = 0
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
-		s.Noticef("Starting http monitor on %s", hp)
 		httpListener, err = net.Listen("tcp", hp)
 	}
 
 	if err != nil {
 		return fmt.Errorf("can't listen to the monitor port: %v", err)
 	}
+
+	s.Noticef("Starting %s monitor on %s", monitorProtocol,
+		net.JoinHostPort(opts.HTTPHost, strconv.Itoa(httpListener.Addr().(*net.TCPAddr).Port)))
 
 	mux := http.NewServeMux()
 
@@ -1021,9 +1023,4 @@ func (s *Server) getClientConnectURLs() []string {
 		}
 	}
 	return urls
-}
-
-// Return startup error, if there is one. Useful for unit testing.
-func (s *Server) FatalError() string {
-	return s.fatalError
 }

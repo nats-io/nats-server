@@ -30,8 +30,6 @@ func DefaultMonitorOptions() *Options {
 		HTTPPort: MONITOR_PORT,
 		NoLog:    true,
 		NoSigs:   true,
-		Debug:    true,
-		Trace:    true,
 	}
 }
 
@@ -592,7 +590,6 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 
 func TestConnzDefaultSorted(t *testing.T) {
 	s := runMonitorServer()
-	s.ConfigureLogger()
 	defer s.Shutdown()
 
 	clients := make([]*nats.Conn, 4)
@@ -1271,7 +1268,7 @@ func TestConnzWithNamedClient(t *testing.T) {
 
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
-	natsUrl := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
+	natsUrl := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
 	client := nats.DefaultOptions
 	client.Servers = []string{natsUrl}
 	nc, err := client.Connect()

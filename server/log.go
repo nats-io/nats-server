@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync/atomic"
 
-	"fmt"
 	"github.com/nats-io/gnatsd/logger"
 )
 
@@ -119,11 +118,6 @@ func (s *Server) Errorf(format string, v ...interface{}) {
 
 // Fatalf logs a fatal error
 func (s *Server) Fatalf(format string, v ...interface{}) {
-	s.mu.Lock()
-	// always store the fatal log
-	errStr := fmt.Sprintf(format, v)
-	s.fatalError = errStr
-	s.mu.Unlock()
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
 		logger.Fatalf(format, v...)
 	}, format, v...)
