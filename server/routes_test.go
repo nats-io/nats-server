@@ -502,8 +502,7 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	opts.Cluster.Host = "localhost"
 	opts.Cluster.NoAdvertise = true
 	s := RunServer(opts)
-	s.Noticef("%+v\n", opts)
-	// defer s.Shutdown()
+	defer s.Shutdown()
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, s.ClusterAddr().(*net.TCPAddr).Port)
 	clientURL := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
@@ -516,7 +515,6 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	// attempts rather small.
 	total := 10
 	for i := 0; i < total; i++ {
-		s.Noticef("URL: %s", url)
 		nc, err := nats.Connect(url)
 		if err != nil {
 			t.Fatalf("Unexepected error on connect: %v", err)

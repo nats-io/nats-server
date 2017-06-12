@@ -477,7 +477,10 @@ func (s *Server) StartProfiler() {
 
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
-		srv.Serve(l)
+		err := srv.Serve(l)
+		if err != nil {
+			s.Fatalf("error starting profiler: %s", err)
+		}
 		s.done <- true
 	}()
 }

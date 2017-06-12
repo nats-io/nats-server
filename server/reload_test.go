@@ -4,6 +4,7 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/nats-io/go-nats"
-	"net"
 )
 
 // Ensure Reload returns an error when attempting to reload a server that did
