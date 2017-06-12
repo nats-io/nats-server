@@ -839,3 +839,241 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	}
 	conn.Close()
 }
+
+// Ensure Reload supports users authentication config changes. Test this by
+// starting a server with users authentication enabled, connect to it to
+// verify, reload config using a different user, ensure reconnect fails, then
+// ensure reconnect succeeds when using the correct credentials.
+func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Error getting working directory: %v", err)
+	}
+	config := filepath.Join(dir, "tmp.conf")
+
+	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	defer os.Remove(config)
+
+	opts, err := ProcessConfigFile(config)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	server := RunServer(opts)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr, nats.UserInfo("alice", "foo"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// These credentials won't change.
+	nc, err = nats.Connect(addr, nats.UserInfo("bob", "bar"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Change users credentials.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/reload/multiple_users.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting fails.
+	if _, err := nats.Connect(addr, nats.UserInfo("alice", "foo")); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	conn, err := nats.Connect(addr, nats.UserInfo("alice", "baz"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+
+	// Ensure the previous connection received an authorization error.
+	select {
+	case err := <-asyncErr:
+		if err != nats.ErrAuthorization {
+			t.Fatalf("Expected ErrAuthorization, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected authorization error")
+	}
+
+	// Ensure the previous connection was disconnected.
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected connection to be disconnected")
+	}
+
+	// Ensure the connection using unchanged credentials can still
+	// publish/receive.
+	if err := nc.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing: %v", err)
+	}
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
+	}
+}
+
+// Ensure Reload supports enabling users authentication. Test this by starting
+// a server with authentication disabled, connect to it to verify, reload
+// config using with users, ensure reconnect fails, then ensure reconnect
+// succeeds when using the correct credentials.
+func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Error getting working directory: %v", err)
+	}
+	config := filepath.Join(dir, "tmp.conf")
+
+	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	defer os.Remove(config)
+
+	opts, err := ProcessConfigFile(config)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	server := RunServer(opts)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// Enable authentication.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting fails.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	conn, err := nats.Connect(addr, nats.UserInfo("alice", "foo"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+
+	// Ensure the previous connection received an authorization error.
+	select {
+	case err := <-asyncErr:
+		if err != nats.ErrAuthorization {
+			t.Fatalf("Expected ErrAuthorization, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected authorization error")
+	}
+
+	// Ensure the previous connection was disconnected.
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected connection to be disconnected")
+	}
+}
+
+// Ensure Reload supports disabling users authentication. Test this by starting
+// a server with authentication enabled, connect to it to verify,
+// reload config using with authentication disabled, then ensure connecting
+// with no credentials succeeds.
+func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Error getting working directory: %v", err)
+	}
+	config := filepath.Join(dir, "tmp.conf")
+
+	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	defer os.Remove(config)
+
+	opts, err := ProcessConfigFile(config)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	server := RunServer(opts)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr, nats.UserInfo("alice", "foo"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		t.Fatalf("Client received an unexpected error: %v", err)
+	})
+
+	// Disable authentication.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting succeeds with no credentials.
+	conn, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+}

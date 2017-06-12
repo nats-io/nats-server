@@ -165,6 +165,17 @@ func (a *authTimeoutOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization timeout = %v", a.newValue)
 }
 
+// usersOption implements the option interface for the authorization `users`
+// setting.
+type usersOption struct {
+	authOption
+	newValue []*User
+}
+
+func (u *usersOption) Apply(server *Server) {
+	server.Noticef("Reloaded: authorization users")
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -237,6 +248,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &authorizationOption{})
 		case "authtimeout":
 			diffOpts = append(diffOpts, &authTimeoutOption{newValue: newValue.(float64)})
+		case "users":
+			diffOpts = append(diffOpts, &usersOption{newValue: newValue.([]*User)})
 		default:
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s", field.Name)
