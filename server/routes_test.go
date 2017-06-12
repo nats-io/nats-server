@@ -188,12 +188,12 @@ func TestSeedSolicitWorks(t *testing.T) {
 
 	optsA := nextServerOpts(optsSeed)
 	optsA.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().(*net.TCPAddr).Port))
+		srvSeed.ClusterAddr().Port))
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
-	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, srvA.ClusterAddr().(*net.TCPAddr).Port)
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, srvA.ClusterAddr().Port)
 
 	nc1, err := nats.Connect(urlA)
 	if err != nil {
@@ -208,12 +208,12 @@ func TestSeedSolicitWorks(t *testing.T) {
 
 	optsB := nextServerOpts(optsA)
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().(*net.TCPAddr).Port))
+		srvSeed.ClusterAddr().Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
-	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, srvB.ClusterAddr().(*net.TCPAddr).Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, srvB.ClusterAddr().Port)
 
 	nc2, err := nats.Connect(urlB)
 	if err != nil {
@@ -242,7 +242,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().(*net.TCPAddr).Port)
+		srvSeed.ClusterAddr().Port)
 	optsA := nextServerOpts(optsSeed)
 	optsA.Routes = RoutesFromStr(seedRouteUrl)
 
@@ -297,7 +297,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().(*net.TCPAddr).Port)
+		srvSeed.ClusterAddr().Port)
 	optsA := nextServerOpts(optsSeed)
 	optsA.Routes = RoutesFromStr(seedRouteUrl)
 
@@ -320,7 +320,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	optsB := nextServerOpts(optsA)
 	// Server B connects to A
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host,
-		srvA.ClusterAddr().(*net.TCPAddr).Port))
+		srvA.ClusterAddr().Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -354,7 +354,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	defer srvSeed.Shutdown()
 
 	urlSeedRoute := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().(*net.TCPAddr).Port)
+		srvSeed.ClusterAddr().Port)
 	optsA := nextServerOpts(optsSeed)
 	optsA.Routes = RoutesFromStr(urlSeedRoute)
 
@@ -377,7 +377,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	optsB := nextServerOpts(optsA)
 	// Server B connects to A
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host,
-		srvA.ClusterAddr().(*net.TCPAddr).Port))
+		srvA.ClusterAddr().Port))
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -504,7 +504,7 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, s.ClusterAddr().(*net.TCPAddr).Port)
+	url := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, s.ClusterAddr().Port)
 	clientURL := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	// When connecting to the ROUTE port, the client library will receive the
 	// CLIENT port in the INFO protocol. This URL is added to the client's pool

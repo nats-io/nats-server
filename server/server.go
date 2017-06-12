@@ -920,23 +920,23 @@ func (s *Server) Addr() net.Addr {
 }
 
 // MonitorAddr will return the net.Addr object for the monitoring listener.
-func (s *Server) MonitorAddr() net.Addr {
+func (s *Server) MonitorAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.http == nil {
 		return nil
 	}
-	return s.http.Addr()
+	return s.http.Addr().(*net.TCPAddr)
 }
 
 // RouteAddr returns the net.Addr object for the route listener.
-func (s *Server) ClusterAddr() net.Addr {
+func (s *Server) ClusterAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.routeListener == nil {
 		return nil
 	}
-	return s.routeListener.Addr()
+	return s.routeListener.Addr().(*net.TCPAddr)
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept client
