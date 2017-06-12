@@ -221,6 +221,9 @@ func TestConfigReload(t *testing.T) {
 	if updated.Password != "T0pS3cr3t" {
 		t.Fatalf("Password is incorrect.\nexpected: T0pS3cr3t\ngot: %s", updated.Password)
 	}
+	if updated.AuthTimeout != 2 {
+		t.Fatalf("AuthTimeout is incorrect.\nexpected: 2\ngot: %f", updated.AuthTimeout)
+	}
 	if !server.info.AuthRequired {
 		t.Fatal("Expected AuthRequired to be true")
 	}

@@ -26,7 +26,8 @@ type option interface {
 	IsAuthChange() bool
 }
 
-// loggingOption is a base struct that provides default option behaviors.
+// loggingOption is a base struct that provides default option behaviors for
+// logging-related options.
 type loggingOption struct{}
 
 func (l loggingOption) IsLoggingChange() bool {
@@ -61,8 +62,20 @@ func (d *debugOption) Apply(server *Server) {
 	server.Noticef("Reloaded: debug = %v", d.newValue)
 }
 
+// noopOption is a base struct that provides default no-op behaviors.
+type noopOption struct{}
+
+func (n noopOption) IsLoggingChange() bool {
+	return false
+}
+
+func (n noopOption) IsAuthChange() bool {
+	return false
+}
+
 // tlsOption implements the option interface for the `tls` setting.
 type tlsOption struct {
+	noopOption
 	newValue *tls.Config
 }
 
@@ -81,12 +94,17 @@ func (t *tlsOption) Apply(server *Server) {
 	server.Noticef("Reloaded: tls = %s", message)
 }
 
-func (t *tlsOption) IsLoggingChange() bool {
-	return false
+// tlsTimeoutOption implements the option interface for the tls `timeout`
+// setting.
+type tlsTimeoutOption struct {
+	noopOption
+	newValue float64
 }
 
-func (t *tlsOption) IsAuthChange() bool {
-	return false
+// Apply is a no-op because the timeout will be reloaded after options are
+// applied.
+func (t *tlsTimeoutOption) Apply(server *Server) {
+	server.Noticef("Reloaded: tls timeout = %v", t.newValue)
 }
 
 // authOption is a base struct that provides default option behaviors.
@@ -108,7 +126,7 @@ type usernameOption struct {
 // Apply is a no-op because authorization will be reloaded after options are
 // applied.
 func (u *usernameOption) Apply(server *Server) {
-	server.Noticef("Reloaded: username")
+	server.Noticef("Reloaded: authorization username")
 }
 
 // passwordOption implements the option interface for the `password` setting.
@@ -119,7 +137,7 @@ type passwordOption struct {
 // Apply is a no-op because authorization will be reloaded after options are
 // applied.
 func (p *passwordOption) Apply(server *Server) {
-	server.Noticef("Reloaded: password")
+	server.Noticef("Reloaded: authorization password")
 }
 
 // authorizationOption implements the option interface for the `token`
@@ -131,7 +149,20 @@ type authorizationOption struct {
 // Apply is a no-op because authorization will be reloaded after options are
 // applied.
 func (a *authorizationOption) Apply(server *Server) {
-	server.Noticef("Reloaded: token")
+	server.Noticef("Reloaded: authorization token")
+}
+
+// authTimeoutOption implements the option interface for the authorization
+// `timeout` setting.
+type authTimeoutOption struct {
+	noopOption
+	newValue float64
+}
+
+// Apply is a no-op because the timeout will be reloaded after options are
+// applied.
+func (a *authTimeoutOption) Apply(server *Server) {
+	server.Noticef("Reloaded: authorization timeout = %v", a.newValue)
 }
 
 // Reload reads the current configuration file and applies any supported
@@ -195,10 +226,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "debug":
 			diffOpts = append(diffOpts, &debugOption{newValue: newValue.(bool)})
 		case "tlsconfig":
-			diffOpts = append(diffOpts, &tlsOption{newValue.(*tls.Config)})
+			diffOpts = append(diffOpts, &tlsOption{newValue: newValue.(*tls.Config)})
 		case "tlstimeout":
-			// TLSTimeout change is picked up when Options is swapped.
-			continue
+			diffOpts = append(diffOpts, &tlsTimeoutOption{newValue: newValue.(float64)})
 		case "username":
 			diffOpts = append(diffOpts, &usernameOption{})
 		case "password":
@@ -206,8 +236,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "authorization":
 			diffOpts = append(diffOpts, &authorizationOption{})
 		case "authtimeout":
-			// AuthTimeout change is picked up when Options is swapped.
-			continue
+			diffOpts = append(diffOpts, &authTimeoutOption{newValue: newValue.(float64)})
 		default:
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s", field.Name)
