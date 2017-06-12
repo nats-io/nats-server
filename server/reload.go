@@ -18,27 +18,46 @@ var FlagSnapshot *Options
 type option interface {
 	// Apply the server option.
 	Apply(server *Server)
+
+	// IsLoggingChange indicates if this option requires reloading the logger.
+	IsLoggingChange() bool
+
+	// IsAuthChange indicates if this option requires reloading authorization.
+	IsAuthChange() bool
+}
+
+// loggingOption is a base struct that provides default option behaviors.
+type loggingOption struct{}
+
+func (l loggingOption) IsLoggingChange() bool {
+	return true
+}
+
+func (l loggingOption) IsAuthChange() bool {
+	return false
 }
 
 // traceOption implements the option interface for the `trace` setting.
 type traceOption struct {
+	loggingOption
 	newValue bool
 }
 
-// Apply the tracing change by reconfiguring the server's logger.
+// Apply is a no-op because authorization will be reloaded after options are
+// applied
 func (t *traceOption) Apply(server *Server) {
-	server.ConfigureLogger()
 	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
 
 // debugOption implements the option interface for the `debug` setting.
 type debugOption struct {
+	loggingOption
 	newValue bool
 }
 
-// Apply the debug change by reconfiguring the server's logger.
+// Apply is a no-op because authorization will be reloaded after options are
+// applied
 func (d *debugOption) Apply(server *Server) {
-	server.ConfigureLogger()
 	server.Noticef("Reloaded: debug = %v", d.newValue)
 }
 
@@ -49,6 +68,7 @@ type tlsOption struct {
 
 // Apply the tls change.
 func (t *tlsOption) Apply(server *Server) {
+	server.mu.Lock()
 	tlsRequired := t.newValue != nil
 	server.info.TLSRequired = tlsRequired
 	message := "disabled"
@@ -57,7 +77,61 @@ func (t *tlsOption) Apply(server *Server) {
 		message = "enabled"
 	}
 	server.generateServerInfoJSON()
+	server.mu.Unlock()
 	server.Noticef("Reloaded: tls = %s", message)
+}
+
+func (t *tlsOption) IsLoggingChange() bool {
+	return false
+}
+
+func (t *tlsOption) IsAuthChange() bool {
+	return false
+}
+
+// authOption is a base struct that provides default option behaviors.
+type authOption struct{}
+
+func (o authOption) IsLoggingChange() bool {
+	return false
+}
+
+func (o authOption) IsAuthChange() bool {
+	return true
+}
+
+// usernameOption implements the option interface for the `username` setting.
+type usernameOption struct {
+	authOption
+}
+
+// Apply is a no-op because authorization will be reloaded after options are
+// applied.
+func (u *usernameOption) Apply(server *Server) {
+	server.Noticef("Reloaded: username")
+}
+
+// passwordOption implements the option interface for the `password` setting.
+type passwordOption struct {
+	authOption
+}
+
+// Apply is a no-op because authorization will be reloaded after options are
+// applied.
+func (p *passwordOption) Apply(server *Server) {
+	server.Noticef("Reloaded: password")
+}
+
+// authorizationOption implements the option interface for the `token`
+// authorization setting.
+type authorizationOption struct {
+	authOption
+}
+
+// Apply is a no-op because authorization will be reloaded after options are
+// applied.
+func (a *authorizationOption) Apply(server *Server) {
+	server.Noticef("Reloaded: token")
 }
 
 // Reload reads the current configuration file and applies any supported
@@ -65,16 +139,18 @@ func (t *tlsOption) Apply(server *Server) {
 // file or an option which doesn't support hot-swapping was changed.
 func (s *Server) Reload() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.configFile == "" {
+		s.mu.Unlock()
 		return errors.New("Can only reload config when a file is provided using -c or --config")
 	}
 	newOpts, err := ProcessConfigFile(s.configFile)
 	if err != nil {
+		s.mu.Unlock()
 		// TODO: Dump previous good config to a .bak file?
 		return fmt.Errorf("Config reload failed: %s", err)
 	}
+	s.mu.Unlock()
+
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
 	processOptions(newOpts)
@@ -115,13 +191,22 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		}
 		switch strings.ToLower(field.Name) {
 		case "trace":
-			diffOpts = append(diffOpts, &traceOption{newValue.(bool)})
+			diffOpts = append(diffOpts, &traceOption{newValue: newValue.(bool)})
 		case "debug":
-			diffOpts = append(diffOpts, &debugOption{newValue.(bool)})
+			diffOpts = append(diffOpts, &debugOption{newValue: newValue.(bool)})
 		case "tlsconfig":
 			diffOpts = append(diffOpts, &tlsOption{newValue.(*tls.Config)})
 		case "tlstimeout":
 			// TLSTimeout change is picked up when Options is swapped.
+			continue
+		case "username":
+			diffOpts = append(diffOpts, &usernameOption{})
+		case "password":
+			diffOpts = append(diffOpts, &passwordOption{})
+		case "authorization":
+			diffOpts = append(diffOpts, &authorizationOption{})
+		case "authtimeout":
+			// AuthTimeout change is picked up when Options is swapped.
 			continue
 		default:
 			// Bail out if attempting to reload any unsupported options.
@@ -133,9 +218,46 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 }
 
 func (s *Server) applyOptions(opts []option) {
+	var (
+		reloadLogging = false
+		reloadAuth    = false
+	)
 	for _, opt := range opts {
 		opt.Apply(s)
+		if opt.IsLoggingChange() {
+			reloadLogging = true
+		}
+		if opt.IsAuthChange() {
+			reloadAuth = true
+		}
+	}
+
+	if reloadLogging {
+		s.ConfigureLogger()
+	}
+	if reloadAuth {
+		s.reloadAuthorization()
 	}
 
 	s.Noticef("Reloaded server configuration")
+}
+
+// reloadAuthorization reconfigures the server authorization settings and
+// disconnects any clients who are no longer authorized.
+func (s *Server) reloadAuthorization() {
+	s.mu.Lock()
+	s.configureAuthorization()
+	s.generateServerInfoJSON()
+	clients := make(map[uint64]*client, len(s.clients))
+	for i, client := range s.clients {
+		clients[i] = client
+	}
+	s.mu.Unlock()
+
+	// Disconnect any unauthorized clients.
+	for _, client := range clients {
+		if !s.isClientAuthorized(client) {
+			client.authViolation()
+		}
+	}
 }

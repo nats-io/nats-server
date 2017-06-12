@@ -72,6 +72,8 @@ func (s *Server) configureAuthorization() {
 		s.info.AuthRequired = true
 	} else if opts.Username != "" || opts.Authorization != "" {
 		s.info.AuthRequired = true
+	} else {
+		s.info.AuthRequired = false
 	}
 }
 
