@@ -284,8 +284,9 @@ func (s *Server) applyOptions(opts []option) {
 	s.Noticef("Reloaded server configuration")
 }
 
-// reloadAuthorization reconfigures the server authorization settings and
-// disconnects any clients who are no longer authorized.
+// reloadAuthorization reconfigures the server authorization settings,
+// disconnects any clients who are no longer authorized, and removes any
+// unauthorized subscriptions.
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 	s.configureAuthorization()
@@ -296,10 +297,14 @@ func (s *Server) reloadAuthorization() {
 	}
 	s.mu.Unlock()
 
-	// Disconnect any unauthorized clients.
 	for _, client := range clients {
+		// Disconnect any unauthorized clients.
 		if !s.isClientAuthorized(client) {
 			client.authViolation()
+			continue
 		}
+
+		// Remove any unauthorized subscriptions.
+		s.removeUnauthorizedSubs(client)
 	}
 }

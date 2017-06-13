@@ -224,6 +224,10 @@ func (c *client) initClient() {
 // into the client.
 func (c *client) RegisterUser(user *User) {
 	if user.Permissions == nil {
+		// Reset perms to nil in case client previously had them.
+		c.mu.Lock()
+		c.perms = nil
+		c.mu.Unlock()
 		return
 	}
 
@@ -775,14 +779,11 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if c.perms != nil {
-		r := c.perms.sub.Match(string(sub.subject))
-		if len(r.psubs) == 0 {
-			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-			c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
-			return nil
-		}
+	if !c.canSubscribe(sub.subject) {
+		c.mu.Unlock()
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+		c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
+		return nil
 	}
 
 	// We can have two SUB protocols coming from a route due to some
@@ -811,6 +812,15 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	return nil
+}
+
+// canSubscribe determines if the client is authorized to subscribe to the
+// given subject. Assumes caller is holding lock.
+func (c *client) canSubscribe(sub []byte) bool {
+	if c.perms == nil {
+		return true
+	}
+	return len(c.perms.sub.Match(string(sub)).psubs) > 0
 }
 
 func (c *client) unsubscribe(sub *subscription) {
@@ -1010,8 +1020,6 @@ func (c *client) processMsg(msg []byte) {
 	if c.trace {
 		c.traceMsg(msg)
 	}
-
-	// defintely
 
 	// Disallow publish to _SYS.>, these are reserved for internals.
 	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&

@@ -135,6 +135,26 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	return comparePasswords(opts.Cluster.Password, c.opts.Password)
 }
 
+// removeUnauthorizedSubs removes any subscriptions the client has that are no
+// longer authorized, e.g. due to a config reload.
+func (s *Server) removeUnauthorizedSubs(c *client) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.perms == nil || c.perms.sub == nil {
+		return
+	}
+
+	for sid, sub := range c.subs {
+		if !c.canSubscribe(sub.subject) {
+			delete(c.subs, sid)
+			s.sl.Remove(sub)
+			s.Noticef("Removed sub %q for user %q - not authorized",
+				string(sub.subject), c.opts.Username)
+		}
+	}
+}
+
 // Support for bcrypt stored passwords and tokens.
 const bcryptPrefix = "$2a$"
 

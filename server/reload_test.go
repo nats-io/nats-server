@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1076,4 +1077,153 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	conn.Close()
+}
+
+// Ensure Reload supports changing permissions. Test this by starting a server
+// with a user configured with certain permissions, test publish and subscribe,
+// reload config with new permissions, ensure the previous subscription was
+// closed and publishes fail, then ensure the new permissions succeed.
+func TestConfigReloadChangePermissions(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Error getting working directory: %v", err)
+	}
+	config := filepath.Join(dir, "tmp.conf")
+
+	if err := os.Symlink("./configs/authorization.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	defer os.Remove(config)
+
+	opts, err := ProcessConfigFile(config)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	server := RunServer(opts)
+	defer server.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr, nats.UserInfo("bob", "bar"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	// Ensure we can publish and receive messages as a sanity check.
+	sub, err := nc.SubscribeSync("_INBOX.>")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	nc.Flush()
+
+	conn, err := nats.Connect(addr, nats.UserInfo("alice", "foo"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer conn.Close()
+
+	sub2, err := conn.SubscribeSync("req.foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	if err := conn.Publish("_INBOX.foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
+	}
+
+	if err := nc.Publish("req.foo", []byte("world")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	nc.Flush()
+
+	msg, err = sub2.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "world" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("world"), msg.Data)
+	}
+
+	// Change permissions.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/reload/authorization.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure we receive an error when publishing to req.foo and we no longer
+	// receive messages on _INBOX.>.
+	if err := nc.Publish("req.foo", []byte("hola")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	nc.Flush()
+	if err := conn.Publish("_INBOX.foo", []byte("mundo")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	select {
+	case err := <-asyncErr:
+		if !strings.Contains(err.Error(), "permissions violation for publish to \"req.foo\"") {
+			t.Fatalf("Expected permissions violation error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected permissions violation error")
+	}
+
+	queued, _, err := sub2.Pending()
+	if err != nil {
+		t.Fatalf("Failed to get pending messaged: %v", err)
+	}
+	if queued != 0 {
+		t.Fatalf("Pending is incorrect.\nexpected: 0\ngot: %d", queued)
+	}
+
+	queued, _, err = sub.Pending()
+	if err != nil {
+		t.Fatalf("Failed to get pending messaged: %v", err)
+	}
+	if queued != 0 {
+		t.Fatalf("Pending is incorrect.\nexpected: 0\ngot: %d", queued)
+	}
+
+	// Ensure we can publish to _INBOX.foo.bar and subscribe to _INBOX.foo.>.
+	sub, err = nc.SubscribeSync("_INBOX.foo.>")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	nc.Flush()
+	if err := nc.Publish("_INBOX.foo.bar", []byte("testing")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	nc.Flush()
+	msg, err = sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "testing" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("testing"), msg.Data)
+	}
+
+	select {
+	case err := <-asyncErr:
+		t.Fatalf("Received unexpected error: %v", err)
+	default:
+	}
 }
