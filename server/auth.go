@@ -141,7 +141,7 @@ func (s *Server) removeUnauthorizedSubs(c *client) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.perms == nil || c.perms.sub == nil {
+	if c.perms == nil {
 		return
 	}
 
