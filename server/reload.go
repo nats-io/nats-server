@@ -255,14 +255,6 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if newValue == 0 {
 				// ignore RANDOM_PORT
 				continue
-			} else {
-				return nil, fmt.Errorf("Config reload not supported for %s: old=%v, new=%v",
-					field.Name, oldValue, newValue)
-			}
-		case "http_port", "https_port":
-			// check to see if newValue == -1 (RANDOM_PORT for http/https monitoring port)
-			if newValue == -1 {
-				continue
 			}
 			fallthrough
 		default:
