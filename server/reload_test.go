@@ -1168,6 +1168,17 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
+	// Ensure we receive an error for the subscription that is no longer
+	// authorized.
+	select {
+	case err := <-asyncErr:
+		if !strings.Contains(err.Error(), "permissions violation for subscription to \"_inbox.>\"") {
+			t.Fatalf("Expected permissions violation error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected permissions violation error")
+	}
+
 	// Ensure we receive an error when publishing to req.foo and we no longer
 	// receive messages on _INBOX.>.
 	if err := nc.Publish("req.foo", []byte("hola")); err != nil {
