@@ -563,8 +563,8 @@ func TestAuthorizationConfig(t *testing.T) {
 			len(alice.Permissions.Publish))
 	}
 	pubPerm := alice.Permissions.Publish[0]
-	if pubPerm != ">" {
-		t.Fatalf("Expected Alice's publish permissions to be '>', got %q\n", pubPerm)
+	if pubPerm != "*" {
+		t.Fatalf("Expected Alice's publish permissions to be '*', got %q\n", pubPerm)
 	}
 	if alice.Permissions.Subscribe == nil {
 		t.Fatalf("Expected Alice's subscribe permissions to be non-nil\n")

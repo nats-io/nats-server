@@ -604,7 +604,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	if _, err := client.ReadString('\n'); err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
 	}
-	time.Sleep(2 * secondsToDuration(serverOptions.AuthTimeout))
+	time.Sleep(3 * secondsToDuration(serverOptions.AuthTimeout))
 	l, err := client.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error receiving info from server: %v\n", err)
@@ -686,6 +686,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	opts.TLSTimeout = 100
+	opts.NoLog = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 

@@ -427,7 +427,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/single_user_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -459,7 +459,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/reload/single_user_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/single_user_authentication_2.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -507,7 +507,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -539,7 +539,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/single_user_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -587,7 +587,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/single_user_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -614,7 +614,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -640,7 +640,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/token_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -672,7 +672,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/reload/token_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/token_authentication_2.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -720,7 +720,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -752,7 +752,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/token_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -800,7 +800,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/token_authentication.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -827,7 +827,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -853,7 +853,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -897,7 +897,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/reload/multiple_users.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/multiple_users_2.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -958,7 +958,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -990,7 +990,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -1038,7 +1038,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/multiple_users.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -1065,7 +1065,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/basic.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
@@ -1091,7 +1091,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 	config := filepath.Join(dir, "tmp.conf")
 
-	if err := os.Symlink("./configs/authorization.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/authorization_1.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	defer os.Remove(config)
@@ -1161,7 +1161,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	if err := os.Remove(config); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
 	}
-	if err := os.Symlink("./configs/reload/authorization.conf", config); err != nil {
+	if err := os.Symlink("./configs/reload/authorization_2.conf", config); err != nil {
 		t.Fatalf("Error creating symlink: %v", err)
 	}
 	if err := server.Reload(); err != nil {
