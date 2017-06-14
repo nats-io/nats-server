@@ -140,7 +140,7 @@ func (p *parser) processItem(it item) error {
 	case itemInteger:
 		lastDigit := 0
 		for _, r := range it.val {
-			if !unicode.IsDigit(r) {
+			if !unicode.IsDigit(r) && r != '-' {
 				break
 			}
 			lastDigit++

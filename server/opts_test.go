@@ -766,3 +766,29 @@ func TestOptionsCloneNil(t *testing.T) {
 		t.Fatalf("Expected nil, got: %+v", clone)
 	}
 }
+
+func TestEmptyConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("")
+
+	if err != nil {
+		t.Fatalf("Expected no error from empty config, got: %+v", err)
+	}
+
+	if opts.ConfigFile != "" {
+		t.Fatalf("Expected empty config, got: %+v", opts)
+	}
+}
+
+func TestMalformedListenAddress(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/malformed_listen_address.conf")
+	if err == nil {
+		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
+	}
+}
+
+func TestMalformedClusterAddress(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/malformed_cluster_address.conf")
+	if err == nil {
+		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
+	}
+}

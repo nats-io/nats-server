@@ -602,7 +602,19 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(opts.Cluster.Port))
+	// Get all possible URLs (when server listens to 0.0.0.0).
+	// This is going to be sent to other Servers, so that they can let their
+	// clients know about us.
+	clientConnectURLs := s.getClientConnectURLs()
+
+	// Snapshot server options.
+	port := opts.Cluster.Port
+
+	if port == -1 {
+		port = 0
+	}
+
+	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
 	s.Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
@@ -611,6 +623,28 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
 		return
 	}
+
+	// Check for TLSConfig
+	tlsReq := opts.Cluster.TLSConfig != nil
+	info := Info{
+		ID:                s.info.ID,
+		Version:           s.info.Version,
+		Host:              opts.Cluster.Host,
+		Port:              l.Addr().(*net.TCPAddr).Port,
+		AuthRequired:      false,
+		TLSRequired:       tlsReq,
+		SSLRequired:       tlsReq,
+		TLSVerify:         tlsReq,
+		MaxPayload:        s.info.MaxPayload,
+		ClientConnectURLs: clientConnectURLs,
+	}
+	// Check for Auth items
+	if opts.Cluster.Username != "" {
+		info.AuthRequired = true
+	}
+	s.routeInfo = info
+	b, _ := json.Marshal(info)
+	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -656,36 +690,6 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	// Wait for the client listen port to be opened, and
 	// the possible ephemeral port to be selected.
 	<-clientListenReady
-
-	// Get all possible URLs (when server listens to 0.0.0.0).
-	// This is going to be sent to other Servers, so that they can let their
-	// clients know about us.
-	clientConnectURLs := s.getClientConnectURLs()
-
-	// Snapshot server options.
-	opts := s.getOpts()
-
-	// Check for TLSConfig
-	tlsReq := opts.Cluster.TLSConfig != nil
-	info := Info{
-		ID:                s.info.ID,
-		Version:           s.info.Version,
-		Host:              opts.Cluster.Host,
-		Port:              opts.Cluster.Port,
-		AuthRequired:      false,
-		TLSRequired:       tlsReq,
-		SSLRequired:       tlsReq,
-		TLSVerify:         tlsReq,
-		MaxPayload:        s.info.MaxPayload,
-		ClientConnectURLs: clientConnectURLs,
-	}
-	// Check for Auth items
-	if opts.Cluster.Username != "" {
-		info.AuthRequired = true
-	}
-	s.routeInfo = info
-	b, _ := json.Marshal(info)
-	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
 
 	// Spin up the accept loop
 	ch := make(chan struct{})
