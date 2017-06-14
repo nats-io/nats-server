@@ -782,7 +782,8 @@ func (c *client) processSub(argo []byte) (err error) {
 	if !c.canSubscribe(sub.subject) {
 		c.mu.Unlock()
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		c.Errorf("Subscription Violation - User %q, Subject %q", c.opts.Username, sub.subject)
+		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
+			c.opts.Username, sub.subject, sub.sid)
 		return nil
 	}
 

@@ -153,11 +153,12 @@ func (s *Server) removeUnauthorizedSubs(c *client) {
 
 	for sid, sub := range subs {
 		if !c.canSubscribe(sub.subject) {
-			s.sl.Remove(sub)
+			_ = s.sl.Remove(sub)
 			c.mu.Lock()
 			delete(c.subs, sid)
 			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
+				sub.subject, sub.sid))
 			s.Noticef("Removed sub %q for user %q - not authorized",
 				string(sub.subject), c.opts.Username)
 		}

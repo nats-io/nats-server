@@ -155,8 +155,8 @@ func (a *authorizationOption) Apply(server *Server) {
 // authTimeoutOption implements the option interface for the authorization
 // `timeout` setting.
 type authTimeoutOption struct {
-	noopOption
-	newValue float64
+	noopOption // Not authOption because this is a no-op; will be reloaded with options.
+	newValue   float64
 }
 
 // Apply is a no-op because the timeout will be reloaded after options are
