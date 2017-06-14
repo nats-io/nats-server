@@ -634,20 +634,23 @@ func TestTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 }
 
 func TestUnsubRace(t *testing.T) {
-	s := RunServer(nil)
+	opts := DefaultOptions()
+	s := RunServer(opts)
 	defer s.Shutdown()
 
-	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
-		DefaultOptions.Host,
-		DefaultOptions.Port))
+	url := fmt.Sprintf("nats://%s:%d",
+		s.getOpts().Host,
+		s.Addr().(*net.TCPAddr).Port,
+	)
+	nc, err := nats.Connect(url)
 	if err != nil {
-		t.Fatalf("Error creating client: %v\n", err)
+		t.Fatalf("Error creating client to %s: %v\n", url, err)
 	}
 	defer nc.Close()
 
 	ncp, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
-		DefaultOptions.Host,
-		DefaultOptions.Port))
+		s.getOpts().Host,
+		s.Addr().(*net.TCPAddr).Port))
 	if err != nil {
 		t.Fatalf("Error creating client: %v\n", err)
 	}

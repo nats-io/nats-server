@@ -68,6 +68,7 @@ type Server struct {
 	start         time.Time
 	http          net.Listener
 	httpHandler   http.Handler
+	profiler      net.Listener
 	httpReqStats  map[string]uint64
 	routeListener net.Listener
 	routeInfo     Info
@@ -329,6 +330,12 @@ func (s *Server) Shutdown() {
 		s.http = nil
 	}
 
+	// Kick Profiling if its running
+	if s.profiler != nil {
+		doneExpected++
+		s.profiler.Close()
+	}
+
 	// Release the solicited routes connect go routines.
 	close(s.rcQuit)
 
@@ -363,12 +370,13 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	opts := s.getOpts()
 
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	s.Noticef("Listening for client connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
+	s.Noticef("Listening for client connections on %s",
+		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
@@ -439,13 +447,41 @@ func (s *Server) StartProfiler() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	s.Noticef("Starting profiling on http port %d", opts.ProfPort)
-	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.ProfPort))
+	port := opts.ProfPort
+
+	// Check for Random Port
+	if port == -1 {
+		port = 0
+	}
+
+	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
+
+	l, err := net.Listen("tcp", hp)
+	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
+
+	if err != nil {
+		s.Fatalf("error starting profiler: %s", err)
+	}
+
+	srv := &http.Server{
+		Addr:           hp,
+		Handler:        http.DefaultServeMux,
+		ReadTimeout:    2 * time.Second,
+		WriteTimeout:   2 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
+	s.mu.Lock()
+	s.profiler = l
+	s.mu.Unlock()
+
 	go func() {
-		err := http.ListenAndServe(hp, nil)
+		// if this errors out, it's probably because the server is being shutdown
+		err := srv.Serve(l)
 		if err != nil {
-			s.Fatalf("error starting monitor server: %s", err)
+			s.Fatalf("error starting profiler: %s", err)
 		}
+		s.done <- true
 	}()
 }
 
@@ -513,13 +549,15 @@ func (s *Server) startMonitoring(secure bool) error {
 		port         int
 	)
 
+	monitorProtocol := "http"
+
 	if secure {
+		monitorProtocol += "s"
 		port = opts.HTTPSPort
 		if port == -1 {
 			port = 0
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
-		s.Noticef("Starting https monitor on %s", hp)
 		config := util.CloneTLSConfig(opts.TLSConfig)
 		config.ClientAuth = tls.NoClientCert
 		httpListener, err = tls.Listen("tcp", hp, config)
@@ -530,13 +568,15 @@ func (s *Server) startMonitoring(secure bool) error {
 			port = 0
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
-		s.Noticef("Starting http monitor on %s", hp)
 		httpListener, err = net.Listen("tcp", hp)
 	}
 
 	if err != nil {
 		return fmt.Errorf("can't listen to the monitor port: %v", err)
 	}
+
+	s.Noticef("Starting %s monitor on %s", monitorProtocol,
+		net.JoinHostPort(opts.HTTPHost, strconv.Itoa(httpListener.Addr().(*net.TCPAddr).Port)))
 
 	mux := http.NewServeMux()
 
@@ -880,13 +920,23 @@ func (s *Server) Addr() net.Addr {
 }
 
 // MonitorAddr will return the net.Addr object for the monitoring listener.
-func (s *Server) MonitorAddr() net.Addr {
+func (s *Server) MonitorAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.http == nil {
 		return nil
 	}
-	return s.http.Addr()
+	return s.http.Addr().(*net.TCPAddr)
+}
+
+// RouteAddr returns the net.Addr object for the route listener.
+func (s *Server) ClusterAddr() *net.TCPAddr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.routeListener == nil {
+		return nil
+	}
+	return s.routeListener.Addr().(*net.TCPAddr)
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept client
