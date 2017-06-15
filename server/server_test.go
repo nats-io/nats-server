@@ -334,7 +334,7 @@ func TestWriteDeadline(t *testing.T) {
 	dur := time.Since(start)
 	// user more than the write deadline to account for calls
 	// overhead, running with -race, etc...
-	if dur > 100*time.Millisecond {
+	if dur > 110*time.Millisecond {
 		t.Fatalf("Flush should have returned sooner, took: %v", dur)
 	}
 	// Flush sender connection to ensure that all data has been sent.
