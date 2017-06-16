@@ -179,7 +179,7 @@ func (u *usersOption) Apply(server *Server) {
 
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
-	noopOption
+	authOption
 	newValue ClusterOpts
 }
 
@@ -371,6 +371,10 @@ func (s *Server) reloadAuthorization() {
 	for i, client := range s.clients {
 		clients[i] = client
 	}
+	routes := make(map[uint64]*client, len(s.routes))
+	for i, route := range s.routes {
+		routes[i] = route
+	}
 	s.mu.Unlock()
 
 	for _, client := range clients {
@@ -382,6 +386,14 @@ func (s *Server) reloadAuthorization() {
 
 		// Remove any unauthorized subscriptions.
 		s.removeUnauthorizedSubs(client)
+	}
+
+	for _, client := range routes {
+		// Disconnect any unauthorized routes.
+		if !s.isRouterAuthorized(client) {
+			client.route.closed = true
+			client.authViolation()
+		}
 	}
 }
 
