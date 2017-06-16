@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 )
@@ -176,6 +177,64 @@ func (u *usersOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization users")
 }
 
+// clusterOption implements the option interface for the `cluster` setting.
+type clusterOption struct {
+	noopOption
+	newValue ClusterOpts
+}
+
+// Apply the cluster change.
+func (c *clusterOption) Apply(server *Server) {
+	server.mu.Lock()
+	tlsRequired := c.newValue.TLSConfig != nil
+	server.routeInfo.TLSRequired = tlsRequired
+	server.routeInfo.SSLRequired = tlsRequired
+	server.routeInfo.TLSVerify = tlsRequired
+	server.routeInfo.AuthRequired = c.newValue.Username != ""
+	server.generateRouteInfoJSON()
+	server.mu.Unlock()
+	server.Noticef("Reloaded: cluster")
+}
+
+// routesOption implements the option interface for the cluster `routes`
+// setting.
+type routesOption struct {
+	noopOption
+	add    []*url.URL
+	remove []*url.URL
+}
+
+// Apply the route changes by adding and removing the necessary routes.
+func (r *routesOption) Apply(server *Server) {
+	server.mu.Lock()
+	routes := make([]*client, len(server.routes))
+	i := 0
+	for _, client := range server.routes {
+		routes[i] = client
+		i++
+	}
+	server.mu.Unlock()
+
+	// Remove routes.
+	for _, remove := range r.remove {
+		for _, client := range routes {
+			if client.route.url == remove {
+				client.mu.Lock()
+				// Do not attempt to reconnect when route is removed.
+				client.route.closed = true
+				client.mu.Unlock()
+				client.closeConnection()
+				server.Noticef("Removed route %v", remove)
+			}
+		}
+	}
+
+	// Add routes.
+	server.solicitRoutes(r.add)
+
+	server.Noticef("Reloaded: cluster routes")
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -250,6 +309,15 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &authTimeoutOption{newValue: newValue.(float64)})
 		case "users":
 			diffOpts = append(diffOpts, &usersOption{newValue: newValue.([]*User)})
+		case "cluster":
+			newClusterOpts := newValue.(ClusterOpts)
+			if err := validateClusterOpts(oldValue.(ClusterOpts), newClusterOpts); err != nil {
+				return nil, err
+			}
+			diffOpts = append(diffOpts, &clusterOption{newValue: newClusterOpts})
+		case "routes":
+			add, remove := diffRoutes(oldValue.([]*url.URL), newValue.([]*url.URL))
+			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
 		case "port":
 			// check to see if newValue == 0 and continue if so.
 			if newValue == 0 {
@@ -315,4 +383,46 @@ func (s *Server) reloadAuthorization() {
 		// Remove any unauthorized subscriptions.
 		s.removeUnauthorizedSubs(client)
 	}
+}
+
+// validateClusterOpts ensures the new ClusterOpts does not change host or
+// port, which do not support reload.
+func validateClusterOpts(old, new ClusterOpts) error {
+	if old.Host != new.Host {
+		return fmt.Errorf("Config reload not supported for cluster host: old=%s, new=%s",
+			old.Host, new.Host)
+	}
+	if old.Port != new.Port {
+		return fmt.Errorf("Config reload not supported for cluster port: old=%d, new=%d",
+			old.Port, new.Port)
+	}
+	return nil
+}
+
+// diffRoutes diffs the old routes and the new routes and returns the ones that
+// should be added and removed from the server.
+func diffRoutes(old, new []*url.URL) (add, remove []*url.URL) {
+	// Find routes to remove.
+removeLoop:
+	for _, oldRoute := range old {
+		for _, newRoute := range new {
+			if oldRoute == newRoute {
+				continue removeLoop
+			}
+		}
+		remove = append(remove, oldRoute)
+	}
+
+	// Find routes to add.
+addLoop:
+	for _, newRoute := range new {
+		for _, oldRoute := range old {
+			if oldRoute == newRoute {
+				continue addLoop
+			}
+		}
+		add = append(add, newRoute)
+	}
+
+	return add, remove
 }

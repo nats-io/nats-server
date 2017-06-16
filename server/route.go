@@ -37,6 +37,7 @@ type route struct {
 	url          *url.URL
 	authRequired bool
 	tlsRequired  bool
+	closed       bool
 }
 
 type connectInfo struct {
@@ -643,8 +644,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
-	b, _ := json.Marshal(info)
-	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
+	s.generateRouteInfoJSON()
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
@@ -697,7 +697,7 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	<-ch
 
 	// Solicit Routes if needed.
-	s.solicitRoutes()
+	s.solicitRoutes(s.getOpts().Routes)
 }
 
 func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
@@ -748,8 +748,8 @@ func (c *client) isSolicitedRoute() bool {
 	return c.typ == ROUTER && c.route != nil && c.route.didSolicit
 }
 
-func (s *Server) solicitRoutes() {
-	for _, r := range s.getOpts().Routes {
+func (s *Server) solicitRoutes(routes []*url.URL) {
+	for _, r := range routes {
 		route := r
 		s.startGoRoutine(func() { s.connectToRoute(route, true) })
 	}

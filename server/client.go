@@ -1342,6 +1342,11 @@ func (c *client) closeConnection() {
 		}
 	}
 
+	// Don't reconnect routes that are being closed.
+	if c.route != nil && c.route.closed {
+		return
+	}
+
 	// Check for a solicited route. If it was, start up a reconnect unless
 	// we are already connected to the other end.
 	if c.isSolicitedRoute() || retryImplicit {
