@@ -48,6 +48,10 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
+		Cluster: ClusterOpts{
+			Host: "localhost",
+			Port: -1,
+		},
 	}
 	processOptions(golden)
 
@@ -109,6 +113,10 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
+		Cluster: ClusterOpts{
+			Host: "localhost",
+			Port: -1,
+		},
 	}
 	processOptions(golden)
 
@@ -170,6 +178,10 @@ func TestConfigReload(t *testing.T) {
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
+		Cluster: ClusterOpts{
+			Host: "localhost",
+			Port: -1,
+		},
 	}
 	processOptions(golden)
 
@@ -228,6 +240,9 @@ func TestConfigReload(t *testing.T) {
 	}
 	if !server.info.AuthRequired {
 		t.Fatal("Expected AuthRequired to be true")
+	}
+	if !updated.Cluster.NoAdvertise {
+		t.Fatal("Expected NoAdvertise to be true")
 	}
 }
 
