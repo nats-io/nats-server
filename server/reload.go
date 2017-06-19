@@ -185,6 +185,7 @@ type clusterOption struct {
 
 // Apply the cluster change.
 func (c *clusterOption) Apply(server *Server) {
+	// TODO: support enabling/disabling clustering.
 	server.mu.Lock()
 	tlsRequired := c.newValue.TLSConfig != nil
 	server.routeInfo.TLSRequired = tlsRequired
