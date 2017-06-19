@@ -396,7 +396,9 @@ func (s *Server) reloadAuthorization() {
 	for _, client := range routes {
 		// Disconnect any unauthorized routes.
 		if !s.isRouterAuthorized(client) {
+			client.mu.Lock()
 			client.route.closed = true
+			client.mu.Unlock()
 			client.authViolation()
 		}
 	}
