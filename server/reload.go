@@ -318,6 +318,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "routes":
 			add, remove := diffRoutes(oldValue.([]*url.URL), newValue.([]*url.URL))
 			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
+		case "nolog":
+			// Ignore NoLog option since it's not parsed and only used in
+			// testing.
+			continue
 		case "port":
 			// check to see if newValue == 0 and continue if so.
 			if newValue == 0 {
