@@ -1561,8 +1561,8 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 
 // Ensure Reload supports changing cluster routes. Test this by starting
 // two servers in a cluster, ensuring messages flow between them, then
-// reloading with a different route and ensuring messages only flow through the
-// new cluster.
+// reloading with a different route and ensuring messages flow through the new
+// cluster.
 func TestConfigReloadClusterRoutes(t *testing.T) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -1582,7 +1582,6 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	srvbOpts.NoLog = true
 
 	srvb := RunServer(srvbOpts)
-	defer srvb.Shutdown()
 
 	srvaConfig := filepath.Join(dir, "tmp_a.conf")
 	if err := os.Symlink("./configs/reload/srv_a_1.conf", srvaConfig); err != nil {
@@ -1643,6 +1642,10 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
 	}
 
+	// Kill old route server.
+	srvbConn.Close()
+	srvb.Shutdown()
+
 	// Reload cluster routes.
 	if err := os.Remove(srvaConfig); err != nil {
 		t.Fatalf("Error deleting symlink: %v", err)
@@ -1665,23 +1668,12 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if err := srvcConn.Publish("foo", []byte("hola")); err != nil {
 		t.Fatalf("Error publishing: %v", err)
 	}
-	srvbConn.Flush()
+	srvcConn.Flush()
 	msg, err = sub.NextMsg(time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
 	if string(msg.Data) != "hola" {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hola"), msg.Data)
-	}
-
-	// Ensure messages no longer flow through the old cluster.
-	for i := 0; i < 5; i++ {
-		if err := srvbConn.Publish("foo", []byte("world")); err != nil {
-			t.Fatalf("Error publishing: %v", err)
-		}
-		srvbConn.Flush()
-	}
-	if msg, err := sub.NextMsg(50 * time.Millisecond); err != nats.ErrTimeout {
-		t.Fatalf("Expected ErrTimeout, got %v %v", err, string(msg.Data))
 	}
 }
