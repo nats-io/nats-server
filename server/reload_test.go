@@ -312,7 +312,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	nc.Flush()
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	nc.Flush()
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
@@ -1153,7 +1153,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 	conn.Flush()
 
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
@@ -1166,7 +1166,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 	nc.Flush()
 
-	msg, err = sub2.NextMsg(time.Second)
+	msg, err = sub2.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		t.Fatalf("Error publishing message: %v", err)
 	}
 	nc.Flush()
-	msg, err = sub.NextMsg(time.Second)
+	msg, err = sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
@@ -1390,7 +1390,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	srvbConn.Flush()
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
@@ -1446,7 +1446,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	srvbConn.Flush()
-	msg, err = sub.NextMsg(time.Second)
+	msg, err = sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
@@ -1522,7 +1522,7 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	srvbConn.Flush()
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
@@ -1550,7 +1550,7 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	srvbConn.Flush()
-	msg, err = sub.NextMsg(time.Second)
+	msg, err = sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
@@ -1634,7 +1634,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	srvbConn.Flush()
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
@@ -1656,6 +1656,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
+	time.Sleep(20 * time.Millisecond)
 
 	srvcAddr := fmt.Sprintf("nats://%s:%d", srvcOpts.Host, srvcOpts.Port)
 	srvcConn, err := nats.Connect(srvcAddr)
@@ -1665,11 +1666,13 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	defer srvcConn.Close()
 
 	// Ensure messages flow through the new cluster.
-	if err := srvcConn.Publish("foo", []byte("hola")); err != nil {
-		t.Fatalf("Error publishing: %v", err)
+	for i := 0; i < 5; i++ {
+		if err := srvcConn.Publish("foo", []byte("hola")); err != nil {
+			t.Fatalf("Error publishing: %v", err)
+		}
+		srvcConn.Flush()
 	}
-	srvcConn.Flush()
-	msg, err = sub.NextMsg(time.Second)
+	msg, err = sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving message: %v", err)
 	}
