@@ -27,11 +27,8 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 // Ensure Reload returns an error when attempting to change an option which
 // does not support reloading.
 func TestConfigReloadUnsupported(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
+	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	defer os.Remove(config)
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -54,16 +51,6 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		},
 	}
 	processOptions(golden)
-
-	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
-	defer os.Remove(config)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	server := New(opts)
 
 	if !reflect.DeepEqual(golden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -92,11 +79,8 @@ func TestConfigReloadUnsupported(t *testing.T) {
 
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
+	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	defer os.Remove(config)
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -119,16 +103,6 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		},
 	}
 	processOptions(golden)
-
-	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
-	defer os.Remove(config)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	server := New(opts)
 
 	if !reflect.DeepEqual(golden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -157,11 +131,8 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
+	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	defer os.Remove(config)
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -184,16 +155,6 @@ func TestConfigReload(t *testing.T) {
 		},
 	}
 	processOptions(golden)
-
-	if err := os.Symlink("./configs/reload/test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
-	defer os.Remove(config)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	server := New(opts)
 
 	if !reflect.DeepEqual(golden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -251,23 +212,8 @@ func TestConfigReload(t *testing.T) {
 // key pair and client verification enabled, ensure reconnect fails, then
 // ensure reconnect succeeds when the client provides a cert.
 func TestConfigReloadRotateTLS(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/tls_test.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -325,23 +271,8 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 // TLS enabled, connect to it to verify, reload config with TLS enabled, ensure
 // reconnect fails, then ensure reconnect succeeds when using secure.
 func TestConfigReloadEnableTLS(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -381,23 +312,8 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 // ensure reconnect fails, then ensure reconnect succeeds when connecting
 // without secure.
 func TestConfigReloadDisableTLS(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/tls_test.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -437,23 +353,9 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 // reload config using a different username/password, ensure reconnect fails,
 // then ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadRotateUserAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
+		"./configs/reload/single_user_authentication_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -517,23 +419,8 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 // reload config using with a username/password, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadEnableUserAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -597,23 +484,9 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no credentials succeeds.
 func TestConfigReloadDisableUserAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
+		"./configs/reload/single_user_authentication_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -650,23 +523,8 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 // verify, reload config using a different token, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct token.
 func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/token_authentication_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -730,23 +588,8 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 // config using with a token, ensure reconnect fails, then ensure reconnect
 // succeeds when using the correct token.
 func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -810,23 +653,8 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no token succeeds.
 func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/token_authentication_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -863,23 +691,8 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 // verify, reload config using a different user, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/multiple_users_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -969,23 +782,8 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 // config using with users, ensure reconnect fails, then ensure reconnect
 // succeeds when using the correct credentials.
 func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -1049,23 +847,8 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no credentials succeeds.
 func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/multiple_users_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	// Ensure we can connect as a sanity check.
@@ -1102,23 +885,8 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 // reload config with new permissions, ensure the previous subscription was
 // closed and publishes fail, then ensure the new permissions succeed.
 func TestConfigReloadChangePermissions(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/authorization_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/authorization_1.conf")
 	defer os.Remove(config)
-
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-
-	server := RunServer(opts)
 	defer server.Shutdown()
 
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
@@ -1260,21 +1028,8 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 // Ensure Reload returns an error when attempting to change cluster address
 // host.
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/srv_a_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	server := New(opts)
 
 	// Attempt to change cluster listen host.
 	if err := os.Remove(config); err != nil {
@@ -1293,21 +1048,8 @@ func TestConfigReloadClusterHostUnsupported(t *testing.T) {
 // Ensure Reload returns an error when attempting to change cluster address
 // port.
 func TestConfigReloadClusterPortUnsupported(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, "tmp.conf")
-
-	if err := os.Symlink("./configs/reload/srv_a_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	server := New(opts)
 
 	// Attempt to change cluster listen port.
 	if err := os.Remove(config); err != nil {
@@ -1328,39 +1070,12 @@ func TestConfigReloadClusterPortUnsupported(t *testing.T) {
 // between them, then reloading with authorization and ensuring messages no
 // longer flow until reloading with the correct credentials.
 func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	srvbConfig := filepath.Join(dir, "tmp_b.conf")
-
-	if err := os.Symlink("./configs/reload/srv_b_1.conf", srvbConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
 	defer os.Remove(srvbConfig)
-
-	srvbOpts, err := ProcessConfigFile(srvbConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvbOpts.NoLog = true
-
-	srvb := RunServer(srvbOpts)
 	defer srvb.Shutdown()
 
-	srvaConfig := filepath.Join(dir, "tmp_a.conf")
-	if err := os.Symlink("./configs/reload/srv_a_1.conf", srvaConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
-
-	srvaOpts, err := ProcessConfigFile(srvaConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvaOpts.NoLog = true
-
-	srva := RunServer(srvaOpts)
 	defer srva.Shutdown()
 
 	srvaAddr := fmt.Sprintf("nats://%s:%d", srvaOpts.Host, srvaOpts.Port)
@@ -1460,39 +1175,12 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 // between them, then reloading without authorization and ensuring messages
 // still flow.
 func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	srvbConfig := filepath.Join(dir, "tmp_b.conf")
-
-	if err := os.Symlink("./configs/reload/srv_b_2.conf", srvbConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_2.conf")
 	defer os.Remove(srvbConfig)
-
-	srvbOpts, err := ProcessConfigFile(srvbConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvbOpts.NoLog = true
-
-	srvb := RunServer(srvbOpts)
 	defer srvb.Shutdown()
 
-	srvaConfig := filepath.Join(dir, "tmp_a.conf")
-	if err := os.Symlink("./configs/reload/srv_a_2.conf", srvaConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_2.conf")
 	defer os.Remove(srvaConfig)
-
-	srvaOpts, err := ProcessConfigFile(srvaConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvaOpts.NoLog = true
-
-	srva := RunServer(srvaOpts)
 	defer srva.Shutdown()
 
 	srvaAddr := fmt.Sprintf("nats://%s:%d", srvaOpts.Host, srvaOpts.Port)
@@ -1564,38 +1252,11 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 // reloading with a different route and ensuring messages flow through the new
 // cluster.
 func TestConfigReloadClusterRoutes(t *testing.T) {
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	srvbConfig := filepath.Join(dir, "tmp_b.conf")
-
-	if err := os.Symlink("./configs/reload/srv_b_1.conf", srvbConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
 	defer os.Remove(srvbConfig)
 
-	srvbOpts, err := ProcessConfigFile(srvbConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvbOpts.NoLog = true
-
-	srvb := RunServer(srvbOpts)
-
-	srvaConfig := filepath.Join(dir, "tmp_a.conf")
-	if err := os.Symlink("./configs/reload/srv_a_1.conf", srvaConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
-
-	srvaOpts, err := ProcessConfigFile(srvaConfig)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	srvaOpts.NoLog = true
-
-	srva := RunServer(srvaOpts)
 	defer srva.Shutdown()
 
 	srvcOpts, err := ProcessConfigFile("./configs/reload/srv_c_1.conf")
@@ -1679,4 +1340,33 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if string(msg.Data) != "hola" {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hola"), msg.Data)
 	}
+}
+
+func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
+	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
+	opts.NoLog = true
+	return RunServer(opts), opts, config
+}
+
+func newServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
+	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
+	return New(opts), opts, config
+}
+
+func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Options, string) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Error getting working directory: %v", err)
+	}
+	config := filepath.Join(dir, symlinkName)
+
+	if err := os.Symlink(configName, config); err != nil {
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
+	}
+
+	opts, err := ProcessConfigFile(config)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	return opts, config
 }
