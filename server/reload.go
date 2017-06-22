@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync/atomic"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -329,7 +330,7 @@ func (m *maxControlLineOption) Apply(server *Server) {
 // setting.
 type maxPayloadOption struct {
 	noopOption
-	newValue int
+	newValue int64
 }
 
 // Apply the setting by updating the server info and each client.
@@ -338,9 +339,7 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.info.MaxPayload = m.newValue
 	server.generateServerInfoJSON()
 	for _, client := range server.clients {
-		client.mu.Lock()
-		client.mpay = m.newValue
-		client.mu.Unlock()
+		atomic.StoreInt64(&client.mpay, m.newValue)
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)
@@ -440,7 +439,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "maxcontrolline":
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
 		case "maxpayload":
-			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int)})
+			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int64)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.
