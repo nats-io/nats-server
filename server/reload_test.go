@@ -187,6 +187,12 @@ func TestConfigReload(t *testing.T) {
 	if updated.LogFile != "/tmp/gnatsd-2.log" {
 		t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
 	}
+	if !updated.Syslog {
+		t.Fatal("Expected Syslog to be true")
+	}
+	if updated.RemoteSyslog != "udp://localhost:514" {
+		t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://localhost:514\ngot: %s", updated.RemoteSyslog)
+	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
 	}

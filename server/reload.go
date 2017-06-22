@@ -84,6 +84,29 @@ func (l *logfileOption) Apply(server *Server) {
 	server.Noticef("Reloaded: log_file = %v", l.newValue)
 }
 
+// syslogOption implements the option interface for the `syslog` setting.
+type syslogOption struct {
+	loggingOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (s *syslogOption) Apply(server *Server) {
+	server.Noticef("Reloaded: syslog = %v", s.newValue)
+}
+
+// remoteSyslogOption implements the option interface for the `remote_syslog`
+// setting.
+type remoteSyslogOption struct {
+	loggingOption
+	newValue string
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (r *remoteSyslogOption) Apply(server *Server) {
+	server.Noticef("Reloaded: remote_syslog = %v", r.newValue)
+}
+
 // noopOption is a base struct that provides default no-op behaviors.
 type noopOption struct{}
 
@@ -409,6 +432,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &logtimeOption{newValue: newValue.(bool)})
 		case "logfile":
 			diffOpts = append(diffOpts, &logfileOption{newValue: newValue.(string)})
+		case "syslog":
+			diffOpts = append(diffOpts, &syslogOption{newValue: newValue.(bool)})
+		case "remotesyslog":
+			diffOpts = append(diffOpts, &remoteSyslogOption{newValue: newValue.(string)})
 		case "tlsconfig":
 			diffOpts = append(diffOpts, &tlsOption{newValue: newValue.(*tls.Config)})
 		case "tlstimeout":
