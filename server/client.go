@@ -524,8 +524,8 @@ func (c *client) maxConnExceeded() {
 	c.closeConnection()
 }
 
-func (c *client) maxPayloadViolation(sz int) {
-	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
+func (c *client) maxPayloadViolation(sz, max int) {
+	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, max)
 	c.sendErr("Maximum Payload Violation")
 	c.closeConnection()
 }
@@ -712,8 +712,11 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
-	if c.mpay > 0 && c.pa.size > c.mpay {
-		c.maxPayloadViolation(c.pa.size)
+	c.mu.Lock()
+	maxPayload := c.mpay
+	c.mu.Unlock()
+	if maxPayload > 0 && c.pa.size > maxPayload {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
 

@@ -295,6 +295,57 @@ func (m *maxConnOption) Apply(server *Server) {
 	server.Noticef("Reloaded: max_connections = %v", m.newValue)
 }
 
+// pidFileOption implements the option interface for the `pid_file` setting.
+type pidFileOption struct {
+	noopOption
+	newValue string
+}
+
+// Apply the setting by logging the pid to the new file.
+func (p *pidFileOption) Apply(server *Server) {
+	if p.newValue == "" {
+		return
+	}
+	if err := server.logPid(); err != nil {
+		server.Errorf("Failed to write pidfile: %v", err)
+	}
+	server.Noticef("Reloaded: pid_file = %v", p.newValue)
+}
+
+// maxControlLineOption implements the option interface for the
+// `max_control_line` setting.
+type maxControlLineOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the max control line will be reloaded after options
+// are applied
+func (m *maxControlLineOption) Apply(server *Server) {
+	server.Noticef("Reloaded: max_control_line = %d", m.newValue)
+}
+
+// maxPayloadOption implements the option interface for the `max_payload`
+// setting.
+type maxPayloadOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply the setting by updating the server info and each client.
+func (m *maxPayloadOption) Apply(server *Server) {
+	server.mu.Lock()
+	server.info.MaxPayload = m.newValue
+	server.generateServerInfoJSON()
+	for _, client := range server.clients {
+		client.mu.Lock()
+		client.mpay = m.newValue
+		client.mu.Unlock()
+	}
+	server.mu.Unlock()
+	server.Noticef("Reloaded: max_payload = %d", m.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -384,6 +435,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
 		case "maxconn":
 			diffOpts = append(diffOpts, &maxConnOption{newValue: newValue.(int)})
+		case "pidfile":
+			diffOpts = append(diffOpts, &pidFileOption{newValue: newValue.(string)})
+		case "maxcontrolline":
+			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
+		case "maxpayload":
+			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.

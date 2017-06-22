@@ -185,7 +185,7 @@ func TestConfigReload(t *testing.T) {
 		t.Fatal("Expected Logtime to be true")
 	}
 	if updated.LogFile != "/tmp/gnatsd-2.log" {
-		t.Fatalf("LogFile is incorrect.\nexpected /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
+		t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
 	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
@@ -210,6 +210,12 @@ func TestConfigReload(t *testing.T) {
 	}
 	if !updated.Cluster.NoAdvertise {
 		t.Fatal("Expected NoAdvertise to be true")
+	}
+	if updated.PidFile != "/tmp/gnatsd.pid" {
+		t.Fatalf("PidFile is incorrect.\nexpected: /tmp/gnatsd.pid\ngot: %s", updated.PidFile)
+	}
+	if updated.MaxControlLine != 512 {
+		t.Fatalf("MaxControlLine is incorrect.\nexpected: 512\ngot: %d", updated.MaxControlLine)
 	}
 }
 
@@ -1395,7 +1401,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Expected error")
+		t.Fatal("Expected to be disconnected")
 	}
 
 	if numClients := server.NumClients(); numClients != 1 {
@@ -1406,6 +1412,76 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	_, err = nats.Connect(addr)
 	if err == nil {
 		t.Fatal("Expected error on connect")
+	}
+}
+
+// Ensure reload supports changing the max payload size. Test this by starting
+// a server with the default size limit, ensuring publishes work, reloading
+// with a restrictive limit, and ensuring publishing an oversized message fails
+// and disconnects the client.
+func TestConfigReloadMaxPayload(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	closed := make(chan struct{})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+
+	conn, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer conn.Close()
+	sub, err := conn.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	conn.Flush()
+
+	// Ensure we can publish as a sanity check.
+	if err := nc.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing: %v", err)
+	}
+	nc.Flush()
+	_, err = sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving message: %v", err)
+	}
+
+	// Set max payload to one.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/reload/max_payload.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure oversized messages don't get delivered and the client is
+	// disconnected.
+	if err := nc.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing: %v", err)
+	}
+	nc.Flush()
+	_, err = sub.NextMsg(20 * time.Millisecond)
+	if err != nats.ErrTimeout {
+		t.Fatalf("Expected ErrTimeout, got: %v", err)
+	}
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected to be disconnected")
 	}
 }
 
