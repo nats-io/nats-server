@@ -223,6 +223,15 @@ func TestConfigReload(t *testing.T) {
 	if updated.MaxControlLine != 512 {
 		t.Fatalf("MaxControlLine is incorrect.\nexpected: 512\ngot: %d", updated.MaxControlLine)
 	}
+	if updated.PingInterval != 5*time.Second {
+		t.Fatalf("PingInterval is incorrect.\nexpected 5s\ngot: %s", updated.PingInterval)
+	}
+	if updated.MaxPingsOut != 1 {
+		t.Fatalf("MaxPingsOut is incorrect.\nexpected 1\ngot: %d", updated.MaxPingsOut)
+	}
+	if updated.WriteDeadline != 2*time.Second {
+		t.Fatalf("WriteDeadline is incorrect.\nexpected 2s\ngot: %s", updated.WriteDeadline)
+	}
 }
 
 // Ensure Reload supports TLS config changes. Test this by starting a server

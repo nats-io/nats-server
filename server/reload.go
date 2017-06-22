@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -368,6 +369,45 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)
 }
 
+// pingIntervalOption implements the option interface for the `ping_interval`
+// setting.
+type pingIntervalOption struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the ping interval will be reloaded after options
+// are applied.
+func (p *pingIntervalOption) Apply(server *Server) {
+	server.Noticef("Reloaded: ping_interval = %s", p.newValue)
+}
+
+// maxPingsOutOption implements the option interface for the `ping_max`
+// setting.
+type maxPingsOutOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the ping interval will be reloaded after options
+// are applied.
+func (m *maxPingsOutOption) Apply(server *Server) {
+	server.Noticef("Reloaded: ping_max = %d", m.newValue)
+}
+
+// writeDeadlineOption implements the option interface for the `write_deadline`
+// setting.
+type writeDeadlineOption struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the write deadline will be reloaded after options
+// are applied.
+func (w *writeDeadlineOption) Apply(server *Server) {
+	server.Noticef("Reloaded: write_deadline = %s", w.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -467,6 +507,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
 		case "maxpayload":
 			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int64)})
+		case "pinginterval":
+			diffOpts = append(diffOpts, &pingIntervalOption{newValue: newValue.(time.Duration)})
+		case "maxpingsout":
+			diffOpts = append(diffOpts, &maxPingsOutOption{newValue: newValue.(int)})
+		case "writedeadline":
+			diffOpts = append(diffOpts, &writeDeadlineOption{newValue: newValue.(time.Duration)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.
