@@ -256,6 +256,45 @@ func (r *routesOption) Apply(server *Server) {
 	server.Noticef("Reloaded: cluster routes")
 }
 
+// maxConnOption implements the option interface for the `max_connections`
+// setting.
+type maxConnOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply the max connections change by closing random connections til we are
+// below the limit if necessary.
+func (m *maxConnOption) Apply(server *Server) {
+	server.mu.Lock()
+	var (
+		clients = make([]*client, len(server.clients))
+		i       = 0
+	)
+	for _, client := range server.clients {
+		clients[i] = client
+		i++
+	}
+	server.mu.Unlock()
+
+	if m.newValue > 0 && len(clients) > m.newValue {
+		// Close connections til we are within the limit.
+		var (
+			numClose = len(clients) - m.newValue
+			closed   = 0
+		)
+		for _, client := range clients {
+			client.maxConnExceeded()
+			closed++
+			if closed >= numClose {
+				break
+			}
+		}
+		server.Noticef("Closed %d connections to fall within max_connections", closed)
+	}
+	server.Noticef("Reloaded: max_connections = %v", m.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -343,6 +382,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "routes":
 			add, remove := diffRoutes(oldValue.([]*url.URL), newValue.([]*url.URL))
 			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
+		case "maxconn":
+			diffOpts = append(diffOpts, &maxConnOption{newValue: newValue.(int)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.

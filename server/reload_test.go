@@ -1348,6 +1348,67 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	}
 }
 
+// Ensure Reload supports changing the max connections. Test this by starting a
+// server with no max connections, connecting two clients, reloading with a
+// max connections of one, and ensuring one client is disconnected.
+func TestConfigReloadMaxConnections(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	// Make two connections.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+	nc1, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+	closed := make(chan struct{}, 1)
+	nc1.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+	nc2, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc2.Close()
+	nc2.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+
+	if numClients := server.NumClients(); numClients != 2 {
+		t.Fatalf("Expected 2 clients, got %d", numClients)
+	}
+
+	// Set max connections to one.
+	if err := os.Remove(config); err != nil {
+		t.Fatalf("Error deleting symlink: %v", err)
+	}
+	if err := os.Symlink("./configs/reload/max_connections.conf", config); err != nil {
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
+	}
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure one connection was closed.
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected error")
+	}
+
+	if numClients := server.NumClients(); numClients != 1 {
+		t.Fatalf("Expected 1 client, got %d", numClients)
+	}
+
+	// Ensure new connections fail.
+	_, err = nats.Connect(addr)
+	if err == nil {
+		t.Fatal("Expected error on connect")
+	}
+}
+
 func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	opts.NoLog = true
