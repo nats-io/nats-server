@@ -58,7 +58,7 @@ type debugOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because logging will be reloaded after options are applied
+// Apply is a no-op because logging will be reloaded after options are applied.
 func (d *debugOption) Apply(server *Server) {
 	server.Noticef("Reloaded: debug = %v", d.newValue)
 }
