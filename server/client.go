@@ -1325,6 +1325,11 @@ func (c *client) closeConnection() {
 		retryImplicit = c.route.retry
 	}
 
+	closed := false
+	if c.route != nil {
+		closed = c.route.closed
+	}
+
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -1340,6 +1345,11 @@ func (c *client) closeConnection() {
 				srv.broadcastUnSubscribe(sub)
 			}
 		}
+	}
+
+	// Don't reconnect routes that are being closed.
+	if c.route != nil && closed {
+		return
 	}
 
 	// Check for a solicited route. If it was, start up a reconnect unless

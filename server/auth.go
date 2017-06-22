@@ -130,6 +130,10 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	if opts.Cluster.Username == "" {
+		return true
+	}
+
 	if opts.Cluster.Username != c.opts.Username {
 		return false
 	}

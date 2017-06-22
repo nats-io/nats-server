@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/conf"
+	"github.com/nats-io/gnatsd/util"
 )
 
 // Options for clusters.
@@ -93,6 +94,12 @@ func (o *Options) Clone() *Options {
 			*routeCopy = *route
 			clone.Routes[i] = routeCopy
 		}
+	}
+	if o.TLSConfig != nil {
+		clone.TLSConfig = util.CloneTLSConfig(o.TLSConfig)
+	}
+	if o.Cluster.TLSConfig != nil {
+		clone.Cluster.TLSConfig = util.CloneTLSConfig(o.Cluster.TLSConfig)
 	}
 	return clone
 }

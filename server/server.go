@@ -177,6 +177,15 @@ func (s *Server) generateServerInfoJSON() {
 	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
 }
 
+func (s *Server) generateRouteInfoJSON() {
+	b, err := json.Marshal(s.routeInfo)
+	if err != nil {
+		s.Fatalf("Error marshaling route INFO JSON: %+v\n", err)
+		return
+	}
+	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
+}
+
 // PrintAndDie is exported for access in other packages.
 func PrintAndDie(msg string) {
 	fmt.Fprintf(os.Stderr, "%s\n", msg)
