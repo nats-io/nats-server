@@ -45,8 +45,7 @@ type traceOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because authorization will be reloaded after options are
-// applied
+// Apply is a no-op because logging will be reloaded after options are applied.
 func (t *traceOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
@@ -57,10 +56,31 @@ type debugOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because authorization will be reloaded after options are
-// applied
+// Apply is a no-op because logging will be reloaded after options are applied
 func (d *debugOption) Apply(server *Server) {
 	server.Noticef("Reloaded: debug = %v", d.newValue)
+}
+
+// logtimeOption implements the option interface for the `logtime` setting.
+type logtimeOption struct {
+	loggingOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (l *logtimeOption) Apply(server *Server) {
+	server.Noticef("Reloaded: logtime = %v", l.newValue)
+}
+
+// logfileOption implements the option interface for the `log_file` setting.
+type logfileOption struct {
+	loggingOption
+	newValue string
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (l *logfileOption) Apply(server *Server) {
+	server.Noticef("Reloaded: log_file = %v", l.newValue)
 }
 
 // noopOption is a base struct that provides default no-op behaviors.
@@ -296,6 +316,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &traceOption{newValue: newValue.(bool)})
 		case "debug":
 			diffOpts = append(diffOpts, &debugOption{newValue: newValue.(bool)})
+		case "logtime":
+			diffOpts = append(diffOpts, &logtimeOption{newValue: newValue.(bool)})
+		case "logfile":
+			diffOpts = append(diffOpts, &logfileOption{newValue: newValue.(string)})
 		case "tlsconfig":
 			diffOpts = append(diffOpts, &tlsOption{newValue: newValue.(*tls.Config)})
 		case "tlstimeout":

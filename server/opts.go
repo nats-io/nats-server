@@ -712,8 +712,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Trace {
 		opts.Trace = true
 	}
-	if flagOpts.Logtime {
-		opts.Logtime = true
+	// Logtime flag defaults to true, so only take precedence if it was set to false.
+	if !flagOpts.Logtime {
+		opts.Logtime = false
 	}
 	if flagOpts.LogFile != "" {
 		opts.LogFile = flagOpts.LogFile

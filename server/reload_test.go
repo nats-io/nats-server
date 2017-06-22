@@ -181,6 +181,12 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Debug {
 		t.Fatal("Expected Debug to be true")
 	}
+	if !updated.Logtime {
+		t.Fatal("Expected Logtime to be true")
+	}
+	if updated.LogFile != "/tmp/gnatsd-2.log" {
+		t.Fatalf("LogFile is incorrect.\nexpected /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
+	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
 	}
