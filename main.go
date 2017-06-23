@@ -183,7 +183,7 @@ func main() {
 	s.ConfigureLogger()
 
 	// Start things up. Block here until done.
-	s.Start()
+	server.Run(s)
 }
 
 func configureTLS(opts *server.Options) {
