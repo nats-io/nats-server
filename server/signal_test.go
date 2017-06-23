@@ -59,3 +59,25 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 		t.Fatalf("Expected log to contain %q, got %q", expectedStr, string(buf))
 	}
 }
+
+func TestSignalToReloadConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/reload/basic.conf")
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if reloaded := s.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
+
+	// This should cause config to be reloaded.
+	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
+	// Wait a bit for action to be performed
+	time.Sleep(500 * time.Millisecond)
+
+	if reloaded := s.NumReloads(); reloaded != 1 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 1\ngot: %d", reloaded)
+	}
+}

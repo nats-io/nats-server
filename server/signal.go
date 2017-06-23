@@ -1,5 +1,5 @@
 // +build !windows
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -16,7 +16,7 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGHUP)
 
 	go func() {
 		for sig := range c {
@@ -28,6 +28,11 @@ func (s *Server) handleSignals() {
 			case syscall.SIGUSR1:
 				// File log re-open for rotating file logs.
 				s.ReOpenLogFile()
+			case syscall.SIGHUP:
+				// Config reload.
+				if err := s.Reload(); err != nil {
+					s.Errorf("Failed to reload server configuration: %s", err)
+				}
 			}
 		}
 	}()
