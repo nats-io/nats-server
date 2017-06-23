@@ -183,7 +183,9 @@ func main() {
 	s.ConfigureLogger()
 
 	// Start things up. Block here until done.
-	server.Run(s)
+	if err := server.Run(s); err != nil {
+		server.PrintAndDie(err.Error())
+	}
 }
 
 func configureTLS(opts *server.Options) {

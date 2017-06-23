@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/debug"
 )
 
 const serviceName = "gnatsd"
@@ -65,6 +66,14 @@ loop:
 }
 
 // Run starts the NATS server as a Windows service.
-func Run(server *Server) {
-	svc.Run(serviceName, &winServiceWrapper{server})
+func Run(server *Server) error {
+	run := svc.Run
+	isInteractive, err := svc.IsAnInteractiveSession()
+	if err != nil {
+		return err
+	}
+	if isInteractive {
+		run = debug.Run
+	}
+	return run(serviceName, &winServiceWrapper{server})
 }
