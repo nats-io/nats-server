@@ -79,6 +79,7 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
+	reloaded      uint64         // number of times server config has been reloaded
 	logging       struct {
 		sync.RWMutex
 		logger Logger
@@ -916,6 +917,14 @@ func (s *Server) NumSubscriptions() uint32 {
 	subs := s.sl.Count()
 	s.mu.Unlock()
 	return subs
+}
+
+// NumReloads returns the number of times the server config has been reloaded.
+func (s *Server) NumReloads() uint64 {
+	s.mu.Lock()
+	reloaded := s.reloaded
+	s.mu.Unlock()
+	return reloaded
 }
 
 // Addr will return the net.Addr object for the current listener.

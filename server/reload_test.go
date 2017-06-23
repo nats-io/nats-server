@@ -19,8 +19,14 @@ import (
 // not start with a config file.
 func TestConfigReloadNoConfigFile(t *testing.T) {
 	server := New(&Options{})
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 	if server.Reload() == nil {
 		t.Fatal("Expected Reload to return an error")
+	}
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
 	}
 }
 
@@ -29,6 +35,10 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 func TestConfigReloadUnsupported(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -75,12 +85,20 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
+
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 }
 
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -127,12 +145,20 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
+
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 }
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	if reloaded := server.NumReloads(); reloaded != 0 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	}
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -204,6 +230,10 @@ func TestConfigReload(t *testing.T) {
 	}
 	if !updated.Cluster.NoAdvertise {
 		t.Fatal("Expected NoAdvertise to be true")
+	}
+
+	if reloaded := server.NumReloads(); reloaded != 1 {
+		t.Fatalf("Reloaded is incorrect.\nexpected: 1\ngot: %d", reloaded)
 	}
 }
 
