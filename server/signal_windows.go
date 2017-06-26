@@ -64,7 +64,7 @@ func ProcessSignal(command string, pid int) error {
 		cmd = svc.Shutdown
 		to = svc.Stopped
 	case "reopen":
-		cmd = svc.Cmd(256)
+		cmd = reopenLogCmd
 		to = svc.Running
 	case "reload":
 		cmd = svc.ParamChange

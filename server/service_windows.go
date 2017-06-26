@@ -9,7 +9,12 @@ import (
 	"golang.org/x/sys/windows/svc/debug"
 )
 
-const serviceName = "gnatsd"
+const (
+	serviceName     = "gnatsd"
+	reopenLogCode   = 128
+	reopenLogCmd    = svc.Cmd(reopenLogCode)
+	acceptReopenLog = svc.Accepted(reopenLogCode)
+)
 
 // winServiceWrapper implements the svc.Handler interface for implementing
 // gnatsd as a Windows service.
@@ -40,7 +45,10 @@ func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequ
 		return false, 1
 	}
 
-	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	status <- svc.Status{
+		State:   svc.Running,
+		Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptParamChange | acceptReopenLog,
+	}
 
 loop:
 	for change := range changes {
@@ -50,10 +58,13 @@ loop:
 		case svc.Stop, svc.Shutdown:
 			w.server.Shutdown()
 			break loop
-		//case svc.ParamChange:
-		//	if err := w.server.Reload(); err != nil {
-		//		w.server.Errorf("Failed to reload server configuration: %s", err)
-		//	}
+		case reopenLogCmd:
+			// File log re-open for rotating file logs.
+			w.server.ReOpenLogFile()
+		case svc.ParamChange:
+			if err := w.server.Reload(); err != nil {
+				w.server.Errorf("Failed to reload server configuration: %s", err)
+			}
 		default:
 			w.server.Debugf("Unexpected control request: %v", change.Cmd)
 		}
