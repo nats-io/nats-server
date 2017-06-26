@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/nats-io/gnatsd/server"
 )
@@ -22,6 +24,7 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
+    -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -67,10 +70,13 @@ func main() {
 	// Server Options
 	opts := &server.Options{}
 
-	var showVersion bool
-	var debugAndTrace bool
-	var configFile string
-	var showTLSHelp bool
+	var (
+		showVersion   bool
+		debugAndTrace bool
+		configFile    string
+		signal        string
+		showTLSHelp   bool
+	)
 
 	// Parse flags
 	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
@@ -94,6 +100,8 @@ func main() {
 	flag.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
 	flag.StringVar(&configFile, "c", "", "Configuration file.")
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
+	flag.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
+	flag.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
@@ -150,6 +158,27 @@ func main() {
 
 	// Snapshot flag options.
 	server.FlagSnapshot = opts.Clone()
+
+	// Process signal.
+	if signal != "" {
+		var (
+			pid           = -1
+			commandAndPid = strings.Split(signal, "=")
+		)
+		if l := len(commandAndPid); l == 2 {
+			p, err := strconv.Atoi(commandAndPid[1])
+			if err != nil {
+				usage()
+			}
+			pid = p
+		} else if l > 2 {
+			usage()
+		}
+		if err := server.ProcessSignal(commandAndPid[0], pid); err != nil {
+			server.PrintAndDie(err.Error())
+		}
+		os.Exit(0)
+	}
 
 	// Parse config if given
 	if configFile != "" {

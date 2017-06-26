@@ -24,3 +24,11 @@ func (s *Server) handleSignals() {
 		}
 	}()
 }
+
+// ProcessSignal sends the given signal command to the given process. If pid is
+// -1, this will send the signal to the single running instance of gnatsd. If
+// multiple instances are running, it returns an error.
+func ProcessSignal(command string, pid int) error {
+	// TODO
+	return errors.New("TODO")
+}
