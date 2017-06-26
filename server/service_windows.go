@@ -28,9 +28,10 @@ type winServiceWrapper struct {
 // with 0 being "no error". You can also indicate if exit code,
 // if any, is service specific or not by using svcSpecificEC
 // parameter.
-func (w *winServiceWrapper) Execute(args []string, r <-chan svc.ChangeRequest,
-	s chan<- svc.Status) (bool, uint32) {
+func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequest,
+	status chan<- svc.Status) (bool, uint32) {
 
+	status <- svc.Status{State: svc.StartPending}
 	go w.server.Start()
 
 	// Wait for accept loop(s) to be started
@@ -39,17 +40,13 @@ func (w *winServiceWrapper) Execute(args []string, r <-chan svc.ChangeRequest,
 		return false, 1
 	}
 
-	select {
-	case s <- svc.Status{
-		State:   svc.Running,
-		Accepts: svc.AcceptStop | svc.AcceptShutdown,
-	}:
-	default:
-	}
+	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 
 loop:
-	for change := range r {
+	for change := range changes {
 		switch change.Cmd {
+		case svc.Interrogate:
+			status <- change.CurrentStatus
 		case svc.Stop, svc.Shutdown:
 			w.server.Shutdown()
 			break loop
@@ -58,10 +55,11 @@ loop:
 		//		w.server.Errorf("Failed to reload server configuration: %s", err)
 		//	}
 		default:
-			w.server.Debugf("Command not supported by service %s: %v", serviceName, change.Cmd)
+			w.server.Debugf("Unexpected control request: %v", change.Cmd)
 		}
 	}
 
+	status <- svc.Status{State: svc.StopPending}
 	return false, 0
 }
 

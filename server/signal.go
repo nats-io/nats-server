@@ -55,10 +55,10 @@ func ProcessSignal(command string, pid int) (err error) {
 			return err
 		}
 		if len(pids) == 0 {
-			return errors.New("No gnatsd processes running")
+			return errors.New("no gnatsd processes running")
 		}
 		if len(pids) > 1 {
-			errStr := "Multiple gnatsd processes running:\n"
+			errStr := "multiple gnatsd processes running:\n"
 			prefix := ""
 			for _, p := range pids {
 				errStr += fmt.Sprintf("%s%d", prefix, p)
@@ -97,7 +97,7 @@ func resolvePids() ([]int, error) {
 		}
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
-			return nil, errors.New("Unable to resolve pid")
+			return nil, errors.New("unable to resolve pid")
 		}
 		pids = append(pids, pid)
 	}
