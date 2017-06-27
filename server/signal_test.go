@@ -85,7 +85,7 @@ func TestSignalToReloadConfig(t *testing.T) {
 }
 
 func TestProcessSignalNoProcesses(t *testing.T) {
-	err := ProcessSignal(CommandStop, -1)
+	err := ProcessSignal(CommandStop, "")
 	if err == nil {
 		t.Fatal("Expected error")
 	}
@@ -105,7 +105,7 @@ func TestProcessSignalMultipleProcesses(t *testing.T) {
 		pgrep = pgrepBefore
 	}()
 
-	err := ProcessSignal(CommandStop, -1)
+	err := ProcessSignal(CommandStop, "")
 	if err == nil {
 		t.Fatal("Expected error")
 	}
@@ -124,7 +124,7 @@ func TestProcessSignalPgrepError(t *testing.T) {
 		pgrep = pgrepBefore
 	}()
 
-	err := ProcessSignal(CommandStop, -1)
+	err := ProcessSignal(CommandStop, "")
 	if err == nil {
 		t.Fatal("Expected error")
 	}
@@ -143,7 +143,7 @@ func TestProcessSignalPgrepMangled(t *testing.T) {
 		pgrep = pgrepBefore
 	}()
 
-	err := ProcessSignal(CommandStop, -1)
+	err := ProcessSignal(CommandStop, "")
 	if err == nil {
 		t.Fatal("Expected error")
 	}
@@ -178,7 +178,7 @@ func TestProcessSignalResolveSingleProcess(t *testing.T) {
 		kill = killBefore
 	}()
 
-	if err := ProcessSignal(CommandStop, -1); err != nil {
+	if err := ProcessSignal(CommandStop, ""); err != nil {
 		t.Fatalf("ProcessSignal failed: %v", err)
 	}
 
@@ -188,11 +188,22 @@ func TestProcessSignalResolveSingleProcess(t *testing.T) {
 }
 
 func TestProcessSignalInvalidCommand(t *testing.T) {
-	err := ProcessSignal(Command("invalid"), 123)
+	err := ProcessSignal(Command("invalid"), "123")
 	if err == nil {
 		t.Fatal("Expected error")
 	}
 	expectedStr := "unknown signal \"invalid\""
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalInvalidPid(t *testing.T) {
+	err := ProcessSignal(CommandStop, "abc")
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "invalid pid: abc"
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}
@@ -215,7 +226,7 @@ func TestProcessSignalQuitProcess(t *testing.T) {
 		kill = killBefore
 	}()
 
-	if err := ProcessSignal(CommandQuit, 123); err != nil {
+	if err := ProcessSignal(CommandQuit, "123"); err != nil {
 		t.Fatalf("ProcessSignal failed: %v", err)
 	}
 
@@ -241,7 +252,7 @@ func TestProcessSignalReopenProcess(t *testing.T) {
 		kill = killBefore
 	}()
 
-	if err := ProcessSignal(CommandReopen, 123); err != nil {
+	if err := ProcessSignal(CommandReopen, "123"); err != nil {
 		t.Fatalf("ProcessSignal failed: %v", err)
 	}
 
@@ -267,7 +278,7 @@ func TestProcessSignalReloadProcess(t *testing.T) {
 		kill = killBefore
 	}()
 
-	if err := ProcessSignal(CommandReload, 123); err != nil {
+	if err := ProcessSignal(CommandReload, "123"); err != nil {
 		t.Fatalf("ProcessSignal failed: %v", err)
 	}
 

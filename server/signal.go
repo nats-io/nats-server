@@ -45,11 +45,13 @@ func (s *Server) handleSignals() {
 	}()
 }
 
-// ProcessSignal sends the given signal command to the given process. If pid is
-// -1, this will send the signal to the single running instance of gnatsd. If
-// multiple instances are running, it returns an error.
-func ProcessSignal(command Command, pid int) (err error) {
-	if pid == -1 {
+// ProcessSignal sends the given signal command to the given process. If pidStr
+// is empty, this will send the signal to the single running instance of
+// gnatsd. If multiple instances are running, it returns an error. This returns
+// an error if the given process is not running or the command is invalid.
+func ProcessSignal(command Command, pidStr string) (err error) {
+	var pid int
+	if pidStr == "" {
 		pids, err := resolvePids()
 		if err != nil {
 			return err
@@ -67,6 +69,12 @@ func ProcessSignal(command Command, pid int) (err error) {
 			return errors.New(errStr)
 		}
 		pid = pids[0]
+	} else {
+		p, err := strconv.Atoi(pidStr)
+		if err != nil {
+			return fmt.Errorf("invalid pid: %s", pidStr)
+		}
+		pid = p
 	}
 
 	switch command {

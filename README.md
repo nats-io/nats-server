@@ -92,7 +92,7 @@ On Unix systems, the NATS server responds to the following signals:
 +---------+---------------------------------------+
 | SIGUSR1 | Reopens the log file for log rotation |
 +---------+---------------------------------------+
-| SIGHUP  | Reloads server configuration          |
+| SIGHUP  | Reloads server configuration file     |
 +---------+---------------------------------------+
 
 The `gnatsd` binary can be used to send these signals to running NATS servers using the `-sl` flag:

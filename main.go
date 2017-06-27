@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/nats-io/gnatsd/server"
@@ -282,15 +281,11 @@ func configureClusterOpts(opts *server.Options) error {
 
 func processSignal(signal string) {
 	var (
-		pid           = -1
+		pid           string
 		commandAndPid = strings.Split(signal, "=")
 	)
 	if l := len(commandAndPid); l == 2 {
-		p, err := strconv.Atoi(commandAndPid[1])
-		if err != nil {
-			usage()
-		}
-		pid = p
+		pid = commandAndPid[1]
 	} else if l > 2 {
 		usage()
 	}

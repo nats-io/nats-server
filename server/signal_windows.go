@@ -3,7 +3,6 @@
 package server
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -32,11 +31,11 @@ func (s *Server) handleSignals() {
 }
 
 // ProcessSignal sends the given signal command to the running gnatsd service.
-// If pid is not -1 or if there is no gnatsd service running, it returns an
-// error.
-func ProcessSignal(command Command, pid int) error {
-	if pid != -1 {
-		return errors.New("cannot signal pid on Windows")
+// If service is empty, this signals the "gnatsd" service. This returns an
+// error is the given service is not running or the command is invalid.
+func ProcessSignal(command Command, service string) error {
+	if service == "" {
+		service = serviceName
 	}
 
 	m, err := mgr.Connect()
@@ -45,7 +44,7 @@ func ProcessSignal(command Command, pid int) error {
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(service)
 	if err != nil {
 		return fmt.Errorf("could not access service: %v", err)
 	}
