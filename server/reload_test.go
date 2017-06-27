@@ -19,14 +19,12 @@ import (
 // not start with a config file.
 func TestConfigReloadNoConfigFile(t *testing.T) {
 	server := New(&Options{})
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
-	}
+	loaded := server.ConfigTime()
 	if server.Reload() == nil {
 		t.Fatal("Expected Reload to return an error")
 	}
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
 	}
 }
 
@@ -36,9 +34,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
 
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
-	}
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -86,8 +82,8 @@ func TestConfigReloadUnsupported(t *testing.T) {
 			golden, opts)
 	}
 
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
 	}
 }
 
@@ -96,9 +92,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
 
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
-	}
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -146,8 +140,8 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 			golden, opts)
 	}
 
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
 	}
 }
 
@@ -156,9 +150,7 @@ func TestConfigReload(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
 
-	if reloaded := server.NumReloads(); reloaded != 0 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 0\ngot: %d", reloaded)
-	}
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -232,8 +224,8 @@ func TestConfigReload(t *testing.T) {
 		t.Fatal("Expected NoAdvertise to be true")
 	}
 
-	if reloaded := server.NumReloads(); reloaded != 1 {
-		t.Fatalf("Reloaded is incorrect.\nexpected: 1\ngot: %d", reloaded)
+	if reloaded := server.ConfigTime(); !reloaded.After(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
 	}
 }
 

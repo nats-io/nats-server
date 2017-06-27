@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -259,7 +260,7 @@ func (s *Server) Reload() error {
 	err = s.reloadOptions(newOpts)
 	if err == nil {
 		s.mu.Lock()
-		s.reloaded++
+		s.configTime = time.Now()
 		s.mu.Unlock()
 	}
 	return err

@@ -84,7 +84,7 @@ Hello World
 On Unix systems, the NATS server responds to the following signals:
 
 | Signal  | Result                                |
-| ------- | --------------------------------------|
+| ------- | ------------------------------------- |
 | SIGKILL | Kills the process immediately         |
 | SIGINT  | Stops the server gracefully           |
 | SIGUSR1 | Reopens the log file for log rotation |

@@ -79,7 +79,7 @@ type Server struct {
 	grRunning     bool
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
-	reloaded      uint64         // number of times server config has been reloaded
+	configTime    time.Time      // last time config was loaded
 	logging       struct {
 		sync.RWMutex
 		logger Logger
@@ -119,13 +119,15 @@ func New(opts *Options) *Server {
 		clientConnectURLs: make(map[string]struct{}),
 	}
 
+	now := time.Now()
 	s := &Server{
 		configFile: opts.ConfigFile,
 		info:       info,
 		sl:         NewSublist(),
 		opts:       opts,
 		done:       make(chan bool, 1),
-		start:      time.Now(),
+		start:      now,
+		configTime: now,
 	}
 
 	s.mu.Lock()
@@ -919,12 +921,11 @@ func (s *Server) NumSubscriptions() uint32 {
 	return subs
 }
 
-// NumReloads returns the number of times the server config has been reloaded.
-func (s *Server) NumReloads() uint64 {
+// ConfigTime will report the last time the server configuration was loaded.
+func (s *Server) ConfigTime() time.Time {
 	s.mu.Lock()
-	reloaded := s.reloaded
-	s.mu.Unlock()
-	return reloaded
+	defer s.mu.Unlock()
+	return s.configTime
 }
 
 // Addr will return the net.Addr object for the current listener.
