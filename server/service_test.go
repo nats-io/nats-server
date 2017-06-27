@@ -4,19 +4,38 @@
 package server
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
 
 func TestRun(t *testing.T) {
-	s := New(DefaultOptions())
+	var (
+		s       = New(DefaultOptions())
+		started = make(chan error, 1)
+		errC    = make(chan error, 1)
+	)
+	go func() {
+		errC <- Run(s)
+	}()
 	go func() {
 		if !s.ReadyForConnections(time.Second) {
-			t.Fatal("Failed to start server in time")
+			started <- errors.New("failed to start in time")
+			return
 		}
 		s.Shutdown()
+		close(started)
 	}()
-	if err := Run(s); err != nil {
-		t.Fatalf("Run failed: %v", err)
+
+	select {
+	case err := <-errC:
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out")
+	}
+	if err := <-started; err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
