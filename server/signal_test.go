@@ -72,6 +72,9 @@ func TestSignalToReloadConfig(t *testing.T) {
 
 	loaded := s.ConfigTime()
 
+	// Wait a bit to ensure ConfigTime changes.
+	time.Sleep(5 * time.Millisecond)
+
 	// This should cause config to be reloaded.
 	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
 	// Wait a bit for action to be performed

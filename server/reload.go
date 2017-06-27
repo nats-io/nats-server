@@ -257,13 +257,13 @@ func (s *Server) Reload() error {
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
 	processOptions(newOpts)
-	err = s.reloadOptions(newOpts)
-	if err == nil {
-		s.mu.Lock()
-		s.configTime = time.Now()
-		s.mu.Unlock()
+	if err := s.reloadOptions(newOpts); err != nil {
+		return err
 	}
-	return err
+	s.mu.Lock()
+	s.configTime = time.Now()
+	s.mu.Unlock()
+	return nil
 }
 
 // reloadOptions reloads the server config with the provided options. If an

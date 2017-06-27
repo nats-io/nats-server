@@ -49,7 +49,7 @@ func (s *Server) handleSignals() {
 // is empty, this will send the signal to the single running instance of
 // gnatsd. If multiple instances are running, it returns an error. This returns
 // an error if the given process is not running or the command is invalid.
-func ProcessSignal(command Command, pidStr string) (err error) {
+func ProcessSignal(command Command, pidStr string) error {
 	var pid int
 	if pidStr == "" {
 		pids, err := resolvePids()
@@ -77,6 +77,7 @@ func ProcessSignal(command Command, pidStr string) (err error) {
 		pid = p
 	}
 
+	var err error
 	switch command {
 	case CommandStop:
 		err = kill(pid, syscall.SIGKILL)
@@ -89,7 +90,7 @@ func ProcessSignal(command Command, pidStr string) (err error) {
 	default:
 		err = fmt.Errorf("unknown signal %q", command)
 	}
-	return
+	return err
 }
 
 // resolvePids returns the pids for all running gnatsd processes.
