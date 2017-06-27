@@ -57,11 +57,8 @@ func ProcessSignal(command string, pid int) error {
 	)
 
 	switch command {
-	case "stop":
+	case "stop", "quit":
 		cmd = svc.Stop
-		to = svc.Stopped
-	case "quit":
-		cmd = svc.Shutdown
 		to = svc.Stopped
 	case "reopen":
 		cmd = reopenLogCmd
