@@ -88,16 +88,33 @@ func ProcessSignal(command string, pid int) (err error) {
 func resolvePids() ([]int, error) {
 	// If pgrep isn't available, this will just bail out and the user will be
 	// required to specify a pid.
-	output, _ := exec.Command("pgrep", processName).Output()
-	pidStrs := strings.Split(string(output), "\n")
-	pids := make([]int, 0, len(pidStrs))
+	output, err := exec.Command("pgrep", processName).Output()
+	if err != nil {
+		switch err.(type) {
+		case *exec.ExitError:
+			// ExitError indicates non-zero exit code, meaning no processes
+			// found.
+			break
+		default:
+			return nil, errors.New("unable to resolve pid, try providing one")
+		}
+	}
+	var (
+		myPid   = os.Getpid()
+		pidStrs = strings.Split(string(output), "\n")
+		pids    = make([]int, 0, len(pidStrs))
+	)
 	for _, pidStr := range pidStrs {
 		if pidStr == "" {
 			continue
 		}
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
-			return nil, errors.New("unable to resolve pid")
+			return nil, errors.New("unable to resolve pid, try providing one")
+		}
+		// Ignore the current process.
+		if pid == myPid {
+			continue
 		}
 		pids = append(pids, pid)
 	}
