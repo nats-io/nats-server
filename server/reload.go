@@ -296,6 +296,7 @@ func (m *maxConnOption) Apply(server *Server) {
 		clients = make([]*client, len(server.clients))
 		i       = 0
 	)
+	// Map iteration is random, which allows us to close random connections.
 	for _, client := range server.clients {
 		clients[i] = client
 		i++
