@@ -4,6 +4,8 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -79,5 +81,197 @@ func TestSignalToReloadConfig(t *testing.T) {
 
 	if reloaded := s.NumReloads(); reloaded != 1 {
 		t.Fatalf("Reloaded is incorrect.\nexpected: 1\ngot: %d", reloaded)
+	}
+}
+
+func TestProcessSignalNoProcesses(t *testing.T) {
+	err := ProcessSignal(CommandStop, -1)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "no gnatsd processes running"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalMultipleProcesses(t *testing.T) {
+	pid := os.Getpid()
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return []byte(fmt.Sprintf("123\n456\n%d\n", pid)), nil
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
+	err := ProcessSignal(CommandStop, -1)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "multiple gnatsd processes running:\n123\n456"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalPgrepError(t *testing.T) {
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return nil, errors.New("error")
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
+	err := ProcessSignal(CommandStop, -1)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "unable to resolve pid, try providing one"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalPgrepMangled(t *testing.T) {
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return []byte("12x"), nil
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
+	err := ProcessSignal(CommandStop, -1)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "unable to resolve pid, try providing one"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalResolveSingleProcess(t *testing.T) {
+	pid := os.Getpid()
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return []byte(fmt.Sprintf("123\n%d\n", pid)), nil
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGKILL {
+			t.Fatalf("signal is incorrect.\nexpected: killed\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(CommandStop, -1); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
+	}
+}
+
+func TestProcessSignalInvalidCommand(t *testing.T) {
+	err := ProcessSignal(Command("invalid"), 123)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "unknown signal \"invalid\""
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalQuitProcess(t *testing.T) {
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGINT {
+			t.Fatalf("signal is incorrect.\nexpected: interrupt\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(CommandQuit, 123); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
+	}
+}
+
+func TestProcessSignalReopenProcess(t *testing.T) {
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGUSR1 {
+			t.Fatalf("signal is incorrect.\nexpected: user defined signal 1\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(CommandReopen, 123); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
+	}
+}
+
+func TestProcessSignalReloadProcess(t *testing.T) {
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGHUP {
+			t.Fatalf("signal is incorrect.\nexpected: hangup\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(CommandReload, 123); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
 	}
 }

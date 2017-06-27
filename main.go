@@ -159,25 +159,9 @@ func main() {
 	// Snapshot flag options.
 	server.FlagSnapshot = opts.Clone()
 
-	// Process signal.
+	// Process signal control.
 	if signal != "" {
-		var (
-			pid           = -1
-			commandAndPid = strings.Split(signal, "=")
-		)
-		if l := len(commandAndPid); l == 2 {
-			p, err := strconv.Atoi(commandAndPid[1])
-			if err != nil {
-				usage()
-			}
-			pid = p
-		} else if l > 2 {
-			usage()
-		}
-		if err := server.ProcessSignal(commandAndPid[0], pid); err != nil {
-			server.PrintAndDie(err.Error())
-		}
-		os.Exit(0)
+		processSignal(signal)
 	}
 
 	// Parse config if given
@@ -294,4 +278,24 @@ func configureClusterOpts(opts *server.Options) error {
 	}
 
 	return nil
+}
+
+func processSignal(signal string) {
+	var (
+		pid           = -1
+		commandAndPid = strings.Split(signal, "=")
+	)
+	if l := len(commandAndPid); l == 2 {
+		p, err := strconv.Atoi(commandAndPid[1])
+		if err != nil {
+			usage()
+		}
+		pid = p
+	} else if l > 2 {
+		usage()
+	}
+	if err := server.ProcessSignal(server.Command(commandAndPid[0]), pid); err != nil {
+		server.PrintAndDie(err.Error())
+	}
+	os.Exit(0)
 }

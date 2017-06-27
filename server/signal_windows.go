@@ -34,7 +34,7 @@ func (s *Server) handleSignals() {
 // ProcessSignal sends the given signal command to the running gnatsd service.
 // If pid is not -1 or if there is no gnatsd service running, it returns an
 // error.
-func ProcessSignal(command string, pid int) error {
+func ProcessSignal(command Command, pid int) error {
 	if pid != -1 {
 		return errors.New("cannot signal pid on Windows")
 	}
@@ -57,13 +57,13 @@ func ProcessSignal(command string, pid int) error {
 	)
 
 	switch command {
-	case "stop", "quit":
+	case CommandStop, CommandQuit:
 		cmd = svc.Stop
 		to = svc.Stopped
-	case "reopen":
+	case CommandReopen:
 		cmd = reopenLogCmd
 		to = svc.Running
-	case "reload":
+	case CommandReload:
 		cmd = svc.ParamChange
 		to = svc.Running
 	default:

@@ -48,7 +48,7 @@ func (s *Server) handleSignals() {
 // ProcessSignal sends the given signal command to the given process. If pid is
 // -1, this will send the signal to the single running instance of gnatsd. If
 // multiple instances are running, it returns an error.
-func ProcessSignal(command string, pid int) (err error) {
+func ProcessSignal(command Command, pid int) (err error) {
 	if pid == -1 {
 		pids, err := resolvePids()
 		if err != nil {
@@ -70,14 +70,14 @@ func ProcessSignal(command string, pid int) (err error) {
 	}
 
 	switch command {
-	case "stop":
-		err = syscall.Kill(pid, syscall.SIGKILL)
-	case "quit":
-		err = syscall.Kill(pid, syscall.SIGINT)
-	case "reopen":
-		err = syscall.Kill(pid, syscall.SIGUSR1)
-	case "reload":
-		err = syscall.Kill(pid, syscall.SIGHUP)
+	case CommandStop:
+		err = kill(pid, syscall.SIGKILL)
+	case CommandQuit:
+		err = kill(pid, syscall.SIGINT)
+	case CommandReopen:
+		err = kill(pid, syscall.SIGUSR1)
+	case CommandReload:
+		err = kill(pid, syscall.SIGHUP)
 	default:
 		err = fmt.Errorf("unknown signal %q", command)
 	}
@@ -88,7 +88,7 @@ func ProcessSignal(command string, pid int) (err error) {
 func resolvePids() ([]int, error) {
 	// If pgrep isn't available, this will just bail out and the user will be
 	// required to specify a pid.
-	output, err := exec.Command("pgrep", processName).Output()
+	output, err := pgrep()
 	if err != nil {
 		switch err.(type) {
 		case *exec.ExitError:
@@ -119,4 +119,12 @@ func resolvePids() ([]int, error) {
 		pids = append(pids, pid)
 	}
 	return pids, nil
+}
+
+var kill = func(pid int, signal syscall.Signal) error {
+	return syscall.Kill(pid, signal)
+}
+
+var pgrep = func() ([]byte, error) {
+	return exec.Command("pgrep", processName).Output()
 }
