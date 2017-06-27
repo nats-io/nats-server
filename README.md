@@ -79,6 +79,71 @@ MSG foo 1 11
 Hello World
 ```
 
+### Process Signaling
+
+On Unix systems, the NATS server responds to the following signals:
+
++---------+---------------------------------------+
+| Signal  | Result                                |
++---------+---------------------------------------+
+| SIGKILL | Kills the process immediately         |
++---------+---------------------------------------+
+| SIGINT  | Stops the server gracefully           |
++---------+---------------------------------------+
+| SIGUSR1 | Reopens the log file for log rotation |
++---------+---------------------------------------+
+| SIGHUP  | Reloads server configuration          |
++---------+---------------------------------------+
+
+The `gnatsd` binary can be used to send these signals to running NATS servers using the `-sl` flag:
+
+```sh
+# Reload server configuration
+gnatsd -sl reload
+
+# Reopen log file for log rotation
+gnatsd -sl reopen
+
+# Stop the server
+gnatsd -sl stop
+```
+
+If there are multiple `gnatsd` processes running, specify a PID:
+
+```sh
+gnatsd -sl stop=<pid>
+```
+
+See the [Windows Service](#windows-service) section for information on signaling the NATS server on Windows.
+
+### Windows Service
+
+The NATS server supports running as a Windows service. In fact, this is the recommended way of running NATS on Windows. There is currently no installer and instead users should use `sc.exe` to install the service:
+
+```batch
+sc.exe create gnatsd binPath= "%NATS_PATH%\gnatsd.exe [gnatsd flags]"
+sc.exe start gnatsd
+```
+
+The above will create and start a `gnatsd` service. Note that the gnatsd flags should be passed in when creating the service. This allows for running multiple NATS server configurations on a single Windows server by using a 1:1 service instance per installed NATS server service. Once the service is running, it can be controlled using `sc.exe` or `gnatsd.exe -sl`:
+
+```batch
+REM Reload server configuration
+gnatsd.exe -sl reload
+
+REM Reopen log file for log rotation
+gnatsd.exe -sl reopen
+
+REM Stop the server
+gnatsd.exe -sl stop
+```
+
+The above commands will default to controlling the `gnatsd` service. If the service is another name, it can be specified:
+
+```batch
+gnatsd.exe -sl stop=<service name>
+```
+
 ## Command line arguments
 
 The NATS server accepts command line arguments to control its behavior. Usage is shown below. Note that command line arguments override those items in the [configuration file](#configuration-file).
