@@ -9,3 +9,8 @@ func Run(server *Server) error {
 	server.Start()
 	return nil
 }
+
+// isWindowsService indicates if NATS is running as a Windows service.
+func isWindowsService() bool {
+	return false
+}

@@ -37,11 +37,18 @@ func (s *Server) ConfigureLogger() {
 		opts = s.getOpts()
 	)
 
+	syslog := opts.Syslog
+	if isWindowsService() && opts.LogFile == "" {
+		// Enable syslog if no log file is specified and we're running as a
+		// Windows service so that logs are written to the Windows event log.
+		syslog = true
+	}
+
 	if opts.LogFile != "" {
 		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
 	} else if opts.RemoteSyslog != "" {
 		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
-	} else if opts.Syslog {
+	} else if syslog {
 		log = logger.NewSysLogger(opts.Debug, opts.Trace)
 	} else {
 		colors := true

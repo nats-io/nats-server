@@ -86,3 +86,9 @@ func Run(server *Server) error {
 	}
 	return run(serviceName, &winServiceWrapper{server})
 }
+
+// isWindowsService indicates if NATS is running as a Windows service.
+func isWindowsService() bool {
+	isInteractive, _ := svc.IsAnInteractiveSession()
+	return !isInteractive
+}
