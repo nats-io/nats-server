@@ -87,6 +87,7 @@ func (cf *clientFlag) clear(c clientFlag) {
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
+	mpay  int64
 	mu    sync.Mutex
 	typ   int
 	cid   uint64
@@ -94,7 +95,6 @@ type client struct {
 	opts  clientOpts
 	start time.Time
 	nc    net.Conn
-	mpay  int64
 	ncs   string
 	bw    *bufio.Writer
 	srv   *Server
