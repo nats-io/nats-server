@@ -227,12 +227,9 @@ func (s *Server) isRunning() bool {
 	return s.running
 }
 
-func (s *Server) logPid() {
+func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	err := ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
-	if err != nil {
-		PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
-	}
+	return ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 }
 
 // Start up the server, this will block.
@@ -255,7 +252,9 @@ func (s *Server) Start() {
 
 	// Log the pid to a file
 	if opts.PidFile != _EMPTY_ {
-		s.logPid()
+		if err := s.logPid(); err != nil {
+			PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
+		}
 	}
 
 	// Start monitoring if needed
@@ -641,7 +640,10 @@ func (s *Server) HTTPHandler() http.Handler {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: s.info.MaxPayload, start: time.Now()}
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: int64(opts.MaxPayload), start: time.Now()}
 
 	// Grab JSON info string
 	s.mu.Lock()
@@ -675,9 +677,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 		s.mu.Unlock()
 		return c
 	}
-
-	// Snapshot server options.
-	opts := s.getOpts()
 
 	// If there is a max connections specified, check that adding
 	// this new client would not push us over the max

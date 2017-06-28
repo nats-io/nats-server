@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,8 +47,7 @@ type traceOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because authorization will be reloaded after options are
-// applied
+// Apply is a no-op because logging will be reloaded after options are applied.
 func (t *traceOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
@@ -58,10 +58,54 @@ type debugOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because authorization will be reloaded after options are
-// applied
+// Apply is a no-op because logging will be reloaded after options are applied.
 func (d *debugOption) Apply(server *Server) {
 	server.Noticef("Reloaded: debug = %v", d.newValue)
+}
+
+// logtimeOption implements the option interface for the `logtime` setting.
+type logtimeOption struct {
+	loggingOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (l *logtimeOption) Apply(server *Server) {
+	server.Noticef("Reloaded: logtime = %v", l.newValue)
+}
+
+// logfileOption implements the option interface for the `log_file` setting.
+type logfileOption struct {
+	loggingOption
+	newValue string
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (l *logfileOption) Apply(server *Server) {
+	server.Noticef("Reloaded: log_file = %v", l.newValue)
+}
+
+// syslogOption implements the option interface for the `syslog` setting.
+type syslogOption struct {
+	loggingOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (s *syslogOption) Apply(server *Server) {
+	server.Noticef("Reloaded: syslog = %v", s.newValue)
+}
+
+// remoteSyslogOption implements the option interface for the `remote_syslog`
+// setting.
+type remoteSyslogOption struct {
+	loggingOption
+	newValue string
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (r *remoteSyslogOption) Apply(server *Server) {
+	server.Noticef("Reloaded: remote_syslog = %v", r.newValue)
 }
 
 // noopOption is a base struct that provides default no-op behaviors.
@@ -237,6 +281,134 @@ func (r *routesOption) Apply(server *Server) {
 	server.Noticef("Reloaded: cluster routes")
 }
 
+// maxConnOption implements the option interface for the `max_connections`
+// setting.
+type maxConnOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply the max connections change by closing random connections til we are
+// below the limit if necessary.
+func (m *maxConnOption) Apply(server *Server) {
+	server.mu.Lock()
+	var (
+		clients = make([]*client, len(server.clients))
+		i       = 0
+	)
+	// Map iteration is random, which allows us to close random connections.
+	for _, client := range server.clients {
+		clients[i] = client
+		i++
+	}
+	server.mu.Unlock()
+
+	if m.newValue > 0 && len(clients) > m.newValue {
+		// Close connections til we are within the limit.
+		var (
+			numClose = len(clients) - m.newValue
+			closed   = 0
+		)
+		for _, client := range clients {
+			client.maxConnExceeded()
+			closed++
+			if closed >= numClose {
+				break
+			}
+		}
+		server.Noticef("Closed %d connections to fall within max_connections", closed)
+	}
+	server.Noticef("Reloaded: max_connections = %v", m.newValue)
+}
+
+// pidFileOption implements the option interface for the `pid_file` setting.
+type pidFileOption struct {
+	noopOption
+	newValue string
+}
+
+// Apply the setting by logging the pid to the new file.
+func (p *pidFileOption) Apply(server *Server) {
+	if p.newValue == "" {
+		return
+	}
+	if err := server.logPid(); err != nil {
+		server.Errorf("Failed to write pidfile: %v", err)
+	}
+	server.Noticef("Reloaded: pid_file = %v", p.newValue)
+}
+
+// maxControlLineOption implements the option interface for the
+// `max_control_line` setting.
+type maxControlLineOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the max control line will be reloaded after options
+// are applied
+func (m *maxControlLineOption) Apply(server *Server) {
+	server.Noticef("Reloaded: max_control_line = %d", m.newValue)
+}
+
+// maxPayloadOption implements the option interface for the `max_payload`
+// setting.
+type maxPayloadOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply the setting by updating the server info and each client.
+func (m *maxPayloadOption) Apply(server *Server) {
+	server.mu.Lock()
+	server.info.MaxPayload = m.newValue
+	server.generateServerInfoJSON()
+	for _, client := range server.clients {
+		atomic.StoreInt64(&client.mpay, int64(m.newValue))
+	}
+	server.mu.Unlock()
+	server.Noticef("Reloaded: max_payload = %d", m.newValue)
+}
+
+// pingIntervalOption implements the option interface for the `ping_interval`
+// setting.
+type pingIntervalOption struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the ping interval will be reloaded after options
+// are applied.
+func (p *pingIntervalOption) Apply(server *Server) {
+	server.Noticef("Reloaded: ping_interval = %s", p.newValue)
+}
+
+// maxPingsOutOption implements the option interface for the `ping_max`
+// setting.
+type maxPingsOutOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the ping interval will be reloaded after options
+// are applied.
+func (m *maxPingsOutOption) Apply(server *Server) {
+	server.Noticef("Reloaded: ping_max = %d", m.newValue)
+}
+
+// writeDeadlineOption implements the option interface for the `write_deadline`
+// setting.
+type writeDeadlineOption struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the write deadline will be reloaded after options
+// are applied.
+func (w *writeDeadlineOption) Apply(server *Server) {
+	server.Noticef("Reloaded: write_deadline = %s", w.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -303,6 +475,14 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &traceOption{newValue: newValue.(bool)})
 		case "debug":
 			diffOpts = append(diffOpts, &debugOption{newValue: newValue.(bool)})
+		case "logtime":
+			diffOpts = append(diffOpts, &logtimeOption{newValue: newValue.(bool)})
+		case "logfile":
+			diffOpts = append(diffOpts, &logfileOption{newValue: newValue.(string)})
+		case "syslog":
+			diffOpts = append(diffOpts, &syslogOption{newValue: newValue.(bool)})
+		case "remotesyslog":
+			diffOpts = append(diffOpts, &remoteSyslogOption{newValue: newValue.(string)})
 		case "tlsconfig":
 			diffOpts = append(diffOpts, &tlsOption{newValue: newValue.(*tls.Config)})
 		case "tlstimeout":
@@ -326,6 +506,20 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "routes":
 			add, remove := diffRoutes(oldValue.([]*url.URL), newValue.([]*url.URL))
 			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
+		case "maxconn":
+			diffOpts = append(diffOpts, &maxConnOption{newValue: newValue.(int)})
+		case "pidfile":
+			diffOpts = append(diffOpts, &pidFileOption{newValue: newValue.(string)})
+		case "maxcontrolline":
+			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
+		case "maxpayload":
+			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int)})
+		case "pinginterval":
+			diffOpts = append(diffOpts, &pingIntervalOption{newValue: newValue.(time.Duration)})
+		case "maxpingsout":
+			diffOpts = append(diffOpts, &maxPingsOutOption{newValue: newValue.(int)})
+		case "writedeadline":
+			diffOpts = append(diffOpts, &writeDeadlineOption{newValue: newValue.(time.Duration)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.
