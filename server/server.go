@@ -36,7 +36,7 @@ type Info struct {
 	SSLRequired       bool     `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
 	TLSRequired       bool     `json:"tls_required"`
 	TLSVerify         bool     `json:"tls_verify"`
-	MaxPayload        int64    `json:"max_payload"`
+	MaxPayload        int      `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
 
@@ -640,7 +640,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: opts.MaxPayload, start: time.Now()}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: int64(opts.MaxPayload), start: time.Now()}
 
 	// Grab JSON info string
 	s.mu.Lock()

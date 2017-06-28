@@ -355,7 +355,7 @@ func (m *maxControlLineOption) Apply(server *Server) {
 // setting.
 type maxPayloadOption struct {
 	noopOption
-	newValue int64
+	newValue int
 }
 
 // Apply the setting by updating the server info and each client.
@@ -364,7 +364,7 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.info.MaxPayload = m.newValue
 	server.generateServerInfoJSON()
 	for _, client := range server.clients {
-		atomic.StoreInt64(&client.mpay, m.newValue)
+		atomic.StoreInt64(&client.mpay, int64(m.newValue))
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)
@@ -507,7 +507,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "maxcontrolline":
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
 		case "maxpayload":
-			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int64)})
+			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int)})
 		case "pinginterval":
 			diffOpts = append(diffOpts, &pingIntervalOption{newValue: newValue.(time.Duration)})
 		case "maxpingsout":

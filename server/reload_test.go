@@ -232,6 +232,9 @@ func TestConfigReload(t *testing.T) {
 	if updated.WriteDeadline != 2*time.Second {
 		t.Fatalf("WriteDeadline is incorrect.\nexpected 2s\ngot: %s", updated.WriteDeadline)
 	}
+	if updated.MaxPayload != 1024 {
+		t.Fatalf("MaxPayload is incorrect.\nexpected 1024\ngot: %d", updated.MaxPayload)
+	}
 }
 
 // Ensure Reload supports TLS config changes. Test this by starting a server

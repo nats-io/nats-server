@@ -381,7 +381,7 @@ type Varz struct {
 	*Info
 	*Options
 	Port             int               `json:"port"`
-	MaxPayload       int64             `json:"max_payload"`
+	MaxPayload       int               `json:"max_payload"`
 	Start            time.Time         `json:"start"`
 	Now              time.Time         `json:"now"`
 	Uptime           string            `json:"uptime"`
