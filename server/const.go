@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+// Command is a signal used to control a running gnatsd process.
+type Command string
+
+// Valid Command values.
+const (
+	CommandStop   = Command("stop")
+	CommandQuit   = Command("quit")
+	CommandReopen = Command("reopen")
+	CommandReload = Command("reload")
+)
+
 const (
 	// VERSION is the current version for the server.
 	VERSION = "0.9.6"

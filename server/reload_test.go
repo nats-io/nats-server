@@ -19,8 +19,12 @@ import (
 // not start with a config file.
 func TestConfigReloadNoConfigFile(t *testing.T) {
 	server := New(&Options{})
+	loaded := server.ConfigTime()
 	if server.Reload() == nil {
 		t.Fatal("Expected Reload to return an error")
+	}
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
 	}
 }
 
@@ -29,6 +33,8 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 func TestConfigReloadUnsupported(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -75,12 +81,18 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
+
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
+	}
 }
 
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -127,12 +139,18 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
+
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
+	}
 }
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+
+	loaded := server.ConfigTime()
 
 	golden := &Options{
 		ConfigFile:     config,
@@ -234,6 +252,10 @@ func TestConfigReload(t *testing.T) {
 	}
 	if updated.MaxPayload != 1024 {
 		t.Fatalf("MaxPayload is incorrect.\nexpected 1024\ngot: %d", updated.MaxPayload)
+	}
+
+	if reloaded := server.ConfigTime(); !reloaded.After(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
 	}
 }
 

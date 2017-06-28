@@ -422,14 +422,20 @@ func (s *Server) Reload() error {
 	if err != nil {
 		s.mu.Unlock()
 		// TODO: Dump previous good config to a .bak file?
-		return fmt.Errorf("Config reload failed: %s", err)
+		return err
 	}
 	s.mu.Unlock()
 
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
 	processOptions(newOpts)
-	return s.reloadOptions(newOpts)
+	if err := s.reloadOptions(newOpts); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.configTime = time.Now()
+	s.mu.Unlock()
+	return nil
 }
 
 // reloadOptions reloads the server config with the provided options. If an
