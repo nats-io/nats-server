@@ -87,6 +87,7 @@ func (cf *clientFlag) clear(c clientFlag) {
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
+	mpay  int64
 	mu    sync.Mutex
 	typ   int
 	cid   uint64
@@ -94,7 +95,6 @@ type client struct {
 	opts  clientOpts
 	start time.Time
 	nc    net.Conn
-	mpay  int
 	ncs   string
 	bw    *bufio.Writer
 	srv   *Server
@@ -524,8 +524,8 @@ func (c *client) maxConnExceeded() {
 	c.closeConnection()
 }
 
-func (c *client) maxPayloadViolation(sz int) {
-	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, c.mpay)
+func (c *client) maxPayloadViolation(sz int, max int64) {
+	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, max)
 	c.sendErr("Maximum Payload Violation")
 	c.closeConnection()
 }
@@ -712,8 +712,9 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
-	if c.mpay > 0 && c.pa.size > c.mpay {
-		c.maxPayloadViolation(c.pa.size)
+	maxPayload := atomic.LoadInt64(&c.mpay)
+	if maxPayload > 0 && int64(c.pa.size) > maxPayload {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
 
