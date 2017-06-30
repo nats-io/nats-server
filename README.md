@@ -49,9 +49,9 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[37274] 2016/12/15 18:33:12.119961 [INF] Starting nats-server version 0.9.6
-[37274] 2016/12/15 18:33:12.120060 [INF] Listening for client connections on 0.0.0.0:4222
-[37274] 2016/12/15 18:33:12.120154 [INF] Server is ready
+[71950] 2017/06/30 13:00:34.972268 [INF] Starting nats-server version 1.0.0
+[71950] 2017/06/30 13:00:34.972407 [INF] Listening for client connections on 0.0.0.0:4222
+[71950] 2017/06/30 13:00:34.972410 [INF] Server is ready
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
@@ -69,7 +69,7 @@ The NATS server uses a [text based protocol](http://nats.io/documentation/intern
 Trying 107.170.221.32...
 Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"0.9.6","go":"go1.7.4","host":"0.0.0.0","port":4222, ...}
+INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"1.0.0","go":"go1.7.6","host":"0.0.0.0","port":4222, ...}
 SUB foo 1
 +OK
 PUB foo 11
@@ -151,11 +151,12 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
+    -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
-    -s, --syslog                     Enable syslog as log method
+    -s, --syslog                     Log to syslog or windows event log
     -r, --remote_syslog <addr>       Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
@@ -177,6 +178,7 @@ Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
+        --connect_retries <number>   For implicit routes, number of connect retries
 
 
 Common Options:
@@ -642,18 +644,18 @@ Examples using the test certificates which are self signed for localhost and 127
 ```bash
 > ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
-[2935] 2016/04/26 13:34:30.685413 [INF] Starting nats-server version 0.8.0.beta
-[2935] 2016/04/26 13:34:30.685509 [INF] Listening for client connections on 0.0.0.0:4222
-[2935] 2016/04/26 13:34:30.685656 [INF] TLS required for client connections
-[2935] 2016/04/26 13:34:30.685660 [INF] Server is ready
+[72112] 2017/06/30 13:05:50.706084 [INF] Starting nats-server version 1.0.0
+[72112] 2017/06/30 13:05:50.706231 [INF] Listening for client connections on 0.0.0.0:4222
+[72112] 2017/06/30 13:05:50.706234 [INF] TLS required for client connections
+[72112] 2017/06/30 13:05:50.706235 [INF] Server is ready
 ```
 
 Notice that the log  indicates that the client connections will be required to use TLS.  If you run the server in Debug mode with `-D` or `-DV`, the logs will show the cipher suite selection for each connected client.
 
 ```
-[15146] 2015/12/03 12:38:37.733139 [DBG] ::1:63330 - cid:1 - Starting TLS client connection handshake
-[15146] 2015/12/03 12:38:37.751948 [DBG] ::1:63330 - cid:1 - TLS handshake complete
-[15146] 2015/12/03 12:38:37.751959 [DBG] ::1:63330 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+[72167] 2017/06/30 13:08:42.658129 [DBG] ::1:63035 - cid:4 - Starting TLS client connection handshake
+[72167] 2017/06/30 13:08:42.674096 [DBG] ::1:63035 - cid:4 - TLS handshake complete
+[72167] 2017/06/30 13:08:42.674121 [DBG] ::1:63035 - cid:4 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 ```
 
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
@@ -704,10 +706,10 @@ To enable monitoring via the configuration file, use `host:port` (there is no ex
 For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
 ```
-[83249] 2016/06/23 19:39:35.173557 [INF] Starting nats-server version 0.8.0
-[83249] 2016/06/23 19:39:35.173835 [INF] Starting http monitor on 0.0.0.0:8222
-[83249] 2016/06/23 19:39:35.175193 [INF] Listening for client connections on 0.0.0.0:4222
-[83249] 2016/06/23 19:39:35.175226 [INF] Server is ready
+[72440] 2017/06/30 13:09:18.428193 [INF] Starting nats-server version 1.0.0
+[72440] 2017/06/30 13:09:18.428365 [INF] Starting http monitor on 0.0.0.0:8222
+[72440] 2017/06/30 13:09:18.428407 [INF] Listening for client connections on 0.0.0.0:4222
+[72440] 2017/06/30 13:09:18.428410 [INF] Server is ready
 ```
 
 ## Development
@@ -762,8 +764,8 @@ IN THE SOFTWARE.
 [License-Image]: https://img.shields.io/badge/License-MIT-blue.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v0.9.6
-[Release-image]: http://img.shields.io/badge/release-v0.9.6-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.0.0
+[Release-image]: http://img.shields.io/badge/release-v1.0.0-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
