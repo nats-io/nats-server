@@ -416,6 +416,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -481,6 +482,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -547,6 +549,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		t.Fatalf("Client received an unexpected error: %v", err)
 	})
@@ -585,6 +588,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -633,6 +637,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Expected connection to be disconnected")
 	}
+	nc.Close()
 }
 
 // Ensure Reload supports enabling token authentication. Test this by starting
@@ -650,6 +655,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -715,6 +721,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		t.Fatalf("Client received an unexpected error: %v", err)
 	})
@@ -753,6 +760,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -763,12 +771,12 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	})
 
 	// These credentials won't change.
-	nc, err = nats.Connect(addr, nats.UserInfo("bob", "bar"))
+	nc2, err := nats.Connect(addr, nats.UserInfo("bob", "bar"))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
-	defer nc.Close()
-	sub, err := nc.SubscribeSync("foo")
+	defer nc2.Close()
+	sub, err := nc2.SubscribeSync("foo")
 	if err != nil {
 		t.Fatalf("Error subscribing: %v", err)
 	}
@@ -816,10 +824,10 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 
 	// Ensure the connection using unchanged credentials can still
 	// publish/receive.
-	if err := nc.Publish("foo", []byte("hello")); err != nil {
+	if err := nc2.Publish("foo", []byte("hello")); err != nil {
 		t.Fatalf("Error publishing: %v", err)
 	}
-	nc.Flush()
+	nc2.Flush()
 	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
@@ -844,6 +852,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	disconnected := make(chan struct{})
 	asyncErr := make(chan error)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -909,6 +918,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer nc.Close()
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		t.Fatalf("Client received an unexpected error: %v", err)
 	})
@@ -1135,18 +1145,22 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
-
+	defer srvaConn.Close()
 	sub, err := srvaConn.SubscribeSync("foo")
 	if err != nil {
 		t.Fatalf("Error subscribing: %v", err)
 	}
 	defer sub.Unsubscribe()
+	if err := srvaConn.Flush(); err != nil {
+		t.Fatalf("Error flushing: %v", err)
+	}
 
 	srvbAddr := fmt.Sprintf("nats://%s:%d", srvbOpts.Host, srvbOpts.Port)
 	srvbConn, err := nats.Connect(srvbAddr)
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer srvbConn.Close()
 
 	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
@@ -1240,18 +1254,23 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer srvaConn.Close()
 
 	sub, err := srvaConn.SubscribeSync("foo")
 	if err != nil {
 		t.Fatalf("Error subscribing: %v", err)
 	}
 	defer sub.Unsubscribe()
+	if err := srvaConn.Flush(); err != nil {
+		t.Fatalf("Error flushing: %v", err)
+	}
 
 	srvbAddr := fmt.Sprintf("nats://%s:%d", srvbOpts.Host, srvbOpts.Port)
 	srvbConn, err := nats.Connect(srvbAddr)
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer srvbConn.Close()
 
 	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
@@ -1325,18 +1344,23 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer srvaConn.Close()
 
 	sub, err := srvaConn.SubscribeSync("foo")
 	if err != nil {
 		t.Fatalf("Error subscribing: %v", err)
 	}
 	defer sub.Unsubscribe()
+	if err := srvaConn.Flush(); err != nil {
+		t.Fatalf("Error flushing: %v", err)
+	}
 
 	srvbAddr := fmt.Sprintf("nats://%s:%d", srvbOpts.Host, srvbOpts.Port)
 	srvbConn, err := nats.Connect(srvbAddr)
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
+	defer srvbConn.Close()
 
 	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
