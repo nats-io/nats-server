@@ -1351,7 +1351,7 @@ func TestConcurrentMonitoring(t *testing.T) {
 	for _, e := range endpoints {
 		go func(endpoint string) {
 			defer wg.Done()
-			for i := 0; i < 150; i++ {
+			for i := 0; i < 50; i++ {
 				resp, err := http.Get(url + endpoint)
 				if err != nil {
 					ech <- fmt.Sprintf("Expected no error: Got %v\n", err)

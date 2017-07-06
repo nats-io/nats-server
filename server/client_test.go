@@ -589,10 +589,10 @@ func TestClientMapRemoval(t *testing.T) {
 }
 
 func TestAuthorizationTimeout(t *testing.T) {
-	serverOptions := defaultServerOptions
+	serverOptions := DefaultOptions()
 	serverOptions.Authorization = "my_token"
 	serverOptions.AuthTimeout = 0.4
-	s := RunServer(&serverOptions)
+	s := RunServer(serverOptions)
 	defer s.Shutdown()
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
