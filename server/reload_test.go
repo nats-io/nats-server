@@ -44,7 +44,6 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		Debug:          false,
 		Trace:          false,
 		Logtime:        false,
-		LogFile:        "/tmp/gnatsd.log",
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
@@ -102,7 +101,6 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		Debug:          false,
 		Trace:          false,
 		Logtime:        false,
-		LogFile:        "/tmp/gnatsd.log",
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
@@ -160,7 +158,6 @@ func TestConfigReload(t *testing.T) {
 		Debug:          false,
 		Trace:          false,
 		Logtime:        false,
-		LogFile:        "/tmp/gnatsd.log",
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
@@ -201,9 +198,6 @@ func TestConfigReload(t *testing.T) {
 	}
 	if !updated.Logtime {
 		t.Fatal("Expected Logtime to be true")
-	}
-	if updated.LogFile != "/tmp/gnatsd-2.log" {
-		t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
 	}
 	if !updated.Syslog {
 		t.Fatal("Expected Syslog to be true")
