@@ -71,7 +71,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
 	}
 
-	// This should fail because `debug` cannot be changed.
+	// This should fail because `cluster` host cannot be changed.
 	if err := server.Reload(); err == nil {
 		t.Fatal("Expected Reload to return an error")
 	}
