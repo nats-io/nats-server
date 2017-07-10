@@ -4,10 +4,12 @@ package server
 
 import (
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +35,7 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 func TestConfigReloadUnsupported(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+	defer server.Shutdown()
 
 	loaded := server.ConfigTime()
 
@@ -90,6 +93,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 func TestConfigReloadInvalidConfig(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+	defer server.Shutdown()
 
 	loaded := server.ConfigTime()
 
@@ -145,8 +149,21 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
+	var content []byte
+	if runtime.GOOS != "windows" {
+		content = []byte(`
+			remote_syslog: "udp://localhost:514" # change on reload
+			log_file:      "/tmp/gnatsd-2.log" # change on reload
+		`)
+	}
+	platformConf := "platform.conf"
+	defer os.Remove(platformConf)
+	if err := ioutil.WriteFile(platformConf, content, 0666); err != nil {
+		t.Fatalf("Unable to write config file: %v", err)
+	}
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
+	defer server.Shutdown()
 
 	loaded := server.ConfigTime()
 
@@ -202,8 +219,13 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Syslog {
 		t.Fatal("Expected Syslog to be true")
 	}
-	if updated.RemoteSyslog != "udp://localhost:514" {
-		t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://localhost:514\ngot: %s", updated.RemoteSyslog)
+	if runtime.GOOS != "windows" {
+		if updated.RemoteSyslog != "udp://localhost:514" {
+			t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://localhost:514\ngot: %s", updated.RemoteSyslog)
+		}
+		if updated.LogFile != "/tmp/gnatsd-2.log" {
+			t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
+		}
 	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
@@ -1086,6 +1108,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {
 	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
+	defer server.Shutdown()
 
 	// Attempt to change cluster listen host.
 	if err := os.Remove(config); err != nil {
@@ -1106,6 +1129,7 @@ func TestConfigReloadClusterHostUnsupported(t *testing.T) {
 func TestConfigReloadClusterPortUnsupported(t *testing.T) {
 	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
+	defer server.Shutdown()
 
 	// Attempt to change cluster listen port.
 	if err := os.Remove(config); err != nil {
@@ -1319,6 +1343,7 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 func TestConfigReloadClusterRoutes(t *testing.T) {
 	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
 	defer os.Remove(srvbConfig)
+	defer srvb.Shutdown()
 
 	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
