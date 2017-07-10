@@ -36,7 +36,6 @@ func TestRouteConfig(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
-		LogFile: "/tmp/nats_cluster_test.log",
 		PidFile: "/tmp/nats_cluster_test.pid",
 	}
 

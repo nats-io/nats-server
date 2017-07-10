@@ -67,6 +67,7 @@ func TestSignalToReloadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
+	opts.NoLog = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
