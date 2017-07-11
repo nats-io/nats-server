@@ -1414,7 +1414,7 @@ func TestMonitorRoutezRace(t *testing.T) {
 		defer func() {
 			doneCh <- struct{}{}
 		}()
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 10; i++ {
 			time.Sleep(10 * time.Millisecond)
 			srvB := RunServer(srvBOpts)
 			time.Sleep(20 * time.Millisecond)
