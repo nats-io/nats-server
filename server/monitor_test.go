@@ -1397,3 +1397,41 @@ func TestMonitorHandler(t *testing.T) {
 		t.Fatal("HTTP Handler should be nil")
 	}
 }
+
+func TestMonitorRoutezRace(t *testing.T) {
+	resetPreviousHTTPConnections()
+	srvAOpts := DefaultMonitorOptions()
+	srvAOpts.Cluster.Port = -1
+	srvA := RunServer(srvAOpts)
+	defer srvA.Shutdown()
+
+	srvBOpts := nextServerOpts(srvAOpts)
+	srvBOpts.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", srvA.MonitorAddr().Port)
+	doneCh := make(chan struct{})
+	go func() {
+		defer func() {
+			doneCh <- struct{}{}
+		}()
+		for i := 0; i < 20; i++ {
+			time.Sleep(10 * time.Millisecond)
+			srvB := RunServer(srvBOpts)
+			time.Sleep(20 * time.Millisecond)
+			srvB.Shutdown()
+		}
+	}()
+	done := false
+	for !done {
+		if resp, err := http.Get(url + "routez"); err != nil {
+			time.Sleep(10 * time.Millisecond)
+		} else {
+			resp.Body.Close()
+		}
+		select {
+		case <-doneCh:
+			done = true
+		default:
+		}
+	}
+}
