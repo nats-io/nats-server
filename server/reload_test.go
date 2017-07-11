@@ -1158,6 +1158,8 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
 
+	checkClusterFormed(t, srva, srvb)
+
 	srvaAddr := fmt.Sprintf("nats://%s:%d", srvaOpts.Host, srvaOpts.Port)
 	srvaConn, err := nats.Connect(srvaAddr)
 	if err != nil {
@@ -1234,7 +1236,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	checkClusterFormed(t, srva, srvb)
 
 	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
@@ -1266,6 +1268,8 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_2.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
 
 	srvaAddr := fmt.Sprintf("nats://%s:%d", srvaOpts.Host, srvaOpts.Port)
 	srvaConn, err := nats.Connect(srvaAddr)
@@ -1318,6 +1322,8 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
+	checkClusterFormed(t, srva, srvb)
+
 	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
 	}
@@ -1348,6 +1354,8 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
 
 	srvcOpts, err := ProcessConfigFile("./configs/reload/srv_c_1.conf")
 	if err != nil {
@@ -1412,7 +1420,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	checkClusterFormed(t, srva, srvc)
 
 	srvcAddr := fmt.Sprintf("nats://%s:%d", srvcOpts.Host, srvcOpts.Port)
 	srvcConn, err := nats.Connect(srvcAddr)
