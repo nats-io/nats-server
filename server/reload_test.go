@@ -66,12 +66,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	}
 
 	// Change config file to bad config by replacing symlink.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/reload_unsupported.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/reload_unsupported.conf")
 
 	// This should fail because `cluster` host cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -124,12 +119,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	}
 
 	// Change config file to bad config by replacing symlink.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/invalid.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/invalid.conf")
 
 	// This should fail because the new config should not parse.
 	if err := server.Reload(); err == nil {
@@ -194,12 +184,7 @@ func TestConfigReload(t *testing.T) {
 	}
 
 	// Change config file to new config by replacing symlink.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/reload.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/reload.conf")
 
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
@@ -298,12 +283,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Rotate cert and enable client verification.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/tls_verify_test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/tls_verify_test.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -352,12 +332,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 	nc.Close()
 
 	// Enable TLS.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/tls_test.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/tls_test.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -393,12 +368,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	nc.Close()
 
 	// Disable TLS.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -443,12 +413,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	})
 
 	// Change user credentials.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/single_user_authentication_2.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/single_user_authentication_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -509,12 +474,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/single_user_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/single_user_authentication_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -571,12 +531,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -615,12 +570,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	})
 
 	// Change authentication token.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/token_authentication_2.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/token_authentication_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -682,12 +632,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/token_authentication_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/token_authentication_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -743,12 +688,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -799,12 +739,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Change users credentials.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/multiple_users_2.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/multiple_users_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -879,12 +814,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/multiple_users_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/multiple_users_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -940,12 +870,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/basic.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1021,12 +946,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 
 	// Change permissions.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/authorization_2.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/authorization_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1111,12 +1031,7 @@ func TestConfigReloadClusterHostUnsupported(t *testing.T) {
 	defer server.Shutdown()
 
 	// Attempt to change cluster listen host.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_c_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/srv_c_1.conf")
 
 	// This should fail because cluster address cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -1132,12 +1047,7 @@ func TestConfigReloadClusterPortUnsupported(t *testing.T) {
 	defer server.Shutdown()
 
 	// Attempt to change cluster listen port.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_b_1.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/srv_b_1.conf")
 
 	// This should fail because cluster address cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -1198,12 +1108,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 
 	// Enable route authorization.
-	if err := os.Remove(srvbConfig); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_b_2.conf", srvbConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, srvbConfig, "./configs/reload/srv_b_2.conf")
 	if err := srvb.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1224,12 +1129,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 
 	// Reload Server A with correct route credentials.
-	if err := os.Remove(srvaConfig); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_a_2.conf", srvaConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, srvaConfig, "./configs/reload/srv_a_2.conf")
 	defer os.Remove(srvaConfig)
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
@@ -1308,12 +1208,7 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 	}
 
 	// Disable route authorization.
-	if err := os.Remove(srvbConfig); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_b_1.conf", srvbConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, srvbConfig, "./configs/reload/srv_b_1.conf")
 	if err := srvb.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1403,12 +1298,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	srvb.Shutdown()
 
 	// Reload cluster routes.
-	if err := os.Remove(srvaConfig); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/srv_a_3.conf", srvaConfig); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, srvaConfig, "./configs/reload/srv_a_3.conf")
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1470,12 +1360,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	}
 
 	// Set max connections to one.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/max_connections.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/max_connections.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1540,12 +1425,7 @@ func TestConfigReloadMaxPayload(t *testing.T) {
 	}
 
 	// Set max payload to one.
-	if err := os.Remove(config); err != nil {
-		t.Fatalf("Error deleting symlink: %v", err)
-	}
-	if err := os.Symlink("./configs/reload/max_payload.conf", config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
+	createSymlink(t, config, "./configs/reload/max_payload.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1585,14 +1465,17 @@ func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (
 		t.Fatalf("Error getting working directory: %v", err)
 	}
 	config := filepath.Join(dir, symlinkName)
-
-	if err := os.Symlink(configName, config); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
-	}
-
+	createSymlink(t, config, configName)
 	opts, err := ProcessConfigFile(config)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	return opts, config
+}
+
+func createSymlink(t *testing.T, symlinkName, fileName string) {
+	os.Remove(symlinkName)
+	if err := os.Symlink(fileName, symlinkName); err != nil {
+		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
+	}
 }
