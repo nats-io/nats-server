@@ -21,7 +21,6 @@ before_script:
 - if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i -race $EXCLUDE_VENDOR
-- go test -v -race $EXCLUDE_VENDOR
+- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
 after_success:
-- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]]; then ./scripts/cov.sh TRAVIS; fi
-- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]] && [ "$TRAVIS_TAG" != "" ]; ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.7.* ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
