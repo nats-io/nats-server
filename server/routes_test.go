@@ -148,7 +148,7 @@ func checkClusterFormed(t *testing.T, servers ...*Server) {
 	// Wait for the cluster to form
 	var err string
 	expectedNumRoutes := len(servers) - 1
-	maxTime := time.Now().Add(5 * time.Second)
+	maxTime := time.Now().Add(10 * time.Second)
 	for time.Now().Before(maxTime) {
 		err = ""
 		for _, s := range servers {
@@ -164,7 +164,7 @@ func checkClusterFormed(t *testing.T, servers ...*Server) {
 		}
 	}
 	if err != "" {
-		t.Fatalf("%s", err)
+		stackFatalf(t, "%s", err)
 	}
 }
 
