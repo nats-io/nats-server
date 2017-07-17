@@ -4,10 +4,11 @@
 package logger
 
 import (
-	"golang.org/x/sys/windows/svc/eventlog"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 // Skips testing if we do not have privledges to run this test.
