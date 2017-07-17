@@ -84,6 +84,42 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	}
 }
 
+// This checks that if we change an option that does not support hot-swapping
+// we get an error. Using `listen` for now (test may need to be updated if
+// server is changed to support change of listen spec).
+func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
+	orgConfig := "tmp_a.conf"
+	newConfig := "tmp_b.conf"
+	defer os.Remove(orgConfig)
+	defer os.Remove(newConfig)
+	if err := ioutil.WriteFile(orgConfig, []byte("listen: localhost:-1"), 0666); err != nil {
+		t.Fatalf("Error creatign config file: %v", err)
+	}
+	if err := ioutil.WriteFile(newConfig, []byte("listen: localhost:9999"), 0666); err != nil {
+		t.Fatalf("Error creatign config file: %v", err)
+	}
+
+	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", orgConfig)
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	loaded := server.ConfigTime()
+
+	time.Sleep(time.Millisecond)
+
+	// Change config file with unsupported option hot-swap
+	createSymlink(t, config, newConfig)
+
+	// This should fail because `cluster` host cannot be changed.
+	if err := server.Reload(); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("Expected Reload to return a not supported error, got %v", err)
+	}
+
+	if reloaded := server.ConfigTime(); reloaded != loaded {
+		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
+	}
+}
+
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
 	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
@@ -248,8 +284,8 @@ func TestConfigReload(t *testing.T) {
 	if updated.MaxPingsOut != 1 {
 		t.Fatalf("MaxPingsOut is incorrect.\nexpected 1\ngot: %d", updated.MaxPingsOut)
 	}
-	if updated.WriteDeadline != 2*time.Second {
-		t.Fatalf("WriteDeadline is incorrect.\nexpected 2s\ngot: %s", updated.WriteDeadline)
+	if updated.WriteDeadline != 3*time.Second {
+		t.Fatalf("WriteDeadline is incorrect.\nexpected 3s\ngot: %s", updated.WriteDeadline)
 	}
 	if updated.MaxPayload != 1024 {
 		t.Fatalf("MaxPayload is incorrect.\nexpected 1024\ngot: %d", updated.MaxPayload)
@@ -1301,15 +1337,16 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
 	}
 
-	// Kill old route server.
-	srvbConn.Close()
-	srvb.Shutdown()
-
 	// Reload cluster routes.
 	createSymlink(t, srvaConfig, "./configs/reload/srv_a_3.conf")
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
+
+	// Kill old route server.
+	srvbConn.Close()
+	srvb.Shutdown()
+
 	checkClusterFormed(t, srva, srvc)
 
 	srvcAddr := fmt.Sprintf("nats://%s:%d", srvcOpts.Host, srvcOpts.Port)
