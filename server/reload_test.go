@@ -93,10 +93,10 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 	defer os.Remove(orgConfig)
 	defer os.Remove(newConfig)
 	if err := ioutil.WriteFile(orgConfig, []byte("listen: localhost:-1"), 0666); err != nil {
-		t.Fatalf("Error creatign config file: %v", err)
+		t.Fatalf("Error creating config file: %v", err)
 	}
 	if err := ioutil.WriteFile(newConfig, []byte("listen: localhost:9999"), 0666); err != nil {
-		t.Fatalf("Error creatign config file: %v", err)
+		t.Fatalf("Error creating config file: %v", err)
 	}
 
 	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", orgConfig)
@@ -110,7 +110,7 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 	// Change config file with unsupported option hot-swap
 	createSymlink(t, config, newConfig)
 
-	// This should fail because `cluster` host cannot be changed.
+	// This should fail because `listen` host cannot be changed.
 	if err := server.Reload(); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("Expected Reload to return a not supported error, got %v", err)
 	}
