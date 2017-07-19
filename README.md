@@ -49,7 +49,7 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[71950] 2017/06/30 13:00:34.972268 [INF] Starting nats-server version 1.0.0
+[71950] 2017/06/30 13:00:34.972268 [INF] Starting nats-server version 1.0.2
 [71950] 2017/06/30 13:00:34.972407 [INF] Listening for client connections on 0.0.0.0:4222
 [71950] 2017/06/30 13:00:34.972410 [INF] Server is ready
 ```
@@ -69,7 +69,7 @@ The NATS server uses a [text based protocol](http://nats.io/documentation/intern
 Trying 107.170.221.32...
 Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"1.0.0","go":"go1.7.6","host":"0.0.0.0","port":4222, ...}
+INFO {"server_id":"kG19DsXX1UVeSyEjhl3RFw","version":"1.0.2","go":"go1.7.6","host":"0.0.0.0","port":4222, ...}
 SUB foo 1
 +OK
 PUB foo 11
@@ -644,7 +644,7 @@ Examples using the test certificates which are self signed for localhost and 127
 ```bash
 > ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
-[72112] 2017/06/30 13:05:50.706084 [INF] Starting nats-server version 1.0.0
+[72112] 2017/06/30 13:05:50.706084 [INF] Starting nats-server version 1.0.2
 [72112] 2017/06/30 13:05:50.706231 [INF] Listening for client connections on 0.0.0.0:4222
 [72112] 2017/06/30 13:05:50.706234 [INF] TLS required for client connections
 [72112] 2017/06/30 13:05:50.706235 [INF] Server is ready
@@ -706,7 +706,7 @@ To enable monitoring via the configuration file, use `host:port` (there is no ex
 For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
 ```
-[72440] 2017/06/30 13:09:18.428193 [INF] Starting nats-server version 1.0.0
+[72440] 2017/06/30 13:09:18.428193 [INF] Starting nats-server version 1.0.2
 [72440] 2017/06/30 13:09:18.428365 [INF] Starting http monitor on 0.0.0.0:8222
 [72440] 2017/06/30 13:09:18.428407 [INF] Listening for client connections on 0.0.0.0:4222
 [72440] 2017/06/30 13:09:18.428410 [INF] Server is ready
@@ -764,8 +764,8 @@ IN THE SOFTWARE.
 [License-Image]: https://img.shields.io/badge/License-MIT-blue.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.0.0
-[Release-image]: http://img.shields.io/badge/release-v1.0.0-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.0.2
+[Release-image]: http://img.shields.io/badge/release-v1.0.2-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
