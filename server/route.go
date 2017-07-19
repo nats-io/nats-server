@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/url"
 	"strconv"
@@ -522,31 +523,32 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		s.routes[c.cid] = c
 		s.remotes[id] = c
 
-		// If this server's ID is (alpha) less than the peer, then we will
-		// make sure that if we are disconnected, we will try to connect once
-		// more. This is to mitigate the issue where both sides add the route
-		// on the opposite connection, and therefore we end-up with both
-		// being dropped.
-		if s.info.ID < id {
-			c.mu.Lock()
-			// Make this as a retry (otherwise, only explicit are retried).
-			c.route.retry = true
-			c.mu.Unlock()
-		}
-
 		// we don't need to send if the only route is the one we just accepted.
 		sendInfo = len(s.routes) > 1
 	}
 	s.mu.Unlock()
 
-	if exists && c.route.didSolicit {
+	if exists {
+		var r *route
+
+		c.mu.Lock()
 		// upgrade to solicited?
+		if c.route.didSolicit {
+			// Make a copy
+			rs := *c.route
+			r = &rs
+		}
+		c.mu.Unlock()
+
 		remote.mu.Lock()
-		// the existing route (remote) should keep its 'retry' value, and
-		// not be replaced with c.route.retry.
-		retry := remote.route.retry
-		remote.route = c.route
-		remote.route.retry = retry
+		// r will be not nil if c.route.didSolicit was true
+		if r != nil {
+			remote.route = r
+		}
+		// This is to mitigate the issue where both sides add the route
+		// on the opposite connection, and therefore end-up with both
+		// connections being dropped.
+		remote.route.retry = true
 		remote.mu.Unlock()
 	}
 
@@ -702,9 +704,16 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 
 func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 	tryForEver := rtype == Explicit
+	// If A connects to B, and B to A (regardless if explicit or
+	// implicit - due to auto-discovery), and if each server first
+	// registers the route on the opposite TCP connection, the
+	// two connections will end-up being closed.
+	// Add some random delay to reduce risk of repeated failures.
+	delay := time.Duration(rand.Intn(100)) * time.Millisecond
 	if tryForEver {
-		time.Sleep(DEFAULT_ROUTE_RECONNECT)
+		delay += DEFAULT_ROUTE_RECONNECT
 	}
+	time.Sleep(delay)
 	s.connectToRoute(rURL, tryForEver)
 }
 
