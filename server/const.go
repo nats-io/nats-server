@@ -19,7 +19,7 @@ const (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "1.0.1"
+	VERSION = "1.0.2"
 
 	// DEFAULT_PORT is the default port for client connections.
 	DEFAULT_PORT = 4222
