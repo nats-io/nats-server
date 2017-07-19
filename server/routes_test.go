@@ -8,12 +8,12 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/go-nats"
-	"strings"
-	"sync"
 )
 
 func TestRouteConfig(t *testing.T) {
