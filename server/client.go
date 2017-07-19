@@ -1321,14 +1321,15 @@ func (c *client) closeConnection() {
 	}
 	srv := c.srv
 
-	retryImplicit := false
+	var (
+		routeClosed   bool
+		retryImplicit bool
+	)
 	if c.route != nil {
-		retryImplicit = c.route.retry
-	}
-
-	closed := false
-	if c.route != nil {
-		closed = c.route.closed
+		routeClosed = c.route.closed
+		if !routeClosed {
+			retryImplicit = c.route.retry
+		}
 	}
 
 	c.mu.Unlock()
@@ -1349,7 +1350,7 @@ func (c *client) closeConnection() {
 	}
 
 	// Don't reconnect routes that are being closed.
-	if c.route != nil && closed {
+	if routeClosed {
 		return
 	}
 
@@ -1385,6 +1386,16 @@ func (c *client) closeConnection() {
 			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
 		}
 	}
+}
+
+// If the client is a route connection, sets the `closed` flag to true
+// to prevent any reconnecting attempt when c.closeConnection() is called.
+func (c *client) setRouteNoReconnectOnClose() {
+	c.mu.Lock()
+	if c.route != nil {
+		c.route.closed = true
+	}
+	c.mu.Unlock()
 }
 
 // Logging functionality scoped to a client or route.

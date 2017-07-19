@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -523,5 +525,69 @@ func TestClientConnectToRoutePort(t *testing.T) {
 		if nc.ConnectedUrl() != clientURL {
 			t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
 		}
+	}
+}
+
+type checkDuplicateRouteLogger struct {
+	sync.Mutex
+	gotDuplicate bool
+}
+
+func (l *checkDuplicateRouteLogger) Noticef(format string, v ...interface{}) {}
+func (l *checkDuplicateRouteLogger) Errorf(format string, v ...interface{})  {}
+func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...interface{})  {}
+func (l *checkDuplicateRouteLogger) Tracef(format string, v ...interface{})  {}
+func (l *checkDuplicateRouteLogger) Debugf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "duplicate remote route") {
+		l.gotDuplicate = true
+	}
+}
+
+func TestRoutesToEachOther(t *testing.T) {
+	optsA := DefaultOptions()
+	optsA.Cluster.Port = 7246
+	optsA.Routes = RoutesFromStr("nats://127.0.0.1:7247")
+
+	optsB := DefaultOptions()
+	optsB.Cluster.Port = 7247
+	optsB.Routes = RoutesFromStr("nats://127.0.0.1:7246")
+
+	srvALogger := &checkDuplicateRouteLogger{}
+	srvA := New(optsA)
+	srvA.SetLogger(srvALogger, true, false)
+	defer srvA.Shutdown()
+
+	srvBLogger := &checkDuplicateRouteLogger{}
+	srvB := New(optsB)
+	srvB.SetLogger(srvBLogger, true, false)
+	defer srvB.Shutdown()
+
+	go srvA.Start()
+	go srvB.Start()
+
+	start := time.Now()
+	checkClusterFormed(t, srvA, srvB)
+	end := time.Now()
+
+	srvALogger.Lock()
+	gotIt := srvALogger.gotDuplicate
+	srvALogger.Unlock()
+	if !gotIt {
+		srvBLogger.Lock()
+		gotIt = srvBLogger.gotDuplicate
+		srvBLogger.Unlock()
+	}
+	if gotIt {
+		dur := end.Sub(start)
+		// It should not take too long to have a successful connection
+		// between the 2 servers.
+		if dur > 5*time.Second {
+			t.Logf("Cluster formed, but took a long time: %v", dur)
+		}
+	} else {
+		t.Log("Was not able to get duplicate route this time!")
 	}
 }
