@@ -405,8 +405,17 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// uinterrupted, causing the Shutdown() to wait indefinitively.
 	// We need to store the client in a special map, under a special lock.
 	s.grMu.Lock()
-	s.grTmpClients[c.cid] = c
+	running := s.grRunning
+	if running {
+		s.grTmpClients[c.cid] = c
+	}
 	s.grMu.Unlock()
+	if !running {
+		c.mu.Unlock()
+		c.setRouteNoReconnectOnClose()
+		c.closeConnection()
+		return nil
+	}
 
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })

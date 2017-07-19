@@ -314,6 +314,7 @@ func (s *Server) Shutdown() {
 	s.grMu.Unlock()
 	// Copy off the routes
 	for i, r := range s.routes {
+		r.setRouteNoReconnectOnClose()
 		conns[i] = r
 	}
 

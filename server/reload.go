@@ -265,10 +265,8 @@ func (r *routesOption) Apply(server *Server) {
 	for _, remove := range r.remove {
 		for _, client := range routes {
 			if client.route.url == remove {
-				client.mu.Lock()
 				// Do not attempt to reconnect when route is removed.
-				client.route.closed = true
-				client.mu.Unlock()
+				client.setRouteNoReconnectOnClose()
 				client.closeConnection()
 				server.Noticef("Removed route %v", remove)
 			}
@@ -597,9 +595,7 @@ func (s *Server) reloadAuthorization() {
 	for _, client := range routes {
 		// Disconnect any unauthorized routes.
 		if !s.isRouterAuthorized(client) {
-			client.mu.Lock()
-			client.route.closed = true
-			client.mu.Unlock()
+			client.setRouteNoReconnectOnClose()
 			client.authViolation()
 		}
 	}
