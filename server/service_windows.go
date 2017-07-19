@@ -3,6 +3,7 @@
 package server
 
 import (
+	"os"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -20,6 +21,14 @@ const (
 // gnatsd as a Windows service.
 type winServiceWrapper struct {
 	server *Server
+}
+
+var dockerized = false
+
+func init() {
+	if v, exists := os.LookupEnv("NATS_DOCKERIZED"); exists && v == "1" {
+		dockerized = true
+	}
 }
 
 // Execute will be called by the package code at the start of
@@ -76,6 +85,10 @@ loop:
 
 // Run starts the NATS server as a Windows service.
 func Run(server *Server) error {
+	if dockerized {
+		server.Start()
+		return nil
+	}
 	run := svc.Run
 	isInteractive, err := svc.IsAnInteractiveSession()
 	if err != nil {
@@ -89,6 +102,9 @@ func Run(server *Server) error {
 
 // isWindowsService indicates if NATS is running as a Windows service.
 func isWindowsService() bool {
+	if dockerized {
+		return false
+	}
 	isInteractive, _ := svc.IsAnInteractiveSession()
 	return !isInteractive
 }

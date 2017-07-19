@@ -5,9 +5,10 @@ package logger
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows/svc/eventlog"
 	"os"
 	"strings"
+
+	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 const (
