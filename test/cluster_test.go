@@ -442,3 +442,38 @@ func TestAutoUnsubscribePropagation(t *testing.T) {
 		t.Fatalf("Expected no subscriptions on remote server, got %d\n", subs)
 	}
 }
+
+func TestAutoUnsubscribePropagationOnClientDisconnect(t *testing.T) {
+	srvA, srvB, optsA, _ := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	cluster := []*server.Server{srvA, srvB}
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	sendA, expectA := setupConn(t, clientA)
+
+	// No subscriptions. Ready to test.
+	if err := checkExpectedSubs(0, cluster...); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	sendA("SUB foo 1\r\n")
+	sendA("UNSUB 1 1\r\n")
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	// Waiting cluster subs propagation
+	if err := checkExpectedSubs(1, cluster...); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	clientA.Close()
+
+	// No subs should be on the cluster when all clients is disconnected
+	if err := checkExpectedSubs(0, cluster...); err != nil {
+		t.Fatalf("%v", err)
+	}
+}

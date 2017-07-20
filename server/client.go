@@ -1317,6 +1317,8 @@ func (c *client) closeConnection() {
 	// Snapshot for use.
 	subs := make([]*subscription, 0, len(c.subs))
 	for _, sub := range c.subs {
+		// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
+		sub.max = 0
 		subs = append(subs, sub)
 	}
 	srv := c.srv
