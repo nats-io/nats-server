@@ -93,7 +93,7 @@ func TestTLSClientCertificate(t *testing.T) {
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	copts := nats.DefaultOptions
+	copts := nats.GetDefaultOptions()
 	copts.Url = nurl
 	copts.Secure = true
 	copts.TLSConfig = config
