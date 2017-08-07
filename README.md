@@ -736,11 +736,23 @@ FAIL
 
 If this is the case, ensure that the tests are run with privileges on a local drive (e.g. running on `C:` as admin).
 
+## Community and Contributing
+
+NATS has a vibrant and friendly community.  If you are interested in connecting with other NATS users or contributing, read about our [community](http://nats.io/community/) on [NATS.io](http://nats.io/).
+
+### NATS Office Hours
+
+The NATS maintainers hold online open office hours on the __3rd Monday of every month at 1PM Eastern US / 10AM Pacific US__ where we discuss the future of NATS, issues, PRs, answer questions, and sorts of other good stuff.  Anyone is welcome to participate or listen in, whether you are using NATS or just interested in learning more.
+
+The office hours agenda and zoom link can be found [here](https://docs.google.com/a/apcera.com/document/d/1vrkEXW9CN0_MX_AkerHnYrgduiUAng5EVfafCbXiYc4/edit?usp=sharing), where we hope you'll comment about what you would like to discuss!
+
+
+
 ## License
 
 (The MIT License)
 
-Copyright (c) 2012-2016 Apcera Inc.
+Copyright (c) 2012-2017 Apcera Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to
