@@ -25,7 +25,7 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 
 	servers := []string{urlA, urlB}
 
-	opts := nats.DefaultOptions
+	opts := nats.GetDefaultOptions()
 	opts.Timeout = (5 * time.Second)
 	opts.ReconnectWait = (50 * time.Millisecond)
 	opts.MaxReconnect = 1000
@@ -115,7 +115,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
 
 	// Client options
-	opts := nats.DefaultOptions
+	opts := nats.GetDefaultOptions()
 	opts.Timeout = (5 * time.Second)
 	opts.ReconnectWait = (50 * time.Millisecond)
 	opts.MaxReconnect = 1000
