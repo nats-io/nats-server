@@ -47,7 +47,6 @@ type Info struct {
 // Server is our main struct.
 type Server struct {
 	gcid uint64
-	grid uint64
 	stats
 	mu            sync.Mutex
 	info          Info
