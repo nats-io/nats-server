@@ -449,7 +449,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 const (
 	_CRLF_  = "\r\n"
 	_EMPTY_ = ""
-	_SPC_   = " "
 )
 
 const (

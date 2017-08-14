@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	dbg "runtime/debug"
 )
@@ -424,7 +423,6 @@ func TestSublistTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 var subs []*subscription
 var toks = []string{"apcera", "continuum", "component", "router", "api", "imgr", "jmgr", "auth"}
 var sl = NewSublist()
-var results = make([]*subscription, 0, 64)
 
 func init() {
 	subs = make([]*subscription, 0, 256*1024)
@@ -535,14 +533,4 @@ func Benchmark_____________Sublist10XMultipleReads(b *testing.B) {
 
 func Benchmark____________Sublist100XMultipleReads(b *testing.B) {
 	multiRead(b, 100)
-}
-
-func _BenchmarkRSS(b *testing.B) {
-	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	println("HEAP:", m.HeapObjects)
-	println("ALLOC:", m.Alloc)
-	println("TOTAL ALLOC:", m.TotalAlloc)
-	time.Sleep(30 * 1e9)
 }

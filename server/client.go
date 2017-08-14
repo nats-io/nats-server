@@ -91,7 +91,6 @@ type client struct {
 	mu    sync.Mutex
 	typ   int
 	cid   uint64
-	lang  string
 	opts  clientOpts
 	start time.Time
 	nc    net.Conn

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -17,13 +16,6 @@ import (
 
 	"github.com/nats-io/gnatsd/server"
 )
-
-const natsServerExe = "../gnatsd"
-
-type natsServer struct {
-	args []string
-	cmd  *exec.Cmd
-}
 
 // So we can pass tests and benchmarks..
 type tLogger interface {
