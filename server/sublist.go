@@ -84,16 +84,7 @@ func NewSublist() *Sublist {
 func (s *Sublist) Insert(sub *subscription) error {
 	// copy the subject since we hold this and this might be part of a large byte slice.
 	subject := string(sub.subject)
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
+	tokens := strings.Split(subject, string(btsep))
 
 	s.Lock()
 
@@ -210,16 +201,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 		return rc
 	}
 
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
+	tokens := strings.Split(subject, string(btsep))
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
 	result := &SublistResult{}
@@ -311,16 +293,7 @@ type lnt struct {
 // Remove will remove a subscription.
 func (s *Sublist) Remove(sub *subscription) error {
 	subject := string(sub.subject)
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
+	tokens := strings.Split(subject, string(btsep))
 
 	s.Lock()
 	defer s.Unlock()
