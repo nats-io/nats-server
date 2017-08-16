@@ -370,6 +370,49 @@ func TestSublistValidLiteralSubjects(t *testing.T) {
 	checkBool(IsValidLiteralSubject("foo.bar.>"), false, t)
 	checkBool(IsValidLiteralSubject("*"), false, t)
 	checkBool(IsValidLiteralSubject(">"), false, t)
+	// The followings have widlcards characters but are not
+	// considered as such because they are not individual tokens.
+	checkBool(IsValidLiteralSubject("foo*"), true, t)
+	checkBool(IsValidLiteralSubject("foo**"), true, t)
+	checkBool(IsValidLiteralSubject("foo.**"), true, t)
+	checkBool(IsValidLiteralSubject("foo*bar"), true, t)
+	checkBool(IsValidLiteralSubject("foo.*bar"), true, t)
+	checkBool(IsValidLiteralSubject("foo*.bar"), true, t)
+	checkBool(IsValidLiteralSubject("*bar"), true, t)
+	checkBool(IsValidLiteralSubject("foo>"), true, t)
+	checkBool(IsValidLiteralSubject("foo>>"), true, t)
+	checkBool(IsValidLiteralSubject("foo.>>"), true, t)
+	checkBool(IsValidLiteralSubject("foo>bar"), true, t)
+	checkBool(IsValidLiteralSubject("foo.>bar"), true, t)
+	checkBool(IsValidLiteralSubject("foo>.bar"), true, t)
+	checkBool(IsValidLiteralSubject(">bar"), true, t)
+}
+
+func TestSublistValidlSubjects(t *testing.T) {
+	checkBool(IsValidSubject("."), false, t)
+	checkBool(IsValidSubject(".foo"), false, t)
+	checkBool(IsValidSubject("foo."), false, t)
+	checkBool(IsValidSubject("foo..bar"), false, t)
+	checkBool(IsValidSubject(">.bar"), false, t)
+	checkBool(IsValidSubject("foo.>.bar"), false, t)
+	checkBool(IsValidSubject("foo"), true, t)
+	checkBool(IsValidSubject("foo.bar.*"), true, t)
+	checkBool(IsValidSubject("foo.bar.>"), true, t)
+	checkBool(IsValidSubject("*"), true, t)
+	checkBool(IsValidSubject(">"), true, t)
+	checkBool(IsValidSubject("foo*"), true, t)
+	checkBool(IsValidSubject("foo**"), true, t)
+	checkBool(IsValidSubject("foo.**"), true, t)
+	checkBool(IsValidSubject("foo*bar"), true, t)
+	checkBool(IsValidSubject("foo.*bar"), true, t)
+	checkBool(IsValidSubject("foo*.bar"), true, t)
+	checkBool(IsValidSubject("*bar"), true, t)
+	checkBool(IsValidSubject("foo>"), true, t)
+	checkBool(IsValidSubject("foo.>>"), true, t)
+	checkBool(IsValidSubject("foo>bar"), true, t)
+	checkBool(IsValidSubject("foo.>bar"), true, t)
+	checkBool(IsValidSubject("foo>.bar"), true, t)
+	checkBool(IsValidSubject(">bar"), true, t)
 }
 
 func TestSublistMatchLiterals(t *testing.T) {
@@ -385,6 +428,18 @@ func TestSublistMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral("foo.bar", "foo"), false, t)
 	checkBool(matchLiteral("stats.test.foos", "stats.test.foos"), true, t)
 	checkBool(matchLiteral("stats.test.foos", "stats.test.foo"), false, t)
+
+	// These are cases where wildcards characters should not be considered
+	// wildcards since they do not follow the rules of wildcards.
+	checkBool(matchLiteral("*bar", "*.*"), false, t)
+	checkBool(matchLiteral("*bar", "*.>"), false, t)
+	checkBool(matchLiteral("*bar", "*bar"), true, t) // match literally
+	checkBool(matchLiteral("foo*", "foo.*"), false, t)
+	checkBool(matchLiteral("foo*", "foo.>"), false, t)
+	checkBool(matchLiteral("foo*", "foo*"), true, t) // match literally
+	checkBool(matchLiteral("foo*bar", "foo.*.bar"), false, t)
+	checkBool(matchLiteral("foo*bar", "foo.>"), false, t)
+	checkBool(matchLiteral("foo*bar", "foo*bar"), true, t) // match literally
 }
 
 func TestSublistBadSubjectOnRemove(t *testing.T) {

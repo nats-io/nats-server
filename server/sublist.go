@@ -610,28 +610,46 @@ func IsValidLiteralSubject(subject string) bool {
 func matchLiteral(literal, subject string) bool {
 	li := 0
 	ll := len(literal)
-	for i := 0; i < len(subject); i++ {
+	ls := len(subject)
+	for i := 0; i < ls; i++ {
 		if li >= ll {
 			return false
 		}
 		b := subject[i]
+		checkb := true
 		switch b {
 		case pwc:
-			// Skip token in literal
-			ll := len(literal)
-			for {
-				if li >= ll || literal[li] == btsep {
-					li--
-					break
+			// NOTE: This is not testing validity of a subject, instead ensures
+			// that wildcards are treated as such if they follow some basic rules.
+			// For `*` it means:
+			// only character in the string
+			// or first character and followed by a `.`
+			// or last character and preceded by a `.`
+			// or preceded and followed by a `.`
+			if ls == 1 ||
+				(i == 0 && i < ls-1 && subject[i+1] == btsep) ||
+				(i > 0 && subject[i-1] == btsep && ((i == ls-1) || (subject[i+1] == btsep))) {
+				// Skip token in literal
+				for {
+					if li >= ll || literal[li] == btsep {
+						li--
+						break
+					}
+					li++
 				}
-				li++
+				checkb = false
 			}
 		case fwc:
-			return true
-		default:
-			if b != literal[li] {
-				return false
+			// For `>` to be a wildcard, it means:
+			// only character in the string
+			// or last character preceded by `.`
+			if ls == 1 ||
+				(i > 0 && subject[i-1] == btsep && i == ls-1) {
+				return true
 			}
+		}
+		if checkb && b != literal[li] {
+			return false
 		}
 		li++
 	}
