@@ -589,3 +589,39 @@ func Benchmark_____________Sublist10XMultipleReads(b *testing.B) {
 func Benchmark____________Sublist100XMultipleReads(b *testing.B) {
 	multiRead(b, 100)
 }
+
+func Benchmark_SublistMatchLiteral(b *testing.B) {
+	b.StopTimer()
+	cachedSubj := "foo.foo.foo.foo.foo.foo.foo.foo.foo.foo"
+	subjects := []string{
+		"foo.foo.foo.foo.foo.foo.foo.foo.foo.foo",
+		"foo.foo.foo.foo.foo.foo.foo.foo.foo.>",
+		"foo.foo.foo.foo.foo.foo.foo.foo.>",
+		"foo.foo.foo.foo.foo.foo.foo.>",
+		"foo.foo.foo.foo.foo.foo.>",
+		"foo.foo.foo.foo.foo.>",
+		"foo.foo.foo.foo.>",
+		"foo.foo.foo.>",
+		"foo.foo.>",
+		"foo.>",
+		">",
+		"foo.foo.foo.foo.foo.foo.foo.foo.foo.*",
+		"foo.foo.foo.foo.foo.foo.foo.foo.*.*",
+		"foo.foo.foo.foo.foo.foo.foo.*.*.*",
+		"foo.foo.foo.foo.foo.foo.*.*.*.*",
+		"foo.foo.foo.foo.foo.*.*.*.*.*",
+		"foo.foo.foo.foo.*.*.*.*.*.*",
+		"foo.foo.foo.*.*.*.*.*.*.*",
+		"foo.foo.*.*.*.*.*.*.*.*",
+		"foo.*.*.*.*.*.*.*.*.*",
+		"*.*.*.*.*.*.*.*.*.*",
+	}
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		for _, subject := range subjects {
+			if !matchLiteral(cachedSubj, subject) {
+				b.Fatalf("Subject %q no match with %q", cachedSubj, subject)
+			}
+		}
+	}
+}
