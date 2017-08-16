@@ -249,6 +249,8 @@ max_control_line: 512
 max_payload: 65536
 ```
 
+Inside configuration files, string values support the following escape characters: `\xXX, \t, \n, \r, \", \\`.  Take note that when specifying directory paths in options such as `pid_file` and `log_file` on Windows, you'll need to escape backslashes, e.g. `log_file:  "c:\\logging\\log.txt"`, or use unix style (`/`) path separators.
+
 ## Variables
 
 The NATS sever configuration language supports block-scoped variables that can be used for templating in the configuration file, and specifically to ease setting of group values for [permission fields](#authorization) and [user authentication](#authentication).
