@@ -616,7 +616,6 @@ func matchLiteral(literal, subject string) bool {
 			return false
 		}
 		b := subject[i]
-		checkb := true
 		switch b {
 		case pwc:
 			// NOTE: This is not testing validity of a subject, instead ensures
@@ -626,9 +625,7 @@ func matchLiteral(literal, subject string) bool {
 			// or first character and followed by a `.`
 			// or last character and preceded by a `.`
 			// or preceded and followed by a `.`
-			if ls == 1 ||
-				(i == 0 && i < ls-1 && subject[i+1] == btsep) ||
-				(i > 0 && subject[i-1] == btsep && ((i == ls-1) || (subject[i+1] == btsep))) {
+			if (i == 0 || subject[i-1] == btsep) && (i == ls-1 || subject[i+1] == btsep) {
 				// Skip token in literal
 				for {
 					if li >= ll || literal[li] == btsep {
@@ -637,19 +634,23 @@ func matchLiteral(literal, subject string) bool {
 					}
 					li++
 				}
-				checkb = false
+			} else if b != literal[li] {
+				return false
 			}
 		case fwc:
 			// For `>` to be a wildcard, it means:
 			// only character in the string
 			// or last character preceded by `.`
-			if ls == 1 ||
-				(i > 0 && subject[i-1] == btsep && i == ls-1) {
+			if (i == 0 || subject[i-1] == btsep) && i == ls-1 {
 				return true
 			}
-		}
-		if checkb && b != literal[li] {
-			return false
+			if b != literal[li] {
+				return false
+			}
+		default:
+			if b != literal[li] {
+				return false
+			}
 		}
 		li++
 	}
