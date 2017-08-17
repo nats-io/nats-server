@@ -428,18 +428,20 @@ func TestSublistMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral("foo.bar", "foo"), false, t)
 	checkBool(matchLiteral("stats.test.foos", "stats.test.foos"), true, t)
 	checkBool(matchLiteral("stats.test.foos", "stats.test.foo"), false, t)
+	checkBool(matchLiteral("stats.test", "stats.test.*"), false, t)
+	checkBool(matchLiteral("stats.test.foos", "stats.*"), false, t)
+	checkBool(matchLiteral("stats.test.foos", "stats.*.*.foos"), false, t)
 
 	// These are cases where wildcards characters should not be considered
 	// wildcards since they do not follow the rules of wildcards.
-	checkBool(matchLiteral("*bar", "*.*"), false, t)
-	checkBool(matchLiteral("*bar", "*.>"), false, t)
-	checkBool(matchLiteral("*bar", "*bar"), true, t) // match literally
-	checkBool(matchLiteral("foo*", "foo.*"), false, t)
-	checkBool(matchLiteral("foo*", "foo.>"), false, t)
-	checkBool(matchLiteral("foo*", "foo*"), true, t) // match literally
-	checkBool(matchLiteral("foo*bar", "foo.*.bar"), false, t)
-	checkBool(matchLiteral("foo*bar", "foo.>"), false, t)
-	checkBool(matchLiteral("foo*bar", "foo*bar"), true, t) // match literally
+	checkBool(matchLiteral("*bar", "*bar"), true, t)
+	checkBool(matchLiteral("foo*", "foo*"), true, t)
+	checkBool(matchLiteral("foo*bar", "foo*bar"), true, t)
+	checkBool(matchLiteral("foo.***.bar", "foo.***.bar"), true, t)
+	checkBool(matchLiteral(">bar", ">bar"), true, t)
+	checkBool(matchLiteral("foo>", "foo>"), true, t)
+	checkBool(matchLiteral("foo>bar", "foo>bar"), true, t)
+	checkBool(matchLiteral("foo.>>>.bar", "foo.>>>.bar"), true, t)
 }
 
 func TestSublistBadSubjectOnRemove(t *testing.T) {
