@@ -468,6 +468,9 @@ authorization {
 }
 ```
 
+>If you chose to use a token for client's authentication and generate the token by `/util/mkpassword.go` then you should use a generated bcrypt hash as a `token` in server's config as written above and a **pass** as a `token` in client's config.
+>Note that the token for the client is the generated pass and the token for the server is the generated bcrypt hash.
+
 **Multi-user authentication**
 
 You can enable multi-user authentication using a NATS server configuration file that defines user credentials (`user` and `password`), and optionally `permissions`, for two or more users. Multi-user authentication leverages [variables](#variables).
