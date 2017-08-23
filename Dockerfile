@@ -1,4 +1,4 @@
-FROM golang:1.7.6
+FROM golang:1.8.3
 
 MAINTAINER Derek Collison <derek@apcera.com>
 
