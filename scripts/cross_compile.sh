@@ -5,8 +5,8 @@ go get github.com/mitchellh/gox
 go get github.com/tcnksm/ghr
 
 export APPNAME="gnatsd"
-export OSARCH="linux/386 linux/amd64 darwin/amd64 windows/386 windows/amd64"
-export DIRS="linux-386 linux-amd64 linux-arm6 linux-arm7 darwin-amd64 windows-386 windows-amd64"
+export OSARCH="linux/386 linux/amd64 linux/arm64 darwin/amd64 windows/386 windows/amd64"
+export DIRS="linux-386 linux-amd64 linux-arm6 linux-arm7 linux-arm64 darwin-amd64 windows-386 windows-amd64"
 export OUTDIR="pkg"
 
 # If we have an arg, assume its a version tag and rename as appropriate.
