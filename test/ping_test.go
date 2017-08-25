@@ -1,4 +1,4 @@
-// Copyright 2012-2014 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package test
 
@@ -41,6 +41,7 @@ func TestPingSentToTLSConnection(t *testing.T) {
 	tc.CaFile = opts.TLSCaCert
 
 	opts.TLSConfig, _ = server.GenTLSConfig(&tc)
+	opts.TLSTimeout = float64(5 * time.Second)
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
