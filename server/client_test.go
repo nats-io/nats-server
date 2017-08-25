@@ -767,3 +767,47 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	cli.closeConnection()
 	ch <- true
 }
+
+// This tests issue #558
+func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	ch := make(chan bool, 1)
+	// This subject is a literal even though it contains `*` and `>`,
+	// they are not treated as wildcards.
+	subj := "foo.bar,*,>,baz"
+	cb := func(_ *nats.Msg) {
+		ch <- true
+	}
+	for i := 0; i < 2; i++ {
+		sub, err := nc.Subscribe(subj, cb)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := nc.Flush(); err != nil {
+			t.Fatalf("Error on flush: %v", err)
+		}
+		if err := nc.LastError(); err != nil {
+			t.Fatalf("Server reported error: %v", err)
+		}
+		if err := nc.Publish(subj, []byte("msg")); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("Should have received the message")
+		}
+		if err := sub.Unsubscribe(); err != nil {
+			t.Fatalf("Error on unsubscribe: %v", err)
+		}
+	}
+}
