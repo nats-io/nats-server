@@ -199,7 +199,7 @@ http: localhost:8222 # HTTP monitoring port
 # Authorization for client connections
 authorization {
   user:     derek
-  # ./util/mkpassword -p T0pS3cr3t
+  # ./util/mkpasswd -p T0pS3cr3t
   password: $2a$11$W2zko751KUvVy59mUTWmpOdWjpEm5qhcCZRd05GjI/sSOT.xtiHyG
   timeout:  1
 }
@@ -213,7 +213,7 @@ cluster {
   # Authorization for route connections
   authorization {
     user: route_user
-    # ./util/mkpassword -p T0pS3cr3tT00!
+    # ./util/mkpasswd -p T0pS3cr3tT00!
     password: $2a$11$xH8dkGrty1cBNtZjhPeWJewu/YPbSU.rXJWmS6SFilOBXzmZoMk9m
     timeout: 0.5
   }
@@ -462,14 +462,19 @@ Or, if you chose to use a token:
 
 ```
 authorization {
-  # You can generate the token using /util/mkpassword.go
+  # You can generate the token using /util/mkpasswd.go
   token:   $2a$11$pBwUBpza8vdJ7tWZcP5GRO13qRgh4dwNn8g67k5i/41yIKBp.sHke
   timeout: 1
 }
 ```
 
->If you chose to use a token for client's authentication and generate the token by `/util/mkpassword.go` then you should use the generated bcrypt hash as the token in server's config as written above and the generated pass as the token in client's config.  
-Note that the token for the client is the generated pass and the token for the server is the generated bcrypt hash.
+>If you chose to use a token for client's authentication and generate the token by `/util/mkpasswd.go` then you must use the generated bcrypt hash as the token in server config, as written above, and the generated pass as the token in client configurations.
+
+```
+$ go run util/mkpasswd.go 
+pass: D#6)e0ht^@61kU5!^!owrX // NATS client token
+bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server authorization token
+```
 
 **Multi-user authentication**
 
