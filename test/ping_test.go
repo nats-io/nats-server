@@ -41,7 +41,7 @@ func TestPingSentToTLSConnection(t *testing.T) {
 	tc.CaFile = opts.TLSCaCert
 
 	opts.TLSConfig, _ = server.GenTLSConfig(&tc)
-	opts.TLSTimeout = float64(5 * time.Second)
+	opts.TLSTimeout = 5
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
