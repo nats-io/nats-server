@@ -2,7 +2,7 @@ language: go
 go:
 - 1.7.x
 - 1.8.x
-- 1.9
+- 1.9.x
 install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
@@ -15,8 +15,7 @@ before_script:
 - $(exit $(go fmt $EXCLUDE_VENDOR | wc -l))
 - go vet $EXCLUDE_VENDOR
 - misspell -error -locale US .
-# Temporary fix, it seems megacheck fails with weird import errors on Go 1.9
-- if [[ "$TRAVIS_GO_VERSION" != 1.9 ]]; then megacheck $EXCLUDE_VENDOR; fi
+- megacheck $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" == 1.8.* ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i -race $EXCLUDE_VENDOR
