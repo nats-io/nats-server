@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package main
 
@@ -24,6 +24,7 @@ Server Options:
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
+    -dlq                             Enable dead-letter queues (default: false)
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -101,6 +102,7 @@ func main() {
 	flag.StringVar(&configFile, "config", "", "Configuration file.")
 	flag.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	flag.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
+	flag.BoolVar(&opts.DLQ, "dlq", false, "Enable dead-letter queues.")
 	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")

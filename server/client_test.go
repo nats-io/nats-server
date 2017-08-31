@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -10,6 +10,7 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -809,5 +810,194 @@ func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
 		if err := sub.Unsubscribe(); err != nil {
 			t.Fatalf("Error on unsubscribe: %v", err)
 		}
+	}
+}
+
+// Ensure DLQ subscriptions do not work when disabled (default).
+func TestDLQDisabled(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d",
+		s.getOpts().Host,
+		s.Addr().(*net.TCPAddr).Port,
+	)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error creating client to %s: %v\n", url, err)
+	}
+	defer nc.Close()
+
+	ch := make(chan struct{}, 1)
+	_, err = nc.Subscribe("_SYS.dlq.foo.*", func(msg *nats.Msg) {
+		ch <- struct{}{}
+	})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc.Flush()
+
+	for i := 0; i < 5; i++ {
+		if err := nc.Publish(fmt.Sprintf("foo.%s", strconv.Itoa(i)), []byte("hello")); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	nc.Flush()
+
+	select {
+	case <-ch:
+		t.Fatal("Unexpected message received")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Ensure DLQ subscriptions receive messages when there are no interested
+// subscribers.
+func TestDLQEnabled(t *testing.T) {
+	opts := DefaultOptions()
+	opts.DLQ = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d",
+		s.getOpts().Host,
+		s.Addr().(*net.TCPAddr).Port,
+	)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error creating client to %s: %v\n", url, err)
+	}
+	defer nc.Close()
+
+	ch := make(chan *nats.Msg, 5)
+	_, err = nc.Subscribe("_SYS.dlq.foo.*", func(msg *nats.Msg) {
+		ch <- msg
+	})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc.Flush()
+
+	for i := 0; i < 5; i++ {
+		if err := nc.Publish(fmt.Sprintf("foo.%s", strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	nc.Flush()
+
+	for i := 0; i < 5; i++ {
+		select {
+		case m := <-ch:
+			if string(m.Data) != strconv.Itoa(i) {
+				t.Fatalf("Msg data is incorrect.\nexpected: %d\ngot: %s", i, m.Data)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Expected to receive message")
+		}
+	}
+
+	// Subscribe to foo.0 and then verify DLQ receives foo.1 through foo.4.
+	recv := make(chan struct{}, 1)
+	_, err = nc.Subscribe("foo.0", func(msg *nats.Msg) {
+		recv <- struct{}{}
+	})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc.Flush()
+
+	for i := 0; i < 5; i++ {
+		if err := nc.Publish(fmt.Sprintf("foo.%s", strconv.Itoa(i)), []byte(strconv.Itoa(i))); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	nc.Flush()
+
+	select {
+	case <-recv:
+	case <-time.After(time.Second):
+		t.Fatal("Expected to receive message")
+	}
+
+	// Should receive 1 through 4.
+	for i := 1; i < 5; i++ {
+		select {
+		case m := <-ch:
+			if string(m.Data) != strconv.Itoa(i) {
+				t.Fatalf("Msg data is incorrect.\nexpected: %d\ngot: %s", i, m.Data)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Expected to receive message")
+		}
+	}
+}
+
+// Ensure DLQs work across routes.
+func TestDLQRoute(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
+	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+
+	optsA.NoSigs, optsA.NoLog, optsA.DLQ = true, true, true
+	optsB.NoSigs, optsB.NoLog, optsB.DLQ = true, true, true
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// Wait for route to form.
+	checkClusterFormed(t, srvA, srvB)
+
+	nc1, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc1.Close()
+
+	ch := make(chan struct{}, 1)
+	_, err = nc1.Subscribe("_SYS.dlq.foo", func(m *nats.Msg) { ch <- struct{}{} })
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc1.Flush()
+
+	nc2, err := nats.Connect(urlB)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+
+	if err := nc2.Publish("foo", []byte("Hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	nc2.Flush()
+
+	// Verify DLQ received message.
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("Expected to receive message")
+	}
+
+	// Now verify DLQ does not receive message when there is a subscription.
+	if _, err := nc1.Subscribe("foo", func(m *nats.Msg) {}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc1.Flush()
+
+	if err := nc2.Publish("foo", []byte("Hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	nc2.Flush()
+
+	select {
+	case <-ch:
+		t.Fatal("Unexpected message received")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

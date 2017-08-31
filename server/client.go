@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -164,6 +164,7 @@ type subscription struct {
 	sid     []byte
 	nm      int64
 	max     int64
+	dlq     bool
 }
 
 type clientOpts struct {
@@ -770,12 +771,31 @@ func (c *client) processSub(argo []byte) (err error) {
 		return fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
 
+	// If dead-letter queues are enabled, check if it's a DLQ subscription,
+	// indicated by a subject starting with _SYS.dlq.
+	if atomic.LoadUint32(&c.srv.dlq) == 1 &&
+		sub.subject[0] == '_' && len(sub.subject) > 8 &&
+		sub.subject[1] == 'S' && sub.subject[2] == 'Y' &&
+		sub.subject[3] == 'S' && sub.subject[4] == '.' &&
+		sub.subject[5] == 'd' && sub.subject[6] == 'l' &&
+		sub.subject[7] == 'q' && sub.subject[8] == '.' {
+
+		// Trim the DLQ prefix.
+		sub.subject = sub.subject[9:]
+		sub.dlq = true
+	}
+
 	shouldForward := false
 
 	c.mu.Lock()
 	if c.nc == nil {
 		c.mu.Unlock()
 		return nil
+	}
+
+	sl := c.srv.sl
+	if sub.dlq {
+		sl = c.srv.dlqSl
 	}
 
 	// Check permissions if applicable.
@@ -792,13 +812,11 @@ func (c *client) processSub(argo []byte) (err error) {
 	sid := string(sub.sid)
 	if c.subs[sid] == nil {
 		c.subs[sid] = sub
-		if c.srv != nil {
-			err = c.srv.sl.Insert(sub)
-			if err != nil {
-				delete(c.subs, sid)
-			} else {
-				shouldForward = c.typ != ROUTER
-			}
+		err = sl.Insert(sub)
+		if err != nil {
+			delete(c.subs, sid)
+		} else {
+			shouldForward = c.typ != ROUTER
 		}
 	}
 	c.mu.Unlock()
@@ -836,7 +854,11 @@ func (c *client) unsubscribe(sub *subscription) {
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
 	delete(c.subs, string(sub.sid))
 	if c.srv != nil {
-		c.srv.sl.Remove(sub)
+		sl := c.srv.sl
+		if sub.dlq {
+			sl = c.srv.dlqSl
+		}
+		sl.Remove(sub)
 	}
 }
 
@@ -1104,9 +1126,16 @@ func (c *client) processMsg(msg []byte) {
 		}
 	}
 
-	// Check for no interest, short circuit if so.
+	// Check for no interest. If so, check for DLQ subscribers if enabled,
+	// otherwise short circuit.
 	if len(r.psubs) == 0 && len(r.qsubs) == 0 {
-		return
+		if atomic.LoadUint32(&srv.dlq) == 0 {
+			return
+		}
+		r = srv.dlqSl.Match(string(c.pa.subject))
+		if len(r.psubs) == 0 && len(r.qsubs) == 0 {
+			return
+		}
 	}
 
 	// Check for pedantic and bad subject.

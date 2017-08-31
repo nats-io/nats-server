@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -47,11 +47,13 @@ type Info struct {
 // Server is our main struct.
 type Server struct {
 	gcid uint64
+	dlq  uint32
 	stats
 	mu            sync.Mutex
 	info          Info
 	infoJSON      []byte
 	sl            *Sublist
+	dlqSl         *Sublist
 	configFile    string
 	optsMu        sync.RWMutex
 	opts          *Options
@@ -118,6 +120,11 @@ func New(opts *Options) *Server {
 		clientConnectURLs: make(map[string]struct{}),
 	}
 
+	dlq := uint32(0)
+	if opts.DLQ {
+		dlq = 1
+	}
+
 	now := time.Now()
 	s := &Server{
 		configFile: opts.ConfigFile,
@@ -127,6 +134,8 @@ func New(opts *Options) *Server {
 		done:       make(chan bool, 1),
 		start:      now,
 		configTime: now,
+		dlq:        dlq,
+		dlqSl:      NewSublist(),
 	}
 
 	s.mu.Lock()

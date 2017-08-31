@@ -587,7 +587,12 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 		return
 	}
 	rsid := routeSid(sub)
-	proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+	var proto string
+	if sub.dlq {
+		proto = fmt.Sprintf(subProto, "_SYS.dlq."+string(sub.subject), sub.queue, rsid)
+	} else {
+		proto = fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+	}
 	s.broadcastInterestToRoutes(proto)
 }
 

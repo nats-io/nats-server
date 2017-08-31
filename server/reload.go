@@ -228,6 +228,22 @@ type clusterOption struct {
 	newValue ClusterOpts
 }
 
+// dlqOption implements the option interface for the `dlq` setting.
+type dlqOption struct {
+	noopOption
+	newValue bool
+}
+
+// Apply the DLQ change.
+func (d *dlqOption) Apply(server *Server) {
+	if d.newValue {
+		atomic.StoreUint32(&server.dlq, 1)
+	} else {
+		atomic.StoreUint32(&server.dlq, 0)
+	}
+	server.Noticef("Reloaded: dlq = %v", d.newValue)
+}
+
 // Apply the cluster change.
 func (c *clusterOption) Apply(server *Server) {
 	// TODO: support enabling/disabling clustering.
@@ -518,6 +534,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxPingsOutOption{newValue: newValue.(int)})
 		case "writedeadline":
 			diffOpts = append(diffOpts, &writeDeadlineOption{newValue: newValue.(time.Duration)})
+		case "dlq":
+			diffOpts = append(diffOpts, &dlqOption{newValue: newValue.(bool)})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.
