@@ -71,6 +71,7 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+	DLQ            bool          `json:"dead_letter_queue"`
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone
@@ -186,6 +187,8 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 			opts.Trace = v.(bool)
 		case "logtime":
 			opts.Logtime = v.(bool)
+		case "dlq", "dead_letter_queue":
+			opts.DLQ = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
 			auth, err := parseAuthorization(am)
