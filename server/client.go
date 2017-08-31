@@ -1051,7 +1051,7 @@ func (c *client) processMsg(msg []byte) {
 				// Prune the permissions cache. Keeps us from unbounded growth.
 				r := 0
 				for subject := range c.perms.pcache {
-					delete(c.cache.results, subject)
+					delete(c.perms.pcache, subject)
 					r++
 					if r > pruneSize {
 						break
