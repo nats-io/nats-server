@@ -102,29 +102,38 @@ func (s *Sublist) Insert(sub *subscription) error {
 	var n *node
 
 	for _, t := range tokens {
-		if len(t) == 0 || sfwc {
+		lt := len(t)
+		if lt == 0 || sfwc {
 			s.Unlock()
 			return ErrInvalidSubject
 		}
 
-		switch t[0] {
-		case pwc:
-			n = l.pwc
-		case fwc:
-			n = l.fwc
-			sfwc = true
-		default:
+		if lt > 1 {
 			n = l.nodes[t]
+		} else {
+			switch t[0] {
+			case pwc:
+				n = l.pwc
+			case fwc:
+				n = l.fwc
+				sfwc = true
+			default:
+				n = l.nodes[t]
+			}
 		}
 		if n == nil {
 			n = newNode()
-			switch t[0] {
-			case pwc:
-				l.pwc = n
-			case fwc:
-				l.fwc = n
-			default:
+			if lt > 1 {
 				l.nodes[t] = n
+			} else {
+				switch t[0] {
+				case pwc:
+					l.pwc = n
+				case fwc:
+					l.fwc = n
+				default:
+					l.nodes[t] = n
+				}
 			}
 		}
 		if n.next == nil {
@@ -334,20 +343,25 @@ func (s *Sublist) Remove(sub *subscription) error {
 	levels := lnts[:0]
 
 	for _, t := range tokens {
-		if len(t) == 0 || sfwc {
+		lt := len(t)
+		if lt == 0 || sfwc {
 			return ErrInvalidSubject
 		}
 		if l == nil {
 			return ErrNotFound
 		}
-		switch t[0] {
-		case pwc:
-			n = l.pwc
-		case fwc:
-			n = l.fwc
-			sfwc = true
-		default:
+		if lt > 1 {
 			n = l.nodes[t]
+		} else {
+			switch t[0] {
+			case pwc:
+				n = l.pwc
+			case fwc:
+				n = l.fwc
+				sfwc = true
+			default:
+				n = l.nodes[t]
+			}
 		}
 		if n != nil {
 			levels = append(levels, lnt{l, n, t})

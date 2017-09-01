@@ -475,6 +475,40 @@ func TestSublistTwoTokenPubMatchSingleTokenSub(t *testing.T) {
 	verifyLen(r.psubs, 0, t)
 }
 
+func TestSublistInsertWithWildcardsAsLiterals(t *testing.T) {
+	s := NewSublist()
+	subjects := []string{"foo.*-", "foo.>-"}
+	for _, subject := range subjects {
+		sub := newSub(subject)
+		s.Insert(sub)
+		// Should find no match
+		r := s.Match("foo.bar")
+		verifyLen(r.psubs, 0, t)
+		// Should find a match
+		r = s.Match(subject)
+		verifyLen(r.psubs, 1, t)
+	}
+}
+
+func TestSublistRemoveWithWildcardsAsLiterals(t *testing.T) {
+	s := NewSublist()
+	subjects := []string{"foo.*-", "foo.>-"}
+	for _, subject := range subjects {
+		sub := newSub(subject)
+		s.Insert(sub)
+		// Should find no match
+		rsub := newSub("foo.bar")
+		s.Remove(rsub)
+		if c := s.Count(); c != 1 {
+			t.Fatalf("Expected sublist to still contain sub, got %v", c)
+		}
+		s.Remove(sub)
+		if c := s.Count(); c != 0 {
+			t.Fatalf("Expected sublist to be empty, got %v", c)
+		}
+	}
+}
+
 // -- Benchmarks Setup --
 
 var subs []*subscription
