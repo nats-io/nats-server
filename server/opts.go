@@ -18,7 +18,7 @@ import (
 	"github.com/nats-io/gnatsd/util"
 )
 
-// Options for clusters.
+// ClusterOpts are options for clusters.
 type ClusterOpts struct {
 	Host           string      `json:"addr"`
 	Port           int         `json:"cluster_port"`
@@ -156,15 +156,36 @@ Available cipher suites include:
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
-	opts := &Options{ConfigFile: configFile}
+	opts := &Options{}
+	if err := opts.ProcessConfigFile(configFile); err != nil {
+		return nil, err
+	}
+	return opts, nil
+}
 
+// ProcessConfigFile updates the Options structure with options
+// present in the given configuration file.
+// This version is convenient if one wants to set some default
+// options and then override them with what is in the config file.
+// For instance, this version allows you to do something such as:
+//
+// opts := &Options{Debug: true}
+// opts.ProcessConfigFile(myConfigFile)
+//
+// If the config file contains "debug: false", after this call,
+// opts.Debug would really be false. It would be impossible to
+// achieve that with the non receiver ProcessConfigFile() version,
+// since one would not know after the call if "debug" was not present
+// or was present but set to false.
+func (o *Options) ProcessConfigFile(configFile string) error {
+	o.ConfigFile = configFile
 	if configFile == "" {
-		return opts, nil
+		return nil
 	}
 
 	m, err := conf.ParseFile(configFile)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for k, v := range m {
@@ -172,113 +193,113 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		case "listen":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.Host = hp.host
-			opts.Port = hp.port
+			o.Host = hp.host
+			o.Port = hp.port
 		case "port":
-			opts.Port = int(v.(int64))
+			o.Port = int(v.(int64))
 		case "host", "net":
-			opts.Host = v.(string)
+			o.Host = v.(string)
 		case "debug":
-			opts.Debug = v.(bool)
+			o.Debug = v.(bool)
 		case "trace":
-			opts.Trace = v.(bool)
+			o.Trace = v.(bool)
 		case "logtime":
-			opts.Logtime = v.(bool)
+			o.Logtime = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
 			auth, err := parseAuthorization(am)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.Username = auth.user
-			opts.Password = auth.pass
-			opts.Authorization = auth.token
+			o.Username = auth.user
+			o.Password = auth.pass
+			o.Authorization = auth.token
 			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				return nil, fmt.Errorf("Cannot have a user/pass and token")
+				return fmt.Errorf("Cannot have a user/pass and token")
 			}
-			opts.AuthTimeout = auth.timeout
+			o.AuthTimeout = auth.timeout
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
-					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
+					return fmt.Errorf("Can not have a single user/pass and a users array")
 				}
 				if auth.token != "" {
-					return nil, fmt.Errorf("Can not have a token and a users array")
+					return fmt.Errorf("Can not have a token and a users array")
 				}
-				opts.Users = auth.users
+				o.Users = auth.users
 			}
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.HTTPHost = hp.host
-			opts.HTTPPort = hp.port
+			o.HTTPHost = hp.host
+			o.HTTPPort = hp.port
 		case "https":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.HTTPHost = hp.host
-			opts.HTTPSPort = hp.port
+			o.HTTPHost = hp.host
+			o.HTTPSPort = hp.port
 		case "http_port", "monitor_port":
-			opts.HTTPPort = int(v.(int64))
+			o.HTTPPort = int(v.(int64))
 		case "https_port":
-			opts.HTTPSPort = int(v.(int64))
+			o.HTTPSPort = int(v.(int64))
 		case "cluster":
 			cm := v.(map[string]interface{})
-			if err := parseCluster(cm, opts); err != nil {
-				return nil, err
+			if err := parseCluster(cm, o); err != nil {
+				return err
 			}
 		case "logfile", "log_file":
-			opts.LogFile = v.(string)
+			o.LogFile = v.(string)
 		case "syslog":
-			opts.Syslog = v.(bool)
+			o.Syslog = v.(bool)
 		case "remote_syslog":
-			opts.RemoteSyslog = v.(string)
+			o.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
-			opts.PidFile = v.(string)
+			o.PidFile = v.(string)
 		case "prof_port":
-			opts.ProfPort = int(v.(int64))
+			o.ProfPort = int(v.(int64))
 		case "max_control_line":
-			opts.MaxControlLine = int(v.(int64))
+			o.MaxControlLine = int(v.(int64))
 		case "max_payload":
-			opts.MaxPayload = int(v.(int64))
+			o.MaxPayload = int(v.(int64))
 		case "max_connections", "max_conn":
-			opts.MaxConn = int(v.(int64))
+			o.MaxConn = int(v.(int64))
 		case "ping_interval":
-			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
+			o.PingInterval = time.Duration(int(v.(int64))) * time.Second
 		case "ping_max":
-			opts.MaxPingsOut = int(v.(int64))
+			o.MaxPingsOut = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
 			tc, err := parseTLS(tlsm)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if opts.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				return nil, err
+			if o.TLSConfig, err = GenTLSConfig(tc); err != nil {
+				return err
 			}
-			opts.TLSTimeout = tc.Timeout
+			o.TLSTimeout = tc.Timeout
 		case "write_deadline":
 			wd, ok := v.(string)
 			if ok {
 				dur, err := time.ParseDuration(wd)
 				if err != nil {
-					return nil, fmt.Errorf("error parsing write_deadline: %v", err)
+					return fmt.Errorf("error parsing write_deadline: %v", err)
 				}
-				opts.WriteDeadline = dur
+				o.WriteDeadline = dur
 			} else {
 				// Backward compatible with old type, assume this is the
 				// number of seconds.
-				opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
+				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
 			}
 		}
 	}
-	return opts, nil
+	return nil
 }
 
 // hostPort is simple struct to hold parsed listen/addr strings.
@@ -686,7 +707,7 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 		return fileOpts
 	}
 	// Merge the two, flagOpts override
-	opts := *fileOpts
+	opts := fileOpts.Clone()
 
 	if flagOpts.Port != 0 {
 		opts.Port = flagOpts.Port
@@ -734,9 +755,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
 	}
 	if flagOpts.RoutesStr != "" {
-		mergeRoutes(&opts, flagOpts)
+		mergeRoutes(opts, flagOpts)
 	}
-	return &opts
+	return opts
 }
 
 // RoutesFromStr parses route URLs from a string

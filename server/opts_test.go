@@ -789,3 +789,32 @@ func TestMalformedClusterAddress(t *testing.T) {
 		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
 	}
 }
+
+func TestOptionsProcessConfigFile(t *testing.T) {
+	// Create options with default values of Debug and Trace
+	// that are the opposite of what is in the config file.
+	// Set another option that is not present in the config file.
+	logFileName := "test.log"
+	opts := &Options{
+		Debug:   true,
+		Trace:   false,
+		LogFile: logFileName,
+	}
+	configFileName := "./configs/test.conf"
+	if err := opts.ProcessConfigFile(configFileName); err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	// Verify that values are as expected
+	if opts.ConfigFile != configFileName {
+		t.Fatalf("Expected ConfigFile to be set to %q, got %v", configFileName, opts.ConfigFile)
+	}
+	if opts.Debug {
+		t.Fatal("Debug option should have been set to false from config file")
+	}
+	if !opts.Trace {
+		t.Fatal("Trace option should have been set to true from config file")
+	}
+	if opts.LogFile != logFileName {
+		t.Fatalf("Expected LogFile to be %q, got %q", logFileName, opts.LogFile)
+	}
+}
