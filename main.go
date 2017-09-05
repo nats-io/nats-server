@@ -3,11 +3,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/nats-io/gnatsd/server"
@@ -70,11 +72,10 @@ func main() {
 	opts := &server.Options{}
 
 	var (
-		showVersion   bool
-		debugAndTrace bool
-		configFile    string
-		signal        string
-		showTLSHelp   bool
+		showVersion bool
+		configFile  string
+		signal      string
+		showTLSHelp bool
 	)
 
 	// Parse flags
@@ -87,7 +88,7 @@ func main() {
 	flag.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
 	flag.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
+	flag.Bool("DV", false, "Enable Debug and Trace logging.")
 	flag.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	flag.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	flag.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -128,6 +129,14 @@ func main() {
 		fmt.Printf("%s\n", usageStr)
 	}
 
+	// The flags definition above set "default" values to some of the options.
+	// Calling Parse() here will override the default options with any value
+	// specified from the command line. This is ok. We will then update the
+	// options with the content of the configuration file (if present), and then,
+	// call Parse() again to override the default+config with command line values.
+	// Calling Parse() before processing config file is necessary since configFile
+	// itself is a command line argument, and also Parse() is required in order
+	// to know if user wants simply to show "help" or "version", etc...
 	flag.Parse()
 
 	// Show version and exit
@@ -137,11 +146,6 @@ func main() {
 
 	if showTLSHelp {
 		server.PrintTLSHelpAndDie()
-	}
-
-	// One flag can set multiple options.
-	if debugAndTrace {
-		opts.Trace, opts.Debug = true, true
 	}
 
 	// Process args looking for non-flag options,
@@ -165,12 +169,33 @@ func main() {
 
 	// Parse config if given
 	if configFile != "" {
-		fileOpts, err := server.ProcessConfigFile(configFile)
-		if err != nil {
+		// This will update the options with values from the config file.
+		if err := opts.ProcessConfigFile(configFile); err != nil {
 			server.PrintAndDie(err.Error())
 		}
-		opts = server.MergeOptions(fileOpts, opts)
+		// Call this again to override config file options with options from command line.
+		flag.Parse()
 	}
+
+	// Special handling of some flags
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "DV":
+			// Check value to support -DV=false
+			boolValue, _ := strconv.ParseBool(f.Value.String())
+			opts.Trace, opts.Debug = boolValue, boolValue
+		case "routes":
+			// Keep in mind that the flag has updated opts.RoutesStr at this point.
+			if opts.RoutesStr == "" {
+				// Set routes array to nil since routes string is empty
+				opts.Routes = nil
+				return
+			}
+			routeUrls := server.RoutesFromStr(f.Value.String())
+			opts.Routes = routeUrls
+			opts.RoutesStr = f.Value.String()
+		}
+	})
 
 	// Remove any host/ip that points to itself in Route
 	newroutes, err := server.RemoveSelfReference(opts.Cluster.Port, opts.Routes)
@@ -257,7 +282,7 @@ func configureClusterOpts(opts *server.Options) error {
 		if clusterURL.User != nil {
 			pass, hasPassword := clusterURL.User.Password()
 			if !hasPassword {
-				return fmt.Errorf("Expected cluster password to be set.")
+				return errors.New("expected cluster password to be set")
 			}
 			opts.Cluster.Password = pass
 
