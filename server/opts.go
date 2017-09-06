@@ -71,6 +71,9 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+
+	CustomClientAuth Auth `json:"-"`
+	CustomRouterAuth Auth `json:"-"`
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone

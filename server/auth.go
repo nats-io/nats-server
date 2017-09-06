@@ -3,11 +3,28 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// Auth is an interface for implementing authentication
+type Auth interface {
+	// Check if a client is authorized to connect
+	Check(c ClientAuth) bool
+}
+
+// ClientAuth is an interface for client authentication
+type ClientAuth interface {
+	// Get options associated with a client
+	GetOpts() *clientOpts
+	// If TLS is enabled, TLS ConnectionState, nil otherwise
+	GetTLSConnectionState() *tls.ConnectionState
+	// Optionally map a user after auth.
+	RegisterUser(*User)
+}
 
 // User is for multiple accounts/users.
 type User struct {
@@ -98,8 +115,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	// Check multiple users first, then token, then single user/pass.
-	if s.users != nil {
+	// Check custom auth first, then multiple users, then token, then single user/pass.
+	if s.opts.CustomClientAuth != nil {
+		return s.opts.CustomClientAuth.Check(c)
+	} else if s.users != nil {
 		user, ok := s.users[c.opts.Username]
 		if !ok {
 			return false
@@ -129,6 +148,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 func (s *Server) isRouterAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
+
+	if s.opts.CustomRouterAuth != nil {
+		return s.opts.CustomRouterAuth.Check(c)
+	}
 
 	if opts.Cluster.Username == "" {
 		return true
