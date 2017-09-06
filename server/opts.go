@@ -5,6 +5,8 @@ package server
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -18,7 +20,7 @@ import (
 	"github.com/nats-io/gnatsd/util"
 )
 
-// Options for clusters.
+// ClusterOpts are options for clusters.
 type ClusterOpts struct {
 	Host           string      `json:"addr"`
 	Port           int         `json:"cluster_port"`
@@ -156,15 +158,36 @@ Available cipher suites include:
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
-	opts := &Options{ConfigFile: configFile}
+	opts := &Options{}
+	if err := opts.ProcessConfigFile(configFile); err != nil {
+		return nil, err
+	}
+	return opts, nil
+}
 
+// ProcessConfigFile updates the Options structure with options
+// present in the given configuration file.
+// This version is convenient if one wants to set some default
+// options and then override them with what is in the config file.
+// For instance, this version allows you to do something such as:
+//
+// opts := &Options{Debug: true}
+// opts.ProcessConfigFile(myConfigFile)
+//
+// If the config file contains "debug: false", after this call,
+// opts.Debug would really be false. It would be impossible to
+// achieve that with the non receiver ProcessConfigFile() version,
+// since one would not know after the call if "debug" was not present
+// or was present but set to false.
+func (o *Options) ProcessConfigFile(configFile string) error {
+	o.ConfigFile = configFile
 	if configFile == "" {
-		return opts, nil
+		return nil
 	}
 
 	m, err := conf.ParseFile(configFile)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	for k, v := range m {
@@ -172,113 +195,113 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		case "listen":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.Host = hp.host
-			opts.Port = hp.port
+			o.Host = hp.host
+			o.Port = hp.port
 		case "port":
-			opts.Port = int(v.(int64))
+			o.Port = int(v.(int64))
 		case "host", "net":
-			opts.Host = v.(string)
+			o.Host = v.(string)
 		case "debug":
-			opts.Debug = v.(bool)
+			o.Debug = v.(bool)
 		case "trace":
-			opts.Trace = v.(bool)
+			o.Trace = v.(bool)
 		case "logtime":
-			opts.Logtime = v.(bool)
+			o.Logtime = v.(bool)
 		case "authorization":
 			am := v.(map[string]interface{})
 			auth, err := parseAuthorization(am)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.Username = auth.user
-			opts.Password = auth.pass
-			opts.Authorization = auth.token
+			o.Username = auth.user
+			o.Password = auth.pass
+			o.Authorization = auth.token
 			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				return nil, fmt.Errorf("Cannot have a user/pass and token")
+				return fmt.Errorf("Cannot have a user/pass and token")
 			}
-			opts.AuthTimeout = auth.timeout
+			o.AuthTimeout = auth.timeout
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
-					return nil, fmt.Errorf("Can not have a single user/pass and a users array")
+					return fmt.Errorf("Can not have a single user/pass and a users array")
 				}
 				if auth.token != "" {
-					return nil, fmt.Errorf("Can not have a token and a users array")
+					return fmt.Errorf("Can not have a token and a users array")
 				}
-				opts.Users = auth.users
+				o.Users = auth.users
 			}
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.HTTPHost = hp.host
-			opts.HTTPPort = hp.port
+			o.HTTPHost = hp.host
+			o.HTTPPort = hp.port
 		case "https":
 			hp, err := parseListen(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			opts.HTTPHost = hp.host
-			opts.HTTPSPort = hp.port
+			o.HTTPHost = hp.host
+			o.HTTPSPort = hp.port
 		case "http_port", "monitor_port":
-			opts.HTTPPort = int(v.(int64))
+			o.HTTPPort = int(v.(int64))
 		case "https_port":
-			opts.HTTPSPort = int(v.(int64))
+			o.HTTPSPort = int(v.(int64))
 		case "cluster":
 			cm := v.(map[string]interface{})
-			if err := parseCluster(cm, opts); err != nil {
-				return nil, err
+			if err := parseCluster(cm, o); err != nil {
+				return err
 			}
 		case "logfile", "log_file":
-			opts.LogFile = v.(string)
+			o.LogFile = v.(string)
 		case "syslog":
-			opts.Syslog = v.(bool)
+			o.Syslog = v.(bool)
 		case "remote_syslog":
-			opts.RemoteSyslog = v.(string)
+			o.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
-			opts.PidFile = v.(string)
+			o.PidFile = v.(string)
 		case "prof_port":
-			opts.ProfPort = int(v.(int64))
+			o.ProfPort = int(v.(int64))
 		case "max_control_line":
-			opts.MaxControlLine = int(v.(int64))
+			o.MaxControlLine = int(v.(int64))
 		case "max_payload":
-			opts.MaxPayload = int(v.(int64))
+			o.MaxPayload = int(v.(int64))
 		case "max_connections", "max_conn":
-			opts.MaxConn = int(v.(int64))
+			o.MaxConn = int(v.(int64))
 		case "ping_interval":
-			opts.PingInterval = time.Duration(int(v.(int64))) * time.Second
+			o.PingInterval = time.Duration(int(v.(int64))) * time.Second
 		case "ping_max":
-			opts.MaxPingsOut = int(v.(int64))
+			o.MaxPingsOut = int(v.(int64))
 		case "tls":
 			tlsm := v.(map[string]interface{})
 			tc, err := parseTLS(tlsm)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if opts.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				return nil, err
+			if o.TLSConfig, err = GenTLSConfig(tc); err != nil {
+				return err
 			}
-			opts.TLSTimeout = tc.Timeout
+			o.TLSTimeout = tc.Timeout
 		case "write_deadline":
 			wd, ok := v.(string)
 			if ok {
 				dur, err := time.ParseDuration(wd)
 				if err != nil {
-					return nil, fmt.Errorf("error parsing write_deadline: %v", err)
+					return fmt.Errorf("error parsing write_deadline: %v", err)
 				}
-				opts.WriteDeadline = dur
+				o.WriteDeadline = dur
 			} else {
 				// Backward compatible with old type, assume this is the
 				// number of seconds.
-				opts.WriteDeadline = time.Duration(v.(int64)) * time.Second
+				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
 			}
 		}
 	}
-	return opts, nil
+	return nil
 }
 
 // hostPort is simple struct to hold parsed listen/addr strings.
@@ -892,4 +915,261 @@ func processOptions(opts *Options) {
 	if opts.WriteDeadline == time.Duration(0) {
 		opts.WriteDeadline = DEFAULT_FLUSH_DEADLINE
 	}
+}
+
+// ConfigureOptions accepts a flag set and augment it with NATS Server
+// specific flags. On success, an options structure is returned configured
+// based on the selected flags and/or configuration file.
+// The command line options take precedence to the ones in the configuration file.
+func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
+	opts := &Options{}
+	var (
+		showVersion bool
+		showHelp    bool
+		showTLSHelp bool
+		signal      string
+		configFile  string
+		err         error
+	)
+
+	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
+	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
+	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
+	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
+	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
+	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
+	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
+	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
+	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
+	fs.Bool("DV", false, "Enable Debug and Trace logging.")
+	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
+	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
+	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
+	fs.StringVar(&opts.Password, "pass", "", "Password required for connection.")
+	fs.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
+	fs.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
+	fs.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
+	fs.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
+	fs.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
+	fs.StringVar(&configFile, "c", "", "Configuration file.")
+	fs.StringVar(&configFile, "config", "", "Configuration file.")
+	fs.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
+	fs.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
+	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
+	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
+	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
+	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
+	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
+	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
+	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://localhost:514).")
+	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://localhost:514).")
+	fs.BoolVar(&showVersion, "version", false, "Print version information.")
+	fs.BoolVar(&showVersion, "v", false, "Print version information.")
+	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
+	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
+	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
+	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
+	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
+	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
+	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
+	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
+	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
+	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
+	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
+	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+
+	// The flags definition above set "default" values to some of the options.
+	// Calling Parse() here will override the default options with any value
+	// specified from the command line. This is ok. We will then update the
+	// options with the content of the configuration file (if present), and then,
+	// call Parse() again to override the default+config with command line values.
+	// Calling Parse() before processing config file is necessary since configFile
+	// itself is a command line argument, and also Parse() is required in order
+	// to know if user wants simply to show "help" or "version", etc...
+	fs.Parse(args)
+
+	// Show version and exit
+	if showVersion {
+		PrintServerAndExit()
+	}
+
+	if showTLSHelp {
+		PrintTLSHelpAndDie()
+	}
+
+	// Process args looking for non-flag options,
+	// 'version' and 'help' only for now
+	showVersion, showHelp, err = ProcessCommandLineArgs(fs)
+	if err != nil {
+		return nil, err
+	} else if showVersion {
+		PrintServerAndExit()
+	} else if showHelp {
+		fs.Usage()
+		return nil, nil
+	}
+
+	// Snapshot flag options.
+	FlagSnapshot = opts.Clone()
+
+	// Process signal control.
+	if signal != "" {
+		if err := processSignal(fs, signal); err != nil {
+			return nil, err
+		}
+	}
+
+	// Parse config if given
+	if configFile != "" {
+		// This will update the options with values from the config file.
+		if err := opts.ProcessConfigFile(configFile); err != nil {
+			return nil, err
+		}
+		// Call this again to override config file options with options from command line.
+		fs.Parse(args)
+	}
+
+	// Special handling of some flags
+	var (
+		flagErr     error
+		tlsDisabled bool
+		tlsOverride bool
+	)
+	fs.Visit(func(f *flag.Flag) {
+		// short-circuit if an error was encountered
+		if flagErr != nil {
+			return
+		}
+		if strings.HasPrefix(f.Name, "tls") {
+			if f.Name == "tls" {
+				if !opts.TLS {
+					// User has specified "-tls=false", we need to disable TLS
+					opts.TLSConfig = nil
+					tlsDisabled = true
+					tlsOverride = false
+					return
+				}
+				tlsOverride = true
+			} else if !tlsDisabled {
+				tlsOverride = true
+			}
+		} else {
+			switch f.Name {
+			case "DV":
+				// Check value to support -DV=false
+				boolValue, _ := strconv.ParseBool(f.Value.String())
+				opts.Trace, opts.Debug = boolValue, boolValue
+			case "cluster", "cluster_listen":
+				// Override cluster config if explicitly set via flags.
+				flagErr = overrideCluster(opts)
+			case "routes":
+				// Keep in mind that the flag has updated opts.RoutesStr at this point.
+				if opts.RoutesStr == "" {
+					// Set routes array to nil since routes string is empty
+					opts.Routes = nil
+					return
+				}
+				routeUrls := RoutesFromStr(opts.RoutesStr)
+				opts.Routes = routeUrls
+			}
+		}
+	})
+	if flagErr != nil {
+		return nil, flagErr
+	}
+
+	// This will be true if some of the `-tls` params have been set and
+	// `-tls=false` has not been set.
+	if tlsOverride {
+		if err := overrideTLS(opts); err != nil {
+			return nil, err
+		}
+	}
+
+	// If we don't have cluster defined in the configuration
+	// file and no cluster listen string override, but we do
+	// have a routes override, we need to report misconfiguration.
+	if opts.RoutesStr != "" && opts.Cluster.ListenStr == "" && opts.Cluster.Host == "" && opts.Cluster.Port == 0 {
+		return nil, errors.New("solicited routes require cluster capabilities, e.g. --cluster")
+	}
+
+	return opts, nil
+}
+
+// overrideTLS is called when at least "-tls=true" has been set.
+func overrideTLS(opts *Options) error {
+	if opts.TLSCert == "" {
+		return errors.New("TLS Server certificate must be present and valid")
+	}
+	if opts.TLSKey == "" {
+		return errors.New("TLS Server private key must be present and valid")
+	}
+
+	tc := TLSConfigOpts{}
+	tc.CertFile = opts.TLSCert
+	tc.KeyFile = opts.TLSKey
+	tc.CaFile = opts.TLSCaCert
+	tc.Verify = opts.TLSVerify
+
+	var err error
+	opts.TLSConfig, err = GenTLSConfig(&tc)
+	return err
+}
+
+// overrideCluster updates Options.Cluster if that flag "cluster" (or "cluster_listen")
+// has explicitly be set in the command line. If it is set to empty string, it will
+// clear the Cluster options.
+func overrideCluster(opts *Options) error {
+	if opts.Cluster.ListenStr == "" {
+		// This one is enough to disable clustering.
+		opts.Cluster.Port = 0
+		return nil
+	}
+	clusterURL, err := url.Parse(opts.Cluster.ListenStr)
+	if err != nil {
+		return err
+	}
+	h, p, err := net.SplitHostPort(clusterURL.Host)
+	if err != nil {
+		return err
+	}
+	opts.Cluster.Host = h
+	_, err = fmt.Sscan(p, &opts.Cluster.Port)
+	if err != nil {
+		return err
+	}
+
+	if clusterURL.User != nil {
+		pass, hasPassword := clusterURL.User.Password()
+		if !hasPassword {
+			return errors.New("expected cluster password to be set")
+		}
+		opts.Cluster.Password = pass
+
+		user := clusterURL.User.Username()
+		opts.Cluster.Username = user
+	} else {
+		// Since we override from flag and there is no user/pwd, make
+		// sure we clear what we may have gotten from config file.
+		opts.Cluster.Username = ""
+		opts.Cluster.Password = ""
+	}
+	return nil
+}
+
+func processSignal(fs *flag.FlagSet, signal string) error {
+	var (
+		pid           string
+		commandAndPid = strings.Split(signal, "=")
+	)
+	if l := len(commandAndPid); l == 2 {
+		pid = commandAndPid[1]
+	} else if l > 2 {
+		return fmt.Errorf("invalid signal parameters: %v", commandAndPid[2:])
+	}
+	if err := ProcessSignal(Command(commandAndPid[0]), pid); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
 }

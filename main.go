@@ -5,10 +5,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
-	"strings"
 
 	"github.com/nats-io/gnatsd/server"
 )
@@ -66,126 +63,16 @@ func usage() {
 }
 
 func main() {
-	// Server Options
-	opts := &server.Options{}
-
-	var (
-		showVersion   bool
-		debugAndTrace bool
-		configFile    string
-		signal        string
-		showTLSHelp   bool
-	)
-
-	// Parse flags
-	flag.IntVar(&opts.Port, "port", 0, "Port to listen on.")
-	flag.IntVar(&opts.Port, "p", 0, "Port to listen on.")
-	flag.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
-	flag.StringVar(&opts.Host, "a", "", "Network host to listen on.")
-	flag.StringVar(&opts.Host, "net", "", "Network host to listen on.")
-	flag.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
-	flag.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
-	flag.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
-	flag.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	flag.BoolVar(&debugAndTrace, "DV", false, "Enable Debug and Trace logging.")
-	flag.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
-	flag.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
-	flag.StringVar(&opts.Username, "user", "", "Username required for connection.")
-	flag.StringVar(&opts.Password, "pass", "", "Password required for connection.")
-	flag.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
-	flag.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
-	flag.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
-	flag.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
-	flag.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
-	flag.StringVar(&configFile, "c", "", "Configuration file.")
-	flag.StringVar(&configFile, "config", "", "Configuration file.")
-	flag.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
-	flag.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
-	flag.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
-	flag.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	flag.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
-	flag.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
-	flag.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
-	flag.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
-	flag.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://localhost:514).")
-	flag.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://localhost:514).")
-	flag.BoolVar(&showVersion, "version", false, "Print version information.")
-	flag.BoolVar(&showVersion, "v", false, "Print version information.")
-	flag.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
-	flag.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
-	flag.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
-	flag.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	flag.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
-	flag.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
-	flag.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
-	flag.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
-	flag.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
-	flag.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
-	flag.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
-	flag.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
-
-	flag.Usage = func() {
-		fmt.Printf("%s\n", usageStr)
-	}
-
-	flag.Parse()
-
-	// Show version and exit
-	if showVersion {
-		server.PrintServerAndExit()
-	}
-
-	if showTLSHelp {
-		server.PrintTLSHelpAndDie()
-	}
-
-	// One flag can set multiple options.
-	if debugAndTrace {
-		opts.Trace, opts.Debug = true, true
-	}
-
-	// Process args looking for non-flag options,
-	// 'version' and 'help' only for now
-	showVersion, showHelp, err := server.ProcessCommandLineArgs(flag.CommandLine)
-	if err != nil {
-		server.PrintAndDie(err.Error() + usageStr)
-	} else if showVersion {
-		server.PrintServerAndExit()
-	} else if showHelp {
+	// Create a FlagSet and sets the usage
+	fs := flag.NewFlagSet("nats-server", flag.ExitOnError)
+	fs.Usage = func() {
 		usage()
 	}
 
-	// Snapshot flag options.
-	server.FlagSnapshot = opts.Clone()
-
-	// Process signal control.
-	if signal != "" {
-		processSignal(signal)
-	}
-
-	// Parse config if given
-	if configFile != "" {
-		fileOpts, err := server.ProcessConfigFile(configFile)
-		if err != nil {
-			server.PrintAndDie(err.Error())
-		}
-		opts = server.MergeOptions(fileOpts, opts)
-	}
-
-	// Remove any host/ip that points to itself in Route
-	newroutes, err := server.RemoveSelfReference(opts.Cluster.Port, opts.Routes)
+	// Configure the options from the flags/config file
+	opts, err := server.ConfigureOptions(fs, os.Args[1:])
 	if err != nil {
-		server.PrintAndDie(err.Error())
-	}
-	opts.Routes = newroutes
-
-	// Configure TLS based on any present flags
-	configureTLS(opts)
-
-	// Configure cluster opts if explicitly set via flags.
-	err = configureClusterOpts(opts)
-	if err != nil {
-		server.PrintAndDie(err.Error())
+		server.PrintAndDie(err.Error() + "\n" + usageStr)
 	}
 
 	// Create the server with appropriate options.
@@ -198,99 +85,4 @@ func main() {
 	if err := server.Run(s); err != nil {
 		server.PrintAndDie(err.Error())
 	}
-}
-
-func configureTLS(opts *server.Options) {
-	// If no trigger flags, ignore the others
-	if !opts.TLS && !opts.TLSVerify {
-		return
-	}
-	if opts.TLSCert == "" {
-		server.PrintAndDie("TLS Server certificate must be present and valid.")
-	}
-	if opts.TLSKey == "" {
-		server.PrintAndDie("TLS Server private key must be present and valid.")
-	}
-
-	tc := server.TLSConfigOpts{}
-	tc.CertFile = opts.TLSCert
-	tc.KeyFile = opts.TLSKey
-	tc.CaFile = opts.TLSCaCert
-
-	if opts.TLSVerify {
-		tc.Verify = true
-	}
-	var err error
-	if opts.TLSConfig, err = server.GenTLSConfig(&tc); err != nil {
-		server.PrintAndDie(err.Error())
-	}
-}
-
-func configureClusterOpts(opts *server.Options) error {
-	// If we don't have cluster defined in the configuration
-	// file and no cluster listen string override, but we do
-	// have a routes override, we need to report misconfiguration.
-	if opts.Cluster.ListenStr == "" && opts.Cluster.Host == "" &&
-		opts.Cluster.Port == 0 {
-		if opts.RoutesStr != "" {
-			server.PrintAndDie("Solicited routes require cluster capabilities, e.g. --cluster.")
-		}
-		return nil
-	}
-
-	// If cluster flag override, process it
-	if opts.Cluster.ListenStr != "" {
-		clusterURL, err := url.Parse(opts.Cluster.ListenStr)
-		if err != nil {
-			return err
-		}
-		h, p, err := net.SplitHostPort(clusterURL.Host)
-		if err != nil {
-			return err
-		}
-		opts.Cluster.Host = h
-		_, err = fmt.Sscan(p, &opts.Cluster.Port)
-		if err != nil {
-			return err
-		}
-
-		if clusterURL.User != nil {
-			pass, hasPassword := clusterURL.User.Password()
-			if !hasPassword {
-				return fmt.Errorf("Expected cluster password to be set.")
-			}
-			opts.Cluster.Password = pass
-
-			user := clusterURL.User.Username()
-			opts.Cluster.Username = user
-		} else {
-			// Since we override from flag and there is no user/pwd, make
-			// sure we clear what we may have gotten from config file.
-			opts.Cluster.Username = ""
-			opts.Cluster.Password = ""
-		}
-	}
-
-	// If we have routes but no config file, fill in here.
-	if opts.RoutesStr != "" && opts.Routes == nil {
-		opts.Routes = server.RoutesFromStr(opts.RoutesStr)
-	}
-
-	return nil
-}
-
-func processSignal(signal string) {
-	var (
-		pid           string
-		commandAndPid = strings.Split(signal, "=")
-	)
-	if l := len(commandAndPid); l == 2 {
-		pid = commandAndPid[1]
-	} else if l > 2 {
-		usage()
-	}
-	if err := server.ProcessSignal(server.Command(commandAndPid[0]), pid); err != nil {
-		server.PrintAndDie(err.Error())
-	}
-	os.Exit(0)
 }

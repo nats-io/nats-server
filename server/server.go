@@ -212,7 +212,7 @@ func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool,
 		case "help":
 			return false, true, nil
 		default:
-			return false, false, fmt.Errorf("Unrecognized command: %q\n", arg)
+			return false, false, fmt.Errorf("unrecognized command: %q", arg)
 		}
 	}
 
