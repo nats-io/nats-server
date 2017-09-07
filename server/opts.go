@@ -986,7 +986,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 	// Calling Parse() before processing config file is necessary since configFile
 	// itself is a command line argument, and also Parse() is required in order
 	// to know if user wants simply to show "help" or "version", etc...
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
 
 	// Show version and exit
 	if showVersion {
@@ -1026,6 +1028,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 			return nil, err
 		}
 		// Call this again to override config file options with options from command line.
+		// Note: We don't need to check error here since if there was an error, it would
+		// have been caught the first time this function was called (after setting up the
+		// flags).
 		fs.Parse(args)
 	}
 
