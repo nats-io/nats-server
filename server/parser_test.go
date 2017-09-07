@@ -201,46 +201,106 @@ func TestParsePub(t *testing.T) {
 	}
 }
 
-func testPubArg(c *client, t *testing.T) {
-	if !bytes.Equal(c.pa.subject, []byte("foo")) {
-		t.Fatalf("Mismatched subject: '%s'\n", c.pa.subject)
-	}
-	if !bytes.Equal(c.pa.szb, []byte("22")) {
-		t.Fatalf("Bad size buf: '%s'\n", c.pa.szb)
-	}
-	if c.pa.size != 22 {
-		t.Fatalf("Bad size: %d\n", c.pa.size)
-	}
-}
-
 func TestParsePubArg(t *testing.T) {
 	c := dummyClient()
-	if err := c.processPub([]byte("foo 22")); err != nil {
-		t.Fatalf("Unexpected parse error: %v\n", err)
+
+	for _, test := range []struct {
+		arg     string
+		subject string
+		reply   string
+		size    int
+		szb     string
+	}{
+		{arg: "a 2",
+			subject: "a", reply: "", size: 2, szb: "2"},
+		{arg: "a 222",
+			subject: "a", reply: "", size: 222, szb: "222"},
+		{arg: "foo 22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: " foo 22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo 22 ",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo   22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: " foo 22 ",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: " foo   22 ",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo bar 22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: " foo bar 22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "foo bar 22 ",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "foo  bar  22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: " foo bar 22 ",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "  foo   bar  22  ",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "  foo   bar  2222  ",
+			subject: "foo", reply: "bar", size: 2222, szb: "2222"},
+		{arg: "  foo     2222  ",
+			subject: "foo", reply: "", size: 2222, szb: "2222"},
+		{arg: "a\t2",
+			subject: "a", reply: "", size: 2, szb: "2"},
+		{arg: "a\t222",
+			subject: "a", reply: "", size: 222, szb: "222"},
+		{arg: "foo\t22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "\tfoo\t22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo\t22\t",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo\t\t\t22",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "\tfoo\t22\t",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "\tfoo\t\t\t22\t",
+			subject: "foo", reply: "", size: 22, szb: "22"},
+		{arg: "foo\tbar\t22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "\tfoo\tbar\t22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "foo\tbar\t22\t",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "foo\t\tbar\t\t22",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "\tfoo\tbar\t22\t",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "\t \tfoo\t \t \tbar\t \t22\t \t",
+			subject: "foo", reply: "bar", size: 22, szb: "22"},
+		{arg: "\t\tfoo\t\t\tbar\t\t2222\t\t",
+			subject: "foo", reply: "bar", size: 2222, szb: "2222"},
+		{arg: "\t \tfoo\t \t \t\t\t2222\t \t",
+			subject: "foo", reply: "", size: 2222, szb: "2222"},
+	} {
+		t.Run(test.arg, func(t *testing.T) {
+			if err := c.processPub([]byte(test.arg)); err != nil {
+				t.Fatalf("Unexpected parse error: %v\n", err)
+			}
+			if !bytes.Equal(c.pa.subject, []byte(test.subject)) {
+				t.Fatalf("Mismatched subject: '%s'\n", c.pa.subject)
+			}
+			if !bytes.Equal(c.pa.reply, []byte(test.reply)) {
+				t.Fatalf("Mismatched reply subject: '%s'\n", c.pa.reply)
+			}
+			if !bytes.Equal(c.pa.szb, []byte(test.szb)) {
+				t.Fatalf("Bad size buf: '%s'\n", c.pa.szb)
+			}
+			if c.pa.size != test.size {
+				t.Fatalf("Bad size: %d\n", c.pa.size)
+			}
+		})
 	}
-	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22")); err != nil {
-		t.Fatalf("Unexpected parse error: %v\n", err)
-	}
-	testPubArg(c, t)
-	if err := c.processPub([]byte(" foo 22 ")); err != nil {
-		t.Fatalf("Unexpected parse error: %v\n", err)
-	}
-	testPubArg(c, t)
-	if err := c.processPub([]byte("foo   22")); err != nil {
-		t.Fatalf("Unexpected parse error: %v\n", err)
-	}
-	if err := c.processPub([]byte("foo   22\r")); err != nil {
-		t.Fatalf("Unexpected parse error: %v\n", err)
-	}
-	testPubArg(c, t)
 }
 
 func TestParsePubBadSize(t *testing.T) {
 	c := dummyClient()
 	// Setup localized max payload
 	c.mpay = 32768
-	if err := c.processPub([]byte("foo 2222222222222222\r")); err == nil {
+	if err := c.processPub([]byte("foo 2222222222222222")); err == nil {
 		t.Fatalf("Expected parse error for size too large")
 	}
 }
