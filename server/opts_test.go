@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"flag"
 	"io/ioutil"
@@ -853,6 +854,10 @@ func TestConfigureOptions(t *testing.T) {
 	// Helper function that expect configuration to fail.
 	expectToFail := func(args []string, errContent ...string) {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		// Silence the flagSet so that on failure nothing is printed.
+		// (flagSet would print error message about unknown flags, etc..)
+		silenceOuput := &bytes.Buffer{}
+		fs.SetOutput(silenceOuput)
 		opts, err := ConfigureOptions(fs, args)
 		if opts != nil || err == nil {
 			stackFatalf(t, "Expected no option and an error, got opts=%v and err=%v", opts, err)
@@ -874,6 +879,9 @@ func TestConfigureOptions(t *testing.T) {
 
 	// Should fail because of unknown parameter
 	expectToFail([]string{"foo"}, "command")
+
+	// Should fail because unknown flag
+	expectToFail([]string{"-xxx", "foo"}, "flag")
 
 	// Should fail because of config file missing
 	expectToFail([]string{"-c", "xxx.cfg"}, "file")
