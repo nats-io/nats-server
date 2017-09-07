@@ -4,6 +4,7 @@ package server
 
 import (
 	"crypto/tls"
+	"flag"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -787,5 +788,195 @@ func TestMalformedClusterAddress(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/malformed_cluster_address.conf")
 	if err == nil {
 		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
+	}
+}
+
+func TestOptionsProcessConfigFile(t *testing.T) {
+	// Create options with default values of Debug and Trace
+	// that are the opposite of what is in the config file.
+	// Set another option that is not present in the config file.
+	logFileName := "test.log"
+	opts := &Options{
+		Debug:   true,
+		Trace:   false,
+		LogFile: logFileName,
+	}
+	configFileName := "./configs/test.conf"
+	if err := opts.ProcessConfigFile(configFileName); err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	// Verify that values are as expected
+	if opts.ConfigFile != configFileName {
+		t.Fatalf("Expected ConfigFile to be set to %q, got %v", configFileName, opts.ConfigFile)
+	}
+	if opts.Debug {
+		t.Fatal("Debug option should have been set to false from config file")
+	}
+	if !opts.Trace {
+		t.Fatal("Trace option should have been set to true from config file")
+	}
+	if opts.LogFile != logFileName {
+		t.Fatalf("Expected LogFile to be %q, got %q", logFileName, opts.LogFile)
+	}
+}
+
+func TestConfigureOptions(t *testing.T) {
+	// Options.Configure() will snapshot the flags. This is used by the reload code.
+	// We need to set it back to nil otherwise it will impact reload tests.
+	defer func() { FlagSnapshot = nil }()
+
+	// Ensure that Usage is called when param "help" is set
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	ch := make(chan bool, 1)
+	fs.Usage = func() {
+		ch <- true
+	}
+	if _, err := ConfigureOptions(fs, []string{"help"}); err != nil {
+		t.Fatalf("Error on configure: %v", err)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("Should have invoked flag set's Usage")
+	}
+
+	// Helper function that expect parsing with given args to not produce an error.
+	mustNotFail := func(args []string) *Options {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		opts, err := ConfigureOptions(fs, args)
+		if err != nil {
+			stackFatalf(t, "Error on configure: %v", err)
+		}
+		return opts
+	}
+
+	// Helper function that expect configuration to fail.
+	expectToFail := func(args []string, errContent ...string) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		opts, err := ConfigureOptions(fs, args)
+		if opts != nil || err == nil {
+			stackFatalf(t, "Expected no option and an error, got opts=%v and err=%v", opts, err)
+		}
+		for _, testErr := range errContent {
+			if strings.Contains(err.Error(), testErr) {
+				// We got the error we wanted.
+				return
+			}
+		}
+		stackFatalf(t, "Expected errors containing any of those %v, got %v", errContent, err)
+	}
+
+	// Basic test with port number
+	opts := mustNotFail([]string{"-p", "1234"})
+	if opts.Port != 1234 {
+		t.Fatalf("Expected port to be 1234, got %v", opts.Port)
+	}
+
+	// Should fail because of unknown parameter
+	expectToFail([]string{"foo"}, "command")
+
+	// Should fail because of config file missing
+	expectToFail([]string{"-c", "xxx.cfg"}, "file")
+
+	// Should fail because of too many args for signal command
+	expectToFail([]string{"-sl", "quit=pid=foo"}, "signal")
+
+	// Should fail because of invalid pid
+	// On windows, if not running with admin privileges, you would get access denied.
+	expectToFail([]string{"-sl", "quit=pid"}, "pid", "denied")
+
+	// The config file set Trace to true.
+	opts = mustNotFail([]string{"-c", "./configs/test.conf"})
+	if !opts.Trace {
+		t.Fatal("Trace should have been set to true")
+	}
+
+	// The config file set Trace to true, but was overridden by param -V=false
+	opts = mustNotFail([]string{"-c", "./configs/test.conf", "-V=false"})
+	if opts.Trace {
+		t.Fatal("Trace should have been set to false")
+	}
+
+	// The config file set Trace to true, but was overridden by param -DV=false
+	opts = mustNotFail([]string{"-c", "./configs/test.conf", "-DV=false"})
+	if opts.Debug || opts.Trace {
+		t.Fatal("Debug and Trace should have been set to false")
+	}
+
+	// The config file set Trace to true, but was overridden by param -DV
+	opts = mustNotFail([]string{"-c", "./configs/test.conf", "-DV"})
+	if !opts.Debug || !opts.Trace {
+		t.Fatal("Debug and Trace should have been set to true")
+	}
+
+	// This should fail since -cluster is missing
+	expectedURL, _ := url.Parse("nats://localhost:6223")
+	expectToFail([]string{"-routes", expectedURL.String()}, "solicited routes")
+
+	// Ensure that we can set cluster and routes from command line
+	opts = mustNotFail([]string{"-cluster", "nats://localhost:6222", "-routes", expectedURL.String()})
+	if opts.Cluster.ListenStr != "nats://localhost:6222" {
+		t.Fatalf("Unexpected Cluster.ListenStr=%q", opts.Cluster.ListenStr)
+	}
+	if opts.RoutesStr != "nats://localhost:6223" || len(opts.Routes) != 1 || opts.Routes[0].String() != expectedURL.String() {
+		t.Fatalf("Unexpected RoutesStr: %q and Routes: %v", opts.RoutesStr, opts.Routes)
+	}
+
+	// Use a config with cluster configuration and explicit route defined.
+	// Override with empty routes string.
+	opts = mustNotFail([]string{"-c", "./configs/srv_a.conf", "-routes", ""})
+	if opts.RoutesStr != "" || len(opts.Routes) != 0 {
+		t.Fatalf("Unexpected RoutesStr: %q and Routes: %v", opts.RoutesStr, opts.Routes)
+	}
+
+	// Use a config with cluster configuration and override cluster listen string
+	expectedURL, _ = url.Parse("nats-route://ruser:top_secret@127.0.0.1:7246")
+	opts = mustNotFail([]string{"-c", "./configs/srv_a.conf", "-cluster", "nats://ivan:pwd@localhost:6222"})
+	if opts.Cluster.Username != "ivan" || opts.Cluster.Password != "pwd" || opts.Cluster.Port != 6222 ||
+		len(opts.Routes) != 1 || opts.Routes[0].String() != expectedURL.String() {
+		t.Fatalf("Unexpected Cluster and/or Routes: %#v - %v", opts.Cluster, opts.Routes)
+	}
+
+	// Disable clustering from command line
+	opts = mustNotFail([]string{"-c", "./configs/srv_a.conf", "-cluster", ""})
+	if opts.Cluster.Port != 0 {
+		t.Fatalf("Unexpected Cluster: %v", opts.Cluster)
+	}
+
+	// Various erros due to malformed cluster listen string.
+	// (adding -routes to have more than 1 set flag to check
+	// that Visit() stops when an error is found).
+	expectToFail([]string{"-cluster", ":", "-routes", ""}, "protocol")
+	expectToFail([]string{"-cluster", "nats://localhost", "-routes", ""}, "port")
+	expectToFail([]string{"-cluster", "nats://localhost:xxx", "-routes", ""}, "integer")
+	expectToFail([]string{"-cluster", "nats://ivan:localhost:6222", "-routes", ""}, "colons")
+	expectToFail([]string{"-cluster", "nats://ivan@localhost:6222", "-routes", ""}, "password")
+
+	// Override config file's TLS configuration from command line, and completely disable TLS
+	opts = mustNotFail([]string{"-c", "./configs/tls.conf", "-tls=false"})
+	if opts.TLSConfig != nil || opts.TLS {
+		t.Fatal("Expected TLS to be disabled")
+	}
+	// Override config file's TLS configuration from command line, and force TLS verification.
+	// However, since TLS config has to be regenerated, user need to provide -tlscert and -tlskey too.
+	// So this should fail.
+	expectToFail([]string{"-c", "./configs/tls.conf", "-tlsverify"}, "valid")
+
+	// Now same than above, but with all valid params.
+	opts = mustNotFail([]string{"-c", "./configs/tls.conf", "-tlsverify", "-tlscert", "./configs/certs/server.pem", "-tlskey", "./configs/certs/key.pem"})
+	if opts.TLSConfig == nil || !opts.TLSVerify {
+		t.Fatal("Expected TLS to be configured and force verification")
+	}
+
+	// Configure TLS, but some TLS params missing
+	expectToFail([]string{"-tls"}, "valid")
+	expectToFail([]string{"-tls", "-tlscert", "./configs/certs/server.pem"}, "valid")
+	// One of the file does not exist
+	expectToFail([]string{"-tls", "-tlscert", "./configs/certs/server.pem", "-tlskey", "./configs/certs/notfound.pem"}, "file")
+
+	// Configure TLS and check that this results in a TLSConfig option.
+	opts = mustNotFail([]string{"-tls", "-tlscert", "./configs/certs/server.pem", "-tlskey", "./configs/certs/key.pem"})
+	if opts.TLSConfig == nil || !opts.TLS {
+		t.Fatal("Expected TLSConfig to be set")
 	}
 }
