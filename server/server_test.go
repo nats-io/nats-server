@@ -386,3 +386,34 @@ func TestNilMonitoringPort(t *testing.T) {
 		t.Fatal("HttpAddr should be nil.")
 	}
 }
+
+type DummyAuth struct {
+	count int
+}
+
+func (d *DummyAuth) Check(c ClientAuth) bool {
+	d.count++
+	return true
+}
+
+func TestCustomClientAuth(t *testing.T) {
+	var clientAuth DummyAuth
+
+	opts := DefaultOptions()
+	opts.CustomClientAuth = &clientAuth
+
+	s := RunServer(opts)
+
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	nc.Close()
+
+	if clientAuth.count != 1 {
+		t.Error("Client auth should have been delegated to CustomClientAuth")
+	}
+}
