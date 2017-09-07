@@ -1014,7 +1014,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 
 	// Process signal control.
 	if signal != "" {
-		if err := processSignal(fs, signal); err != nil {
+		if err := processSignal(signal); err != nil {
 			return nil, err
 		}
 	}
@@ -1157,7 +1157,7 @@ func overrideCluster(opts *Options) error {
 	return nil
 }
 
-func processSignal(fs *flag.FlagSet, signal string) error {
+func processSignal(signal string) error {
 	var (
 		pid           string
 		commandAndPid = strings.Split(signal, "=")

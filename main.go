@@ -65,9 +65,7 @@ func usage() {
 func main() {
 	// Create a FlagSet and sets the usage
 	fs := flag.NewFlagSet("nats-server", flag.ExitOnError)
-	fs.Usage = func() {
-		usage()
-	}
+	fs.Usage = usage
 
 	// Configure the options from the flags/config file
 	opts, err := server.ConfigureOptions(fs, os.Args[1:])
