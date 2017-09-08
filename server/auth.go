@@ -82,7 +82,9 @@ func (s *Server) configureAuthorization() {
 
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
-	if opts.Users != nil {
+	if opts.CustomClientAuthentication != nil {
+		s.info.AuthRequired = true
+	} else if opts.Users != nil {
 		s.users = make(map[string]*User)
 		for _, u := range opts.Users {
 			s.users[u.Username] = u
