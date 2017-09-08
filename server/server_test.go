@@ -390,7 +390,7 @@ func TestNilMonitoringPort(t *testing.T) {
 type DummyAuth struct{}
 
 func (d *DummyAuth) Check(c ClientAuthentication) bool {
-	return false
+	return c.GetOpts().Username != "test"
 }
 
 func TestCustomClientAuthentication(t *testing.T) {
@@ -404,7 +404,7 @@ func TestCustomClientAuthentication(t *testing.T) {
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	if _, err := nats.Connect(addr); err == nil {
+	if _, err := nats.Connect(addr, nats.UserInfo("test", "")); err == nil {
 		t.Fatal("Expected client to fail to connect")
 	}
 }
@@ -419,10 +419,11 @@ func TestCustomRouterAuthentication(t *testing.T) {
 
 	opts2 := DefaultOptions()
 	opts2.Cluster.Host = "127.0.0.1"
-	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", clusterPort))
+	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://test@127.0.0.1:%d", clusterPort))
 	s2 := RunServer(opts2)
 	defer s2.Shutdown()
 	if nr := s2.NumRoutes(); nr != 0 {
 		t.Fatalf("Expected no route, got %v", nr)
 	}
+
 }
