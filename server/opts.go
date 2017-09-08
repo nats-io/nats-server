@@ -921,7 +921,7 @@ func processOptions(opts *Options) {
 // specific flags. On success, an options structure is returned configured
 // based on the selected flags and/or configuration file.
 // The command line options take precedence to the ones in the configuration file.
-func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
+func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
 		showVersion bool
@@ -932,6 +932,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 		err         error
 	)
 
+	fs.BoolVar(&showHelp, "h", false, "Show this message.")
+	fs.BoolVar(&showHelp, "help", false, "Show this message.")
 	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
 	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
 	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
@@ -990,13 +992,19 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 		return nil, err
 	}
 
-	// Show version and exit
 	if showVersion {
-		PrintServerAndExit()
+		printVersion()
+		return nil, nil
+	}
+
+	if showHelp {
+		printHelp()
+		return nil, nil
 	}
 
 	if showTLSHelp {
-		PrintTLSHelpAndDie()
+		printTLSHelp()
+		return nil, nil
 	}
 
 	// Process args looking for non-flag options,
@@ -1005,9 +1013,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string) (*Options, error) {
 	if err != nil {
 		return nil, err
 	} else if showVersion {
-		PrintServerAndExit()
+		printVersion()
+		return nil, nil
 	} else if showHelp {
-		fs.Usage()
+		printHelp()
 		return nil, nil
 	}
 

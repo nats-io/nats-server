@@ -68,7 +68,10 @@ func main() {
 	fs.Usage = usage
 
 	// Configure the options from the flags/config file
-	opts, err := server.ConfigureOptions(fs, os.Args[1:])
+	opts, err := server.ConfigureOptions(fs, os.Args[1:],
+		server.PrintServerAndExit,
+		fs.Usage,
+		server.PrintTLSHelpAndDie)
 	if err != nil {
 		server.PrintAndDie(err.Error() + "\n" + usageStr)
 	}

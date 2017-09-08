@@ -826,25 +826,43 @@ func TestConfigureOptions(t *testing.T) {
 	// We need to set it back to nil otherwise it will impact reload tests.
 	defer func() { FlagSnapshot = nil }()
 
-	// Ensure that Usage is called when param "help" is set
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	ch := make(chan bool, 1)
-	fs.Usage = func() {
+	checkPrintInvoked := func() {
 		ch <- true
 	}
-	if _, err := ConfigureOptions(fs, []string{"help"}); err != nil {
-		t.Fatalf("Error on configure: %v", err)
+	usage := func() { panic("should not get there") }
+	var fs *flag.FlagSet
+	type testPrint struct {
+		args                   []string
+		version, help, tlsHelp func()
 	}
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-		t.Fatal("Should have invoked flag set's Usage")
+	testFuncs := []testPrint{
+		testPrint{[]string{"-v"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
+		testPrint{[]string{"version"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
+		testPrint{[]string{"-h"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
+		testPrint{[]string{"help"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
+		testPrint{[]string{"-help_tls"}, PrintServerAndExit, usage, checkPrintInvoked},
+	}
+	for _, tf := range testFuncs {
+		fs = flag.NewFlagSet("test", flag.ContinueOnError)
+		opts, err := ConfigureOptions(fs, tf.args, tf.version, tf.help, tf.tlsHelp)
+		if err != nil {
+			t.Fatalf("Error on configure: %v", err)
+		}
+		if opts != nil {
+			t.Fatalf("Expected options to be nil, got %v", opts)
+		}
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("Should have invoked print function for args=%v", tf.args)
+		}
 	}
 
 	// Helper function that expect parsing with given args to not produce an error.
 	mustNotFail := func(args []string) *Options {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
-		opts, err := ConfigureOptions(fs, args)
+		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
 		if err != nil {
 			stackFatalf(t, "Error on configure: %v", err)
 		}
@@ -858,7 +876,7 @@ func TestConfigureOptions(t *testing.T) {
 		// (flagSet would print error message about unknown flags, etc..)
 		silenceOuput := &bytes.Buffer{}
 		fs.SetOutput(silenceOuput)
-		opts, err := ConfigureOptions(fs, args)
+		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
 		if opts != nil || err == nil {
 			stackFatalf(t, "Expected no option and an error, got opts=%v and err=%v", opts, err)
 		}
