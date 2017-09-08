@@ -1,4 +1,4 @@
-// Copyright 2012-2016 Apcera Inc. All rights reserved.
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
 
 package server
 
@@ -20,16 +20,30 @@ const (
 )
 
 // parseSize expects decimal positive numbers. We
-// return -1 to signal error
+// return -1 to signal error.
 func parseSize(d []byte) (n int) {
-	if len(d) == 0 {
+	l := len(d)
+	if l == 0 {
 		return -1
 	}
-	for _, dec := range d {
-		if dec < asciiZero || dec > asciiNine {
-			return -1
-		}
-		n = n*10 + (int(dec) - asciiZero)
+	var (
+		i   int
+		dec byte
+	)
+
+	// Note: Use `goto` here to avoid for loop in order
+	// to have the function be inlined.
+	// See: https://github.com/golang/go/issues/14768
+loop:
+	dec = d[i]
+	if dec < asciiZero || dec > asciiNine {
+		return -1
+	}
+	n = n*10 + (int(dec) - asciiZero)
+
+	i++
+	if i < l {
+		goto loop
 	}
 	return n
 }
