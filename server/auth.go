@@ -10,14 +10,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Auth is an interface for implementing authentication
-type Auth interface {
+// Authentication is an interface for implementing authentication
+type Authentication interface {
 	// Check if a client is authorized to connect
-	Check(c ClientAuth) bool
+	Check(c ClientAuthentication) bool
 }
 
-// ClientAuth is an interface for client authentication
-type ClientAuth interface {
+// ClientAuthentication is an interface for client authentication
+type ClientAuthentication interface {
 	// Get options associated with a client
 	GetOpts() *clientOpts
 	// If TLS is enabled, TLS ConnectionState, nil otherwise
@@ -116,8 +116,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	opts := s.getOpts()
 
 	// Check custom auth first, then multiple users, then token, then single user/pass.
-	if s.opts.CustomClientAuth != nil {
-		return s.opts.CustomClientAuth.Check(c)
+	if s.opts.CustomClientAuthentication != nil {
+		return s.opts.CustomClientAuthentication.Check(c)
 	} else if s.users != nil {
 		user, ok := s.users[c.opts.Username]
 		if !ok {
@@ -149,8 +149,8 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	if s.opts.CustomRouterAuth != nil {
-		return s.opts.CustomRouterAuth.Check(c)
+	if s.opts.CustomRouterAuthentication != nil {
+		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
 	if opts.Cluster.Username == "" {

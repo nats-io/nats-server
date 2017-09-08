@@ -387,33 +387,42 @@ func TestNilMonitoringPort(t *testing.T) {
 	}
 }
 
-type DummyAuth struct {
-	count int
+type DummyAuth struct{}
+
+func (d *DummyAuth) Check(c ClientAuthentication) bool {
+	return false
 }
 
-func (d *DummyAuth) Check(c ClientAuth) bool {
-	d.count++
-	return true
-}
-
-func TestCustomClientAuth(t *testing.T) {
+func TestCustomClientAuthentication(t *testing.T) {
 	var clientAuth DummyAuth
 
 	opts := DefaultOptions()
-	opts.CustomClientAuth = &clientAuth
+	opts.CustomClientAuthentication = &clientAuth
 
 	s := RunServer(opts)
 
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	nc, err := nats.Connect(addr)
-	if err != nil {
-		t.Fatalf("Error creating client: %v\n", err)
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected client to fail to connect")
 	}
-	nc.Close()
+}
 
-	if clientAuth.count != 1 {
-		t.Error("Client auth should have been delegated to CustomClientAuth")
+func TestCustomRouterAuthentication(t *testing.T) {
+	opts := DefaultOptions()
+	opts.CustomRouterAuthentication = &DummyAuth{}
+	opts.Cluster.Host = "127.0.0.1"
+	s := RunServer(opts)
+	defer s.Shutdown()
+	clusterPort := s.ClusterAddr().Port
+
+	opts2 := DefaultOptions()
+	opts2.Cluster.Host = "127.0.0.1"
+	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", clusterPort))
+	s2 := RunServer(opts2)
+	defer s2.Shutdown()
+	if nr := s2.NumRoutes(); nr != 0 {
+		t.Fatalf("Expected no route, got %v", nr)
 	}
 }
