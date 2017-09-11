@@ -431,7 +431,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				s.Debugf("Temporary Client Accept Error(%v), sleeping %dms",
+				s.Errorf("Temporary Client Accept Error (%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
@@ -439,7 +439,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else if s.isRunning() {
-				s.Noticef("Accept error: %v", err)
+				s.Errorf("Client Accept Error: %v", err)
 			}
 			continue
 		}
