@@ -3,11 +3,28 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// Authentication is an interface for implementing authentication
+type Authentication interface {
+	// Check if a client is authorized to connect
+	Check(c ClientAuthentication) bool
+}
+
+// ClientAuthentication is an interface for client authentication
+type ClientAuthentication interface {
+	// Get options associated with a client
+	GetOpts() *clientOpts
+	// If TLS is enabled, TLS ConnectionState, nil otherwise
+	GetTLSConnectionState() *tls.ConnectionState
+	// Optionally map a user after auth.
+	RegisterUser(*User)
+}
 
 // User is for multiple accounts/users.
 type User struct {
@@ -65,7 +82,9 @@ func (s *Server) configureAuthorization() {
 
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
-	if opts.Users != nil {
+	if opts.CustomClientAuthentication != nil {
+		s.info.AuthRequired = true
+	} else if opts.Users != nil {
 		s.users = make(map[string]*User)
 		for _, u := range opts.Users {
 			s.users[u.Username] = u
@@ -98,8 +117,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	// Check multiple users first, then token, then single user/pass.
-	if s.users != nil {
+	// Check custom auth first, then multiple users, then token, then single user/pass.
+	if s.opts.CustomClientAuthentication != nil {
+		return s.opts.CustomClientAuthentication.Check(c)
+	} else if s.users != nil {
 		user, ok := s.users[c.opts.Username]
 		if !ok {
 			return false
@@ -129,6 +150,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 func (s *Server) isRouterAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
+
+	if s.opts.CustomRouterAuthentication != nil {
+		return s.opts.CustomRouterAuthentication.Check(c)
+	}
 
 	if opts.Cluster.Username == "" {
 		return true
