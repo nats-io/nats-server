@@ -5,8 +5,9 @@ After=network.target
 [Service]
 PrivateTmp=true
 Type=simple
-PIDFile=/var/run/gnatsd/%i.pid
 ExecStart=/usr/sbin/gnatsd -c /etc/gnatsd.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s SIGINT $MAINPID
 User=gnatsd
 Group=gnatsd
 
