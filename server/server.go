@@ -816,37 +816,9 @@ func tlsVersion(ver uint16) string {
 
 // We use hex here so we don't need multiple versions
 func tlsCipher(cs uint16) string {
-	switch cs {
-	case 0x0005:
-		return "TLS_RSA_WITH_RC4_128_SHA"
-	case 0x000a:
-		return "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
-	case 0x002f:
-		return "TLS_RSA_WITH_AES_128_CBC_SHA"
-	case 0x0035:
-		return "TLS_RSA_WITH_AES_256_CBC_SHA"
-	case 0xc007:
-		return "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA"
-	case 0xc009:
-		return "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"
-	case 0xc00a:
-		return "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA"
-	case 0xc011:
-		return "TLS_ECDHE_RSA_WITH_RC4_128_SHA"
-	case 0xc012:
-		return "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA"
-	case 0xc013:
-		return "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
-	case 0xc014:
-		return "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
-	case 0xc02f:
-		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-	case 0xc02b:
-		return "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
-	case 0xc030:
-		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
-	case 0xc02c:
-		return "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+	name, present := cipherMapByID[cs]
+	if present {
+		return name
 	}
 	return fmt.Sprintf("Unknown [%x]", cs)
 }
