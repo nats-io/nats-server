@@ -1,0 +1,16 @@
+[Unit]
+Description=NATS messaging server
+After=network.target
+
+[Service]
+PrivateTmp=true
+Type=simple
+ExecStart=/usr/sbin/gnatsd -c /etc/gnatsd.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s SIGINT $MAINPID
+User=gnatsd
+Group=gnatsd
+
+[Install]
+WantedBy=multi-user.target
+
