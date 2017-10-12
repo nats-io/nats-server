@@ -47,6 +47,7 @@ Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
+        --always_notify <bool>       Always notify clients when a server reconnects
         --connect_retries <number>   For implicit routes, number of connect retries
 
 
