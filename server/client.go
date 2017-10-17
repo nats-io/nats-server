@@ -679,7 +679,7 @@ func (c *client) processPub(arg []byte) error {
 	start := -1
 	for i, b := range arg {
 		switch b {
-		case ' ', '\t', '\r', '\n':
+		case ' ', '\t':
 			if start >= 0 {
 				args = append(args, arg[start:i])
 				start = -1
