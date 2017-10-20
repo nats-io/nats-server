@@ -783,7 +783,9 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	}
 
 	// If notification of server additions is always allowed
-	// Set wasUpdated to true so that the notification gets sent.
+	// set wasUpdated to true so that the notification gets sent.
+	// This means that we will send the INFO protocol even if
+	// its content was not updated
 	if s.getOpts().Cluster.AlwaysNotify {
             return true
 	}
