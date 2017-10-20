@@ -160,8 +160,9 @@ func (c *client) processRouteInfo(info *Info) {
 		// protocol to all clients that support it (unless the feature is disabled).
 		// Also send out the notification if the 'always notify' flag is on regardless
 		// of whether the server was already in the Server Info.
-		opts := s.getOpts()
-		if s.updateServerINFO(info.ClientConnectURLs) || opts.Cluster.AlwaysNotify {
+		// opts := s.getOpts()
+		// if s.updateServerINFO(info.ClientConnectURLs) || opts.Cluster.AlwaysNotify {
+		if s.updateServerINFO(info.ClientConnectURLs) {
 			s.sendAsyncInfoToClients()
 		}
 	} else {

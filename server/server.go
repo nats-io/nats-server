@@ -781,6 +781,13 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	if wasUpdated {
 		s.generateServerInfoJSON()
 	}
+
+	// If notification of server additions is always allowed
+	// Set wasUpdated to true so that the notification gets sent.
+	if s.getOpts().Cluster.AlwaysNotify {
+            return true
+	}
+
 	return wasUpdated
 }
 
