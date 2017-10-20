@@ -787,7 +787,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	// This means that we will send the INFO protocol even if
 	// its content was not updated
 	if s.getOpts().Cluster.AlwaysNotify {
-            return true
+		return true
 	}
 
 	return wasUpdated
