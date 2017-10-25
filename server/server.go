@@ -769,8 +769,10 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	cluster := s.getOps().Cluster
+
 	// Feature disabled, do not update.
-	if s.getOpts().Cluster.NoAdvertise {
+	if cluster.NoAdvertise {
 		return false
 	}
 
@@ -794,7 +796,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	//
 	// This means that we will send the INFO protocol even if
 	// its content was not updated
-	if s.getOpts().Cluster.AlwaysNotify {
+	if cluster.AlwaysNotify {
 		wasUpdated = true
 	}
 
