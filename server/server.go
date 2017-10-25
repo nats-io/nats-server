@@ -787,7 +787,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	if wasUpdated {
 		s.generateServerInfoJSON()
 	}
-	
+
 	// If notification of server additions is always allowed
 	// then always return true, regardless of whether the URL
 	// list is updated or not
