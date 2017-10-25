@@ -774,16 +774,6 @@ func (s *Server) updateServerINFO(urls []string) bool {
 		return false
 	}
 
-	// If notification of server additions is always allowed
-	// then always return true, regardless of whether the URL
-	// list is updated or not
-	//
-	// This means that we will send the INFO protocol even if
-	// its content was not updated
-	if s.getOpts().Cluster.AlwaysNotify {
-		return true
-	}
-
 	// Will be set to true if we alter the server's Info object.
 	wasUpdated := false
 	for _, url := range urls {
@@ -796,6 +786,16 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	}
 	if wasUpdated {
 		s.generateServerInfoJSON()
+	}
+	
+	// If notification of server additions is always allowed
+	// then always return true, regardless of whether the URL
+	// list is updated or not
+	//
+	// This means that we will send the INFO protocol even if
+	// its content was not updated
+	if s.getOpts().Cluster.AlwaysNotify {
+		wasUpdated = true
 	}
 
 	return wasUpdated
