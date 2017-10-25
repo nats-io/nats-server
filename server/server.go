@@ -769,7 +769,7 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cluster := s.getOps().Cluster
+	cluster := s.getOpts().Cluster
 
 	// Feature disabled, do not update.
 	if cluster.NoAdvertise {
