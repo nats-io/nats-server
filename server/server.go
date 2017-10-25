@@ -758,7 +758,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 // array of URLs and re-generate the infoJSON byte array, only if the
 // given URLs were not already recorded and if the feature is not
 // disabled.
+//
 // Returns a boolean indicating if server's Info was updated.
+//
+// If the 'AlwaysNotify' flag is set in the options, this
+// function will also return 'true' after the 'NoAdvertise'
+// check is made.
+//
 func (s *Server) updateServerINFO(urls []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -766,6 +772,16 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	// Feature disabled, do not update.
 	if s.getOpts().Cluster.NoAdvertise {
 		return false
+	}
+
+	// If notification of server additions is always allowed
+	// then always return true, regardless of whether the URL
+	// list is updated or not
+	//
+	// This means that we will send the INFO protocol even if
+	// its content was not updated
+	if s.getOpts().Cluster.AlwaysNotify {
+		return true
 	}
 
 	// Will be set to true if we alter the server's Info object.
@@ -780,14 +796,6 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	}
 	if wasUpdated {
 		s.generateServerInfoJSON()
-	}
-
-	// If notification of server additions is always allowed
-	// set wasUpdated to true so that the notification gets sent.
-	// This means that we will send the INFO protocol even if
-	// its content was not updated
-	if s.getOpts().Cluster.AlwaysNotify {
-		return true
 	}
 
 	return wasUpdated
