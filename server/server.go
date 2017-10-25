@@ -793,7 +793,6 @@ func (s *Server) updateServerINFO(urls []string) bool {
 	// If notification of server additions is always allowed
 	// then always return true, regardless of whether the URL
 	// list is updated or not
-	//
 	// This means that we will send the INFO protocol even if
 	// its content was not updated
 	if cluster.AlwaysNotify {
