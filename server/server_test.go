@@ -19,7 +19,6 @@ func DefaultOptions() *Options {
 		Port:     -1,
 		HTTPPort: -1,
 		Cluster:  ClusterOpts{Port: -1},
-		ProfPort: -1,
 		NoLog:    true,
 		NoSigs:   true,
 		Debug:    true,
@@ -441,4 +440,52 @@ func TestCustomRouterAuthentication(t *testing.T) {
 		t.Fatalf("Expected 1 route, got %v", nr)
 	}
 
+}
+
+func TestMonitoringNoTimeout(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	s.mu.Lock()
+	srv := s.monitoringServer
+	s.mu.Unlock()
+
+	if srv == nil {
+		t.Fatalf("Monitoring server not set")
+	}
+	if srv.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout should not be set, was set to %v", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout should not be set, was set to %v", srv.WriteTimeout)
+	}
+}
+
+func TestProfilingNoTimeout(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ProfPort = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	paddr := s.ProfilerAddr()
+	if paddr == nil {
+		t.Fatalf("Profiler not started")
+	}
+	pport := paddr.Port
+	if pport <= 0 {
+		t.Fatalf("Expected profiler port to be set, got %v", pport)
+	}
+	s.mu.Lock()
+	srv := s.profilingServer
+	s.mu.Unlock()
+
+	if srv == nil {
+		t.Fatalf("Profiling server not set")
+	}
+	if srv.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout should not be set, was set to %v", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout should not be set, was set to %v", srv.WriteTimeout)
+	}
 }

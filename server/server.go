@@ -85,6 +85,11 @@ type Server struct {
 		trace  int32
 		debug  int32
 	}
+
+	// Used by tests to check that http.Servers do
+	// not set any timeout.
+	monitoringServer *http.Server
+	profilingServer  *http.Server
 }
 
 // Make sure all are 64bits for atomic use
@@ -477,20 +482,24 @@ func (s *Server) StartProfiler() {
 	srv := &http.Server{
 		Addr:           hp,
 		Handler:        http.DefaultServeMux,
-		ReadTimeout:    2 * time.Second,
-		WriteTimeout:   2 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 
 	s.mu.Lock()
 	s.profiler = l
+	s.profilingServer = srv
 	s.mu.Unlock()
 
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
 		err := srv.Serve(l)
 		if err != nil {
-			s.Fatalf("error starting profiler: %s", err)
+			s.mu.Lock()
+			shutdown := s.shutdown
+			s.mu.Unlock()
+			if !shutdown {
+				s.Fatalf("error starting profiler: %s", err)
+			}
 		}
 		s.done <- true
 	}()
@@ -606,16 +615,18 @@ func (s *Server) startMonitoring(secure bool) error {
 	// Stacksz
 	mux.HandleFunc(StackszPath, s.HandleStacksz)
 
+	// Do not set a WriteTimeout because it could cause cURL/browser
+	// to return empty response or unable to display page if the
+	// server needs more time to build the response.
 	srv := &http.Server{
 		Addr:           hp,
 		Handler:        mux,
-		ReadTimeout:    2 * time.Second,
-		WriteTimeout:   2 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 	s.mu.Lock()
 	s.http = httpListener
 	s.httpHandler = mux
+	s.monitoringServer = srv
 	s.mu.Unlock()
 
 	go func() {
@@ -919,7 +930,7 @@ func (s *Server) MonitorAddr() *net.TCPAddr {
 	return s.http.Addr().(*net.TCPAddr)
 }
 
-// RouteAddr returns the net.Addr object for the route listener.
+// ClusterAddr returns the net.Addr object for the route listener.
 func (s *Server) ClusterAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -927,6 +938,16 @@ func (s *Server) ClusterAddr() *net.TCPAddr {
 		return nil
 	}
 	return s.routeListener.Addr().(*net.TCPAddr)
+}
+
+// ProfilerAddr returns the net.Addr object for the route listener.
+func (s *Server) ProfilerAddr() *net.TCPAddr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.profiler == nil {
+		return nil
+	}
+	return s.profiler.Addr().(*net.TCPAddr)
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept client
