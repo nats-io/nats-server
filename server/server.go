@@ -474,11 +474,14 @@ func (s *Server) StartProfiler() {
 		s.Fatalf("error starting profiler: %s", err)
 	}
 
+	// Do not set WriteTimeout since when profiling one can ask
+	// for a trace of a given number of seconds and pprof would
+	// then fail the request if it detects that the WriteTimeout
+	// is lower than the request's trace duration.
 	srv := &http.Server{
 		Addr:           hp,
 		Handler:        http.DefaultServeMux,
 		ReadTimeout:    2 * time.Second,
-		WriteTimeout:   2 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 
@@ -490,7 +493,12 @@ func (s *Server) StartProfiler() {
 		// if this errors out, it's probably because the server is being shutdown
 		err := srv.Serve(l)
 		if err != nil {
-			s.Fatalf("error starting profiler: %s", err)
+			s.mu.Lock()
+			shutdown := s.shutdown
+			s.mu.Unlock()
+			if !shutdown {
+				s.Fatalf("error starting profiler: %s", err)
+			}
 		}
 		s.done <- true
 	}()
@@ -919,7 +927,7 @@ func (s *Server) MonitorAddr() *net.TCPAddr {
 	return s.http.Addr().(*net.TCPAddr)
 }
 
-// RouteAddr returns the net.Addr object for the route listener.
+// ClusterAddr returns the net.Addr object for the route listener.
 func (s *Server) ClusterAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -927,6 +935,16 @@ func (s *Server) ClusterAddr() *net.TCPAddr {
 		return nil
 	}
 	return s.routeListener.Addr().(*net.TCPAddr)
+}
+
+// ProfilerAddr returns the net.Addr object for the profiler listener.
+func (s *Server) ProfilerAddr() *net.TCPAddr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.profiler == nil {
+		return nil
+	}
+	return s.profiler.Addr().(*net.TCPAddr)
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept client
