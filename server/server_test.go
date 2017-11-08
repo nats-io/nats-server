@@ -5,7 +5,9 @@ package server
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,6 @@ func DefaultOptions() *Options {
 		Port:     -1,
 		HTTPPort: -1,
 		Cluster:  ClusterOpts{Port: -1},
-		ProfPort: -1,
 		NoLog:    true,
 		NoSigs:   true,
 		Debug:    true,
@@ -441,4 +442,33 @@ func TestCustomRouterAuthentication(t *testing.T) {
 		t.Fatalf("Expected 1 route, got %v", nr)
 	}
 
+}
+
+func TestProfiler(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ProfPort = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	profaddr := s.ProfilerAddr()
+	if profaddr == nil {
+		t.Fatalf("Profiler not started")
+	}
+	pport := profaddr.Port
+	if pport == 0 || pport == -1 {
+		t.Fatalf("Profiler port should have been set, got %v", pport)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/debug/pprof/trace?seconds=3", pport)
+	r, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("Error getting pprof page: %v", err)
+	}
+	defer r.Body.Close()
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	if strings.Contains(string(body), "WriteTimeout") {
+		t.Fatalf("Did not get the expected pprof trace: %v", string(body))
+	}
 }
