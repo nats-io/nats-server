@@ -1435,3 +1435,57 @@ func TestMonitorRoutezRace(t *testing.T) {
 		}
 	}
 }
+
+func TestConnzTLSInHandshake(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "configs/certs/server.pem"
+	tc.KeyFile = "configs/certs/key.pem"
+
+	var err error
+	opts := DefaultMonitorOptions()
+	opts.TLSTimeout = 1.5 // 1.5 seconds
+	opts.TLSConfig, err = GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating TSL config: %v", err)
+	}
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create bare TCP connection to delay client TLS handshake
+	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	defer c.Close()
+
+	start := time.Now()
+	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
+	resp, err := http.Get(endpoint)
+	if err != nil {
+		t.Fatalf("Error getting response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Error reading body: %v", err)
+	}
+	duration := time.Since(start)
+	if duration >= 1500*time.Millisecond {
+		t.Fatalf("Looks like connz blocked on handshake, took %v", duration)
+	}
+	connz := &Connz{}
+	if err := json.Unmarshal(body, connz); err != nil {
+		t.Fatalf("Error unmarshalling: %v", err)
+	}
+	if len(connz.Conns) != 1 {
+		t.Fatalf("Expected 1 conn, got %v", len(connz.Conns))
+	}
+	conn := connz.Conns[0]
+	// TLS fields should be not set
+	if conn.TLSVersion != "" || conn.TLSCipher != "" {
+		t.Fatalf("Expected TLS fields to not be set, got version:%v cipher:%v", conn.TLSVersion, conn.TLSCipher)
+	}
+}
