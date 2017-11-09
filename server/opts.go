@@ -31,6 +31,7 @@ type ClusterOpts struct {
 	TLSConfig      *tls.Config `json:"-"`
 	ListenStr      string      `json:"-"`
 	NoAdvertise    bool        `json:"-"`
+	AlwaysNotify   bool        `json:"-"`
 	ConnectRetries int         `json:"-"`
 }
 
@@ -389,6 +390,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.TLSTimeout = tc.Timeout
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
+		case "always_notify":
+			opts.Cluster.AlwaysNotify = mv.(bool)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		}
@@ -975,6 +978,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
+	fs.BoolVar(&opts.Cluster.AlwaysNotify, "always_notify", false, "Always notify clients when a server connects to the cluster.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
