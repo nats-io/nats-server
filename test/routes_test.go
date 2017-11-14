@@ -717,15 +717,15 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		rc, routeSend, routeExpect = createRoute()
 		defer rc.Close()
 
-		// Resend the same route INFO json, since there is no new URL,
-		// no client should receive an INFO
+		// Resend the same route INFO json. The server will now send
+		// the INFO even when there is no change.
 		sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
 
 		// Expect nothing for old clients
 		expectNothing(t, oldClient)
 
-		// Expect nothing for new clients as well (no real update)
-		expectNothing(t, newClient)
+		// Expect new client to receive an INFO (unless disabled)
+		checkINFOReceived(newClient, newClientExpect, routeConnectURLs)
 
 		// Now stop the route and restart with an additional URL
 		rc.Close()
