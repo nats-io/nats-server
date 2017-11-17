@@ -7,15 +7,15 @@ type SortOpt string
 
 const (
 	byCid      SortOpt = "cid"
-	bySubs             = "subs"
-	byPending          = "pending"
-	byOutMsgs          = "msgs_to"
-	byInMsgs           = "msgs_from"
-	byOutBytes         = "bytes_to"
-	byInBytes          = "bytes_from"
-	byLast             = "last"
-	byIdle             = "idle"
-	byUptime           = "uptime"
+	bySubs     SortOpt = "subs"
+	byPending  SortOpt = "pending"
+	byOutMsgs  SortOpt = "msgs_to"
+	byInMsgs   SortOpt = "msgs_from"
+	byOutBytes SortOpt = "bytes_to"
+	byInBytes  SortOpt = "bytes_from"
+	byLast     SortOpt = "last"
+	byIdle     SortOpt = "idle"
+	byUptime   SortOpt = "uptime"
 )
 
 // IsValid determines if a sort option is valid
