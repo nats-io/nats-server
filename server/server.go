@@ -726,6 +726,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Re-Grab lock
 		c.mu.Lock()
+
+		// Indicate that handshake is complete (used in monitoring)
+		c.flags.set(handshakeComplete)
 	}
 
 	// The connection may have been closed

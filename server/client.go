@@ -53,9 +53,10 @@ type clientFlag byte
 
 // Some client state represented as flags
 const (
-	connectReceived clientFlag = 1 << iota // The CONNECT proto has been received
-	firstPongSent                          // The first PONG has been sent
-	infoUpdated                            // The server's Info object has changed before first PONG was sent
+	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
+	firstPongSent                            // The first PONG has been sent
+	infoUpdated                              // The server's Info object has changed before first PONG was sent
+	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
 )
 
 // set the flag (would be equivalent to set the boolean to true)
