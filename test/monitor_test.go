@@ -71,7 +71,7 @@ func runMonitorServerNoHTTPPort() *server.Server {
 }
 
 func resetPreviousHTTPConnections() {
-	http.DefaultTransport = &http.Transport{}
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 }
 
 // Make sure that we do not run the http server for monitoring unless asked.

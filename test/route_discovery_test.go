@@ -289,8 +289,6 @@ func TestStressSeedSolicitWorks(t *testing.T) {
 			var err error
 			maxTime := time.Now().Add(5 * time.Second)
 			for time.Now().Before(maxTime) {
-				resetPreviousHTTPConnections()
-
 				for j := 0; j < len(serversInfo); j++ {
 					err = checkConnected(t, serversInfo, j, true)
 					// If error, start this for loop from beginning
@@ -430,8 +428,6 @@ func TestStressChainedSolicitWorks(t *testing.T) {
 			var err error
 			maxTime := time.Now().Add(5 * time.Second)
 			for time.Now().Before(maxTime) {
-				resetPreviousHTTPConnections()
-
 				for j := 0; j < len(serversInfo); j++ {
 					err = checkConnected(t, serversInfo, j, false)
 					// If error, start this for loop from beginning
@@ -554,25 +550,22 @@ func expectRidsNoFatal(t *testing.T, direct bool, rz *server.Routez, rids []stri
 
 // Helper to easily grab routez info.
 func readHTTPRoutez(t *testing.T, url string) *server.Routez {
+	resetPreviousHTTPConnections()
 	resp, err := http.Get(url + "routez")
 	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		// Do one retry - FIXME(dlc) - Why does this fail when running the solicit tests b2b?
-		resp, _ = http.Get(url + "routez")
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-		}
+		stackFatalf(t, "Expected no error: Got %v\n", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		stackFatalf(t, "Expected a 200 response, got %d\n", resp.StatusCode)
+	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
+		stackFatalf(t, "Got an error reading the body: %v\n", err)
 	}
 	r := server.Routez{}
 	if err := json.Unmarshal(body, &r); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
 	}
 	return &r
 }
