@@ -142,6 +142,8 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Registering remote route %q", info.ID)
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
+		// sendInfo will be false if the route that we just accepted
+		// is the only route there is.
 		if sendInfo {
 			// Need to get the remote IP address.
 			c.mu.Lock()
@@ -156,9 +158,10 @@ func (c *client) processRouteInfo(info *Info) {
 			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
-		// If the server Info did not have these URLs, update and send an INFO
-		// protocol to all clients that support it (unless the feature is disabled).
-		if s.updateServerINFO(info.ClientConnectURLs) {
+		// Unless disabled, possibly update the server's INFO protcol
+		// and send to clients that know how to handle async INFOs.
+		if !s.getOpts().Cluster.NoAdvertise {
+			s.updateServerINFO(info.ClientConnectURLs)
 			s.sendAsyncInfoToClients()
 		}
 	} else {
