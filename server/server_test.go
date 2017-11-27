@@ -213,6 +213,46 @@ func TestGetConnectURLs(t *testing.T) {
 	}
 }
 
+func TestClusterAdvertiseConnectURL(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = 4222
+	opts.Cluster.AdvertiseStr = "nats.example.com"
+
+	s := New(opts)
+
+	urls := s.getClientConnectURLs()
+
+	if len(urls) != 1 {
+		t.Fatalf("Expected to get one url, got none: %v with Cluster.AdvertiseStr %v",
+			opts.Host, opts.Cluster.AdvertiseStr)
+	}
+
+	if urls[0] != "nats.example.com:4222" {
+		t.Fatalf("Expected to get '%s', got: '%v'", "nats.example.com:4222", urls[0])
+	}
+	s.Shutdown()
+
+	opts.Cluster.AdvertiseStr = "nats.example.com, nats2.example.com:7777"
+
+	s = New(opts)
+
+	urls = s.getClientConnectURLs()
+
+	if len(urls) != 2 {
+		t.Fatalf("Expected to get two urls, got %d: %v", len(urls), opts.Cluster.AdvertiseStr)
+	}
+
+	if urls[0] != "nats.example.com:4222" {
+		t.Fatalf("Expected 'nats.example.com:4222', got: '%v'", urls[0])
+	}
+
+	if urls[1] != "nats2.example.com:7777" {
+		t.Fatalf("Expected 'nats2.example.com:7777', got: '%v'", urls[1])
+	}
+
+	s.Shutdown()
+}
+
 func TestNoDeadlockOnStartFailure(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Host = "x.x.x.x" // bad host

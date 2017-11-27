@@ -1002,42 +1002,62 @@ func (s *Server) getClientConnectURLs() []string {
 	sPort := strconv.Itoa(opts.Port)
 	urls := make([]string, 0, 1)
 
-	ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
-	// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
-	// interfaces.
-	if err == nil && ipAddr.IP.IsUnspecified() {
-		var ip net.IP
-		ifaces, _ := net.Interfaces()
-		for _, i := range ifaces {
-			addrs, _ := i.Addrs()
-			for _, addr := range addrs {
-				switch v := addr.(type) {
-				case *net.IPNet:
-					ip = v.IP
-				case *net.IPAddr:
-					ip = v.IP
+	// short circuit if cluster-advertise is set
+	if opts.Cluster.AdvertiseStr != "" {
+		hosts := strings.Split(opts.Cluster.AdvertiseStr, ",")
+
+		for _, i := range hosts {
+			hostPort := strings.Split(i, ":")
+			host := strings.TrimSpace(hostPort[0])
+
+			if len(hostPort) > 1 {
+				port := strings.TrimSpace(hostPort[1])
+				// if a separate advertise port is set, use that. Otherwise, use the main listen port.
+				if port != "" {
+					sPort = port
 				}
-				// Skip non global unicast addresses
-				if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
-					ip = nil
-					continue
+			}
+			urls = append(urls, net.JoinHostPort(host, sPort))
+		}
+	} else {
+		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
+		// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
+		// interfaces.
+		if err == nil && ipAddr.IP.IsUnspecified() {
+			var ip net.IP
+			ifaces, _ := net.Interfaces()
+			for _, i := range ifaces {
+				addrs, _ := i.Addrs()
+				for _, addr := range addrs {
+					switch v := addr.(type) {
+					case *net.IPNet:
+						ip = v.IP
+					case *net.IPAddr:
+						ip = v.IP
+					}
+					// Skip non global unicast addresses
+					if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
+						ip = nil
+						continue
+					}
+					urls = append(urls, net.JoinHostPort(ip.String(), sPort))
 				}
-				urls = append(urls, net.JoinHostPort(ip.String(), sPort))
+			}
+		}
+		if err != nil || len(urls) == 0 {
+			// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
+			// reason we could not add any URL in the loop above.
+			// We had a case where a Windows VM was hosed and would have err == nil
+			// and not add any address in the array in the loop above, and we
+			// ended-up returning 0.0.0.0, which is problematic for Windows clients.
+			// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
+			if opts.Host == "0.0.0.0" || opts.Host == "::" {
+				s.Errorf("Address %q can not be resolved properly", opts.Host)
+			} else {
+				urls = append(urls, net.JoinHostPort(opts.Host, sPort))
 			}
 		}
 	}
-	if err != nil || len(urls) == 0 {
-		// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
-		// reason we could not add any URL in the loop above.
-		// We had a case where a Windows VM was hosed and would have err == nil
-		// and not add any address in the array in the loop above, and we
-		// ended-up returning 0.0.0.0, which is problematic for Windows clients.
-		// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
-		if opts.Host == "0.0.0.0" || opts.Host == "::" {
-			s.Errorf("Address %q can not be resolved properly", opts.Host)
-		} else {
-			urls = append(urls, net.JoinHostPort(opts.Host, sPort))
-		}
-	}
+
 	return urls
 }
