@@ -1003,21 +1003,32 @@ func (s *Server) getClientConnectURLs() []string {
 	urls := make([]string, 0, 1)
 
 	// short circuit if cluster-advertise is set
-	if opts.Cluster.AdvertiseStr != "" {
-		hosts := strings.Split(opts.Cluster.AdvertiseStr, ",")
+	if opts.Cluster.ClientAdvertiseStr != "" {
+		hosts := strings.Split(opts.Cluster.ClientAdvertiseStr, ",")
 
-		for _, i := range hosts {
-			hostPort := strings.Split(i, ":")
-			host := strings.TrimSpace(hostPort[0])
-
-			if len(hostPort) > 1 {
-				port := strings.TrimSpace(hostPort[1])
-				// if a separate advertise port is set, use that. Otherwise, use the main listen port.
-				if port != "" {
-					sPort = port
-				}
+		for n, i := range hosts {
+			host, port, err := net.SplitHostPort(i)
+			switch err.(type) {
+			case *net.AddrError:
+				// try appending the current port
+				host, port, err = net.SplitHostPort(i + ":" + sPort)
 			}
-			urls = append(urls, net.JoinHostPort(host, sPort))
+
+			if err != nil {
+				s.Fatalf("Client Advertise Address error: %v, on entry: %s", err, i)
+			}
+
+			// set the info host to the first address in a list
+			if n == 0 {
+				s.info.Host = host
+				s.info.Port, err = strconv.Atoi(port)
+			}
+
+			if err != nil {
+				s.Fatalf("Client Advertise Address error: %v, on entry: %s", err, i)
+			}
+
+			urls = append(urls, net.JoinHostPort(strings.TrimSpace(host), strings.TrimSpace(port)))
 		}
 	} else {
 		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)

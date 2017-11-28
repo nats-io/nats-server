@@ -213,10 +213,10 @@ func TestGetConnectURLs(t *testing.T) {
 	}
 }
 
-func TestClusterAdvertiseConnectURL(t *testing.T) {
+func TestClusterClientAdvertiseConnectURL(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Port = 4222
-	opts.Cluster.AdvertiseStr = "nats.example.com"
+	opts.Cluster.ClientAdvertiseStr = "nats.example.com"
 
 	s := New(opts)
 
@@ -224,7 +224,7 @@ func TestClusterAdvertiseConnectURL(t *testing.T) {
 
 	if len(urls) != 1 {
 		t.Fatalf("Expected to get one url, got none: %v with Cluster.AdvertiseStr %v",
-			opts.Host, opts.Cluster.AdvertiseStr)
+			opts.Host, opts.Cluster.ClientAdvertiseStr)
 	}
 
 	if urls[0] != "nats.example.com:4222" {
@@ -232,14 +232,14 @@ func TestClusterAdvertiseConnectURL(t *testing.T) {
 	}
 	s.Shutdown()
 
-	opts.Cluster.AdvertiseStr = "nats.example.com, nats2.example.com:7777"
+	opts.Cluster.ClientAdvertiseStr = "nats.example.com, nats2.example.com:7777"
 
 	s = New(opts)
 
 	urls = s.getClientConnectURLs()
 
 	if len(urls) != 2 {
-		t.Fatalf("Expected to get two urls, got %d: %v", len(urls), opts.Cluster.AdvertiseStr)
+		t.Fatalf("Expected to get two urls, got %d: %v", len(urls), opts.Cluster.ClientAdvertiseStr)
 	}
 
 	if urls[0] != "nats.example.com:4222" {
@@ -251,6 +251,10 @@ func TestClusterAdvertiseConnectURL(t *testing.T) {
 	}
 
 	s.Shutdown()
+}
+
+func TestClusterAdvertiseConnectURL(t *testing.T) {
+
 }
 
 func TestNoDeadlockOnStartFailure(t *testing.T) {
