@@ -3,6 +3,8 @@
 package server
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -58,9 +60,7 @@ func TestRouteAdvertise(t *testing.T) {
 	// to validate functionally.
 	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
 
-	optsSeed.NoSigs, optsSeed.NoLog = true, false
-	optsSeed.Debug = true
-
+	optsSeed.NoSigs, optsSeed.NoLog = true, true
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
 
@@ -74,6 +74,7 @@ func TestRouteAdvertise(t *testing.T) {
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
+	srvA.mu.Lock()
 	if srvA.routeInfo.Host != "example.com" {
 		t.Fatalf("Expected srvA Route Advertise to be example.com:80, got: %v:%d",
 			srvA.routeInfo.Host, srvA.routeInfo.Port)
@@ -82,8 +83,27 @@ func TestRouteAdvertise(t *testing.T) {
 	if srvA.routeInfo.IP != "nats-route://example.com:80/" {
 		t.Fatalf("Expected srvA.routeInfo.IP to be set, got %v", srvA.routeInfo.IP)
 	}
+	srvA.mu.Unlock()
+	srvSeed.mu.Lock()
 	if srvSeed.routeInfo.IP != "" {
 		t.Fatalf("Expected srvSeed.routeInfo.IP to not be set, got %v", srvSeed.routeInfo.IP)
+	}
+	srvSeed.mu.Unlock()
+
+	// create a TCP client, connect to srvA Cluster and verify info.
+	testCn, _ := net.Dial("tcp", net.JoinHostPort(optsA.Cluster.Host, strconv.Itoa(optsA.Cluster.Port)))
+	defer testCn.Close()
+	msg, _ := bufio.NewReader(testCn).ReadString('\n')
+	var retInfo Info
+	err := json.Unmarshal([]byte(strings.TrimLeft(msg, "INFO ")), &retInfo)
+	if err != nil {
+		t.Fatalf("Unable to read response: %v", err)
+	}
+	if retInfo.Host != "example.com" && retInfo.Port != optsA.Cluster.Port {
+		t.Fatalf("Host and Port from cluster incorrect: got %s:%d", retInfo.Host, retInfo.Port)
+	}
+	if retInfo.IP != "nats-route://example.com:80/" {
+		t.Fatalf("IP incorrected expected: nats-route://example.com:80/, got: %s", retInfo.IP)
 	}
 }
 

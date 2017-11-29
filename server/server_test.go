@@ -247,6 +247,17 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 		t.Fatalf("Expected port to be set to 7777")
 	}
 	s.Shutdown()
+
+	opts = DefaultOptions()
+	opts.Cluster.Port = 0
+	opts.ClientAdvertise = "nats.example.com:7777"
+	s = New(opts)
+	if s.info.Host != "nats.example.com" && s.info.Port != 7777 {
+		t.Fatalf("Expected Client Advertise Host:Port to be nats.example.com:7777, got: %s:%d",
+			s.info.Host, s.info.Port)
+	}
+	s.Shutdown()
+
 }
 
 func TestNoDeadlockOnStartFailure(t *testing.T) {

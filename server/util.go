@@ -4,6 +4,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -74,13 +75,13 @@ func secondsToDuration(seconds float64) time.Duration {
 }
 
 // Parse a host/port string with an optional default port
-func parseHostPort(hostPort string, defaultPort string) (host string, port int, err error) {
+func parseHostPort(hostPort string, defaultPort int) (host string, port int, err error) {
 	if hostPort != "" {
 		host, sPort, err := net.SplitHostPort(hostPort)
 		switch err.(type) {
 		case *net.AddrError:
 			// try appending the current port
-			host, sPort, err = net.SplitHostPort(hostPort + ":" + defaultPort)
+			host, sPort, err = net.SplitHostPort(fmt.Sprintf("%s:%d", hostPort, defaultPort))
 		}
 		if err != nil {
 			return "", -1, err

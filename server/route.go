@@ -646,7 +646,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	port = l.Addr().(*net.TCPAddr).Port
 	ip := ""
 	if opts.Cluster.RouteAdvertise != "" {
-		advHost, advPort, err := parseHostPort(opts.Cluster.RouteAdvertise, strconv.Itoa(port))
+		advHost, advPort, err := parseHostPort(opts.Cluster.RouteAdvertise, port)
 		if err != nil {
 			s.Errorf("setting RouteAdvertise failed %v", err)
 		} else {

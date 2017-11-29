@@ -109,12 +109,23 @@ func New(opts *Options) *Server {
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
+	// configure host/port if advertise is set
+	host := opts.Host
+	port := opts.Port
+	if opts.ClientAdvertise != "" {
+		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
+		if err == nil {
+			host = h
+			port = p
+		}
+	}
+
 	info := Info{
 		ID:                genID(),
 		Version:           VERSION,
 		GoVersion:         runtime.Version(),
-		Host:              opts.Host,
-		Port:              opts.Port,
+		Host:              host,
+		Port:              port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -191,7 +202,6 @@ func (s *Server) generateRouteInfoJSON() {
 		return
 	}
 	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
-	s.Errorf("route info: %s", b)
 }
 
 // PrintAndDie is exported for access in other packages.
@@ -1001,20 +1011,14 @@ func (s *Server) getClientConnectURLs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sPort := strconv.Itoa(opts.Port)
 	urls := make([]string, 0, 1)
 
 	// short circuit if client advertise is set
-	ca := opts.ClientAdvertise
-	if ca != "" {
-		host, port, err := parseHostPort(ca, sPort)
-		s.info.Host = host // TODO: should not set these here.
-		s.info.Port = port
-		if err != nil {
-			s.Errorf("Client Advertise Address %v, on: %s", err, ca)
-		}
-		urls = append(urls, net.JoinHostPort(host, strconv.Itoa(port)))
+	if opts.ClientAdvertise != "" {
+		// just use the info host/port. This is updated in s.New()
+		urls = append(urls, net.JoinHostPort(s.info.Host, strconv.Itoa(s.info.Port)))
 	} else {
+		sPort := strconv.Itoa(opts.Port)
 		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
 		// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
 		// interfaces.
