@@ -53,6 +53,40 @@ func TestRouteConfig(t *testing.T) {
 	}
 }
 
+func TestRouteAdvertise(t *testing.T) {
+	// TODO: Need to work through this test case. may need to add a util proxy server
+	// to validate functionally.
+	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
+
+	optsSeed.NoSigs, optsSeed.NoLog = true, false
+	optsSeed.Debug = true
+
+	srvSeed := RunServer(optsSeed)
+	defer srvSeed.Shutdown()
+
+	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
+		srvSeed.ClusterAddr().Port)
+	optsA := nextServerOpts(optsSeed)
+	optsA.Routes = RoutesFromStr(seedRouteUrl)
+	optsA.Cluster.Port = 9999
+	optsA.Cluster.RouteAdvertise = "example.com:80"
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	if srvA.routeInfo.Host != "example.com" {
+		t.Fatalf("Expected srvA Route Advertise to be example.com:80, got: %v:%d",
+			srvA.routeInfo.Host, srvA.routeInfo.Port)
+	}
+	// using example.com, but don't expect anything to try to connect to it.
+	if srvA.routeInfo.IP != "nats-route://example.com:80/" {
+		t.Fatalf("Expected srvA.routeInfo.IP to be set, got %v", srvA.routeInfo.IP)
+	}
+	if srvSeed.routeInfo.IP != "" {
+		t.Fatalf("Expected srvSeed.routeInfo.IP to not be set, got %v", srvSeed.routeInfo.IP)
+	}
+}
+
 func TestServerRoutesWithClients(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
 	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")

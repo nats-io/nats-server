@@ -143,16 +143,20 @@ func (c *client) processRouteInfo(info *Info) {
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
 		if sendInfo {
-			// Need to get the remote IP address.
-			c.mu.Lock()
-			switch conn := c.nc.(type) {
-			case *net.TCPConn, *tls.Conn:
-				addr := conn.RemoteAddr().(*net.TCPAddr)
-				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
-			default:
-				info.IP = c.route.url.String()
+			// If IP isn't already set on info
+			if info.IP == "" {
+				// Need to get the remote IP address.
+				c.mu.Lock()
+				switch conn := c.nc.(type) {
+				case *net.TCPConn, *tls.Conn:
+					addr := conn.RemoteAddr().(*net.TCPAddr)
+					info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
+						strconv.Itoa(info.Port)))
+				default:
+					info.IP = c.route.url.String()
+				}
+				c.mu.Unlock()
 			}
-			c.mu.Unlock()
 			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
@@ -637,11 +641,26 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
+	// Configure Cluster Advertise Address
+	host := opts.Cluster.Host
+	port = l.Addr().(*net.TCPAddr).Port
+	ip := ""
+	if opts.Cluster.RouteAdvertise != "" {
+		advHost, advPort, err := parseHostPort(opts.Cluster.RouteAdvertise, strconv.Itoa(port))
+		if err != nil {
+			s.Errorf("setting RouteAdvertise failed %v", err)
+		} else {
+			host = advHost
+			port = advPort
+		}
+		ip = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(advHost, strconv.Itoa(advPort)))
+	}
 	info := Info{
 		ID:                s.info.ID,
 		Version:           s.info.Version,
-		Host:              opts.Cluster.Host,
-		Port:              l.Addr().(*net.TCPAddr).Port,
+		Host:              host,
+		Port:              port,
+		IP:                ip,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,

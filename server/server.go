@@ -191,6 +191,7 @@ func (s *Server) generateRouteInfoJSON() {
 		return
 	}
 	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
+	s.Errorf("route info: %s", b)
 }
 
 // PrintAndDie is exported for access in other packages.
@@ -992,6 +993,7 @@ func (s *Server) startGoRoutine(f func()) {
 // getClientConnectURLs returns suitable URLs for clients to connect to the listen
 // port based on the server options' Host and Port. If the Host corresponds to
 // "any" interfaces, this call returns the list of resolved IP addresses.
+// If ClientAdvertise is set, returns the client advertise host and port
 func (s *Server) getClientConnectURLs() []string {
 	// Snapshot server options.
 	opts := s.getOpts()
@@ -1002,34 +1004,16 @@ func (s *Server) getClientConnectURLs() []string {
 	sPort := strconv.Itoa(opts.Port)
 	urls := make([]string, 0, 1)
 
-	// short circuit if cluster-advertise is set
-	if opts.Cluster.ClientAdvertiseStr != "" {
-		hosts := strings.Split(opts.Cluster.ClientAdvertiseStr, ",")
-
-		for n, i := range hosts {
-			host, port, err := net.SplitHostPort(i)
-			switch err.(type) {
-			case *net.AddrError:
-				// try appending the current port
-				host, port, err = net.SplitHostPort(i + ":" + sPort)
-			}
-
-			if err != nil {
-				s.Fatalf("Client Advertise Address error: %v, on entry: %s", err, i)
-			}
-
-			// set the info host to the first address in a list
-			if n == 0 {
-				s.info.Host = host
-				s.info.Port, err = strconv.Atoi(port)
-			}
-
-			if err != nil {
-				s.Fatalf("Client Advertise Address error: %v, on entry: %s", err, i)
-			}
-
-			urls = append(urls, net.JoinHostPort(strings.TrimSpace(host), strings.TrimSpace(port)))
+	// short circuit if client advertise is set
+	ca := opts.ClientAdvertise
+	if ca != "" {
+		host, port, err := parseHostPort(ca, sPort)
+		s.info.Host = host // TODO: should not set these here.
+		s.info.Port = port
+		if err != nil {
+			s.Errorf("Client Advertise Address %v, on: %s", err, ca)
 		}
+		urls = append(urls, net.JoinHostPort(host, strconv.Itoa(port)))
 	} else {
 		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
 		// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
