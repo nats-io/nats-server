@@ -241,7 +241,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	// Initiate the connection, using info.IP instead of info.URL here...
 	r, err := url.Parse(info.IP)
 	if err != nil {
-		s.Debugf("Error parsing URL from INFO: %v\n", err)
+		s.Errorf("Error parsing URL from INFO: %v\n", err)
 		return
 	}
 
@@ -341,8 +341,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	c.Debugf("Route connection created")
-
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
@@ -375,7 +373,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 		c.mu.Unlock()
 		if err := conn.Handshake(); err != nil {
-			c.Debugf("TLS route handshake error: %v", err)
+			c.Errorf("TLS route handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection()
 			return nil
@@ -446,6 +444,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c.mu.Unlock()
 
+	c.Noticef("Route connection created")
 	return c
 }
 
@@ -738,7 +737,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
-			s.Debugf("Error trying to connect to route: %v", err)
+			s.Errorf("Error trying to connect to route: %v", err)
 			if !tryForEver {
 				if opts.Cluster.ConnectRetries <= 0 {
 					return
