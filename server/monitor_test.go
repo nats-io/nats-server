@@ -100,7 +100,7 @@ func TestNoMonitorPort(t *testing.T) {
 	}
 }
 
-func TestVarz(t *testing.T) {
+func TestHandleVarz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
@@ -185,6 +185,45 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
 	}
 	defer respj.Body.Close()
+}
+
+func TestVarz(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	v := s.Varz()
+
+	// Do some sanity checks on values
+	if time.Since(v.Start) > 10*time.Second {
+		t.Fatal("Expected start time to be within 10 seconds.")
+	}
+
+	nc := createClientConnSubscribeAndPublish(t, s)
+	defer nc.Close()
+
+	v = s.Varz()
+
+	if v.Connections != 1 {
+		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+	}
+	if v.TotalConnections < 1 {
+		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
+	}
+	if v.InMsgs != 1 {
+		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
+	}
+	if v.OutMsgs != 1 {
+		t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
+	}
+	if v.InBytes != 5 {
+		t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
+	}
+	if v.OutBytes != 5 {
+		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+	}
+	if v.Subscriptions != 1 {
+		t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+	}
 }
 
 func TestConnz(t *testing.T) {
