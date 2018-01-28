@@ -1,3 +1,29 @@
+2017 iMac Pro 3Ghz (Turbo 4Ghz) 10-Core Skylake
+OSX High Sierra 10.13.2
+
+===================
+Go version go1.9.2
+===================
+
+Benchmark_____Pub0b_Payload-20    	30000000	        55.1 ns/op	 199.78 MB/s
+Benchmark_____Pub8b_Payload-20    	30000000	        55.8 ns/op	 340.21 MB/s
+Benchmark____Pub32b_Payload-20    	20000000	        63.4 ns/op	 694.34 MB/s
+Benchmark___Pub128B_Payload-20    	20000000	        79.8 ns/op	1766.47 MB/s
+Benchmark___Pub256B_Payload-20    	20000000	        98.1 ns/op	2741.51 MB/s
+Benchmark_____Pub1K_Payload-20    	 5000000	       283 ns/op	3660.72 MB/s
+Benchmark_____Pub4K_Payload-20    	 1000000	      1395 ns/op	2945.30 MB/s
+Benchmark_____Pub8K_Payload-20    	  500000	      2846 ns/op	2882.35 MB/s
+Benchmark_AuthPub0b_Payload-20    	10000000	       126 ns/op	  86.82 MB/s
+Benchmark____________PubSub-20    	10000000	       135 ns/op
+Benchmark____PubSubTwoConns-20    	10000000	       136 ns/op
+Benchmark____PubTwoQueueSub-20    	10000000	       152 ns/op
+Benchmark___PubFourQueueSub-20    	10000000	       152 ns/op
+Benchmark__PubEightQueueSub-20    	10000000	       152 ns/op
+Benchmark___RoutedPubSub_0b-20    	 5000000	       385 ns/op
+Benchmark___RoutedPubSub_1K-20    	 1000000	      1076 ns/op
+Benchmark_RoutedPubSub_100K-20    	   20000	     78501 ns/op
+
+
 2015 iMac5k 4Ghz i7 Haswell
 OSX El Capitan 10.11.3
 

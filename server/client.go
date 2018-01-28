@@ -118,9 +118,64 @@ type client struct {
 }
 
 type permissions struct {
-	sub    *Sublist
-	pub    *Sublist
-	pcache map[string]bool
+	sub     *Sublist
+	pub     *Sublist
+	temppub *Sublist
+	reply   *Sublist
+	pcache  map[string]bool
+	tpcache map[string]bool
+	rcache  map[string]bool
+}
+
+func (p *permissions) canPublish(subject string) bool {
+	return checkPermsList(p.pub, p.pcache, subject)
+}
+
+func (p *permissions) canTemporarilyPublish(subject string) bool {
+	return checkPermsList(p.temppub, p.tpcache, subject)
+}
+
+func (p *permissions) canReply(subject string) bool {
+	return checkPermsList(p.reply, p.rcache, subject)
+}
+
+func (p *permissions) addTemporaryPublishPermission(subject string) {
+	p.temppub.Insert(&subscription{subject: []byte(subject)})
+	p.tpcache[subject] = true
+	pruneCacheIfNeeded(p.tpcache)
+}
+
+func (p *permissions) removeTemporaryPublishPermission(subject string) {
+	p.temppub.Remove(&subscription{subject: []byte(subject)})
+	delete(p.tpcache, subject)
+}
+
+func checkPermsList(s *Sublist, cache map[string]bool, subject string) bool {
+	allowed, ok := cache[subject]
+	if ok && !allowed {
+		return false
+	}
+	if !ok {
+		r := s.Match(subject)
+		allowed = len(r.psubs) > 0
+		cache[subject] = allowed
+		pruneCacheIfNeeded(cache)
+	}
+
+	return allowed
+}
+
+func pruneCacheIfNeeded(cache map[string]bool) {
+	if len(cache) > maxPermCacheSize {
+		r := 0
+		for subject := range cache {
+			delete(cache, subject)
+			r++
+			if r > pruneSize {
+				break
+			}
+		}
+	}
 }
 
 const (
@@ -239,7 +294,11 @@ func (c *client) RegisterUser(user *User) {
 	c.perms = &permissions{}
 	c.perms.sub = NewSublist()
 	c.perms.pub = NewSublist()
+	c.perms.temppub = NewSublist()
+	c.perms.reply = NewSublist()
 	c.perms.pcache = make(map[string]bool)
+	c.perms.tpcache = make(map[string]bool)
+	c.perms.rcache = make(map[string]bool)
 
 	// Loop over publish permissions
 	for _, pubSubject := range user.Permissions.Publish {
@@ -251,6 +310,12 @@ func (c *client) RegisterUser(user *User) {
 	for _, subSubject := range user.Permissions.Subscribe {
 		sub := &subscription{subject: []byte(subSubject)}
 		c.perms.sub.Insert(sub)
+	}
+
+	// Loop over reply permissions
+	for _, replySubject := range user.Permissions.Reply {
+		sub := &subscription{subject: []byte(replySubject)}
+		c.perms.reply.Insert(sub)
 	}
 }
 
@@ -751,7 +816,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	c.traceInOp("SUB", argo)
 
 	// Indicate activity.
-	c.cache.subs += 1
+	c.cache.subs++
 
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
@@ -858,7 +923,7 @@ func (c *client) processUnsub(arg []byte) error {
 	}
 
 	// Indicate activity.
-	c.cache.subs += 1
+	c.cache.subs++
 
 	var sub *subscription
 
@@ -970,6 +1035,15 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 		deadlineSet = true
 	}
 
+	// If this is a request, the recipient can't already publish to the reply subject
+	// and the recipient has permission to reply, add the reply inbox to the recipient's
+	// publish permissions temporarily
+	if c.pa.reply != nil && client.perms != nil &&
+		!client.perms.canPublish(string(c.pa.reply)) &&
+		client.perms.canReply(string(c.pa.subject)) {
+		client.perms.addTemporaryPublishPermission(string(c.pa.reply))
+	}
+
 	// Deliver to the client.
 	_, err := client.bw.Write(mh)
 	if err != nil {
@@ -1016,7 +1090,7 @@ func (c *client) processMsg(msg []byte) {
 
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.cache.inMsgs += 1
+	c.cache.inMsgs++
 	c.cache.inBytes += len(msg) - LEN_CR_LF
 
 	if c.trace {
@@ -1033,36 +1107,15 @@ func (c *client) processMsg(msg []byte) {
 
 	// Check if published subject is allowed if we have permissions in place.
 	if c.perms != nil {
-		allowed, ok := c.perms.pcache[string(c.pa.subject)]
-		if ok && !allowed {
-			c.pubPermissionViolation(c.pa.subject)
-			return
-		}
-		if !ok {
-			r := c.perms.pub.Match(string(c.pa.subject))
-			notAllowed := len(r.psubs) == 0
-			if notAllowed {
+		subj := string(c.pa.subject)
+		if !c.perms.canPublish(subj) {
+			// Check whether we can publish temporarily as a reply
+			if !c.perms.canTemporarilyPublish(subj) {
 				c.pubPermissionViolation(c.pa.subject)
-				c.perms.pcache[string(c.pa.subject)] = false
-			} else {
-				c.perms.pcache[string(c.pa.subject)] = true
-			}
-			// Prune if needed.
-			if len(c.perms.pcache) > maxPermCacheSize {
-				// Prune the permissions cache. Keeps us from unbounded growth.
-				r := 0
-				for subject := range c.perms.pcache {
-					delete(c.perms.pcache, subject)
-					r++
-					if r > pruneSize {
-						break
-					}
-				}
-			}
-			// Return here to allow the pruning code to run if needed.
-			if notAllowed {
 				return
 			}
+
+			c.perms.removeTemporaryPublishPermission(subj)
 		}
 	}
 

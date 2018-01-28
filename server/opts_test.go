@@ -537,8 +537,8 @@ func TestAuthorizationConfig(t *testing.T) {
 	}
 	processOptions(opts)
 	lu := len(opts.Users)
-	if lu != 3 {
-		t.Fatalf("Expected 3 users, got %d\n", lu)
+	if lu != 4 {
+		t.Fatalf("Expected 4 users, got %d\n", lu)
 	}
 	// Build a map
 	mu := make(map[string]*User)
@@ -585,6 +585,37 @@ func TestAuthorizationConfig(t *testing.T) {
 	}
 	if bob.Permissions == nil {
 		t.Fatalf("Expected Bob's permissions to be non-nil\n")
+	}
+
+	// Brian
+	brian, ok := mu["brian"]
+	if !ok {
+		t.Fatalf("Expected to see user Brian\n")
+	}
+	if brian.Permissions == nil {
+		t.Fatalf("Expected Brian's permissions to be non-nil\n")
+	}
+	numPub := len(brian.Permissions.Publish)
+	if numPub > 0 {
+		t.Fatalf("Expected Brian's publish permissions to be empty, found %d elements", numPub)
+	}
+	numSub := len(brian.Permissions.Subscribe)
+	if numSub != 1 {
+		t.Fatalf("Expected Brian's subscribe permissions to have 1 element, found %d elements",
+			numSub)
+	}
+	subPerm = brian.Permissions.Subscribe[0]
+	if subPerm != "foo" {
+		t.Fatalf("Expected Brian's subscribe permissions to be 'foo', found %q", subPerm)
+	}
+	numReply := len(brian.Permissions.Reply)
+	if numReply != 1 {
+		t.Fatalf("Expected Brian's reply permissions to have 1 element, found %d elements",
+			numReply)
+	}
+	replyPerm := brian.Permissions.Reply[0]
+	if replyPerm != "foo" {
+		t.Fatalf("Expected Brian's reply permissions to be 'foo', found %q", replyPerm)
 	}
 
 	// Susan

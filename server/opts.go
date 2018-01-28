@@ -506,6 +506,12 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 				return nil, err
 			}
 			p.Subscribe = subjects
+		case "reply":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Reply = subjects
 		default:
 			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
 		}

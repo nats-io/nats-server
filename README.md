@@ -511,7 +511,7 @@ authorization {
 
 The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/server/gnatsd-authorization) documentation.
 
-Each permission grant is an object with two fields: what subject(s) the authenticated user can publish to, and what subject(s) the authenticated user can subscribe to. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
+Each permission grant is an object with three fields: what subject(s) the authenticated user can publish to, what subject(s) the authenticated user can subscribe to, and what subject(s) the authenticated user can reply to requests from. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
 
 You set permissions by creating an entry inside of the `authorization` configuration block that conforms to the following syntax:
 
@@ -520,11 +520,12 @@ authorization {
   PERMISSION_NAME = {
     publish = "singleton" or ["array", ...]
     subscribe = "singleton" or ["array", ...]
+    reply = "singleton" or ["array, ...]
   }
 }
 ```
 
-Here is an example authorization configuration that defines three users, two of whom are assigned explicit permissions.
+Here is an example authorization configuration that defines four users, three of whom are assigned explicit permissions.
 
 ```
 authorization {
@@ -536,6 +537,10 @@ authorization {
     publish = ["req.foo", "req.bar"]
     subscribe = "_INBOX.*"
   }
+  REPLIER = {
+    subscribe = "req.foo"
+    reply = "req.foo"
+  }
   DEFAULT_PERMISSIONS = {
     publish = "SANDBOX.*"
     subscribe = ["PUBLIC.>", "_INBOX.>"]
@@ -545,6 +550,7 @@ authorization {
   users = [
     {user: alice, password: foo, permissions: $ADMIN}
     {user: bob,   password: bar, permissions: $REQUESTOR}
+    {user: brian, password: baz, permissions: $REPLIER}
     {user: joe,   password: $PASS}
   ]
 }
@@ -552,7 +558,9 @@ authorization {
 
 Since Alice is an ADMIN she can publish/subscribe on any subject. We use the wildcard “>” to match any subject.
 
-Bob is REQUESTOR and can publish requests on subjects "req.foo" or "req.bar", and subscribe to anything that is a response ("_INBOX.*").
+Bob is REQUESTOR that can publish requests on subjects "req.foo" or "req.bar", and subscribe to anything that is a response ("_INBOX.*").
+
+Brian is a REPLIER that can subscribe to subject "req.foo", and reply to any requests received on that subject, but cannot otherwise publish any messages.
 
 Joe has no permission grant and therefore inherits the default permission set. You set the inherited default permissions by assigning them to the `default_permissions` entry inside of the `authorization` configuration block.
 
