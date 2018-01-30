@@ -212,7 +212,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
-		if tlsRequired && client.nc != nil {
+		// Exclude clients that are still doing handshake so we don't block in
+		// ConnectionState().
+		if tlsRequired && client.flags.isSet(handshakeComplete) && client.nc != nil {
 			conn := client.nc.(*tls.Conn)
 			cs := conn.ConnectionState()
 			ci.TLSVersion = tlsVersion(cs.Version)

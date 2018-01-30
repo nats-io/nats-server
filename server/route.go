@@ -142,6 +142,8 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Registering remote route %q", info.ID)
 		// Send our local subscriptions to this route.
 		s.sendLocalSubsToRoute(c)
+		// sendInfo will be false if the route that we just accepted
+		// is the only route there is.
 		if sendInfo {
 			// Need to get the remote IP address.
 			c.mu.Lock()
@@ -156,9 +158,10 @@ func (c *client) processRouteInfo(info *Info) {
 			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
-		// If the server Info did not have these URLs, update and send an INFO
-		// protocol to all clients that support it (unless the feature is disabled).
-		if s.updateServerINFO(info.ClientConnectURLs) {
+		// Unless disabled, possibly update the server's INFO protcol
+		// and send to clients that know how to handle async INFOs.
+		if !s.getOpts().Cluster.NoAdvertise {
+			s.updateServerINFO(info.ClientConnectURLs)
 			s.sendAsyncInfoToClients()
 		}
 	} else {
@@ -238,7 +241,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	// Initiate the connection, using info.IP instead of info.URL here...
 	r, err := url.Parse(info.IP)
 	if err != nil {
-		s.Debugf("Error parsing URL from INFO: %v\n", err)
+		s.Errorf("Error parsing URL from INFO: %v\n", err)
 		return
 	}
 
@@ -338,8 +341,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	c.Debugf("Route connection created")
-
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
@@ -372,7 +373,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 		c.mu.Unlock()
 		if err := conn.Handshake(); err != nil {
-			c.Debugf("TLS route handshake error: %v", err)
+			c.Errorf("TLS route handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection()
 			return nil
@@ -443,6 +444,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c.mu.Unlock()
 
+	c.Noticef("Route connection created")
 	return c
 }
 
@@ -735,7 +737,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
-			s.Debugf("Error trying to connect to route: %v", err)
+			s.Errorf("Error trying to connect to route: %v", err)
 			if !tryForEver {
 				if opts.Cluster.ConnectRetries <= 0 {
 					return
