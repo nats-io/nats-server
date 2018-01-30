@@ -50,6 +50,7 @@ func (u *User) clone() *User {
 type Permissions struct {
 	Publish   []string `json:"publish"`
 	Subscribe []string `json:"subscribe"`
+	Reply     []string `json:"reply"`
 }
 
 // clone performs a deep copy of the Permissions struct, returning a new clone
@@ -66,6 +67,10 @@ func (p *Permissions) clone() *Permissions {
 	if p.Subscribe != nil {
 		clone.Subscribe = make([]string, len(p.Subscribe))
 		copy(clone.Subscribe, p.Subscribe)
+	}
+	if p.Reply != nil {
+		clone.Reply = make([]string, len(p.Reply))
+		copy(clone.Reply, p.Reply)
 	}
 	return clone
 }
