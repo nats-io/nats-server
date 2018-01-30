@@ -1489,3 +1489,68 @@ func TestConnzTLSInHandshake(t *testing.T) {
 		t.Fatalf("Expected TLS fields to not be set, got version:%v cipher:%v", conn.TLSVersion, conn.TLSCipher)
 	}
 }
+
+func getJSONData(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("expected no error from %s: got %v", url, err)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("expected a 200 response from %s, got %d", url, resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("got an error reading the %s body: %v", url, err)
+	}
+	return body, nil
+}
+
+func TestServerIDs(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	v := Varz{}
+	c := Connz{}
+	r := Routez{}
+
+	murl := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+
+	data, err := getJSONData(murl + "varz")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Fatalf("Got an error unmarshalling the varz body: %v\n", err)
+	}
+
+	data, err = getJSONData(murl + "connz")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatalf("Got an error unmarshalling the connz body: %v\n", err)
+	}
+
+	data, err = getJSONData(murl + "routez")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatalf("Got an error unmarshalling the connz routez: %v\n", err)
+	}
+
+	if v.ID == "" {
+		t.Fatal("Varz ID is empty")
+	}
+	if c.ID == "" {
+		t.Fatal("Connz ID is empty")
+	}
+	if r.ID == "" {
+		t.Fatal("Routez ID is empty")
+	}
+
+	if v.ID != c.ID || v.ID != r.ID {
+		t.Fatalf("Varz ID [%s] is not equal to Connz ID [%s] or Routez ID [%s]", v.ID, c.ID, r.ID)
+	}
+}

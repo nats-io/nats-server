@@ -26,6 +26,7 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
+	ID       string     `json:"server_id"`
 	Now      time.Time  `json:"now"`
 	NumConns int        `json:"num_connections"`
 	Total    int        `json:"total"`
@@ -94,6 +95,9 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[ConnzPath]++
 	tlsRequired := s.info.TLSRequired
+
+	// copy the server id for monitoring
+	c.ID = s.info.ID
 
 	// number total of clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
@@ -266,6 +270,7 @@ type Subsz struct {
 
 // Routez represents detailed information on current client connections.
 type Routez struct {
+	ID        string       `json:"server_id"`
 	Now       time.Time    `json:"now"`
 	NumRoutes int          `json:"num_routes"`
 	Routes    []*RouteInfo `json:"routes"`
@@ -300,6 +305,9 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 	s.httpReqStats[RoutezPath]++
 	rs.NumRoutes = len(s.routes)
+
+	// copy the server id for monitoring
+	rs.ID = s.info.ID
 
 	for _, r := range s.routes {
 		r.mu.Lock()
