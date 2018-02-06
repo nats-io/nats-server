@@ -249,7 +249,7 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 	s.Shutdown()
 
 	opts = DefaultOptions()
-	opts.Cluster.Port = 0
+	opts.Port = 0
 	opts.ClientAdvertise = "nats.example.com:7777"
 	s = New(opts)
 	if s.info.Host != "nats.example.com" && s.info.Port != 7777 {
@@ -257,7 +257,25 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 			s.info.Host, s.info.Port)
 	}
 	s.Shutdown()
+}
 
+func TestClientAdvertiseErrorOnStartup(t *testing.T) {
+	opts := DefaultOptions()
+	// Set invalid address
+	opts.ClientAdvertise = "addr:::123"
+	s := New(opts)
+	defer s.Shutdown()
+	dl := &DummyLogger{}
+	s.SetLogger(dl, false, false)
+
+	// Expect this to return due to failure
+	s.Start()
+	dl.Lock()
+	msg := dl.msg
+	dl.Unlock()
+	if !strings.Contains(msg, "ClientAdvertise") {
+		t.Fatalf("Unexpected error: %v", msg)
+	}
 }
 
 func TestNoDeadlockOnStartFailure(t *testing.T) {

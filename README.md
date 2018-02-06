@@ -152,6 +152,7 @@ Server Options:
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
+        --client_advertise <string>  Client URL to advertise to other servers
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -178,6 +179,7 @@ Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
+        --cluster_advertise <string> Cluster URL to advertise to other servers
         --connect_retries <number>   For implicit routes, number of connect retries
 
 
@@ -285,6 +287,23 @@ The `--cluster` flag specifies the NATS URL where the server listens for connect
 The `--routes` flag specifies the NATS URL for one or more servers in the cluster. When a server connects to a specified route, it will advertise its own cluster URL to other servers. Note that when the `--routes` option is specified a `--cluster` option is also required.
 
 Previous releases required you to build the complete mesh using the `--routes` flag. To define your cluster in the current release, please follow the "Basic example" as described below.
+
+Suppose that server srvA is connected to server srvB. A bi-directional route exists between srvA and srvB. A new server, srvC, connects to srvA.<br>
+When accepting the connection, srvA will gossip the address of srvC to srvB so that srvB connects to srvC, completing the full mesh.<br>
+The URL that srvB will use to connect to srvC is the result of the TCP remote address that srvA got from its connection to srvC.
+
+It is possible to advertise with `--cluster_advertise` a different address than the one used in `--cluster`.
+
+In the previous example, if srvC uses a `--cluster_adertise` URL, this is what srvA will gossip to srvB in order to connect to srvC.
+
+NOTE: The advertise address should really result in a connection to srvC. Providing an address that would result in a connection to a different NATS Server would prevent the formation of a full-mesh cluster!
+
+As part of the gossip protocol, a server will also send to the other servers the URL clients should connect to.<br>
+The URL is the one defined in the `listen` parameter, or, if 0.0.0.0 or :: is specified, the resolved non-local IP addresses for the "any" interface.
+
+If those addresses are not reacheable from the outside world where the clients are running, the administrator can use the `--no_advertise` option to disable servers gossiping those URLs.<br>
+Another option is to provide a `--client_advertise` URL to use instead. If this option is specified (and advertise has not been disabled), then the server will advertise this URL to other servers instead of its `listen` address (or resolved IPs when listen is 0.0.0.0 or ::).
+
 
 ### Basic example
 

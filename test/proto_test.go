@@ -3,6 +3,7 @@
 package test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -280,4 +281,26 @@ func TestControlLineMaximums(t *testing.T) {
 	}
 	send(pubTooLong)
 	expect(errRe)
+}
+
+func TestServerInfoWithClientAdvertise(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = PROTO_TEST_PORT
+	opts.ClientAdvertise = "me:1"
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	c := createClientConn(t, opts.Host, PROTO_TEST_PORT)
+	defer c.Close()
+
+	buf := expectResult(t, c, infoRe)
+	js := infoRe.FindAllSubmatch(buf, 1)[0][1]
+	var sinfo server.Info
+	err := json.Unmarshal(js, &sinfo)
+	if err != nil {
+		t.Fatalf("Could not unmarshal INFO json: %v\n", err)
+	}
+	if sinfo.Host != "me" || sinfo.Port != 1 {
+		t.Fatalf("Expected INFO Host:Port to be me:1, got %s:%d", sinfo.Host, sinfo.Port)
+	}
 }

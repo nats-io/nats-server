@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nats-io/gnatsd/logger"
@@ -64,28 +65,41 @@ func TestSetLogger(t *testing.T) {
 }
 
 type DummyLogger struct {
+	sync.Mutex
 	msg string
 }
 
-func (dl *DummyLogger) checkContent(t *testing.T, expectedStr string) {
-	if dl.msg != expectedStr {
-		stackFatalf(t, "Expected log to be: %v, got %v", expectedStr, dl.msg)
+func (l *DummyLogger) checkContent(t *testing.T, expectedStr string) {
+	l.Lock()
+	defer l.Unlock()
+	if l.msg != expectedStr {
+		stackFatalf(t, "Expected log to be: %v, got %v", expectedStr, l.msg)
 	}
 }
 
 func (l *DummyLogger) Noticef(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)
 }
 func (l *DummyLogger) Errorf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)
 }
 func (l *DummyLogger) Fatalf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)
 }
 func (l *DummyLogger) Debugf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)
 }
 func (l *DummyLogger) Tracef(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)
 }
 

@@ -3,8 +3,6 @@
 package server
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -55,55 +53,127 @@ func TestRouteConfig(t *testing.T) {
 	}
 }
 
-func TestRouteAdvertise(t *testing.T) {
-	// TODO: Need to work through this test case. may need to add a util proxy server
-	// to validate functionally.
-	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
+func TestClusterAdvertise(t *testing.T) {
+	lst, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Error starting listener: %v", err)
+	}
+	ch := make(chan error)
+	go func() {
+		c, err := lst.Accept()
+		if err != nil {
+			ch <- err
+			return
+		}
+		c.Close()
+		ch <- nil
+	}()
 
-	optsSeed.NoSigs, optsSeed.NoLog = true, true
-	srvSeed := RunServer(optsSeed)
-	defer srvSeed.Shutdown()
+	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA.NoSigs, optsA.NoLog = true, true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
 
-	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
-		srvSeed.ClusterAddr().Port)
-	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(seedRouteUrl)
-	optsA.Cluster.Port = 9999
-	optsA.Cluster.RouteAdvertise = "example.com:80"
+	srvARouteURL := fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, srvA.ClusterAddr().Port)
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(srvARouteURL)
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// Wait for these 2 to connect to each other
+	checkClusterFormed(t, srvA, srvB)
+
+	// Now start server C that connects to A. A should ask B to connect to C,
+	// based on C's URL. But since C configures a Cluster.Advertise, it will connect
+	// to our listener.
+	optsC := nextServerOpts(optsB)
+	optsC.Cluster.Advertise = lst.Addr().String()
+	optsC.ClientAdvertise = "me:1"
+	optsC.Routes = RoutesFromStr(srvARouteURL)
+
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	select {
+	case e := <-ch:
+		if e != nil {
+			t.Fatalf("Error: %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Test timed out")
+	}
+}
+
+func TestClusterAdvertiseErrorOnStartup(t *testing.T) {
+	opts := DefaultOptions()
+	// Set invalid address
+	opts.Cluster.Advertise = "addr:::123"
+	s := New(opts)
+	defer s.Shutdown()
+	dl := &DummyLogger{}
+	s.SetLogger(dl, false, false)
+
+	// Start will keep running, so start in a go-routine.
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		s.Start()
+		wg.Done()
+	}()
+	msg := ""
+	ok := false
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		dl.Lock()
+		msg = dl.msg
+		dl.Unlock()
+		if strings.Contains(msg, "Cluster.Advertise") {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("Did not get expected error, got %v", msg)
+	}
+	s.Shutdown()
+	wg.Wait()
+}
+
+func TestClientAdvertise(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA.NoSigs, optsA.NoLog = true, true
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
-	srvA.mu.Lock()
-	if srvA.routeInfo.Host != "example.com" {
-		t.Fatalf("Expected srvA Route Advertise to be example.com:80, got: %v:%d",
-			srvA.routeInfo.Host, srvA.routeInfo.Port)
-	}
-	// using example.com, but don't expect anything to try to connect to it.
-	if srvA.routeInfo.IP != "nats-route://example.com:80/" {
-		t.Fatalf("Expected srvA.routeInfo.IP to be set, got %v", srvA.routeInfo.IP)
-	}
-	srvA.mu.Unlock()
-	srvSeed.mu.Lock()
-	if srvSeed.routeInfo.IP != "" {
-		t.Fatalf("Expected srvSeed.routeInfo.IP to not be set, got %v", srvSeed.routeInfo.IP)
-	}
-	srvSeed.mu.Unlock()
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsB.ClientAdvertise = "me:1"
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
 
-	// create a TCP client, connect to srvA Cluster and verify info.
-	testCn, _ := net.Dial("tcp", net.JoinHostPort(optsA.Cluster.Host, strconv.Itoa(optsA.Cluster.Port)))
-	defer testCn.Close()
-	msg, _ := bufio.NewReader(testCn).ReadString('\n')
-	var retInfo Info
-	err := json.Unmarshal([]byte(strings.TrimLeft(msg, "INFO ")), &retInfo)
+	checkClusterFormed(t, srvA, srvB)
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
 	if err != nil {
-		t.Fatalf("Unable to read response: %v", err)
+		t.Fatalf("Error on connect: %v", err)
 	}
-	if retInfo.Host != "example.com" && retInfo.Port != optsA.Cluster.Port {
-		t.Fatalf("Host and Port from cluster incorrect: got %s:%d", retInfo.Host, retInfo.Port)
+	defer nc.Close()
+	timeout := time.Now().Add(time.Second)
+	good := false
+	for time.Now().Before(timeout) {
+		ds := nc.DiscoveredServers()
+		if len(ds) == 1 {
+			if ds[0] == "nats://me:1" {
+				good = true
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
-	if retInfo.IP != "nats-route://example.com:80/" {
-		t.Fatalf("IP incorrected expected: nats-route://example.com:80/, got: %s", retInfo.IP)
+	if !good {
+		t.Fatalf("Did not get expected discovered servers: %v", nc.DiscoveredServers())
 	}
 }
 

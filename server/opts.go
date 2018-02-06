@@ -30,7 +30,7 @@ type ClusterOpts struct {
 	TLSTimeout     float64     `json:"-"`
 	TLSConfig      *tls.Config `json:"-"`
 	ListenStr      string      `json:"-"`
-	RouteAdvertise string      `json:"-"`
+	Advertise      string      `json:"-"`
 	NoAdvertise    bool        `json:"-"`
 	ConnectRetries int         `json:"-"`
 }
@@ -391,8 +391,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
 			opts.Cluster.TLSConfig.RootCAs = opts.Cluster.TLSConfig.ClientCAs
 			opts.Cluster.TLSTimeout = tc.Timeout
-		case "route_advertise":
-			opts.Cluster.RouteAdvertise = mv.(string)
+		case "cluster_advertise", "advertise":
+			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
 		case "connect_retries":
@@ -768,6 +768,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Cluster.ConnectRetries != 0 {
 		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
 	}
+	if flagOpts.Cluster.Advertise != "" {
+		opts.Cluster.Advertise = flagOpts.Cluster.Advertise
+	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
@@ -951,7 +954,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
-	fs.StringVar(&opts.ClientAdvertise, "client_advertise", "", "Client url for discovered servers.")
+	fs.StringVar(&opts.ClientAdvertise, "client_advertise", "", "Client URL to advertise to other servers.")
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
@@ -984,7 +987,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	fs.StringVar(&opts.Cluster.RouteAdvertise, "route_advertise", "", "Cluster url(s) for discovered servers.")
+	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")

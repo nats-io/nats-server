@@ -86,6 +86,12 @@ type Server struct {
 		debug  int32
 	}
 
+	// These store the real client/cluster listen ports. They are
+	// required during config reload to reset the Options (after
+	// reload) to the actual listen port values.
+	clientActualPort  int
+	clusterActualPort int
+
 	// Used by tests to check that http.Servers do
 	// not set any timeout.
 	monitoringServer *http.Server
@@ -109,23 +115,12 @@ func New(opts *Options) *Server {
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
-	// configure host/port if advertise is set
-	host := opts.Host
-	port := opts.Port
-	if opts.ClientAdvertise != "" {
-		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
-		if err == nil {
-			host = h
-			port = p
-		}
-	}
-
 	info := Info{
 		ID:                genID(),
 		Version:           VERSION,
 		GoVersion:         runtime.Version(),
-		Host:              host,
-		Port:              port,
+		Host:              opts.Host,
+		Port:              opts.Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -148,6 +143,12 @@ func New(opts *Options) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// This is normally done in the AcceptLoop, once the
+	// listener has been created (possibly with random port),
+	// but since some tests may expect the INFO to be properly
+	// set after New(), let's do it now.
+	s.setInfoHostPortAndGenerateJSON()
+
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -166,7 +167,6 @@ func New(opts *Options) *Server {
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
-	s.generateServerInfoJSON()
 	s.handleSignals()
 
 	return s
@@ -421,19 +421,19 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// to 0 at the beginning this function. So we need to get the actual port
 	if opts.Port == 0 {
 		// Write resolved port back to options.
-		_, port, err := net.SplitHostPort(l.Addr().String())
-		if err != nil {
-			s.Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-			s.mu.Unlock()
-			return
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil {
-			s.Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-			s.mu.Unlock()
-			return
-		}
-		opts.Port = portNum
+		opts.Port = l.Addr().(*net.TCPAddr).Port
+	}
+	// Keep track of actual listen port. This will be needed in case of
+	// config reload.
+	s.clientActualPort = opts.Port
+
+	// Now that port has been set (if it was set to RANDOM), set the
+	// server's info Host/Port with either values from Options or
+	// ClientAdvertise. Also generate the JSON byte array.
+	if err := s.setInfoHostPortAndGenerateJSON(); err != nil {
+		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", s.opts.ClientAdvertise, err)
+		s.mu.Unlock()
+		return
 	}
 	s.mu.Unlock()
 
@@ -467,6 +467,31 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	}
 	s.Noticef("Server Exiting..")
 	s.done <- true
+}
+
+// This function sets the server's info Host/Port based on server Options.
+// Note that this function may be called during config reload, this is why
+// Host/Port may be reset to original Options if the ClientAdvertise option
+// is not set (since it may have previously been).
+// The function then generates the server infoJSON.
+func (s *Server) setInfoHostPortAndGenerateJSON() error {
+	// When this function is called, opts.Port is set to the actual listen
+	// port (if option was originally set to RANDOM), even during a config
+	// reload. So use of s.opts.Port is safe.
+	if s.opts.ClientAdvertise != "" {
+		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
+		if err != nil {
+			return err
+		}
+		s.info.Host = h
+		s.info.Port = p
+	} else {
+		s.info.Host = s.opts.Host
+		s.info.Port = s.opts.Port
+	}
+	// (re)generate the infoJSON byte array.
+	s.generateServerInfoJSON()
+	return nil
 }
 
 // StartProfiler is called to enable dynamic profiling.

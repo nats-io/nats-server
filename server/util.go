@@ -74,7 +74,8 @@ func secondsToDuration(seconds float64) time.Duration {
 	return time.Duration(ttl)
 }
 
-// Parse a host/port string with an optional default port
+// Parse a host/port string with a default port to use
+// if none (or 0 or -1) is specified in `hostPort` string.
 func parseHostPort(hostPort string, defaultPort int) (host string, port int, err error) {
 	if hostPort != "" {
 		host, sPort, err := net.SplitHostPort(hostPort)
@@ -89,6 +90,9 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 		port, err = strconv.Atoi(strings.TrimSpace(sPort))
 		if err != nil {
 			return "", -1, err
+		}
+		if port == 0 || port == -1 {
+			port = defaultPort
 		}
 		return strings.TrimSpace(host), port, nil
 	}
