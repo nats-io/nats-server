@@ -18,8 +18,8 @@ const (
 )
 
 var (
-	// GITHASH injected at build
-	GITHASH string
+	// gitCommit injected at build
+	gitCommit string
 )
 
 const (
