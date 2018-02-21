@@ -29,6 +29,7 @@ import (
 type Info struct {
 	ID                string   `json:"server_id"`
 	Version           string   `json:"version"`
+	GitHash           string   `json:"git_hash"`
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
@@ -112,6 +113,7 @@ func New(opts *Options) *Server {
 	info := Info{
 		ID:                genID(),
 		Version:           VERSION,
+		GitHash:           GITHASH,
 		GoVersion:         runtime.Version(),
 		Host:              opts.Host,
 		Port:              opts.Port,
@@ -241,6 +243,7 @@ func (s *Server) logPid() error {
 func (s *Server) Start() {
 	s.Noticef("Starting nats-server version %s", VERSION)
 	s.Debugf("Go build version %s", s.info.GoVersion)
+	s.Debugf("GIT hash [%s]", GITHASH)
 
 	// Avoid RACE between Start() and Shutdown()
 	s.mu.Lock()
