@@ -145,16 +145,22 @@ func (c *client) processRouteInfo(info *Info) {
 		// sendInfo will be false if the route that we just accepted
 		// is the only route there is.
 		if sendInfo {
-			// Need to get the remote IP address.
-			c.mu.Lock()
-			switch conn := c.nc.(type) {
-			case *net.TCPConn, *tls.Conn:
-				addr := conn.RemoteAddr().(*net.TCPAddr)
-				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(), strconv.Itoa(info.Port)))
-			default:
-				info.IP = c.route.url.String()
+			// The incoming INFO from the route will have IP set
+			// if it has Cluster.Advertise. In that case, use that
+			// otherwise contruct it from the remote TCP address.
+			if info.IP == "" {
+				// Need to get the remote IP address.
+				c.mu.Lock()
+				switch conn := c.nc.(type) {
+				case *net.TCPConn, *tls.Conn:
+					addr := conn.RemoteAddr().(*net.TCPAddr)
+					info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
+						strconv.Itoa(info.Port)))
+				default:
+					info.IP = c.route.url.String()
+				}
+				c.mu.Unlock()
 			}
-			c.mu.Unlock()
 			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
@@ -612,6 +618,12 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
+	defer func() {
+		if ch != nil {
+			close(ch)
+		}
+	}()
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -631,19 +643,16 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	s.Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		// We need to close this channel to avoid a deadlock
-		close(ch)
 		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
 		return
 	}
 
+	s.mu.Lock()
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
 		ID:                s.info.ID,
 		Version:           s.info.Version,
-		Host:              opts.Cluster.Host,
-		Port:              l.Addr().(*net.TCPAddr).Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
 		SSLRequired:       tlsReq,
@@ -651,20 +660,33 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		MaxPayload:        s.info.MaxPayload,
 		ClientConnectURLs: clientConnectURLs,
 	}
+	// If we have selected a random port...
+	if port == 0 {
+		// Write resolved port back to options.
+		opts.Cluster.Port = l.Addr().(*net.TCPAddr).Port
+	}
+	// Keep track of actual listen port. This will be needed in case of
+	// config reload.
+	s.clusterActualPort = opts.Cluster.Port
 	// Check for Auth items
 	if opts.Cluster.Username != "" {
 		info.AuthRequired = true
 	}
 	s.routeInfo = info
-	s.generateRouteInfoJSON()
-
+	// Possibly override Host/Port and set IP based on Cluster.Advertise
+	if err := s.setRouteInfoHostPortAndIP(); err != nil {
+		s.Fatalf("Error setting route INFO with Cluster.Advertise value of %s, err=%v", s.opts.Cluster.Advertise, err)
+		l.Close()
+		s.mu.Unlock()
+		return
+	}
 	// Setup state that can enable shutdown
-	s.mu.Lock()
 	s.routeListener = l
 	s.mu.Unlock()
 
 	// Let them know we are up
 	close(ch)
+	ch = nil
 
 	tmpDelay := ACCEPT_MIN_SLEEP
 
@@ -692,6 +714,26 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	}
 	s.Debugf("Router accept loop exiting..")
 	s.done <- true
+}
+
+// Similar to setInfoHostPortAndGenerateJSON, but for routeInfo.
+func (s *Server) setRouteInfoHostPortAndIP() error {
+	if s.opts.Cluster.Advertise != "" {
+		advHost, advPort, err := parseHostPort(s.opts.Cluster.Advertise, s.opts.Cluster.Port)
+		if err != nil {
+			return err
+		}
+		s.routeInfo.Host = advHost
+		s.routeInfo.Port = advPort
+		s.routeInfo.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(advHost, strconv.Itoa(advPort)))
+	} else {
+		s.routeInfo.Host = s.opts.Cluster.Host
+		s.routeInfo.Port = s.opts.Cluster.Port
+		s.routeInfo.IP = ""
+	}
+	// (re)generate the routeInfoJSON byte array
+	s.generateRouteInfoJSON()
+	return nil
 }
 
 // StartRouting will start the accept loop on the cluster host:port

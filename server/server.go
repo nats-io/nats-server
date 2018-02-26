@@ -86,6 +86,12 @@ type Server struct {
 		debug  int32
 	}
 
+	// These store the real client/cluster listen ports. They are
+	// required during config reload to reset the Options (after
+	// reload) to the actual listen port values.
+	clientActualPort  int
+	clusterActualPort int
+
 	// Used by tests to check that http.Servers do
 	// not set any timeout.
 	monitoringServer *http.Server
@@ -137,6 +143,12 @@ func New(opts *Options) *Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// This is normally done in the AcceptLoop, once the
+	// listener has been created (possibly with random port),
+	// but since some tests may expect the INFO to be properly
+	// set after New(), let's do it now.
+	s.setInfoHostPortAndGenerateJSON()
+
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -155,7 +167,6 @@ func New(opts *Options) *Server {
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
-	s.generateServerInfoJSON()
 	s.handleSignals()
 
 	return s
@@ -410,19 +421,19 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// to 0 at the beginning this function. So we need to get the actual port
 	if opts.Port == 0 {
 		// Write resolved port back to options.
-		_, port, err := net.SplitHostPort(l.Addr().String())
-		if err != nil {
-			s.Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-			s.mu.Unlock()
-			return
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil {
-			s.Fatalf("Error parsing server address (%s): %s", l.Addr().String(), e)
-			s.mu.Unlock()
-			return
-		}
-		opts.Port = portNum
+		opts.Port = l.Addr().(*net.TCPAddr).Port
+	}
+	// Keep track of actual listen port. This will be needed in case of
+	// config reload.
+	s.clientActualPort = opts.Port
+
+	// Now that port has been set (if it was set to RANDOM), set the
+	// server's info Host/Port with either values from Options or
+	// ClientAdvertise. Also generate the JSON byte array.
+	if err := s.setInfoHostPortAndGenerateJSON(); err != nil {
+		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", s.opts.ClientAdvertise, err)
+		s.mu.Unlock()
+		return
 	}
 	s.mu.Unlock()
 
@@ -456,6 +467,31 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	}
 	s.Noticef("Server Exiting..")
 	s.done <- true
+}
+
+// This function sets the server's info Host/Port based on server Options.
+// Note that this function may be called during config reload, this is why
+// Host/Port may be reset to original Options if the ClientAdvertise option
+// is not set (since it may have previously been).
+// The function then generates the server infoJSON.
+func (s *Server) setInfoHostPortAndGenerateJSON() error {
+	// When this function is called, opts.Port is set to the actual listen
+	// port (if option was originally set to RANDOM), even during a config
+	// reload. So use of s.opts.Port is safe.
+	if s.opts.ClientAdvertise != "" {
+		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
+		if err != nil {
+			return err
+		}
+		s.info.Host = h
+		s.info.Port = p
+	} else {
+		s.info.Host = s.opts.Host
+		s.info.Port = s.opts.Port
+	}
+	// (re)generate the infoJSON byte array.
+	s.generateServerInfoJSON()
+	return nil
 }
 
 // StartProfiler is called to enable dynamic profiling.
@@ -984,6 +1020,7 @@ func (s *Server) startGoRoutine(f func()) {
 // getClientConnectURLs returns suitable URLs for clients to connect to the listen
 // port based on the server options' Host and Port. If the Host corresponds to
 // "any" interfaces, this call returns the list of resolved IP addresses.
+// If ClientAdvertise is set, returns the client advertise host and port
 func (s *Server) getClientConnectURLs() []string {
 	// Snapshot server options.
 	opts := s.getOpts()
@@ -991,45 +1028,52 @@ func (s *Server) getClientConnectURLs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sPort := strconv.Itoa(opts.Port)
 	urls := make([]string, 0, 1)
 
-	ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
-	// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
-	// interfaces.
-	if err == nil && ipAddr.IP.IsUnspecified() {
-		var ip net.IP
-		ifaces, _ := net.Interfaces()
-		for _, i := range ifaces {
-			addrs, _ := i.Addrs()
-			for _, addr := range addrs {
-				switch v := addr.(type) {
-				case *net.IPNet:
-					ip = v.IP
-				case *net.IPAddr:
-					ip = v.IP
+	// short circuit if client advertise is set
+	if opts.ClientAdvertise != "" {
+		// just use the info host/port. This is updated in s.New()
+		urls = append(urls, net.JoinHostPort(s.info.Host, strconv.Itoa(s.info.Port)))
+	} else {
+		sPort := strconv.Itoa(opts.Port)
+		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
+		// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
+		// interfaces.
+		if err == nil && ipAddr.IP.IsUnspecified() {
+			var ip net.IP
+			ifaces, _ := net.Interfaces()
+			for _, i := range ifaces {
+				addrs, _ := i.Addrs()
+				for _, addr := range addrs {
+					switch v := addr.(type) {
+					case *net.IPNet:
+						ip = v.IP
+					case *net.IPAddr:
+						ip = v.IP
+					}
+					// Skip non global unicast addresses
+					if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
+						ip = nil
+						continue
+					}
+					urls = append(urls, net.JoinHostPort(ip.String(), sPort))
 				}
-				// Skip non global unicast addresses
-				if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
-					ip = nil
-					continue
-				}
-				urls = append(urls, net.JoinHostPort(ip.String(), sPort))
+			}
+		}
+		if err != nil || len(urls) == 0 {
+			// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
+			// reason we could not add any URL in the loop above.
+			// We had a case where a Windows VM was hosed and would have err == nil
+			// and not add any address in the array in the loop above, and we
+			// ended-up returning 0.0.0.0, which is problematic for Windows clients.
+			// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
+			if opts.Host == "0.0.0.0" || opts.Host == "::" {
+				s.Errorf("Address %q can not be resolved properly", opts.Host)
+			} else {
+				urls = append(urls, net.JoinHostPort(opts.Host, sPort))
 			}
 		}
 	}
-	if err != nil || len(urls) == 0 {
-		// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
-		// reason we could not add any URL in the loop above.
-		// We had a case where a Windows VM was hosed and would have err == nil
-		// and not add any address in the array in the loop above, and we
-		// ended-up returning 0.0.0.0, which is problematic for Windows clients.
-		// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
-		if opts.Host == "0.0.0.0" || opts.Host == "::" {
-			s.Errorf("Address %q can not be resolved properly", opts.Host)
-		} else {
-			urls = append(urls, net.JoinHostPort(opts.Host, sPort))
-		}
-	}
+
 	return urls
 }

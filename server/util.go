@@ -3,6 +3,11 @@
 package server
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nuid"
@@ -67,4 +72,29 @@ func parseInt64(d []byte) (n int64) {
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
 	return time.Duration(ttl)
+}
+
+// Parse a host/port string with a default port to use
+// if none (or 0 or -1) is specified in `hostPort` string.
+func parseHostPort(hostPort string, defaultPort int) (host string, port int, err error) {
+	if hostPort != "" {
+		host, sPort, err := net.SplitHostPort(hostPort)
+		switch err.(type) {
+		case *net.AddrError:
+			// try appending the current port
+			host, sPort, err = net.SplitHostPort(fmt.Sprintf("%s:%d", hostPort, defaultPort))
+		}
+		if err != nil {
+			return "", -1, err
+		}
+		port, err = strconv.Atoi(strings.TrimSpace(sPort))
+		if err != nil {
+			return "", -1, err
+		}
+		if port == 0 || port == -1 {
+			port = defaultPort
+		}
+		return strings.TrimSpace(host), port, nil
+	}
+	return "", -1, errors.New("No hostport specified")
 }

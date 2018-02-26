@@ -3,6 +3,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -187,7 +188,7 @@ func TestConfigReload(t *testing.T) {
 	if err := ioutil.WriteFile(platformConf, content, 0666); err != nil {
 		t.Fatalf("Unable to write config file: %v", err)
 	}
-	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -200,6 +201,7 @@ func TestConfigReload(t *testing.T) {
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          false,
+		NoLog:          true,
 		Logtime:        false,
 		MaxControlLine: 1024,
 		MaxPayload:     1048576,
@@ -209,12 +211,12 @@ func TestConfigReload(t *testing.T) {
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
 			Host: "localhost",
-			Port: -1,
+			Port: server.ClusterAddr().Port,
 		},
 	}
 	processOptions(golden)
 
-	if !reflect.DeepEqual(golden, server.getOpts()) {
+	if !reflect.DeepEqual(golden, opts) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, opts)
 	}
@@ -1370,6 +1372,166 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	if string(msg.Data) != "hola" {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hola"), msg.Data)
 	}
+}
+
+func TestConfigReloadClusterAdvertise(t *testing.T) {
+	conf := "routeadv.conf"
+	if err := ioutil.WriteFile(conf, []byte(`
+	listen: "0.0.0.0:-1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+	}
+	`), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoLog = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	orgClusterPort := s.ClusterAddr().Port
+
+	updateConfig := func(content string) {
+		if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+			stackFatalf(t, "Error creating config file: %v", err)
+		}
+		if err := s.Reload(); err != nil {
+			stackFatalf(t, "Error on reload: %v", err)
+		}
+	}
+
+	verify := func(expectedHost string, expectedPort int, expectedIP string) {
+		s.mu.Lock()
+		routeInfo := s.routeInfo
+		routeInfoJSON := Info{}
+		err = json.Unmarshal(s.routeInfoJSON[5:], &routeInfoJSON) // Skip "INFO "
+		s.mu.Unlock()
+		if err != nil {
+			t.Fatalf("Error on Unmarshal: %v", err)
+		}
+		if routeInfo.Host != expectedHost || routeInfo.Port != expectedPort || routeInfo.IP != expectedIP {
+			t.Fatalf("Expected host/port/IP to be %s:%v, %q, got %s:%d, %q",
+				expectedHost, expectedPort, expectedIP, routeInfo.Host, routeInfo.Port, routeInfo.IP)
+		}
+		// Check that server routeInfoJSON was updated too
+		if !reflect.DeepEqual(routeInfo, routeInfoJSON) {
+			t.Fatalf("Expected routeInfoJSON to be %+v, got %+v", routeInfo, routeInfoJSON)
+		}
+	}
+
+	// Update config with cluster_advertise
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+		cluster_advertise: "me:1"
+	}
+	`)
+	verify("me", 1, "nats-route://me:1/")
+
+	// Update config with cluster_advertise (no port specified)
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+		cluster_advertise: "me"
+	}
+	`)
+	verify("me", orgClusterPort, fmt.Sprintf("nats-route://me:%d/", orgClusterPort))
+
+	// Update config with cluster_advertise (-1 port specified)
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+		cluster_advertise: "me:-1"
+	}
+	`)
+	verify("me", orgClusterPort, fmt.Sprintf("nats-route://me:%d/", orgClusterPort))
+
+	// Update to remove cluster_advertise
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+	}
+	`)
+	verify("0.0.0.0", orgClusterPort, "")
+}
+
+func TestConfigReloadClientAdvertise(t *testing.T) {
+	conf := "clientadv.conf"
+	if err := ioutil.WriteFile(conf, []byte(`listen: "0.0.0.0:-1"`), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		stackFatalf(t, "Error processing config file: %v", err)
+	}
+	opts.NoLog = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	orgPort := s.Addr().(*net.TCPAddr).Port
+
+	updateConfig := func(content string) {
+		if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+			stackFatalf(t, "Error creating config file: %v", err)
+		}
+		if err := s.Reload(); err != nil {
+			stackFatalf(t, "Error on reload: %v", err)
+		}
+	}
+
+	verify := func(expectedHost string, expectedPort int) {
+		s.mu.Lock()
+		info := s.info
+		infoJSON := Info{clientConnectURLs: make(map[string]struct{})}
+		err := json.Unmarshal(s.infoJSON[5:len(s.infoJSON)-2], &infoJSON) // Skip INFO
+		s.mu.Unlock()
+		if err != nil {
+			stackFatalf(t, "Error on Unmarshal: %v", err)
+		}
+		if info.Host != expectedHost || info.Port != expectedPort {
+			stackFatalf(t, "Expected host/port to be %s:%d, got %s:%d",
+				expectedHost, expectedPort, info.Host, info.Port)
+		}
+		// Check that server infoJSON was updated too
+		if !reflect.DeepEqual(info, infoJSON) {
+			stackFatalf(t, "Expected infoJSON to be %+v, got %+v", info, infoJSON)
+		}
+	}
+
+	// Update config with ClientAdvertise (port specified)
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	client_advertise: "me:1"
+	`)
+	verify("me", 1)
+
+	// Update config with ClientAdvertise (no port specified)
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	client_advertise: "me"
+	`)
+	verify("me", orgPort)
+
+	// Update config with ClientAdvertise (-1 port specified)
+	updateConfig(`
+	listen: "0.0.0.0:-1"
+	client_advertise: "me:-1"
+	`)
+	verify("me", orgPort)
+
+	// Now remove ClientAdvertise to check that original values
+	// are restored.
+	updateConfig(`listen: "0.0.0.0:-1"`)
+	verify("0.0.0.0", orgPort)
 }
 
 // Ensure Reload supports changing the max connections. Test this by starting a

@@ -21,6 +21,7 @@ Server Options:
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
+        --client_advertise <string>  Client URL to advertise to other servers
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -47,6 +48,7 @@ Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
+        --cluster_advertise <string> Cluster URL to advertise to other servers
         --connect_retries <number>   For implicit routes, number of connect retries
 
 

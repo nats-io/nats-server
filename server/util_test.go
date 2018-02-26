@@ -30,6 +30,42 @@ func TestParseSInt64(t *testing.T) {
 	}
 }
 
+func TestParseHostPort(t *testing.T) {
+	check := func(hostPort string, defaultPort int, expectedHost string, expectedPort int, expectedErr bool) {
+		h, p, err := parseHostPort(hostPort, defaultPort)
+		if expectedErr {
+			if err == nil {
+				stackFatalf(t, "Expected an error, did not get one")
+			}
+			// expected error, so we are done
+			return
+		}
+		if !expectedErr && err != nil {
+			stackFatalf(t, "Unexpected error: %v", err)
+		}
+		if expectedHost != h {
+			stackFatalf(t, "Expected host %q, got %q", expectedHost, h)
+		}
+		if expectedPort != p {
+			stackFatalf(t, "Expected port %d, got %d", expectedPort, p)
+		}
+	}
+	check("addr:1234", 5678, "addr", 1234, false)
+	check(" addr:1234 ", 5678, "addr", 1234, false)
+	check(" addr : 1234 ", 5678, "addr", 1234, false)
+	check("addr", 5678, "addr", 5678, false)
+	check(" addr ", 5678, "addr", 5678, false)
+	check("addr:-1", 5678, "addr", 5678, false)
+	check(" addr:-1 ", 5678, "addr", 5678, false)
+	check(" addr : -1 ", 5678, "addr", 5678, false)
+	check("addr:0", 5678, "addr", 5678, false)
+	check(" addr:0 ", 5678, "addr", 5678, false)
+	check(" addr : 0 ", 5678, "addr", 5678, false)
+	check("addr:addr", 0, "", 0, true)
+	check("addr:::1234", 0, "", 0, true)
+	check("", 0, "", 0, true)
+}
+
 func BenchmarkParseInt(b *testing.B) {
 	b.SetBytes(1)
 	n := "12345678"

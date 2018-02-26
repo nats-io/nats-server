@@ -53,6 +53,130 @@ func TestRouteConfig(t *testing.T) {
 	}
 }
 
+func TestClusterAdvertise(t *testing.T) {
+	lst, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Error starting listener: %v", err)
+	}
+	ch := make(chan error)
+	go func() {
+		c, err := lst.Accept()
+		if err != nil {
+			ch <- err
+			return
+		}
+		c.Close()
+		ch <- nil
+	}()
+
+	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA.NoSigs, optsA.NoLog = true, true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvARouteURL := fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, srvA.ClusterAddr().Port)
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(srvARouteURL)
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// Wait for these 2 to connect to each other
+	checkClusterFormed(t, srvA, srvB)
+
+	// Now start server C that connects to A. A should ask B to connect to C,
+	// based on C's URL. But since C configures a Cluster.Advertise, it will connect
+	// to our listener.
+	optsC := nextServerOpts(optsB)
+	optsC.Cluster.Advertise = lst.Addr().String()
+	optsC.ClientAdvertise = "me:1"
+	optsC.Routes = RoutesFromStr(srvARouteURL)
+
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	select {
+	case e := <-ch:
+		if e != nil {
+			t.Fatalf("Error: %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Test timed out")
+	}
+}
+
+func TestClusterAdvertiseErrorOnStartup(t *testing.T) {
+	opts := DefaultOptions()
+	// Set invalid address
+	opts.Cluster.Advertise = "addr:::123"
+	s := New(opts)
+	defer s.Shutdown()
+	dl := &DummyLogger{}
+	s.SetLogger(dl, false, false)
+
+	// Start will keep running, so start in a go-routine.
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		s.Start()
+		wg.Done()
+	}()
+	msg := ""
+	ok := false
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		dl.Lock()
+		msg = dl.msg
+		dl.Unlock()
+		if strings.Contains(msg, "Cluster.Advertise") {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("Did not get expected error, got %v", msg)
+	}
+	s.Shutdown()
+	wg.Wait()
+}
+
+func TestClientAdvertise(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA.NoSigs, optsA.NoLog = true, true
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsB.ClientAdvertise = "me:1"
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	timeout := time.Now().Add(time.Second)
+	good := false
+	for time.Now().Before(timeout) {
+		ds := nc.DiscoveredServers()
+		if len(ds) == 1 {
+			if ds[0] == "nats://me:1" {
+				good = true
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !good {
+		t.Fatalf("Did not get expected discovered servers: %v", nc.DiscoveredServers())
+	}
+}
+
 func TestServerRoutesWithClients(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
 	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")

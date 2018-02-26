@@ -237,7 +237,7 @@ func (c *clusterOption) Apply(server *Server) {
 	server.routeInfo.SSLRequired = tlsRequired
 	server.routeInfo.TLSVerify = tlsRequired
 	server.routeInfo.AuthRequired = c.newValue.Username != ""
-	server.generateRouteInfoJSON()
+	server.setRouteInfoHostPortAndIP()
 	server.mu.Unlock()
 	server.Noticef("Reloaded: cluster")
 }
@@ -407,6 +407,20 @@ func (w *writeDeadlineOption) Apply(server *Server) {
 	server.Noticef("Reloaded: write_deadline = %s", w.newValue)
 }
 
+// clientAdvertiseOption implements the option interface for the `client_advertise` setting.
+type clientAdvertiseOption struct {
+	noopOption
+	newValue string
+}
+
+// Apply the setting by updating the server info and regenerate the infoJSON byte array.
+func (c *clientAdvertiseOption) Apply(server *Server) {
+	server.mu.Lock()
+	server.setInfoHostPortAndGenerateJSON()
+	server.mu.Unlock()
+	server.Noticef("Reload: client_advertise = %s", c.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -422,11 +436,25 @@ func (s *Server) Reload() error {
 		// TODO: Dump previous good config to a .bak file?
 		return err
 	}
+	clientOrgPort := s.clientActualPort
+	clusterOrgPort := s.clusterActualPort
 	s.mu.Unlock()
 
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
 	processOptions(newOpts)
+
+	// processOptions sets Port to 0 if set to -1 (RANDOM port)
+	// If that's the case, set it to the saved value when the accept loop was
+	// created.
+	if newOpts.Port == 0 {
+		newOpts.Port = clientOrgPort
+	}
+	// We don't do that for cluster, so check against -1.
+	if newOpts.Cluster.Port == -1 {
+		newOpts.Cluster.Port = clusterOrgPort
+	}
+
 	if err := s.reloadOptions(newOpts); err != nil {
 		return err
 	}
@@ -518,6 +546,15 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxPingsOutOption{newValue: newValue.(int)})
 		case "writedeadline":
 			diffOpts = append(diffOpts, &writeDeadlineOption{newValue: newValue.(time.Duration)})
+		case "clientadvertise":
+			cliAdv := newValue.(string)
+			if cliAdv != "" {
+				// Validate ClientAdvertise syntax
+				if _, _, err := parseHostPort(cliAdv, 0); err != nil {
+					return nil, fmt.Errorf("invalid ClientAdvertise value of %s, err=%v", cliAdv, err)
+				}
+			}
+			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
 		case "nolog":
 			// Ignore NoLog option since it's not parsed and only used in
 			// testing.
@@ -611,6 +648,12 @@ func validateClusterOpts(old, new ClusterOpts) error {
 	if old.Port != new.Port {
 		return fmt.Errorf("Config reload not supported for cluster port: old=%d, new=%d",
 			old.Port, new.Port)
+	}
+	// Validate Cluster.Advertise syntax
+	if new.Advertise != "" {
+		if _, _, err := parseHostPort(new.Advertise, 0); err != nil {
+			return fmt.Errorf("invalid Cluster.Advertise value of %s, err=%v", new.Advertise, err)
+		}
 	}
 	return nil
 }

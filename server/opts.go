@@ -30,49 +30,51 @@ type ClusterOpts struct {
 	TLSTimeout     float64     `json:"-"`
 	TLSConfig      *tls.Config `json:"-"`
 	ListenStr      string      `json:"-"`
+	Advertise      string      `json:"-"`
 	NoAdvertise    bool        `json:"-"`
 	ConnectRetries int         `json:"-"`
 }
 
 // Options block for gnatsd server.
 type Options struct {
-	ConfigFile     string        `json:"-"`
-	Host           string        `json:"addr"`
-	Port           int           `json:"port"`
-	Trace          bool          `json:"-"`
-	Debug          bool          `json:"-"`
-	NoLog          bool          `json:"-"`
-	NoSigs         bool          `json:"-"`
-	Logtime        bool          `json:"-"`
-	MaxConn        int           `json:"max_connections"`
-	Users          []*User       `json:"-"`
-	Username       string        `json:"-"`
-	Password       string        `json:"-"`
-	Authorization  string        `json:"-"`
-	PingInterval   time.Duration `json:"ping_interval"`
-	MaxPingsOut    int           `json:"ping_max"`
-	HTTPHost       string        `json:"http_host"`
-	HTTPPort       int           `json:"http_port"`
-	HTTPSPort      int           `json:"https_port"`
-	AuthTimeout    float64       `json:"auth_timeout"`
-	MaxControlLine int           `json:"max_control_line"`
-	MaxPayload     int           `json:"max_payload"`
-	Cluster        ClusterOpts   `json:"cluster"`
-	ProfPort       int           `json:"-"`
-	PidFile        string        `json:"-"`
-	LogFile        string        `json:"-"`
-	Syslog         bool          `json:"-"`
-	RemoteSyslog   string        `json:"-"`
-	Routes         []*url.URL    `json:"-"`
-	RoutesStr      string        `json:"-"`
-	TLSTimeout     float64       `json:"tls_timeout"`
-	TLS            bool          `json:"-"`
-	TLSVerify      bool          `json:"-"`
-	TLSCert        string        `json:"-"`
-	TLSKey         string        `json:"-"`
-	TLSCaCert      string        `json:"-"`
-	TLSConfig      *tls.Config   `json:"-"`
-	WriteDeadline  time.Duration `json:"-"`
+	ConfigFile      string        `json:"-"`
+	Host            string        `json:"addr"`
+	Port            int           `json:"port"`
+	ClientAdvertise string        `json:"-"`
+	Trace           bool          `json:"-"`
+	Debug           bool          `json:"-"`
+	NoLog           bool          `json:"-"`
+	NoSigs          bool          `json:"-"`
+	Logtime         bool          `json:"-"`
+	MaxConn         int           `json:"max_connections"`
+	Users           []*User       `json:"-"`
+	Username        string        `json:"-"`
+	Password        string        `json:"-"`
+	Authorization   string        `json:"-"`
+	PingInterval    time.Duration `json:"ping_interval"`
+	MaxPingsOut     int           `json:"ping_max"`
+	HTTPHost        string        `json:"http_host"`
+	HTTPPort        int           `json:"http_port"`
+	HTTPSPort       int           `json:"https_port"`
+	AuthTimeout     float64       `json:"auth_timeout"`
+	MaxControlLine  int           `json:"max_control_line"`
+	MaxPayload      int           `json:"max_payload"`
+	Cluster         ClusterOpts   `json:"cluster"`
+	ProfPort        int           `json:"-"`
+	PidFile         string        `json:"-"`
+	LogFile         string        `json:"-"`
+	Syslog          bool          `json:"-"`
+	RemoteSyslog    string        `json:"-"`
+	Routes          []*url.URL    `json:"-"`
+	RoutesStr       string        `json:"-"`
+	TLSTimeout      float64       `json:"tls_timeout"`
+	TLS             bool          `json:"-"`
+	TLSVerify       bool          `json:"-"`
+	TLSCert         string        `json:"-"`
+	TLSKey          string        `json:"-"`
+	TLSCaCert       string        `json:"-"`
+	TLSConfig       *tls.Config   `json:"-"`
+	WriteDeadline   time.Duration `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -202,6 +204,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 			o.Host = hp.host
 			o.Port = hp.port
+		case "client_advertise":
+			o.ClientAdvertise = v.(string)
 		case "port":
 			o.Port = int(v.(int64))
 		case "host", "net":
@@ -387,6 +391,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
 			opts.Cluster.TLSConfig.RootCAs = opts.Cluster.TLSConfig.ClientCAs
 			opts.Cluster.TLSTimeout = tc.Timeout
+		case "cluster_advertise", "advertise":
+			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
 		case "connect_retries":
@@ -720,6 +726,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Host != "" {
 		opts.Host = flagOpts.Host
 	}
+	if flagOpts.ClientAdvertise != "" {
+		opts.ClientAdvertise = flagOpts.ClientAdvertise
+	}
 	if flagOpts.Username != "" {
 		opts.Username = flagOpts.Username
 	}
@@ -758,6 +767,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	}
 	if flagOpts.Cluster.ConnectRetries != 0 {
 		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
+	}
+	if flagOpts.Cluster.Advertise != "" {
+		opts.Cluster.Advertise = flagOpts.Cluster.Advertise
 	}
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
@@ -942,6 +954,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
+	fs.StringVar(&opts.ClientAdvertise, "client_advertise", "", "Client URL to advertise to other servers.")
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
@@ -974,6 +987,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
+	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
@@ -1171,6 +1185,7 @@ func overrideCluster(opts *Options) error {
 		opts.Cluster.Username = ""
 		opts.Cluster.Password = ""
 	}
+
 	return nil
 }
 
