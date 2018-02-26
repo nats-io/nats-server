@@ -29,6 +29,7 @@ import (
 type Info struct {
 	ID                string   `json:"server_id"`
 	Version           string   `json:"version"`
+	GitCommit         string   `json:"git_commit"`
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
@@ -118,6 +119,7 @@ func New(opts *Options) *Server {
 	info := Info{
 		ID:                genID(),
 		Version:           VERSION,
+		GitCommit:         gitCommit,
 		GoVersion:         runtime.Version(),
 		Host:              opts.Host,
 		Port:              opts.Port,
@@ -252,6 +254,10 @@ func (s *Server) logPid() error {
 func (s *Server) Start() {
 	s.Noticef("Starting nats-server version %s", VERSION)
 	s.Debugf("Go build version %s", s.info.GoVersion)
+	if gitCommit == "" {
+		gitCommit = "not set"
+	}
+	s.Noticef("Git commit [%s]", gitCommit)
 
 	// Avoid RACE between Start() and Shutdown()
 	s.mu.Lock()

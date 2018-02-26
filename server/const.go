@@ -17,6 +17,11 @@ const (
 	CommandReload = Command("reload")
 )
 
+var (
+	// gitCommit injected at build
+	gitCommit string
+)
+
 const (
 	// VERSION is the current version for the server.
 	VERSION = "1.0.4"
