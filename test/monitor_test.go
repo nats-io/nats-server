@@ -98,7 +98,7 @@ func TestNoMonitorPort(t *testing.T) {
 func testEndpointDataRace(endpoint string, t *testing.T) {
 	var doneWg sync.WaitGroup
 
-	url := fmt.Sprintf("http://localhost:%d/", MONITOR_PORT)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", MONITOR_PORT)
 
 	// Poll as fast as we can, while creating connections, publishing,
 	// and subscribing.

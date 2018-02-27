@@ -1326,17 +1326,29 @@ func (c *client) closeConnection() {
 	var (
 		routeClosed   bool
 		retryImplicit bool
+		connectURLs   []string
 	)
 	if c.route != nil {
 		routeClosed = c.route.closed
 		if !routeClosed {
 			retryImplicit = c.route.retry
 		}
+		connectURLs = c.route.connectURLs
 	}
 
 	c.mu.Unlock()
 
 	if srv != nil {
+		// This is a route that disconnected...
+		if len(connectURLs) > 0 {
+			// Unless disabled, possibly update the server's INFO protcol
+			// and send to clients that know how to handle async INFOs.
+			if !srv.getOpts().Cluster.NoAdvertise {
+				srv.removeClientConnectURLs(connectURLs)
+				srv.sendAsyncInfoToClients()
+			}
+		}
+
 		// Unregister
 		srv.removeClient(c)
 

@@ -237,6 +237,11 @@ func (c *clusterOption) Apply(server *Server) {
 	server.routeInfo.SSLRequired = tlsRequired
 	server.routeInfo.TLSVerify = tlsRequired
 	server.routeInfo.AuthRequired = c.newValue.Username != ""
+	if c.newValue.NoAdvertise {
+		server.routeInfo.ClientConnectURLs = nil
+	} else {
+		server.routeInfo.ClientConnectURLs = server.clientConnectURLs
+	}
 	server.setRouteInfoHostPortAndIP()
 	server.mu.Unlock()
 	server.Noticef("Reloaded: cluster")

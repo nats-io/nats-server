@@ -153,7 +153,9 @@ func TestGetConnectURLs(t *testing.T) {
 		s := New(opts)
 		defer s.Shutdown()
 
+		s.mu.Lock()
 		urls := s.getClientConnectURLs()
+		s.mu.Unlock()
 		if len(urls) == 0 {
 			t.Fatalf("Expected to get a list of urls, got none for listen addr: %v", opts.Host)
 		}
@@ -189,7 +191,9 @@ func TestGetConnectURLs(t *testing.T) {
 		s := New(opts)
 		defer s.Shutdown()
 
+		s.mu.Lock()
 		urls := s.getClientConnectURLs()
+		s.mu.Unlock()
 		if len(urls) != 1 {
 			t.Fatalf("Expected one URL, got %v", urls)
 		}
@@ -220,7 +224,9 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 	s := New(opts)
 	defer s.Shutdown()
 
+	s.mu.Lock()
 	urls := s.getClientConnectURLs()
+	s.mu.Unlock()
 	if len(urls) != 1 {
 		t.Fatalf("Expected to get one url, got none: %v with ClientAdvertise %v",
 			opts.Host, opts.ClientAdvertise)
@@ -232,7 +238,9 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 
 	opts.ClientAdvertise = "nats.example.com:7777"
 	s = New(opts)
+	s.mu.Lock()
 	urls = s.getClientConnectURLs()
+	s.mu.Unlock()
 	if len(urls) != 1 {
 		t.Fatalf("Expected to get one url, got none: %v with ClientAdvertise %v",
 			opts.Host, opts.ClientAdvertise)
