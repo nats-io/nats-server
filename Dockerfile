@@ -1,6 +1,6 @@
-FROM golang:1.9.2
+FROM golang:1.9.4
 
-MAINTAINER Derek Collison <derek@apcera.com>
+MAINTAINER Ivan Kozlovic <ivan@synadia.com>
 
 COPY . /go/src/github.com/nats-io/gnatsd
 WORKDIR /go/src/github.com/nats-io/gnatsd
