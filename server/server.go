@@ -86,6 +86,7 @@ type Server struct {
 		trace  int32
 		debug  int32
 	}
+	clientConnectURLs []string
 
 	// These store the real client/cluster listen ports. They are
 	// required during config reload to reset the Options (after
@@ -441,6 +442,8 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		s.mu.Unlock()
 		return
 	}
+	// Keep track of client connect URLs. We may need them later.
+	s.clientConnectURLs = s.getClientConnectURLs()
 	s.mu.Unlock()
 
 	// Let the caller know that we are ready
@@ -810,24 +813,48 @@ func (s *Server) createClient(conn net.Conn) *client {
 	return c
 }
 
+// addClientConnectURLs adds the given array of urls to the server's
+// INFO.ClientConnectURLs array. The server INFO JSON is regenerated.
+// Note that a check is made to ensure that given URLs are not
+// already present. So the INFO JSON is regenerated only if new ULRs
+// were added.
+func (s *Server) addClientConnectURLs(urls []string) {
+	s.updateServerINFO(urls, true)
+}
+
+// removeClientConnectURLs removes the given array of urls from the server's
+// INFO.ClientConnectURLs array. The server INFO JSON is regenerated.
+func (s *Server) removeClientConnectURLs(urls []string) {
+	s.updateServerINFO(urls, false)
+}
+
 // updateServerINFO updates the server's Info object with the given
-// array of URLs and re-generate the infoJSON byte array, only if the
-// given URLs were not already recorded.
-func (s *Server) updateServerINFO(urls []string) {
+// array of URLs and re-generate the infoJSON byte array.
+func (s *Server) updateServerINFO(urls []string, add bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Will be set to true if we alter the server's Info object.
 	wasUpdated := false
+	remove := !add
 	for _, url := range urls {
-		if _, present := s.info.clientConnectURLs[url]; !present {
-
+		_, present := s.info.clientConnectURLs[url]
+		if add && !present {
 			s.info.clientConnectURLs[url] = struct{}{}
-			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
+			wasUpdated = true
+		} else if remove && present {
+			delete(s.info.clientConnectURLs, url)
 			wasUpdated = true
 		}
 	}
 	if wasUpdated {
+		// Recreate the info.ClientConnectURL array from the map
+		s.info.ClientConnectURLs = s.info.ClientConnectURLs[:0]
+		// Add this server client connect ULRs first...
+		s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, s.clientConnectURLs...)
+		for url := range s.info.clientConnectURLs {
+			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
+		}
 		s.generateServerInfoJSON()
 	}
 }
@@ -1026,13 +1053,11 @@ func (s *Server) startGoRoutine(f func()) {
 // getClientConnectURLs returns suitable URLs for clients to connect to the listen
 // port based on the server options' Host and Port. If the Host corresponds to
 // "any" interfaces, this call returns the list of resolved IP addresses.
-// If ClientAdvertise is set, returns the client advertise host and port
+// If ClientAdvertise is set, returns the client advertise host and port.
+// The server lock is assumed held on entry.
 func (s *Server) getClientConnectURLs() []string {
 	// Snapshot server options.
 	opts := s.getOpts()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	urls := make([]string, 0, 1)
 

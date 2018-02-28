@@ -8,13 +8,11 @@ import (
 	"io/ioutil"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"reflect"
-	"strconv"
 
 	"github.com/nats-io/gnatsd/server"
 )
@@ -655,13 +653,19 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			buf := routeExpect(infoRe)
 			info := server.Info{}
 			if err := json.Unmarshal(buf[4:], &info); err != nil {
-				t.Fatalf("Could not unmarshal route info: %v", err)
+				stackFatalf(t, "Could not unmarshal route info: %v", err)
 			}
-			if len(info.ClientConnectURLs) == 0 {
-				t.Fatal("Expected a list of URLs, got none")
-			}
-			if info.ClientConnectURLs[0] != clientURL {
-				t.Fatalf("Expected ClientConnectURLs to be %q, got %q", clientURL, info.ClientConnectURLs[0])
+			if opts.Cluster.NoAdvertise {
+				if len(info.ClientConnectURLs) != 0 {
+					stackFatalf(t, "Expected ClientConnectURLs to be empty, got %v", info.ClientConnectURLs)
+				}
+			} else {
+				if len(info.ClientConnectURLs) == 0 {
+					stackFatalf(t, "Expected a list of URLs, got none")
+				}
+				if info.ClientConnectURLs[0] != clientURL {
+					stackFatalf(t, "Expected ClientConnectURLs to be %q, got %q", clientURL, info.ClientConnectURLs[0])
+				}
 			}
 
 			return rc, routeSend, routeExpect
@@ -675,12 +679,33 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			routeInfo.ClientConnectURLs = urls
 			b, err := json.Marshal(routeInfo)
 			if err != nil {
-				t.Fatalf("Could not marshal test route info: %v", err)
+				stackFatalf(t, "Could not marshal test route info: %v", err)
 			}
 			infoJSON := fmt.Sprintf("INFO %s\r\n", b)
 			routeSend(infoJSON)
 			routeSend("PING\r\n")
 			routeExpect(pongRe)
+		}
+
+		checkClientConnectURLS := func(urls, expected []string) {
+			// Order of array is not guaranteed.
+			ok := false
+			if len(urls) == len(expected) {
+				m := make(map[string]struct{}, len(expected))
+				for _, url := range expected {
+					m[url] = struct{}{}
+				}
+				ok = true
+				for _, url := range urls {
+					if _, present := m[url]; !present {
+						ok = false
+						break
+					}
+				}
+			}
+			if !ok {
+				stackFatalf(t, "Expected ClientConnectURLs to be %v, got %v", expected, urls)
+			}
 		}
 
 		checkINFOReceived := func(client net.Conn, clientExpect expectFun, expectedURLs []string) {
@@ -691,11 +716,9 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			buf := clientExpect(infoRe)
 			info := server.Info{}
 			if err := json.Unmarshal(buf[4:], &info); err != nil {
-				t.Fatalf("Could not unmarshal route info: %v", err)
+				stackFatalf(t, "Could not unmarshal route info: %v", err)
 			}
-			if !reflect.DeepEqual(info.ClientConnectURLs, expectedURLs) {
-				t.Fatalf("Expected ClientConnectURLs to be %v, got %v", expectedURLs, info.ClientConnectURLs)
-			}
+			checkClientConnectURLS(info.ClientConnectURLs, expectedURLs)
 		}
 
 		// Create a route
@@ -703,32 +726,51 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		defer rc.Close()
 
 		// Send an INFO with single URL
-		routeConnectURLs := []string{"localhost:5222"}
-		sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+		routeClientConnectURLs := []string{"127.0.0.1:5222"}
+		sendRouteINFO(routeSend, routeExpect, routeClientConnectURLs)
 
 		// Expect nothing for old clients
 		expectNothing(t, oldClient)
 
-		// Expect new client to receive an INFO (unless disabled)
-		checkINFOReceived(newClient, newClientExpect, routeConnectURLs)
+		// We expect to get the one from the server we connect to and the other route.
+		expectedURLs := []string{clientURL, routeClientConnectURLs[0]}
 
-		// Disconnect and reconnect the route.
+		// Expect new client to receive an INFO (unless disabled)
+		checkINFOReceived(newClient, newClientExpect, expectedURLs)
+
+		// Disconnect the route
 		rc.Close()
+
+		// Expect nothing for old clients
+		expectNothing(t, oldClient)
+
+		// Expect new client to receive an INFO (unless disabled).
+		// The content will now have the disconnected route ClientConnectURLs
+		// removed from the INFO. So it should be the one from the server the
+		// client is connected to.
+		checkINFOReceived(newClient, newClientExpect, []string{clientURL})
+
+		// Reconnect the route.
 		rc, routeSend, routeExpect = createRoute()
 		defer rc.Close()
 
 		// Resend the same route INFO json. The server will now send
-		// the INFO even when there is no change.
-		sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+		// the INFO since the disconnected route ClientConnectURLs was
+		// removed in previous step.
+		sendRouteINFO(routeSend, routeExpect, routeClientConnectURLs)
 
 		// Expect nothing for old clients
 		expectNothing(t, oldClient)
 
 		// Expect new client to receive an INFO (unless disabled)
-		checkINFOReceived(newClient, newClientExpect, routeConnectURLs)
+		checkINFOReceived(newClient, newClientExpect, expectedURLs)
 
 		// Now stop the route and restart with an additional URL
 		rc.Close()
+		// On route disconnect, clients will receive an updated INFO
+		expectNothing(t, oldClient)
+		checkINFOReceived(newClient, newClientExpect, []string{clientURL})
+
 		rc, routeSend, routeExpect = createRoute()
 		defer rc.Close()
 
@@ -742,15 +784,16 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		clientNoPingSend, clientNoPingExpect := setupConnWithProto(t, clientNoPing, clientProtoInfo)
 
 		// The route now has an additional URL
-		routeConnectURLs = append(routeConnectURLs, "localhost:7777")
+		routeClientConnectURLs = append(routeClientConnectURLs, "127.0.0.1:7777")
+		expectedURLs = append(expectedURLs, "127.0.0.1:7777")
 		// This causes the server to add the route and send INFO to clients
-		sendRouteINFO(routeSend, routeExpect, routeConnectURLs)
+		sendRouteINFO(routeSend, routeExpect, routeClientConnectURLs)
 
 		// Expect nothing for old clients
 		expectNothing(t, oldClient)
 
 		// Expect new client to receive an INFO, and verify content as expected.
-		checkINFOReceived(newClient, newClientExpect, routeConnectURLs)
+		checkINFOReceived(newClient, newClientExpect, expectedURLs)
 
 		// Expect nothing yet for client that did not send the PING
 		expectNothing(t, clientNoPing)
@@ -769,7 +812,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		if !pongRe.Match(pongBuf) {
 			t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
 		}
-		checkINFOReceived(clientNoPing, clientNoPingExpect, routeConnectURLs)
+		checkINFOReceived(clientNoPing, clientNoPingExpect, expectedURLs)
 
 		// Have the client that did not send the connect do it now
 		clientNoConnectSend, clientNoConnectExpect := setupConnWithProto(t, clientNoConnect, clientProtoInfo)
@@ -786,7 +829,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		if !pongRe.Match(pongBuf) {
 			t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
 		}
-		checkINFOReceived(clientNoConnect, clientNoConnectExpect, routeConnectURLs)
+		checkINFOReceived(clientNoConnect, clientNoConnectExpect, expectedURLs)
 
 		// Create a client connection and verify content of initial INFO contains array
 		// (but empty if no advertise option is set)
@@ -803,12 +846,44 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			if len(sinfo.ClientConnectURLs) != 0 {
 				t.Fatalf("Expected ClientConnectURLs to be empty, got %v", sinfo.ClientConnectURLs)
 			}
-		} else if !reflect.DeepEqual(sinfo.ClientConnectURLs, routeConnectURLs) {
-			t.Fatalf("Expected ClientConnectURLs to be %v, got %v", routeConnectURLs, sinfo.ClientConnectURLs)
+		} else {
+			checkClientConnectURLS(sinfo.ClientConnectURLs, expectedURLs)
 		}
+
+		// Add a new route
+		routeID = "Server-C"
+		rc2, route2Send, route2Expect := createRoute()
+		defer rc2.Close()
+
+		// Send an INFO with single URL
+		rc2ConnectURLs := []string{"127.0.0.1:8888"}
+		sendRouteINFO(route2Send, route2Expect, rc2ConnectURLs)
+
+		// This is the combined client connect URLs array
+		totalConnectURLs := expectedURLs
+		totalConnectURLs = append(totalConnectURLs, rc2ConnectURLs...)
+
+		// Expect nothing for old clients
+		expectNothing(t, oldClient)
+
+		// Expect new client to receive an INFO (unless disabled)
+		checkINFOReceived(newClient, newClientExpect, totalConnectURLs)
+
+		// Make first route disconnect
+		rc.Close()
+
+		// Expect nothing for old clients
+		expectNothing(t, oldClient)
+
+		// Expect new client to receive an INFO (unless disabled)
+		// The content should be the server client is connected to and the last route
+		checkINFOReceived(newClient, newClientExpect, []string{"127.0.0.1:4242", "127.0.0.1:8888"})
 	}
 
 	opts := LoadConfig("./configs/cluster.conf")
+	// For this test, be explicit about listen spec.
+	opts.Host = "127.0.0.1"
+	opts.Port = 4242
 	for i := 0; i < 2; i++ {
 		if i == 1 {
 			opts.Cluster.NoAdvertise = true

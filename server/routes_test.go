@@ -626,7 +626,6 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	// cluster's Host to localhost so it works on Windows too, since on
 	// Windows, a client can't use 0.0.0.0 in a connect.
 	opts.Cluster.Host = "localhost"
-	opts.Cluster.NoAdvertise = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -648,6 +647,20 @@ func TestClientConnectToRoutePort(t *testing.T) {
 		defer nc.Close()
 		if nc.ConnectedUrl() != clientURL {
 			t.Fatalf("Expected client to be connected to %v, got %v", clientURL, nc.ConnectedUrl())
+		}
+	}
+
+	s.Shutdown()
+	// Try again with NoAdvertise and this time, the client should fail to connect.
+	opts.Cluster.NoAdvertise = true
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	for i := 0; i < total; i++ {
+		nc, err := nats.Connect(url)
+		if err == nil {
+			nc.Close()
+			t.Fatal("Expected error on connect, got none")
 		}
 	}
 }

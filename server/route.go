@@ -39,6 +39,7 @@ type route struct {
 	authRequired bool
 	tlsRequired  bool
 	closed       bool
+	connectURLs  []string
 }
 
 type connectInfo struct {
@@ -164,10 +165,10 @@ func (c *client) processRouteInfo(info *Info) {
 			// Now let the known servers know about this new route
 			s.forwardNewRouteInfoToKnownServers(info)
 		}
-		// Unless disabled, possibly update the server's INFO protcol
+		// Unless disabled, possibly update the server's INFO protocol
 		// and send to clients that know how to handle async INFOs.
 		if !s.getOpts().Cluster.NoAdvertise {
-			s.updateServerINFO(info.ClientConnectURLs)
+			s.addClientConnectURLs(info.ClientConnectURLs)
 			s.sendAsyncInfoToClients()
 		}
 	} else {
@@ -181,7 +182,8 @@ func (c *client) processRouteInfo(info *Info) {
 func (s *Server) sendAsyncInfoToClients() {
 	s.mu.Lock()
 	// If there are no clients supporting async INFO protocols, we are done.
-	if s.cproto == 0 {
+	// Also don't send if we are shutting down...
+	if s.cproto == 0 || s.shutdown {
 		s.mu.Unlock()
 		return
 	}
@@ -538,6 +540,9 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 
 		s.routes[c.cid] = c
 		s.remotes[id] = c
+		c.mu.Lock()
+		c.route.connectURLs = info.ClientConnectURLs
+		c.mu.Unlock()
 
 		// we don't need to send if the only route is the one we just accepted.
 		sendInfo = len(s.routes) > 1
@@ -627,11 +632,6 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	// Get all possible URLs (when server listens to 0.0.0.0).
-	// This is going to be sent to other Servers, so that they can let their
-	// clients know about us.
-	clientConnectURLs := s.getClientConnectURLs()
-
 	// Snapshot server options.
 	port := opts.Cluster.Port
 
@@ -651,14 +651,17 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
-		ID:                s.info.ID,
-		Version:           s.info.Version,
-		AuthRequired:      false,
-		TLSRequired:       tlsReq,
-		SSLRequired:       tlsReq,
-		TLSVerify:         tlsReq,
-		MaxPayload:        s.info.MaxPayload,
-		ClientConnectURLs: clientConnectURLs,
+		ID:           s.info.ID,
+		Version:      s.info.Version,
+		AuthRequired: false,
+		TLSRequired:  tlsReq,
+		SSLRequired:  tlsReq,
+		TLSVerify:    tlsReq,
+		MaxPayload:   s.info.MaxPayload,
+	}
+	// Set this if only if advertise is not disabled
+	if !opts.Cluster.NoAdvertise {
+		info.ClientConnectURLs = s.clientConnectURLs
 	}
 	// If we have selected a random port...
 	if port == 0 {

@@ -1374,6 +1374,15 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	}
 }
 
+func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
+	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+		stackFatalf(t, "Error creating config file: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		stackFatalf(t, "Error on reload: %v", err)
+	}
+}
+
 func TestConfigReloadClusterAdvertise(t *testing.T) {
 	conf := "routeadv.conf"
 	if err := ioutil.WriteFile(conf, []byte(`
@@ -1395,15 +1404,6 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 
 	orgClusterPort := s.ClusterAddr().Port
 
-	updateConfig := func(content string) {
-		if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
-			stackFatalf(t, "Error creating config file: %v", err)
-		}
-		if err := s.Reload(); err != nil {
-			stackFatalf(t, "Error on reload: %v", err)
-		}
-	}
-
 	verify := func(expectedHost string, expectedPort int, expectedIP string) {
 		s.mu.Lock()
 		routeInfo := s.routeInfo
@@ -1424,7 +1424,7 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 	}
 
 	// Update config with cluster_advertise
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	cluster: {
 		listen: "0.0.0.0:-1"
@@ -1434,7 +1434,7 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 	verify("me", 1, "nats-route://me:1/")
 
 	// Update config with cluster_advertise (no port specified)
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	cluster: {
 		listen: "0.0.0.0:-1"
@@ -1444,7 +1444,7 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 	verify("me", orgClusterPort, fmt.Sprintf("nats-route://me:%d/", orgClusterPort))
 
 	// Update config with cluster_advertise (-1 port specified)
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	cluster: {
 		listen: "0.0.0.0:-1"
@@ -1454,13 +1454,73 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 	verify("me", orgClusterPort, fmt.Sprintf("nats-route://me:%d/", orgClusterPort))
 
 	// Update to remove cluster_advertise
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	cluster: {
 		listen: "0.0.0.0:-1"
 	}
 	`)
 	verify("0.0.0.0", orgClusterPort, "")
+}
+
+func TestConfigReloadClusterNoAdvertise(t *testing.T) {
+	conf := "routeadv.conf"
+	if err := ioutil.WriteFile(conf, []byte(`
+	listen: "0.0.0.0:-1"
+	client_advertise: "me:1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+	}
+	`), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoLog = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	s.mu.Lock()
+	ccurls := s.routeInfo.ClientConnectURLs
+	s.mu.Unlock()
+	if len(ccurls) != 1 && ccurls[0] != "me:1" {
+		t.Fatalf("Unexpected routeInfo.ClientConnectURLS: %v", ccurls)
+	}
+
+	// Update config with no_advertise
+	reloadUpdateConfig(t, s, conf, `
+	listen: "0.0.0.0:-1"
+	client_advertise: "me:1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+		no_advertise: true
+	}
+	`)
+
+	s.mu.Lock()
+	ccurls = s.routeInfo.ClientConnectURLs
+	s.mu.Unlock()
+	if len(ccurls) != 0 {
+		t.Fatalf("Unexpected routeInfo.ClientConnectURLS: %v", ccurls)
+	}
+
+	// Update config with cluster_advertise (no port specified)
+	reloadUpdateConfig(t, s, conf, `
+	listen: "0.0.0.0:-1"
+	client_advertise: "me:1"
+	cluster: {
+		listen: "0.0.0.0:-1"
+	}
+	`)
+	s.mu.Lock()
+	ccurls = s.routeInfo.ClientConnectURLs
+	s.mu.Unlock()
+	if len(ccurls) != 1 && ccurls[0] != "me:1" {
+		t.Fatalf("Unexpected routeInfo.ClientConnectURLS: %v", ccurls)
+	}
 }
 
 func TestConfigReloadClientAdvertise(t *testing.T) {
@@ -1478,15 +1538,6 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 	defer s.Shutdown()
 
 	orgPort := s.Addr().(*net.TCPAddr).Port
-
-	updateConfig := func(content string) {
-		if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
-			stackFatalf(t, "Error creating config file: %v", err)
-		}
-		if err := s.Reload(); err != nil {
-			stackFatalf(t, "Error on reload: %v", err)
-		}
-	}
 
 	verify := func(expectedHost string, expectedPort int) {
 		s.mu.Lock()
@@ -1508,21 +1559,21 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 	}
 
 	// Update config with ClientAdvertise (port specified)
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	client_advertise: "me:1"
 	`)
 	verify("me", 1)
 
 	// Update config with ClientAdvertise (no port specified)
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	client_advertise: "me"
 	`)
 	verify("me", orgPort)
 
 	// Update config with ClientAdvertise (-1 port specified)
-	updateConfig(`
+	reloadUpdateConfig(t, s, conf, `
 	listen: "0.0.0.0:-1"
 	client_advertise: "me:-1"
 	`)
@@ -1530,7 +1581,7 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 
 	// Now remove ClientAdvertise to check that original values
 	// are restored.
-	updateConfig(`listen: "0.0.0.0:-1"`)
+	reloadUpdateConfig(t, s, conf, `listen: "0.0.0.0:-1"`)
 	verify("0.0.0.0", orgPort)
 }
 
