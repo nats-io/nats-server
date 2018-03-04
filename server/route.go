@@ -564,6 +564,9 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		remote.mu.Lock()
 		// r will be not nil if c.route.didSolicit was true
 		if r != nil {
+			// If we upgrade to solicited, we still want to keep the remote's
+			// connectURLs. So transfer those.
+			r.connectURLs = remote.route.connectURLs
 			remote.route = r
 		}
 		// This is to mitigate the issue where both sides add the route
