@@ -3,6 +3,7 @@
 package test
 
 import (
+	"net"
 	"runtime"
 	"testing"
 	"time"
@@ -22,8 +23,9 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 func TestGoServerShutdownWithClients(t *testing.T) {
 	base := runtime.NumGoroutine()
 	s := RunDefaultServer()
+	addr := s.Addr().(*net.TCPAddr)
 	for i := 0; i < 50; i++ {
-		createClientConn(t, "localhost", 4222)
+		createClientConn(t, "localhost", addr.Port)
 	}
 	s.Shutdown()
 	// Wait longer for client connections
