@@ -877,13 +877,13 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 
 		// Expect new client to receive an INFO (unless disabled)
 		// The content should be the server client is connected to and the last route
-		checkINFOReceived(newClient, newClientExpect, []string{"127.0.0.1:4242", "127.0.0.1:8888"})
+		checkINFOReceived(newClient, newClientExpect, []string{"127.0.0.1:5242", "127.0.0.1:8888"})
 	}
 
 	opts := LoadConfig("./configs/cluster.conf")
 	// For this test, be explicit about listen spec.
 	opts.Host = "127.0.0.1"
-	opts.Port = 4242
+	opts.Port = 5242
 	for i := 0; i < 2; i++ {
 		if i == 1 {
 			opts.Cluster.NoAdvertise = true
