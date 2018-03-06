@@ -168,8 +168,7 @@ func (c *client) processRouteInfo(info *Info) {
 		// Unless disabled, possibly update the server's INFO protocol
 		// and send to clients that know how to handle async INFOs.
 		if !s.getOpts().Cluster.NoAdvertise {
-			s.addClientConnectURLs(info.ClientConnectURLs)
-			s.sendAsyncInfoToClients()
+			s.addClientConnectURLsAndSendINFOToClients(info.ClientConnectURLs)
 		}
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
@@ -179,46 +178,24 @@ func (c *client) processRouteInfo(info *Info) {
 
 // sendAsyncInfoToClients sends an INFO protocol to all
 // connected clients that accept async INFO updates.
+// The server lock is held on entry.
 func (s *Server) sendAsyncInfoToClients() {
-	s.mu.Lock()
 	// If there are no clients supporting async INFO protocols, we are done.
 	// Also don't send if we are shutting down...
 	if s.cproto == 0 || s.shutdown {
-		s.mu.Unlock()
 		return
 	}
 
-	// Capture under lock
-	proto := s.infoJSON
-
-	// Make a copy of ALL clients so we can release server lock while
-	// sending the protocol to clients. We could check the conditions
-	// (proto support, first PONG sent) here and so have potentially
-	// a limited number of clients, but that would mean grabbing the
-	// client's lock here, which we don't want since we would still
-	// need it in the second loop.
-	clients := make([]*client, 0, len(s.clients))
 	for _, c := range s.clients {
-		clients = append(clients, c)
-	}
-	s.mu.Unlock()
-
-	for _, c := range clients {
 		c.mu.Lock()
-		// If server did not yet receive the CONNECT protocol, check later
-		// when sending the first PONG.
-		if !c.flags.isSet(connectReceived) {
-			c.flags.set(infoUpdated)
-		} else if c.opts.Protocol >= ClientProtoInfo {
-			// Send only if first PONG was sent
-			if c.flags.isSet(firstPongSent) {
-				// sendInfo takes care of checking if the connection is still
-				// valid or not, so don't duplicate tests here.
-				c.sendInfo(proto)
-			} else {
-				// Otherwise, notify that INFO has changed and check later.
-				c.flags.set(infoUpdated)
-			}
+		// Here, we are going to send only to the clients that are fully
+		// registered (server has received CONNECT and first PING). For
+		// clients that are not at this stage, this will happen in the
+		// processing of the first PING (see client.processPing)
+		if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
+			// sendInfo takes care of checking if the connection is still
+			// valid or not, so don't duplicate tests here.
+			c.sendInfo(s.infoJSON)
 		}
 		c.mu.Unlock()
 	}

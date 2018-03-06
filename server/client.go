@@ -55,7 +55,6 @@ type clientFlag byte
 const (
 	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
 	firstPongSent                            // The first PONG has been sent
-	infoUpdated                              // The server's Info object has changed before first PONG was sent
 	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
 )
 
@@ -80,10 +79,12 @@ func (cf *clientFlag) setIfNotSet(c clientFlag) bool {
 	return false
 }
 
+// Commenting out for now otherwise megacheck complains.
+// We may need that in the future.
 // clear unset the flag (would be equivalent to set the boolean to false)
-func (cf *clientFlag) clear(c clientFlag) {
-	*cf &= ^c
-}
+// func (cf *clientFlag) clear(c clientFlag) {
+// 	*cf &= ^c
+// }
 
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
@@ -579,37 +580,50 @@ func (c *client) processPing() {
 		return
 	}
 	c.traceOutOp("PONG", nil)
-	err := c.sendProto([]byte("PONG\r\n"), true)
-	if err != nil {
+	if err := c.sendProto([]byte("PONG\r\n"), true); err != nil {
 		c.clearConnection()
 		c.Debugf("Error on Flush, error %s", err.Error())
+		c.mu.Unlock()
+		return
 	}
-	srv := c.srv
-	sendUpdateINFO := false
-	// Check if this is the first PONG, if so...
-	if c.flags.setIfNotSet(firstPongSent) {
-		// Check if server should send an async INFO protocol to the client
-		if c.opts.Protocol >= ClientProtoInfo &&
-			srv != nil && c.flags.isSet(infoUpdated) {
-			sendUpdateINFO = true
-		}
-		// We can now clear the flag
-		c.flags.clear(infoUpdated)
+	// The CONNECT should have been received, but make sure it
+	// is so before proceeding
+	if !c.flags.isSet(connectReceived) {
+		c.mu.Unlock()
+		return
+	}
+	// If we are here, the CONNECT has been received so we know
+	// if this client supports async INFO or not.
+	var (
+		checkClusterChange bool
+		srv                = c.srv
+	)
+	// For older clients, just flip the firstPongSent flag if not already
+	// set and we are done.
+	if c.opts.Protocol < ClientProtoInfo || srv == nil {
+		c.flags.setIfNotSet(firstPongSent)
+	} else {
+		// This is a client that supports async INFO protocols.
+		// If this is the first PING (so firstPongSent is not set yet),
+		// we will need to check if there was a change in cluster topology.
+		checkClusterChange = !c.flags.isSet(firstPongSent)
 	}
 	c.mu.Unlock()
 
-	// Some clients send an initial PING as part of the synchronous connect process.
-	// They can't be receiving anything until the first PONG is received.
-	// So we delay the possible updated INFO after this point.
-	if sendUpdateINFO {
+	if checkClusterChange {
 		srv.mu.Lock()
-		// Use the cached protocol
-		proto := srv.infoJSON
-		srv.mu.Unlock()
-
 		c.mu.Lock()
-		c.sendInfo(proto)
+		// Now that we are under both locks, we can flip the flag.
+		// This prevents sendAsyncInfoToClients() and and code here
+		// to send a double INFO protocol.
+		c.flags.set(firstPongSent)
+		// If there was a cluster update since this client was created,
+		// send an updated INFO protocol now.
+		if srv.lastCURLsUpdate >= c.start.UnixNano() {
+			c.sendInfo(srv.infoJSON)
+		}
 		c.mu.Unlock()
+		srv.mu.Unlock()
 	}
 }
 
@@ -1344,8 +1358,7 @@ func (c *client) closeConnection() {
 			// Unless disabled, possibly update the server's INFO protcol
 			// and send to clients that know how to handle async INFOs.
 			if !srv.getOpts().Cluster.NoAdvertise {
-				srv.removeClientConnectURLs(connectURLs)
-				srv.sendAsyncInfoToClients()
+				srv.removeClientConnectURLsAndSendINFOToClients(connectURLs)
 			}
 		}
 
