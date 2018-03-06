@@ -87,6 +87,7 @@ type Server struct {
 		debug  int32
 	}
 	clientConnectURLs []string
+	lastCURLsUpdate   int64
 
 	// These store the real client/cluster listen ports. They are
 	// required during config reload to reset the Options (after
@@ -814,24 +815,29 @@ func (s *Server) createClient(conn net.Conn) *client {
 	return c
 }
 
-// addClientConnectURLs adds the given array of urls to the server's
-// INFO.ClientConnectURLs array. The server INFO JSON is regenerated.
+// Adds the given array of urls to the server's INFO.ClientConnectURLs
+// array. The server INFO JSON is regenerated.
 // Note that a check is made to ensure that given URLs are not
 // already present. So the INFO JSON is regenerated only if new ULRs
 // were added.
-func (s *Server) addClientConnectURLs(urls []string) {
-	s.updateServerINFO(urls, true)
+// If there was a change, an INFO protocol is sent to registered clients
+// that support async INFO protocols.
+func (s *Server) addClientConnectURLsAndSendINFOToClients(urls []string) {
+	s.updateServerINFOAndSendINFOToClients(urls, true)
 }
 
-// removeClientConnectURLs removes the given array of urls from the server's
-// INFO.ClientConnectURLs array. The server INFO JSON is regenerated.
-func (s *Server) removeClientConnectURLs(urls []string) {
-	s.updateServerINFO(urls, false)
+// Removes the given array of urls from the server's INFO.ClientConnectURLs
+// array. The server INFO JSON is regenerated if needed.
+// If there was a change, an INFO protocol is sent to registered clients
+// that support async INFO protocols.
+func (s *Server) removeClientConnectURLsAndSendINFOToClients(urls []string) {
+	s.updateServerINFOAndSendINFOToClients(urls, false)
 }
 
-// updateServerINFO updates the server's Info object with the given
-// array of URLs and re-generate the infoJSON byte array.
-func (s *Server) updateServerINFO(urls []string, add bool) {
+// Updates the server's Info object with the given array of URLs and re-generate
+// the infoJSON byte array, then send an (async) INFO protocol to clients that
+// support it.
+func (s *Server) updateServerINFOAndSendINFOToClients(urls []string, add bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -857,6 +863,10 @@ func (s *Server) updateServerINFO(urls []string, add bool) {
 			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
 		}
 		s.generateServerInfoJSON()
+		// Update the time of this update
+		s.lastCURLsUpdate = time.Now().UnixNano()
+		// Send to all registered clients that support async INFO protocols.
+		s.sendAsyncInfoToClients()
 	}
 }
 

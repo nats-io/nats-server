@@ -729,57 +729,132 @@ func TestRoutesToEachOther(t *testing.T) {
 	}
 }
 
-func TestConnectULRsWithRoutesToEachOther(t *testing.T) {
-	optsA := DefaultOptions()
-	optsA.Host = "127.0.0.1"
-	optsA.Cluster.Port = 7246
-	optsA.Routes = RoutesFromStr("nats://127.0.0.1:7247")
+func wait(ch chan bool) error {
+	select {
+	case <-ch:
+		return nil
+	case <-time.After(5 * time.Second):
+	}
+	return fmt.Errorf("timeout")
+}
 
-	optsB := DefaultOptions()
-	optsB.Host = "127.0.0.1"
-	optsB.Cluster.Port = 7247
-	optsB.Routes = RoutesFromStr("nats://127.0.0.1:7246")
+func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
+	s1Opts := DefaultOptions()
+	s1Opts.Host = "127.0.0.1"
+	s1Opts.Port = 4222
+	s1Opts.Cluster.Host = "127.0.0.1"
+	s1Opts.Cluster.Port = 6222
+	s1Opts.Routes = RoutesFromStr("nats://127.0.0.1:6223,nats://127.0.0.1:6224")
+	s1 := RunServer(s1Opts)
+	defer s1.Shutdown()
 
-	// Start servers with go routines to increase change of
-	// each server connecting to each other at the same time.
-	srvA := New(optsA)
-	defer srvA.Shutdown()
+	s1Url := "nats://127.0.0.1:4222"
+	s2Url := "nats://127.0.0.1:4223"
+	s3Url := "nats://127.0.0.1:4224"
 
-	srvB := New(optsB)
-	defer srvB.Shutdown()
-
-	go srvA.Start()
-	go srvB.Start()
-
-	// Wait for cluster to be formed
-	checkClusterFormed(t, srvA, srvB)
-
-	// Connect to serverB
-	url := fmt.Sprintf("nats://%s", srvB.Addr().String())
-	nc, err := nats.Connect(url)
+	ch := make(chan bool, 1)
+	chch := make(chan bool, 1)
+	connHandler := func(_ *nats.Conn) {
+		chch <- true
+	}
+	nc, err := nats.Connect(s1Url,
+		nats.ReconnectHandler(connHandler),
+		nats.DiscoveredServersHandler(func(_ *nats.Conn) {
+			ch <- true
+		}))
 	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc.Close()
-	ds := nc.Servers()
-	if len(ds) != 2 {
-		t.Fatalf("Expected 2 servers, got %v", ds)
+		t.Fatalf("Error on connect")
 	}
 
-	// Shutdown server A and make sure that we are notfied
-	// that server A is no longer running.
-	srvA.Shutdown()
-	timeout := time.Now().Add(5 * time.Second)
-	ok := false
-	for time.Now().Before(timeout) {
-		ds = nc.Servers()
-		if len(ds) == 1 {
-			ok = true
-			break
+	s2Opts := DefaultOptions()
+	s2Opts.Host = "127.0.0.1"
+	s2Opts.Port = s1Opts.Port + 1
+	s2Opts.Cluster.Host = "127.0.0.1"
+	s2Opts.Cluster.Port = 6223
+	s2Opts.Routes = RoutesFromStr("nats://127.0.0.1:6222,nats://127.0.0.1:6224")
+	s2 := RunServer(s2Opts)
+	defer s2.Shutdown()
+
+	// Wait to be notified
+	if err := wait(ch); err != nil {
+		t.Fatal("New server callback was not invoked")
+	}
+
+	checkPool := func(expected []string) {
+		// Don't use discovered here, but Servers to have the full list.
+		// Also, there may be cases where the mesh is not formed yet,
+		// so try again on failure.
+		var (
+			ds      []string
+			timeout = time.Now().Add(5 * time.Second)
+		)
+		for time.Now().Before(timeout) {
+			ds = nc.Servers()
+			if len(ds) == len(expected) {
+				m := make(map[string]struct{}, len(ds))
+				for _, url := range ds {
+					m[url] = struct{}{}
+				}
+				ok := true
+				for _, url := range expected {
+					if _, present := m[url]; !present {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		time.Sleep(50 * time.Millisecond)
+		stackFatalf(t, "Expected %v, got %v", expected, ds)
 	}
-	if !ok {
-		t.Fatalf("List of servers should be only 1, got %v", ds)
+	// Verify that we now know about s2
+	checkPool([]string{s1Url, s2Url})
+
+	s3Opts := DefaultOptions()
+	s3Opts.Host = "127.0.0.1"
+	s3Opts.Port = s2Opts.Port + 1
+	s3Opts.Cluster.Host = "127.0.0.1"
+	s3Opts.Cluster.Port = 6224
+	s3Opts.Routes = RoutesFromStr("nats://127.0.0.1:6222,nats://127.0.0.1:6223")
+	s3 := RunServer(s3Opts)
+	defer s3.Shutdown()
+
+	// Wait to be notified
+	if err := wait(ch); err != nil {
+		t.Fatal("New server callback was not invoked")
 	}
+	// Verify that we now know about s3
+	checkPool([]string{s1Url, s2Url, s3Url})
+
+	// Stop s1. Since this was passed to the Connect() call, this one should
+	// still be present.
+	s1.Shutdown()
+	// Wait for reconnect
+	if err := wait(chch); err != nil {
+		t.Fatal("Reconnect handler not invoked")
+	}
+	checkPool([]string{s1Url, s2Url, s3Url})
+
+	// Check the server we reconnected to.
+	reConnectedTo := nc.ConnectedUrl()
+	expected := []string{s1Url}
+	if reConnectedTo == s2Url {
+		s2.Shutdown()
+		expected = append(expected, s3Url)
+	} else if reConnectedTo == s3Url {
+		s3.Shutdown()
+		expected = append(expected, s2Url)
+	} else {
+		t.Fatalf("Unexpected server client has reconnected to: %v", reConnectedTo)
+	}
+	// Wait for reconnect
+	if err := wait(chch); err != nil {
+		t.Fatal("Reconnect handler not invoked")
+	}
+	// The implicit server that we just shutdown should have been removed from the pool
+	checkPool(expected)
+	nc.Close()
 }
