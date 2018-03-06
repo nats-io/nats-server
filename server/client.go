@@ -79,13 +79,6 @@ func (cf *clientFlag) setIfNotSet(c clientFlag) bool {
 	return false
 }
 
-// Commenting out for now otherwise megacheck complains.
-// We may need that in the future.
-// clear unset the flag (would be equivalent to set the boolean to false)
-// func (cf *clientFlag) clear(c clientFlag) {
-// 	*cf &= ^c
-// }
-
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
