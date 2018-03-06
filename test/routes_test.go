@@ -496,7 +496,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 
 	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
-	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:4222")
+	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTE:1234")
 
 	// Expect to see the local sub echoed through after we send our INFO.
 	time.Sleep(50 * time.Millisecond)
@@ -507,7 +507,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	if err := json.Unmarshal(buf[4:], &info); err != nil {
 		t.Fatalf("Could not unmarshal route info: %v", err)
 	}
-	info.ID = "ROUTE:4222"
+	info.ID = "ROUTE:1234"
 	b, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
@@ -525,7 +525,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	route = createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 
-	routeSend, routeExpect = setupRouteEx(t, route, opts, "ROUTE:4222")
+	routeSend, routeExpect = setupRouteEx(t, route, opts, "ROUTE:1234")
 
 	routeExpect(infoRe)
 
@@ -600,7 +600,7 @@ func TestRouteConnectOnShutdownRace(t *testing.T) {
 		for {
 			route := createRouteConn(l, opts.Cluster.Host, opts.Cluster.Port)
 			if route != nil {
-				setupRouteEx(l, route, opts, "ROUTE:4222")
+				setupRouteEx(l, route, opts, "ROUTE:1234")
 				route.Close()
 			}
 			select {
