@@ -26,7 +26,7 @@ type tLogger interface {
 // DefaultTestOptions are default options for the unit tests.
 var DefaultTestOptions = server.Options{
 	Host:           "localhost",
-	Port:           -1,
+	Port:           4222,
 	NoLog:          true,
 	NoSigs:         true,
 	MaxControlLine: 256,

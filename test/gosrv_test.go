@@ -11,7 +11,9 @@ import (
 
 func TestSimpleGoServerShutdown(t *testing.T) {
 	base := runtime.NumGoroutine()
-	s := RunDefaultServer()
+	opts := DefaultTestOptions
+	opts.Port = -1
+	s := RunServer(&opts)
 	s.Shutdown()
 	time.Sleep(100 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
@@ -22,7 +24,9 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 
 func TestGoServerShutdownWithClients(t *testing.T) {
 	base := runtime.NumGoroutine()
-	s := RunDefaultServer()
+	opts := DefaultTestOptions
+	opts.Port = -1
+	s := RunServer(&opts)
 	addr := s.Addr().(*net.TCPAddr)
 	for i := 0; i < 50; i++ {
 		createClientConn(t, "localhost", addr.Port)
@@ -39,7 +43,9 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 }
 
 func TestGoServerMultiShutdown(t *testing.T) {
-	s := RunDefaultServer()
+	opts := DefaultTestOptions
+	opts.Port = -1
+	s := RunServer(&opts)
 	s.Shutdown()
 	s.Shutdown()
 }
