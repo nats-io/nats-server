@@ -1141,7 +1141,13 @@ func (c *client) processMsg(msg []byte) {
 	// since they are sent direct via L2 semantics. If the match is a queue
 	// subscription, we will return from here regardless if we find a sub.
 	if isRoute {
-		if sub, ok := srv.routeSidQueueSubscriber(c.pa.sid); ok {
+		isQueue, sub, err := srv.routeSidQueueSubscriber(c.pa.sid)
+		if isQueue {
+			// We got an invalid QRSID, so stop here
+			if err != nil {
+				c.Errorf("Unable to deliver messaage: %v", err)
+				return
+			}
 			if sub != nil {
 				mh := c.msgHeader(msgh[:si], sub)
 				if c.deliverMsg(sub, mh, msg) {
@@ -1149,15 +1155,13 @@ func (c *client) processMsg(msg []byte) {
 				}
 			}
 			isRouteQsub = true
-			// for queue subscription try hard to deliver a message at least once.
-			// Right now we know fo sure that it's a queue subscription and
+			// At this point we know fo sure that it's a queue subscription and
 			// we didn't make a delivery attempt, because either a subscriber limit
 			// was exceeded or a subscription is already gone.
-			// So, let a code below find yet another matching subscription.
+			// So, let the code below find yet another matching subscription.
 			// We are at risk that a message might go forth and back
 			// between routes during these attempts, but at the end
 			// it shall either be delivered (at most once) or drop.
-			c.Debugf("Re-sending message of a detached queue sid %s", c.pa.sid)
 		}
 	}
 
@@ -1218,15 +1222,12 @@ func (c *client) processMsg(msg []byte) {
 			// Iterate over all subscribed clients starting at a random index
 			// until we find one that's able to deliver a message.
 			// Drop a message on the floor if there are noone.
-			start_index := c.cache.prand.Intn(len(qsubs))
+			startIndex := c.cache.prand.Intn(len(qsubs))
 			for i := 0; i < len(qsubs); i++ {
-				index := (start_index + i) % len(qsubs)
+				index := (startIndex + i) % len(qsubs)
 				sub := qsubs[index]
 				if sub != nil {
 					mh := c.msgHeader(msgh[:si], sub)
-					if isRouteQsub {
-						c.Tracef("Re-sending msg of %s to %s", c.pa.sid, sub.sid)
-					}
 					if c.deliverMsg(sub, mh, msg) {
 						break
 					}

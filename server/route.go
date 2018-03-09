@@ -453,10 +453,17 @@ const (
 	QRSID_LEN = len(QRSID)
 )
 
-func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
-	cid, sid, ok := parseRouteSid(rsid)
-	if !ok {
-		return nil, false
+// Parse the given rsid. If the protocol does not start with QRSID,
+// returns false and no subscription nor error.
+// If it does start with QRSID, returns true and possibly a subscription
+// or an error if the QRSID protocol is malformed.
+func (s *Server) routeSidQueueSubscriber(rsid []byte) (bool, *subscription, error) {
+	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
+		return false, nil, nil
+	}
+	cid, sid, err := parseRouteQueueSid(rsid)
+	if err != nil {
+		return true, nil, err
 	}
 
 	s.mu.Lock()
@@ -464,16 +471,16 @@ func (s *Server) routeSidQueueSubscriber(rsid []byte) (*subscription, bool) {
 	s.mu.Unlock()
 
 	if client == nil {
-		return nil, true
+		return true, nil, nil
 	}
 
 	client.mu.Lock()
 	sub, ok := client.subs[string(sid)]
 	client.mu.Unlock()
 	if ok {
-		return sub, true
+		return true, sub, nil
 	}
-	return nil, true
+	return true, nil, nil
 }
 
 func routeSid(sub *subscription) string {
@@ -484,19 +491,40 @@ func routeSid(sub *subscription) string {
 	return fmt.Sprintf("%s%s:%d:%s", qi, RSID, sub.client.cid, sub.sid)
 }
 
-func parseRouteSid(rsid []byte) (uint64, []byte, bool) {
-	if !bytes.HasPrefix(rsid, []byte(QRSID)) {
-		return 0, nil, false
-	}
-
-	// We don't care what's char of rsid[QRSID_LEN+1], it should be ':'
-	for i, count := QRSID_LEN+1, len(rsid); i < count; i++ {
-		switch rsid[i] {
-		case ':':
-			return uint64(parseInt64(rsid[QRSID_LEN+1 : i])), rsid[i+1:], true
+// Parse the given `rsid` knowing that it starts with `QRSID`.
+// Returns the cid and sid or an error not a valid QRSID.
+func parseRouteQueueSid(rsid []byte) (uint64, []byte, error) {
+	var (
+		cid      uint64
+		sid      []byte
+		cidFound bool
+		sidFound bool
+	)
+	// A valid QRSID needs to be at least QRSID:x:y
+	// First character here should be `:`
+	if len(rsid) >= QRSID_LEN+4 {
+		if rsid[QRSID_LEN] == ':' {
+			for i, count := QRSID_LEN+1, len(rsid); i < count; i++ {
+				switch rsid[i] {
+				case ':':
+					cid = uint64(parseInt64(rsid[QRSID_LEN+1 : i]))
+					cidFound = true
+					sid = rsid[i+1:]
+				}
+			}
+			if cidFound {
+				// We can't assume the content of sid, so as long
+				// as it is not len 0, we have to say it is a valid one.
+				if len(rsid) > 0 {
+					sidFound = true
+				}
+			}
 		}
 	}
-	return 0, nil, true
+	if cidFound && sidFound {
+		return cid, sid, nil
+	}
+	return 0, nil, fmt.Errorf("invalid QRSID: %s", rsid)
 }
 
 func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
