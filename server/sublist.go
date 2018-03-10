@@ -236,13 +236,8 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	s.Lock()
 	matchLevel(s.root, tokens, result)
 
-	// Store in cache and return to caller a copy of the results to avoid
-	// race when sub is removed from sublist and caller walks through the
-	// results.
-	cr := copyResult(result)
-
 	// Add to our cache
-	s.cache[subject] = cr
+	s.cache[subject] = result
 	// Bound the number of entries to sublistMaxCache
 	if len(s.cache) > slCacheMax {
 		for k := range s.cache {
@@ -252,7 +247,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	}
 	s.Unlock()
 
-	return cr
+	return result
 }
 
 // This will add in a node's results to the total results.
@@ -266,7 +261,9 @@ func addNodeToResults(n *node, results *SublistResult) {
 		if i := findQSliceForSub(qr[0], results.qsubs); i >= 0 {
 			results.qsubs[i] = append(results.qsubs[i], qr...)
 		} else {
-			results.qsubs = append(results.qsubs, qr)
+			copyqr := make([]*subscription, len(qr))
+			copy(copyqr, qr)
+			results.qsubs = append(results.qsubs, copyqr)
 		}
 	}
 }
