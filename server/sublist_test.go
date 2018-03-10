@@ -1,3 +1,6 @@
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
+// Copyright 2018 Synadia Communications Inc. All rights reserved.
+
 package server
 
 import (
@@ -506,6 +509,81 @@ func TestSublistRemoveWithWildcardsAsLiterals(t *testing.T) {
 		if c := s.Count(); c != 0 {
 			t.Fatalf("Expected sublist to be empty, got %v", c)
 		}
+	}
+}
+
+func TestSubListRaceOnRemove(t *testing.T) {
+	s := NewSublist()
+
+	var (
+		total = 100
+		subs  = make(map[int]*subscription, total) // use map for randomness
+	)
+	for i := 0; i < total; i++ {
+		sub := newQSub("foo", "bar")
+		subs[i] = sub
+	}
+
+	for i := 0; i < 2; i++ {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		// Call Match() once or twice, to make sure we get from cache
+		if i == 1 {
+			s.Match("foo")
+		}
+		// This will be from cache when i==1
+		r := s.Match("foo")
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			for _, sub := range subs {
+				s.Remove(sub)
+			}
+			wg.Done()
+		}()
+		for _, qsub := range r.qsubs {
+			for i := 0; i < len(qsub); i++ {
+				sub := qsub[i]
+				if string(sub.queue) != "bar" {
+					t.Fatalf("Queue name should be bar, got %s", qsub[i].queue)
+				}
+			}
+		}
+		wg.Wait()
+	}
+
+	// Repeat tests with regular subs
+	for i := 0; i < total; i++ {
+		sub := newSub("foo")
+		subs[i] = sub
+	}
+
+	for i := 0; i < 2; i++ {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		// Call Match() once or twice, to make sure we get from cache
+		if i == 1 {
+			s.Match("foo")
+		}
+		// This will be from cache when i==1
+		r := s.Match("foo")
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			for _, sub := range subs {
+				s.Remove(sub)
+			}
+			wg.Done()
+		}()
+		for i := 0; i < len(r.psubs); i++ {
+			sub := r.psubs[i]
+			if string(sub.subject) != "foo" {
+				t.Fatalf("Subject should be foo, got %s", sub.subject)
+			}
+		}
+		wg.Wait()
 	}
 }
 

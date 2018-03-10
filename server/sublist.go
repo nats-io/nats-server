@@ -236,8 +236,13 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	s.Lock()
 	matchLevel(s.root, tokens, result)
 
+	// Store in cache and return to caller a copy of the results to avoid
+	// race when sub is removed from sublist and caller walks through the
+	// results.
+	cr := copyResult(result)
+
 	// Add to our cache
-	s.cache[subject] = result
+	s.cache[subject] = cr
 	// Bound the number of entries to sublistMaxCache
 	if len(s.cache) > slCacheMax {
 		for k := range s.cache {
@@ -247,7 +252,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	}
 	s.Unlock()
 
-	return result
+	return cr
 }
 
 // This will add in a node's results to the total results.
