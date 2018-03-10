@@ -100,130 +100,98 @@ func TestNoMonitorPort(t *testing.T) {
 	}
 }
 
+var (
+	appJSONContent = "application/json"
+	appJSContent   = "application/javascript"
+)
+
+func readBodyEx(t *testing.T, url string, status int, content string) []byte {
+	resp, err := http.Get(url)
+	if err != nil {
+		stackFatalf(t, "Expected no error: Got %v\n", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != status {
+		stackFatalf(t, "Expected a %d response, got %d\n", status, resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != content {
+		stackFatalf(t, "Expected %s content-type, got %s\n", content, ct)
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		stackFatalf(t, "Got an error reading the body: %v\n", err)
+	}
+	return body
+}
+
+func readBody(t *testing.T, url string) []byte {
+	return readBodyEx(t, url, 200, appJSONContent)
+}
+
 func TestHandleVarz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "varz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+	body := readBody(t, url+"varz")
 
-	v := Varz{}
-	if err := json.Unmarshal(body, &v); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	var v *Varz
+	for i := 0; i < 2; i++ {
+		if i == 0 {
+			v = &Varz{}
+			if err := json.Unmarshal(body, &v); err != nil {
+				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+			}
+		} else {
+			v = s.Varz()
+		}
 
-	// Do some sanity checks on values
-	if time.Since(v.Start) > 10*time.Second {
-		t.Fatal("Expected start time to be within 10 seconds.")
-	}
+		// Do some sanity checks on values
+		if time.Since(v.Start) > 10*time.Second {
+			t.Fatal("Expected start time to be within 10 seconds.")
+		}
 
-	nc := createClientConnSubscribeAndPublish(t, s)
-	defer nc.Close()
+		if i == 0 {
+			nc := createClientConnSubscribeAndPublish(t, s)
+			defer nc.Close()
+		}
 
-	resp, err = http.Get(url + "varz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+		if i == 0 {
+			body = readBody(t, url+"varz")
+			v = &Varz{}
+			if err := json.Unmarshal(body, &v); err != nil {
+				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+			}
+		} else {
+			v = s.Varz()
+		}
 
-	v = Varz{}
-	if err := json.Unmarshal(body, &v); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if v.Connections != 1 {
-		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
-	}
-	if v.TotalConnections < 1 {
-		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
-	}
-	if v.InMsgs != 1 {
-		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
-	}
-	if v.OutMsgs != 1 {
-		t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
-	}
-	if v.InBytes != 5 {
-		t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
-	}
-	if v.OutBytes != 5 {
-		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
-	}
-	if v.Subscriptions != 1 {
-		t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+		if v.Connections != 1 {
+			t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
+		}
+		if v.TotalConnections < 1 {
+			t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
+		}
+		if v.InMsgs != 1 {
+			t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
+		}
+		if v.OutMsgs != 1 {
+			t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
+		}
+		if v.InBytes != 5 {
+			t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
+		}
+		if v.OutBytes != 5 {
+			t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+		}
+		if v.Subscriptions != 1 {
+			t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+		}
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port) + "varz?callback=callback")
-	if errj != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	ct = respj.Header.Get("Content-Type")
-	if ct != "application/javascript" {
-		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
-	}
-	defer respj.Body.Close()
-}
-
-func TestVarz(t *testing.T) {
-	s := runMonitorServer()
-	defer s.Shutdown()
-
-	v := s.Varz()
-
-	// Do some sanity checks on values
-	if time.Since(v.Start) > 10*time.Second {
-		t.Fatal("Expected start time to be within 10 seconds.")
-	}
-
-	nc := createClientConnSubscribeAndPublish(t, s)
-	defer nc.Close()
-
-	v = s.Varz()
-
-	if v.Connections != 1 {
-		t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
-	}
-	if v.TotalConnections < 1 {
-		t.Fatalf("Expected Total Connections of at least 1, got %v\n", v.TotalConnections)
-	}
-	if v.InMsgs != 1 {
-		t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
-	}
-	if v.OutMsgs != 1 {
-		t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
-	}
-	if v.InBytes != 5 {
-		t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
-	}
-	if v.OutBytes != 5 {
-		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
-	}
-	if v.Subscriptions != 1 {
-		t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
-	}
+	readBodyEx(t, url+"varz?callback=callback", 200, appJSContent)
 }
 
 func TestConnz(t *testing.T) {
@@ -231,23 +199,7 @@ func TestConnz(t *testing.T) {
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -268,19 +220,7 @@ func TestConnz(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
-	resp, err = http.Get(url + "connz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+	body = readBody(t, url+"connz")
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
@@ -350,15 +290,7 @@ func TestConnz(t *testing.T) {
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port) + "connz?callback=callback")
-	if errj != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	ct = respj.Header.Get("Content-Type")
-	if ct != "application/javascript" {
-		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
-	}
-	defer respj.Body.Close()
+	readBodyEx(t, url+"connz?callback=callback", 200, appJSContent)
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -369,19 +301,7 @@ func TestConnzWithSubs(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?subs=1")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?subs=1")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -406,20 +326,10 @@ func TestConnzLastActivity(t *testing.T) {
 	defer nc2.Close()
 	nc2.Flush()
 
+	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+
 	pollConz := func() *Connz {
-		url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-		resp, err := http.Get(url + "connz?subs=1")
-		if err != nil {
-			t.Fatalf("Expected no error: Got %v\n", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-		}
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("Got an error reading the body: %v\n", err)
-		}
+		body := readBody(t, url+"connz?subs=1")
 		c := Connz{}
 		if err := json.Unmarshal(body, &c); err != nil {
 			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -498,19 +408,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 
 	// Test that offset and limit ok when not enough connections
-	resp, err := http.Get(url + "connz?offset=1&limit=1")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?offset=1&limit=1")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -520,18 +418,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	}
 
 	// Test that when given negative values, 0 or default is used
-	resp, err = http.Get(url + "connz?offset=-1&limit=-1")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+	body = readBody(t, url+"connz?offset=-1&limit=-1")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -550,19 +437,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	cl2 := createClientConnSubscribeAndPublish(t, s)
 	defer cl2.Close()
 
-	resp, err = http.Get(url + "connz?offset=1&limit=1")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body = readBody(t, url+"connz?offset=1&limit=1")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -588,19 +463,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected Total to be at least 2, got %v", c.Total)
 	}
 
-	resp, err = http.Get(url + "connz?offset=2&limit=1")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body = readBody(t, url+"connz?offset=2&limit=1")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -638,19 +501,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -674,19 +525,7 @@ func TestConnzSortedByCid(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=cid")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=cid")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -718,19 +557,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=bytes_to")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=bytes_to")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -744,19 +571,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 
 	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err = http.Get(url + "connz?sort=msgs_to")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body = readBody(t, url+"connz?sort=msgs_to")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -770,19 +585,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 
 	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err = http.Get(url + "connz?sort=bytes_from")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	readBody(t, url+"connz?sort=bytes_from")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -796,19 +599,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 
 	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err = http.Get(url + "connz?sort=msgs_from")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	readBody(t, url+"connz?sort=msgs_from")
 	c = Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -836,19 +627,7 @@ func TestConnzSortedByPending(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=pending")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=pending")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -876,19 +655,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=subs")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=subs")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -920,19 +687,7 @@ func TestConnzSortedByLast(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=last")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=last")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -958,19 +713,7 @@ func TestConnzSortedByUptime(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=uptime")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=uptime")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -1004,19 +747,7 @@ func TestConnzSortedByIdle(t *testing.T) {
 	firstClient.Publish("client.1", []byte("new message"))
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=idle")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz?sort=idle")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -1061,14 +792,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz?sort=foo")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 400 {
-		t.Fatalf("Expected a 400 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
+	readBodyEx(t, url+"connz?sort=foo", 400, "text/plain; charset=utf-8")
 }
 
 func TestConnzWithRoutes(t *testing.T) {
@@ -1078,7 +802,6 @@ func TestConnzWithRoutes(t *testing.T) {
 	opts.Cluster.Port = CLUSTER_PORT
 
 	s := RunServer(opts)
-
 	defer s.Shutdown()
 
 	opts = &Options{
@@ -1100,23 +823,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	time.Sleep(time.Second)
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz")
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -1131,50 +838,53 @@ func TestConnzWithRoutes(t *testing.T) {
 		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
 	}
 
+	nc := createClientConnSubscribeAndPublish(t, sc)
+	defer nc.Close()
+
 	// Now check routez
-	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err = http.Get(url + "routez")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+	urls := []string{"routez", "routez?subs=1"}
+	for subs, urlSuffix := range urls {
+		for i := 0; i < 2; i++ {
+			var rz *Routez
+			if i == 0 {
+				rz = &Routez{}
+				body = readBody(t, url+urlSuffix)
+				if err := json.Unmarshal(body, &rz); err != nil {
+					t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+				}
+			} else {
+				rz = s.Routez(subs)
+			}
 
-	rz := Routez{}
-	if err := json.Unmarshal(body, &rz); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+			if rz.NumRoutes != 1 {
+				t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
+			}
 
-	if rz.NumRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
-	}
+			if len(rz.Routes) != 1 {
+				t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
+			}
 
-	if len(rz.Routes) != 1 {
-		t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
-	}
+			route := rz.Routes[0]
 
-	route := rz.Routes[0]
+			if route.DidSolicit {
+				t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
+			}
 
-	if route.DidSolicit {
-		t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
+			// Don't ask for subs, so there should not be any
+			if subs == 0 {
+				if len(route.Subs) != 0 {
+					t.Fatalf("There should not be subs, got %v", len(route.Subs))
+				}
+			} else {
+				if len(route.Subs) != 1 {
+					t.Fatalf("There should be 1 sub, got %v", len(route.Subs))
+				}
+			}
+		}
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port) + "routez?callback=callback")
-	if errj != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	ct = respj.Header.Get("Content-Type")
-	if ct != "application/javascript" {
-		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
-	}
-	defer respj.Body.Close()
+	readBodyEx(t, url+"routez?callback=callback", 200, appJSContent)
 }
 
 func TestSubsz(t *testing.T) {
@@ -1185,47 +895,32 @@ func TestSubsz(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "subscriptionsz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-	sl := Subsz{}
-	if err := json.Unmarshal(body, &sl); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	var sl *Subsz
 
-	if sl.NumSubs != 1 {
-		t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
-	}
-	if sl.NumInserts != 1 {
-		t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
-	}
-	if sl.NumMatches != 1 {
-		t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
+	for i := 0; i < 2; i++ {
+		if i == 0 {
+			body := readBody(t, url+"subscriptionsz")
+			sl = &Subsz{}
+			if err := json.Unmarshal(body, &sl); err != nil {
+				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+			}
+		} else {
+			sl = s.Subsz()
+		}
+
+		if sl.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
+		}
+		if sl.NumInserts != 1 {
+			t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
+		}
+		if sl.NumMatches != 1 {
+			t.Fatalf("Expected NumMatches of 1, got %d\n", sl.NumMatches)
+		}
 	}
 
 	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port) + "subscriptionsz?callback=callback")
-	ct = respj.Header.Get("Content-Type")
-	if errj != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if ct != "application/javascript" {
-		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
-	}
-	defer respj.Body.Close()
+	readBodyEx(t, url+"subscriptionsz?callback=callback", 200, appJSContent)
 }
 
 // Tests handle root
@@ -1270,23 +965,7 @@ func TestConnzWithNamedClient(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "connz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
-
+	body := readBody(t, url+"connz")
 	// Confirm server is exposing client name in monitoring endpoint.
 	c := Connz{}
 	if err := json.Unmarshal(body, &c); err != nil {
@@ -1307,12 +986,12 @@ func TestConnzWithNamedClient(t *testing.T) {
 
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
-	natsUrl := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
+	natsURL := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
 	client := nats.DefaultOptions
-	client.Servers = []string{natsUrl}
+	client.Servers = []string{natsURL}
 	nc, err := client.Connect()
 	if err != nil {
-		t.Fatalf("Error creating client: %v to: %s\n", err, natsUrl)
+		t.Fatalf("Error creating client: %v to: %s\n", err, natsURL)
 	}
 
 	ch := make(chan bool)
@@ -1342,37 +1021,12 @@ func TestStacksz(t *testing.T) {
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	resp, err := http.Get(url + "stacksz")
-	if err != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("Expected application/json content-type, got %s\n", ct)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Got an error reading the body: %v\n", err)
-	}
+	body := readBody(t, url+"stacksz")
 	// Check content
 	str := string(body)
 	if !strings.Contains(str, "HandleStacksz") {
 		t.Fatalf("Result does not seem to contain server's stacks:\n%v", str)
 	}
-	// Test JSONP
-	respj, errj := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port) + "subscriptionsz?callback=callback")
-	ct = respj.Header.Get("Content-Type")
-	if errj != nil {
-		t.Fatalf("Expected no error: Got %v\n", err)
-	}
-	if ct != "application/javascript" {
-		t.Fatalf("Expected application/javascript content-type, got %s\n", ct)
-	}
-	defer respj.Body.Close()
 }
 
 func TestConcurrentMonitoring(t *testing.T) {
@@ -1502,15 +1156,7 @@ func TestConnzTLSInHandshake(t *testing.T) {
 
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
-	resp, err := http.Get(endpoint)
-	if err != nil {
-		t.Fatalf("Error getting response: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Error reading body: %v", err)
-	}
+	body := readBody(t, endpoint)
 	duration := time.Since(start)
 	if duration >= 1500*time.Millisecond {
 		t.Fatalf("Looks like connz blocked on handshake, took %v", duration)
@@ -1529,22 +1175,6 @@ func TestConnzTLSInHandshake(t *testing.T) {
 	}
 }
 
-func getJSONData(url string) ([]byte, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("expected no error from %s: got %v", url, err)
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("expected a 200 response from %s, got %d", url, resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("got an error reading the %s body: %v", url, err)
-	}
-	return body, nil
-}
-
 func TestServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1555,26 +1185,17 @@ func TestServerIDs(t *testing.T) {
 
 	murl := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 
-	data, err := getJSONData(murl + "varz")
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
+	data := readBody(t, murl+"varz")
 	if err := json.Unmarshal(data, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the varz body: %v\n", err)
 	}
 
-	data, err = getJSONData(murl + "connz")
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
+	data = readBody(t, murl+"connz")
 	if err := json.Unmarshal(data, &c); err != nil {
 		t.Fatalf("Got an error unmarshalling the connz body: %v\n", err)
 	}
 
-	data, err = getJSONData(murl + "routez")
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
+	data = readBody(t, murl+"routez")
 	if err := json.Unmarshal(data, &r); err != nil {
 		t.Fatalf("Got an error unmarshalling the connz routez: %v\n", err)
 	}

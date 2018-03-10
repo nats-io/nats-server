@@ -293,12 +293,11 @@ type RouteInfo struct {
 	Subs         []string `json:"subscriptions_list,omitempty"`
 }
 
-// HandleRoutez process HTTP requests for route information.
-func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
+// Routez returns a Routez struct containing inormation about routes.
+// If `subs` is equal to 1, the routes will contain the list of subscriptions.
+func (s *Server) Routez(subs int) *Routez {
 	rs := &Routez{Routes: []*RouteInfo{}}
 	rs.Now = time.Now()
-
-	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
 
 	// Walk the list
 	s.mu.Lock()
@@ -340,6 +339,13 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 		rs.Routes = append(rs.Routes, ri)
 	}
 	s.mu.Unlock()
+	return rs
+}
+
+// HandleRoutez process HTTP requests for route information.
+func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
+	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
+	rs := s.Routez(subs)
 
 	b, err := json.MarshalIndent(rs, "", "  ")
 	if err != nil {
@@ -350,13 +356,18 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
-// HandleSubsz processes HTTP requests for subjects stats.
-func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
+// Subsz returns a Subsz struct containing subjects statistics
+func (s *Server) Subsz() *Subsz {
 	s.mu.Lock()
 	s.httpReqStats[SubszPath]++
 	s.mu.Unlock()
 
-	st := &Subsz{s.sl.Stats()}
+	return &Subsz{s.sl.Stats()}
+}
+
+// HandleSubsz processes HTTP requests for subjects stats.
+func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
+	st := s.Subsz()
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		s.Errorf("Error marshaling response to /subscriptionsz request: %v", err)
