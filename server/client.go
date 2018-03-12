@@ -1159,9 +1159,9 @@ func (c *client) processMsg(msg []byte) {
 			// we didn't make a delivery attempt, because either a subscriber limit
 			// was exceeded or a subscription is already gone.
 			// So, let the code below find yet another matching subscription.
-			// We are at risk that a message might go forth and back
-			// between routes during these attempts, but at the end
-			// it shall either be delivered (at most once) or drop.
+			// We are at risk that a message might go back and forth between routes
+			// during these attempts, but at the end it shall either be delivered
+			// (at most once) or dropped.
 		}
 	}
 
@@ -1208,8 +1208,8 @@ func (c *client) processMsg(msg []byte) {
 		}
 	}
 
-	// Now process any queue subs we have if not a route.
-	// ... Or if it's a route and we need to resend.
+	// Now process any queue subs we have if not a route...
+	// or if we did not make a delivery attempt yet.
 	if isRouteQsub || !isRoute {
 		// Check to see if we have our own rand yet. Global rand
 		// has contention with lots of clients, etc.
@@ -1219,9 +1219,8 @@ func (c *client) processMsg(msg []byte) {
 		// Process queue subs
 		for i := 0; i < len(r.qsubs); i++ {
 			qsubs := r.qsubs[i]
-			// Iterate over all subscribed clients starting at a random index
-			// until we find one that's able to deliver a message.
-			// Drop a message on the floor if there are noone.
+			// Find a subscription that is able to deliver this message
+			// starting at a random index.
 			startIndex := c.cache.prand.Intn(len(qsubs))
 			for i := 0; i < len(qsubs); i++ {
 				index := (startIndex + i) % len(qsubs)
