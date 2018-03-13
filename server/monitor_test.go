@@ -129,43 +129,39 @@ func readBody(t *testing.T, url string) []byte {
 	return readBodyEx(t, url, 200, appJSONContent)
 }
 
+func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) *Varz {
+	if mode == 0 {
+		v := &Varz{}
+		body := readBody(t, url)
+		if err := json.Unmarshal(body, v); err != nil {
+			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+		}
+		return v
+	}
+	v, _ := s.Varz(opts)
+	return v
+}
+
 func TestHandleVarz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"varz")
 
-	var v *Varz
-	for i := 0; i < 2; i++ {
-		if i == 0 {
-			v = &Varz{}
-			if err := json.Unmarshal(body, &v); err != nil {
-				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-			}
-		} else {
-			v = s.Varz()
-		}
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url+"varz", nil)
 
 		// Do some sanity checks on values
 		if time.Since(v.Start) > 10*time.Second {
 			t.Fatal("Expected start time to be within 10 seconds.")
 		}
+	}
 
-		if i == 0 {
-			nc := createClientConnSubscribeAndPublish(t, s)
-			defer nc.Close()
-		}
+	nc := createClientConnSubscribeAndPublish(t, s)
+	defer nc.Close()
 
-		if i == 0 {
-			body = readBody(t, url+"varz")
-			v = &Varz{}
-			if err := json.Unmarshal(body, &v); err != nil {
-				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-			}
-		} else {
-			v = s.Varz()
-		}
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url+"varz", nil)
 
 		if v.Connections != 1 {
 			t.Fatalf("Expected Connections of 1, got %v\n", v.Connections)
@@ -194,99 +190,127 @@ func TestHandleVarz(t *testing.T) {
 	readBodyEx(t, url+"varz?callback=callback", 200, appJSContent)
 }
 
+func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions) *Connz {
+	if mode == 0 {
+		body := readBody(t, url)
+		c := &Connz{}
+		if err := json.Unmarshal(body, &c); err != nil {
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		return c
+	}
+	c, err := s.Connz(opts)
+	if err != nil {
+		stackFatalf(t, "Error on Connz(): %v", err)
+	}
+	return c
+}
+
+func waitForClientConnCount(t *testing.T, s *Server, count int) {
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		if s.NumClients() == count {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	stackFatalf(t, "The number of expected connections was %v, got %v", count, s.NumClients())
+}
+
 func TestConnz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+
+	testConnz := func(mode int) {
+		c := pollConz(t, s, mode, url+"connz", nil)
+
+		// Test contents..
+		if c.NumConns != 0 {
+			t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+		}
+		if c.Total != 0 {
+			t.Fatalf("Expected 0 live connections, got %d\n", c.Total)
+		}
+		if c.Conns == nil || len(c.Conns) != 0 {
+			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+		}
+
+		// Test with connections.
+		nc := createClientConnSubscribeAndPublish(t, s)
+		defer nc.Close()
+
+		c = pollConz(t, s, mode, url+"connz", nil)
+
+		if c.NumConns != 1 {
+			t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
+		}
+		if c.Total != 1 {
+			t.Fatalf("Expected 1 live connection, got %d\n", c.Total)
+		}
+		if c.Conns == nil || len(c.Conns) != 1 {
+			t.Fatalf("Expected 1 connection in array, got %d\n", len(c.Conns))
+		}
+
+		if c.Limit != DefaultConnListSize {
+			t.Fatalf("Expected limit of %d, got %v\n", DefaultConnListSize, c.Limit)
+		}
+
+		if c.Offset != 0 {
+			t.Fatalf("Expected offset of 0, got %v\n", c.Offset)
+		}
+
+		// Test inside details of each connection
+		ci := c.Conns[0]
+
+		if ci.Cid == 0 {
+			t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
+		}
+		if ci.IP != "127.0.0.1" {
+			t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.IP)
+		}
+		if ci.Port == 0 {
+			t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
+		}
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 0 {
+			t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
+		}
+		if ci.InMsgs != 1 {
+			t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
+		}
+		if ci.OutMsgs != 1 {
+			t.Fatalf("Expected OutMsgs of 1, got %v\n", ci.OutMsgs)
+		}
+		if ci.InBytes != 5 {
+			t.Fatalf("Expected InBytes of 1, got %v\n", ci.InBytes)
+		}
+		if ci.OutBytes != 5 {
+			t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
+		}
+		if ci.Start.IsZero() {
+			t.Fatalf("Expected Start to be valid\n")
+		}
+		if ci.Uptime == "" {
+			t.Fatalf("Expected Uptime to be valid\n")
+		}
+		if ci.LastActivity.IsZero() {
+			t.Fatalf("Expected LastActivity to be valid\n")
+		}
+		if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
+			t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
+		}
+		if ci.Idle == "" {
+			t.Fatalf("Expected Idle to be valid\n")
+		}
 	}
 
-	// Test contents..
-	if c.NumConns != 0 {
-		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
-	}
-	if c.Total != 0 {
-		t.Fatalf("Expected 0 live connections, got %d\n", c.Total)
-	}
-	if c.Conns == nil || len(c.Conns) != 0 {
-		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
-	}
-
-	// Test with connections.
-	nc := createClientConnSubscribeAndPublish(t, s)
-	defer nc.Close()
-
-	body = readBody(t, url+"connz")
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.NumConns != 1 {
-		t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
-	}
-	if c.Total != 1 {
-		t.Fatalf("Expected 1 live connection, got %d\n", c.Total)
-	}
-	if c.Conns == nil || len(c.Conns) != 1 {
-		t.Fatalf("Expected 1 connection in array, got %d\n", len(c.Conns))
-	}
-
-	if c.Limit != DefaultConnListSize {
-		t.Fatalf("Expected limit of %d, got %v\n", DefaultConnListSize, c.Limit)
-	}
-
-	if c.Offset != 0 {
-		t.Fatalf("Expected offset of 0, got %v\n", c.Offset)
-	}
-
-	// Test inside details of each connection
-	ci := c.Conns[0]
-
-	if ci.Cid == 0 {
-		t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
-	}
-	if ci.IP != "127.0.0.1" {
-		t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.IP)
-	}
-	if ci.Port == 0 {
-		t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
-	}
-	if ci.NumSubs != 1 {
-		t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
-	}
-	if len(ci.Subs) != 0 {
-		t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
-	}
-	if ci.InMsgs != 1 {
-		t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
-	}
-	if ci.OutMsgs != 1 {
-		t.Fatalf("Expected OutMsgs of 1, got %v\n", ci.OutMsgs)
-	}
-	if ci.InBytes != 5 {
-		t.Fatalf("Expected InBytes of 1, got %v\n", ci.InBytes)
-	}
-	if ci.OutBytes != 5 {
-		t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
-	}
-	if ci.Start.IsZero() {
-		t.Fatalf("Expected Start to be valid\n")
-	}
-	if ci.Uptime == "" {
-		t.Fatalf("Expected Uptime to be valid\n")
-	}
-	if ci.LastActivity.IsZero() {
-		t.Fatalf("Expected LastActivity to be valid\n")
-	}
-	if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
-		t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
-	}
-	if ci.Idle == "" {
-		t.Fatalf("Expected Idle to be valid\n")
+	for mode := 0; mode < 2; mode++ {
+		testConnz(mode)
+		waitForClientConnCount(t, s, 0)
 	}
 
 	// Test JSONP
@@ -301,16 +325,13 @@ func TestConnzWithSubs(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?subs=1")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	// Test inside details of each connection
-	ci := c.Conns[0]
-	if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
-		t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?subs=1", &ConnzOptions{Subscriptions: true})
+		// Test inside details of each connection
+		ci := c.Conns[0]
+		if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
+			t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
+		}
 	}
 }
 
@@ -318,86 +339,85 @@ func TestConnzLastActivity(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	nc := createClientConnSubscribeAndPublish(t, s)
-	defer nc.Close()
-	nc.Flush()
-
-	nc2 := createClientConnSubscribeAndPublish(t, s)
-	defer nc2.Close()
-	nc2.Flush()
-
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url += "connz?subs=1"
+	opts := &ConnzOptions{Subscriptions: true}
 
-	pollConz := func() *Connz {
-		body := readBody(t, url+"connz?subs=1")
-		c := Connz{}
-		if err := json.Unmarshal(body, &c); err != nil {
-			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	testActivity := func(mode int) {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		defer nc.Close()
+		nc.Flush()
+
+		nc2 := createClientConnSubscribeAndPublish(t, s)
+		defer nc2.Close()
+		nc2.Flush()
+
+		// Test inside details of each connection
+		ci := pollConz(t, s, mode, url, opts).Conns[0]
+		if len(ci.Subs) != 1 {
+			t.Fatalf("Expected subs of 1, got %v\n", len(ci.Subs))
 		}
-		return &c
+		firstLast := ci.LastActivity
+		if firstLast.IsZero() {
+			t.Fatalf("Expected LastActivity to be valid\n")
+		}
+
+		// Just wait a bit to make sure that there is a difference
+		// between first and last.
+		time.Sleep(100 * time.Millisecond)
+
+		// Sub should trigger update.
+		sub, _ := nc.Subscribe("hello.world", func(m *nats.Msg) {})
+		nc.Flush()
+		ci = pollConz(t, s, mode, url, opts).Conns[0]
+		subLast := ci.LastActivity
+		if firstLast.Equal(subLast) {
+			t.Fatalf("Subscribe should have triggered update to LastActivity\n")
+		}
+
+		// Just wait a bit to make sure that there is a difference
+		// between first and last.
+		time.Sleep(100 * time.Millisecond)
+
+		// Pub should trigger as well
+		nc.Publish("foo", []byte("Hello"))
+		nc.Flush()
+		ci = pollConz(t, s, mode, url, opts).Conns[0]
+		pubLast := ci.LastActivity
+		if subLast.Equal(pubLast) {
+			t.Fatalf("Publish should have triggered update to LastActivity\n")
+		}
+
+		// Just wait a bit to make sure that there is a difference
+		// between first and last.
+		time.Sleep(100 * time.Millisecond)
+
+		// Unsub should trigger as well
+		sub.Unsubscribe()
+		nc.Flush()
+		ci = pollConz(t, s, mode, url, opts).Conns[0]
+		pubLast = ci.LastActivity
+		if subLast.Equal(pubLast) {
+			t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
+		}
+
+		// Just wait a bit to make sure that there is a difference
+		// between first and last.
+		time.Sleep(100 * time.Millisecond)
+
+		// Message delivery should trigger as well
+		nc2.Publish("foo", []byte("Hello"))
+		nc2.Flush()
+		nc.Flush()
+		ci = pollConz(t, s, mode, url, opts).Conns[0]
+		msgLast := ci.LastActivity
+		if pubLast.Equal(msgLast) {
+			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
+		}
 	}
 
-	// Test inside details of each connection
-	ci := pollConz().Conns[0]
-	if len(ci.Subs) != 1 {
-		t.Fatalf("Expected subs of 1, got %v\n", len(ci.Subs))
-	}
-	firstLast := ci.LastActivity
-	if firstLast.IsZero() {
-		t.Fatalf("Expected LastActivity to be valid\n")
-	}
-
-	// Just wait a bit to make sure that there is a difference
-	// between first and last.
-	time.Sleep(100 * time.Millisecond)
-
-	// Sub should trigger update.
-	sub, _ := nc.Subscribe("hello.world", func(m *nats.Msg) {})
-	nc.Flush()
-	ci = pollConz().Conns[0]
-	subLast := ci.LastActivity
-	if firstLast.Equal(subLast) {
-		t.Fatalf("Subscribe should have triggered update to LastActivity\n")
-	}
-
-	// Just wait a bit to make sure that there is a difference
-	// between first and last.
-	time.Sleep(100 * time.Millisecond)
-
-	// Pub should trigger as well
-	nc.Publish("foo", []byte("Hello"))
-	nc.Flush()
-	ci = pollConz().Conns[0]
-	pubLast := ci.LastActivity
-	if subLast.Equal(pubLast) {
-		t.Fatalf("Publish should have triggered update to LastActivity\n")
-	}
-
-	// Just wait a bit to make sure that there is a difference
-	// between first and last.
-	time.Sleep(100 * time.Millisecond)
-
-	// Unsub should trigger as well
-	sub.Unsubscribe()
-	nc.Flush()
-	ci = pollConz().Conns[0]
-	pubLast = ci.LastActivity
-	if subLast.Equal(pubLast) {
-		t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
-	}
-
-	// Just wait a bit to make sure that there is a difference
-	// between first and last.
-	time.Sleep(100 * time.Millisecond)
-
-	// Message delivery should trigger as well
-	nc2.Publish("foo", []byte("Hello"))
-	nc2.Flush()
-	nc.Flush()
-	ci = pollConz().Conns[0]
-	msgLast := ci.LastActivity
-	if pubLast.Equal(msgLast) {
-		t.Fatalf("Message delivery should have triggered update to LastActivity\n")
+	for mode := 0; mode < 2; mode++ {
+		testActivity(mode)
 	}
 }
 
@@ -407,28 +427,21 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 
-	// Test that offset and limit ok when not enough connections
-	body := readBody(t, url+"connz?offset=1&limit=1")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-	if c.Conns == nil || len(c.Conns) != 0 {
-		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
-	}
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?offset=1&limit=1", &ConnzOptions{Offset: 1, Limit: 1})
+		if c.Conns == nil || len(c.Conns) != 0 {
+			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+		}
 
-	// Test that when given negative values, 0 or default is used
-	body = readBody(t, url+"connz?offset=-1&limit=-1")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-	if c.Conns == nil || len(c.Conns) != 0 {
-		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
-	}
-	if c.Offset != 0 {
-		t.Fatalf("Expected offset to be 0, and limit to be %v, got %v and %v",
-			DefaultConnListSize, c.Offset, c.Limit)
+		// Test that when given negative values, 0 or default is used
+		c = pollConz(t, s, mode, url+"connz?offset=-1&limit=-1", &ConnzOptions{Offset: -11, Limit: -11})
+		if c.Conns == nil || len(c.Conns) != 0 {
+			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+		}
+		if c.Offset != 0 {
+			t.Fatalf("Expected offset to be 0, and limit to be %v, got %v and %v",
+				DefaultConnListSize, c.Offset, c.Limit)
+		}
 	}
 
 	cl1 := createClientConnSubscribeAndPublish(t, s)
@@ -437,56 +450,48 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	cl2 := createClientConnSubscribeAndPublish(t, s)
 	defer cl2.Close()
 
-	body = readBody(t, url+"connz?offset=1&limit=1")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?offset=1&limit=1", &ConnzOptions{Offset: 1, Limit: 1})
+		if c.Limit != 1 {
+			t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
+		}
 
-	if c.Limit != 1 {
-		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
-	}
+		if c.Offset != 1 {
+			t.Fatalf("Expected offset of 1, got %v\n", c.Offset)
+		}
 
-	if c.Offset != 1 {
-		t.Fatalf("Expected offset of 1, got %v\n", c.Offset)
-	}
+		if len(c.Conns) != 1 {
+			t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
+		}
 
-	if len(c.Conns) != 1 {
-		t.Fatalf("Expected conns of 1, got %v\n", len(c.Conns))
-	}
+		if c.NumConns != 1 {
+			t.Fatalf("Expected NumConns to be 1, got %v\n", c.NumConns)
+		}
 
-	if c.NumConns != 1 {
-		t.Fatalf("Expected NumConns to be 1, got %v\n", c.NumConns)
-	}
+		if c.Total != 2 {
+			t.Fatalf("Expected Total to be at least 2, got %v", c.Total)
+		}
 
-	if c.Total != 2 {
-		t.Fatalf("Expected Total to be at least 2, got %v", c.Total)
-	}
+		c = pollConz(t, s, mode, url+"connz?offset=2&limit=1", &ConnzOptions{Offset: 2, Limit: 1})
+		if c.Limit != 1 {
+			t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
+		}
 
-	body = readBody(t, url+"connz?offset=2&limit=1")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+		if c.Offset != 2 {
+			t.Fatalf("Expected offset of 2, got %v\n", c.Offset)
+		}
 
-	if c.Limit != 1 {
-		t.Fatalf("Expected limit of 1, got %v\n", c.Limit)
-	}
+		if len(c.Conns) != 0 {
+			t.Fatalf("Expected conns of 0, got %v\n", len(c.Conns))
+		}
 
-	if c.Offset != 2 {
-		t.Fatalf("Expected offset of 2, got %v\n", c.Offset)
-	}
+		if c.NumConns != 0 {
+			t.Fatalf("Expected NumConns to be 0, got %v\n", c.NumConns)
+		}
 
-	if len(c.Conns) != 0 {
-		t.Fatalf("Expected conns of 0, got %v\n", len(c.Conns))
-	}
-
-	if c.NumConns != 0 {
-		t.Fatalf("Expected NumConns to be 0, got %v\n", c.NumConns)
-	}
-
-	if c.Total != 2 {
-		t.Fatalf("Expected Total to be 2, got %v", c.Total)
+		if c.Total != 2 {
+			t.Fatalf("Expected Total to be 2, got %v", c.Total)
+		}
 	}
 }
 
@@ -501,16 +506,13 @@ func TestConnzDefaultSorted(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].Cid > c.Conns[1].Cid ||
-		c.Conns[1].Cid > c.Conns[2].Cid ||
-		c.Conns[2].Cid > c.Conns[3].Cid {
-		t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz", nil)
+		if c.Conns[0].Cid > c.Conns[1].Cid ||
+			c.Conns[1].Cid > c.Conns[2].Cid ||
+			c.Conns[2].Cid > c.Conns[3].Cid {
+			t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+		}
 	}
 }
 
@@ -525,16 +527,13 @@ func TestConnzSortedByCid(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=cid")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].Cid > c.Conns[1].Cid ||
-		c.Conns[1].Cid > c.Conns[2].Cid ||
-		c.Conns[2].Cid > c.Conns[3].Cid {
-		t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=cid", &ConnzOptions{Sort: ByCid})
+		if c.Conns[0].Cid > c.Conns[1].Cid ||
+			c.Conns[1].Cid > c.Conns[2].Cid ||
+			c.Conns[2].Cid > c.Conns[3].Cid {
+			t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+		}
 	}
 }
 
@@ -557,59 +556,38 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=bytes_to")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=bytes_to", &ConnzOptions{Sort: ByOutBytes})
+		if c.Conns[0].OutBytes < c.Conns[1].OutBytes ||
+			c.Conns[0].OutBytes < c.Conns[2].OutBytes ||
+			c.Conns[0].OutBytes < c.Conns[3].OutBytes {
+			t.Fatalf("Expected conns sorted in descending order by bytes to, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].OutBytes, c.Conns[1].OutBytes, c.Conns[2].OutBytes, c.Conns[3].OutBytes)
+		}
 
-	if c.Conns[0].OutBytes < c.Conns[1].OutBytes ||
-		c.Conns[0].OutBytes < c.Conns[2].OutBytes ||
-		c.Conns[0].OutBytes < c.Conns[3].OutBytes {
-		t.Fatalf("Expected conns sorted in descending order by bytes to, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].OutBytes, c.Conns[1].OutBytes, c.Conns[2].OutBytes, c.Conns[3].OutBytes)
-	}
+		c = pollConz(t, s, mode, url+"connz?sort=msgs_to", &ConnzOptions{Sort: ByOutMsgs})
+		if c.Conns[0].OutMsgs < c.Conns[1].OutMsgs ||
+			c.Conns[0].OutMsgs < c.Conns[2].OutMsgs ||
+			c.Conns[0].OutMsgs < c.Conns[3].OutMsgs {
+			t.Fatalf("Expected conns sorted in descending order by msgs from, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].OutMsgs, c.Conns[1].OutMsgs, c.Conns[2].OutMsgs, c.Conns[3].OutMsgs)
+		}
 
-	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body = readBody(t, url+"connz?sort=msgs_to")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+		c = pollConz(t, s, mode, url+"connz?sort=bytes_from", &ConnzOptions{Sort: ByInBytes})
+		if c.Conns[0].InBytes < c.Conns[1].InBytes ||
+			c.Conns[0].InBytes < c.Conns[2].InBytes ||
+			c.Conns[0].InBytes < c.Conns[3].InBytes {
+			t.Fatalf("Expected conns sorted in descending order by bytes from, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].InBytes, c.Conns[1].InBytes, c.Conns[2].InBytes, c.Conns[3].InBytes)
+		}
 
-	if c.Conns[0].OutMsgs < c.Conns[1].OutMsgs ||
-		c.Conns[0].OutMsgs < c.Conns[2].OutMsgs ||
-		c.Conns[0].OutMsgs < c.Conns[3].OutMsgs {
-		t.Fatalf("Expected conns sorted in descending order by msgs from, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].OutMsgs, c.Conns[1].OutMsgs, c.Conns[2].OutMsgs, c.Conns[3].OutMsgs)
-	}
-
-	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	readBody(t, url+"connz?sort=bytes_from")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].InBytes < c.Conns[1].InBytes ||
-		c.Conns[0].InBytes < c.Conns[2].InBytes ||
-		c.Conns[0].InBytes < c.Conns[3].InBytes {
-		t.Fatalf("Expected conns sorted in descending order by bytes from, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].InBytes, c.Conns[1].InBytes, c.Conns[2].InBytes, c.Conns[3].InBytes)
-	}
-
-	url = fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	readBody(t, url+"connz?sort=msgs_from")
-	c = Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].InMsgs < c.Conns[1].InMsgs ||
-		c.Conns[0].InMsgs < c.Conns[2].InMsgs ||
-		c.Conns[0].InMsgs < c.Conns[3].InMsgs {
-		t.Fatalf("Expected conns sorted in descending order by msgs from, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].InMsgs, c.Conns[1].InMsgs, c.Conns[2].InMsgs, c.Conns[3].InMsgs)
+		c = pollConz(t, s, mode, url+"connz?sort=msgs_from", &ConnzOptions{Sort: ByInMsgs})
+		if c.Conns[0].InMsgs < c.Conns[1].InMsgs ||
+			c.Conns[0].InMsgs < c.Conns[2].InMsgs ||
+			c.Conns[0].InMsgs < c.Conns[3].InMsgs {
+			t.Fatalf("Expected conns sorted in descending order by msgs from, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].InMsgs, c.Conns[1].InMsgs, c.Conns[2].InMsgs, c.Conns[3].InMsgs)
+		}
 	}
 }
 
@@ -627,17 +605,14 @@ func TestConnzSortedByPending(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=pending")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].Pending < c.Conns[1].Pending ||
-		c.Conns[0].Pending < c.Conns[2].Pending ||
-		c.Conns[0].Pending < c.Conns[3].Pending {
-		t.Fatalf("Expected conns sorted in descending order by number of pending, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].Pending, c.Conns[1].Pending, c.Conns[2].Pending, c.Conns[3].Pending)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=pending", &ConnzOptions{Sort: ByPending})
+		if c.Conns[0].Pending < c.Conns[1].Pending ||
+			c.Conns[0].Pending < c.Conns[2].Pending ||
+			c.Conns[0].Pending < c.Conns[3].Pending {
+			t.Fatalf("Expected conns sorted in descending order by number of pending, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].Pending, c.Conns[1].Pending, c.Conns[2].Pending, c.Conns[3].Pending)
+		}
 	}
 }
 
@@ -655,17 +630,14 @@ func TestConnzSortedBySubs(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=subs")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].NumSubs < c.Conns[1].NumSubs ||
-		c.Conns[0].NumSubs < c.Conns[2].NumSubs ||
-		c.Conns[0].NumSubs < c.Conns[3].NumSubs {
-		t.Fatalf("Expected conns sorted in descending order by number of subs, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].NumSubs, c.Conns[1].NumSubs, c.Conns[2].NumSubs, c.Conns[3].NumSubs)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=subs", &ConnzOptions{Sort: BySubs})
+		if c.Conns[0].NumSubs < c.Conns[1].NumSubs ||
+			c.Conns[0].NumSubs < c.Conns[2].NumSubs ||
+			c.Conns[0].NumSubs < c.Conns[3].NumSubs {
+			t.Fatalf("Expected conns sorted in descending order by number of subs, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].NumSubs, c.Conns[1].NumSubs, c.Conns[2].NumSubs, c.Conns[3].NumSubs)
+		}
 	}
 }
 
@@ -687,17 +659,14 @@ func TestConnzSortedByLast(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=last")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
-		c.Conns[1].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
-		c.Conns[2].LastActivity.UnixNano() < c.Conns[3].LastActivity.UnixNano() {
-		t.Fatalf("Expected conns sorted in descending order by lastActivity, got %v < one of [%v, %v, %v]\n",
-			c.Conns[0].LastActivity, c.Conns[1].LastActivity, c.Conns[2].LastActivity, c.Conns[3].LastActivity)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=last", &ConnzOptions{Sort: ByLast})
+		if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
+			c.Conns[1].LastActivity.UnixNano() < c.Conns[2].LastActivity.UnixNano() ||
+			c.Conns[2].LastActivity.UnixNano() < c.Conns[3].LastActivity.UnixNano() {
+			t.Fatalf("Expected conns sorted in descending order by lastActivity, got %v < one of [%v, %v, %v]\n",
+				c.Conns[0].LastActivity, c.Conns[1].LastActivity, c.Conns[2].LastActivity, c.Conns[3].LastActivity)
+		}
 	}
 }
 
@@ -713,18 +682,15 @@ func TestConnzSortedByUptime(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=uptime")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	// uptime is generated by Conn.Start
-	if c.Conns[0].Start.UnixNano() > c.Conns[1].Start.UnixNano() ||
-		c.Conns[1].Start.UnixNano() > c.Conns[2].Start.UnixNano() ||
-		c.Conns[2].Start.UnixNano() > c.Conns[3].Start.UnixNano() {
-		t.Fatalf("Expected conns sorted in ascending order by start time, got %v > one of [%v, %v, %v]\n",
-			c.Conns[0].Start, c.Conns[1].Start, c.Conns[2].Start, c.Conns[3].Start)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=uptime", &ConnzOptions{Sort: ByUptime})
+		// uptime is generated by Conn.Start
+		if c.Conns[0].Start.UnixNano() > c.Conns[1].Start.UnixNano() ||
+			c.Conns[1].Start.UnixNano() > c.Conns[2].Start.UnixNano() ||
+			c.Conns[2].Start.UnixNano() > c.Conns[3].Start.UnixNano() {
+			t.Fatalf("Expected conns sorted in ascending order by start time, got %v > one of [%v, %v, %v]\n",
+				c.Conns[0].Start, c.Conns[1].Start, c.Conns[2].Start, c.Conns[3].Start)
+		}
 	}
 }
 
@@ -732,49 +698,50 @@ func TestConnzSortedByIdle(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	firstClient := createClientConnSubscribeAndPublish(t, s)
-	defer firstClient.Close()
-	firstClient.Subscribe("client.1", func(m *nats.Msg) {})
-	firstClient.Flush()
-
-	secondClient := createClientConnSubscribeAndPublish(t, s)
-	defer secondClient.Close()
-	secondClient.Subscribe("client.2", func(m *nats.Msg) {})
-	secondClient.Flush()
-
-	// The Idle granularity is a whole second
-	time.Sleep(time.Second)
-	firstClient.Publish("client.1", []byte("new message"))
-
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz?sort=idle")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
 
-	// Make sure we are returned 2 connections...
-	if len(c.Conns) != 2 {
-		t.Fatalf("Expected to get two connections, got %v", len(c.Conns))
-	}
+	testIdle := func(mode int) {
+		firstClient := createClientConnSubscribeAndPublish(t, s)
+		defer firstClient.Close()
+		firstClient.Subscribe("client.1", func(m *nats.Msg) {})
+		firstClient.Flush()
 
-	// And that the Idle time is valid (even if equal to "0s")
-	if c.Conns[0].Idle == "" || c.Conns[1].Idle == "" {
-		t.Fatal("Expected Idle value to be valid")
-	}
+		secondClient := createClientConnSubscribeAndPublish(t, s)
+		defer secondClient.Close()
+		secondClient.Subscribe("client.2", func(m *nats.Msg) {})
+		secondClient.Flush()
 
-	idle1, err := time.ParseDuration(c.Conns[0].Idle)
-	if err != nil {
-		t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
-	}
-	idle2, err := time.ParseDuration(c.Conns[1].Idle)
-	if err != nil {
-		t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
-	}
+		// The Idle granularity is a whole second
+		time.Sleep(time.Second)
+		firstClient.Publish("client.1", []byte("new message"))
 
-	if idle1 < idle2 {
-		t.Fatalf("Expected conns sorted in descending order by Idle, got %v < %v\n",
-			idle1, idle2)
+		c := pollConz(t, s, mode, url+"connz?sort=idle", &ConnzOptions{Sort: ByIdle})
+		// Make sure we are returned 2 connections...
+		if len(c.Conns) != 2 {
+			t.Fatalf("Expected to get two connections, got %v", len(c.Conns))
+		}
+
+		// And that the Idle time is valid (even if equal to "0s")
+		if c.Conns[0].Idle == "" || c.Conns[1].Idle == "" {
+			t.Fatal("Expected Idle value to be valid")
+		}
+
+		idle1, err := time.ParseDuration(c.Conns[0].Idle)
+		if err != nil {
+			t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
+		}
+		idle2, err := time.ParseDuration(c.Conns[1].Idle)
+		if err != nil {
+			t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
+		}
+
+		if idle1 < idle2 {
+			t.Fatalf("Expected conns sorted in descending order by Idle, got %v < %v\n",
+				idle1, idle2)
+		}
+	}
+	for mode := 0; mode < 2; mode++ {
+		testIdle(mode)
 	}
 }
 
@@ -793,6 +760,23 @@ func TestConnzSortBadRequest(t *testing.T) {
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 	readBodyEx(t, url+"connz?sort=foo", 400, "text/plain; charset=utf-8")
+
+	if _, err := s.Connz(&ConnzOptions{Sort: "foo"}); err == nil {
+		t.Fatal("Expected error, got none")
+	}
+}
+
+func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptions) *Routez {
+	if mode == 0 {
+		rz := &Routez{}
+		body := readBody(t, url)
+		if err := json.Unmarshal(body, rz); err != nil {
+			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+		}
+		return rz
+	}
+	rz, _ := s.Routez(opts)
+	return rz
 }
 
 func TestConnzWithRoutes(t *testing.T) {
@@ -823,19 +807,16 @@ func TestConnzWithRoutes(t *testing.T) {
 	time.Sleep(time.Second)
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz")
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
-
-	// Test contents..
-	// Make sure routes don't show up under connz, but do under routez
-	if c.NumConns != 0 {
-		t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
-	}
-	if c.Conns == nil || len(c.Conns) != 0 {
-		t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz", nil)
+		// Test contents..
+		// Make sure routes don't show up under connz, but do under routez
+		if c.NumConns != 0 {
+			t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+		}
+		if c.Conns == nil || len(c.Conns) != 0 {
+			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+		}
 	}
 
 	nc := createClientConnSubscribeAndPublish(t, sc)
@@ -844,17 +825,8 @@ func TestConnzWithRoutes(t *testing.T) {
 	// Now check routez
 	urls := []string{"routez", "routez?subs=1"}
 	for subs, urlSuffix := range urls {
-		for i := 0; i < 2; i++ {
-			var rz *Routez
-			if i == 0 {
-				rz = &Routez{}
-				body = readBody(t, url+urlSuffix)
-				if err := json.Unmarshal(body, &rz); err != nil {
-					t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-				}
-			} else {
-				rz = s.Routez(subs)
-			}
+		for mode := 0; mode < 2; mode++ {
+			rz := pollRoutez(t, s, mode, url+urlSuffix, &RoutezOptions{Subscriptions: subs == 1})
 
 			if rz.NumRoutes != 1 {
 				t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
@@ -887,6 +859,19 @@ func TestConnzWithRoutes(t *testing.T) {
 	readBodyEx(t, url+"routez?callback=callback", 200, appJSContent)
 }
 
+func pollSubsz(t *testing.T, s *Server, mode int, url string, opts *SubszOptions) *Subsz {
+	if mode == 0 {
+		body := readBody(t, url)
+		sz := &Subsz{}
+		if err := json.Unmarshal(body, sz); err != nil {
+			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+		}
+		return sz
+	}
+	sz, _ := s.Subsz(opts)
+	return sz
+}
+
 func TestSubsz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -895,18 +880,9 @@ func TestSubsz(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	var sl *Subsz
 
-	for i := 0; i < 2; i++ {
-		if i == 0 {
-			body := readBody(t, url+"subscriptionsz")
-			sl = &Subsz{}
-			if err := json.Unmarshal(body, &sl); err != nil {
-				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-			}
-		} else {
-			sl = s.Subsz()
-		}
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subscriptionsz", nil)
 
 		if sl.NumSubs != 1 {
 			t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
@@ -965,22 +941,19 @@ func TestConnzWithNamedClient(t *testing.T) {
 	defer nc.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	body := readBody(t, url+"connz")
-	// Confirm server is exposing client name in monitoring endpoint.
-	c := Connz{}
-	if err := json.Unmarshal(body, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-	}
+	for mode := 0; mode < 2; mode++ {
+		// Confirm server is exposing client name in monitoring endpoint.
+		c := pollConz(t, s, mode, url+"connz", nil)
+		got := len(c.Conns)
+		expected := 1
+		if got != expected {
+			t.Fatalf("Expected %d connection in array, got %d\n", expected, got)
+		}
 
-	got := len(c.Conns)
-	expected := 1
-	if got != expected {
-		t.Fatalf("Expected %d connection in array, got %d\n", expected, got)
-	}
-
-	conn := c.Conns[0]
-	if conn.Name != clientName {
-		t.Fatalf("Expected client to have name %q. got %q", clientName, conn.Name)
+		conn := c.Conns[0]
+		if conn.Name != clientName {
+			t.Fatalf("Expected client to have name %q. got %q", clientName, conn.Name)
+		}
 	}
 }
 
@@ -1156,22 +1129,20 @@ func TestConnzTLSInHandshake(t *testing.T) {
 
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
-	body := readBody(t, endpoint)
-	duration := time.Since(start)
-	if duration >= 1500*time.Millisecond {
-		t.Fatalf("Looks like connz blocked on handshake, took %v", duration)
-	}
-	connz := &Connz{}
-	if err := json.Unmarshal(body, connz); err != nil {
-		t.Fatalf("Error unmarshalling: %v", err)
-	}
-	if len(connz.Conns) != 1 {
-		t.Fatalf("Expected 1 conn, got %v", len(connz.Conns))
-	}
-	conn := connz.Conns[0]
-	// TLS fields should be not set
-	if conn.TLSVersion != "" || conn.TLSCipher != "" {
-		t.Fatalf("Expected TLS fields to not be set, got version:%v cipher:%v", conn.TLSVersion, conn.TLSCipher)
+	for mode := 0; mode < 2; mode++ {
+		connz := pollConz(t, s, mode, endpoint, nil)
+		duration := time.Since(start)
+		if duration >= 1500*time.Millisecond {
+			t.Fatalf("Looks like connz blocked on handshake, took %v", duration)
+		}
+		if len(connz.Conns) != 1 {
+			t.Fatalf("Expected 1 conn, got %v", len(connz.Conns))
+		}
+		conn := connz.Conns[0]
+		// TLS fields should be not set
+		if conn.TLSVersion != "" || conn.TLSCipher != "" {
+			t.Fatalf("Expected TLS fields to not be set, got version:%v cipher:%v", conn.TLSVersion, conn.TLSCipher)
+		}
 	}
 }
 
@@ -1179,38 +1150,44 @@ func TestServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	v := Varz{}
-	c := Connz{}
-	r := Routez{}
-
 	murl := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 
-	data := readBody(t, murl+"varz")
-	if err := json.Unmarshal(data, &v); err != nil {
-		t.Fatalf("Got an error unmarshalling the varz body: %v\n", err)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, murl+"varz", nil)
+		if v.ID == "" {
+			t.Fatal("Varz ID is empty")
+		}
+		c := pollConz(t, s, mode, murl+"connz", nil)
+		if c.ID == "" {
+			t.Fatal("Connz ID is empty")
+		}
+		r := pollRoutez(t, s, mode, murl+"routez", nil)
+		if r.ID == "" {
+			t.Fatal("Routez ID is empty")
+		}
+		if v.ID != c.ID || v.ID != r.ID {
+			t.Fatalf("Varz ID [%s] is not equal to Connz ID [%s] or Routez ID [%s]", v.ID, c.ID, r.ID)
+		}
+	}
+}
+
+func TestHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	for i := 0; i < 10; i++ {
+		s.Varz(nil)
+		s.Connz(nil)
+		s.Routez(nil)
+		s.Subsz(nil)
 	}
 
-	data = readBody(t, murl+"connz")
-	if err := json.Unmarshal(data, &c); err != nil {
-		t.Fatalf("Got an error unmarshalling the connz body: %v\n", err)
-	}
-
-	data = readBody(t, murl+"routez")
-	if err := json.Unmarshal(data, &r); err != nil {
-		t.Fatalf("Got an error unmarshalling the connz routez: %v\n", err)
-	}
-
-	if v.ID == "" {
-		t.Fatal("Varz ID is empty")
-	}
-	if c.ID == "" {
-		t.Fatal("Connz ID is empty")
-	}
-	if r.ID == "" {
-		t.Fatal("Routez ID is empty")
-	}
-
-	if v.ID != c.ID || v.ID != r.ID {
-		t.Fatalf("Varz ID [%s] is not equal to Connz ID [%s] or Routez ID [%s]", v.ID, c.ID, r.ID)
+	v, _ := s.Varz(nil)
+	endpoints := []string{VarzPath, ConnzPath, RoutezPath, SubszPath}
+	for _, e := range endpoints {
+		stats := v.HTTPReqStats[e]
+		if stats != 0 {
+			t.Fatalf("Expected HTTPReqStats for %q to be 0, got %v", e, stats)
+		}
 	}
 }
