@@ -19,6 +19,7 @@ type Logger struct {
 	fatalLabel string
 	debugLabel string
 	traceLabel string
+	logFile    *os.File // file pointer for the file logger.
 }
 
 // NewStdLogger creates a logger with output directed to Stderr
@@ -67,13 +68,24 @@ func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	}
 
 	l := &Logger{
-		logger: log.New(f, pre, flags),
-		debug:  debug,
-		trace:  trace,
+		logger:  log.New(f, pre, flags),
+		debug:   debug,
+		trace:   trace,
+		logFile: f,
 	}
 
 	setPlainLabelFormats(l)
 	return l
+}
+
+// Close cleans up any resources with the server's logger implementation.
+func (l *Logger) Close() {
+	if l.logFile != nil {
+		if err := l.logFile.Close(); err != nil {
+			l.Noticef("couldn't close log file on restart:  %v", err)
+		}
+		l.logFile = nil
+	}
 }
 
 // Generate the pid prefix string
