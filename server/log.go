@@ -84,7 +84,7 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 		// test logger that may not implement that interface.
 		if l, ok := s.logging.logger.(io.Closer); ok {
 			if err := l.Close(); err != nil {
-				s.Noticef("error closing logger: %v", err)
+				s.Noticef("Error closing logger: %v", err)
 			}
 		}
 	}
