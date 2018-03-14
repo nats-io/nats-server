@@ -78,14 +78,15 @@ func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	return l
 }
 
-// Close cleans up any resources with the server's logger implementation.
-func (l *Logger) Close() {
-	if l.logFile != nil {
-		if err := l.logFile.Close(); err != nil {
-			l.Noticef("couldn't close log file on restart:  %v", err)
-		}
+// Close implements the io.Closer interface to clean up
+// resources in the server's logger implementation.
+// Caller must ensure threadsafety.
+func (l *Logger) Close() error {
+	if f := l.logFile; f != nil {
 		l.logFile = nil
+		return f.Close()
 	}
+	return nil
 }
 
 // Generate the pid prefix string

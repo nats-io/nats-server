@@ -3,6 +3,7 @@
 package server
 
 import (
+	"io"
 	"os"
 	"sync/atomic"
 
@@ -78,11 +79,13 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	}
 	s.logging.Lock()
 	if s.logging.logger != nil {
-		// if we are the server's logger, call its Close function, but check
-		// the type because this could be a logger from another process
-		// embedding the NATS server, a SysLogger, or a dummy test logger.
-		if l, ok := s.logging.logger.(*srvlog.Logger); ok {
-			l.Close()
+		// Check to see if the logger implements io.Closer.  This could be a
+		// logger from another process embedding the NATS server or a dummy
+		// test logger that may not implement that interface.
+		if l, ok := s.logging.logger.(io.Closer); ok {
+			if err := l.Close(); err != nil {
+				s.Noticef("error closing logger: %v", err)
+			}
 		}
 	}
 	s.logging.logger = logger
