@@ -1706,6 +1706,53 @@ func TestConfigReloadMaxPayload(t *testing.T) {
 	}
 }
 
+// Ensure reload supports rotating out files. Test this by starting
+// a server with log and pid files, reloading new ones, then check that
+// we can rename and delete the old log/pid files.
+func TestConfigReloadRotateFiles(t *testing.T) {
+	opts, config := newOptionsWithSymlinkConfig(t, "tmp.conf", "./configs/reload/file_rotate.conf")
+	server := RunServer(opts)
+	defer func() {
+		os.Remove(config)
+		os.Remove("log1.txt")
+		os.Remove("gnatsd1.pid")
+	}()
+	defer server.Shutdown()
+
+	// Configure the logger to enable actual logging
+	server.ConfigureLogger()
+
+	// Load a config that renames the files.
+	createSymlink(t, config, "./configs/reload/file_rotate1.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Make sure the new files exist.
+	if _, err := os.Stat("log1.txt"); os.IsNotExist(err) {
+		t.Fatalf("Error reloading config, no new file: %v", err)
+	}
+	if _, err := os.Stat("gnatsd1.pid"); os.IsNotExist(err) {
+		t.Fatalf("Error reloading config, no new file: %v", err)
+	}
+
+	// Check that old file can be renamed.
+	if err := os.Rename("log.txt", "log_old.txt"); err != nil {
+		t.Fatalf("Error reloading config, cannot rename file: %v", err)
+	}
+	if err := os.Rename("gnatsd.pid", "gnatsd_old.pid"); err != nil {
+		t.Fatalf("Error reloading config, cannot rename file: %v", err)
+	}
+
+	// Check that the old files can be removed after rename.
+	if err := os.Remove("log_old.txt"); err != nil {
+		t.Fatalf("Error reloading config, cannot delete file: %v", err)
+	}
+	if err := os.Remove("gnatsd_old.pid"); err != nil {
+		t.Fatalf("Error reloading config, cannot delete file: %v", err)
+	}
+}
+
 func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	opts.NoLog = true

@@ -3,10 +3,11 @@
 package server
 
 import (
+	"io"
 	"os"
 	"sync/atomic"
 
-	"github.com/nats-io/gnatsd/logger"
+	srvlog "github.com/nats-io/gnatsd/logger"
 )
 
 // Logger interface of the NATS Server
@@ -45,11 +46,11 @@ func (s *Server) ConfigureLogger() {
 	}
 
 	if opts.LogFile != "" {
-		log = logger.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
+		log = srvlog.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
 	} else if opts.RemoteSyslog != "" {
-		log = logger.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
+		log = srvlog.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
 	} else if syslog {
-		log = logger.NewSysLogger(opts.Debug, opts.Trace)
+		log = srvlog.NewSysLogger(opts.Debug, opts.Trace)
 	} else {
 		colors := true
 		// Check to see if stderr is being redirected and if so turn off color
@@ -58,7 +59,7 @@ func (s *Server) ConfigureLogger() {
 		if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
 			colors = false
 		}
-		log = logger.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
+		log = srvlog.NewStdLogger(opts.Logtime, opts.Debug, opts.Trace, colors, true)
 	}
 
 	s.SetLogger(log, opts.Debug, opts.Trace)
@@ -76,8 +77,17 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	} else {
 		atomic.StoreInt32(&s.logging.trace, 0)
 	}
-
 	s.logging.Lock()
+	if s.logging.logger != nil {
+		// Check to see if the logger implements io.Closer.  This could be a
+		// logger from another process embedding the NATS server or a dummy
+		// test logger that may not implement that interface.
+		if l, ok := s.logging.logger.(io.Closer); ok {
+			if err := l.Close(); err != nil {
+				s.Errorf("Error closing logger: %v", err)
+			}
+		}
+	}
 	s.logging.logger = logger
 	s.logging.Unlock()
 }
@@ -102,7 +112,7 @@ func (s *Server) ReOpenLogFile() {
 	if opts.LogFile == "" {
 		s.Noticef("File log re-open ignored, not a file logger")
 	} else {
-		fileLog := logger.NewFileLogger(opts.LogFile,
+		fileLog := srvlog.NewFileLogger(opts.LogFile,
 			opts.Logtime, opts.Debug, opts.Trace, true)
 		s.SetLogger(fileLog, opts.Debug, opts.Trace)
 		s.Noticef("File log re-opened")
