@@ -512,7 +512,7 @@ func TestSublistRemoveWithWildcardsAsLiterals(t *testing.T) {
 	}
 }
 
-func TestSubListRaceOnRemove(t *testing.T) {
+func TestSublistRaceOnRemove(t *testing.T) {
 	s := NewSublist()
 
 	var (
@@ -584,6 +584,104 @@ func TestSubListRaceOnRemove(t *testing.T) {
 			}
 		}
 		wg.Wait()
+	}
+}
+
+func TestSublistRaceOnInsert(t *testing.T) {
+	s := NewSublist()
+
+	var (
+		total = 100
+		subs  = make(map[int]*subscription, total) // use map for randomness
+		wg    sync.WaitGroup
+	)
+	for i := 0; i < total; i++ {
+		sub := newQSub("foo", "bar")
+		subs[i] = sub
+	}
+	wg.Add(1)
+	go func() {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < 1000; i++ {
+		r := s.Match("foo")
+		for _, qsubs := range r.qsubs {
+			for _, qsub := range qsubs {
+				if string(qsub.queue) != "bar" {
+					t.Fatalf("Expected queue name to be bar, got %v", string(qsub.queue))
+				}
+			}
+		}
+	}
+	wg.Wait()
+
+	// Repeat the test with plain subs
+	for i := 0; i < total; i++ {
+		sub := newSub("foo")
+		subs[i] = sub
+	}
+	wg.Add(1)
+	go func() {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < 1000; i++ {
+		r := s.Match("foo")
+		for _, sub := range r.psubs {
+			if string(sub.subject) != "foo" {
+				t.Fatalf("Expected subject to be foo, got %v", string(sub.subject))
+			}
+		}
+	}
+	wg.Wait()
+}
+
+func TestSublistRaceOnMatch(t *testing.T) {
+	s := NewSublist()
+	s.Insert(newQSub("foo.*", "workers"))
+	s.Insert(newQSub("foo.bar", "workers"))
+	s.Insert(newSub("foo.*"))
+	s.Insert(newSub("foo.bar"))
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	errCh := make(chan error, 2)
+	f := func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			r := s.Match("foo.bar")
+			for _, sub := range r.psubs {
+				if !strings.HasPrefix(string(sub.subject), "foo.") {
+					errCh <- fmt.Errorf("Wrong subject: %s", sub.subject)
+					return
+				}
+			}
+			for _, qsub := range r.qsubs {
+				for _, sub := range qsub {
+					if string(sub.queue) != "workers" {
+						errCh <- fmt.Errorf("Wrong queue name: %s", sub.queue)
+						return
+					}
+				}
+			}
+			// Empty cache to maximize chance for race
+			s.Lock()
+			delete(s.cache, "foo.bar")
+			s.Unlock()
+		}
+	}
+	go f()
+	go f()
+	wg.Wait()
+	select {
+	case e := <-errCh:
+		t.Fatalf(e.Error())
+	default:
 	}
 }
 
