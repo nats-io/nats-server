@@ -1,7 +1,8 @@
 ## <img src="logos/nats-server.png" width="300">
 [![License][License-Image]][License-Url] [![ReportCard][ReportCard-Image]][ReportCard-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Coverage][Coverage-Image]][Coverage-Url]
 
-A High Performance [NATS](https://nats.io) Server written in [Go.](http://golang.org)
+A High Performance [NATS](https://nats.io) Server written in [Go](http://golang.org) and hosted by the Cloud Native Computing Foundation ([CNCF](https://cncf.io)).
+
 
 ## Quickstart
 
