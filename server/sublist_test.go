@@ -1,3 +1,6 @@
+// Copyright 2012-2017 Apcera Inc. All rights reserved.
+// Copyright 2018 Synadia Communications Inc. All rights reserved.
+
 package server
 
 import (
@@ -506,6 +509,179 @@ func TestSublistRemoveWithWildcardsAsLiterals(t *testing.T) {
 		if c := s.Count(); c != 0 {
 			t.Fatalf("Expected sublist to be empty, got %v", c)
 		}
+	}
+}
+
+func TestSublistRaceOnRemove(t *testing.T) {
+	s := NewSublist()
+
+	var (
+		total = 100
+		subs  = make(map[int]*subscription, total) // use map for randomness
+	)
+	for i := 0; i < total; i++ {
+		sub := newQSub("foo", "bar")
+		subs[i] = sub
+	}
+
+	for i := 0; i < 2; i++ {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		// Call Match() once or twice, to make sure we get from cache
+		if i == 1 {
+			s.Match("foo")
+		}
+		// This will be from cache when i==1
+		r := s.Match("foo")
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			for _, sub := range subs {
+				s.Remove(sub)
+			}
+			wg.Done()
+		}()
+		for _, qsub := range r.qsubs {
+			for i := 0; i < len(qsub); i++ {
+				sub := qsub[i]
+				if string(sub.queue) != "bar" {
+					t.Fatalf("Queue name should be bar, got %s", qsub[i].queue)
+				}
+			}
+		}
+		wg.Wait()
+	}
+
+	// Repeat tests with regular subs
+	for i := 0; i < total; i++ {
+		sub := newSub("foo")
+		subs[i] = sub
+	}
+
+	for i := 0; i < 2; i++ {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		// Call Match() once or twice, to make sure we get from cache
+		if i == 1 {
+			s.Match("foo")
+		}
+		// This will be from cache when i==1
+		r := s.Match("foo")
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			for _, sub := range subs {
+				s.Remove(sub)
+			}
+			wg.Done()
+		}()
+		for i := 0; i < len(r.psubs); i++ {
+			sub := r.psubs[i]
+			if string(sub.subject) != "foo" {
+				t.Fatalf("Subject should be foo, got %s", sub.subject)
+			}
+		}
+		wg.Wait()
+	}
+}
+
+func TestSublistRaceOnInsert(t *testing.T) {
+	s := NewSublist()
+
+	var (
+		total = 100
+		subs  = make(map[int]*subscription, total) // use map for randomness
+		wg    sync.WaitGroup
+	)
+	for i := 0; i < total; i++ {
+		sub := newQSub("foo", "bar")
+		subs[i] = sub
+	}
+	wg.Add(1)
+	go func() {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < 1000; i++ {
+		r := s.Match("foo")
+		for _, qsubs := range r.qsubs {
+			for _, qsub := range qsubs {
+				if string(qsub.queue) != "bar" {
+					t.Fatalf("Expected queue name to be bar, got %v", string(qsub.queue))
+				}
+			}
+		}
+	}
+	wg.Wait()
+
+	// Repeat the test with plain subs
+	for i := 0; i < total; i++ {
+		sub := newSub("foo")
+		subs[i] = sub
+	}
+	wg.Add(1)
+	go func() {
+		for _, sub := range subs {
+			s.Insert(sub)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < 1000; i++ {
+		r := s.Match("foo")
+		for _, sub := range r.psubs {
+			if string(sub.subject) != "foo" {
+				t.Fatalf("Expected subject to be foo, got %v", string(sub.subject))
+			}
+		}
+	}
+	wg.Wait()
+}
+
+func TestSublistRaceOnMatch(t *testing.T) {
+	s := NewSublist()
+	s.Insert(newQSub("foo.*", "workers"))
+	s.Insert(newQSub("foo.bar", "workers"))
+	s.Insert(newSub("foo.*"))
+	s.Insert(newSub("foo.bar"))
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	errCh := make(chan error, 2)
+	f := func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			r := s.Match("foo.bar")
+			for _, sub := range r.psubs {
+				if !strings.HasPrefix(string(sub.subject), "foo.") {
+					errCh <- fmt.Errorf("Wrong subject: %s", sub.subject)
+					return
+				}
+			}
+			for _, qsub := range r.qsubs {
+				for _, sub := range qsub {
+					if string(sub.queue) != "workers" {
+						errCh <- fmt.Errorf("Wrong queue name: %s", sub.queue)
+						return
+					}
+				}
+			}
+			// Empty cache to maximize chance for race
+			s.Lock()
+			delete(s.cache, "foo.bar")
+			s.Unlock()
+		}
+	}
+	go f()
+	go f()
+	wg.Wait()
+	select {
+	case e := <-errCh:
+		t.Fatalf(e.Error())
+	default:
 	}
 }
 

@@ -261,7 +261,7 @@ func addNodeToResults(n *node, results *SublistResult) {
 		if i := findQSliceForSub(qr[0], results.qsubs); i >= 0 {
 			results.qsubs[i] = append(results.qsubs[i], qr...)
 		} else {
-			results.qsubs = append(results.qsubs, qr)
+			results.qsubs = append(results.qsubs, append([]*subscription(nil), qr...))
 		}
 	}
 }
