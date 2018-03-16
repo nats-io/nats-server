@@ -5,7 +5,7 @@
 			"importpath": "github.com/nats-io/nuid",
 			"repository": "https://github.com/nats-io/nuid",
 			"vcs": "git",
-			"revision": "289cccf02c178dc782430d534e3c1f5b72af807f",
+			"revision": "28b996b57a46dd0c2aa3a3dc7fa8780878331d00",
 			"branch": "master",
 			"notests": true
 		},
