@@ -5,23 +5,24 @@ package server
 // SortOpt is a helper type to sort by ConnInfo values
 type SortOpt string
 
+// Possible sort options
 const (
-	byCid      SortOpt = "cid"
-	bySubs     SortOpt = "subs"
-	byPending  SortOpt = "pending"
-	byOutMsgs  SortOpt = "msgs_to"
-	byInMsgs   SortOpt = "msgs_from"
-	byOutBytes SortOpt = "bytes_to"
-	byInBytes  SortOpt = "bytes_from"
-	byLast     SortOpt = "last"
-	byIdle     SortOpt = "idle"
-	byUptime   SortOpt = "uptime"
+	ByCid      SortOpt = "cid"        // By connection ID
+	BySubs     SortOpt = "subs"       // By number of subscriptions
+	ByPending  SortOpt = "pending"    // By amount of data in bytes waiting to be sent to client
+	ByOutMsgs  SortOpt = "msgs_to"    // By number of messages sent
+	ByInMsgs   SortOpt = "msgs_from"  // By number of messages received
+	ByOutBytes SortOpt = "bytes_to"   // By amount of bytes sent
+	ByInBytes  SortOpt = "bytes_from" // By amount of bytes received
+	ByLast     SortOpt = "last"       // By the last activity
+	ByIdle     SortOpt = "idle"       // By the amount of inactivity
+	ByUptime   SortOpt = "uptime"     // By the amount of time connections exist
 )
 
 // IsValid determines if a sort option is valid
 func (s SortOpt) IsValid() bool {
 	switch s {
-	case "", byCid, bySubs, byPending, byOutMsgs, byInMsgs, byOutBytes, byInBytes, byLast, byIdle, byUptime:
+	case "", ByCid, BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes, ByLast, ByIdle, ByUptime:
 		return true
 	default:
 		return false
