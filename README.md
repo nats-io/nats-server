@@ -252,7 +252,7 @@ max_control_line: 512
 # maximum payload
 max_payload: 65536
 
-# Duration the server can block on a socket write to a client.  Exceeding the 
+# Duration the server can block on a socket write to a client.  Exceeding the
 # deadline will designate a client as a slow consumer.
 write_deadline: "2s"
 ```
@@ -496,7 +496,7 @@ authorization {
 >If you chose to use a token for client's authentication and generate the token by `/util/mkpasswd.go` then you must use the generated bcrypt hash as the token in server config, as written above, and the generated pass as the token in client configurations.
 
 ```
-$ go run util/mkpasswd.go 
+$ go run util/mkpasswd.go
 pass: D#6)e0ht^@61kU5!^!owrX // NATS client token
 bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server authorization token
 ```
@@ -784,33 +784,8 @@ The NATS maintainers hold online open office hours on the __2nd Monday of every 
 The office hours agenda and how to join can be found [here](https://docs.google.com/a/synadia.com/document/d/1b_ffYvd7eZ4idtRCyQNwlpXV0slN2QGJxueEDbjX6QI/edit?usp=sharing), where we hope you'll comment about what you would like to discuss!
 
 
-
-## License
-
-(The MIT License)
-
-Copyright (c) 2012-2017 Apcera Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to
-deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-sell copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-IN THE SOFTWARE.
-
-[License-Url]: http://opensource.org/licenses/MIT
-[License-Image]: https://img.shields.io/badge/License-MIT-blue.svg
+[License-Url]: https://www.apache.org/licenses/LICENSE-2.0
+[License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
 [Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.0.6
@@ -820,3 +795,8 @@ IN THE SOFTWARE.
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
 [ReportCard-Image]: http://goreportcard.com/badge/github.com/nats-io/gnatsd
 [github-release]: https://github.com/nats-io/gnatsd/releases/
+
+## License
+
+Unless otherwise noted, the NATS source files are distributed
+under the Apache Version 2.0 license found in the LICENSE file.
