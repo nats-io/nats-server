@@ -103,6 +103,7 @@ func TestNoMonitorPort(t *testing.T) {
 var (
 	appJSONContent = "application/json"
 	appJSContent   = "application/javascript"
+	textPlain      = "text/plain; charset=utf-8"
 )
 
 func readBodyEx(t *testing.T, url string, status int, content string) []byte {
@@ -126,7 +127,7 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 }
 
 func readBody(t *testing.T, url string) []byte {
-	return readBodyEx(t, url, 200, appJSONContent)
+	return readBodyEx(t, url, http.StatusOK, appJSONContent)
 }
 
 func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) *Varz {
@@ -187,7 +188,7 @@ func TestHandleVarz(t *testing.T) {
 	}
 
 	// Test JSONP
-	readBodyEx(t, url+"varz?callback=callback", 200, appJSContent)
+	readBodyEx(t, url+"varz?callback=callback", http.StatusOK, appJSContent)
 }
 
 func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions) *Connz {
@@ -314,7 +315,18 @@ func TestConnz(t *testing.T) {
 	}
 
 	// Test JSONP
-	readBodyEx(t, url+"connz?callback=callback", 200, appJSContent)
+	readBodyEx(t, url+"connz?callback=callback", http.StatusOK, appJSContent)
+}
+
+func TestConnzBadParams(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://localhost:%d/connz?", s.MonitorAddr().Port)
+	readBodyEx(t, url+"auth=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"offset=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"limit=xxx", http.StatusBadRequest, textPlain)
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -759,7 +771,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
-	readBodyEx(t, url+"connz?sort=foo", 400, "text/plain; charset=utf-8")
+	readBodyEx(t, url+"connz?sort=foo", http.StatusBadRequest, textPlain)
 
 	if _, err := s.Connz(&ConnzOptions{Sort: "foo"}); err == nil {
 		t.Fatal("Expected error, got none")
@@ -856,7 +868,15 @@ func TestConnzWithRoutes(t *testing.T) {
 	}
 
 	// Test JSONP
-	readBodyEx(t, url+"routez?callback=callback", 200, appJSContent)
+	readBodyEx(t, url+"routez?callback=callback", http.StatusOK, appJSContent)
+}
+
+func TestRoutezWithBadParams(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://localhost:%d/routez?", s.MonitorAddr().Port)
+	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
 }
 
 func pollSubsz(t *testing.T, s *Server, mode int, url string, opts *SubszOptions) *Subsz {
@@ -896,7 +916,7 @@ func TestSubsz(t *testing.T) {
 	}
 
 	// Test JSONP
-	readBodyEx(t, url+"subscriptionsz?callback=callback", 200, appJSContent)
+	readBodyEx(t, url+"subscriptionsz?callback=callback", http.StatusOK, appJSContent)
 }
 
 // Tests handle root
@@ -911,8 +931,8 @@ func TestHandleRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected a %d response, got %d\n", http.StatusOK, resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1023,8 +1043,8 @@ func TestConcurrentMonitoring(t *testing.T) {
 					ech <- fmt.Sprintf("Expected no error: Got %v\n", err)
 					return
 				}
-				if resp.StatusCode != 200 {
-					ech <- fmt.Sprintf("Expected a 200 response, got %d\n", resp.StatusCode)
+				if resp.StatusCode != http.StatusOK {
+					ech <- fmt.Sprintf("Expected a %v response, got %d\n", http.StatusOK, resp.StatusCode)
 					return
 				}
 				ct := resp.Header.Get("Content-Type")

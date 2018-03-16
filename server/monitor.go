@@ -278,13 +278,39 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	return c, nil
 }
 
+func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error) {
+	str := r.URL.Query().Get(param)
+	if str == "" {
+		return 0, nil
+	}
+	val, err := strconv.Atoi(str)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Error decoding %s: %v", param, err)))
+		return 0, err
+	}
+	return val, nil
+}
+
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
-	auth, _ := strconv.Atoi(r.URL.Query().Get("auth"))
-	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	auth, err := decodeInt(w, r, "auth")
+	if err != nil {
+		return
+	}
+	subs, err := decodeInt(w, r, "subs")
+	if err != nil {
+		return
+	}
+	offset, err := decodeInt(w, r, "offset")
+	if err != nil {
+		return
+	}
+	limit, err := decodeInt(w, r, "limit")
+	if err != nil {
+		return
+	}
 
 	connzOpts := &ConnzOptions{
 		Sort:          sortOpt,
@@ -411,7 +437,10 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 // HandleRoutez process HTTP requests for route information.
 func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
-	subs, _ := strconv.Atoi(r.URL.Query().Get("subs"))
+	subs, err := decodeInt(w, r, "subs")
+	if err != nil {
+		return
+	}
 	var opts *RoutezOptions
 	if subs == 1 {
 		opts = &RoutezOptions{Subscriptions: true}
