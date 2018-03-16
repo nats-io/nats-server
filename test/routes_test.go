@@ -389,9 +389,9 @@ func TestRouteQueueSemantics(t *testing.T) {
 	// Queue group one.
 	routeSend("MSG foo QRSID:1:2 2\r\nok\r\n")
 	// Invlaid queue sid.
-	routeSend("MSG foo QRSID 2\r\nok\r\n")
-	routeSend("MSG foo QRSID:1 2\r\nok\r\n")
-	routeSend("MSG foo QRSID:1: 2\r\nok\r\n")
+	routeSend("MSG foo QRSID 2\r\nok\r\n")    // cid and sid missing
+	routeSend("MSG foo QRSID:1 2\r\nok\r\n")  // cid not terminated with ':'
+	routeSend("MSG foo QRSID:1: 2\r\nok\r\n") // cid==1 but sid missing. It needs to be at least one character.
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
