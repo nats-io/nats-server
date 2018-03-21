@@ -1049,3 +1049,152 @@ func TestMapInclude(t *testing.T) {
 	lx = lex("foo { include \"users.conf\"}")
 	expect(t, lx, expectedItems)
 }
+
+func TestJSONCompat(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		input    string
+		expected []item
+	}{
+		{
+			name: "should omit initial and final brackets at top level with a single item",
+			input: `
+                        {
+                          "http_port": 8223
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 3},
+				{itemInteger, "8223", 3},
+			},
+		},
+		{
+			name: "should omit trailing commas at top level with two items",
+			input: `
+                        {
+                          "http_port": 8223,
+                          "port": 4223
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 3},
+				{itemInteger, "8223", 3},
+				{itemKey, "port", 4},
+				{itemInteger, "4223", 4},
+			},
+		},
+		{
+			name: "should omit trailing commas at top level with multiple items",
+			input: `
+                        {
+                          "http_port": 8223,
+                          "port": 4223,
+                          "max_payload": "5MB",
+                          "debug": true,
+                          "max_control_line": 1024
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 3},
+				{itemInteger, "8223", 3},
+				{itemKey, "port", 4},
+				{itemInteger, "4223", 4},
+				{itemKey, "max_payload", 5},
+				{itemString, "5MB", 5},
+				{itemKey, "debug", 6},
+				{itemBool, "true", 6},
+				{itemKey, "max_control_line", 7},
+				{itemInteger, "1024", 7},
+			},
+		},
+		{
+			name: "should support JSON not prettified",
+			input: `{"http_port": 8224,"port": 4224}
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 1},
+				{itemInteger, "8224", 1},
+				{itemKey, "port", 1},
+				{itemInteger, "4224", 1},
+			},
+		},
+		{
+			name: "should support JSON not prettified with final bracket after newline",
+			input: `{"http_port": 8225,"port": 4225
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 1},
+				{itemInteger, "8225", 1},
+				{itemKey, "port", 1},
+				{itemInteger, "4225", 1},
+			},
+		},
+		{
+			name: "should support uglified JSON with inner blocks",
+			input: `{"http_port": 8227,"port": 4227,"write_deadline": "1h","cluster": {"port": 6222,"routes": ["nats://127.0.0.1:4222","nats://127.0.0.1:4223","nats://127.0.0.1:4224"]}}
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 1},
+				{itemInteger, "8227", 1},
+				{itemKey, "port", 1},
+				{itemInteger, "4227", 1},
+				{itemKey, "write_deadline", 1},
+				{itemString, "1h", 1},
+				{itemKey, "cluster", 1},
+				{itemMapStart, "", 1},
+				{itemKey, "port", 1},
+				{itemInteger, "6222", 1},
+				{itemKey, "routes", 1},
+				{itemArrayStart, "", 1},
+				{itemString, "nats://127.0.0.1:4222", 1},
+				{itemString, "nats://127.0.0.1:4223", 1},
+				{itemString, "nats://127.0.0.1:4224", 1},
+				{itemArrayEnd, "", 1},
+				{itemMapEnd, "", 1},
+			},
+		},
+		{
+			name: "should support prettified JSON with inner blocks",
+			input: `
+                        {
+                          "http_port": 8227,
+                          "port": 4227,
+                          "write_deadline": "1h",
+                          "cluster": {
+                            "port": 6222,
+                            "routes": [
+                              "nats://127.0.0.1:4222",
+                              "nats://127.0.0.1:4223",
+                              "nats://127.0.0.1:4224"
+                            ]
+                          }
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "http_port", 3},
+				{itemInteger, "8227", 3},
+				{itemKey, "port", 4},
+				{itemInteger, "4227", 4},
+				{itemKey, "write_deadline", 5},
+				{itemString, "1h", 5},
+				{itemKey, "cluster", 6},
+				{itemMapStart, "", 6},
+				{itemKey, "port", 7},
+				{itemInteger, "6222", 7},
+				{itemKey, "routes", 8},
+				{itemArrayStart, "", 8},
+				{itemString, "nats://127.0.0.1:4222", 9},
+				{itemString, "nats://127.0.0.1:4223", 10},
+				{itemString, "nats://127.0.0.1:4224", 11},
+				{itemArrayEnd, "", 12},
+				{itemMapEnd, "", 13},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lx := lex(test.input)
+			expect(t, lx, test.expected)
+		})
+	}
+}
