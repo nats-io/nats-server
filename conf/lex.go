@@ -73,6 +73,9 @@ const (
 	sqStringStart     = '\''
 	sqStringEnd       = '\''
 	optValTerm        = ';'
+	topOptStart       = '{'
+	topOptValTerm     = ','
+	topOptTerm        = '}'
 	blockStart        = '('
 	blockEnd          = ')'
 )
@@ -234,6 +237,8 @@ func lexTop(lx *lexer) stateFn {
 	}
 
 	switch r {
+	case topOptStart:
+		return lexSkip(lx, lexTop)
 	case commentHashStart:
 		lx.push(lexTop)
 		return lexCommentStart
@@ -280,7 +285,7 @@ func lexTopValueEnd(lx *lexer) stateFn {
 		fallthrough
 	case isWhitespace(r):
 		return lexTopValueEnd
-	case isNL(r) || r == eof || r == optValTerm:
+	case isNL(r) || r == eof || r == optValTerm || r == topOptValTerm || r == topOptTerm:
 		lx.ignore()
 		return lexTop
 	}
