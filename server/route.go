@@ -659,12 +659,13 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	}
 
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
-	s.Noticef("Listening for route connections on %s", hp)
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
 		return
 	}
+	s.Noticef("Listening for route connections on %s",
+		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	s.mu.Lock()
 	// Check for TLSConfig
