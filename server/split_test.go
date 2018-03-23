@@ -252,7 +252,7 @@ func TestSplitBufferPubOp5(t *testing.T) {
 
 func TestSplitConnectArg(t *testing.T) {
 	c := &client{subs: make(map[string]*subscription)}
-	connectAll := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
+	connectAll := []byte("CONNECT {\"verbose\":false,\"tls_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 
 	argJSON := connectAll[8:]
@@ -342,7 +342,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 
 	// CONNECT_ARG
-	connop := []byte("CONNECT {\"verbose\":false,\"ssl_required\":false," +
+	connop := []byte("CONNECT {\"verbose\":false,\"tls_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 	c.parse(connop[:22])
 	c.parse(connop[22:])

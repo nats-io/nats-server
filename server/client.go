@@ -175,7 +175,7 @@ type subscription struct {
 type clientOpts struct {
 	Verbose       bool   `json:"verbose"`
 	Pedantic      bool   `json:"pedantic"`
-	SslRequired   bool   `json:"ssl_required"`
+	TLSRequired   bool   `json:"tls_required"`
 	Authorization string `json:"auth_token"`
 	Username      string `json:"user"`
 	Password      string `json:"pass"`

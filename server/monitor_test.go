@@ -1037,7 +1037,7 @@ func TestConcurrentMonitoring(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	// Get some endpoints. Make sure we have at least varz,
 	// and the more the merrier.
 	endpoints := []string{"varz", "varz", "varz", "connz", "connz", "subsz", "subsz", "routez", "routez"}

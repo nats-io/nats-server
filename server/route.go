@@ -674,7 +674,6 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		Version:      s.info.Version,
 		AuthRequired: false,
 		TLSRequired:  tlsReq,
-		SSLRequired:  tlsReq,
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
 	}

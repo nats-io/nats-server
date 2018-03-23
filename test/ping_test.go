@@ -64,7 +64,7 @@ func TestPingSentToTLSConnection(t *testing.T) {
 	tlsConn := c.(*tls.Conn)
 	tlsConn.Handshake()
 
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", false, false, true)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v}\r\n", false, false, true)
 	sendProto(t, c, cs)
 
 	expect := expectCommand(t, c)

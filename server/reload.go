@@ -245,7 +245,6 @@ func (c *clusterOption) Apply(server *Server) {
 	server.mu.Lock()
 	tlsRequired := c.newValue.TLSConfig != nil
 	server.routeInfo.TLSRequired = tlsRequired
-	server.routeInfo.SSLRequired = tlsRequired
 	server.routeInfo.TLSVerify = tlsRequired
 	server.routeInfo.AuthRequired = c.newValue.Username != ""
 	if c.newValue.NoAdvertise {

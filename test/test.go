@@ -173,7 +173,7 @@ func checkInfoMsg(t tLogger, c net.Conn) server.Info {
 
 func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
 	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v}\r\n", verbose, pedantic, ssl)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v}\r\n", verbose, pedantic, ssl)
 	sendProto(t, c, cs)
 }
 
@@ -210,7 +210,7 @@ func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
 
 func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
 	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"ssl_required\":%v,\"protocol\":%d}\r\n", false, false, false, proto)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"protocol\":%d}\r\n", false, false, false, proto)
 	sendProto(t, c, cs)
 	return sendCommand(t, c), expectCommand(t, c)
 }

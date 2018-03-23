@@ -37,7 +37,7 @@ type serverInfo struct {
 	Port         uint   `json:"port"`
 	Version      string `json:"version"`
 	AuthRequired bool   `json:"auth_required"`
-	TLSRequired  bool   `json:"ssl_required"`
+	TLSRequired  bool   `json:"tls_required"`
 	MaxPayload   int64  `json:"max_payload"`
 }
 
@@ -121,7 +121,7 @@ func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
 	// Basic Connect setting flags
-	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false}\r\n")
 	err := c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -182,7 +182,7 @@ func TestClientConnectProto(t *testing.T) {
 	_, c, r := setupClient()
 
 	// Basic Connect setting flags, proto should be zero (original proto)
-	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false}\r\n")
 	err := c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -195,7 +195,7 @@ func TestClientConnectProto(t *testing.T) {
 	}
 
 	// ProtoInfo
-	connectOp = []byte(fmt.Sprintf("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false,\"protocol\":%d}\r\n", ClientProtoInfo))
+	connectOp = []byte(fmt.Sprintf("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false,\"protocol\":%d}\r\n", ClientProtoInfo))
 	err = c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
