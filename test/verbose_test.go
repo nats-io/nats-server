@@ -51,7 +51,7 @@ func TestVerboseConnect(t *testing.T) {
 	expect(okRe)
 
 	// Connect
-	send("CONNECT {\"verbose\":true,\"pedantic\":true,\"ssl_required\":false}\r\n")
+	send("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false}\r\n")
 	expect(okRe)
 }
 

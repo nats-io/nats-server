@@ -45,7 +45,6 @@ type Info struct {
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
 	AuthRequired      bool     `json:"auth_required"`
-	SSLRequired       bool     `json:"ssl_required"` // DEPRECATED: ssl json used for older clients
 	TLSRequired       bool     `json:"tls_required"`
 	TLSVerify         bool     `json:"tls_verify"`
 	MaxPayload        int      `json:"max_payload"`
@@ -138,7 +137,6 @@ func New(opts *Options) *Server {
 		Port:              opts.Port,
 		AuthRequired:      false,
 		TLSRequired:       tlsReq,
-		SSLRequired:       tlsReq,
 		TLSVerify:         verify,
 		MaxPayload:        opts.MaxPayload,
 		clientConnectURLs: make(map[string]struct{}),

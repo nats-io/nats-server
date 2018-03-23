@@ -71,7 +71,7 @@ The NATS server uses a [text based protocol](http://nats.io/documentation/intern
 Trying 107.170.221.32...
 Connected to demo.nats.io.
 Escape character is '^]'.
-INFO {"server_id":"JUOufISZqT09TSan4iBHCJ","version":"1.0.6","git_commit":"","go":"go1.9.4","host":"0.0.0.0","port":4222,"auth_required":false,"ssl_required":false,"tls_required":false,"tls_verify":false,"max_payload":1048576}
+INFO {"server_id":"JUOufISZqT09TSan4iBHCJ","version":"1.0.6","git_commit":"","go":"go1.9.4","host":"0.0.0.0","port":4222,"auth_required":false,"tls_required":false,"tls_verify":false,"max_payload":1048576}
 SUB foo 1
 +OK
 PUB foo 11

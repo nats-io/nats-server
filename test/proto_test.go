@@ -202,7 +202,7 @@ func TestProtoCrash(t *testing.T) {
 
 	checkInfoMsg(t, c)
 
-	send("CONNECT {\"verbose\":true,\"ssl_required\":false,\"user\":\"test\",\"pedantic\":true,\"pass\":\"password\"}")
+	send("CONNECT {\"verbose\":true,\"tls_required\":false,\"user\":\"test\",\"pedantic\":true,\"pass\":\"password\"}")
 
 	time.Sleep(100 * time.Millisecond)
 
