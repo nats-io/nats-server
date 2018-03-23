@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,23 @@ func RunServer(opts *Options) *Server {
 		panic("Unable to start NATS Server in Go Routine")
 	}
 	return s
+}
+
+func TestVersionMatchesTag(t *testing.T) {
+	tag := os.Getenv("TRAVIS_TAG")
+	if tag == "" {
+		t.SkipNow()
+	}
+	// We expect a tag of the form vX.Y.Z. If that's not the case,
+	// we need someone to have a look. So fail if first letter is not
+	// a `v`
+	if tag[0] != 'v' {
+		t.Fatalf("Expect tag to start with `v`, tag is: %s", tag)
+	}
+	// Strip the `v` from the tag for the version comparison.
+	if VERSION != tag[1:] {
+		t.Fatalf("Version (%s) does not match tag (%s)", VERSION, tag[1:])
+	}
 }
 
 func TestStartProfiler(t *testing.T) {
