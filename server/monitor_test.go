@@ -371,10 +371,6 @@ func TestConnzLastActivity(t *testing.T) {
 		defer nc.Close()
 		nc.Flush()
 
-		nc2 := createClientConnSubscribeAndPublish(t, s)
-		defer nc2.Close()
-		nc2.Flush()
-
 		// Test inside details of each connection
 		ci := pollConz(t, s, mode, url, opts).Conns[0]
 		if len(ci.Subs) != 1 {
@@ -429,8 +425,7 @@ func TestConnzLastActivity(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Message delivery should trigger as well
-		nc2.Publish("foo", []byte("Hello"))
-		nc2.Flush()
+		nc.Publish("foo", []byte("Hello"))
 		nc.Flush()
 		ci = pollConz(t, s, mode, url, opts).Conns[0]
 		msgLast := ci.LastActivity

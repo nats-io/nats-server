@@ -769,7 +769,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	c.traceInOp("SUB", argo)
 
 	// Indicate activity.
-	c.cache.subs += 1
+	c.cache.subs++
 
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
