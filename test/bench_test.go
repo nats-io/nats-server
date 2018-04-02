@@ -39,7 +39,7 @@ const defaultSendBufSize = 32768
 func flushConnection(b *testing.B, c net.Conn) {
 	buf := make([]byte, 32)
 	c.Write([]byte("PING\r\n"))
-	c.SetReadDeadline(time.Now().Add(1 * time.Second))
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := c.Read(buf)
 	c.SetReadDeadline(time.Time{})
 	if err != nil {
@@ -86,47 +86,47 @@ func sizedString(sz int) string {
 // Publish subject for pub benchmarks.
 var psub = "a"
 
-func Benchmark_____Pub0b_Payload(b *testing.B) {
+func Benchmark______Pub0b_Payload(b *testing.B) {
 	benchPub(b, psub, "")
 }
 
-func Benchmark_____Pub8b_Payload(b *testing.B) {
+func Benchmark______Pub8b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8)
 	benchPub(b, psub, s)
 }
 
-func Benchmark____Pub32b_Payload(b *testing.B) {
+func Benchmark_____Pub32b_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(32)
 	benchPub(b, psub, s)
 }
 
-func Benchmark___Pub128B_Payload(b *testing.B) {
+func Benchmark____Pub128B_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(128)
 	benchPub(b, psub, s)
 }
 
-func Benchmark___Pub256B_Payload(b *testing.B) {
+func Benchmark____Pub256B_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(256)
 	benchPub(b, psub, s)
 }
 
-func Benchmark_____Pub1K_Payload(b *testing.B) {
+func Benchmark______Pub1K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(1024)
 	benchPub(b, psub, s)
 }
 
-func Benchmark_____Pub4K_Payload(b *testing.B) {
+func Benchmark______Pub4K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(4 * 1024)
 	benchPub(b, psub, s)
 }
 
-func Benchmark_____Pub8K_Payload(b *testing.B) {
+func Benchmark______Pub8K_Payload(b *testing.B) {
 	b.StopTimer()
 	s := sizedString(8 * 1024)
 	benchPub(b, psub, s)
@@ -137,7 +137,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	bytes := 0
 
 	for {
-		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		c.SetReadDeadline(time.Now().Add(30 * time.Second))
 		n, err := c.Read(buf)
 		if err != nil {
 			b.Errorf("Error on read: %v\n", err)
@@ -155,7 +155,7 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 }
 
 // Benchmark the authorization code path.
-func Benchmark_AuthPub0b_Payload(b *testing.B) {
+func Benchmark__AuthPub0b_Payload(b *testing.B) {
 	b.StopTimer()
 
 	srv, opts := RunServerWithConfig("./configs/authorization.conf")
@@ -180,7 +180,7 @@ func Benchmark_AuthPub0b_Payload(b *testing.B) {
 	b.StopTimer()
 }
 
-func Benchmark____________PubSub(b *testing.B) {
+func Benchmark_____________PubSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -212,7 +212,7 @@ func Benchmark____________PubSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark____PubSubTwoConns(b *testing.B) {
+func Benchmark_____PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -248,7 +248,7 @@ func Benchmark____PubSubTwoConns(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark____PubTwoQueueSub(b *testing.B) {
+func Benchmark_____PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -281,7 +281,7 @@ func Benchmark____PubTwoQueueSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark___PubFourQueueSub(b *testing.B) {
+func Benchmark____PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -316,7 +316,7 @@ func Benchmark___PubFourQueueSub(b *testing.B) {
 	s.Shutdown()
 }
 
-func Benchmark__PubEightQueueSub(b *testing.B) {
+func Benchmark___PubEightQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
 	c := createClientConn(b, "localhost", PERF_PORT)
@@ -400,15 +400,15 @@ func routePubSub(b *testing.B, size int) {
 	sub.Close()
 }
 
-func Benchmark___RoutedPubSub_0b(b *testing.B) {
+func Benchmark____RoutedPubSub_0b(b *testing.B) {
 	routePubSub(b, 2)
 }
 
-func Benchmark___RoutedPubSub_1K(b *testing.B) {
+func Benchmark____RoutedPubSub_1K(b *testing.B) {
 	routePubSub(b, 1024)
 }
 
-func Benchmark_RoutedPubSub_100K(b *testing.B) {
+func Benchmark__RoutedPubSub_100K(b *testing.B) {
 	routePubSub(b, 100*1024)
 }
 
@@ -459,18 +459,172 @@ func routeQueue(b *testing.B, numQueueSubs, size int) {
 	sub.Close()
 }
 
-func Benchmark___Routed2QueueSub(b *testing.B) {
+func Benchmark____Routed2QueueSub(b *testing.B) {
 	routeQueue(b, 2, 2)
 }
 
-func Benchmark___Routed4QueueSub(b *testing.B) {
+func Benchmark____Routed4QueueSub(b *testing.B) {
 	routeQueue(b, 4, 2)
 }
 
-func Benchmark___Routed8QueueSub(b *testing.B) {
+func Benchmark____Routed8QueueSub(b *testing.B) {
 	routeQueue(b, 8, 2)
 }
 
-func Benchmark__Routed16QueueSub(b *testing.B) {
+func Benchmark___Routed16QueueSub(b *testing.B) {
 	routeQueue(b, 16, 2)
+}
+
+func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, subject, payload string) {
+	b.StopTimer()
+
+	var s1, s2 *server.Server
+	var o1, o2 *server.Options
+
+	switch numServers {
+	case 1:
+		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		defer s1.Shutdown()
+		s2, o2 = s1, o1
+	case 2:
+		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		defer s1.Shutdown()
+		s2, o2 = RunServerWithConfig("./configs/srv_b.conf")
+		defer s2.Shutdown()
+	default:
+		b.Fatalf("%d servers not supported for this test\n", numServers)
+	}
+
+	// To get a consistent length sid in MSG sent to us for drainConnection.
+	var sidFloor int
+	switch {
+	case subsPerConnection <= 100:
+		sidFloor = 100
+	case subsPerConnection <= 1000:
+		sidFloor = 1000
+	case subsPerConnection <= 10000:
+		sidFloor = 10000
+	default:
+		b.Fatalf("Unsupported SubsPerConnection argument of %d\n", subsPerConnection)
+	}
+
+	msgOp := fmt.Sprintf("MSG %s %d %d\r\n%s\r\n", subject, sidFloor, len(payload), payload)
+	expected := len(msgOp) * subsPerConnection * b.N
+
+	// Client connections and subscriptions.
+	clients := make([]chan bool, 0, numConnections)
+	for i := 0; i < numConnections; i++ {
+		c := createClientConn(b, o2.Host, o2.Port)
+		doDefaultConnect(b, c)
+		defer c.Close()
+
+		ch := make(chan bool)
+		clients = append(clients, ch)
+
+		for s := 0; s < subsPerConnection; s++ {
+			subOp := fmt.Sprintf("SUB %s %d\r\n", subject, sidFloor+s)
+			sendProto(b, c, subOp)
+		}
+		flushConnection(b, c)
+
+		go drainConnection(b, c, ch, expected)
+	}
+	// Publish Connection
+	c := createClientConn(b, o1.Host, o1.Port)
+	doDefaultConnect(b, c)
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
+
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := bw.Write(sendOp)
+		if err != nil {
+			b.Errorf("Received error on PUB write: %v\n", err)
+		}
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Errorf("Received error on FLUSH write: %v\n", err)
+	}
+
+	// Wait for connections to be drained
+	for i := 0; i < numConnections; i++ {
+		<-clients[i]
+	}
+	b.StopTimer()
+}
+
+var sub = "x"
+var payload = "12345678"
+
+func Benchmark_____FanOut_512x1000x1000(b *testing.B) {
+	doFanout(b, 1, 1000, 1000, sub, sizedString(512))
+}
+
+func Benchmark_____FanOut_8x1000x100(b *testing.B) {
+	doFanout(b, 1, 1000, 100, sub, payload)
+}
+
+func Benchmark______FanOut_8x1x10(b *testing.B) {
+	doFanout(b, 1, 1, 10, sub, payload)
+}
+
+func Benchmark_____FanOut_8x1x100(b *testing.B) {
+	doFanout(b, 1, 1, 100, sub, payload)
+}
+
+func Benchmark____FanOut_8x10x100(b *testing.B) {
+	doFanout(b, 1, 10, 100, sub, payload)
+}
+
+func Benchmark___FanOut_8x10x1000(b *testing.B) {
+	doFanout(b, 1, 10, 1000, sub, payload)
+}
+
+func Benchmark___FanOut_8x100x100(b *testing.B) {
+	doFanout(b, 1, 100, 100, sub, payload)
+}
+
+func Benchmark__FanOut_8x100x1000(b *testing.B) {
+	doFanout(b, 1, 100, 1000, sub, payload)
+}
+
+func Benchmark__FanOut_8x10x10000(b *testing.B) {
+	doFanout(b, 1, 10, 10000, sub, payload)
+}
+
+func Benchmark__FanOut_1kx10x1000(b *testing.B) {
+	doFanout(b, 1, 10, 1000, sub, sizedString(1024))
+}
+
+func Benchmark_____RFanOut_8x1x10(b *testing.B) {
+	doFanout(b, 2, 1, 10, sub, payload)
+}
+
+func Benchmark____RFanOut_8x1x100(b *testing.B) {
+	doFanout(b, 2, 1, 100, sub, payload)
+}
+
+func Benchmark___RFanOut_8x10x100(b *testing.B) {
+	doFanout(b, 2, 10, 100, sub, payload)
+}
+
+func Benchmark__RFanOut_8x10x1000(b *testing.B) {
+	doFanout(b, 2, 10, 1000, sub, payload)
+}
+
+func Benchmark__RFanOut_8x100x100(b *testing.B) {
+	doFanout(b, 2, 100, 100, sub, payload)
+}
+
+func Benchmark_RFanOut_8x100x1000(b *testing.B) {
+	doFanout(b, 2, 100, 1000, sub, payload)
+}
+
+func Benchmark_RFanOut_8x10x10000(b *testing.B) {
+	doFanout(b, 2, 10, 10000, sub, payload)
+}
+
+func Benchmark_RFanOut_1kx10x1000(b *testing.B) {
+	doFanout(b, 2, 10, 1000, sub, sizedString(1024))
 }
