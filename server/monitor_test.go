@@ -1108,6 +1108,9 @@ func TestMonitorRoutezRace(t *testing.T) {
 		}()
 		for i := 0; i < 10; i++ {
 			time.Sleep(10 * time.Millisecond)
+			// Reset ports
+			srvBOpts.Port = -1
+			srvBOpts.Cluster.Port = -1
 			srvB := RunServer(srvBOpts)
 			time.Sleep(20 * time.Millisecond)
 			srvB.Shutdown()
