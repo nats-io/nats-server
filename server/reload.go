@@ -570,8 +570,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				}
 			}
 			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
-		case "nolog":
-			// Ignore NoLog option since it's not parsed and only used in
+		case "nolog", "nosigs":
+			// Ignore NoLog ad NoSigs options since they are not parsed and only used in
 			// testing.
 			continue
 		case "port":

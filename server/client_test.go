@@ -698,6 +698,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	}
 	opts.TLSTimeout = 100
 	opts.NoLog = true
+	opts.NoSigs = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
