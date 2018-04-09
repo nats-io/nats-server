@@ -32,7 +32,7 @@ import (
 // Ensure Reload returns an error when attempting to reload a server that did
 // not start with a config file.
 func TestConfigReloadNoConfigFile(t *testing.T) {
-	server := New(&Options{})
+	server := New(&Options{NoSigs: true})
 	loaded := server.ConfigTime()
 	if server.Reload() == nil {
 		t.Fatal("Expected Reload to return an error")
@@ -69,6 +69,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 			Host: "localhost",
 			Port: -1,
 		},
+		NoSigs: true,
 	}
 	processOptions(golden)
 
@@ -158,6 +159,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 			Host: "localhost",
 			Port: -1,
 		},
+		NoSigs: true,
 	}
 	processOptions(golden)
 
@@ -224,6 +226,7 @@ func TestConfigReload(t *testing.T) {
 			Host: "localhost",
 			Port: server.ClusterAddr().Port,
 		},
+		NoSigs: true,
 	}
 	processOptions(golden)
 
@@ -1306,6 +1309,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	srvcOpts.NoLog = true
+	srvcOpts.NoSigs = true
 
 	srvc := RunServer(srvcOpts)
 	defer srvc.Shutdown()
@@ -1410,6 +1414,7 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	opts.NoLog = true
+	opts.NoSigs = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -1491,6 +1496,7 @@ func TestConfigReloadClusterNoAdvertise(t *testing.T) {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	opts.NoLog = true
+	opts.NoSigs = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -1545,6 +1551,7 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 		stackFatalf(t, "Error processing config file: %v", err)
 	}
 	opts.NoLog = true
+	opts.NoSigs = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -1767,11 +1774,13 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	opts.NoLog = true
+	opts.NoSigs = true
 	return RunServer(opts), opts, config
 }
 
 func newServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
+	opts.NoSigs = true
 	return New(opts), opts, config
 }
 
@@ -1786,6 +1795,7 @@ func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
+	opts.NoSigs = true
 	return opts, config
 }
 

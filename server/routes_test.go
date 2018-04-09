@@ -542,6 +542,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 func TestRouteTLSHandshakeError(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
 	optsSeed.NoLog = true
+	optsSeed.NoSigs = true
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
 

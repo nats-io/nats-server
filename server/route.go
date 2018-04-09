@@ -812,7 +812,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 				}
 			}
 			select {
-			case <-s.rcQuit:
+			case <-s.quitCh:
 				return
 			case <-time.After(DEFAULT_ROUTE_CONNECT):
 				continue

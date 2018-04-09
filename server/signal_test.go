@@ -83,18 +83,21 @@ func TestSignalToReloadConfig(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	loaded := s.ConfigTime()
+	// Repeat test to make sure that server services signals more than once...
+	for i := 0; i < 2; i++ {
+		loaded := s.ConfigTime()
 
-	// Wait a bit to ensure ConfigTime changes.
-	time.Sleep(5 * time.Millisecond)
+		// Wait a bit to ensure ConfigTime changes.
+		time.Sleep(5 * time.Millisecond)
 
-	// This should cause config to be reloaded.
-	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
-	// Wait a bit for action to be performed
-	time.Sleep(500 * time.Millisecond)
+		// This should cause config to be reloaded.
+		syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
+		// Wait a bit for action to be performed
+		time.Sleep(500 * time.Millisecond)
 
-	if reloaded := s.ConfigTime(); !reloaded.After(loaded) {
-		t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
+		if reloaded := s.ConfigTime(); !reloaded.After(loaded) {
+			t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
+		}
 	}
 }
 

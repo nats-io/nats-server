@@ -83,7 +83,7 @@ type Server struct {
 	routeListener net.Listener
 	routeInfo     Info
 	routeInfoJSON []byte
-	rcQuit        chan bool
+	quitCh        chan struct{}
 	grMu          sync.Mutex
 	grTmpClients  map[uint64]*client
 	grRunning     bool
@@ -173,9 +173,9 @@ func New(opts *Options) *Server {
 	s.routes = make(map[uint64]*client)
 	s.remotes = make(map[string]*client)
 
-	// Used to kick out all of the route
-	// connect Go routines.
-	s.rcQuit = make(chan bool)
+	// Used to kick out all go routines possibly waiting on server
+	// to shutdown.
+	s.quitCh = make(chan struct{})
 
 	// Used to setup Authorization.
 	s.configureAuthorization()
@@ -381,8 +381,8 @@ func (s *Server) Shutdown() {
 		s.profiler.Close()
 	}
 
-	// Release the solicited routes connect go routines.
-	close(s.rcQuit)
+	// Release go routines that wait on that channel
+	close(s.quitCh)
 
 	s.mu.Unlock()
 
