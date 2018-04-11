@@ -549,16 +549,17 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	}
 	remote, exists := s.remotes[id]
 	if !exists {
-		// Remove from the temporary map
-		s.grMu.Lock()
-		delete(s.grTmpClients, c.cid)
-		s.grMu.Unlock()
-
 		s.routes[c.cid] = c
 		s.remotes[id] = c
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
+		cid := c.cid
 		c.mu.Unlock()
+
+		// Remove from the temporary map
+		s.grMu.Lock()
+		delete(s.grTmpClients, cid)
+		s.grMu.Unlock()
 
 		// we don't need to send if the only route is the one we just accepted.
 		sendInfo = len(s.routes) > 1

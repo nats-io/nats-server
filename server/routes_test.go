@@ -939,3 +939,36 @@ func TestRoutedQueueUnsubscribe(t *testing.T) {
 	}
 	t.Fatalf("Should have received %v messages, got %v", total, atomic.LoadInt32(&received))
 }
+
+func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
+	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
+	optsA.NoSigs, optsA.NoLog = true, true
+
+	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+	optsB.NoSigs, optsB.NoLog = true, true
+
+	srvA := New(optsA)
+	defer srvA.Shutdown()
+	srvB := New(optsB)
+	defer srvB.Shutdown()
+
+	// Start this way to increase chance of having the two connect
+	// to each other at the same time. This will cause one of the
+	// route to be dropped.
+	go srvA.Start()
+	go srvB.Start()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Ensure that maps are empty
+	checkMap := func(s *Server) {
+		s.grMu.Lock()
+		l := len(s.grTmpClients)
+		s.grMu.Unlock()
+		if l != 0 {
+			stackFatalf(t, "grTmpClients map should be empty, got %v", l)
+		}
+	}
+	checkMap(srvA)
+	checkMap(srvB)
+}

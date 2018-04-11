@@ -950,6 +950,10 @@ func (s *Server) removeClient(c *client) {
 				delete(s.remotes, rID)
 			}
 		}
+		// Remove from temporary map in case it is there.
+		s.grMu.Lock()
+		delete(s.grTmpClients, cid)
+		s.grMu.Unlock()
 	}
 	s.mu.Unlock()
 }
