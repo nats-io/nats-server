@@ -1402,11 +1402,11 @@ func (c *client) closeConnection() {
 		srv.removeClient(c)
 
 		// Remove clients subscriptions.
-		for _, sub := range subs {
-			srv.sl.Remove(sub)
-			// Forward on unsubscribes if we are not
-			// a router ourselves.
-			if c.typ != ROUTER {
+		srv.sl.RemoveBatch(subs)
+		if c.typ != ROUTER {
+			for _, sub := range subs {
+				// Forward on unsubscribes if we are not
+				// a router ourselves.
 				srv.broadcastUnSubscribe(sub)
 			}
 		}

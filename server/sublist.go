@@ -64,8 +64,8 @@ type Sublist struct {
 // A node contains subscriptions and a pointer to the next level.
 type node struct {
 	next  *level
-	psubs []*subscription
-	qsubs [][]*subscription
+	psubs map[*subscription]*subscription
+	qsubs map[string](map[*subscription]*subscription)
 }
 
 // A level represents a group of nodes and special pointers to
@@ -77,11 +77,10 @@ type level struct {
 
 // Create a new default node.
 func newNode() *node {
-	return &node{psubs: make([]*subscription, 0, 4)}
+	return &node{psubs: make(map[*subscription]*subscription)}
 }
 
-// Create a new default level. We use FNV1A as the hash
-// algorithm for the tokens, which should be short.
+// Create a new default level.
 func newLevel() *level {
 	return &level{nodes: make(map[string]*node)}
 }
@@ -153,14 +152,19 @@ func (s *Sublist) Insert(sub *subscription) error {
 		l = n.next
 	}
 	if sub.queue == nil {
-		n.psubs = append(n.psubs, sub)
+		n.psubs[sub] = sub
 	} else {
-		// This is a queue subscription
-		if i := findQSliceForSub(sub, n.qsubs); i >= 0 {
-			n.qsubs[i] = append(n.qsubs[i], sub)
-		} else {
-			n.qsubs = append(n.qsubs, []*subscription{sub})
+		if n.qsubs == nil {
+			n.qsubs = make(map[string]map[*subscription]*subscription)
 		}
+		qname := string(sub.queue)
+		// This is a queue subscription
+		subs, ok := n.qsubs[qname]
+		if !ok {
+			subs = make(map[*subscription]*subscription)
+			n.qsubs[qname] = subs
+		}
+		subs[sub] = sub
 	}
 
 	s.count++
@@ -263,16 +267,26 @@ func (s *Sublist) Match(subject string) *SublistResult {
 
 // This will add in a node's results to the total results.
 func addNodeToResults(n *node, results *SublistResult) {
-	results.psubs = append(results.psubs, n.psubs...)
-	for _, qr := range n.qsubs {
+	for _, psub := range n.psubs {
+		results.psubs = append(results.psubs, psub)
+	}
+	//results.psubs = append(results.psubs, n.psubs...)
+	for qname, qr := range n.qsubs {
 		if len(qr) == 0 {
 			continue
 		}
+		tsub := &subscription{subject: nil, queue: []byte(qname)}
 		// Need to find matching list in results
-		if i := findQSliceForSub(qr[0], results.qsubs); i >= 0 {
-			results.qsubs[i] = append(results.qsubs[i], qr...)
+		if i := findQSliceForSub(tsub, results.qsubs); i >= 0 {
+			for _, sub := range qr {
+				results.qsubs[i] = append(results.qsubs[i], sub)
+			}
 		} else {
-			results.qsubs = append(results.qsubs, append([]*subscription(nil), qr...))
+			var nqsub []*subscription
+			for _, sub := range qr {
+				nqsub = append(nqsub, sub)
+			}
+			results.qsubs = append(results.qsubs, nqsub)
 		}
 	}
 }
@@ -328,8 +342,8 @@ type lnt struct {
 	t string
 }
 
-// Remove will remove a subscription.
-func (s *Sublist) Remove(sub *subscription) error {
+// Raw low level remove, can do batches with lock held outside.
+func (s *Sublist) remove(sub *subscription, shouldLock bool) error {
 	subject := string(sub.subject)
 	tsa := [32]string{}
 	tokens := tsa[:0]
@@ -342,8 +356,10 @@ func (s *Sublist) Remove(sub *subscription) error {
 	}
 	tokens = append(tokens, subject[start:])
 
-	s.Lock()
-	defer s.Unlock()
+	if shouldLock {
+		s.Lock()
+		defer s.Unlock()
+	}
 
 	sfwc := false
 	l := s.root
@@ -400,6 +416,24 @@ func (s *Sublist) Remove(sub *subscription) error {
 	return nil
 }
 
+// Remove will remove a subscription.
+func (s *Sublist) Remove(sub *subscription) error {
+	return s.remove(sub, true)
+}
+
+// Remove will remove a subscription.
+func (s *Sublist) RemoveBatch(subs []*subscription) error {
+	s.Lock()
+	defer s.Unlock()
+
+	for _, sub := range subs {
+		if err := s.remove(sub, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // pruneNode is used to prune an empty node from the tree.
 func (l *level) pruneNode(n *node, t string) {
 	if n == nil {
@@ -437,61 +471,26 @@ func (l *level) numNodes() int {
 	return num
 }
 
-// Removes a sub from a list.
-func removeSubFromList(sub *subscription, sl []*subscription) ([]*subscription, bool) {
-	for i := 0; i < len(sl); i++ {
-		if sl[i] == sub {
-			last := len(sl) - 1
-			sl[i] = sl[last]
-			sl[last] = nil
-			sl = sl[:last]
-			return shrinkAsNeeded(sl), true
-		}
-	}
-	return sl, false
-}
-
 // Remove the sub for the given node.
 func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 	if n == nil {
 		return false
 	}
 	if sub.queue == nil {
-		n.psubs, found = removeSubFromList(sub, n.psubs)
+		_, found = n.psubs[sub]
+		delete(n.psubs, sub)
 		return found
 	}
 
 	// We have a queue group subscription here
-	if i := findQSliceForSub(sub, n.qsubs); i >= 0 {
-		n.qsubs[i], found = removeSubFromList(sub, n.qsubs[i])
-		if len(n.qsubs[i]) == 0 {
-			last := len(n.qsubs) - 1
-			n.qsubs[i] = n.qsubs[last]
-			n.qsubs[last] = nil
-			n.qsubs = n.qsubs[:last]
-			if len(n.qsubs) == 0 {
-				n.qsubs = nil
-			}
-		}
-		return found
+	qname := string(sub.queue)
+	qsub := n.qsubs[qname]
+	_, found = qsub[sub]
+	delete(qsub, sub)
+	if len(qsub) == 0 {
+		delete(n.qsubs, qname)
 	}
-	return false
-}
-
-// Checks if we need to do a resize. This is for very large growth then
-// subsequent return to a more normal size from unsubscribe.
-func shrinkAsNeeded(sl []*subscription) []*subscription {
-	lsl := len(sl)
-	csl := cap(sl)
-	// Don't bother if list not too big
-	if csl <= 8 {
-		return sl
-	}
-	pFree := float32(csl-lsl) / float32(csl)
-	if pFree > 0.50 {
-		return append([]*subscription(nil), sl...)
-	}
-	return sl
+	return found
 }
 
 // Count returns the number of subscriptions.
