@@ -224,6 +224,26 @@ func TestSublistRemoveCleanupWildcards(t *testing.T) {
 	verifyNumLevels(s, 0, t)
 }
 
+func TestSublistRemoveWithLargeSubs(t *testing.T) {
+	subject := "foo"
+	s := NewSublist()
+	for i := 0; i < plistMin*2; i++ {
+		sub := newSub(subject)
+		s.Insert(sub)
+	}
+	r := s.Match(subject)
+	verifyLen(r.psubs, plistMin*2, t)
+	// Remove one that is in the middle
+	s.Remove(r.psubs[plistMin])
+	// Remove first one
+	s.Remove(r.psubs[0])
+	// Remove last one
+	s.Remove(r.psubs[len(r.psubs)-1])
+	// Check len again
+	r = s.Match(subject)
+	verifyLen(r.psubs, plistMin*2-3, t)
+}
+
 func TestSublistInvalidSubjectsInsert(t *testing.T) {
 	s := NewSublist()
 
@@ -825,6 +845,10 @@ func Benchmark___________Sublist100XMultipleReads(b *testing.B) {
 	multiRead(b, 100)
 }
 
+func Benchmark__________Sublist1000XMultipleReads(b *testing.B) {
+	multiRead(b, 1000)
+}
+
 func Benchmark________________SublistMatchLiteral(b *testing.B) {
 	b.StopTimer()
 	cachedSubj := "foo.foo.foo.foo.foo.foo.foo.foo.foo.foo"
@@ -858,6 +882,24 @@ func Benchmark________________SublistMatchLiteral(b *testing.B) {
 				b.Fatalf("Subject %q no match with %q", cachedSubj, subject)
 			}
 		}
+	}
+}
+
+func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
+	var nsubs = 512
+	b.StopTimer()
+	s := NewSublist()
+	subject := "foo"
+	for i := 0; i < nsubs; i++ {
+		s.Insert(newSub(subject))
+	}
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		r := s.Match(subject)
+		if len(r.psubs) != nsubs {
+			b.Fatalf("Results len is %d, should be %d", len(r.psubs), nsubs)
+		}
+		delete(s.cache, subject)
 	}
 }
 

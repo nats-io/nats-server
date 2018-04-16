@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1113,14 +1114,28 @@ func (c *client) processMsg(msg []byte) {
 	if !ok {
 		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)
+
+		// Sort the results by connection. This will help on high fanout and high subs
+		// per connection scenarios.
+		sort.Slice(r.psubs, func(i, j int) bool {
+			c1 := r.psubs[i].client
+			c2 := r.psubs[j].client
+			if c1 == nil {
+				return true
+			} else if c2 == nil {
+				return false
+			}
+			return c1.cid < c2.cid
+		})
+
 		c.cache.results[subject] = r
 		if len(c.cache.results) > maxResultCacheSize {
 			// Prune the results cache. Keeps us from unbounded growth.
-			r := 0
+			n := 0
 			for subject := range c.cache.results {
 				delete(c.cache.results, subject)
-				r++
-				if r > pruneSize {
+				n++
+				if n > pruneSize {
 					break
 				}
 			}
@@ -1183,7 +1198,6 @@ func (c *client) processMsg(msg []byte) {
 		var rmap map[string]struct{}
 
 		// Loop over all normal subscriptions that match.
-
 		for _, sub := range r.psubs {
 			// Check if this is a send to a ROUTER, make sure we only send it
 			// once. The other side will handle the appropriate re-processing

@@ -39,8 +39,12 @@ var (
 	ErrNotFound       = errors.New("sublist: No Matches Found")
 )
 
-// cacheMax is used to bound limit the frontend cache
-const slCacheMax = 1024
+const (
+	// cacheMax is used to bound limit the frontend cache
+	slCacheMax = 1024
+	// plistMin is our lower bounds to create a fast plist for Match.
+	plistMin = 256
+)
 
 // A result structure better optimized for queue subs.
 type SublistResult struct {
@@ -66,6 +70,7 @@ type node struct {
 	next  *level
 	psubs map[*subscription]*subscription
 	qsubs map[string](map[*subscription]*subscription)
+	plist []*subscription
 }
 
 // A level represents a group of nodes and special pointers to
@@ -153,6 +158,15 @@ func (s *Sublist) Insert(sub *subscription) error {
 	}
 	if sub.queue == nil {
 		n.psubs[sub] = sub
+		if n.plist != nil {
+			n.plist = append(n.plist, sub)
+		} else if len(n.psubs) > plistMin {
+			n.plist = make([]*subscription, 0, len(n.psubs))
+			// Populate
+			for _, psub := range n.psubs {
+				n.plist = append(n.plist, psub)
+			}
+		}
 	} else {
 		if n.qsubs == nil {
 			n.qsubs = make(map[string]map[*subscription]*subscription)
@@ -267,10 +281,15 @@ func (s *Sublist) Match(subject string) *SublistResult {
 
 // This will add in a node's results to the total results.
 func addNodeToResults(n *node, results *SublistResult) {
-	for _, psub := range n.psubs {
-		results.psubs = append(results.psubs, psub)
+	// Normal subscriptions
+	if n.plist != nil {
+		results.psubs = append(results.psubs, n.plist...)
+	} else {
+		for _, psub := range n.psubs {
+			results.psubs = append(results.psubs, psub)
+		}
 	}
-	//results.psubs = append(results.psubs, n.psubs...)
+	// Queue subscriptions
 	for qname, qr := range n.qsubs {
 		if len(qr) == 0 {
 			continue
@@ -421,7 +440,7 @@ func (s *Sublist) Remove(sub *subscription) error {
 	return s.remove(sub, true)
 }
 
-// Remove will remove a subscription.
+// RemoveBatch will remove a list of subscriptions.
 func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	s.Lock()
 	defer s.Unlock()
@@ -479,6 +498,12 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 	if sub.queue == nil {
 		_, found = n.psubs[sub]
 		delete(n.psubs, sub)
+		if found && n.plist != nil {
+			// This will brute force remove the plist to perform
+			// correct behavior. Will get repopulated on a call
+			//to Match as needed.
+			n.plist = nil
+		}
 		return found
 	}
 
