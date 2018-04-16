@@ -476,8 +476,6 @@ func Benchmark___Routed16QueueSub(b *testing.B) {
 }
 
 func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, subject, payload string) {
-	b.StopTimer()
-
 	var s1, s2 *server.Server
 	var o1, o2 *server.Options
 
@@ -526,7 +524,6 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 			sendProto(b, c, subOp)
 		}
 		flushConnection(b, c)
-
 		go drainConnection(b, c, ch, expected)
 	}
 	// Publish Connection
@@ -534,8 +531,9 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
+	flushConnection(b, c)
 
-	b.StartTimer()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := bw.Write(sendOp)
 		if err != nil {
@@ -557,11 +555,11 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 var sub = "x"
 var payload = "12345678"
 
-func Benchmark___FanOut_512x1kx1k(b *testing.B) {
+func _Benchmark___FanOut_512x1kx1k(b *testing.B) {
 	doFanout(b, 1, 1000, 1000, sub, sizedString(512))
 }
 
-func Benchmark__FanOut_8x1000x100(b *testing.B) {
+func _Benchmark__FanOut_8x1000x100(b *testing.B) {
 	doFanout(b, 1, 1000, 100, sub, payload)
 }
 
