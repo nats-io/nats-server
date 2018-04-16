@@ -555,11 +555,11 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 var sub = "x"
 var payload = "12345678"
 
-func _Benchmark___FanOut_512x1kx1k(b *testing.B) {
+func Benchmark___FanOut_512x1kx1k(b *testing.B) {
 	doFanout(b, 1, 1000, 1000, sub, sizedString(512))
 }
 
-func _Benchmark__FanOut_8x1000x100(b *testing.B) {
+func Benchmark__FanOut_8x1000x100(b *testing.B) {
 	doFanout(b, 1, 1000, 100, sub, payload)
 }
 
