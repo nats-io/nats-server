@@ -660,11 +660,18 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	}
 
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
-	l, e := net.Listen("tcp", hp)
-	if e != nil {
-		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
-		return
+	var l net.Listener
+	var e error
+	if opts.RouteListener == nil {
+		l, e = net.Listen("tcp", hp)
+		if e != nil {
+			s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
+			return
+		}
+	} else {
+		l = opts.RouteListener
 	}
+
 	s.Noticef("Listening for route connections on %s",
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
@@ -800,7 +807,13 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 	attempts := 0
 	for s.isRunning() && rURL != nil {
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
-		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
+		var conn net.Conn
+		var err error
+		if s.opts.RouteDialer != nil {
+			conn, err = s.opts.RouteDialer.Dial("tcp", rURL.Host)
+		} else {
+			conn, err = net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
+		}
 		if err != nil {
 			s.Errorf("Error trying to connect to route: %v", err)
 			if !tryForEver {

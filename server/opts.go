@@ -31,6 +31,12 @@ import (
 	"github.com/nats-io/gnatsd/util"
 )
 
+// CustomDialer can be used to specify any dialer, not necessarily
+// a *net.Dialer.
+type CustomDialer interface {
+	Dial(network, address string) (net.Conn, error)
+}
+
 // ClusterOpts are options for clusters.
 type ClusterOpts struct {
 	Host           string      `json:"addr"`
@@ -86,6 +92,9 @@ type Options struct {
 	TLSCaCert       string        `json:"-"`
 	TLSConfig       *tls.Config   `json:"-"`
 	WriteDeadline   time.Duration `json:"-"`
+	ClientListener  net.Listener  `json:"-"`
+	RouteListener   net.Listener  `json:"-"`
+	RouteDialer     CustomDialer  `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`

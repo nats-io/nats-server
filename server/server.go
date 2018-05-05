@@ -415,11 +415,18 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	opts := s.getOpts()
 
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	l, e := net.Listen("tcp", hp)
-	if e != nil {
-		s.Fatalf("Error listening on port: %s, %q", hp, e)
-		return
+	var l net.Listener
+	var e error
+	if opts.ClientListener == nil {
+		l, e = net.Listen("tcp", hp)
+		if e != nil {
+			s.Fatalf("Error listening on port: %s, %q", hp, e)
+			return
+		}
+	} else {
+		l = opts.ClientListener
 	}
+
 	s.Noticef("Listening for client connections on %s",
 		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
