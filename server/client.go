@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -933,6 +932,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	}
 	client := sub.client
 	client.mu.Lock()
+
 	sub.nm++
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
@@ -1032,6 +1032,57 @@ writeErr:
 	return true
 }
 
+// pruneCache will prune the cache via randomly
+// deleting items. Doing so pruneSize items at a time.
+func (c *client) prunePubPermsCache() {
+	r := 0
+	for subject := range c.perms.pcache {
+		delete(c.perms.pcache, subject)
+		if r++; r > pruneSize {
+			break
+		}
+	}
+}
+
+// pubAllowed checks on publish permissioning.
+func (c *client) pubAllowed() bool {
+	// Disallow publish to _SYS.>, these are reserved for internals.
+	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
+		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&
+		c.pa.subject[3] == 'S' && c.pa.subject[4] == '.' {
+		c.pubPermissionViolation(c.pa.subject)
+		return false
+	}
+
+	if c.perms == nil {
+		return true
+	}
+
+	// Check if published subject is allowed if we have permissions in place.
+	allowed, ok := c.perms.pcache[string(c.pa.subject)]
+	if ok {
+		if !allowed {
+			c.pubPermissionViolation(c.pa.subject)
+		}
+		return allowed
+	}
+	// Cache miss
+	r := c.perms.pub.Match(string(c.pa.subject))
+	allowed = len(r.psubs) != 0
+	if !allowed {
+		c.pubPermissionViolation(c.pa.subject)
+		c.perms.pcache[string(c.pa.subject)] = false
+	} else {
+		c.perms.pcache[string(c.pa.subject)] = true
+	}
+	// Prune if needed.
+
+	if len(c.perms.pcache) > maxPermCacheSize {
+		c.prunePubPermsCache()
+	}
+	return allowed
+}
+
 // processMsg is called to process an inbound msg from a client.
 func (c *client) processMsg(msg []byte) {
 	// Snapshot server.
@@ -1046,47 +1097,9 @@ func (c *client) processMsg(msg []byte) {
 		c.traceMsg(msg)
 	}
 
-	// Disallow publish to _SYS.>, these are reserved for internals.
-	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
-		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&
-		c.pa.subject[3] == 'S' && c.pa.subject[4] == '.' {
-		c.pubPermissionViolation(c.pa.subject)
+	// Check pub permissions
+	if !c.pubAllowed() {
 		return
-	}
-
-	// Check if published subject is allowed if we have permissions in place.
-	if c.perms != nil {
-		allowed, ok := c.perms.pcache[string(c.pa.subject)]
-		if ok && !allowed {
-			c.pubPermissionViolation(c.pa.subject)
-			return
-		}
-		if !ok {
-			r := c.perms.pub.Match(string(c.pa.subject))
-			notAllowed := len(r.psubs) == 0
-			if notAllowed {
-				c.pubPermissionViolation(c.pa.subject)
-				c.perms.pcache[string(c.pa.subject)] = false
-			} else {
-				c.perms.pcache[string(c.pa.subject)] = true
-			}
-			// Prune if needed.
-			if len(c.perms.pcache) > maxPermCacheSize {
-				// Prune the permissions cache. Keeps us from unbounded growth.
-				r := 0
-				for subject := range c.perms.pcache {
-					delete(c.perms.pcache, subject)
-					r++
-					if r > pruneSize {
-						break
-					}
-				}
-			}
-			// Return here to allow the pruning code to run if needed.
-			if notAllowed {
-				return
-			}
-		}
 	}
 
 	if c.opts.Verbose {
@@ -1114,36 +1127,24 @@ func (c *client) processMsg(msg []byte) {
 	if !ok {
 		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)
-
-		// Sort the results by connection. This will help on high fanout and high subs
-		// per connection scenarios.
-		sort.Slice(r.psubs, func(i, j int) bool {
-			c1 := r.psubs[i].client
-			c2 := r.psubs[j].client
-			if c1 == nil {
-				return true
-			} else if c2 == nil {
-				return false
-			}
-			return c1.cid < c2.cid
-		})
-
 		c.cache.results[subject] = r
+		// Prune the results cache. Keeps us from unbounded growth.
 		if len(c.cache.results) > maxResultCacheSize {
-			// Prune the results cache. Keeps us from unbounded growth.
 			n := 0
 			for subject := range c.cache.results {
 				delete(c.cache.results, subject)
-				n++
-				if n > pruneSize {
+				if n++; n > pruneSize {
 					break
 				}
 			}
 		}
 	}
 
+	// This is the fanout scale.
+	fanout := len(r.psubs) + len(r.qsubs)
+
 	// Check for no interest, short circuit if so.
-	if len(r.psubs) == 0 && len(r.qsubs) == 0 {
+	if fanout == 0 {
 		return
 	}
 
