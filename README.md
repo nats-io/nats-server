@@ -780,9 +780,7 @@ NATS has a vibrant and friendly community.  If you are interested in connecting 
 
 ### NATS Office Hours
 
-The NATS maintainers hold online open office hours on the __2nd Monday of every month at 1PM Eastern US / 10AM Pacific US__ where we discuss the future of NATS, issues, PRs, answer questions, and sorts of other good stuff.  Anyone is welcome to participate or listen in, whether you are using NATS or just interested in learning more.
-
-The office hours agenda and how to join can be found [here](https://docs.google.com/a/synadia.com/document/d/1b_ffYvd7eZ4idtRCyQNwlpXV0slN2QGJxueEDbjX6QI/edit?usp=sharing), where we hope you'll comment about what you would like to discuss!
+NATS Office Hours will be on hiatus for the US summer season. Please join our [Slack channel](https://join.slack.com/t/natsio/shared_invite/enQtMzE2NDkxNDI2NTE1LTc5ZDEzYTkwYWZkYWQ5YjY1MzBjMWZmYzA5OGQxMzlkMGQzMjYxNGM3MWYxMjNiYmNjNzIwMTVjMWE2ZDgxZGM) or [Google Group](https://groups.google.com/forum/#!forum/natsio) to chat with our maintainers.
 
 
 [License-Url]: https://www.apache.org/licenses/LICENSE-2.0
