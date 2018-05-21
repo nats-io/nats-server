@@ -555,7 +555,7 @@ authorization {
   }
   REQUESTOR = {
     publish = ["req.foo", "req.bar"]
-    subscribe = "_INBOX.*"
+    subscribe = "_INBOX.>"
   }
   DEFAULT_PERMISSIONS = {
     publish = "SANDBOX.*"
@@ -577,7 +577,7 @@ Bob is REQUESTOR and can publish requests on subjects "req.foo" or "req.bar", an
 
 Joe has no permission grant and therefore inherits the default permission set. You set the inherited default permissions by assigning them to the `default_permissions` entry inside of the `authorization` configuration block.
 
-Note that `_INBOX.*` subscribe permissions must be granted in order to use the request APIs in Apcera supported clients. If an unauthorized client publishes or attempts to subscribe to a subject, the action fails and is logged at the server, and an error message is returned to the client.
+Note that `_INBOX.>` subscribe permissions must be granted in order to use the request APIs in Synadia supported clients. If an unauthorized client publishes or attempts to subscribe to a subject, the action fails and is logged at the server, and an error message is returned to the client.
 
 ### TLS
 
