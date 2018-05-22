@@ -521,9 +521,9 @@ For example:
 authorization {
   PASS: abcdefghijklmnopqrstuvwxwz0123456789
   users = [
-    {user: joe, password: foo, permissions: $ADMIN}
-    {user: alice, password: bar, permissions: $REQUESTOR}
-    {user: bob,   password: $PASS, permissions: $RESPONDER}
+    {user: joe,     password: foo,   permissions: $ADMIN}
+    {user: alice,   password: bar,   permissions: $REQUESTOR}
+    {user: bob,     password: $PASS, permissions: $RESPONDER}
     {user: charlie, password: bar}
   ]
 }
@@ -559,8 +559,8 @@ authorization {
     subscribe = "_INBOX.>"
   }
   RESPONDER = {
-      subscribe = ["req.foo", "req.bar"]
-      publish = "_INBOX.>"
+    subscribe = ["req.foo", "req.bar"]
+    publish = "_INBOX.>"
   }
   DEFAULT_PERMISSIONS = {
     publish = "SANDBOX.*"
@@ -569,10 +569,10 @@ authorization {
 
   PASS: abcdefghijklmnopqrstuvwxwz0123456789
   users = [
-        {user: joe, password: foo, permissions: $ADMIN}
-        {user: alice, password: bar, permissions: $REQUESTOR}
-        {user: bob,   password: $PASS, permissions: $RESPONDER}
-        {user: charlie, password: bar}
+    {user: joe,     password: foo,   permissions: $ADMIN}
+    {user: alice,   password: bar,   permissions: $REQUESTOR}
+    {user: bob,     password: $PASS, permissions: $RESPONDER}
+    {user: charlie, password: bar}
   ]
 }
 ```
