@@ -352,6 +352,16 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 	}
 }
 
+func (c *client) parseFlushAndClose(op []byte) {
+	c.parse(op)
+	for cp := range c.pcd {
+		cp.mu.Lock()
+		cp.flushOutbound()
+		cp.mu.Unlock()
+	}
+	c.nc.Close()
+}
+
 func TestClientPubWithQueueSub(t *testing.T) {
 	_, c, cr := setupClient()
 
@@ -366,13 +376,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 		op = append(op, pubs...)
 	}
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var n1, n2, received int
 	for ; ; received++ {
@@ -415,13 +419,7 @@ func TestClientUnSub(t *testing.T) {
 	op = append(op, unsub...)
 	op = append(op, pub...)
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var received int
 	for ; ; received++ {
@@ -458,13 +456,7 @@ func TestClientUnSubMax(t *testing.T) {
 		op = append(op, pub...)
 	}
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var received int
 	for ; ; received++ {

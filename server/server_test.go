@@ -402,7 +402,7 @@ func TestProcessCommandLineArgs(t *testing.T) {
 
 func TestWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
-	opts.WriteDeadline = 20 * time.Millisecond
+	opts.WriteDeadline = 1 * time.Millisecond
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -416,7 +416,7 @@ func TestWriteDeadline(t *testing.T) {
 	}
 	// Reduce socket buffer to increase reliability of getting
 	// write deadline errors.
-	c.(*net.TCPConn).SetReadBuffer(10)
+	c.(*net.TCPConn).SetReadBuffer(4)
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	sender, err := nats.Connect(url)
@@ -439,7 +439,10 @@ func TestWriteDeadline(t *testing.T) {
 		t.Fatalf("Flush should have returned sooner, took: %v", dur)
 	}
 	// Flush sender connection to ensure that all data has been sent.
-	sender.Flush()
+	if err := sender.Flush(); err != nil {
+		t.Fatalf("Error on flush: %v", err)
+	}
+
 	// At this point server should have closed connection c.
 
 	// On certain platforms, it may take more than one call before
