@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
@@ -303,6 +302,10 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	}
 	s.mu.Unlock()
 
+	if b.Len() == 0 {
+		return
+	}
+
 	route.mu.Lock()
 	defer route.mu.Unlock()
 	route.sendProto(b.Bytes(), true)
@@ -385,9 +388,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 			c.mu.Unlock()
 			return nil
 		}
-
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	}
 
 	// Do final client initialization
@@ -414,8 +414,18 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		return nil
 	}
 
+	// Check for Auth required state for incoming connections.
+	// Make sure to do this before spinning up readLoop.
+	if authRequired && !didSolicit {
+		ttl := secondsToDuration(opts.Cluster.AuthTimeout)
+		c.setAuthTimer(ttl)
+	}
+
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })
+
+	// Spin up the write loop.
+	s.startGoRoutine(c.writeLoop)
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
@@ -431,12 +441,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Send our info to the other side.
 	c.sendInfo(infoJSON)
-
-	// Check for Auth required state for incoming connections.
-	if authRequired && !didSolicit {
-		ttl := secondsToDuration(opts.Cluster.AuthTimeout)
-		c.setAuthTimer(ttl)
-	}
 
 	c.mu.Unlock()
 

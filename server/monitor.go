@@ -155,7 +155,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		case BySubs:
 			pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
 		case ByPending:
-			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
+			pairs[i] = Pair{Key: client, Val: int64(client.out.pb)}
 		case ByOutMsgs:
 			pairs[i] = Pair{Key: client, Val: client.outMsgs}
 		case ByInMsgs:
@@ -221,7 +221,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
 		ci.NumSubs = uint32(len(client.subs))
-		ci.Pending = client.bw.Buffered()
+		ci.Pending = int(client.out.pb)
 		ci.Name = client.opts.Name
 		ci.Lang = client.opts.Lang
 		ci.Version = client.opts.Version

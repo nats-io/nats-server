@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -90,12 +89,14 @@ type Server struct {
 	grWG          sync.WaitGroup // to wait on various go routines
 	cproto        int64          // number of clients supporting async INFO
 	configTime    time.Time      // last time config was loaded
-	logging       struct {
+
+	logging struct {
 		sync.RWMutex
 		logger Logger
 		trace  int32
 		debug  int32
 	}
+
 	clientConnectURLs []string
 	lastCURLsUpdate   int64
 
@@ -180,6 +181,7 @@ func New(opts *Options) *Server {
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
+	// Start signal handler
 	s.handleSignals()
 
 	return s
@@ -381,10 +383,10 @@ func (s *Server) Shutdown() {
 		s.profiler.Close()
 	}
 
+	s.mu.Unlock()
+
 	// Release go routines that wait on that channel
 	close(s.quitCh)
-
-	s.mu.Unlock()
 
 	// Close client and route connections
 	for _, c := range conns {
@@ -800,18 +802,16 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.setAuthTimer(secondsToDuration(opts.AuthTimeout))
 	}
 
-	if tlsRequired {
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
-	}
-
 	// Do final client initialization
 
 	// Set the Ping timer
 	c.setPingTimer()
 
 	// Spin up the read loop.
-	s.startGoRoutine(func() { c.readLoop() })
+	s.startGoRoutine(c.readLoop)
+
+	// Spin up the write loop.
+	s.startGoRoutine(c.writeLoop)
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")

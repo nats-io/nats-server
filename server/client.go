@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -54,9 +53,9 @@ const (
 
 // For controlling dynamic buffer sizes.
 const (
-	startBufSize = 512 // For INFO/CONNECT block
-	minBufSize   = 128
-	maxBufSize   = 65536
+	startBufSize = 512   // For INFO/CONNECT block
+	minBufSize   = 64    // Smallest to shrink to for PING/PONG
+	maxBufSize   = 65536 // 64k
 )
 
 // Represent client booleans with a bitmask
@@ -67,11 +66,18 @@ const (
 	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
 	firstPongSent                            // The first PONG has been sent
 	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
+	clearConnection                          // Marks that clearConnection has already been called.
+	flushOutbound                            // Marks client as having a flushOutbound call in progress.
 )
 
 // set the flag (would be equivalent to set the boolean to true)
 func (cf *clientFlag) set(c clientFlag) {
 	*cf |= c
+}
+
+// clear the flag (would be equivalent to set the boolean to false)
+func (cf *clientFlag) clear(c clientFlag) {
+	*cf &= ^c
 }
 
 // isSet returns true if the flag is set, false otherwise
@@ -101,7 +107,7 @@ type client struct {
 	start time.Time
 	nc    net.Conn
 	ncs   string
-	bw    *bufio.Writer
+	out   outbound
 	srv   *Server
 	subs  map[string]*subscription
 	perms *permissions
@@ -110,7 +116,6 @@ type client struct {
 	atmr  *time.Timer
 	ptmr  *time.Timer
 	pout  int
-	wfc   int
 	msgb  [msgScratchSize]byte
 	last  time.Time
 	parseState
@@ -120,6 +125,17 @@ type client struct {
 	trace bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
+}
+
+// outbound holds pending data for a socket.
+type outbound struct {
+	p   []byte      // Primary write buffer
+	s   []byte      // Secondary for use post flush
+	nb  net.Buffers // net.Buffers for writev IO
+	sz  int         // limit size per []byte, uses variable BufSize constants, start, min, max.
+	pb  int64       // Total pending/queued bytes.
+	sg  *sync.Cond  // Flusher conditional for signaling.
+	fps int         // Flush pending signals from inbound messages.
 }
 
 type permissions struct {
@@ -195,7 +211,11 @@ func init() {
 func (c *client) initClient() {
 	s := c.srv
 	c.cid = atomic.AddUint64(&s.gcid, 1)
-	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
+
+	// Outbound data structure setup
+	c.out.sz = startBufSize
+	c.out.sg = sync.NewCond(&c.mu)
+
 	c.subs = make(map[string]*subscription)
 	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
 	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
@@ -259,6 +279,33 @@ func (c *client) RegisterUser(user *User) {
 	}
 }
 
+// writeLoop is the main socket write functionality.
+// Runs in its own Go routine.
+func (c *client) writeLoop() {
+	defer c.srv.grWG.Done()
+
+	// Main loop. Will wait to be signaled and then will use
+	// buffered outbound structure for efficient writev to the underlying socket.
+	for {
+		c.mu.Lock()
+		if (c.out.pb == 0 || c.out.fps > 0) && !c.flags.isSet(clearConnection) {
+			// Wait on pending data.
+			c.out.sg.Wait()
+		}
+		// Flush data
+		c.flushOutbound()
+		isClosed := c.flags.isSet(clearConnection)
+		c.mu.Unlock()
+
+		// Check for closed condition.
+		if isClosed {
+			return
+		}
+	}
+}
+
+// readLoop is the main socket read functionality.
+// Runs in its own Go routine.
 func (c *client) readLoop() {
 	// Grab the connection off the client, it will be cleared on a close.
 	// We check for that after the loop, but want to avoid a nil dereference
@@ -275,15 +322,13 @@ func (c *client) readLoop() {
 	// Start read buffer.
 	b := make([]byte, startBufSize)
 
-	// Snapshot server options.
-	opts := s.getOpts()
-
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
 			c.closeConnection()
 			return
 		}
+
 		// Grab for updates for last activity.
 		last := time.Now()
 
@@ -292,6 +337,8 @@ func (c *client) readLoop() {
 		c.cache.inBytes = 0
 		c.cache.subs = 0
 
+		// Main call into parser for inbound data. This will generate callouts
+		// to process messages, etc.
 		if err := c.parse(b[:n]); err != nil {
 			// handled inline
 			if err != ErrMaxPayload && err != ErrAuthorization {
@@ -301,6 +348,7 @@ func (c *client) readLoop() {
 			}
 			return
 		}
+
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
 		atomic.AddInt64(&c.inMsgs, int64(c.cache.inMsgs))
@@ -310,37 +358,10 @@ func (c *client) readLoop() {
 
 		// Check pending clients for flush.
 		for cp := range c.pcd {
-			// Flush those in the set
+			// Queue up a flush for those in the set
 			cp.mu.Lock()
-			if cp.nc != nil {
-				// Gather the flush calls that happened before now.
-				// This is a signal into us about dynamic buffer allocation tuning.
-				wfc := cp.wfc
-				cp.wfc = 0
-
-				cp.nc.SetWriteDeadline(time.Now().Add(opts.WriteDeadline))
-				err := cp.bw.Flush()
-				cp.nc.SetWriteDeadline(time.Time{})
-				if err != nil {
-					c.Debugf("Error flushing: %v", err)
-					cp.mu.Unlock()
-					cp.closeConnection()
-					cp.mu.Lock()
-				} else {
-					// Update outbound last activity.
-					cp.last = last
-					// Check if we should tune the buffer.
-					sz := cp.bw.Available()
-					// Check for expansion opportunity.
-					if wfc > 2 && sz <= maxBufSize/2 {
-						cp.bw = bufio.NewWriterSize(cp.nc, sz*2)
-					}
-					// Check for shrinking opportunity.
-					if wfc == 0 && sz >= minBufSize*2 {
-						cp.bw = bufio.NewWriterSize(cp.nc, sz/2)
-					}
-				}
-			}
+			cp.out.fps--
+			cp.flushSignal()
 			cp.mu.Unlock()
 			delete(c.pcd, cp)
 		}
@@ -351,12 +372,13 @@ func (c *client) readLoop() {
 		if c.cache.inMsgs > 0 || c.cache.subs > 0 {
 			c.last = last
 		}
+
 		c.mu.Unlock()
 		if nc == nil {
 			return
 		}
 
-		// Update buffer size as/if needed.
+		// Update read buffer size as/if needed.
 
 		// Grow
 		if n == len(b) && len(b) < maxBufSize {
@@ -368,6 +390,123 @@ func (c *client) readLoop() {
 			b = make([]byte, len(b)/2)
 		}
 	}
+}
+
+// collapsePtoNB will place primary onto nb buffer as needed in prep for WriteTo.
+// This will return a copy on purpose.
+func (c *client) collapsePtoNB() net.Buffers {
+	if c.out.p != nil {
+		p := c.out.p
+		c.out.p = nil
+		return append(c.out.nb, p)
+	}
+	return c.out.nb
+}
+
+// This will handle the fixup needed on a partial write.
+// Assume pending has been already calculated correctly.
+func (c *client) handlePartialWrite(pnb net.Buffers) {
+	nb := c.collapsePtoNB()
+	// The partial needs to be first, so append nb to pnb
+	c.out.nb = append(pnb, nb...)
+}
+
+// flushOutbound will flush outbound buffer to a client.
+// Lock must be held
+func (c *client) flushOutbound() {
+	if c.flags.isSet(flushOutbound) {
+		return
+	}
+	c.flags.set(flushOutbound)
+	defer c.flags.clear(flushOutbound)
+
+	// Check for nothing to do.
+	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
+		return
+	}
+
+	// Snapshot opts
+	srv := c.srv
+	opts := srv.getOpts()
+
+	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
+	nb := c.collapsePtoNB()
+	c.out.p, c.out.nb, c.out.s = c.out.s, nil, nil
+
+	// For selecting primary replacement.
+	cnb := nb
+
+	// In case it goes away after releasing the lock.
+	nc := c.nc
+	attempted := c.out.pb
+
+	// Do NOT hold lock during actual IO
+	c.mu.Unlock()
+
+	// flush here
+	now := time.Now()
+	// FIXME(dlc) - writev will do multiple IOs past 1024 on
+	// most platforms, need to account for that with deadline?
+	nc.SetWriteDeadline(now.Add(opts.WriteDeadline))
+	// Actual write to the socket.
+	n, err := nb.WriteTo(nc)
+	nc.SetWriteDeadline(time.Time{})
+	// Re-acquire client lock
+	c.mu.Lock()
+
+	// Subtract from pending bytes.
+	c.out.pb -= n
+
+	if n != attempted && n > 0 {
+		c.handlePartialWrite(nb)
+	}
+
+	if err != nil {
+		if n == 0 {
+			c.out.pb -= attempted
+		}
+		c.clearConnection()
+
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			atomic.AddInt64(&srv.slowConsumers, 1)
+			c.Noticef("Slow Consumer Detected")
+		} else {
+			c.Debugf("Error flushing: %v", err)
+		}
+		// FIXME(dlc) - return here?
+	}
+
+	// Adjust based on what we wrote plus any pending.
+	pt := int(n + c.out.pb)
+
+	// Adjust sz as needed downward, keeping power of 2.
+	// We do this at a slower rate, hence the pt*4.
+	for pt*4 < c.out.sz && c.out.sz > minBufSize {
+		c.out.sz >>= 1
+	}
+	// Adjust sz as needed upward, keeping power of 2.
+	for pt > c.out.sz && c.out.sz < maxBufSize {
+		c.out.sz <<= 1
+	}
+
+	// Check to see if we can reuse buffers.
+	if len(cnb) > 0 {
+		oldp := cnb[0][:0]
+		if cap(oldp) == c.out.sz || cap(oldp) == c.out.sz*2 {
+			// Replace primary or secondary if they are nil, reusing same buffer.
+			if c.out.p == nil {
+				c.out.p = oldp
+			} else if c.out.s == nil {
+				c.out.s = oldp
+			}
+		}
+	}
+}
+
+// flushSignal will use server to queue the flush IO operation to a pool of flushers.
+// Lock must be held.
+func (c *client) flushSignal() {
+	c.out.sg.Signal()
 }
 
 func (c *client) traceMsg(msg []byte) {
@@ -535,24 +674,68 @@ func (c *client) maxPayloadViolation(sz int, max int64) {
 	c.closeConnection()
 }
 
-// Assume the lock is held upon entry.
-func (c *client) sendProto(info []byte, doFlush bool) error {
-	var err error
-	if c.bw != nil && c.nc != nil {
-		deadlineSet := false
-		if doFlush || c.bw.Available() < len(info) {
-			c.nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
-			deadlineSet = true
+// queueOutbound queues data for client/route connections.
+// Return pending length.
+// Lock should be held
+func (c *client) queueOutbound(data []byte) {
+	// Add to pending bytes total.
+	c.out.pb += int64(len(data))
+
+	if c.out.p == nil {
+		if c.out.sz == 0 {
+			c.out.sz = startBufSize
 		}
-		_, err = c.bw.Write(info)
-		if err == nil && doFlush {
-			err = c.bw.Flush()
-		}
-		if deadlineSet {
-			c.nc.SetWriteDeadline(time.Time{})
+		if c.out.s != nil && cap(c.out.s) >= c.out.sz {
+			c.out.p = c.out.s
+			c.out.s = nil
+		} else {
+			c.out.p = make([]byte, 0, c.out.sz)
 		}
 	}
-	return err
+	// Determine if we copy or reference
+	if len(data) > cap(c.out.p)-len(c.out.p) {
+		// Put the primary on the nb if it has a payload
+		if len(c.out.p) > 0 {
+			c.out.nb = append(c.out.nb, c.out.p)
+			c.out.p = nil
+		}
+		// Check for a big message, and if found place directly on nb
+		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) < maxBufSize?
+
+		if len(data) > maxBufSize {
+			c.out.nb = append(c.out.nb, data)
+		} else {
+			// We will copy to primary.
+			if c.out.p == nil {
+				if len(data) > c.out.sz {
+					c.out.p = make([]byte, 0, len(data))
+				} else {
+					if c.out.s != nil && cap(c.out.s) >= c.out.sz { // TODO(dlc) - Size mismatch?
+						c.out.p = c.out.s
+						c.out.s = nil
+					} else {
+						c.out.p = make([]byte, 0, c.out.sz)
+					}
+				}
+			}
+			c.out.p = append(c.out.p, data...)
+		}
+	} else {
+		c.out.p = append(c.out.p, data...)
+	}
+}
+
+// Assume the lock is held upon entry.
+func (c *client) sendProto(info []byte, doFlush bool) {
+	if c.nc == nil {
+		return
+	}
+	c.queueOutbound(info)
+	if doFlush {
+		c.flushOutbound()
+	} else {
+		c.flushSignal()
+	}
 }
 
 // Assume the lock is held upon entry.
@@ -572,6 +755,7 @@ func (c *client) sendOK() {
 	c.traceOutOp("OK", nil)
 	// Can not autoflush this one, needs to be async.
 	c.sendProto([]byte("+OK\r\n"), false)
+	// FIXME(dlc) - ??
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
@@ -584,12 +768,8 @@ func (c *client) processPing() {
 		return
 	}
 	c.traceOutOp("PONG", nil)
-	if err := c.sendProto([]byte("PONG\r\n"), true); err != nil {
-		c.clearConnection()
-		c.Debugf("Error on Flush, error %s", err.Error())
-		c.mu.Unlock()
-		return
-	}
+	c.sendProto([]byte("PONG\r\n"), true)
+
 	// The CONNECT should have been received, but make sure it
 	// is so before proceeding
 	if !c.flags.isSet(connectReceived) {
@@ -932,6 +1112,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	}
 	client := sub.client
 	client.mu.Lock()
+	srv := client.srv
 
 	sub.nm++
 	// Check if we should auto-unsubscribe.
@@ -946,7 +1127,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 			// Due to defer, reverse the code order so that execution
 			// is consistent with other cases where we unsubscribe.
 			if shouldForward {
-				defer client.srv.broadcastUnSubscribe(sub)
+				defer srv.broadcastUnSubscribe(sub)
 			}
 			defer client.unsubscribe(sub)
 		} else if sub.nm > sub.max {
@@ -954,12 +1135,13 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 			client.mu.Unlock()
 			client.unsubscribe(sub)
 			if shouldForward {
-				client.srv.broadcastUnSubscribe(sub)
+				srv.broadcastUnSubscribe(sub)
 			}
 			return false
 		}
 	}
 
+	// Check for closed connection
 	if client.nc == nil {
 		client.mu.Unlock()
 		return false
@@ -975,60 +1157,31 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	client.outMsgs++
 	client.outBytes += msgSize
 
-	atomic.AddInt64(&c.srv.outMsgs, 1)
-	atomic.AddInt64(&c.srv.outBytes, msgSize)
+	atomic.AddInt64(&srv.outMsgs, 1)
+	atomic.AddInt64(&srv.outBytes, msgSize)
 
-	// Check to see if our writes will cause a flush
-	// in the underlying bufio. If so limit time we
-	// will wait for flush to complete.
+	// Queue to outbound buffer
+	client.queueOutbound(mh)
+	client.queueOutbound(msg)
 
-	deadlineSet := false
-	if client.bw.Available() < (len(mh) + len(msg)) {
-		client.wfc++
-		client.nc.SetWriteDeadline(time.Now().Add(client.srv.getOpts().WriteDeadline))
-		deadlineSet = true
-	}
-
-	// Deliver to the client.
-	_, err := client.bw.Write(mh)
-	if err != nil {
-		goto writeErr
-	}
-
-	_, err = client.bw.Write(msg)
-	if err != nil {
-		goto writeErr
+	// Check outbound threshold and queue IO flush if needed.
+	if client.out.pb > maxBufSize*2 {
+		client.flushSignal()
 	}
 
 	if c.trace {
 		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
 	}
 
-	// TODO(dlc) - Do we need this or can we just call always?
-	if deadlineSet {
-		client.nc.SetWriteDeadline(time.Time{})
+	// Increment the flush pending signals if we are setting for the first time.
+	if _, ok := c.pcd[client]; !ok {
+		client.out.fps++
 	}
-
 	client.mu.Unlock()
+
+	// Remember for when we return to the top of the loop.
 	c.pcd[client] = needFlush
-	return true
 
-writeErr:
-	if deadlineSet {
-		client.nc.SetWriteDeadline(time.Time{})
-	}
-	client.mu.Unlock()
-
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		atomic.AddInt64(&client.srv.slowConsumers, 1)
-		client.Noticef("Slow Consumer Detected")
-		client.closeConnection()
-	} else {
-		c.Debugf("Error writing msg: %v", err)
-	}
-	// Honor at most once semantic:
-	// treat message that we attempted to send as actually sent
-	// and don't let a higher-level code an attempt to resend it.
 	return true
 }
 
@@ -1119,7 +1272,7 @@ func (c *client) processMsg(msg []byte) {
 	if genid == c.cache.genid && c.cache.results != nil {
 		r, ok = c.cache.results[string(c.pa.subject)]
 	} else {
-		// reset
+		// reset our L1 completely.
 		c.cache.results = make(map[string]*SublistResult)
 		c.cache.genid = genid
 	}
@@ -1290,16 +1443,12 @@ func (c *client) processPingTimer() {
 	c.traceOutOp("PING", nil)
 
 	// Send PING
-	err := c.sendProto([]byte("PING\r\n"), true)
-	if err != nil {
-		c.Debugf("Error on Client Ping Flush, error %s", err)
-		c.clearConnection()
-	} else {
-		// Reset to fire again if all OK.
-		c.setPingTimer()
-	}
+	c.sendProto([]byte("PING\r\n"), true)
+	// Reset to fire again.
+	c.setPingTimer()
 }
 
+// Lock should be held
 func (c *client) setPingTimer() {
 	if c.srv == nil {
 		return
@@ -1341,18 +1490,29 @@ func (c *client) isAuthTimerSet() bool {
 
 // Lock should be held
 func (c *client) clearConnection() {
-	if c.nc == nil {
+	if c.flags.isSet(clearConnection) {
 		return
 	}
+	c.flags.set(clearConnection)
+	nc := c.nc
+	if nc == nil || c.srv == nil {
+		return
+	}
+	// Flush any pending.
+	c.flushOutbound()
+
+	// Clear outbound here.
+	c.out.sg.Broadcast()
+
 	// With TLS, Close() is sending an alert (that is doing a write).
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
-	c.nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
-	if c.bw != nil {
-		c.bw.Flush()
+	if c.flags.isSet(handshakeComplete) {
+		nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
 	}
-	c.nc.Close()
-	c.nc.SetWriteDeadline(time.Time{})
+	nc.Close()
+	// Do this always to also kick out any IO writes.
+	nc.SetWriteDeadline(time.Time{})
 }
 
 func (c *client) typeString() string {
