@@ -426,18 +426,61 @@ func TestWriteDeadline(t *testing.T) {
 	defer sender.Close()
 
 	payload := make([]byte, 1000000)
-	start := time.Now()
 	for i := 0; i < 10; i++ {
 		if err := sender.Publish("foo", payload); err != nil {
 			t.Fatalf("Error on publish: %v", err)
 		}
 	}
-	dur := time.Since(start)
-	// user more than the write deadline to account for calls
-	// overhead, running with -race, etc...
-	if dur > 110*time.Millisecond {
-		t.Fatalf("Flush should have returned sooner, took: %v", dur)
+	// Flush sender connection to ensure that all data has been sent.
+	if err := sender.Flush(); err != nil {
+		t.Fatalf("Error on flush: %v", err)
 	}
+
+	// At this point server should have closed connection c.
+
+	// On certain platforms, it may take more than one call before
+	// getting the error.
+	for i := 0; i < 100; i++ {
+		if _, err := c.Write([]byte("PUB bar 5\r\nhello\r\n")); err != nil {
+			// ok
+			return
+		}
+	}
+	t.Fatal("Connection should have been closed")
+}
+
+func TestSlowConsumerPendingBytes(t *testing.T) {
+	opts := DefaultOptions()
+	opts.WriteDeadline = 30 * time.Second // Wait forever so write deadline does not trigger slow consumer.
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("CONNECT {}\r\nPING\r\nSUB foo 1\r\n")); err != nil {
+		t.Fatalf("Error sending protocols to server: %v", err)
+	}
+	// Reduce socket buffer to increase reliability of data backing up in the server destined
+	// for our subscribed client.
+	c.(*net.TCPConn).SetReadBuffer(2)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 1000000)
+	for i := 0; i < 100; i++ {
+		if err := sender.Publish("foo", payload); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+
 	// Flush sender connection to ensure that all data has been sent.
 	if err := sender.Flush(); err != nil {
 		t.Fatalf("Error on flush: %v", err)

@@ -25,8 +25,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/nats-io/go-nats"
 	"net"
+
+	"github.com/nats-io/go-nats"
 )
 
 const CLIENT_PORT = -1
@@ -383,7 +384,7 @@ func TestConnzLastActivity(t *testing.T) {
 
 		// Just wait a bit to make sure that there is a difference
 		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Sub should trigger update.
 		sub, _ := nc.Subscribe("hello.world", func(m *nats.Msg) {})
@@ -396,7 +397,7 @@ func TestConnzLastActivity(t *testing.T) {
 
 		// Just wait a bit to make sure that there is a difference
 		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Pub should trigger as well
 		nc.Publish("foo", []byte("Hello"))
@@ -409,7 +410,7 @@ func TestConnzLastActivity(t *testing.T) {
 
 		// Just wait a bit to make sure that there is a difference
 		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Unsub should trigger as well
 		sub.Unsubscribe()
@@ -422,7 +423,7 @@ func TestConnzLastActivity(t *testing.T) {
 
 		// Just wait a bit to make sure that there is a difference
 		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Message delivery should trigger as well
 		nc.Publish("foo", []byte("Hello"))

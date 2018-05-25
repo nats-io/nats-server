@@ -129,13 +129,14 @@ type client struct {
 
 // outbound holds pending data for a socket.
 type outbound struct {
-	p   []byte      // Primary write buffer
-	s   []byte      // Secondary for use post flush
-	nb  net.Buffers // net.Buffers for writev IO
-	sz  int         // limit size per []byte, uses variable BufSize constants, start, min, max.
-	pb  int64       // Total pending/queued bytes.
-	sg  *sync.Cond  // Flusher conditional for signaling.
-	fps int         // Flush pending signals from inbound messages.
+	p   []byte        // Primary write buffer
+	s   []byte        // Secondary for use post flush
+	nb  net.Buffers   // net.Buffers for writev IO
+	sz  int           // limit size per []byte, uses variable BufSize constants, start, min, max.
+	pb  int64         // Total pending/queued bytes.
+	sg  *sync.Cond    // Flusher conditional for signaling.
+	fps int           // Flush pending signals from inbound messages.
+	lft time.Duration // Last flush time.
 }
 
 type permissions struct {
@@ -356,12 +357,20 @@ func (c *client) readLoop() {
 		atomic.AddInt64(&s.inMsgs, int64(c.cache.inMsgs))
 		atomic.AddInt64(&s.inBytes, int64(c.cache.inBytes))
 
+		budget := 5 * time.Millisecond
+
 		// Check pending clients for flush.
 		for cp := range c.pcd {
 			// Queue up a flush for those in the set
 			cp.mu.Lock()
 			cp.out.fps--
-			cp.flushSignal()
+			if budget > 0 {
+				cp.flushOutbound()
+				budget -= cp.out.lft
+			} else {
+				cp.flushSignal()
+			}
+
 			cp.mu.Unlock()
 			delete(c.pcd, cp)
 		}
@@ -451,9 +460,12 @@ func (c *client) flushOutbound() {
 	// Actual write to the socket.
 	n, err := nb.WriteTo(nc)
 	nc.SetWriteDeadline(time.Time{})
+	lft := time.Since(now)
 	// Re-acquire client lock
 	c.mu.Lock()
 
+	// Update flush time statistics
+	c.out.lft = lft
 	// Subtract from pending bytes.
 	c.out.pb -= n
 
@@ -466,14 +478,13 @@ func (c *client) flushOutbound() {
 			c.out.pb -= attempted
 		}
 		c.clearConnection()
-
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			atomic.AddInt64(&srv.slowConsumers, 1)
 			c.Noticef("Slow Consumer Detected")
 		} else {
 			c.Debugf("Error flushing: %v", err)
 		}
-		// FIXME(dlc) - return here?
+		return
 	}
 
 	// Adjust based on what we wrote plus any pending.
@@ -680,6 +691,15 @@ func (c *client) maxPayloadViolation(sz int, max int64) {
 func (c *client) queueOutbound(data []byte) {
 	// Add to pending bytes total.
 	c.out.pb += int64(len(data))
+
+	// Check for slow consumer via pending bytes limit.
+	// ok to return here, client is going away.
+	if c.out.pb > c.srv.getOpts().MaxPending {
+		c.clearConnection()
+		atomic.AddInt64(&c.srv.slowConsumers, 1)
+		c.Noticef("Slow Consumer Detected")
+		return
+	}
 
 	if c.out.p == nil {
 		if c.out.sz == 0 {
@@ -1513,6 +1533,7 @@ func (c *client) clearConnection() {
 	nc.Close()
 	// Do this always to also kick out any IO writes.
 	nc.SetWriteDeadline(time.Time{})
+	//fmt.Printf("MAX FT was %v\n", c.out.mft)
 }
 
 func (c *client) typeString() string {
