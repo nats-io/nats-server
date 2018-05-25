@@ -136,6 +136,8 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	sg  *sync.Cond    // Flusher conditional for signaling.
 	fps int           // Flush pending signals from inbound messages.
+	mp  int64         // snapshot of max pending.
+	wdl time.Duration // Snapshot fo write deadline.
 	lft time.Duration // Last flush time.
 }
 
@@ -216,6 +218,10 @@ func (c *client) initClient() {
 	// Outbound data structure setup
 	c.out.sz = startBufSize
 	c.out.sg = sync.NewCond(&c.mu)
+	opts := s.getOpts()
+	// Snapshots to avoid mutex access in fast paths.
+	c.out.wdl = opts.WriteDeadline
+	c.out.mp = opts.MaxPending
 
 	c.subs = make(map[string]*subscription)
 	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
@@ -364,13 +370,11 @@ func (c *client) readLoop() {
 			// Queue up a flush for those in the set
 			cp.mu.Lock()
 			cp.out.fps--
-			if budget > 0 {
-				cp.flushOutbound()
+			if budget > 0 && cp.flushOutbound() {
 				budget -= cp.out.lft
 			} else {
 				cp.flushSignal()
 			}
-
 			cp.mu.Unlock()
 			delete(c.pcd, cp)
 		}
@@ -421,22 +425,22 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 }
 
 // flushOutbound will flush outbound buffer to a client.
+// Will return if data was attempted to be written.
 // Lock must be held
-func (c *client) flushOutbound() {
+func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
-		return
+		return false
 	}
 	c.flags.set(flushOutbound)
 	defer c.flags.clear(flushOutbound)
 
 	// Check for nothing to do.
 	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
-		return
+		return true // true because no need to queue a signal.
 	}
 
 	// Snapshot opts
 	srv := c.srv
-	opts := srv.getOpts()
 
 	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
 	nb := c.collapsePtoNB()
@@ -456,7 +460,7 @@ func (c *client) flushOutbound() {
 	now := time.Now()
 	// FIXME(dlc) - writev will do multiple IOs past 1024 on
 	// most platforms, need to account for that with deadline?
-	nc.SetWriteDeadline(now.Add(opts.WriteDeadline))
+	nc.SetWriteDeadline(now.Add(c.out.wdl))
 	// Actual write to the socket.
 	n, err := nb.WriteTo(nc)
 	nc.SetWriteDeadline(time.Time{})
@@ -484,7 +488,7 @@ func (c *client) flushOutbound() {
 		} else {
 			c.Debugf("Error flushing: %v", err)
 		}
-		return
+		return true
 	}
 
 	// Adjust based on what we wrote plus any pending.
@@ -512,6 +516,7 @@ func (c *client) flushOutbound() {
 			}
 		}
 	}
+	return true
 }
 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
@@ -694,7 +699,7 @@ func (c *client) queueOutbound(data []byte) {
 
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
-	if c.out.pb > c.srv.getOpts().MaxPending {
+	if c.out.pb > c.out.mp {
 		c.clearConnection()
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected")
@@ -751,9 +756,7 @@ func (c *client) sendProto(info []byte, doFlush bool) {
 		return
 	}
 	c.queueOutbound(info)
-	if doFlush {
-		c.flushOutbound()
-	} else {
+	if !(doFlush && c.flushOutbound()) {
 		c.flushSignal()
 	}
 }
@@ -1528,12 +1531,11 @@ func (c *client) clearConnection() {
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
 	if c.flags.isSet(handshakeComplete) {
-		nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
+		nc.SetWriteDeadline(time.Now().Add(c.out.wdl))
 	}
 	nc.Close()
 	// Do this always to also kick out any IO writes.
 	nc.SetWriteDeadline(time.Time{})
-	//fmt.Printf("MAX FT was %v\n", c.out.mft)
 }
 
 func (c *client) typeString() string {
