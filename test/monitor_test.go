@@ -228,6 +228,14 @@ func TestVarz(t *testing.T) {
 	if v.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 	}
+	if v.MaxPending != server.MAX_PENDING_SIZE {
+		t.Fatalf("Expected MaxPending of %d, got %v\n",
+			server.MAX_PENDING_SIZE, v.MaxPending)
+	}
+	if v.WriteDeadline != server.DEFAULT_FLUSH_DEADLINE {
+		t.Fatalf("Expected WriteDeadline of %d, got %v\n",
+			server.DEFAULT_FLUSH_DEADLINE, v.WriteDeadline)
+	}
 }
 
 func TestConnz(t *testing.T) {
