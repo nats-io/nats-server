@@ -33,11 +33,11 @@ import (
 
 // ClusterOpts are options for clusters.
 type ClusterOpts struct {
-	Host           string      `json:"addr"`
-	Port           int         `json:"cluster_port"`
+	Host           string      `json:"addr,omitempty"`
+	Port           int         `json:"cluster_port,omitempty"`
 	Username       string      `json:"-"`
 	Password       string      `json:"-"`
-	AuthTimeout    float64     `json:"auth_timeout"`
+	AuthTimeout    float64     `json:"auth_timeout,omitempty"`
 	TLSTimeout     float64     `json:"-"`
 	TLSConfig      *tls.Config `json:"-"`
 	ListenStr      string      `json:"-"`
@@ -71,7 +71,7 @@ type Options struct {
 	MaxControlLine  int           `json:"max_control_line"`
 	MaxPayload      int           `json:"max_payload"`
 	MaxPending      int64         `json:"max_pending"`
-	Cluster         ClusterOpts   `json:"cluster"`
+	Cluster         ClusterOpts   `json:"cluster,omitempty"`
 	ProfPort        int           `json:"-"`
 	PidFile         string        `json:"-"`
 	LogFile         string        `json:"-"`
@@ -926,14 +926,16 @@ func processOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
-	if opts.Cluster.Host == "" {
-		opts.Cluster.Host = DEFAULT_HOST
-	}
-	if opts.Cluster.TLSTimeout == 0 {
-		opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
-	}
-	if opts.Cluster.AuthTimeout == 0 {
-		opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	if opts.Cluster.Port != 0 {
+		if opts.Cluster.Host == "" {
+			opts.Cluster.Host = DEFAULT_HOST
+		}
+		if opts.Cluster.TLSTimeout == 0 {
+			opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
+		}
+		if opts.Cluster.AuthTimeout == 0 {
+			opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+		}
 	}
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE

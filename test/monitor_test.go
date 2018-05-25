@@ -51,8 +51,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = MONITOR_PORT
 	opts.HTTPHost = "localhost"
-	opts.Cluster.Host = "127.0.0.1"
-	opts.Cluster.Port = 10223
+	opts.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10223}
 	opts.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10222")
 
 	s1 := RunServer(&opts)
@@ -61,8 +60,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts2.Port = CLIENT_PORT + 1
 	opts2.HTTPPort = MONITOR_PORT + 1
 	opts2.HTTPHost = "localhost"
-	opts2.Cluster.Host = "127.0.0.1"
-	opts2.Cluster.Port = 10222
+	opts2.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10222}
 	opts2.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10223")
 
 	s2 := RunServer(&opts2)
@@ -206,6 +204,10 @@ func TestVarz(t *testing.T) {
 	body, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	if strings.Contains(string(body), "cluster_port") {
+		t.Fatal("Varz body contains cluster information when no cluster is defined.")
 	}
 
 	v = server.Varz{}

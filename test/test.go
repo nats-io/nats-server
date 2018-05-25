@@ -372,9 +372,9 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 
 // Helper function to generate next opts to make sure no port conflicts etc.
 func nextServerOpts(opts *server.Options) *server.Options {
-	nopts := *opts
+	nopts := opts.Clone()
 	nopts.Port++
 	nopts.Cluster.Port++
 	nopts.HTTPPort++
-	return &nopts
+	return nopts
 }
