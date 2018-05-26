@@ -573,6 +573,7 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 	flushConnection(b, c)
 
 	b.ResetTimer()
+
 	for i := 0; i < b.N; i++ {
 		_, err := bw.Write(sendOp)
 		if err != nil {
