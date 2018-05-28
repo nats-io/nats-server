@@ -53,9 +53,10 @@ const (
 
 // For controlling dynamic buffer sizes.
 const (
-	startBufSize = 512   // For INFO/CONNECT block
-	minBufSize   = 64    // Smallest to shrink to for PING/PONG
-	maxBufSize   = 65536 // 64k
+	startBufSize   = 512   // For INFO/CONNECT block
+	minBufSize     = 64    // Smallest to shrink to for PING/PONG
+	maxBufSize     = 65536 // 64k
+	shortsToShrink = 2
 )
 
 // Represent client booleans with a bitmask
@@ -111,7 +112,7 @@ type client struct {
 	srv   *Server
 	subs  map[string]*subscription
 	perms *permissions
-	cache readCache
+	in    readCache
 	pcd   map[*client]struct{}
 	atmr  *time.Timer
 	ptmr  *time.Timer
@@ -133,6 +134,7 @@ type outbound struct {
 	s   []byte        // Secondary for use post flush
 	nb  net.Buffers   // net.Buffers for writev IO
 	sz  int           // limit size per []byte, uses variable BufSize constants, start, min, max.
+	sws int           // Number of short writes, used for dyanmic resizing.
 	pb  int64         // Total pending/queued bytes.
 	sg  *sync.Cond    // Flusher conditional for signaling.
 	fps int           // Flush pending signals from inbound messages.
@@ -158,9 +160,11 @@ type readCache struct {
 	genid   uint64
 	results map[string]*SublistResult
 	prand   *rand.Rand
-	inMsgs  int
-	inBytes int
+	msgs    int
+	bytes   int
 	subs    int
+	rsz     int // Read buffer size
+	srs     int // Short reads, used for dynamic buffer resizing.
 }
 
 func (c *client) String() (id string) {
@@ -319,6 +323,7 @@ func (c *client) readLoop() {
 	c.mu.Lock()
 	nc := c.nc
 	s := c.srv
+	c.in.rsz = startBufSize
 	defer s.grWG.Done()
 	c.mu.Unlock()
 
@@ -327,7 +332,8 @@ func (c *client) readLoop() {
 	}
 
 	// Start read buffer.
-	b := make([]byte, startBufSize)
+
+	b := make([]byte, c.in.rsz)
 
 	for {
 		n, err := nc.Read(b)
@@ -340,9 +346,9 @@ func (c *client) readLoop() {
 		last := time.Now()
 
 		// Clear inbound stats cache
-		c.cache.inMsgs = 0
-		c.cache.inBytes = 0
-		c.cache.subs = 0
+		c.in.msgs = 0
+		c.in.bytes = 0
+		c.in.subs = 0
 
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
@@ -358,11 +364,12 @@ func (c *client) readLoop() {
 
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
-		atomic.AddInt64(&c.inMsgs, int64(c.cache.inMsgs))
-		atomic.AddInt64(&c.inBytes, int64(c.cache.inBytes))
-		atomic.AddInt64(&s.inMsgs, int64(c.cache.inMsgs))
-		atomic.AddInt64(&s.inBytes, int64(c.cache.inBytes))
+		atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
+		atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+		atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
+		atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
 
+		// Budget to spend in place flushing outbound data.
 		budget := 5 * time.Millisecond
 
 		// Check pending clients for flush.
@@ -378,29 +385,39 @@ func (c *client) readLoop() {
 			cp.mu.Unlock()
 			delete(c.pcd, cp)
 		}
+
 		// Check to see if we got closed, e.g. slow consumer
 		c.mu.Lock()
 		nc := c.nc
+
 		// Activity based on interest changes or data/msgs.
-		if c.cache.inMsgs > 0 || c.cache.subs > 0 {
+		if c.in.msgs > 0 || c.in.subs > 0 {
 			c.last = last
 		}
 
-		c.mu.Unlock()
-		if nc == nil {
-			return
+		if n < cap(b) {
+			c.in.srs++
+		} else {
+			c.in.srs = 0
 		}
 
 		// Update read buffer size as/if needed.
 
 		// Grow
-		if n == len(b) && len(b) < maxBufSize {
-			b = make([]byte, len(b)*2)
+		if n >= cap(b) && cap(b) < maxBufSize {
+			c.in.rsz = cap(b) * 2
+			b = make([]byte, c.in.rsz)
 		}
 
 		// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
-		if n < len(b)/2 && len(b) > minBufSize {
-			b = make([]byte, len(b)/2)
+		if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
+			c.in.rsz = cap(b) / 2
+			b = make([]byte, c.in.rsz)
+		}
+
+		c.mu.Unlock()
+		if nc == nil {
+			return
 		}
 	}
 }
@@ -470,12 +487,15 @@ func (c *client) flushOutbound() bool {
 
 	// Update flush time statistics
 	c.out.lft = lft
+
 	// Subtract from pending bytes.
 	c.out.pb -= n
 
 	// Check for partial writes
 	if n != attempted && n > 0 {
 		c.handlePartialWrite(nb)
+	} else if n >= int64(c.out.sz) {
+		c.out.sws = 0
 	}
 
 	if err != nil {
@@ -497,8 +517,11 @@ func (c *client) flushOutbound() bool {
 
 	// Adjust sz as needed downward, keeping power of 2.
 	// We do this at a slower rate, hence the pt*4.
-	if pt*4 < c.out.sz && c.out.sz > minBufSize {
-		c.out.sz >>= 1
+	if pt < c.out.sz && c.out.sz > minBufSize {
+		c.out.sws++
+		if c.out.sws > shortsToShrink {
+			c.out.sz >>= 1
+		}
 	}
 	// Adjust sz as needed upward, keeping power of 2.
 	if pt > c.out.sz && c.out.sz < maxBufSize {
@@ -720,15 +743,21 @@ func (c *client) queueOutbound(data []byte) {
 		}
 	}
 	// Determine if we copy or reference
-	if len(data) > cap(c.out.p)-len(c.out.p) {
+	available := cap(c.out.p) - len(c.out.p)
+	if len(data) > available {
+		// We can fit into existing primary, but message will fit in next one
+		// we allocate or utilize from the secondary. So copy what we can.
+		if available > 0 && len(data) < c.out.sz {
+			c.out.p = append(c.out.p, data[:available]...)
+			data = data[available:]
+		}
 		// Put the primary on the nb if it has a payload
 		if len(c.out.p) > 0 {
 			c.out.nb = append(c.out.nb, c.out.p)
 			c.out.p = nil
 		}
 		// Check for a big message, and if found place directly on nb
-		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) < maxBufSize?
-
+		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) <
 		if len(data) > maxBufSize {
 			c.out.nb = append(c.out.nb, data)
 		} else {
@@ -768,6 +797,19 @@ func (c *client) sendProto(info []byte, doFlush bool) {
 }
 
 // Assume the lock is held upon entry.
+func (c *client) sendPong() {
+	c.traceOutOp("PONG", nil)
+	c.sendProto([]byte("PONG\r\n"), true)
+}
+
+// Assume the lock is held upon entry.
+func (c *client) sendPing() {
+	c.pout++
+	c.traceOutOp("PING", nil)
+	c.sendProto([]byte("PING\r\n"), true)
+}
+
+// Assume the lock is held upon entry.
 func (c *client) sendInfo(info []byte) {
 	c.sendProto(info, true)
 }
@@ -796,8 +838,7 @@ func (c *client) processPing() {
 		c.mu.Unlock()
 		return
 	}
-	c.traceOutOp("PONG", nil)
-	c.sendProto([]byte("PONG\r\n"), true)
+	c.sendPong()
 
 	// The CONNECT should have been received, but make sure it
 	// is so before proceeding
@@ -978,7 +1019,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	c.traceInOp("SUB", argo)
 
 	// Indicate activity.
-	c.cache.subs++
+	c.in.subs++
 
 	// Copy so we do not reference a potentially large buffer
 	arg := make([]byte, len(argo))
@@ -1085,7 +1126,7 @@ func (c *client) processUnsub(arg []byte) error {
 	}
 
 	// Indicate activity.
-	c.cache.subs += 1
+	c.in.subs += 1
 
 	var sub *subscription
 
@@ -1272,8 +1313,8 @@ func (c *client) processMsg(msg []byte) {
 
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.cache.inMsgs += 1
-	c.cache.inBytes += len(msg) - LEN_CR_LF
+	c.in.msgs += 1
+	c.in.bytes += len(msg) - LEN_CR_LF
 
 	if c.trace {
 		c.traceMsg(msg)
@@ -1298,23 +1339,23 @@ func (c *client) processMsg(msg []byte) {
 
 	genid := atomic.LoadUint64(&srv.sl.genid)
 
-	if genid == c.cache.genid && c.cache.results != nil {
-		r, ok = c.cache.results[string(c.pa.subject)]
+	if genid == c.in.genid && c.in.results != nil {
+		r, ok = c.in.results[string(c.pa.subject)]
 	} else {
 		// reset our L1 completely.
-		c.cache.results = make(map[string]*SublistResult)
-		c.cache.genid = genid
+		c.in.results = make(map[string]*SublistResult)
+		c.in.genid = genid
 	}
 
 	if !ok {
 		subject := string(c.pa.subject)
 		r = srv.sl.Match(subject)
-		c.cache.results[subject] = r
+		c.in.results[subject] = r
 		// Prune the results cache. Keeps us from unbounded growth.
-		if len(c.cache.results) > maxResultCacheSize {
+		if len(c.in.results) > maxResultCacheSize {
 			n := 0
-			for subject := range c.cache.results {
-				delete(c.cache.results, subject)
+			for subject := range c.in.results {
+				delete(c.in.results, subject)
 				if n++; n > pruneSize {
 					break
 				}
@@ -1421,15 +1462,15 @@ func (c *client) processMsg(msg []byte) {
 	if isRouteQsub || !isRoute {
 		// Check to see if we have our own rand yet. Global rand
 		// has contention with lots of clients, etc.
-		if c.cache.prand == nil {
-			c.cache.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		if c.in.prand == nil {
+			c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 		}
 		// Process queue subs
 		for i := 0; i < len(r.qsubs); i++ {
 			qsubs := r.qsubs[i]
 			// Find a subscription that is able to deliver this message
 			// starting at a random index.
-			startIndex := c.cache.prand.Intn(len(qsubs))
+			startIndex := c.in.prand.Intn(len(qsubs))
 			for i := 0; i < len(qsubs); i++ {
 				index := (startIndex + i) % len(qsubs)
 				sub := qsubs[index]
@@ -1461,18 +1502,16 @@ func (c *client) processPingTimer() {
 	c.Debugf("%s Ping Timer", c.typeString())
 
 	// Check for violation
-	c.pout++
-	if c.pout > c.srv.getOpts().MaxPingsOut {
+	if c.pout+1 > c.srv.getOpts().MaxPingsOut {
 		c.Debugf("Stale Client Connection - Closing")
 		c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
 		c.clearConnection()
 		return
 	}
 
-	c.traceOutOp("PING", nil)
-
 	// Send PING
-	c.sendProto([]byte("PING\r\n"), true)
+	c.sendPing()
+
 	// Reset to fire again.
 	c.setPingTimer()
 }

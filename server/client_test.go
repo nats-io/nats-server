@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"crypto/rand"
 	"crypto/tls"
 
 	"github.com/nats-io/go-nats"
@@ -651,9 +652,7 @@ func TestUnsubRace(t *testing.T) {
 	}
 	defer nc.Close()
 
-	ncp, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
-		s.getOpts().Host,
-		s.Addr().(*net.TCPAddr).Port))
+	ncp, err := nats.Connect(url)
 	if err != nil {
 		t.Fatalf("Error creating client: %v\n", err)
 	}
@@ -662,7 +661,6 @@ func TestUnsubRace(t *testing.T) {
 	sub, _ := nc.Subscribe("foo", func(m *nats.Msg) {
 		// Just eat it..
 	})
-
 	nc.Flush()
 
 	var wg sync.WaitGroup
@@ -814,4 +812,102 @@ func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
 			t.Fatalf("Error on unsubscribe: %v", err)
 		}
 	}
+}
+
+// Utility function to grab buffer sizes
+func (c *client) getBufferSizes() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.in.rsz, c.out.sz
+
+}
+
+func (c *client) triggerPing() {
+	c.mu.Lock()
+	c.sendPing()
+	c.mu.Unlock()
+	// Wait for PONG
+	for pout := 1; pout != 0; {
+		c.mu.Lock()
+		pout = c.pout
+		c.mu.Unlock()
+	}
+}
+
+func (c *client) checkBuffers(t *testing.T, ers, ews int) {
+	t.Helper()
+	rsz, wsz := c.getBufferSizes()
+	if rsz != ers {
+		t.Fatalf("Expected read buffer of %d, but got %d\n", ers, rsz)
+	}
+	if wsz != ews {
+		t.Fatalf("Expected write buffer of %d, but got %d\n", ews, wsz)
+	}
+}
+
+func TestDynamicBuffers(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Grab the client from server.
+	s.mu.Lock()
+	lc := len(s.clients)
+	c := s.clients[s.gcid]
+	s.mu.Unlock()
+
+	if lc != 1 {
+		t.Fatalf("Expected only 1 client but got %d\n", lc)
+	}
+	if c == nil {
+		t.Fatal("Expected to retrieve client\n")
+
+	}
+	// Should have already throttled back
+	c.checkBuffers(t, startBufSize, startBufSize)
+
+	// Send data.
+	data := make([]byte, 1024)
+	rand.Read(data)
+
+	for i := 0; i < 100; i++ {
+		nc.Publish("foo", data)
+	}
+	nc.Flush()
+
+	c.checkBuffers(t, maxBufSize, startBufSize/2)
+
+	nc.Subscribe("foo", func(m *nats.Msg) {
+		// Just eat it..
+	})
+	nc.Flush()
+
+	for i := 0; i < 1000; i++ {
+		nc.Publish("foo", data)
+	}
+	nc.Flush()
+
+	c.checkBuffers(t, maxBufSize, maxBufSize)
+
+	// Trigger server PING
+	c.triggerPing()
+	// Should still be the same
+	c.checkBuffers(t, maxBufSize, maxBufSize)
+	// Trigger second server PING
+	c.triggerPing()
+	// Should be shrinking now.
+	expected := maxBufSize / 2
+	c.checkBuffers(t, expected, expected)
+
+	// Do 10, should go to minimum for both..
+	for i := 0; i < 10; i++ {
+		c.triggerPing()
+	}
+	c.checkBuffers(t, minBufSize, minBufSize)
 }

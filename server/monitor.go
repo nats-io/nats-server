@@ -626,7 +626,7 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.WriteDeadline = opts.WriteDeadline
 	v.Subscriptions = s.sl.Count()
 	v.ConfigLoadTime = s.configTime
-	// Need a copy here since s.httpReqStas can change while doing
+	// Need a copy here since s.httpReqStats can change while doing
 	// the marshaling down below.
 	v.HTTPReqStats = make(map[string]uint64, len(s.httpReqStats))
 	for key, val := range s.httpReqStats {
