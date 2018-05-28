@@ -1,6 +1,5 @@
 language: go
 go:
-- 1.8.x
 - 1.9.x
 - 1.10.x
 install:
@@ -16,9 +15,9 @@ before_script:
 - go vet $EXCLUDE_VENDOR
 - misspell -error -locale US .
 - megacheck $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" == 1.9.* ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i -race $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" == 1.9.* ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
 after_success:
-- if [[ "$TRAVIS_GO_VERSION" == 1.9.* ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
