@@ -40,6 +40,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxPayload:     MAX_PAYLOAD_SIZE,
 		MaxPending:     MAX_PENDING_SIZE,
 		WriteDeadline:  DEFAULT_FLUSH_DEADLINE,
+		RQSubsSweep:    DEFAULT_REMOTE_QSUBS_SWEEPER,
 	}
 
 	opts := &Options{}

@@ -872,9 +872,10 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	nc.Close()
 }
 
-func TestRoutedQueueUnsubscribe(t *testing.T) {
+func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
 	optsA.NoSigs, optsA.NoLog = true, true
+	optsA.RQSubsSweep = 250 * time.Millisecond
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -900,16 +901,28 @@ func TestRoutedQueueUnsubscribe(t *testing.T) {
 	}
 	defer ncB.Close()
 
-	received := int32(0)
-	cb := func(m *nats.Msg) {
-		atomic.AddInt32(&received, 1)
+	rbar := int32(0)
+	barCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbar, 1)
+	}
+	rbaz := int32(0)
+	bazCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbaz, 1)
 	}
 
-	// Create 50 queue subs with auto-unsubscribe to each server.
+	// Create 250 queue subs with auto-unsubscribe to each server for
+	// group bar and group baz. So 500 total per queue group.
 	cons := []*nats.Conn{ncA, ncB}
 	for _, c := range cons {
-		for i := 0; i < 50; i++ {
-			qsub, err := c.QueueSubscribe("foo", "bar", cb)
+		for i := 0; i < 250; i++ {
+			qsub, err := c.QueueSubscribe("foo", "bar", barCb)
+			if err != nil {
+				t.Fatalf("Error on subscribe: %v", err)
+			}
+			if err := qsub.AutoUnsubscribe(1); err != nil {
+				t.Fatalf("Error on auto-unsubscribe: %v", err)
+			}
+			qsub, err = c.QueueSubscribe("foo", "baz", bazCb)
 			if err != nil {
 				t.Fatalf("Error on subscribe: %v", err)
 			}
@@ -920,24 +933,39 @@ func TestRoutedQueueUnsubscribe(t *testing.T) {
 		c.Flush()
 	}
 
-	total := 100
+	expected := int32(500)
 	// Now send messages from each server
-	for i := 0; i < total; i++ {
+	for i := int32(0); i < expected; i++ {
 		c := cons[i%2]
-		c.Publish("foo", []byte("hello"))
+		c.Publish("foo", []byte("Don't Drop Me!"))
 	}
 	for _, c := range cons {
 		c.Flush()
 	}
 
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
-		if atomic.LoadInt32(&received) == int32(total) {
+	wait := time.Now().Add(5 * time.Second)
+	for time.Now().Before(wait) {
+		nbar := atomic.LoadInt32(&rbar)
+		nbaz := atomic.LoadInt32(&rbaz)
+		if nbar == expected && nbaz == expected {
+			time.Sleep(500 * time.Millisecond)
+			// Now check all mappings are gone.
+			srvA.mu.Lock()
+			nrqsa := len(srvA.rqsubs)
+			srvA.mu.Unlock()
+			srvB.mu.Lock()
+			nrqsb := len(srvB.rqsubs)
+			srvB.mu.Unlock()
+			if nrqsa != 0 || nrqsb != 0 {
+				t.Fatalf("Expected rqs mappings to have cleared, but got A:%d, B:%d\n",
+					nrqsa, nrqsb)
+			}
 			return
 		}
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("Should have received %v messages, got %v", total, atomic.LoadInt32(&received))
+	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
+		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 }
 
 func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {

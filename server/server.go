@@ -83,12 +83,20 @@ type Server struct {
 	routeInfo     Info
 	routeInfoJSON []byte
 	quitCh        chan struct{}
-	grMu          sync.Mutex
-	grTmpClients  map[uint64]*client
-	grRunning     bool
-	grWG          sync.WaitGroup // to wait on various go routines
-	cproto        int64          // number of clients supporting async INFO
-	configTime    time.Time      // last time config was loaded
+
+	// Tracking for remote QRSID tags.
+	rqsMu       sync.RWMutex
+	rqsubs      map[string]rqsub
+	rqsubsTimer *time.Timer
+
+	// Tracking Go routines
+	grMu         sync.Mutex
+	grTmpClients map[uint64]*client
+	grRunning    bool
+	grWG         sync.WaitGroup // to wait on various go routines
+
+	cproto     int64     // number of clients supporting async INFO
+	configTime time.Time // last time config was loaded
 
 	logging struct {
 		sync.RWMutex
@@ -383,6 +391,8 @@ func (s *Server) Shutdown() {
 		s.profiler.Close()
 	}
 
+	// Clear any remote qsub mappings
+	s.clearRemoteQSubs()
 	s.mu.Unlock()
 
 	// Release go routines that wait on that channel
@@ -965,8 +975,9 @@ func (s *Server) removeClient(c *client) {
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.routes)
+	nr := len(s.routes)
+	s.mu.Unlock()
+	return nr
 }
 
 // NumRemotes will report number of registered remotes.

@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -910,4 +911,65 @@ func TestDynamicBuffers(t *testing.T) {
 		c.triggerPing()
 	}
 	c.checkBuffers(t, minBufSize, minBufSize)
+}
+
+// Similar to the routed version. Make sure we receive all of the
+// messages with auto-unsubscribe enabled.
+func TestQueueAutoUnsubscribe(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	rbar := int32(0)
+	barCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbar, 1)
+	}
+	rbaz := int32(0)
+	bazCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbaz, 1)
+	}
+
+	// Create 1000 subscriptions with auto-unsubscribe of 1.
+	// Do two groups, one bar and one baz.
+	for i := 0; i < 1000; i++ {
+		qsub, err := nc.QueueSubscribe("foo", "bar", barCb)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := qsub.AutoUnsubscribe(1); err != nil {
+			t.Fatalf("Error on auto-unsubscribe: %v", err)
+		}
+		qsub, err = nc.QueueSubscribe("foo", "baz", bazCb)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := qsub.AutoUnsubscribe(1); err != nil {
+			t.Fatalf("Error on auto-unsubscribe: %v", err)
+		}
+	}
+	nc.Flush()
+
+	expected := int32(1000)
+	for i := int32(0); i < expected; i++ {
+		nc.Publish("foo", []byte("Don't Drop Me!"))
+	}
+	nc.Flush()
+
+	wait := time.Now().Add(5 * time.Second)
+	for time.Now().Before(wait) {
+		nbar := atomic.LoadInt32(&rbar)
+		nbaz := atomic.LoadInt32(&rbaz)
+		if nbar == expected && nbaz == expected {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
+		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 }

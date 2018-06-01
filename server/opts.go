@@ -87,6 +87,7 @@ type Options struct {
 	TLSCaCert       string        `json:"-"`
 	TLSConfig       *tls.Config   `json:"-"`
 	WriteDeadline   time.Duration `json:"-"`
+	RQSubsSweep     time.Duration `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -948,6 +949,9 @@ func processOptions(opts *Options) {
 	}
 	if opts.WriteDeadline == time.Duration(0) {
 		opts.WriteDeadline = DEFAULT_FLUSH_DEADLINE
+	}
+	if opts.RQSubsSweep == time.Duration(0) {
+		opts.RQSubsSweep = DEFAULT_REMOTE_QSUBS_SWEEPER
 	}
 }
 

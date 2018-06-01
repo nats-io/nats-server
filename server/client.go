@@ -47,8 +47,9 @@ func init() {
 
 const (
 	// Scratch buffer size for the processMsg() calls.
-	msgScratchSize = 512
-	msgHeadProto   = "MSG "
+	msgScratchSize  = 512
+	msgHeadProto    = "MSG "
+	msgHeadProtoLen = len(msgHeadProto)
 )
 
 // For controlling dynamic buffer sizes.
@@ -987,7 +988,7 @@ func (c *client) processPub(arg []byte) error {
 	}
 
 	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
-		c.sendErr("Invalid Subject")
+		c.sendErr("Invalid Publish Subject")
 	}
 	return nil
 }
@@ -1093,6 +1094,7 @@ func (c *client) canSubscribe(sub []byte) bool {
 	return len(c.perms.sub.Match(string(sub)).psubs) > 0
 }
 
+// Low level unsubscribe for a given client.
 func (c *client) unsubscribe(sub *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1103,9 +1105,20 @@ func (c *client) unsubscribe(sub *subscription) {
 		return
 	}
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
+
 	delete(c.subs, string(sub.sid))
 	if c.srv != nil {
 		c.srv.sl.Remove(sub)
+	}
+
+	// If we are a queue subscriber on a client connection and we have routes,
+	// we will remember the remote sid and the queue group in case a route
+	// tries to deliver us a message. Remote queue subscribers are directed
+	// so we need to know what to do to avoid unnecessary message drops
+	// from [auto-]unsubscribe.
+	if c.typ == CLIENT && c.srv != nil &&
+		len(sub.queue) > 0 && c.srv.NumRoutes() > 0 {
+		c.srv.holdRemoteQSub(sub)
 	}
 }
 
@@ -1306,6 +1319,16 @@ func (c *client) pubAllowed() bool {
 	return allowed
 }
 
+// prepMsgHeader will prepare the message header prefix
+func (c *client) prepMsgHeader() []byte {
+	// Use the scratch buffer..
+	msgh := c.msgb[:msgHeadProtoLen]
+
+	// msg header
+	msgh = append(msgh, c.pa.subject...)
+	return append(msgh, ' ')
+}
+
 // processMsg is called to process an inbound msg from a client.
 func (c *client) processMsg(msg []byte) {
 	// Snapshot server.
@@ -1334,6 +1357,8 @@ func (c *client) processMsg(msg []byte) {
 		return
 	}
 
+	// Match the subscriptions. We will use our own L1 map if
+	// it's still valid, avoiding contention on the shared sublist.
 	var r *SublistResult
 	var ok bool
 
@@ -1371,114 +1396,67 @@ func (c *client) processMsg(msg []byte) {
 		return
 	}
 
-	// Check for pedantic and bad subject.
-	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
+	if c.typ == ROUTER {
+		c.processRoutedMsg(r, msg)
 		return
 	}
 
-	// Scratch buffer..
-	msgh := c.msgb[:len(msgHeadProto)]
-
-	// msg header
-	msgh = append(msgh, c.pa.subject...)
-	msgh = append(msgh, ' ')
+	// Client connection processing here.
+	msgh := c.prepMsgHeader()
 	si := len(msgh)
 
-	isRoute := c.typ == ROUTER
-	isRouteQsub := false
+	// Used to only send messages once across any given route.
+	var rmap map[string]struct{}
 
-	// If we are a route and we have a queue subscription, deliver direct
-	// since they are sent direct via L2 semantics. If the match is a queue
-	// subscription, we will return from here regardless if we find a sub.
-	if isRoute {
-		isQueue, sub, err := srv.routeSidQueueSubscriber(c.pa.sid)
-		if isQueue {
-			// We got an invalid QRSID, so stop here
-			if err != nil {
-				c.Errorf("Unable to deliver messaage: %v", err)
-				return
+	// Loop over all normal subscriptions that match.
+	for _, sub := range r.psubs {
+		// Check if this is a send to a ROUTER, make sure we only send it
+		// once. The other side will handle the appropriate re-processing
+		// and fan-out. Also enforce 1-Hop semantics, so no routing to another.
+		if sub.client.typ == ROUTER {
+			// Check to see if we have already sent it here.
+			if rmap == nil {
+				rmap = make(map[string]struct{}, srv.numRoutes())
 			}
+			sub.client.mu.Lock()
+			if sub.client.nc == nil ||
+				sub.client.route == nil ||
+				sub.client.route.remoteID == "" {
+				c.Debugf("Bad or Missing ROUTER Identity, not processing msg")
+				sub.client.mu.Unlock()
+				continue
+			}
+			if _, ok := rmap[sub.client.route.remoteID]; ok {
+				c.Debugf("Ignoring route, already processed and sent msg")
+				sub.client.mu.Unlock()
+				continue
+			}
+			rmap[sub.client.route.remoteID] = routeSeen
+			sub.client.mu.Unlock()
+		}
+		// Normal delivery
+		mh := c.msgHeader(msgh[:si], sub)
+		c.deliverMsg(sub, mh, msg)
+	}
+
+	// Check to see if we have our own rand yet. Global rand
+	// has contention with lots of clients, etc.
+	if c.in.prand == nil {
+		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	// Process queue subs
+	for i := 0; i < len(r.qsubs); i++ {
+		qsubs := r.qsubs[i]
+		// Find a subscription that is able to deliver this message
+		// starting at a random index.
+		startIndex := c.in.prand.Intn(len(qsubs))
+		for i := 0; i < len(qsubs); i++ {
+			index := (startIndex + i) % len(qsubs)
+			sub := qsubs[index]
 			if sub != nil {
 				mh := c.msgHeader(msgh[:si], sub)
 				if c.deliverMsg(sub, mh, msg) {
-					return
-				}
-			}
-			isRouteQsub = true
-			// At this point we know fo sure that it's a queue subscription and
-			// we didn't make a delivery attempt, because either a subscriber limit
-			// was exceeded or a subscription is already gone.
-			// So, let the code below find yet another matching subscription.
-			// We are at risk that a message might go back and forth between routes
-			// during these attempts, but at the end it shall either be delivered
-			// (at most once) or dropped.
-		}
-	}
-
-	// Don't process normal subscriptions in case of a queue subscription resend.
-	// Otherwise, we'd end up with potentially delivering the same message twice.
-	if !isRouteQsub {
-		// Used to only send normal subscriptions once across a given route.
-		var rmap map[string]struct{}
-
-		// Loop over all normal subscriptions that match.
-		for _, sub := range r.psubs {
-			// Check if this is a send to a ROUTER, make sure we only send it
-			// once. The other side will handle the appropriate re-processing
-			// and fan-out. Also enforce 1-Hop semantics, so no routing to another.
-			if sub.client.typ == ROUTER {
-				// Skip if sourced from a ROUTER and going to another ROUTER.
-				// This is 1-Hop semantics for ROUTERs.
-				if isRoute {
-					continue
-				}
-				// Check to see if we have already sent it here.
-				if rmap == nil {
-					rmap = make(map[string]struct{}, srv.numRoutes())
-				}
-				sub.client.mu.Lock()
-				if sub.client.nc == nil || sub.client.route == nil ||
-					sub.client.route.remoteID == "" {
-					c.Debugf("Bad or Missing ROUTER Identity, not processing msg")
-					sub.client.mu.Unlock()
-					continue
-				}
-				if _, ok := rmap[sub.client.route.remoteID]; ok {
-					c.Debugf("Ignoring route, already processed")
-					sub.client.mu.Unlock()
-					continue
-				}
-				rmap[sub.client.route.remoteID] = routeSeen
-				sub.client.mu.Unlock()
-			}
-			// Normal delivery
-			mh := c.msgHeader(msgh[:si], sub)
-			c.deliverMsg(sub, mh, msg)
-		}
-	}
-
-	// Now process any queue subs we have if not a route...
-	// or if we did not make a delivery attempt yet.
-	if isRouteQsub || !isRoute {
-		// Check to see if we have our own rand yet. Global rand
-		// has contention with lots of clients, etc.
-		if c.in.prand == nil {
-			c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-		}
-		// Process queue subs
-		for i := 0; i < len(r.qsubs); i++ {
-			qsubs := r.qsubs[i]
-			// Find a subscription that is able to deliver this message
-			// starting at a random index.
-			startIndex := c.in.prand.Intn(len(qsubs))
-			for i := 0; i < len(qsubs); i++ {
-				index := (startIndex + i) % len(qsubs)
-				sub := qsubs[index]
-				if sub != nil {
-					mh := c.msgHeader(msgh[:si], sub)
-					if c.deliverMsg(sub, mh, msg) {
-						break
-					}
+					break
 				}
 			}
 		}
