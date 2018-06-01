@@ -950,12 +950,12 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		if nbar == expected && nbaz == expected {
 			time.Sleep(500 * time.Millisecond)
 			// Now check all mappings are gone.
-			srvA.mu.Lock()
+			srvA.rqsMu.RLock()
 			nrqsa := len(srvA.rqsubs)
-			srvA.mu.Unlock()
-			srvB.mu.Lock()
+			srvA.rqsMu.RUnlock()
+			srvB.rqsMu.RLock()
 			nrqsb := len(srvB.rqsubs)
-			srvB.mu.Unlock()
+			srvB.rqsMu.RUnlock()
 			if nrqsa != 0 || nrqsb != 0 {
 				t.Fatalf("Expected rqs mappings to have cleared, but got A:%d, B:%d\n",
 					nrqsa, nrqsb)

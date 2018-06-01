@@ -544,55 +544,10 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeExpect(subRe)
 }
 
-func TestAutoUnsubPropagation(t *testing.T) {
-	s, opts := runRouteServer(t)
-	defer s.Shutdown()
+type ignoreLogger struct{}
 
-	client := createClientConn(t, opts.Host, opts.Port)
-	defer client.Close()
-
-	clientSend, clientExpect := setupConn(t, client)
-
-	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
-	defer route.Close()
-
-	expectAuthRequired(t, route)
-	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
-	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
-
-	// Setup a local subscription
-	clientSend("SUB foo 2\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(subRe)
-
-	clientSend("UNSUB 2 1\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(unsubmaxRe)
-
-	clientSend("PUB foo 2\r\nok\r\n")
-	clientExpect(msgRe)
-
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	clientSend("UNSUB 2\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(unsubnomaxRe)
-}
-
-type ignoreLogger struct {
-}
-
-func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {
-}
-func (l *ignoreLogger) Errorf(f string, args ...interface{}) {
-}
+func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {}
+func (l *ignoreLogger) Errorf(f string, args ...interface{}) {}
 
 func TestRouteConnectOnShutdownRace(t *testing.T) {
 	s, opts := runRouteServer(t)

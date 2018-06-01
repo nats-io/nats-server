@@ -148,7 +148,7 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 
 	var qsubs []*subscription
 	for _, qs := range r.qsubs {
-		if len(qs) != 0 && bytes.Compare(group, qs[0].queue) == 0 {
+		if len(qs) != 0 && bytes.Equal(group, qs[0].queue) {
 			qsubs = qs
 			break
 		}
@@ -182,7 +182,7 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 			rsub = sub
 			continue
 		}
-		mh := c.msgHeader(msgh[:len(msgh)], sub)
+		mh := c.msgHeader(msgh[:], sub)
 		if c.deliverMsg(sub, mh, msg) {
 			c.Debugf("Redelivery succeeded for message on group '%q'", group)
 			return
@@ -191,7 +191,7 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 	// If we are here we failed to find a local, see if we snapshotted a
 	// remote sub, and if so deliver to that.
 	if rsub != nil {
-		mh := c.msgHeader(msgh[:len(msgh)], rsub)
+		mh := c.msgHeader(msgh[:], rsub)
 		if c.deliverMsg(rsub, mh, msg) {
 			c.Debugf("Re-routing message on group '%q' to remote server", group)
 			return
@@ -639,7 +639,7 @@ const (
 
 const (
 	subProto   = "SUB %s %s %s" + _CRLF_
-	unsubProto = "UNSUB %s%s" + _CRLF_
+	unsubProto = "UNSUB %s" + _CRLF_
 )
 
 // FIXME(dlc) - Make these reserved and reject if they come in as a sid
@@ -820,15 +820,15 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	if s.numRoutes() == 0 {
 		return
 	}
-	rsid := routeSid(sub)
-	maxStr := _EMPTY_
 	sub.client.mu.Lock()
-	// Set max if we have it set and have not tripped auto-unsubscribe
-	if sub.max > 0 && sub.nm < sub.max {
-		maxStr = fmt.Sprintf(" %d", sub.max)
-	}
+	// Max has no meaning on the other side of a route, so do not send.
+	hasMax := sub.max > 0 && sub.nm < sub.max
 	sub.client.mu.Unlock()
-	proto := fmt.Sprintf(unsubProto, rsid, maxStr)
+	if hasMax {
+		return
+	}
+	rsid := routeSid(sub)
+	proto := fmt.Sprintf(unsubProto, rsid)
 	s.broadcastInterestToRoutes(proto)
 }
 
