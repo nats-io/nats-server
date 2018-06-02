@@ -194,8 +194,8 @@ func TestHandleVarz(t *testing.T) {
 		if v.OutBytes != 5 {
 			t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 		}
-		if v.Subscriptions != 1 {
-			t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+		if v.Subscriptions != 0 {
+			t.Fatalf("Expected Subscriptions of 0, got %v\n", v.Subscriptions)
 		}
 	}
 
@@ -254,6 +254,8 @@ func TestConnz(t *testing.T) {
 		nc := createClientConnSubscribeAndPublish(t, s)
 		defer nc.Close()
 
+		time.Sleep(50 * time.Millisecond)
+
 		c = pollConz(t, s, mode, url+"connz", nil)
 
 		if c.NumConns != 1 {
@@ -286,8 +288,8 @@ func TestConnz(t *testing.T) {
 		if ci.Port == 0 {
 			t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
 		}
-		if ci.NumSubs != 1 {
-			t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
+		if ci.NumSubs != 0 {
+			t.Fatalf("Expected num_subs of 0, got %v\n", ci.NumSubs)
 		}
 		if len(ci.Subs) != 0 {
 			t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
@@ -348,12 +350,14 @@ func TestConnzWithSubs(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
+	nc.Subscribe("hello.foo", func(m *nats.Msg) {})
+
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?subs=1", &ConnzOptions{Subscriptions: true})
 		// Test inside details of each connection
 		ci := c.Conns[0]
-		if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
+		if len(ci.Subs) != 1 || ci.Subs[0] != "hello.foo" {
 			t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
 		}
 	}
@@ -374,9 +378,6 @@ func TestConnzLastActivity(t *testing.T) {
 
 		// Test inside details of each connection
 		ci := pollConz(t, s, mode, url, opts).Conns[0]
-		if len(ci.Subs) != 1 {
-			t.Fatalf("Expected subs of 1, got %v\n", len(ci.Subs))
-		}
 		firstLast := ci.LastActivity
 		if firstLast.IsZero() {
 			t.Fatalf("Expected LastActivity to be valid\n")
@@ -400,7 +401,7 @@ func TestConnzLastActivity(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		// Pub should trigger as well
-		nc.Publish("foo", []byte("Hello"))
+		nc.Publish("fubar", []byte("Hello"))
 		nc.Flush()
 		ci = pollConz(t, s, mode, url, opts).Conns[0]
 		pubLast := ci.LastActivity
@@ -841,6 +842,8 @@ func TestConnzWithRoutes(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, sc)
 	defer nc.Close()
 
+	nc.Subscribe("hello.bar", func(m *nats.Msg) {})
+
 	// Now check routez
 	urls := []string{"routez", "routez?subs=1"}
 	for subs, urlSuffix := range urls {
@@ -910,9 +913,8 @@ func TestSubsz(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		sl := pollSubsz(t, s, mode, url+"subscriptionsz", nil)
-
-		if sl.NumSubs != 1 {
-			t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
+		if sl.NumSubs != 0 {
+			t.Fatalf("Expected NumSubs of 0, got %d\n", sl.NumSubs)
 		}
 		if sl.NumInserts != 1 {
 			t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
@@ -995,10 +997,16 @@ func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 	}
 
 	ch := make(chan bool)
-	nc.Subscribe("foo", func(m *nats.Msg) { ch <- true })
-	nc.Publish("foo", []byte("Hello"))
+	inbox := nats.NewInbox()
+	sub, err := nc.Subscribe(inbox, func(m *nats.Msg) { ch <- true })
+	if err != nil {
+		t.Fatalf("Error subscribing to `%s`: %v\n", inbox, err)
+	}
+	nc.Publish(inbox, []byte("Hello"))
 	// Wait for message
 	<-ch
+	sub.Unsubscribe()
+	close(ch)
 	return nc
 }
 
