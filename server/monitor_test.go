@@ -170,6 +170,8 @@ func TestHandleVarz(t *testing.T) {
 		}
 	}
 
+	time.Sleep(100 * time.Millisecond)
+
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
@@ -413,26 +415,26 @@ func TestConnzLastActivity(t *testing.T) {
 		// between first and last.
 		time.Sleep(200 * time.Millisecond)
 
-		// Unsub should trigger as well
-		sub.Unsubscribe()
+		// Message delivery should trigger as well
+		nc.Publish("hello.world", []byte("Hello"))
 		nc.Flush()
 		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		pubLast = ci.LastActivity
-		if subLast.Equal(pubLast) {
-			t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
+		msgLast := ci.LastActivity
+		if pubLast.Equal(msgLast) {
+			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
 		}
 
 		// Just wait a bit to make sure that there is a difference
 		// between first and last.
 		time.Sleep(200 * time.Millisecond)
 
-		// Message delivery should trigger as well
-		nc.Publish("foo", []byte("Hello"))
+		// Unsub should trigger as well
+		sub.Unsubscribe()
 		nc.Flush()
 		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		msgLast := ci.LastActivity
-		if pubLast.Equal(msgLast) {
-			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
+		unsubLast := ci.LastActivity
+		if msgLast.Equal(unsubLast) {
+			t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
 		}
 	}
 
