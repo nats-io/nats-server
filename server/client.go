@@ -377,6 +377,8 @@ func (c *client) readLoop() {
 		for cp := range c.pcd {
 			// Queue up a flush for those in the set
 			cp.mu.Lock()
+			// Update last activity for message delivery
+			cp.last = last
 			cp.out.fps--
 			if budget > 0 && cp.flushOutbound() {
 				budget -= cp.out.lft
@@ -717,7 +719,7 @@ func (c *client) maxPayloadViolation(sz int, max int64) {
 
 // queueOutbound queues data for client/route connections.
 // Return pending length.
-// Lock should be held
+// Lock should be held.
 func (c *client) queueOutbound(data []byte) {
 	// Add to pending bytes total.
 	c.out.pb += int64(len(data))

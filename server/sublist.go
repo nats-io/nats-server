@@ -724,3 +724,7 @@ func matchLiteral(literal, subject string) bool {
 	// Make sure we have processed all of the literal's chars..
 	return li >= ll
 }
+
+// matchAllClients will return a flat array of all client subscriptions.
+//func matchAllClients(*[]*subscription) {
+//}

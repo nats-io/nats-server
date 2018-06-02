@@ -469,32 +469,58 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 // FIXME(dlc) - This could be a DOS or perf issue with many clients
 // and large subscription space. Plus buffering in place not a good idea.
 func (s *Server) sendLocalSubsToRoute(route *client) {
-	b := bytes.Buffer{}
+	//b := bytes.Buffer{}
+
+	now := time.Now()
+
 	s.mu.Lock()
 	for _, client := range s.clients {
 		client.mu.Lock()
-		subs := make([]*subscription, 0, len(client.subs))
 		for _, sub := range client.subs {
-			subs = append(subs, sub)
+			proto := fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))
+			route.mu.Lock()
+			route.queueOutbound([]byte(proto))
+			route.mu.Unlock()
 		}
 		client.mu.Unlock()
-		for _, sub := range subs {
-			rsid := routeSid(sub)
-			proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-			b.WriteString(proto)
-		}
 	}
 	s.mu.Unlock()
 
-	if b.Len() == 0 {
-		return
-	}
+	fmt.Printf("Took %v to build subs\n", time.Since(now))
+
+	now = time.Now()
 
 	route.mu.Lock()
-	defer route.mu.Unlock()
-	route.sendProto(b.Bytes(), true)
+	route.flushOutbound()
+	route.mu.Unlock()
 
-	route.Debugf("Route sent local subscriptions")
+	/*
+		for _, client := range s.clients {
+			client.mu.Lock()
+			subs := make([]*subscription, 0, len(client.subs))
+			for _, sub := range client.subs {
+				subs = append(subs, sub)
+			}
+			client.mu.Unlock()
+			for _, sub := range subs {
+				rsid := routeSid(sub)
+				proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
+				b.WriteString(proto)
+			}
+		}
+	*/
+
+	//if b.Len() == 0 {
+	//	return
+	//}
+
+	//route.mu.Lock()
+	//defer route.mu.Unlock()
+	//route.sendProto(b.Bytes(), true)
+
+	fmt.Printf("Took %v to send subs\n", time.Since(now))
+
+	route.Debugf("Sent local subscriptions to route")
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {

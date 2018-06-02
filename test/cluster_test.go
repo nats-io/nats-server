@@ -488,3 +488,43 @@ func TestAutoUnsubscribePropagationOnClientDisconnect(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
+	srvA, optsA := RunServerWithConfig("./configs/srv_a.conf")
+	defer srvA.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	sendA, expectA := setupConn(t, clientA)
+
+	// Now add lots of subscriptions. These will need to be forwarded
+	// to new routes when they are added.
+	subsTotal := uint32(100000)
+	for i := uint32(0); i < subsTotal; i++ {
+		subject := fmt.Sprintf("FOO.BAR.BAZ.%d", i)
+		sendA(fmt.Sprintf("SUB %s %d\r\n", subject, i))
+	}
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	now := time.Now()
+	srvB, _ := RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+	// Now wait for all subscriptions to be processed.
+	maxTime := time.Now().Add(5 * time.Second)
+	for time.Now().Before(maxTime) {
+		if srvB.NumSubscriptions() == subsTotal {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srvB.NumSubscriptions() != subsTotal {
+		t.Fatalf("srvB did not receive all subscriptions in allocated time: %d",
+			srvB.NumSubscriptions())
+	}
+
+	fmt.Printf("Cluster formed after %v\n", time.Since(now))
+}
