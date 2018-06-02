@@ -129,8 +129,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	opts := s.getOpts()
 
 	// Check custom auth first, then multiple users, then token, then single user/pass.
-	if s.opts.CustomClientAuthentication != nil {
-		return s.opts.CustomClientAuthentication.Check(c)
+	if opts.CustomClientAuthentication != nil {
+		return opts.CustomClientAuthentication.Check(c)
 	} else if s.users != nil {
 		user, ok := s.users[c.opts.Username]
 		if !ok {
