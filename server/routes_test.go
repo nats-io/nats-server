@@ -943,7 +943,7 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		c.Flush()
 	}
 
-	wait := time.Now().Add(5 * time.Second)
+	wait := time.Now().Add(10 * time.Second)
 	for time.Now().Before(wait) {
 		nbar := atomic.LoadInt32(&rbar)
 		nbaz := atomic.LoadInt32(&rbaz)
@@ -962,7 +962,7 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 			}
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
 		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))

@@ -515,23 +515,9 @@ func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
 	checkClusterFormed(t, srvA, srvB)
 
 	// Now wait for all subscriptions to be processed.
-
 	if err := checkExpectedSubs(subsTotal, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
-	/*
-		maxTime := time.Now().Add(5 * time.Second)
-		for time.Now().Before(maxTime) {
-			if srvB.NumSubscriptions() == subsTotal {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if srvB.NumSubscriptions() != subsTotal {
-			t.Fatalf("srvB did not receive all subscriptions in allocated time: %d",
-				srvB.NumSubscriptions())
-		}
-	*/
 	fmt.Printf("Cluster formed after %v\n", time.Since(now))
 }
