@@ -140,7 +140,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	if opts.CustomClientAuthentication != nil {
 		return opts.CustomClientAuthentication.Check(c)
 	} else if s.hasUsers() {
+		s.mu.Lock()
 		user, ok := s.users[c.opts.Username]
+		s.mu.Unlock()
+
 		if !ok {
 			return false
 		}

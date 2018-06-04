@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// Allow dynamic profiling.
@@ -1000,6 +1001,11 @@ func (s *Server) NumSubscriptions() uint32 {
 	subs := s.sl.Count()
 	s.mu.Unlock()
 	return subs
+}
+
+// NumSlowConsumers will report the number of slow consumers.
+func (s *Server) NumSlowConsumers() int64 {
+	return atomic.LoadInt64(&s.slowConsumers)
 }
 
 // ConfigTime will report the last time the server configuration was loaded.

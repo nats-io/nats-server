@@ -488,7 +488,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected authorization error")
 	}
 
@@ -889,14 +889,14 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected authorization error")
 	}
 
 	// Ensure the previous connection was disconnected.
 	select {
 	case <-disconnected:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected connection to be disconnected")
 	}
 }
@@ -1010,7 +1010,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		if !strings.Contains(err.Error(), "permissions violation for subscription to \"_inbox.>\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected permissions violation error")
 	}
 
@@ -1030,7 +1030,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		if !strings.Contains(err.Error(), "permissions violation for publish to \"req.foo\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected permissions violation error")
 	}
 
@@ -1644,7 +1644,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	// Ensure one connection was closed.
 	select {
 	case <-closed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected to be disconnected")
 	}
 
@@ -1719,7 +1719,7 @@ func TestConfigReloadMaxPayload(t *testing.T) {
 
 	select {
 	case <-closed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Expected to be disconnected")
 	}
 }

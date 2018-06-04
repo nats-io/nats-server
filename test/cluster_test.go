@@ -52,7 +52,7 @@ func checkClusterFormed(t *testing.T, servers ...*server.Server) {
 // expected number of subscriptions.
 func checkExpectedSubs(expected int, servers ...*server.Server) error {
 	var err string
-	maxTime := time.Now().Add(5 * time.Second)
+	maxTime := time.Now().Add(10 * time.Second)
 	for time.Now().Before(maxTime) {
 		err = ""
 		for _, s := range servers {
@@ -508,7 +508,6 @@ func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	now := time.Now()
 	srvB, _ := RunServerWithConfig("./configs/srv_b.conf")
 	defer srvB.Shutdown()
 
@@ -516,8 +515,16 @@ func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
 
 	// Now wait for all subscriptions to be processed.
 	if err := checkExpectedSubs(subsTotal, srvB); err != nil {
-		t.Fatalf("%v", err)
+		// Make sure we are not a slow consumer
+		// Check for slow consumer status
+		if srvA.NumSlowConsumers() > 0 {
+			t.Fatal("Did not receive all subscriptions due to slow consumer")
+		} else {
+			t.Fatalf("%v", err)
+		}
 	}
-
-	fmt.Printf("Cluster formed after %v\n", time.Since(now))
+	// Just double check the slow consumer status.
+	if srvA.NumSlowConsumers() > 0 {
+		t.Fatalf("Received a slow consumer notification: %d", srvA.NumSlowConsumers())
+	}
 }

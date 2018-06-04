@@ -815,37 +815,6 @@ func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
 	}
 }
 
-// Utility function to grab buffer sizes
-func (c *client) getBufferSizes() (int, int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.in.rsz, c.out.sz
-
-}
-
-func (c *client) triggerPing() {
-	c.mu.Lock()
-	c.sendPing()
-	c.mu.Unlock()
-	// Wait for PONG
-	for pout := 1; pout != 0; {
-		c.mu.Lock()
-		pout = c.pout
-		c.mu.Unlock()
-	}
-}
-
-func (c *client) checkBuffers(t *testing.T, ers, ews int) {
-	t.Helper()
-	rsz, wsz := c.getBufferSizes()
-	if rsz != ers {
-		t.Fatalf("Expected read buffer of %d, but got %d\n", ers, rsz)
-	}
-	if wsz != ews {
-		t.Fatalf("Expected write buffer of %d, but got %d\n", ews, wsz)
-	}
-}
-
 func TestDynamicBuffers(t *testing.T) {
 	opts := DefaultOptions()
 	s := RunServer(opts)
@@ -868,49 +837,128 @@ func TestDynamicBuffers(t *testing.T) {
 	}
 	if c == nil {
 		t.Fatal("Expected to retrieve client\n")
-
 	}
-	// Should have already throttled back
-	c.checkBuffers(t, startBufSize, startBufSize)
 
-	// Send data.
-	data := make([]byte, 1024)
+	// Create some helper functions and data structures.
+	done := make(chan bool)          // Used to stop recording.
+	type maxv struct{ rsz, wsz int } // Used to hold max values.
+	results := make(chan maxv)
+
+	// stopRecording stops the recording ticker and releases go routine.
+	stopRecording := func() maxv {
+		done <- true
+		return <-results
+	}
+	// max just grabs max values.
+	max := func(a, b int) int {
+		if a > b {
+			return a
+		}
+		return b
+	}
+	// Returns current value of the buffer sizes.
+	getBufferSizes := func() (int, int) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.in.rsz, c.out.sz
+	}
+	// Record the max values seen.
+	recordMaxBufferSizes := func() {
+		ticker := time.NewTicker(10 * time.Microsecond)
+		defer ticker.Stop()
+
+		var m maxv
+
+		recordMax := func() {
+			rsz, wsz := getBufferSizes()
+			m.rsz = max(m.rsz, rsz)
+			m.wsz = max(m.wsz, wsz)
+		}
+
+		for {
+			select {
+			case <-done:
+				recordMax()
+				results <- m
+				return
+			case <-ticker.C:
+				recordMax()
+			}
+		}
+	}
+	// Check that the current value is what we expected.
+	checkBuffers := func(ers, ews int) {
+		t.Helper()
+		rsz, wsz := getBufferSizes()
+		if rsz != ers {
+			t.Fatalf("Expected read buffer of %d, but got %d\n", ers, rsz)
+		}
+		if wsz != ews {
+			t.Fatalf("Expected write buffer of %d, but got %d\n", ews, wsz)
+		}
+	}
+
+	// Check that the max was as expected.
+	checkResults := func(m maxv, rsz, wsz int) {
+		t.Helper()
+		if rsz != m.rsz {
+			t.Fatalf("Expected read buffer of %d, but got %d\n", rsz, m.rsz)
+		}
+		if wsz != m.wsz {
+			t.Fatalf("Expected write buffer of %d, but got %d\n", wsz, m.wsz)
+		}
+	}
+
+	// Here is where testing begins..
+
+	// Should be at or below the startBufSize for both.
+	rsz, wsz := getBufferSizes()
+	if rsz > startBufSize {
+		t.Fatalf("Expected read buffer of <= %d, but got %d\n", startBufSize, rsz)
+	}
+	if wsz > startBufSize {
+		t.Fatalf("Expected write buffer of <= %d, but got %d\n", startBufSize, wsz)
+	}
+
+	// Send some data.
+	data := make([]byte, 2048)
 	rand.Read(data)
 
-	for i := 0; i < 100; i++ {
+	go recordMaxBufferSizes()
+	for i := 0; i < 200; i++ {
 		nc.Publish("foo", data)
 	}
 	nc.Flush()
+	m := stopRecording()
 
-	c.checkBuffers(t, maxBufSize, startBufSize/2)
+	if m.rsz != maxBufSize {
+		t.Fatalf("Expected read buffer of %d, but got %d\n", maxBufSize, m.rsz)
+	}
+	if m.wsz > startBufSize {
+		t.Fatalf("Expected write buffer of <= %d, but got %d\n", startBufSize, m.wsz)
+	}
 
+	// Create Subscription to test outbound buffer from server.
 	nc.Subscribe("foo", func(m *nats.Msg) {
 		// Just eat it..
 	})
-	nc.Flush()
+	go recordMaxBufferSizes()
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 200; i++ {
 		nc.Publish("foo", data)
 	}
 	nc.Flush()
 
-	c.checkBuffers(t, maxBufSize, maxBufSize)
+	m = stopRecording()
+	checkResults(m, maxBufSize, maxBufSize)
 
-	// Trigger server PING
-	c.triggerPing()
-	// Should still be the same
-	c.checkBuffers(t, maxBufSize, maxBufSize)
-	// Trigger second server PING
-	c.triggerPing()
-	// Should be shrinking now.
-	expected := maxBufSize / 2
-	c.checkBuffers(t, expected, expected)
+	// Now test that we shrink correctly.
 
-	// Do 10, should go to minimum for both..
-	for i := 0; i < 10; i++ {
-		c.triggerPing()
+	// Should go to minimum for both..
+	for i := 0; i < 20; i++ {
+		nc.Flush()
 	}
-	c.checkBuffers(t, minBufSize, minBufSize)
+	checkBuffers(minBufSize, minBufSize)
 }
 
 // Similar to the routed version. Make sure we receive all of the

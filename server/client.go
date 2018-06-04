@@ -389,7 +389,7 @@ func (c *client) readLoop() {
 			delete(c.pcd, cp)
 		}
 
-		// Check to see if we got closed, e.g. slow consumer
+		// Update activity, check read buffer size.
 		c.mu.Lock()
 		nc := c.nc
 
@@ -398,27 +398,25 @@ func (c *client) readLoop() {
 			c.last = last
 		}
 
-		if n < cap(b) {
-			c.in.srs++
-		} else {
+		if n >= cap(b) {
 			c.in.srs = 0
+		} else if n < cap(b)/2 { // divide by 2 b/c we want less than what we would shrink to.
+			c.in.srs++
 		}
 
 		// Update read buffer size as/if needed.
-
-		// Grow
 		if n >= cap(b) && cap(b) < maxBufSize {
+			// Grow
 			c.in.rsz = cap(b) * 2
 			b = make([]byte, c.in.rsz)
-		}
-
-		// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
-		if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
+		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
+			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
 			c.in.rsz = cap(b) / 2
 			b = make([]byte, c.in.rsz)
 		}
-
 		c.mu.Unlock()
+
+		// Check to see if we got closed, e.g. slow consumer
 		if nc == nil {
 			return
 		}
