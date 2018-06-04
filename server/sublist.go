@@ -725,6 +725,51 @@ func matchLiteral(literal, subject string) bool {
 	return li >= ll
 }
 
-// matchAllClients will return a flat array of all client subscriptions.
-//func matchAllClients(*[]*subscription) {
-//}
+func addLocalSub(sub *subscription, subs *[]*subscription) {
+	if sub != nil && sub.client != nil && sub.client.typ == CLIENT {
+		*subs = append(*subs, sub)
+	}
+}
+
+func (s *Sublist) addNodeToSubs(n *node, subs *[]*subscription) {
+	// Normal subscriptions
+	if n.plist != nil {
+		for _, sub := range n.plist {
+			addLocalSub(sub, subs)
+		}
+	} else {
+		for _, sub := range n.psubs {
+			addLocalSub(sub, subs)
+		}
+	}
+	// Queue subscriptions
+	for _, qr := range n.qsubs {
+		for _, sub := range qr {
+			addLocalSub(sub, subs)
+		}
+	}
+}
+
+func (s *Sublist) collectLocalSubs(l *level, subs *[]*subscription) {
+	if len(l.nodes) > 0 {
+		for _, n := range l.nodes {
+			s.addNodeToSubs(n, subs)
+			s.collectLocalSubs(n.next, subs)
+		}
+	}
+	if l.pwc != nil {
+		s.addNodeToSubs(l.pwc, subs)
+		s.collectLocalSubs(l.pwc.next, subs)
+	}
+	if l.fwc != nil {
+		s.addNodeToSubs(l.fwc, subs)
+		s.collectLocalSubs(l.fwc.next, subs)
+	}
+}
+
+// Return all local client subscriptions. Use the supplied slice.
+func (s *Sublist) localSubs(subs *[]*subscription) {
+	s.RLock()
+	s.collectLocalSubs(s.root, subs)
+	s.RUnlock()
+}

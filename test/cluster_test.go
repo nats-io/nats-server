@@ -49,7 +49,7 @@ func checkClusterFormed(t *testing.T, servers ...*server.Server) {
 }
 
 // Helper function to check that a server (or list of servers) have the
-// expected number of subscriptions
+// expected number of subscriptions.
 func checkExpectedSubs(expected int, servers ...*server.Server) error {
 	var err string
 	maxTime := time.Now().Add(5 * time.Second)
@@ -62,7 +62,7 @@ func checkExpectedSubs(expected int, servers ...*server.Server) error {
 			}
 		}
 		if err != "" {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		} else {
 			break
 		}
@@ -500,8 +500,8 @@ func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
 
 	// Now add lots of subscriptions. These will need to be forwarded
 	// to new routes when they are added.
-	subsTotal := uint32(100000)
-	for i := uint32(0); i < subsTotal; i++ {
+	subsTotal := 100000
+	for i := 0; i < subsTotal; i++ {
 		subject := fmt.Sprintf("FOO.BAR.BAZ.%d", i)
 		sendA(fmt.Sprintf("SUB %s %d\r\n", subject, i))
 	}
@@ -513,18 +513,25 @@ func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvA, srvB)
+
 	// Now wait for all subscriptions to be processed.
-	maxTime := time.Now().Add(5 * time.Second)
-	for time.Now().Before(maxTime) {
-		if srvB.NumSubscriptions() == subsTotal {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if srvB.NumSubscriptions() != subsTotal {
-		t.Fatalf("srvB did not receive all subscriptions in allocated time: %d",
-			srvB.NumSubscriptions())
+
+	if err := checkExpectedSubs(subsTotal, srvB); err != nil {
+		t.Fatalf("%v", err)
 	}
 
+	/*
+		maxTime := time.Now().Add(5 * time.Second)
+		for time.Now().Before(maxTime) {
+			if srvB.NumSubscriptions() == subsTotal {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if srvB.NumSubscriptions() != subsTotal {
+			t.Fatalf("srvB did not receive all subscriptions in allocated time: %d",
+				srvB.NumSubscriptions())
+		}
+	*/
 	fmt.Printf("Cluster formed after %v\n", time.Since(now))
 }
