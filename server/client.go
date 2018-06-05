@@ -137,6 +137,7 @@ type outbound struct {
 	sz  int           // limit size per []byte, uses variable BufSize constants, start, min, max.
 	sws int           // Number of short writes, used for dyanmic resizing.
 	pb  int64         // Total pending/queued bytes.
+	pm  int64         // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
 	fps int           // Flush pending signals from inbound messages.
 	mp  int64         // snapshot of max pending.
@@ -300,7 +301,7 @@ func (c *client) writeLoop() {
 	// buffered outbound structure for efficient writev to the underlying socket.
 	for {
 		c.mu.Lock()
-		if (c.out.pb == 0 || c.out.fps > 0) && !c.flags.isSet(clearConnection) {
+		if (c.out.pb == 0 || c.out.fps > 0) && len(c.out.nb) == 0 && !c.flags.isSet(clearConnection) {
 			// Wait on pending data.
 			c.out.sg.Wait()
 		}
@@ -365,10 +366,12 @@ func (c *client) readLoop() {
 
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
-		atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
-		atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
-		atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
-		atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+		if c.in.msgs > 0 {
+			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
+			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
+			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+		}
 
 		// Budget to spend in place flushing outbound data.
 		budget := 5 * time.Millisecond
@@ -462,7 +465,7 @@ func (c *client) flushOutbound() bool {
 
 	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
 	nb := c.collapsePtoNB()
-	c.out.p, c.out.nb, c.out.s = c.out.s, nil, nil
+	c.out.p, c.out.nb, c.out.s, c.out.pm = c.out.s, nil, nil, 0
 
 	// For selecting primary replacement.
 	cnb := nb
@@ -506,7 +509,7 @@ func (c *client) flushOutbound() bool {
 		c.clearConnection()
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			atomic.AddInt64(&srv.slowConsumers, 1)
-			c.Noticef("Slow Consumer Detected")
+			c.Noticef("Slow Consumer Detected: WriteDeadline of %v Exceeded", c.out.wdl)
 		} else {
 			c.Debugf("Error flushing: %v", err)
 		}
@@ -727,7 +730,7 @@ func (c *client) queueOutbound(data []byte) {
 	if c.out.pb > c.out.mp {
 		c.clearConnection()
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
-		c.Noticef("Slow Consumer Detected")
+		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		return
 	}
 
@@ -1247,8 +1250,10 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	client.queueOutbound(mh)
 	client.queueOutbound(msg)
 
+	client.out.pm++
+
 	// Check outbound threshold and queue IO flush if needed.
-	if client.out.pb > maxBufSize*2 {
+	if client.out.pm > 1 && client.out.pb > maxBufSize*2 {
 		client.flushSignal()
 	}
 

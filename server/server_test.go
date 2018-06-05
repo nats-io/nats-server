@@ -451,7 +451,8 @@ func TestWriteDeadline(t *testing.T) {
 
 func TestSlowConsumerPendingBytes(t *testing.T) {
 	opts := DefaultOptions()
-	opts.WriteDeadline = 30 * time.Second // Wait forever so write deadline does not trigger slow consumer.
+	opts.WriteDeadline = 30 * time.Second // Wait for long time so write deadline does not trigger slow consumer.
+	opts.MaxPending = 1 * 1024 * 1024     // Set to low value (1MB) to allow SC to trip.
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -465,7 +466,7 @@ func TestSlowConsumerPendingBytes(t *testing.T) {
 	}
 	// Reduce socket buffer to increase reliability of data backing up in the server destined
 	// for our subscribed client.
-	c.(*net.TCPConn).SetReadBuffer(2)
+	c.(*net.TCPConn).SetReadBuffer(128)
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	sender, err := nats.Connect(url)
@@ -474,7 +475,7 @@ func TestSlowConsumerPendingBytes(t *testing.T) {
 	}
 	defer sender.Close()
 
-	payload := make([]byte, 1000000)
+	payload := make([]byte, 1024*1024)
 	for i := 0; i < 100; i++ {
 		if err := sender.Publish("foo", payload); err != nil {
 			t.Fatalf("Error on publish: %v", err)

@@ -1021,3 +1021,60 @@ func TestQueueAutoUnsubscribe(t *testing.T) {
 	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
 		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 }
+
+func TestAvoidSlowConsumerBigMessages(t *testing.T) {
+	opts := DefaultOptions() // Use defaults to make sure they avoid pending slow consumer.
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	data := make([]byte, 1024*1024) // 1MB payload
+	rand.Read(data)
+
+	expected := int32(1000)
+	received := int32(0)
+
+	done := make(chan bool)
+
+	// Create Subscription.
+	nc1.Subscribe("slow.consumer", func(m *nats.Msg) {
+		// Just eat it so that we are not measuring
+		// code time, just delivery.
+		atomic.AddInt32(&received, 1)
+		if received >= expected {
+			done <- true
+		}
+	})
+
+	// Create Error handler
+	nc1.SetErrorHandler(func(c *nats.Conn, s *nats.Subscription, err error) {
+		t.Fatalf("Received an error on the subscription's connection: %v\n", err)
+	})
+
+	for i := int32(0); i < expected; i++ {
+		nc2.Publish("slow.consumer", data)
+	}
+	nc2.Flush()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		r := atomic.LoadInt32(&received)
+		if s.NumSlowConsumers() > 0 {
+			t.Fatalf("Did not receive all large messages due to slow consumer status: %d of %d", r, expected)
+		}
+		t.Fatalf("Failed to receive all large messages: %d of %d\n", r, expected)
+	}
+}
