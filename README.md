@@ -486,7 +486,7 @@ You can also enable token-based authentication and set the credentials in the se
 
 ```
 authorization {
-  # You can generate the token using /util/mkpasswd.go
+  #cleartext is supported but it is recommended you encrypt tokens with util/mkpasswd.go
   token:   S3Cr3T0k3n!
   timeout: 1
 }
@@ -500,7 +500,7 @@ nats://'S3Cr3T0k3n!'@localhost:4222
 
 **Encrypting passwords and tokens**
 
-Passwords and tokens ideally should be be obfuscated with [bcrypt](#bcrypt).  Anywhere in a configuration file you store a password you should use the mkpasswd utility to encrypt the password or token and use that value instead.
+Passwords and tokens ideally should be be encrypted with [bcrypt](#bcrypt).  Anywhere in a configuration file you store a password or token, you should use the mkpasswd utility to encrypt the password or token and use that value instead.
 >Note that clients always use the password or token directly to connect, not the bcrytped value.
 
 To do this, use the mkpasswd utility.  You can pass the -p parameter to the mkpasswd utility to set your own password.
@@ -523,10 +523,10 @@ authorization {
 }
 ```
 
-If you want the mkpasswd util to generate a password or token for you, run it without the -p parameter.
+If you want the mkpasswd utility to generate a password or token for you, run it without the -p parameter.
 ```
 $ go run util/mkpasswd.go
-pass: D#6)e0ht^@61kU5!^!owrX // Generated NATS client password (or token)
+pass: D#6)e0ht^@61kU5!^!owrX // NATS client encrypted with Bcrypt password (or token)
 bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server configuration authorization password (or token)
 ```
 
