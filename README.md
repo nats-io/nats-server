@@ -526,7 +526,7 @@ authorization {
 If you want the mkpasswd utility to generate a password or token for you, run it without the -p parameter.
 ```
 $ go run util/mkpasswd.go
-pass: D#6)e0ht^@61kU5!^!owrX // NATS client encrypted with Bcrypt password (or token)
+pass: D#6)e0ht^@61kU5!^!owrX // Password (or token) encrypted with Bcrypt
 bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server configuration authorization password (or token)
 ```
 
