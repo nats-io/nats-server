@@ -451,54 +451,83 @@ This section describes how to secure the NATS server, including authentication, 
 
 The NATS server supports single and multi-user/client authentication. See also the [server authentication](http://nats.io/documentation/server/gnatsd-authentication/) documentation.
 
-**Single user authentication**
+**Single-user Authentication**
 
-For single-user authentication, you can start the NATS server with authentication enabled by passing in the required credentials on the command line, or by passing in a token.
-
-```
-gnatsd --user foo --pass bar
-```
+For single-user authentication, you can start the NATS server with authentication enabled by passing in the required credentials on the command line.
 
 ```
-gnatsd -auth 'S3Cr3T0k3n!'
+gnatsd --user derek --pass T0pS3cr3t
 ```
-
-Clients can connect using:
-
-```
-nats://foo:bar@localhost:4222
-```
-
-```
-nats://S3Cr3T0k3n!@localhost:4222
-```
-
 You can also enable single-user authentication and set the credentials in the server configuration file as follows:
 
 ```
 authorization {
-  user:     derek
+  user:        derek
   password: T0pS3cr3t
   timeout:  1
 }
 ```
 
-Or, if you chose to use a token:
+Clients can connect using:
+
+```
+nats://derek:T0pS3cr3t@localhost:4222
+```
+
+**Token-based Authentication**
+
+A token is a unique identifier of an application requesting to connect to NATS. You can start the NATS server with authentication enabled by passing in the required token on the command line.
+
+```
+gnatsd -auth 'S3Cr3T0k3n!'
+```
+
+You can also enable token-based authentication and set the credentials in the server configuration file as follows:
 
 ```
 authorization {
-  # You can generate the token using /util/mkpasswd.go
-  token:   $2a$11$pBwUBpza8vdJ7tWZcP5GRO13qRgh4dwNn8g67k5i/41yIKBp.sHke
+  #cleartext is supported but it is recommended you encrypt tokens with util/mkpasswd.go
+  token:   S3Cr3T0k3n!
   timeout: 1
 }
 ```
 
->If you chose to use a token for client's authentication and generate the token by `/util/mkpasswd.go` then you must use the generated bcrypt hash as the token in server config, as written above, and the generated pass as the token in client configurations.
+Clients can connect using:
 
 ```
+nats://'S3Cr3T0k3n!'@localhost:4222
+```
+
+**Encrypting passwords and tokens**
+
+Passwords and tokens ideally should be be encrypted with [bcrypt](#bcrypt).  Anywhere in a configuration file you store a password or token, you should use the mkpasswd utility to encrypt the password or token and use that value instead.
+>Note that clients always use the password or token directly to connect, not the bcrytped value.
+
+To do this, use the mkpasswd utility.  You can pass the -p parameter to the mkpasswd utility to set your own password.
+
+
+```
+$ go run util/mkpasswd.go -p
+Enter Password: <enter S3Cr3T0k3n!>
+Reenter Password: <enter S3Cr3T0k3n!>
+bcrypt hash: $2a$11$UP3xizk94sWF9SHF/wkklOfBT9jphTGNrhZqz2OHoBdk9yO1kvErG
+}
+```
+For example, after encrypting `S3Cr3T0k3n!`, you would set the authorization server configuration as below.
+
+```
+authorization {
+  # You can generate the token using /util/mkpasswd.go
+  token:    $2a$11$UP3xizk94sWF9SHF/wkklOfBT9jphTGNrhZqz2OHoBdk9yO1kvErG
+  timeout: 1
+}
+```
+
+If you want the mkpasswd utility to generate a password or token for you, run it without the -p parameter.
+```
 $ go run util/mkpasswd.go
-pass: D#6)e0ht^@61kU5!^!owrX // NATS client token
-bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server authorization token
+pass: D#6)e0ht^@61kU5!^!owrX // Password (or token) encrypted with Bcrypt
+bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server configuration authorization password (or token)
 ```
 
 **Multi-user authentication**
