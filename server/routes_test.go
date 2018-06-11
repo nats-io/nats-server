@@ -14,6 +14,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -482,6 +483,31 @@ func TestChainedSolicitWorks(t *testing.T) {
 	}
 }
 
+// Helper function to check that a server (or list of servers) have the
+// expected number of subscriptions.
+func checkExpectedSubs(expected int, servers ...*Server) error {
+	var err string
+	maxTime := time.Now().Add(10 * time.Second)
+	for time.Now().Before(maxTime) {
+		err = ""
+		for _, s := range servers {
+			if numSubs := int(s.NumSubscriptions()); numSubs != expected {
+				err = fmt.Sprintf("Expected %d subscriptions for server %q, got %d", expected, s.ID(), numSubs)
+				break
+			}
+		}
+		if err != "" {
+			time.Sleep(10 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	if err != "" {
+		return errors.New(err)
+	}
+	return nil
+}
+
 func TestTLSChainedSolicitWorks(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
 
@@ -519,6 +545,11 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
+	checkClusterFormed(t, srvSeed, srvA, srvB)
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, srvB.Addr().(*net.TCPAddr).Port)
 
 	nc2, err := nats.Connect(urlB)
@@ -526,8 +557,6 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 		t.Fatalf("Error creating client: %v\n", err)
 	}
 	defer nc2.Close()
-
-	checkClusterFormed(t, srvSeed, srvA, srvB)
 
 	nc2.Publish("foo", []byte("Hello"))
 
@@ -910,11 +939,11 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		atomic.AddInt32(&rbaz, 1)
 	}
 
-	// Create 250 queue subs with auto-unsubscribe to each server for
-	// group bar and group baz. So 500 total per queue group.
+	// Create 125 queue subs with auto-unsubscribe to each server for
+	// group bar and group baz. So 250 total per queue group.
 	cons := []*nats.Conn{ncA, ncB}
 	for _, c := range cons {
-		for i := 0; i < 250; i++ {
+		for i := 0; i < 125; i++ {
 			qsub, err := c.QueueSubscribe("foo", "bar", barCb)
 			if err != nil {
 				t.Fatalf("Error on subscribe: %v", err)
@@ -933,7 +962,7 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		c.Flush()
 	}
 
-	expected := int32(500)
+	expected := int32(250)
 	// Now send messages from each server
 	for i := int32(0); i < expected; i++ {
 		c := cons[i%2]

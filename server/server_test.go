@@ -585,10 +585,10 @@ func TestCustomRouterAuthentication(t *testing.T) {
 	opts3.Routes = RoutesFromStr(fmt.Sprintf("nats://valid@127.0.0.1:%d", clusterPort))
 	s3 := RunServer(opts3)
 	defer s3.Shutdown()
+	checkClusterFormed(t, s, s3)
 	if nr := s3.NumRoutes(); nr != 1 {
 		t.Fatalf("Expected 1 route, got %v", nr)
 	}
-
 }
 
 func TestMonitoringNoTimeout(t *testing.T) {

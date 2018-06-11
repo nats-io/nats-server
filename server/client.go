@@ -139,7 +139,7 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	pm  int64         // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
-	fps int           // Flush pending signals from inbound messages.
+	fsp int           // Flush signals that are pending from readLoop's pcd.
 	mp  int64         // snapshot of max pending.
 	wdl time.Duration // Snapshot fo write deadline.
 	lft time.Duration // Last flush time.
@@ -297,20 +297,22 @@ func (c *client) RegisterUser(user *User) {
 func (c *client) writeLoop() {
 	defer c.srv.grWG.Done()
 
+	// Used to check that we did flush from last wake up.
+	waitOk := true
+
 	// Main loop. Will wait to be signaled and then will use
 	// buffered outbound structure for efficient writev to the underlying socket.
 	for {
 		c.mu.Lock()
-		if (c.out.pb == 0 || c.out.fps > 0) && len(c.out.nb) == 0 && !c.flags.isSet(clearConnection) {
+		if waitOk && (c.out.pb == 0 || c.out.fsp > 0) && len(c.out.nb) == 0 && !c.flags.isSet(clearConnection) {
 			// Wait on pending data.
 			c.out.sg.Wait()
 		}
 		// Flush data
-		c.flushOutbound()
+		waitOk = c.flushOutbound()
 		isClosed := c.flags.isSet(clearConnection)
 		c.mu.Unlock()
 
-		// Check for closed condition.
 		if isClosed {
 			return
 		}
@@ -374,7 +376,12 @@ func (c *client) readLoop() {
 		}
 
 		// Budget to spend in place flushing outbound data.
-		budget := 5 * time.Millisecond
+		// Client will be checked on several fronts to see
+		// if applicable. Routes will never wait in place.
+		budget := 500 * time.Microsecond
+		if c.typ == ROUTER {
+			budget = 0
+		}
 
 		// Check pending clients for flush.
 		for cp := range c.pcd {
@@ -382,7 +389,7 @@ func (c *client) readLoop() {
 			cp.mu.Lock()
 			// Update last activity for message delivery
 			cp.last = last
-			cp.out.fps--
+			cp.out.fsp--
 			if budget > 0 && cp.flushOutbound() {
 				budget -= cp.out.lft
 			} else {
@@ -465,7 +472,7 @@ func (c *client) flushOutbound() bool {
 
 	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
 	nb := c.collapsePtoNB()
-	c.out.p, c.out.nb, c.out.s, c.out.pm = c.out.s, nil, nil, 0
+	c.out.p, c.out.nb, c.out.s = c.out.s, nil, nil
 
 	// For selecting primary replacement.
 	cnb := nb
@@ -473,6 +480,7 @@ func (c *client) flushOutbound() bool {
 	// In case it goes away after releasing the lock.
 	nc := c.nc
 	attempted := c.out.pb
+	apm := c.out.pm
 
 	// Do NOT hold lock during actual IO
 	c.mu.Unlock()
@@ -486,14 +494,16 @@ func (c *client) flushOutbound() bool {
 	n, err := nb.WriteTo(nc)
 	nc.SetWriteDeadline(time.Time{})
 	lft := time.Since(now)
+
 	// Re-acquire client lock
 	c.mu.Lock()
 
 	// Update flush time statistics
 	c.out.lft = lft
 
-	// Subtract from pending bytes.
+	// Subtract from pending bytes and messages.
 	c.out.pb -= n
+	c.out.pm -= apm // FIXME(dlc) - this will not be accurate.
 
 	// Check for partial writes
 	if n != attempted && n > 0 {
@@ -734,7 +744,7 @@ func (c *client) queueOutbound(data []byte) {
 		return
 	}
 
-	if c.out.p == nil {
+	if c.out.p == nil && len(data) < maxBufSize {
 		if c.out.sz == 0 {
 			c.out.sz = startBufSize
 		}
@@ -1263,7 +1273,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	// Increment the flush pending signals if we are setting for the first time.
 	if _, ok := c.pcd[client]; !ok {
-		client.out.fps++
+		client.out.fsp++
 	}
 	client.mu.Unlock()
 

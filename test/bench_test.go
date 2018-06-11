@@ -132,6 +132,12 @@ func Benchmark______Pub8K_Payload(b *testing.B) {
 	benchPub(b, psub, s)
 }
 
+func Benchmark______Pub32K_Payload(b *testing.B) {
+	b.StopTimer()
+	s := sizedString(32 * 1024)
+	benchPub(b, psub, s)
+}
+
 func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	buf := make([]byte, defaultRecBufSize)
 	bytes := 0
@@ -462,7 +468,7 @@ func routeQueue(b *testing.B, numQueueSubs, size int) {
 	sub := createClientConn(b, o1.Host, o1.Port)
 	doDefaultConnect(b, sub)
 	for i := 0; i < numQueueSubs; i++ {
-		sendProto(b, sub, fmt.Sprintf("SUB foo bar %c\r\n", byte(33+i)))
+		sendProto(b, sub, fmt.Sprintf("SUB foo bar %d\r\n", 100+i))
 	}
 	flushConnection(b, sub)
 
@@ -474,7 +480,7 @@ func routeQueue(b *testing.B, numQueueSubs, size int) {
 
 	ch := make(chan bool)
 	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", len(payload), payload))
-	expected := len(fmt.Sprintf("MSG foo x %d\r\n%s\r\n", len(payload), payload)) * b.N
+	expected := len(fmt.Sprintf("MSG foo 100 %d\r\n%s\r\n", len(payload), payload)) * b.N
 	go drainConnection(b, sub, ch, expected)
 	b.StartTimer()
 
