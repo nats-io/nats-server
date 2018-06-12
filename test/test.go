@@ -244,17 +244,15 @@ func sendProto(t tLogger, c net.Conn, op string) {
 }
 
 var (
-	infoRe       = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
-	pingRe       = regexp.MustCompile(`PING\r\n`)
-	pongRe       = regexp.MustCompile(`PONG\r\n`)
-	msgRe        = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
-	okRe         = regexp.MustCompile(`\A\+OK\r\n`)
-	errRe        = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
-	subRe        = regexp.MustCompile(`SUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
-	unsubRe      = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
-	unsubmaxRe   = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))\r\n`)
-	unsubnomaxRe = regexp.MustCompile(`UNSUB\s+([^\s]+)\r\n`)
-	connectRe    = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
+	infoRe    = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
+	pingRe    = regexp.MustCompile(`PING\r\n`)
+	pongRe    = regexp.MustCompile(`PONG\r\n`)
+	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
+	errRe     = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
+	subRe     = regexp.MustCompile(`SUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
+	unsubRe   = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
+	connectRe = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
 )
 
 const (
@@ -269,7 +267,7 @@ const (
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 
@@ -372,9 +370,9 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 
 // Helper function to generate next opts to make sure no port conflicts etc.
 func nextServerOpts(opts *server.Options) *server.Options {
-	nopts := *opts
+	nopts := opts.Clone()
 	nopts.Port++
 	nopts.Cluster.Port++
 	nopts.HTTPPort++
-	return &nopts
+	return nopts
 }

@@ -155,7 +155,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		case BySubs:
 			pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
 		case ByPending:
-			pairs[i] = Pair{Key: client, Val: int64(client.bw.Buffered())}
+			pairs[i] = Pair{Key: client, Val: int64(client.out.pb)}
 		case ByOutMsgs:
 			pairs[i] = Pair{Key: client, Val: client.outMsgs}
 		case ByInMsgs:
@@ -221,7 +221,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
 		ci.NumSubs = uint32(len(client.subs))
-		ci.Pending = client.bw.Buffered()
+		ci.Pending = int(client.out.pb)
 		ci.Name = client.opts.Name
 		ci.Lang = client.opts.Lang
 		ci.Version = client.opts.Version
@@ -535,6 +535,8 @@ type Varz struct {
 	InBytes          int64             `json:"in_bytes"`
 	OutBytes         int64             `json:"out_bytes"`
 	SlowConsumers    int64             `json:"slow_consumers"`
+	MaxPending       int64             `json:"max_pending"`
+	WriteDeadline    time.Duration     `json:"write_deadline"`
 	Subscriptions    uint32            `json:"subscriptions"`
 	HTTPReqStats     map[string]uint64 `json:"http_req_stats"`
 	ConfigLoadTime   time.Time         `json:"config_load_time"`
@@ -620,9 +622,11 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
+	v.MaxPending = opts.MaxPending
+	v.WriteDeadline = opts.WriteDeadline
 	v.Subscriptions = s.sl.Count()
 	v.ConfigLoadTime = s.configTime
-	// Need a copy here since s.httpReqStas can change while doing
+	// Need a copy here since s.httpReqStats can change while doing
 	// the marshaling down below.
 	v.HTTPReqStats = make(map[string]uint64, len(s.httpReqStats))
 	for key, val := range s.httpReqStats {

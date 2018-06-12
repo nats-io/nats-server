@@ -51,8 +51,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = MONITOR_PORT
 	opts.HTTPHost = "localhost"
-	opts.Cluster.Host = "127.0.0.1"
-	opts.Cluster.Port = 10223
+	opts.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10223}
 	opts.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10222")
 
 	s1 := RunServer(&opts)
@@ -61,8 +60,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts2.Port = CLIENT_PORT + 1
 	opts2.HTTPPort = MONITOR_PORT + 1
 	opts2.HTTPHost = "localhost"
-	opts2.Cluster.Host = "127.0.0.1"
-	opts2.Cluster.Port = 10222
+	opts2.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10222}
 	opts2.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10223")
 
 	s2 := RunServer(&opts2)
@@ -208,6 +206,10 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 
+	if strings.Contains(string(body), "cluster_port") {
+		t.Fatal("Varz body contains cluster information when no cluster is defined.")
+	}
+
 	v = server.Varz{}
 	if err := json.Unmarshal(body, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
@@ -227,6 +229,14 @@ func TestVarz(t *testing.T) {
 	}
 	if v.OutBytes != 5 {
 		t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+	}
+	if v.MaxPending != server.MAX_PENDING_SIZE {
+		t.Fatalf("Expected MaxPending of %d, got %v\n",
+			server.MAX_PENDING_SIZE, v.MaxPending)
+	}
+	if v.WriteDeadline != server.DEFAULT_FLUSH_DEADLINE {
+		t.Fatalf("Expected WriteDeadline of %d, got %v\n",
+			server.DEFAULT_FLUSH_DEADLINE, v.WriteDeadline)
 	}
 }
 

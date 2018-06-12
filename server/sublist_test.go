@@ -65,6 +65,10 @@ func verifyNumLevels(s *Sublist, expected int, t *testing.T) {
 	}
 }
 
+func verifyQMember(qsubs [][]*subscription, val *subscription, t *testing.T) {
+	verifyMember(qsubs[findQSliceForSub(val, qsubs)], val, t)
+}
+
 func verifyMember(r []*subscription, val *subscription, t *testing.T) {
 	for _, v := range r {
 		if v == nil {
@@ -74,16 +78,19 @@ func verifyMember(r []*subscription, val *subscription, t *testing.T) {
 			return
 		}
 	}
-	stackFatalf(t, "Value '%+v' not found in results", val)
+	stackFatalf(t, "Subscription (%p) for [%s : %s] not found in results", val, val.subject, val.queue)
 }
 
-// Helpera to generate test subscriptions.
+// Helpers to generate test subscriptions.
 func newSub(subject string) *subscription {
 	return &subscription{subject: []byte(subject)}
 }
 
 func newQSub(subject, queue string) *subscription {
-	return &subscription{subject: []byte(subject), queue: []byte(queue)}
+	if queue != "" {
+		return &subscription{subject: []byte(subject), queue: []byte(queue)}
+	}
+	return newSub(subject)
 }
 
 func TestSublistInit(t *testing.T) {
@@ -217,6 +224,26 @@ func TestSublistRemoveCleanupWildcards(t *testing.T) {
 	verifyNumLevels(s, 0, t)
 }
 
+func TestSublistRemoveWithLargeSubs(t *testing.T) {
+	subject := "foo"
+	s := NewSublist()
+	for i := 0; i < plistMin*2; i++ {
+		sub := newSub(subject)
+		s.Insert(sub)
+	}
+	r := s.Match(subject)
+	verifyLen(r.psubs, plistMin*2, t)
+	// Remove one that is in the middle
+	s.Remove(r.psubs[plistMin])
+	// Remove first one
+	s.Remove(r.psubs[0])
+	// Remove last one
+	s.Remove(r.psubs[len(r.psubs)-1])
+	// Check len again
+	r = s.Match(subject)
+	verifyLen(r.psubs, plistMin*2-3, t)
+}
+
 func TestSublistInvalidSubjectsInsert(t *testing.T) {
 	s := NewSublist()
 
@@ -300,7 +327,7 @@ func TestSublistBasicQueueResults(t *testing.T) {
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 1, t)
-	verifyMember(r.qsubs[0], sub1, t)
+	verifyQMember(r.qsubs, sub1, t)
 
 	s.Insert(sub2)
 	r = s.Match(subject)
@@ -308,8 +335,8 @@ func TestSublistBasicQueueResults(t *testing.T) {
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 1, t)
 	verifyLen(r.qsubs[1], 1, t)
-	verifyMember(r.qsubs[0], sub1, t)
-	verifyMember(r.qsubs[1], sub2, t)
+	verifyQMember(r.qsubs, sub1, t)
+	verifyQMember(r.qsubs, sub2, t)
 
 	s.Insert(sub)
 	r = s.Match(subject)
@@ -317,20 +344,25 @@ func TestSublistBasicQueueResults(t *testing.T) {
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 1, t)
 	verifyLen(r.qsubs[1], 1, t)
-	verifyMember(r.qsubs[0], sub1, t)
-	verifyMember(r.qsubs[1], sub2, t)
+	verifyQMember(r.qsubs, sub1, t)
+	verifyQMember(r.qsubs, sub2, t)
 	verifyMember(r.psubs, sub, t)
 
-	s.Insert(sub1)
-	s.Insert(sub2)
+	sub3 := newQSub(subject, "bar")
+	sub4 := newQSub(subject, "baz")
+
+	s.Insert(sub3)
+	s.Insert(sub4)
 
 	r = s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 2, t)
 	verifyLen(r.qsubs[1], 2, t)
-	verifyMember(r.qsubs[0], sub1, t)
-	verifyMember(r.qsubs[1], sub2, t)
+	verifyQMember(r.qsubs, sub1, t)
+	verifyQMember(r.qsubs, sub2, t)
+	verifyQMember(r.qsubs, sub3, t)
+	verifyQMember(r.qsubs, sub4, t)
 	verifyMember(r.psubs, sub, t)
 
 	// Now removal
@@ -341,27 +373,28 @@ func TestSublistBasicQueueResults(t *testing.T) {
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 2, t)
 	verifyLen(r.qsubs[1], 2, t)
-	verifyMember(r.qsubs[0], sub1, t)
-	verifyMember(r.qsubs[1], sub2, t)
+	verifyQMember(r.qsubs, sub1, t)
+	verifyQMember(r.qsubs, sub2, t)
 
 	s.Remove(sub1)
 	r = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 2, t)
-	verifyLen(r.qsubs[0], 1, t)
-	verifyLen(r.qsubs[1], 2, t)
-	verifyMember(r.qsubs[0], sub1, t)
-	verifyMember(r.qsubs[1], sub2, t)
+	verifyLen(r.qsubs[findQSliceForSub(sub1, r.qsubs)], 1, t)
+	verifyLen(r.qsubs[findQSliceForSub(sub2, r.qsubs)], 2, t)
+	verifyQMember(r.qsubs, sub2, t)
+	verifyQMember(r.qsubs, sub3, t)
+	verifyQMember(r.qsubs, sub4, t)
 
-	s.Remove(sub1) // Last one
+	s.Remove(sub3) // Last one
 	r = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 2, t) // this is sub2/baz now
-	verifyMember(r.qsubs[0], sub2, t)
+	verifyQMember(r.qsubs, sub2, t)
 
 	s.Remove(sub2)
-	s.Remove(sub2)
+	s.Remove(sub4)
 	r = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 0, t)
@@ -804,15 +837,19 @@ func multiRead(b *testing.B, num int) {
 	fwg.Wait()
 }
 
-func Benchmark_____________Sublist10XMultipleReads(b *testing.B) {
+func Benchmark____________Sublist10XMultipleReads(b *testing.B) {
 	multiRead(b, 10)
 }
 
-func Benchmark____________Sublist100XMultipleReads(b *testing.B) {
+func Benchmark___________Sublist100XMultipleReads(b *testing.B) {
 	multiRead(b, 100)
 }
 
-func Benchmark_SublistMatchLiteral(b *testing.B) {
+func Benchmark__________Sublist1000XMultipleReads(b *testing.B) {
+	multiRead(b, 1000)
+}
+
+func Benchmark________________SublistMatchLiteral(b *testing.B) {
 	b.StopTimer()
 	cachedSubj := "foo.foo.foo.foo.foo.foo.foo.foo.foo.foo"
 	subjects := []string{
@@ -846,4 +883,137 @@ func Benchmark_SublistMatchLiteral(b *testing.B) {
 			}
 		}
 	}
+}
+
+func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
+	var nsubs = 512
+	b.StopTimer()
+	s := NewSublist()
+	subject := "foo"
+	for i := 0; i < nsubs; i++ {
+		s.Insert(newSub(subject))
+	}
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		r := s.Match(subject)
+		if len(r.psubs) != nsubs {
+			b.Fatalf("Results len is %d, should be %d", len(r.psubs), nsubs)
+		}
+		delete(s.cache, subject)
+	}
+}
+
+func removeTest(b *testing.B, singleSubject, doBatch bool, qgroup string) {
+	b.StopTimer()
+	s := NewSublist()
+	subject := "foo"
+
+	subs := make([]*subscription, 0, b.N)
+	for i := 0; i < b.N; i++ {
+		var sub *subscription
+		if singleSubject {
+			sub = newQSub(subject, qgroup)
+		} else {
+			sub = newQSub(fmt.Sprintf("%s.%d\n", subject, i), qgroup)
+		}
+		s.Insert(sub)
+		subs = append(subs, sub)
+	}
+
+	// Actual test on Remove
+	b.StartTimer()
+	if doBatch {
+		s.RemoveBatch(subs)
+	} else {
+		for _, sub := range subs {
+			s.Remove(sub)
+		}
+	}
+}
+
+func Benchmark__________SublistRemove1TokenSingle(b *testing.B) {
+	removeTest(b, true, false, "")
+}
+
+func Benchmark___________SublistRemove1TokenBatch(b *testing.B) {
+	removeTest(b, true, true, "")
+}
+
+func Benchmark_________SublistRemove2TokensSingle(b *testing.B) {
+	removeTest(b, false, false, "")
+}
+
+func Benchmark__________SublistRemove2TokensBatch(b *testing.B) {
+	removeTest(b, false, true, "")
+}
+
+func Benchmark________SublistRemove1TokenQGSingle(b *testing.B) {
+	removeTest(b, true, false, "bar")
+}
+
+func Benchmark_________SublistRemove1TokenQGBatch(b *testing.B) {
+	removeTest(b, true, true, "bar")
+}
+
+func removeMultiTest(b *testing.B, singleSubject, doBatch bool) {
+	b.StopTimer()
+	s := NewSublist()
+	subject := "foo"
+	var swg, fwg sync.WaitGroup
+	swg.Add(b.N)
+	fwg.Add(b.N)
+
+	// We will have b.N go routines each with 1k subscriptions.
+	sc := 1000
+
+	for i := 0; i < b.N; i++ {
+		go func() {
+			subs := make([]*subscription, 0, sc)
+			for n := 0; n < sc; n++ {
+				var sub *subscription
+				if singleSubject {
+					sub = newSub(subject)
+				} else {
+					sub = newSub(fmt.Sprintf("%s.%d\n", subject, n))
+				}
+				s.Insert(sub)
+				subs = append(subs, sub)
+			}
+			// Wait to start test
+			swg.Done()
+			swg.Wait()
+			// Actual test on Remove
+			if doBatch {
+				s.RemoveBatch(subs)
+			} else {
+				for _, sub := range subs {
+					s.Remove(sub)
+				}
+			}
+			fwg.Done()
+		}()
+	}
+	swg.Wait()
+	b.StartTimer()
+	fwg.Wait()
+}
+
+// Check contention rates for remove from multiple Go routines.
+// Reason for BatchRemove.
+func Benchmark_________SublistRemove1kSingleMulti(b *testing.B) {
+	removeMultiTest(b, true, false)
+}
+
+// Batch version
+func Benchmark__________SublistRemove1kBatchMulti(b *testing.B) {
+	removeMultiTest(b, true, true)
+}
+
+func Benchmark__SublistRemove1kSingle2TokensMulti(b *testing.B) {
+	removeMultiTest(b, false, false)
+}
+
+// Batch version
+func Benchmark___SublistRemove1kBatch2TokensMulti(b *testing.B) {
+	removeMultiTest(b, false, true)
 }

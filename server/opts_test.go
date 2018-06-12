@@ -38,12 +38,9 @@ func TestDefaultOptions(t *testing.T) {
 		AuthTimeout:    float64(AUTH_TIMEOUT) / float64(time.Second),
 		MaxControlLine: MAX_CONTROL_LINE_SIZE,
 		MaxPayload:     MAX_PAYLOAD_SIZE,
-		Cluster: ClusterOpts{
-			Host:        DEFAULT_HOST,
-			AuthTimeout: float64(AUTH_TIMEOUT) / float64(time.Second),
-			TLSTimeout:  float64(TLS_TIMEOUT) / float64(time.Second),
-		},
-		WriteDeadline: DEFAULT_FLUSH_DEADLINE,
+		MaxPending:     MAX_PENDING_SIZE,
+		WriteDeadline:  DEFAULT_FLUSH_DEADLINE,
+		RQSubsSweep:    DEFAULT_REMOTE_QSUBS_SWEEPER,
 	}
 
 	opts := &Options{}
@@ -71,7 +68,7 @@ func TestConfigFile(t *testing.T) {
 		Host:           "localhost",
 		Port:           4242,
 		Username:       "derek",
-		Password:       "bella",
+		Password:       "porkchop",
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          true,
@@ -84,6 +81,7 @@ func TestConfigFile(t *testing.T) {
 		MaxControlLine: 2048,
 		MaxPayload:     65536,
 		MaxConn:        100,
+		MaxPending:     10000000,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 		WriteDeadline:  3 * time.Second,
@@ -226,7 +224,7 @@ func TestMergeOverrides(t *testing.T) {
 		Host:           "localhost",
 		Port:           2222,
 		Username:       "derek",
-		Password:       "spooky",
+		Password:       "porkchop",
 		AuthTimeout:    1.0,
 		Debug:          true,
 		Trace:          true,
@@ -239,6 +237,7 @@ func TestMergeOverrides(t *testing.T) {
 		MaxControlLine: 2048,
 		MaxPayload:     65536,
 		MaxConn:        100,
+		MaxPending:     10000000,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 		Cluster: ClusterOpts{
@@ -255,7 +254,7 @@ func TestMergeOverrides(t *testing.T) {
 	// Overrides via flags
 	opts := &Options{
 		Port:     2222,
-		Password: "spooky",
+		Password: "porkchop",
 		Debug:    true,
 		HTTPPort: DEFAULT_HTTP_PORT,
 		ProfPort: 6789,
@@ -719,7 +718,7 @@ func TestOptionsClone(t *testing.T) {
 		Host:           "localhost",
 		Port:           2222,
 		Username:       "derek",
-		Password:       "spooky",
+		Password:       "porkchop",
 		AuthTimeout:    1.0,
 		Debug:          true,
 		Trace:          true,

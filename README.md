@@ -6,7 +6,7 @@ A High Performance [NATS](https://nats.io) Server written in [Go](http://golang.
 
 ## Quickstart
 
-If you just want to start using NATS, and you have [installed Go](https://golang.org/doc/install) 1.5+ and set your $GOPATH:
+If you just want to start using NATS, and you have [installed Go](https://golang.org/doc/install) 1.9+ and set your $GOPATH:
 
 Install and run the NATS server:
 

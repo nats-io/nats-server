@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -27,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// Allow dynamic profiling.
@@ -84,18 +84,28 @@ type Server struct {
 	routeInfo     Info
 	routeInfoJSON []byte
 	quitCh        chan struct{}
-	grMu          sync.Mutex
-	grTmpClients  map[uint64]*client
-	grRunning     bool
-	grWG          sync.WaitGroup // to wait on various go routines
-	cproto        int64          // number of clients supporting async INFO
-	configTime    time.Time      // last time config was loaded
-	logging       struct {
+
+	// Tracking for remote QRSID tags.
+	rqsMu       sync.RWMutex
+	rqsubs      map[string]rqsub
+	rqsubsTimer *time.Timer
+
+	// Tracking Go routines
+	grMu         sync.Mutex
+	grTmpClients map[uint64]*client
+	grRunning    bool
+	grWG         sync.WaitGroup // to wait on various go routines
+
+	cproto     int64     // number of clients supporting async INFO
+	configTime time.Time // last time config was loaded
+
+	logging struct {
 		sync.RWMutex
 		logger Logger
 		trace  int32
 		debug  int32
 	}
+
 	clientConnectURLs []string
 	lastCURLsUpdate   int64
 
@@ -180,6 +190,7 @@ func New(opts *Options) *Server {
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
+	// Start signal handler
 	s.handleSignals()
 
 	return s
@@ -381,10 +392,12 @@ func (s *Server) Shutdown() {
 		s.profiler.Close()
 	}
 
+	// Clear any remote qsub mappings
+	s.clearRemoteQSubs()
+	s.mu.Unlock()
+
 	// Release go routines that wait on that channel
 	close(s.quitCh)
-
-	s.mu.Unlock()
 
 	// Close client and route connections
 	for _, c := range conns {
@@ -800,18 +813,16 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.setAuthTimer(secondsToDuration(opts.AuthTimeout))
 	}
 
-	if tlsRequired {
-		// Rewrap bw
-		c.bw = bufio.NewWriterSize(c.nc, startBufSize)
-	}
-
 	// Do final client initialization
 
 	// Set the Ping timer
 	c.setPingTimer()
 
 	// Spin up the read loop.
-	s.startGoRoutine(func() { c.readLoop() })
+	s.startGoRoutine(c.readLoop)
+
+	// Spin up the write loop.
+	s.startGoRoutine(c.writeLoop)
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
@@ -965,8 +976,9 @@ func (s *Server) removeClient(c *client) {
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.routes)
+	nr := len(s.routes)
+	s.mu.Unlock()
+	return nr
 }
 
 // NumRemotes will report number of registered remotes.
@@ -989,6 +1001,11 @@ func (s *Server) NumSubscriptions() uint32 {
 	subs := s.sl.Count()
 	s.mu.Unlock()
 	return subs
+}
+
+// NumSlowConsumers will report the number of slow consumers.
+func (s *Server) NumSlowConsumers() int64 {
+	return atomic.LoadInt64(&s.slowConsumers)
 }
 
 // ConfigTime will report the last time the server configuration was loaded.

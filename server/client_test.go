@@ -23,9 +23,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"crypto/rand"
 	"crypto/tls"
 
 	"github.com/nats-io/go-nats"
@@ -352,6 +354,16 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 	}
 }
 
+func (c *client) parseFlushAndClose(op []byte) {
+	c.parse(op)
+	for cp := range c.pcd {
+		cp.mu.Lock()
+		cp.flushOutbound()
+		cp.mu.Unlock()
+	}
+	c.nc.Close()
+}
+
 func TestClientPubWithQueueSub(t *testing.T) {
 	_, c, cr := setupClient()
 
@@ -366,13 +378,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 		op = append(op, pubs...)
 	}
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var n1, n2, received int
 	for ; ; received++ {
@@ -415,13 +421,7 @@ func TestClientUnSub(t *testing.T) {
 	op = append(op, unsub...)
 	op = append(op, pub...)
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var received int
 	for ; ; received++ {
@@ -458,13 +458,7 @@ func TestClientUnSubMax(t *testing.T) {
 		op = append(op, pub...)
 	}
 
-	go func() {
-		c.parse(op)
-		for cp := range c.pcd {
-			cp.bw.Flush()
-		}
-		c.nc.Close()
-	}()
+	go c.parseFlushAndClose(op)
 
 	var received int
 	for ; ; received++ {
@@ -659,9 +653,7 @@ func TestUnsubRace(t *testing.T) {
 	}
 	defer nc.Close()
 
-	ncp, err := nats.Connect(fmt.Sprintf("nats://%s:%d",
-		s.getOpts().Host,
-		s.Addr().(*net.TCPAddr).Port))
+	ncp, err := nats.Connect(url)
 	if err != nil {
 		t.Fatalf("Error creating client: %v\n", err)
 	}
@@ -670,7 +662,6 @@ func TestUnsubRace(t *testing.T) {
 	sub, _ := nc.Subscribe("foo", func(m *nats.Msg) {
 		// Just eat it..
 	})
-
 	nc.Flush()
 
 	var wg sync.WaitGroup
@@ -821,5 +812,269 @@ func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
 		if err := sub.Unsubscribe(); err != nil {
 			t.Fatalf("Error on unsubscribe: %v", err)
 		}
+	}
+}
+
+func TestDynamicBuffers(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Grab the client from server.
+	s.mu.Lock()
+	lc := len(s.clients)
+	c := s.clients[s.gcid]
+	s.mu.Unlock()
+
+	if lc != 1 {
+		t.Fatalf("Expected only 1 client but got %d\n", lc)
+	}
+	if c == nil {
+		t.Fatal("Expected to retrieve client\n")
+	}
+
+	// Create some helper functions and data structures.
+	done := make(chan bool)          // Used to stop recording.
+	type maxv struct{ rsz, wsz int } // Used to hold max values.
+	results := make(chan maxv)
+
+	// stopRecording stops the recording ticker and releases go routine.
+	stopRecording := func() maxv {
+		done <- true
+		return <-results
+	}
+	// max just grabs max values.
+	max := func(a, b int) int {
+		if a > b {
+			return a
+		}
+		return b
+	}
+	// Returns current value of the buffer sizes.
+	getBufferSizes := func() (int, int) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.in.rsz, c.out.sz
+	}
+	// Record the max values seen.
+	recordMaxBufferSizes := func() {
+		ticker := time.NewTicker(10 * time.Microsecond)
+		defer ticker.Stop()
+
+		var m maxv
+
+		recordMax := func() {
+			rsz, wsz := getBufferSizes()
+			m.rsz = max(m.rsz, rsz)
+			m.wsz = max(m.wsz, wsz)
+		}
+
+		for {
+			select {
+			case <-done:
+				recordMax()
+				results <- m
+				return
+			case <-ticker.C:
+				recordMax()
+			}
+		}
+	}
+	// Check that the current value is what we expected.
+	checkBuffers := func(ers, ews int) {
+		t.Helper()
+		rsz, wsz := getBufferSizes()
+		if rsz != ers {
+			t.Fatalf("Expected read buffer of %d, but got %d\n", ers, rsz)
+		}
+		if wsz != ews {
+			t.Fatalf("Expected write buffer of %d, but got %d\n", ews, wsz)
+		}
+	}
+
+	// Check that the max was as expected.
+	checkResults := func(m maxv, rsz, wsz int) {
+		t.Helper()
+		if rsz != m.rsz {
+			t.Fatalf("Expected read buffer of %d, but got %d\n", rsz, m.rsz)
+		}
+		if wsz != m.wsz {
+			t.Fatalf("Expected write buffer of %d, but got %d\n", wsz, m.wsz)
+		}
+	}
+
+	// Here is where testing begins..
+
+	// Should be at or below the startBufSize for both.
+	rsz, wsz := getBufferSizes()
+	if rsz > startBufSize {
+		t.Fatalf("Expected read buffer of <= %d, but got %d\n", startBufSize, rsz)
+	}
+	if wsz > startBufSize {
+		t.Fatalf("Expected write buffer of <= %d, but got %d\n", startBufSize, wsz)
+	}
+
+	// Send some data.
+	data := make([]byte, 2048)
+	rand.Read(data)
+
+	go recordMaxBufferSizes()
+	for i := 0; i < 200; i++ {
+		nc.Publish("foo", data)
+	}
+	nc.Flush()
+	m := stopRecording()
+
+	if m.rsz != maxBufSize {
+		t.Fatalf("Expected read buffer of %d, but got %d\n", maxBufSize, m.rsz)
+	}
+	if m.wsz > startBufSize {
+		t.Fatalf("Expected write buffer of <= %d, but got %d\n", startBufSize, m.wsz)
+	}
+
+	// Create Subscription to test outbound buffer from server.
+	nc.Subscribe("foo", func(m *nats.Msg) {
+		// Just eat it..
+	})
+	go recordMaxBufferSizes()
+
+	for i := 0; i < 200; i++ {
+		nc.Publish("foo", data)
+	}
+	nc.Flush()
+
+	m = stopRecording()
+	checkResults(m, maxBufSize, maxBufSize)
+
+	// Now test that we shrink correctly.
+
+	// Should go to minimum for both..
+	for i := 0; i < 20; i++ {
+		nc.Flush()
+	}
+	checkBuffers(minBufSize, minBufSize)
+}
+
+// Similar to the routed version. Make sure we receive all of the
+// messages with auto-unsubscribe enabled.
+func TestQueueAutoUnsubscribe(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	rbar := int32(0)
+	barCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbar, 1)
+	}
+	rbaz := int32(0)
+	bazCb := func(m *nats.Msg) {
+		atomic.AddInt32(&rbaz, 1)
+	}
+
+	// Create 1000 subscriptions with auto-unsubscribe of 1.
+	// Do two groups, one bar and one baz.
+	for i := 0; i < 1000; i++ {
+		qsub, err := nc.QueueSubscribe("foo", "bar", barCb)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := qsub.AutoUnsubscribe(1); err != nil {
+			t.Fatalf("Error on auto-unsubscribe: %v", err)
+		}
+		qsub, err = nc.QueueSubscribe("foo", "baz", bazCb)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := qsub.AutoUnsubscribe(1); err != nil {
+			t.Fatalf("Error on auto-unsubscribe: %v", err)
+		}
+	}
+	nc.Flush()
+
+	expected := int32(1000)
+	for i := int32(0); i < expected; i++ {
+		nc.Publish("foo", []byte("Don't Drop Me!"))
+	}
+	nc.Flush()
+
+	wait := time.Now().Add(5 * time.Second)
+	for time.Now().Before(wait) {
+		nbar := atomic.LoadInt32(&rbar)
+		nbaz := atomic.LoadInt32(&rbaz)
+		if nbar == expected && nbaz == expected {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
+		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
+}
+
+func TestAvoidSlowConsumerBigMessages(t *testing.T) {
+	opts := DefaultOptions() // Use defaults to make sure they avoid pending slow consumer.
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	data := make([]byte, 1024*1024) // 1MB payload
+	rand.Read(data)
+
+	expected := int32(1000)
+	received := int32(0)
+
+	done := make(chan bool)
+
+	// Create Subscription.
+	nc1.Subscribe("slow.consumer", func(m *nats.Msg) {
+		// Just eat it so that we are not measuring
+		// code time, just delivery.
+		atomic.AddInt32(&received, 1)
+		if received >= expected {
+			done <- true
+		}
+	})
+
+	// Create Error handler
+	nc1.SetErrorHandler(func(c *nats.Conn, s *nats.Subscription, err error) {
+		t.Fatalf("Received an error on the subscription's connection: %v\n", err)
+	})
+
+	for i := int32(0); i < expected; i++ {
+		nc2.Publish("slow.consumer", data)
+	}
+	nc2.Flush()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		r := atomic.LoadInt32(&received)
+		if s.NumSlowConsumers() > 0 {
+			t.Fatalf("Did not receive all large messages due to slow consumer status: %d of %d", r, expected)
+		}
+		t.Fatalf("Failed to receive all large messages: %d of %d\n", r, expected)
 	}
 }

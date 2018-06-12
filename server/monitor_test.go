@@ -25,8 +25,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/nats-io/go-nats"
 	"net"
+
+	"github.com/nats-io/go-nats"
 )
 
 const CLIENT_PORT = -1
@@ -169,6 +170,8 @@ func TestHandleVarz(t *testing.T) {
 		}
 	}
 
+	time.Sleep(100 * time.Millisecond)
+
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
@@ -193,8 +196,8 @@ func TestHandleVarz(t *testing.T) {
 		if v.OutBytes != 5 {
 			t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
 		}
-		if v.Subscriptions != 1 {
-			t.Fatalf("Expected Subscriptions of 1, got %v\n", v.Subscriptions)
+		if v.Subscriptions != 0 {
+			t.Fatalf("Expected Subscriptions of 0, got %v\n", v.Subscriptions)
 		}
 	}
 
@@ -253,6 +256,8 @@ func TestConnz(t *testing.T) {
 		nc := createClientConnSubscribeAndPublish(t, s)
 		defer nc.Close()
 
+		time.Sleep(50 * time.Millisecond)
+
 		c = pollConz(t, s, mode, url+"connz", nil)
 
 		if c.NumConns != 1 {
@@ -285,8 +290,8 @@ func TestConnz(t *testing.T) {
 		if ci.Port == 0 {
 			t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
 		}
-		if ci.NumSubs != 1 {
-			t.Fatalf("Expected num_subs of 1, got %v\n", ci.NumSubs)
+		if ci.NumSubs != 0 {
+			t.Fatalf("Expected num_subs of 0, got %v\n", ci.NumSubs)
 		}
 		if len(ci.Subs) != 0 {
 			t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
@@ -347,14 +352,38 @@ func TestConnzWithSubs(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
+	nc.Subscribe("hello.foo", func(m *nats.Msg) {})
+	ensureServerActivityRecorded(t, nc)
+
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?subs=1", &ConnzOptions{Subscriptions: true})
 		// Test inside details of each connection
 		ci := c.Conns[0]
-		if len(ci.Subs) != 1 || ci.Subs[0] != "foo" {
+		if len(ci.Subs) != 1 || ci.Subs[0] != "hello.foo" {
 			t.Fatalf("Expected subs of 1, got %v\n", ci.Subs)
 		}
+	}
+}
+
+// Helper to map to connection name
+func createConnMap(t *testing.T, cz *Connz) map[string]ConnInfo {
+	cm := make(map[string]ConnInfo)
+	for _, c := range cz.Conns {
+		cm[c.Name] = c
+	}
+	return cm
+}
+
+func getFooAndBar(t *testing.T, cm map[string]ConnInfo) (ConnInfo, ConnInfo) {
+	return cm["foo"], cm["bar"]
+}
+
+func ensureServerActivityRecorded(t *testing.T, nc *nats.Conn) {
+	nc.Flush()
+	err := nc.Flush()
+	if err != nil {
+		t.Fatalf("Error flushing: %v\n", err)
 	}
 }
 
@@ -367,69 +396,72 @@ func TestConnzLastActivity(t *testing.T) {
 	opts := &ConnzOptions{Subscriptions: true}
 
 	testActivity := func(mode int) {
-		nc := createClientConnSubscribeAndPublish(t, s)
-		defer nc.Close()
-		nc.Flush()
+		ncFoo := createClientConnWithName(t, "foo", s)
+		defer ncFoo.Close()
+
+		ncBar := createClientConnWithName(t, "bar", s)
+		defer ncBar.Close()
 
 		// Test inside details of each connection
-		ci := pollConz(t, s, mode, url, opts).Conns[0]
-		if len(ci.Subs) != 1 {
-			t.Fatalf("Expected subs of 1, got %v\n", len(ci.Subs))
+		ciFoo, ciBar := getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+
+		// Test that LastActivity is non-zero
+		if ciFoo.LastActivity.IsZero() {
+			t.Fatalf("Expected LastActivity for connection '%s'to be valid\n", ciFoo.Name)
 		}
-		firstLast := ci.LastActivity
-		if firstLast.IsZero() {
-			t.Fatalf("Expected LastActivity to be valid\n")
+		if ciBar.LastActivity.IsZero() {
+			t.Fatalf("Expected LastActivity for connection '%s'to be valid\n", ciBar.Name)
+		}
+		// Foo should be older than Bar
+		if ciFoo.LastActivity.After(ciBar.LastActivity) {
+			t.Fatal("Expected connection 'foo' to be older than 'bar'\n")
 		}
 
-		// Just wait a bit to make sure that there is a difference
-		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		fooLA := ciFoo.LastActivity
+		barLA := ciBar.LastActivity
+
+		ensureServerActivityRecorded(t, ncFoo)
+		ensureServerActivityRecorded(t, ncBar)
 
 		// Sub should trigger update.
-		sub, _ := nc.Subscribe("hello.world", func(m *nats.Msg) {})
-		nc.Flush()
-		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		subLast := ci.LastActivity
-		if firstLast.Equal(subLast) {
-			t.Fatalf("Subscribe should have triggered update to LastActivity\n")
+		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
+		ensureServerActivityRecorded(t, ncFoo)
+
+		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		nextLA := ciFoo.LastActivity
+		if fooLA.Equal(nextLA) {
+			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
 		}
+		fooLA = nextLA
 
-		// Just wait a bit to make sure that there is a difference
-		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		// Publish and Message Delivery should trigger as well. So both connections
+		// should have updates.
+		ncBar.Publish("hello.world", []byte("Hello"))
 
-		// Pub should trigger as well
-		nc.Publish("foo", []byte("Hello"))
-		nc.Flush()
-		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		pubLast := ci.LastActivity
-		if subLast.Equal(pubLast) {
+		ensureServerActivityRecorded(t, ncFoo)
+		ensureServerActivityRecorded(t, ncBar)
+
+		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		nextLA = ciBar.LastActivity
+		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
 		}
+		barLA = nextLA
 
-		// Just wait a bit to make sure that there is a difference
-		// between first and last.
-		time.Sleep(100 * time.Millisecond)
+		// Message delivery on ncFoo should have triggered as well.
+		nextLA = ciFoo.LastActivity
+		if fooLA.Equal(nextLA) {
+			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
+		}
+		fooLA = nextLA
 
 		// Unsub should trigger as well
 		sub.Unsubscribe()
-		nc.Flush()
-		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		pubLast = ci.LastActivity
-		if subLast.Equal(pubLast) {
-			t.Fatalf("Un-subscribe should have triggered update to LastActivity\n")
-		}
+		ensureServerActivityRecorded(t, ncFoo)
 
-		// Just wait a bit to make sure that there is a difference
-		// between first and last.
-		time.Sleep(100 * time.Millisecond)
-
-		// Message delivery should trigger as well
-		nc.Publish("foo", []byte("Hello"))
-		nc.Flush()
-		ci = pollConz(t, s, mode, url, opts).Conns[0]
-		msgLast := ci.LastActivity
-		if pubLast.Equal(msgLast) {
+		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		nextLA = ciFoo.LastActivity
+		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
 		}
 	}
@@ -840,6 +872,8 @@ func TestConnzWithRoutes(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, sc)
 	defer nc.Close()
 
+	nc.Subscribe("hello.bar", func(m *nats.Msg) {})
+
 	// Now check routez
 	urls := []string{"routez", "routez?subs=1"}
 	for subs, urlSuffix := range urls {
@@ -909,9 +943,8 @@ func TestSubsz(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		sl := pollSubsz(t, s, mode, url+"subscriptionsz", nil)
-
-		if sl.NumSubs != 1 {
-			t.Fatalf("Expected NumSubs of 1, got %d\n", sl.NumSubs)
+		if sl.NumSubs != 0 {
+			t.Fatalf("Expected NumSubs of 0, got %d\n", sl.NumSubs)
 		}
 		if sl.NumInserts != 1 {
 			t.Fatalf("Expected NumInserts of 1, got %d\n", sl.NumInserts)
@@ -994,10 +1027,17 @@ func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 	}
 
 	ch := make(chan bool)
-	nc.Subscribe("foo", func(m *nats.Msg) { ch <- true })
-	nc.Publish("foo", []byte("Hello"))
+	inbox := nats.NewInbox()
+	sub, err := nc.Subscribe(inbox, func(m *nats.Msg) { ch <- true })
+	if err != nil {
+		t.Fatalf("Error subscribing to `%s`: %v\n", inbox, err)
+	}
+	nc.Publish(inbox, []byte("Hello"))
 	// Wait for message
 	<-ch
+	sub.Unsubscribe()
+	close(ch)
+	nc.Flush()
 	return nc
 }
 
@@ -1011,7 +1051,6 @@ func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {
 	if err != nil {
 		t.Fatalf("Error creating client: %v\n", err)
 	}
-
 	return nc
 }
 

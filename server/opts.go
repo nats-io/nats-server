@@ -33,11 +33,11 @@ import (
 
 // ClusterOpts are options for clusters.
 type ClusterOpts struct {
-	Host           string      `json:"addr"`
-	Port           int         `json:"cluster_port"`
+	Host           string      `json:"addr,omitempty"`
+	Port           int         `json:"cluster_port,omitempty"`
 	Username       string      `json:"-"`
 	Password       string      `json:"-"`
-	AuthTimeout    float64     `json:"auth_timeout"`
+	AuthTimeout    float64     `json:"auth_timeout,omitempty"`
 	TLSTimeout     float64     `json:"-"`
 	TLSConfig      *tls.Config `json:"-"`
 	ListenStr      string      `json:"-"`
@@ -70,7 +70,8 @@ type Options struct {
 	AuthTimeout     float64       `json:"auth_timeout"`
 	MaxControlLine  int           `json:"max_control_line"`
 	MaxPayload      int           `json:"max_payload"`
-	Cluster         ClusterOpts   `json:"cluster"`
+	MaxPending      int64         `json:"max_pending"`
+	Cluster         ClusterOpts   `json:"cluster,omitempty"`
 	ProfPort        int           `json:"-"`
 	PidFile         string        `json:"-"`
 	LogFile         string        `json:"-"`
@@ -86,6 +87,7 @@ type Options struct {
 	TLSCaCert       string        `json:"-"`
 	TLSConfig       *tls.Config   `json:"-"`
 	WriteDeadline   time.Duration `json:"-"`
+	RQSubsSweep     time.Duration `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -287,6 +289,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.MaxControlLine = int(v.(int64))
 		case "max_payload":
 			o.MaxPayload = int(v.(int64))
+		case "max_pending":
+			o.MaxPending = v.(int64)
 		case "max_connections", "max_conn":
 			o.MaxConn = int(v.(int64))
 		case "ping_interval":
@@ -923,14 +927,16 @@ func processOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 	}
-	if opts.Cluster.Host == "" {
-		opts.Cluster.Host = DEFAULT_HOST
-	}
-	if opts.Cluster.TLSTimeout == 0 {
-		opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
-	}
-	if opts.Cluster.AuthTimeout == 0 {
-		opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+	if opts.Cluster.Port != 0 {
+		if opts.Cluster.Host == "" {
+			opts.Cluster.Host = DEFAULT_HOST
+		}
+		if opts.Cluster.TLSTimeout == 0 {
+			opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
+		}
+		if opts.Cluster.AuthTimeout == 0 {
+			opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+		}
 	}
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE
@@ -938,8 +944,14 @@ func processOptions(opts *Options) {
 	if opts.MaxPayload == 0 {
 		opts.MaxPayload = MAX_PAYLOAD_SIZE
 	}
+	if opts.MaxPending == 0 {
+		opts.MaxPending = MAX_PENDING_SIZE
+	}
 	if opts.WriteDeadline == time.Duration(0) {
 		opts.WriteDeadline = DEFAULT_FLUSH_DEADLINE
+	}
+	if opts.RQSubsSweep == time.Duration(0) {
+		opts.RQSubsSweep = DEFAULT_REMOTE_QSUBS_SWEEPER
 	}
 }
 

@@ -544,55 +544,10 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeExpect(subRe)
 }
 
-func TestAutoUnsubPropagation(t *testing.T) {
-	s, opts := runRouteServer(t)
-	defer s.Shutdown()
+type ignoreLogger struct{}
 
-	client := createClientConn(t, opts.Host, opts.Port)
-	defer client.Close()
-
-	clientSend, clientExpect := setupConn(t, client)
-
-	route := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
-	defer route.Close()
-
-	expectAuthRequired(t, route)
-	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
-	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
-
-	// Setup a local subscription
-	clientSend("SUB foo 2\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(subRe)
-
-	clientSend("UNSUB 2 1\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(unsubmaxRe)
-
-	clientSend("PUB foo 2\r\nok\r\n")
-	clientExpect(msgRe)
-
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	clientSend("UNSUB 2\r\n")
-	clientSend("PING\r\n")
-	clientExpect(pongRe)
-
-	routeExpect(unsubnomaxRe)
-}
-
-type ignoreLogger struct {
-}
-
-func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {
-}
-func (l *ignoreLogger) Errorf(f string, args ...interface{}) {
-}
+func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {}
+func (l *ignoreLogger) Errorf(f string, args ...interface{}) {}
 
 func TestRouteConnectOnShutdownRace(t *testing.T) {
 	s, opts := runRouteServer(t)
@@ -662,6 +617,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
 			buf := routeExpect(infoRe)
+
 			info := server.Info{}
 			if err := json.Unmarshal(buf[4:], &info); err != nil {
 				stackFatalf(t, "Could not unmarshal route info: %v", err)
@@ -778,6 +734,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 
 		// Now stop the route and restart with an additional URL
 		rc.Close()
+
 		// On route disconnect, clients will receive an updated INFO
 		expectNothing(t, oldClient)
 		checkINFOReceived(newClient, newClientExpect, []string{clientURL})
@@ -895,10 +852,8 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 	// For this test, be explicit about listen spec.
 	opts.Host = "127.0.0.1"
 	opts.Port = 5242
-	for i := 0; i < 2; i++ {
-		if i == 1 {
-			opts.Cluster.NoAdvertise = true
-		}
-		f(opts)
-	}
+
+	f(opts)
+	opts.Cluster.NoAdvertise = true
+	f(opts)
 }

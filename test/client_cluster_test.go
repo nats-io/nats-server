@@ -364,13 +364,13 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	var resp string
 
 	for i := 0; i < 100; i++ {
-		if err := ec2.Request("foo-req", i, &resp, 100*time.Millisecond); err != nil {
+		if err := ec2.Request("foo-req", i, &resp, 500*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
 
 	for i := 0; i < 100; i++ {
-		if err := ec1.Request("foo-req", i, &resp, 100*time.Millisecond); err != nil {
+		if err := ec1.Request("foo-req", i, &resp, 500*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
