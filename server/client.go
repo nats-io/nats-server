@@ -1129,8 +1129,7 @@ func (c *client) unsubscribe(sub *subscription) {
 	// tries to deliver us a message. Remote queue subscribers are directed
 	// so we need to know what to do to avoid unnecessary message drops
 	// from [auto-]unsubscribe.
-	if c.typ == CLIENT && c.srv != nil &&
-		len(sub.queue) > 0 && c.srv.NumRoutes() > 0 {
+	if c.typ == CLIENT && c.srv != nil && len(sub.queue) > 0 {
 		c.srv.holdRemoteQSub(sub)
 	}
 }
