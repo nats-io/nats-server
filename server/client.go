@@ -1297,9 +1297,7 @@ func (c *client) prunePubPermsCache() {
 // pubAllowed checks on publish permissioning.
 func (c *client) pubAllowed() bool {
 	// Disallow publish to _SYS.>, these are reserved for internals.
-	if c.pa.subject[0] == '_' && len(c.pa.subject) > 4 &&
-		c.pa.subject[1] == 'S' && c.pa.subject[2] == 'Y' &&
-		c.pa.subject[3] == 'S' && c.pa.subject[4] == '.' {
+	if len(c.pa.subject) > 4 && string(c.pa.subject[:5]) == "_SYS." {
 		c.pubPermissionViolation(c.pa.subject)
 		return false
 	}
