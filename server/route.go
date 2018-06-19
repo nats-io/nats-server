@@ -973,13 +973,27 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 	s.connectToRoute(rURL, tryForEver)
 }
 
+// Checks to make sure the route is still valid.
+func (s *Server) routeStillValid(rURL *url.URL) bool {
+	for _, ri := range s.getOpts().Routes {
+		if ri == rURL {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
 	defer s.grWG.Done()
+
 	attempts := 0
 	for s.isRunning() && rURL != nil {
+		if tryForEver && !s.routeStillValid(rURL) {
+			return
+		}
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
@@ -1000,6 +1014,12 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 				continue
 			}
 		}
+
+		if tryForEver && !s.routeStillValid(rURL) {
+			conn.Close()
+			return
+		}
+
 		// We have a route connection here.
 		// Go ahead and create it and exit this func.
 		s.createRoute(conn, rURL)
