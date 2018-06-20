@@ -1394,8 +1394,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 // Then stop server B, and have server A continue to try to connect. Reload A with a config
 // that removes the route and make sure it does not connect to server B when its restarted.
 func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
-	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
-	defer os.Remove(srvbConfig)
+	srvb, srvbOpts := RunServerWithConfig("./configs/reload/srv_b_1.conf")
 	defer srvb.Shutdown()
 
 	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
@@ -1463,7 +1462,8 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	}
 
 	// Restart server B.
-	go srvb.Start()
+	srvb, _ = RunServerWithConfig("./configs/reload/srv_b_1.conf")
+	defer srvb.Shutdown()
 
 	// We should not have a cluster formed here.
 	deadline = time.Now().Add(2 * DEFAULT_ROUTE_RECONNECT)
