@@ -63,6 +63,23 @@ func RunServer(opts *Options) *Server {
 	return s
 }
 
+// LoadConfig loads a configuration from a filename
+func LoadConfig(configFile string) (opts *Options) {
+	opts, err := ProcessConfigFile(configFile)
+	if err != nil {
+		panic(fmt.Sprintf("Error processing configuration file: %v", err))
+	}
+	opts.NoSigs, opts.NoLog = true, true
+	return
+}
+
+// RunServerWithConfig starts a new Go routine based server with a configuration file.
+func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
+	opts = LoadConfig(configFile)
+	srv = RunServer(opts)
+	return
+}
+
 func TestVersionMatchesTag(t *testing.T) {
 	tag := os.Getenv("TRAVIS_TAG")
 	if tag == "" {
