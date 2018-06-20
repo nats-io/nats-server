@@ -1,7 +1,7 @@
 language: go
 go:
-- 1.9.6
-- 1.10.2
+- 1.9.7
+- 1.10.3
 install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
