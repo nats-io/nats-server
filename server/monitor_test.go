@@ -309,19 +309,22 @@ func TestConnz(t *testing.T) {
 			t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
 		}
 		if ci.Start.IsZero() {
-			t.Fatalf("Expected Start to be valid\n")
+			t.Fatal("Expected Start to be valid\n")
 		}
 		if ci.Uptime == "" {
-			t.Fatalf("Expected Uptime to be valid\n")
+			t.Fatal("Expected Uptime to be valid\n")
 		}
 		if ci.LastActivity.IsZero() {
-			t.Fatalf("Expected LastActivity to be valid\n")
+			t.Fatal("Expected LastActivity to be valid\n")
 		}
 		if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
 			t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
 		}
 		if ci.Idle == "" {
-			t.Fatalf("Expected Idle to be valid\n")
+			t.Fatal("Expected Idle to be valid\n")
+		}
+		if ci.RTT != "" {
+			t.Fatal("Expected RTT to NOT be set for new connection\n")
 		}
 	}
 
@@ -384,6 +387,60 @@ func ensureServerActivityRecorded(t *testing.T, nc *nats.Conn) {
 	err := nc.Flush()
 	if err != nil {
 		t.Fatalf("Error flushing: %v\n", err)
+	}
+}
+
+func TestConnzRTT(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+
+	testRTT := func(mode int) {
+		// Test with connections.
+		nc := createClientConnSubscribeAndPublish(t, s)
+		defer nc.Close()
+
+		c := pollConz(t, s, mode, url+"connz", nil)
+
+		if c.NumConns != 1 {
+			t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
+		}
+
+		// Send a server side PING to record RTT
+		s.mu.Lock()
+		ci := c.Conns[0]
+		sc := s.clients[ci.Cid]
+		if sc == nil {
+			t.Fatalf("Error looking up client %v\n", ci.Cid)
+		}
+		s.mu.Unlock()
+		sc.mu.Lock()
+		sc.sendPing()
+		sc.mu.Unlock()
+
+		// Wait for client to respond with PONG
+		time.Sleep(20 * time.Millisecond)
+
+		// Repoll for updated information.
+		c = pollConz(t, s, mode, url+"connz", nil)
+		ci = c.Conns[0]
+
+		rtt, err := time.ParseDuration(ci.RTT)
+		if err != nil {
+			t.Fatalf("Could not parse RTT properly, %v", err)
+		}
+		if rtt <= 0 {
+			t.Fatal("Expected RTT to be valid and non-zero\n")
+		}
+		if rtt > 5*time.Millisecond || rtt < 100*time.Nanosecond {
+			t.Fatalf("Invalid RTT of %s\n", ci.RTT)
+		}
+	}
+
+	for mode := 0; mode < 2; mode++ {
+		testRTT(mode)
+		waitForClientConnCount(t, s, 0)
 	}
 }
 

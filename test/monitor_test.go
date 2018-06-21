@@ -102,7 +102,7 @@ func TestNoMonitorPort(t *testing.T) {
 
 // testEndpointDataRace tests a monitoring endpoint for data races by polling
 // while client code acts to ensure statistics are updated. It is designed to
-// run under the -race flag to catch  violations. The caller must start the
+// run under the -race flag to catch violations. The caller must start the
 // NATS server.
 func testEndpointDataRace(endpoint string, t *testing.T) {
 	var doneWg sync.WaitGroup
@@ -653,8 +653,6 @@ func TestHTTPHost(t *testing.T) {
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T) net.Conn {
 	cl := createClientConn(t, "localhost", CLIENT_PORT)
-
-	sendCommand(t, cl)
 	send, expect := setupConn(t, cl)
 	expectMsgs := expectMsgsCommand(t, expect)
 

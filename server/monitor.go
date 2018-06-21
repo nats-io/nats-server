@@ -73,6 +73,7 @@ type ConnInfo struct {
 	Port           int       `json:"port"`
 	Start          time.Time `json:"start"`
 	LastActivity   time.Time `json:"last_activity"`
+	RTT            string    `json:"rtt,omitempty"`
 	Uptime         string    `json:"uptime"`
 	Idle           string    `json:"idle"`
 	Pending        int       `json:"pending_bytes"`
@@ -218,6 +219,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		ci.LastActivity = client.last
 		ci.Uptime = myUptime(c.Now.Sub(client.start))
 		ci.Idle = myUptime(c.Now.Sub(client.last))
+		ci.RTT = client.getRTT()
 		ci.OutMsgs = client.outMsgs
 		ci.OutBytes = client.outBytes
 		ci.NumSubs = uint32(len(client.subs))
@@ -287,6 +289,25 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		i++
 	}
 	return c, nil
+}
+
+// Assume lock is held
+func (c *client) getRTT() string {
+	if c.rtt == 0 {
+		// If a real client, go ahead and send ping now to get a value
+		// for RTT. For tests and telnet, etc skip.
+		if c.flags.isSet(connectReceived) && c.opts.Lang != "" {
+			c.sendPing()
+		}
+		return ""
+	}
+	var rtt time.Duration
+	if c.rtt > time.Microsecond && c.rtt < time.Millisecond {
+		rtt = c.rtt.Truncate(time.Microsecond)
+	} else {
+		rtt = c.rtt.Truncate(time.Millisecond)
+	}
+	return fmt.Sprintf("%v", rtt)
 }
 
 func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error) {

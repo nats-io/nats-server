@@ -116,17 +116,25 @@ type client struct {
 	in    readCache
 	pcd   map[*client]struct{}
 	atmr  *time.Timer
-	ptmr  *time.Timer
-	pout  int
+	ping  pinfo
 	msgb  [msgScratchSize]byte
 	last  time.Time
 	parseState
+
+	rtt      time.Duration
+	rttStart time.Time
 
 	route *route
 	debug bool
 	trace bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
+}
+
+// Struct for PING initiation from the server.
+type pinfo struct {
+	tmr *time.Timer
+	out int
 }
 
 // outbound holds pending data for a socket.
@@ -818,7 +826,8 @@ func (c *client) sendPong() {
 
 // Assume the lock is held upon entry.
 func (c *client) sendPing() {
-	c.pout++
+	c.rttStart = time.Now()
+	c.ping.out++
 	c.traceOutOp("PING", nil)
 	c.sendProto([]byte("PING\r\n"), true)
 }
@@ -898,7 +907,8 @@ func (c *client) processPing() {
 func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
-	c.pout = 0
+	c.ping.out = 0
+	c.rtt = time.Since(c.rttStart)
 	c.mu.Unlock()
 }
 
@@ -1483,7 +1493,7 @@ func (c *client) pubPermissionViolation(subject []byte) {
 func (c *client) processPingTimer() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.ptmr = nil
+	c.ping.tmr = nil
 	// Check if connection is still opened
 	if c.nc == nil {
 		return
@@ -1492,15 +1502,21 @@ func (c *client) processPingTimer() {
 	c.Debugf("%s Ping Timer", c.typeString())
 
 	// Check for violation
-	if c.pout+1 > c.srv.getOpts().MaxPingsOut {
+	if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
 		c.Debugf("Stale Client Connection - Closing")
 		c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
 		c.clearConnection()
 		return
 	}
 
-	// Send PING
-	c.sendPing()
+	// If we have had activity within the PingInterval no
+	// need to send a ping.
+	if delta := time.Since(c.last); delta < c.srv.getOpts().PingInterval {
+		c.Debugf("Delaying PING due to activity %v ago", delta.Round(time.Second))
+	} else {
+		// Send PING
+		c.sendPing()
+	}
 
 	// Reset to fire again.
 	c.setPingTimer()
@@ -1512,16 +1528,16 @@ func (c *client) setPingTimer() {
 		return
 	}
 	d := c.srv.getOpts().PingInterval
-	c.ptmr = time.AfterFunc(d, c.processPingTimer)
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 // Lock should be held
 func (c *client) clearPingTimer() {
-	if c.ptmr == nil {
+	if c.ping.tmr == nil {
 		return
 	}
-	c.ptmr.Stop()
-	c.ptmr = nil
+	c.ping.tmr.Stop()
+	c.ping.tmr = nil
 }
 
 // Lock should be held
