@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -831,6 +832,22 @@ func (c *client) sendPing() {
 	c.sendProto([]byte("PING\r\n"), true)
 }
 
+// Generates the INFO to be sent to the client with the client ID included.
+// info arg will be copied since passed by value.
+// Assume lock is held.
+func (c *client) generateClientInfoJSON(info Info) []byte {
+	info.CID = c.cid
+	// Generate the info json
+	b, err := json.Marshal(info)
+	if err != nil {
+		c.Errorf("Error marshaling INFO JSON: %+v\n", err)
+		return nil
+	}
+	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+	json := bytes.Join(pcs, []byte(" "))
+	return json
+}
+
 // Assume the lock is held upon entry.
 func (c *client) sendInfo(info []byte) {
 	c.sendProto(info, true)
@@ -896,7 +913,7 @@ func (c *client) processPing() {
 		// If there was a cluster update since this client was created,
 		// send an updated INFO protocol now.
 		if srv.lastCURLsUpdate >= c.start.UnixNano() {
-			c.sendInfo(srv.infoJSON)
+			c.sendInfo(c.generateClientInfoJSON(srv.info))
 		}
 		c.mu.Unlock()
 		srv.mu.Unlock()

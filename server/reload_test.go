@@ -1650,19 +1650,10 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 	verify := func(expectedHost string, expectedPort int) {
 		s.mu.Lock()
 		info := s.info
-		infoJSON := Info{clientConnectURLs: make(map[string]struct{})}
-		err := json.Unmarshal(s.infoJSON[5:len(s.infoJSON)-2], &infoJSON) // Skip INFO
 		s.mu.Unlock()
-		if err != nil {
-			stackFatalf(t, "Error on Unmarshal: %v", err)
-		}
 		if info.Host != expectedHost || info.Port != expectedPort {
 			stackFatalf(t, "Expected host/port to be %s:%d, got %s:%d",
 				expectedHost, expectedPort, info.Host, info.Port)
-		}
-		// Check that server infoJSON was updated too
-		if !reflect.DeepEqual(info, infoJSON) {
-			stackFatalf(t, "Expected infoJSON to be %+v, got %+v", info, infoJSON)
 		}
 	}
 

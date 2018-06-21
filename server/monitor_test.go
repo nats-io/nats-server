@@ -369,6 +369,54 @@ func TestConnzWithSubs(t *testing.T) {
 	}
 }
 
+func TestConnzWithCID(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// The one we will request
+	cid := 5
+	total := 10
+
+	// Create 10
+	for i := 1; i <= total; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		defer nc.Close()
+		if i == cid {
+			nc.Subscribe("hello.foo", func(m *nats.Msg) {})
+			nc.Subscribe("hello.bar", func(m *nats.Msg) {})
+			ensureServerActivityRecorded(t, nc)
+		}
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/connz?cid=%d", s.MonitorAddr().Port, cid)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url, &ConnzOptions{CID: uint64(cid)})
+		// Test inside details of each connection
+		if len(c.Conns) != 1 {
+			t.Fatalf("Expected only one connection, but got %d\n", len(c.Conns))
+		}
+		if c.NumConns != 1 {
+			t.Fatalf("Expected NumConns to be 1, but got %d\n", c.NumConns)
+		}
+		ci := c.Conns[0]
+		if ci.Cid != uint64(cid) {
+			t.Fatalf("Expected to receive connection %v, but received %v\n", cid, ci.Cid)
+		}
+		if ci.NumSubs != 2 {
+			t.Fatalf("Expected to receive connection with %d subs, but received %d\n", 2, ci.NumSubs)
+		}
+		// Now test a miss
+		badUrl := fmt.Sprintf("http://localhost:%d/connz?cid=%d", s.MonitorAddr().Port, 100)
+		c = pollConz(t, s, mode, badUrl, &ConnzOptions{CID: uint64(100)})
+		if len(c.Conns) != 0 {
+			t.Fatalf("Expected no connections, got %d\n", len(c.Conns))
+		}
+		if c.NumConns != 0 {
+			t.Fatalf("Expected NumConns of 0, got %d\n", c.NumConns)
+		}
+	}
+}
+
 // Helper to map to connection name
 func createConnMap(t *testing.T, cz *Connz) map[string]ConnInfo {
 	cm := make(map[string]ConnInfo)
@@ -433,7 +481,7 @@ func TestConnzRTT(t *testing.T) {
 		if rtt <= 0 {
 			t.Fatal("Expected RTT to be valid and non-zero\n")
 		}
-		if rtt > 5*time.Millisecond || rtt < 100*time.Nanosecond {
+		if rtt > 20*time.Millisecond || rtt < 100*time.Nanosecond {
 			t.Fatalf("Invalid RTT of %s\n", ci.RTT)
 		}
 	}

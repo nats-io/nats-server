@@ -146,7 +146,6 @@ func (t *tlsOption) Apply(server *Server) {
 		server.info.TLSVerify = (t.newValue.ClientAuth == tls.RequireAndVerifyClientCert)
 		message = "enabled"
 	}
-	server.generateServerInfoJSON()
 	server.mu.Unlock()
 	server.Noticef("Reloaded: tls = %s", message)
 }
@@ -375,7 +374,6 @@ type maxPayloadOption struct {
 func (m *maxPayloadOption) Apply(server *Server) {
 	server.mu.Lock()
 	server.info.MaxPayload = m.newValue
-	server.generateServerInfoJSON()
 	for _, client := range server.clients {
 		atomic.StoreInt64(&client.mpay, int64(m.newValue))
 	}
@@ -622,7 +620,6 @@ func (s *Server) applyOptions(opts []option) {
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 	s.configureAuthorization()
-	s.generateServerInfoJSON()
 	clients := make(map[uint64]*client, len(s.clients))
 	for i, client := range s.clients {
 		clients[i] = client
