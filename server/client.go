@@ -281,6 +281,12 @@ func (c *client) RegisterUser(user *User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.setPermissions(user.Permissions)
+}
+
+// Initializes client.perms structure.
+// Lock is held on entry.
+func (c *client) setPermissions(perms *Permissions) {
 	// Pre-allocate all to simplify checks later.
 	c.perms = &permissions{}
 	c.perms.sub = NewSublist()
@@ -288,13 +294,13 @@ func (c *client) RegisterUser(user *User) {
 	c.perms.pcache = make(map[string]bool)
 
 	// Loop over publish permissions
-	for _, pubSubject := range user.Permissions.Publish {
+	for _, pubSubject := range perms.Publish {
 		sub := &subscription{subject: []byte(pubSubject)}
 		c.perms.pub.Insert(sub)
 	}
 
 	// Loop over subscribe permissions
-	for _, subSubject := range user.Permissions.Subscribe {
+	for _, subSubject := range perms.Subscribe {
 		sub := &subscription{subject: []byte(subSubject)}
 		c.perms.sub.Insert(sub)
 	}
@@ -1071,12 +1077,20 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if !c.canSubscribe(sub.subject) {
-		c.mu.Unlock()
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
-			c.opts.Username, sub.subject, sub.sid)
-		return nil
+	if c.typ == ROUTER {
+		if !c.canExport(sub.subject) {
+			c.mu.Unlock()
+			c.Debugf("Ignoring subscription from route on %q due to export permissions", sub.subject)
+			return nil
+		}
+	} else {
+		if !c.canSubscribe(sub.subject) {
+			c.mu.Unlock()
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
+				c.opts.Username, sub.subject, sub.sid)
+			return nil
+		}
 	}
 
 	// We can have two SUB protocols coming from a route due to some
@@ -1304,36 +1318,25 @@ func (c *client) prunePubPermsCache() {
 }
 
 // pubAllowed checks on publish permissioning.
-func (c *client) pubAllowed() bool {
+func (c *client) pubAllowed(subject []byte) bool {
 	// Disallow publish to _SYS.>, these are reserved for internals.
-	if len(c.pa.subject) > 4 && string(c.pa.subject[:5]) == "_SYS." {
-		c.pubPermissionViolation(c.pa.subject)
+	if len(subject) > 4 && string(subject[:5]) == "_SYS." {
 		return false
 	}
-
 	if c.perms == nil {
 		return true
 	}
 
 	// Check if published subject is allowed if we have permissions in place.
-	allowed, ok := c.perms.pcache[string(c.pa.subject)]
+	allowed, ok := c.perms.pcache[string(subject)]
 	if ok {
-		if !allowed {
-			c.pubPermissionViolation(c.pa.subject)
-		}
 		return allowed
 	}
 	// Cache miss
-	r := c.perms.pub.Match(string(c.pa.subject))
+	r := c.perms.pub.Match(string(subject))
 	allowed = len(r.psubs) != 0
-	if !allowed {
-		c.pubPermissionViolation(c.pa.subject)
-		c.perms.pcache[string(c.pa.subject)] = false
-	} else {
-		c.perms.pcache[string(c.pa.subject)] = true
-	}
+	c.perms.pcache[string(subject)] = allowed
 	// Prune if needed.
-
 	if len(c.perms.pcache) > maxPermCacheSize {
 		c.prunePubPermsCache()
 	}
@@ -1364,8 +1367,9 @@ func (c *client) processMsg(msg []byte) {
 		c.traceMsg(msg)
 	}
 
-	// Check pub permissions
-	if !c.pubAllowed() {
+	// Check pub permissions (don't do this for routes)
+	if c.typ == CLIENT && !c.pubAllowed(c.pa.subject) {
+		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
 

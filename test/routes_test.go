@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/go-nats"
 )
 
 const clientProtoInfo = 1
@@ -856,4 +857,159 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 	f(opts)
 	opts.Cluster.NoAdvertise = true
 	f(opts)
+}
+
+func TestRouteBasicPermissions(t *testing.T) {
+	srvA, optsA := RunServerWithConfig("./configs/srv_a_perms.conf")
+	defer srvA.Shutdown()
+
+	srvB, optsB := RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Create a connection to server B
+	ncb, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	ch := make(chan bool, 1)
+	cb := func(_ *nats.Msg) {
+		ch <- true
+	}
+	// Subscribe on on "bar" and "baz", which should be accepted by server A
+	subBbar, err := ncb.Subscribe("bar", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subBbar.Unsubscribe()
+	subBbaz, err := ncb.Subscribe("baz", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subBbaz.Unsubscribe()
+	ncb.Flush()
+
+	// Create a connection to server A
+	nca, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca.Close()
+	// Publish on bar and baz, messages should be received.
+	if err := nca.Publish("bar", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	if err := nca.Publish("baz", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatal("Did not get the messages")
+		}
+	}
+
+	// From B, start a subscription on "foo", which server A should drop since
+	// it only exports on "bar" and "baz"
+	subBfoo, err := ncb.Subscribe("foo", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subBfoo.Unsubscribe()
+	ncb.Flush()
+	// So producing on "foo" from A should not be forwarded to B.
+	if err := nca.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("Message should not have been received")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Now on A, create a subscription on something that A does not import,
+	// like "bat".
+	subAbat, err := nca.Subscribe("bat", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subAbat.Unsubscribe()
+	nca.Flush()
+	// And from B, send a message on that subject and make sure it is not received.
+	if err := ncb.Publish("bat", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("Message should not have been received")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Stop subscription on foo from B
+	subBfoo.Unsubscribe()
+	ncb.Flush()
+
+	// Create subscription on foo from A, this should be forwared to B.
+	subAfoo, err := nca.Subscribe("foo", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subAfoo.Unsubscribe()
+	// Create another one so that test the import permissions cache
+	subAfoo2, err := nca.Subscribe("foo", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	defer subAfoo2.Unsubscribe()
+	nca.Flush()
+	// Send a message from B and check that it is received.
+	if err := ncb.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatal("Did not get the message")
+		}
+	}
+
+	// Close connection from B, and restart server B too.
+	// We want to make sure that
+	ncb.Close()
+	srvB.Shutdown()
+
+	// Restart server B
+	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	// Connect to B and send on "foo" and make sure we receive
+	ncb, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	if err := ncb.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatal("Did not get the message")
+		}
+	}
+
+	// Send on "bat" and make sure that this is not received.
+	if err := ncb.Publish("bat", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("Message should not have been received")
+	case <-time.After(100 * time.Millisecond):
+	}
 }
