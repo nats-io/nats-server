@@ -367,8 +367,7 @@ func (c *client) readLoop() {
 		if err := c.parse(b[:n]); err != nil {
 			// handled inline
 			if err != ErrMaxPayload && err != ErrAuthorization {
-				c.Errorf("Error reading from client: %s", err.Error())
-				c.sendErr("Parser Error")
+				c.Errorf("%s", err.Error())
 				c.closeConnection()
 			}
 			return
