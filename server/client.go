@@ -908,7 +908,7 @@ func (c *client) processPing() {
 		// If there was a cluster update since this client was created,
 		// send an updated INFO protocol now.
 		if srv.lastCURLsUpdate >= c.start.UnixNano() {
-			c.sendInfo(c.generateClientInfoJSON(srv.info))
+			c.sendInfo(c.generateClientInfoJSON(srv.copyInfo()))
 		}
 		c.mu.Unlock()
 		srv.mu.Unlock()

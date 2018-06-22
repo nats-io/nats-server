@@ -708,6 +708,18 @@ func (s *Server) HTTPHandler() http.Handler {
 	return s.httpHandler
 }
 
+// Perform a conditional deep copy due to reference nature of ClientConnectURLs.
+// If updates are made to Info, this function should be consulted and updated.
+// Assume lock is held.
+func (s *Server) copyInfo() Info {
+	info := s.info
+	if info.ClientConnectURLs != nil {
+		info.ClientConnectURLs = make([]string, len(s.info.ClientConnectURLs))
+		copy(info.ClientConnectURLs, s.info.ClientConnectURLs)
+	}
+	return info
+}
+
 func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
@@ -716,7 +728,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Grab JSON info string
 	s.mu.Lock()
-	info := s.info
+	info := s.copyInfo()
 	s.totalClients++
 	s.mu.Unlock()
 
