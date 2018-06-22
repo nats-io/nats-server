@@ -465,27 +465,21 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	}
 }
 
-// If permissions are set for this cluster, this returns true if the
-// given subject has a match in the Import permissions.
+// canImport is whether or not we will send a SUB for interest to the other side.
 // This is for ROUTER connections only.
 // Lock is held on entry.
 func (c *client) canImport(subject []byte) bool {
-	// For routes:
-	// Import is Publish
-	// Export is Subscribe
-	// So use pubAllowed() here since we want to check Import
+	// Use pubAllowed() since this checks Publish permissions which
+	// is what Import maps to.
 	return c.pubAllowed(subject)
 }
 
-// If permissions are set for this cluster, this returns true if the
-// given subject has a match in the Export permissions.
+// canExport is whether or not we will accept a SUB from the remote for a given subject.
 // This is for ROUTER connections only.
 // Lock is held on entry
 func (c *client) canExport(subject []byte) bool {
-	// For routes:
-	// Import is Publish
-	// Export is Subscribe
-	// So use canSubscribe() here since we want to check Export
+	// Use canSubscribe() since this checks Subscribe permissions which
+	// is what Export maps to.
 	return c.canSubscribe(subject)
 }
 
@@ -499,9 +493,9 @@ func (c *client) setRoutePermissions(perms *RoutePermissions) {
 		return
 	}
 	// Convert route permissions to user permissions.
-	// For routes:
-	// Import is Publish
-	// Export is Subscribe
+	// The Import permission is mapped to Publish
+	// and Export permission is mapped to Subscribe.
+	// For meaning of Import/Export, see canImport and canExport.
 	p := &Permissions{
 		Publish:   perms.Import,
 		Subscribe: perms.Export,
@@ -522,7 +516,6 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	for _, sub := range subs {
 		// Send SUB interest only if subject has a match in import permissions
 		if !route.canImport(sub.subject) {
-			s.Debugf("Not sending subscription interest on %q due to import permission", sub.subject)
 			continue
 		}
 		proto := fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))
@@ -846,7 +839,6 @@ func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 		// If there is no match, we stop here.
 		if !route.canImport(sub.subject) {
 			route.mu.Unlock()
-			s.Debugf("Not sending sub/unsub interest on %q to route due to import permission", sub.subject)
 			break
 		}
 		route.sendProto(protoAsBytes, true)

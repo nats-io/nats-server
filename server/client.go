@@ -1080,17 +1080,14 @@ func (c *client) processSub(argo []byte) (err error) {
 	if c.typ == ROUTER {
 		if !c.canExport(sub.subject) {
 			c.mu.Unlock()
-			c.Debugf("Ignoring subscription from route on %q due to export permissions", sub.subject)
 			return nil
 		}
-	} else {
-		if !c.canSubscribe(sub.subject) {
-			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-			c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
-				c.opts.Username, sub.subject, sub.sid)
-			return nil
-		}
+	} else if !c.canSubscribe(sub.subject) {
+		c.mu.Unlock()
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
+			c.opts.Username, sub.subject, sub.sid)
+		return nil
 	}
 
 	// We can have two SUB protocols coming from a route due to some

@@ -382,9 +382,11 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
 			if auth.defaultPermissions != nil {
-				// For routes:
-				// Import is Publish
-				// Export is Subscribe
+				// Import is whether or not we will send a SUB for interest to the other side.
+				// Export is whether or not we will accept a SUB from the remote for a given subject.
+				// Both only effect interest registration.
+				// The parsing sets Import into Publish and Export into Subscribe, convert
+				// accordingly.
 				opts.Cluster.Permissions = &RoutePermissions{
 					Import: auth.defaultPermissions.Publish,
 					Export: auth.defaultPermissions.Subscribe,
