@@ -37,9 +37,9 @@ You can connect to a public NATS server that is running at our demo site: [nats:
 
 You can build the latest version of the server from the `master` branch. The master branch generally should build and pass tests, but may not work correctly in your environment. Note that stable branches of operating system packagers provided by your OS vendor may not be sufficient.
 
-You need [*Go*](http://golang.org/) version 1.5+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies, which are fully supported in Go 1.6. For Go 1.5, build with `GO15VENDOREXPERIMENT=1`.
+You need [*Go*](http://golang.org/) version 1.9+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies.
 
-- Run `go version` to verify that you are running Go 1.5+. (Run `go help` for more guidance.)
+- Run `go version` to verify that you are running Go 1.9+. (Run `go help` for more guidance.)
 - Clone the <https://github.com/nats-io/gnatsd> repository.
 - Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory.
 - Run `go test ./...` to run the unit regression tests.
@@ -618,14 +618,14 @@ Important to note, NATS Authorizations are whitelist only, meaning in order to n
 
 ### TLS
 
-As of Release 0.7.0, the server can use modern TLS semantics for client connections, route connections, and the HTTPS monitoring port.
-The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid those known with vulnerabilities. The
-server's preferences when building with Go1.5 are as follows.
+The server can use modern TLS semantics for client connections, route connections, and the HTTPS monitoring port.
+The server requires TLS version 1.2, and sets preferences for modern cipher suites that avoid known vulnerabilities.
 
 ```go
 func defaultCipherSuites() []uint16 {
 	return []uint16{
-		// The SHA384 versions are only in Go1.5+
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -640,6 +640,7 @@ func defaultCurvePreferences() []tls.CurveID {
 	return []tls.CurveID{
 		tls.CurveP521,
 		tls.CurveP384,
+		tls.X25519, // faster than P256, arguably more secure
 		tls.CurveP256,
 	}
 }
