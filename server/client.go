@@ -838,14 +838,9 @@ func (c *client) sendPing() {
 func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
 	// Generate the info json
-	b, err := json.Marshal(info)
-	if err != nil {
-		c.Errorf("Error marshaling INFO JSON: %+v\n", err)
-		return nil
-	}
+	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	json := bytes.Join(pcs, []byte(" "))
-	return json
+	return bytes.Join(pcs, []byte(" "))
 }
 
 // Assume the lock is held upon entry.

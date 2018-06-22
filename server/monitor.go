@@ -156,7 +156,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	var pairs Pairs
 	if cid > 0 {
-		//pairs = make(Pairs, 0, 1)
 		client := s.clients[cid]
 		if client != nil {
 			pairs = append(pairs, Pair{Key: client, Val: int64(cid)})

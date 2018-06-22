@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -213,12 +214,9 @@ func (s *Server) setOpts(opts *Options) {
 }
 
 func (s *Server) generateRouteInfoJSON() {
-	b, err := json.Marshal(s.routeInfo)
-	if err != nil {
-		s.Fatalf("Error marshaling route INFO JSON: %+v\n", err)
-		return
-	}
-	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
+	b, _ := json.Marshal(s.routeInfo)
+	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
 // PrintAndDie is exported for access in other packages.
