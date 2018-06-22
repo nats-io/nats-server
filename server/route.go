@@ -389,7 +389,7 @@ func (s *Server) sendAsyncInfoToClients() {
 		if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
-			c.sendInfo(s.infoJSON)
+			c.sendInfo(c.generateClientInfoJSON(s.copyInfo()))
 		}
 		c.mu.Unlock()
 	}

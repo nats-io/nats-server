@@ -64,6 +64,9 @@ type ConnzOptions struct {
 
 	// Limit is the maximum number of connections that should be returned by Connz().
 	Limit int `json:"limit"`
+
+	// Filter for this explicit client connection.
+	CID uint64 `json:"cid"`
 }
 
 // ConnInfo has detailed information on a per connection basis.
@@ -104,6 +107,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		subs    bool
 		offset  int
 		limit   = DefaultConnListSize
+		cid     = uint64(0)
 	)
 
 	if opts != nil {
@@ -126,6 +130,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if limit <= 0 {
 			limit = DefaultConnListSize
 		}
+		if opts.CID > 0 {
+			cid = opts.CID
+			limit = 1
+		}
 	}
 
 	c := &Connz{
@@ -146,36 +154,44 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	totalClients := len(s.clients)
 	c.Total = totalClients
 
-	i := 0
-	pairs := make(Pairs, totalClients)
-	for _, client := range s.clients {
-		client.mu.Lock()
-		switch sortOpt {
-		case ByCid:
-			pairs[i] = Pair{Key: client, Val: int64(client.cid)}
-		case BySubs:
-			pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
-		case ByPending:
-			pairs[i] = Pair{Key: client, Val: int64(client.out.pb)}
-		case ByOutMsgs:
-			pairs[i] = Pair{Key: client, Val: client.outMsgs}
-		case ByInMsgs:
-			pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inMsgs)}
-		case ByOutBytes:
-			pairs[i] = Pair{Key: client, Val: client.outBytes}
-		case ByInBytes:
-			pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inBytes)}
-		case ByLast:
-			pairs[i] = Pair{Key: client, Val: client.last.UnixNano()}
-		case ByIdle:
-			pairs[i] = Pair{Key: client, Val: c.Now.Sub(client.last).Nanoseconds()}
+	var pairs Pairs
+	if cid > 0 {
+		client := s.clients[cid]
+		if client != nil {
+			pairs = append(pairs, Pair{Key: client, Val: int64(cid)})
 		}
-		client.mu.Unlock()
-		i++
+	} else {
+		i := 0
+		pairs = make(Pairs, totalClients)
+		for _, client := range s.clients {
+			client.mu.Lock()
+			switch sortOpt {
+			case ByCid:
+				pairs[i] = Pair{Key: client, Val: int64(client.cid)}
+			case BySubs:
+				pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
+			case ByPending:
+				pairs[i] = Pair{Key: client, Val: int64(client.out.pb)}
+			case ByOutMsgs:
+				pairs[i] = Pair{Key: client, Val: client.outMsgs}
+			case ByInMsgs:
+				pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inMsgs)}
+			case ByOutBytes:
+				pairs[i] = Pair{Key: client, Val: client.outBytes}
+			case ByInBytes:
+				pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inBytes)}
+			case ByLast:
+				pairs[i] = Pair{Key: client, Val: client.last.UnixNano()}
+			case ByIdle:
+				pairs[i] = Pair{Key: client, Val: c.Now.Sub(client.last).Nanoseconds()}
+			}
+			client.mu.Unlock()
+			i++
+		}
 	}
 	s.mu.Unlock()
 
-	if totalClients > 0 {
+	if totalClients > 0 && len(pairs) > 1 {
 		if sortOpt == ByCid {
 			// Return in ascending order
 			sort.Sort(pairs)
@@ -195,14 +211,16 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	if maxoff > totalClients {
 		maxoff = totalClients
 	}
-	pairs = pairs[minoff:maxoff]
+	if pairs != nil {
+		pairs = pairs[minoff:maxoff]
+	}
 
 	// Now we have the real number of ConnInfo objects, we can set c.NumConns
 	// and allocate the array
 	c.NumConns = len(pairs)
 	c.Conns = make([]ConnInfo, c.NumConns)
 
-	i = 0
+	i := 0
 	for _, pair := range pairs {
 
 		client := pair.Key
@@ -310,6 +328,34 @@ func (c *client) getRTT() string {
 	return fmt.Sprintf("%v", rtt)
 }
 
+func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, error) {
+	str := r.URL.Query().Get(param)
+	if str == "" {
+		return false, nil
+	}
+	val, err := strconv.ParseBool(str)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Error decoding boolean for '%s': %v", param, err)))
+		return false, err
+	}
+	return val, nil
+}
+
+func decodeUint64(w http.ResponseWriter, r *http.Request, param string) (uint64, error) {
+	str := r.URL.Query().Get(param)
+	if str == "" {
+		return 0, nil
+	}
+	val, err := strconv.ParseUint(str, 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Error decoding uint64 for '%s': %v", param, err)))
+		return 0, err
+	}
+	return val, nil
+}
+
 func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error) {
 	str := r.URL.Query().Get(param)
 	if str == "" {
@@ -318,7 +364,7 @@ func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error
 	val, err := strconv.Atoi(str)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(fmt.Sprintf("Error decoding %s: %v", param, err)))
+		w.Write([]byte(fmt.Sprintf("Error decoding int for '%s': %v", param, err)))
 		return 0, err
 	}
 	return val, nil
@@ -327,11 +373,11 @@ func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
-	auth, err := decodeInt(w, r, "auth")
+	auth, err := decodeBool(w, r, "auth")
 	if err != nil {
 		return
 	}
-	subs, err := decodeInt(w, r, "subs")
+	subs, err := decodeBool(w, r, "subs")
 	if err != nil {
 		return
 	}
@@ -344,12 +390,18 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cid, err := decodeUint64(w, r, "cid")
+	if err != nil {
+		return
+	}
+
 	connzOpts := &ConnzOptions{
 		Sort:          sortOpt,
-		Username:      auth == 1,
-		Subscriptions: subs == 1,
+		Username:      auth,
+		Subscriptions: subs,
 		Offset:        offset,
 		Limit:         limit,
+		CID:           cid,
 	}
 
 	s.mu.Lock()
@@ -469,12 +521,12 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 // HandleRoutez process HTTP requests for route information.
 func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
-	subs, err := decodeInt(w, r, "subs")
+	subs, err := decodeBool(w, r, "subs")
 	if err != nil {
 		return
 	}
 	var opts *RoutezOptions
-	if subs == 1 {
+	if subs {
 		opts = &RoutezOptions{Subscriptions: true}
 	}
 

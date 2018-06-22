@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -40,19 +41,17 @@ import (
 type Info struct {
 	ID                string   `json:"server_id"`
 	Version           string   `json:"version"`
-	GitCommit         string   `json:"git_commit"`
+	GitCommit         string   `json:"git_commit,omitempty"`
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
-	AuthRequired      bool     `json:"auth_required"`
-	TLSRequired       bool     `json:"tls_required"`
-	TLSVerify         bool     `json:"tls_verify"`
+	AuthRequired      bool     `json:"auth_required,omitempty"`
+	TLSRequired       bool     `json:"tls_required,omitempty"`
+	TLSVerify         bool     `json:"tls_verify,omitempty"`
 	MaxPayload        int      `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
+	CID               uint64   `json:"client_id,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
-
-	// Used internally for quick look-ups.
-	clientConnectURLs map[string]struct{}
 }
 
 // Server is our main struct.
@@ -61,7 +60,6 @@ type Server struct {
 	stats
 	mu            sync.Mutex
 	info          Info
-	infoJSON      []byte
 	sl            *Sublist
 	configFile    string
 	optsMu        sync.RWMutex
@@ -107,7 +105,11 @@ type Server struct {
 	}
 
 	clientConnectURLs []string
-	lastCURLsUpdate   int64
+
+	// Used internally for quick look-ups.
+	clientConnectURLsMap map[string]struct{}
+
+	lastCURLsUpdate int64
 
 	// These store the real client/cluster listen ports. They are
 	// required during config reload to reset the Options (after
@@ -139,17 +141,16 @@ func New(opts *Options) *Server {
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
 	info := Info{
-		ID:                genID(),
-		Version:           VERSION,
-		GitCommit:         gitCommit,
-		GoVersion:         runtime.Version(),
-		Host:              opts.Host,
-		Port:              opts.Port,
-		AuthRequired:      false,
-		TLSRequired:       tlsReq,
-		TLSVerify:         verify,
-		MaxPayload:        opts.MaxPayload,
-		clientConnectURLs: make(map[string]struct{}),
+		ID:           genID(),
+		Version:      VERSION,
+		GitCommit:    gitCommit,
+		GoVersion:    runtime.Version(),
+		Host:         opts.Host,
+		Port:         opts.Port,
+		AuthRequired: false,
+		TLSRequired:  tlsReq,
+		TLSVerify:    verify,
+		MaxPayload:   opts.MaxPayload,
 	}
 
 	now := time.Now()
@@ -171,6 +172,9 @@ func New(opts *Options) *Server {
 	// but since some tests may expect the INFO to be properly
 	// set after New(), let's do it now.
 	s.setInfoHostPortAndGenerateJSON()
+
+	// Used internally for quick look-ups.
+	s.clientConnectURLsMap = make(map[string]struct{})
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
@@ -209,23 +213,10 @@ func (s *Server) setOpts(opts *Options) {
 	s.optsMu.Unlock()
 }
 
-func (s *Server) generateServerInfoJSON() {
-	// Generate the info json
-	b, err := json.Marshal(s.info)
-	if err != nil {
-		s.Fatalf("Error marshaling INFO JSON: %+v\n", err)
-		return
-	}
-	s.infoJSON = []byte(fmt.Sprintf("INFO %s %s", b, CR_LF))
-}
-
 func (s *Server) generateRouteInfoJSON() {
-	b, err := json.Marshal(s.routeInfo)
-	if err != nil {
-		s.Fatalf("Error marshaling route INFO JSON: %+v\n", err)
-		return
-	}
-	s.routeInfoJSON = []byte(fmt.Sprintf(InfoProto, b))
+	b, _ := json.Marshal(s.routeInfo)
+	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
 // PrintAndDie is exported for access in other packages.
@@ -522,8 +513,6 @@ func (s *Server) setInfoHostPortAndGenerateJSON() error {
 		s.info.Host = s.opts.Host
 		s.info.Port = s.opts.Port
 	}
-	// (re)generate the infoJSON byte array.
-	s.generateServerInfoJSON()
 	return nil
 }
 
@@ -719,6 +708,18 @@ func (s *Server) HTTPHandler() http.Handler {
 	return s.httpHandler
 }
 
+// Perform a conditional deep copy due to reference nature of ClientConnectURLs.
+// If updates are made to Info, this function should be consulted and updated.
+// Assume lock is held.
+func (s *Server) copyInfo() Info {
+	info := s.info
+	if info.ClientConnectURLs != nil {
+		info.ClientConnectURLs = make([]string, len(s.info.ClientConnectURLs))
+		copy(info.ClientConnectURLs, s.info.ClientConnectURLs)
+	}
+	return info
+}
+
 func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
@@ -727,9 +728,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Grab JSON info string
 	s.mu.Lock()
-	info := s.infoJSON
-	authRequired := s.info.AuthRequired
-	tlsRequired := s.info.TLSRequired
+	info := s.copyInfo()
 	s.totalClients++
 	s.mu.Unlock()
 
@@ -742,7 +741,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.Debugf("Client connection created")
 
 	// Send our information.
-	c.sendInfo(info)
+	c.sendInfo(c.generateClientInfoJSON(info))
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -772,7 +771,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Lock()
 
 	// Check for TLS
-	if tlsRequired {
+	if info.TLSRequired {
 		c.Debugf("Starting TLS client connection handshake")
 		c.nc = tls.Server(c.nc, opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
@@ -809,7 +808,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Check for Auth. We schedule this timer after the TLS handshake to avoid
 	// the race where the timer fires during the handshake and causes the
 	// server to write bad data to the socket. See issue #432.
-	if authRequired {
+	if info.AuthRequired {
 		c.setAuthTimer(secondsToDuration(opts.AuthTimeout))
 	}
 
@@ -824,7 +823,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Spin up the write loop.
 	s.startGoRoutine(c.writeLoop)
 
-	if tlsRequired {
+	if info.TLSRequired {
 		c.Debugf("TLS handshake complete")
 		cs := c.nc.(*tls.Conn).ConnectionState()
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
@@ -865,12 +864,12 @@ func (s *Server) updateServerINFOAndSendINFOToClients(urls []string, add bool) {
 	wasUpdated := false
 	remove := !add
 	for _, url := range urls {
-		_, present := s.info.clientConnectURLs[url]
+		_, present := s.clientConnectURLsMap[url]
 		if add && !present {
-			s.info.clientConnectURLs[url] = struct{}{}
+			s.clientConnectURLsMap[url] = struct{}{}
 			wasUpdated = true
 		} else if remove && present {
-			delete(s.info.clientConnectURLs, url)
+			delete(s.clientConnectURLsMap, url)
 			wasUpdated = true
 		}
 	}
@@ -879,10 +878,9 @@ func (s *Server) updateServerINFOAndSendINFOToClients(urls []string, add bool) {
 		s.info.ClientConnectURLs = s.info.ClientConnectURLs[:0]
 		// Add this server client connect ULRs first...
 		s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, s.clientConnectURLs...)
-		for url := range s.info.clientConnectURLs {
+		for url := range s.clientConnectURLsMap {
 			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
 		}
-		s.generateServerInfoJSON()
 		// Update the time of this update
 		s.lastCURLsUpdate = time.Now().UnixNano()
 		// Send to all registered clients that support async INFO protocols.
