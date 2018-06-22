@@ -33,17 +33,18 @@ import (
 
 // ClusterOpts are options for clusters.
 type ClusterOpts struct {
-	Host           string      `json:"addr,omitempty"`
-	Port           int         `json:"cluster_port,omitempty"`
-	Username       string      `json:"-"`
-	Password       string      `json:"-"`
-	AuthTimeout    float64     `json:"auth_timeout,omitempty"`
-	TLSTimeout     float64     `json:"-"`
-	TLSConfig      *tls.Config `json:"-"`
-	ListenStr      string      `json:"-"`
-	Advertise      string      `json:"-"`
-	NoAdvertise    bool        `json:"-"`
-	ConnectRetries int         `json:"-"`
+	Host           string            `json:"addr,omitempty"`
+	Port           int               `json:"cluster_port,omitempty"`
+	Username       string            `json:"-"`
+	Password       string            `json:"-"`
+	AuthTimeout    float64           `json:"auth_timeout,omitempty"`
+	Permissions    *RoutePermissions `json:"permissions"`
+	TLSTimeout     float64           `json:"-"`
+	TLSConfig      *tls.Config       `json:"-"`
+	ListenStr      string            `json:"-"`
+	Advertise      string            `json:"-"`
+	NoAdvertise    bool              `json:"-"`
+	ConnectRetries int               `json:"-"`
 }
 
 // Options block for gnatsd server.
@@ -380,6 +381,17 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
+			if auth.defaultPermissions != nil {
+				// Import is whether or not we will send a SUB for interest to the other side.
+				// Export is whether or not we will accept a SUB from the remote for a given subject.
+				// Both only effect interest registration.
+				// The parsing sets Import into Publish and Export into Subscribe, convert
+				// accordingly.
+				opts.Cluster.Permissions = &RoutePermissions{
+					Import: auth.defaultPermissions.Publish,
+					Export: auth.defaultPermissions.Subscribe,
+				}
+			}
 		case "routes":
 			ra := mv.([]interface{})
 			opts.Routes = make([]*url.URL, 0, len(ra))
@@ -443,7 +455,7 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 				return nil, err
 			}
 			auth.users = users
-		case "default_permission", "default_permissions":
+		case "default_permission", "default_permissions", "permissions":
 			pm, ok := mv.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("Expected default permissions to be a map/struct, got %+v", mv)
@@ -515,13 +527,16 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 	p := &Permissions{}
 	for k, v := range pm {
 		switch strings.ToLower(k) {
-		case "pub", "publish":
+		// For routes:
+		// Import is Publish
+		// Export is Subscribe
+		case "pub", "publish", "import":
 			subjects, err := parseSubjects(v)
 			if err != nil {
 				return nil, err
 			}
 			p.Publish = subjects
-		case "sub", "subscribe":
+		case "sub", "subscribe", "export":
 			subjects, err := parseSubjects(v)
 			if err != nil {
 				return nil, err

@@ -63,6 +63,14 @@ type Permissions struct {
 	Subscribe []string `json:"subscribe"`
 }
 
+// RoutePermissions are similar to user permissions
+// but describe what a server can import/export from and to
+// another server.
+type RoutePermissions struct {
+	Import []string `json:"import"`
+	Export []string `json:"export"`
+}
+
 // clone performs a deep copy of the Permissions struct, returning a new clone
 // with all values copied.
 func (p *Permissions) clone() *Permissions {
@@ -184,7 +192,11 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	if opts.Cluster.Username != c.opts.Username {
 		return false
 	}
-	return comparePasswords(opts.Cluster.Password, c.opts.Password)
+	if !comparePasswords(opts.Cluster.Password, c.opts.Password) {
+		return false
+	}
+	c.setRoutePermissions(opts.Cluster.Permissions)
+	return true
 }
 
 // removeUnauthorizedSubs removes any subscriptions the client has that are no

@@ -465,6 +465,44 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	}
 }
 
+// canImport is whether or not we will send a SUB for interest to the other side.
+// This is for ROUTER connections only.
+// Lock is held on entry.
+func (c *client) canImport(subject []byte) bool {
+	// Use pubAllowed() since this checks Publish permissions which
+	// is what Import maps to.
+	return c.pubAllowed(subject)
+}
+
+// canExport is whether or not we will accept a SUB from the remote for a given subject.
+// This is for ROUTER connections only.
+// Lock is held on entry
+func (c *client) canExport(subject []byte) bool {
+	// Use canSubscribe() since this checks Subscribe permissions which
+	// is what Export maps to.
+	return c.canSubscribe(subject)
+}
+
+// Initialize or reset cluster's permissions.
+// This is for ROUTER connections only.
+// Client lock is held on entry
+func (c *client) setRoutePermissions(perms *RoutePermissions) {
+	// Reset if some were set
+	if perms == nil {
+		c.perms = nil
+		return
+	}
+	// Convert route permissions to user permissions.
+	// The Import permission is mapped to Publish
+	// and Export permission is mapped to Subscribe.
+	// For meaning of Import/Export, see canImport and canExport.
+	p := &Permissions{
+		Publish:   perms.Import,
+		Subscribe: perms.Export,
+	}
+	c.setPermissions(p)
+}
+
 // This will send local subscription state to a new route connection.
 // FIXME(dlc) - This could be a DOS or perf issue with many clients
 // and large subscription space. Plus buffering in place not a good idea.
@@ -476,6 +514,10 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 
 	route.mu.Lock()
 	for _, sub := range subs {
+		// Send SUB interest only if subject has a match in import permissions
+		if !route.canImport(sub.subject) {
+			continue
+		}
 		proto := fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))
 		route.queueOutbound([]byte(proto))
 		if route.out.pb > int64(route.out.sz*2) {
@@ -519,6 +561,10 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
 		r.url = rURL
+
+		// Set permissions associated with the route user (if applicable).
+		// No lock needed since we are already under client lock.
+		c.setRoutePermissions(opts.Cluster.Permissions)
 	}
 
 	// Check for TLS
@@ -777,7 +823,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	return !exists, sendInfo
 }
 
-func (s *Server) broadcastInterestToRoutes(proto string) {
+func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 	var arg []byte
 	if atomic.LoadInt32(&s.logging.trace) == 1 {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
@@ -787,6 +833,14 @@ func (s *Server) broadcastInterestToRoutes(proto string) {
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
 		route.mu.Lock()
+		// The permission of this cluster applies to all routes, and each
+		// route will have the same `perms`, so check with the first route
+		// and send SUB interest only if subject has a match in import permissions.
+		// If there is no match, we stop here.
+		if !route.canImport(sub.subject) {
+			route.mu.Unlock()
+			break
+		}
 		route.sendProto(protoAsBytes, true)
 		route.mu.Unlock()
 		route.traceOutOp("", arg)
@@ -802,7 +856,7 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 	}
 	rsid := routeSid(sub)
 	proto := fmt.Sprintf(subProto, sub.subject, sub.queue, rsid)
-	s.broadcastInterestToRoutes(proto)
+	s.broadcastInterestToRoutes(sub, proto)
 }
 
 // broadcastUnSubscribe will forward a client unsubscribe
@@ -820,7 +874,7 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	}
 	rsid := routeSid(sub)
 	proto := fmt.Sprintf(unsubProto, rsid)
-	s.broadcastInterestToRoutes(proto)
+	s.broadcastInterestToRoutes(sub, proto)
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
