@@ -350,6 +350,19 @@ func (p *pidFileOption) Apply(server *Server) {
 	server.Noticef("Reloaded: pid_file = %v", p.newValue)
 }
 
+// portsFileDirOption implements the option interface for the `portFileDir` setting.
+type portsFileDirOption struct {
+	noopOption
+	oldValue string
+	newValue string
+}
+
+func (p *portsFileDirOption) Apply(server *Server) {
+	server.deletePortsFile(p.oldValue)
+	server.logPorts()
+	server.Noticef("Reloaded: ports_file_dir = %v", p.newValue)
+}
+
 // maxControlLineOption implements the option interface for the
 // `max_control_line` setting.
 type maxControlLineOption struct {
@@ -549,6 +562,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxConnOption{newValue: newValue.(int)})
 		case "pidfile":
 			diffOpts = append(diffOpts, &pidFileOption{newValue: newValue.(string)})
+		case "portsfiledir":
+			diffOpts = append(diffOpts, &portsFileDirOption{newValue: newValue.(string), oldValue: oldValue.(string)})
 		case "maxcontrolline":
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
 		case "maxpayload":
