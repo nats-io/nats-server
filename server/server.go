@@ -784,7 +784,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 		// Force handshake
 		c.mu.Unlock()
 		if err := conn.Handshake(); err != nil {
-			c.Debugf("TLS handshake error: %v", err)
+			c.Errorf("TLS handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection()
 			return nil
@@ -899,7 +899,7 @@ func tlsTimeout(c *client, conn *tls.Conn) {
 	}
 	cs := conn.ConnectionState()
 	if !cs.HandshakeComplete {
-		c.Debugf("TLS handshake timeout")
+		c.Errorf("TLS handshake timeout")
 		c.sendErr("Secure Connection - TLS Required")
 		c.closeConnection()
 	}
