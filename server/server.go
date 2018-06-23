@@ -52,7 +52,7 @@ type Info struct {
 	MaxPayload        int      `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
-	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.Sh
+	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
 }
 
 // Server is our main struct.
@@ -327,12 +327,14 @@ func (s *Server) Start() {
 // and closing all associated clients.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
-
 	// Prevent issues with multiple calls.
 	if s.shutdown {
 		s.mu.Unlock()
 		return
 	}
+
+	opts := s.getOpts()
+
 	s.shutdown = true
 	s.running = false
 	s.grMu.Lock()
@@ -409,8 +411,8 @@ func (s *Server) Shutdown() {
 	// Wait for go routines to be done.
 	s.grWG.Wait()
 
-	if s.opts.PortsFileDir != _EMPTY_ {
-		s.deletePortsFile(s.opts.PortsFileDir)
+	if opts.PortsFileDir != _EMPTY_ {
+		s.deletePortsFile(opts.PortsFileDir)
 	}
 }
 
@@ -1157,7 +1159,7 @@ func (s *Server) getClientConnectURLs() []string {
 	return urls
 }
 
-// if the ip is not specified is not resolved, attempt to resolve it
+// if the ip is not specified, attempt to resolve it
 func resolveHostPorts(addr net.Listener) []string {
 	hostPorts := make([]string, 0)
 	hp := addr.Addr().(*net.TCPAddr)
@@ -1203,59 +1205,74 @@ type Ports struct {
 	Profile    []string `json:"profile,omitempty"`
 }
 
-// Returns a Ports struct describing ports where the server can be contacted
-func (s *Server) PortsInfo(opts *Options) Ports {
-	s.mu.Lock()
-	info := s.copyInfo()
-	listener := s.listener
-	httpListener := s.http
-	clusterListener := s.routeListener
-	profileListener := s.profiler
-	s.mu.Unlock()
+// Attempts to resolve all the ports. If after maxWait the ports are not
+// resolved, it returns nil. Otherwise it returns a Ports struct
+// describing ports where the server can be contacted
+func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
+	if s.readyForListeners(maxWait) {
+		opts := s.getOpts()
 
-	ports := Ports{}
+		s.mu.Lock()
+		info := s.copyInfo()
+		listener := s.listener
+		httpListener := s.http
+		clusterListener := s.routeListener
+		profileListener := s.profiler
+		s.mu.Unlock()
 
-	if listener != nil {
-		natsProto := "nats"
-		if info.TLSRequired {
-			natsProto = "tls"
+		ports := Ports{}
+
+		if listener != nil {
+			natsProto := "nats"
+			if info.TLSRequired {
+				natsProto = "tls"
+			}
+			ports.Nats = formatURL(natsProto, listener)
 		}
-		ports.Nats = formatURL(natsProto, listener)
-	}
 
-	if httpListener != nil {
-		monProto := "http"
-		if opts.HTTPSPort != 0 {
-			monProto = "https"
+		if httpListener != nil {
+			monProto := "http"
+			if opts.HTTPSPort != 0 {
+				monProto = "https"
+			}
+			ports.Monitoring = formatURL(monProto, httpListener)
 		}
-		ports.Monitoring = formatURL(monProto, httpListener)
-	}
 
-	if clusterListener != nil {
-		clusterProto := "nats"
-		if opts.Cluster.TLSConfig != nil {
-			clusterProto = "tls"
+		if clusterListener != nil {
+			clusterProto := "nats"
+			if opts.Cluster.TLSConfig != nil {
+				clusterProto = "tls"
+			}
+			ports.Cluster = formatURL(clusterProto, clusterListener)
 		}
-		ports.Cluster = formatURL(clusterProto, clusterListener)
+
+		if profileListener != nil {
+			ports.Profile = formatURL("http", profileListener)
+		}
+
+		return &ports
 	}
 
-	if profileListener != nil {
-		ports.Profile = formatURL("http", profileListener)
-	}
-
-	return ports
+	return nil
 }
 
-// Returns the portsFile or empty string if not set
-func (s *Server) PortsFile(dirname string) string {
+// Returns the portsFile. If a non-empty dirHint is provided, the dirHint
+// path is used instead of the server option value
+func (s *Server) portFile(dirHint string) string {
+	dirname := s.getOpts().PortsFileDir
+	if dirHint != "" {
+		dirname = dirHint
+	}
 	if dirname == _EMPTY_ {
 		return _EMPTY_
 	}
 	return path.Join(dirname, fmt.Sprintf("%s_%d.ports", path.Base(os.Args[0]), os.Getpid()))
 }
 
-func (s *Server) deletePortsFile(dirname string) {
-	portsFile := s.PortsFile(dirname)
+// Delete the ports file. If a non-empty dirHint is provided, the dirHint
+// path is used instead of the server option value
+func (s *Server) deletePortsFile(hintDir string) {
+	portsFile := s.portFile(hintDir)
 	if portsFile != "" {
 		if err := os.Remove(portsFile); err != nil {
 			s.Errorf("Error cleaning up ports file %s: %v", portsFile, err)
@@ -1268,59 +1285,64 @@ func (s *Server) deletePortsFile(dirname string) {
 // if ports file is not set, this function has no effect
 func (s *Server) logPorts() {
 	opts := s.getOpts()
-	portsFile := s.PortsFile(opts.PortsFileDir)
+	portsFile := s.portFile(opts.PortsFileDir)
 	if portsFile != _EMPTY_ {
 		go func() {
-			if s.ReadyForListeners(opts, 5*time.Second) {
-				info := s.PortsInfo(opts)
-				data, err := json.Marshal(info)
-				if err != nil {
-					s.Errorf("Error marshaling ports file: %v", err)
-					return
-				}
-				if err := ioutil.WriteFile(portsFile, data, 0666); err != nil {
-					s.Errorf("Error writing ports file (%s): %v", portsFile, err)
-					return
-				}
+			info := s.PortsInfo(5 * time.Second)
+			if info == nil {
+				s.Errorf("Unable to resolve the ports in the specified time")
+				return
 			}
+			data, err := json.Marshal(info)
+			if err != nil {
+				s.Errorf("Error marshaling ports file: %v", err)
+				return
+			}
+			if err := ioutil.WriteFile(portsFile, data, 0666); err != nil {
+				s.Errorf("Error writing ports file (%s): %v", portsFile, err)
+				return
+			}
+
 		}()
 	}
 }
 
 // waits until a calculated list of listeners is resolved or a timeout
-func (s *Server) ReadyForListeners(opts *Options, dur time.Duration) bool {
-	// this to allow external
-	if opts == nil {
-		opts = s.getOpts()
-	}
+func (s *Server) readyForListeners(dur time.Duration) bool {
 	end := time.Now().Add(dur)
 	for time.Now().Before(end) {
 		s.mu.Lock()
-		shuttingDown := s.shutdown
-		listeners := s.serviceListeners(opts)
+		listeners := s.serviceListeners()
 		s.mu.Unlock()
-
-		if shuttingDown {
+		if len(listeners) == 0 {
 			return false
 		}
+
 		ok := true
 		for _, l := range listeners {
-			if ok {
-				ok = l != nil
+			if l == nil {
+				ok = false
+				break
 			}
 		}
 		if ok {
 			return true
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-s.quitCh:
+			return false
+		case <-time.After(25 * time.Millisecond):
+			// continue - unable to select from quit - we are still running
+		}
 	}
 	return false
 }
 
 // returns a list of listeners that are intended for the process
 // if the entry is nil, the interface is yet to be resolved
-func (s *Server) serviceListeners(opts *Options) []net.Listener {
+func (s *Server) serviceListeners() []net.Listener {
 	listeners := make([]net.Listener, 0)
+	opts := s.getOpts()
 	listeners = append(listeners, s.listener)
 	if opts.Cluster.Port != 0 {
 		listeners = append(listeners, s.routeListener)
