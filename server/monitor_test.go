@@ -1230,7 +1230,7 @@ func TestConnzClosedConnsRace(t *testing.T) {
 		for time.Now().Before(deadline) {
 			c := pollConz(t, s, 0, url, nil)
 			if len(c.Conns) != 100 {
-				t.Fatalf("Incorrect Results: %+v\n", c)
+				t.Errorf("Incorrect Results: %+v\n", c)
 			}
 		}
 		wg.Done()
