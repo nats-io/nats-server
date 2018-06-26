@@ -1132,8 +1132,10 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 	// Create 10 closed, and 10 to leave open.
 	for i := 0; i < numEach; i++ {
 		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.closed.conns", func(m *nats.Msg) {})
 		nc.Close()
 		nc = createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.open.conns", func(m *nats.Msg) {})
 		defer nc.Close()
 	}
 
@@ -1168,6 +1170,32 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 		if lc := len(c.Conns); lc != 1 {
 			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
 		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=true",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: true})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci := c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 1 {
+			t.Fatalf("Expected len(ci.Subs) to be 1 also, got %d\n", len(ci.Subs))
+		}
+		// Now ask for same thing without subs and make sure they are not returned.
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=false",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: false})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci = c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 0 {
+			t.Fatalf("Expected len(ci.Subs) to be 0 since subs=false, got %d\n", len(ci.Subs))
+		}
+
 		// CID #2 is in open
 		c = pollConz(t, s, mode, url+"connz?cid=2&state=open", &ConnzOptions{CID: 2, State: ConnOpen})
 		if lc := len(c.Conns); lc != 1 {
@@ -1178,6 +1206,40 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 			t.Fatalf("Expected no connections in closed array, got %d\n", lc)
 		}
 	}
+}
+
+// Make sure options for ConnInfo like subs=1, authuser, etc do not cause a
+// race.
+func TestConnzClosedConnsRace(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// Create 100 closed connections.
+	for i := 0; i < 100; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Close()
+	}
+
+	urlWithoutSubs := fmt.Sprintf("http://localhost:%d/connz?state=closed", s.MonitorAddr().Port)
+	urlWithSubs := urlWithoutSubs + "&subs=true"
+
+	wg := &sync.WaitGroup{}
+
+	fn := func(url string) {
+		deadline := time.Now().Add(1 * time.Second)
+		for time.Now().Before(deadline) {
+			c := pollConz(t, s, 0, url, nil)
+			if len(c.Conns) != 100 {
+				t.Fatalf("Incorrect Results: %+v\n", c)
+			}
+		}
+		wg.Done()
+	}
+
+	wg.Add(2)
+	go fn(urlWithSubs)
+	go fn(urlWithoutSubs)
+	wg.Wait()
 }
 
 // Create a connection to test ConnInfo

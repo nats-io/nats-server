@@ -71,8 +71,8 @@ type Server struct {
 	routes        map[uint64]*client
 	remotes       map[string]*client
 	users         map[string]*User
-	closed        *closedRingBuffer
 	totalClients  uint64
+	closed        *closedRingBuffer
 	done          chan bool
 	start         time.Time
 	http          net.Listener

@@ -162,16 +162,16 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		Now:    time.Now(),
 	}
 
-	// Walk the list with server lock held.
-	s.mu.Lock()
-
-	// copy the server id for monitoring
-	c.ID = s.info.ID
-
 	// Open clients
 	var openClients []*client
 	// Hold for closed clients if requested.
 	var closedClients []*closedClient
+
+	// Walk the open client list with server lock held.
+	s.mu.Lock()
+
+	// copy the server id for monitoring
+	c.ID = s.info.ID
 
 	// Number of total clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
@@ -266,7 +266,16 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		i++
 	}
 	// Closed Clients
+	var needCopy bool
+	if subs || auth {
+		needCopy = true
+	}
 	for _, cc := range closedClients {
+		// Copy if needed for any changes to the ConnInfo
+		if needCopy {
+			cx := *cc
+			cc = &cx
+		}
 		// Fill in subscription data if requested.
 		if subs && len(cc.subs) > 0 {
 			cc.Subs = cc.subs
