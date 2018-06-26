@@ -1424,6 +1424,25 @@ func TestHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
 	}
 }
 
+func TestClusterEmptyWhenNotDefined(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	body := readBody(t, fmt.Sprintf("http://localhost:%d/varz", s.MonitorAddr().Port))
+	var v map[string]interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+	}
+	// Cluster can empty, or be defined but that needs to be empty.
+	c, ok := v["cluster"]
+	if !ok {
+		return
+	}
+	if len(c.(map[string]interface{})) != 0 {
+		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
+	}
+}
+
 // Benchmark our Connz generation. Don't use HTTP here, just measure server endpoint.
 func Benchmark_Connz(b *testing.B) {
 	runtime.MemProfileRate = 0

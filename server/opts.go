@@ -38,7 +38,7 @@ type ClusterOpts struct {
 	Username       string            `json:"-"`
 	Password       string            `json:"-"`
 	AuthTimeout    float64           `json:"auth_timeout,omitempty"`
-	Permissions    *RoutePermissions `json:"permissions"`
+	Permissions    *RoutePermissions `json:"-"`
 	TLSTimeout     float64           `json:"-"`
 	TLSConfig      *tls.Config       `json:"-"`
 	ListenStr      string            `json:"-"`
