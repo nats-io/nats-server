@@ -350,14 +350,14 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
 	// Exclude clients that are still doing handshake so we don't block in
 	// ConnectionState().
-	if client.flags.isSet(handshakeComplete) && client.nc != nil {
-		conn := client.nc.(*tls.Conn)
+	if client.flags.isSet(handshakeComplete) && nc != nil {
+		conn := nc.(*tls.Conn)
 		cs := conn.ConnectionState()
 		ci.TLSVersion = tlsVersion(cs.Version)
 		ci.TLSCipher = tlsCipher(cs.CipherSuite)
 	}
 
-	switch conn := client.nc.(type) {
+	switch conn := nc.(type) {
 	case *net.TCPConn, *tls.Conn:
 		addr := conn.RemoteAddr().(*net.TCPAddr)
 		ci.Port = addr.Port
