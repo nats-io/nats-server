@@ -789,7 +789,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 		c.mu.Unlock()
 		if err := conn.Handshake(); err != nil {
 			c.Errorf("TLS handshake error: %v", err)
-			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection(TLSHandshakeError)
 			return nil
 		}

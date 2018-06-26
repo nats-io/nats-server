@@ -94,24 +94,3 @@ func (s SortOpt) IsValid() bool {
 		return false
 	}
 }
-
-// Pair type is internally used.
-type Pair struct {
-	Key *client
-	Val int64
-}
-
-// Pairs type is internally used.
-type Pairs []Pair
-
-func (d Pairs) Len() int {
-	return len(d)
-}
-
-func (d Pairs) Swap(i, j int) {
-	d[i], d[j] = d[j], d[i]
-}
-
-func (d Pairs) Less(i, j int) bool {
-	return d[i].Val < d[j].Val
-}
