@@ -71,6 +71,7 @@ type Server struct {
 	routes        map[uint64]*client
 	remotes       map[string]*client
 	users         map[string]*User
+	closed        *closedRingBuffer
 	totalClients  uint64
 	done          chan bool
 	start         time.Time
@@ -178,6 +179,9 @@ func New(opts *Options) *Server {
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
+
+	// For tracking closed clients.
+	s.closed = newClosedRingBuffer(opts.MaxClosedClients)
 
 	// For tracking connections that are not yet registered
 	// in s.routes, but for which readLoop has started.
@@ -392,7 +396,7 @@ func (s *Server) Shutdown() {
 
 	// Close client and route connections
 	for _, c := range conns {
-		c.closeConnection()
+		c.closeConnection(ServerShutdown)
 	}
 
 	// Block until the accept loops exit
@@ -786,7 +790,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 		if err := conn.Handshake(); err != nil {
 			c.Errorf("TLS handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
-			c.closeConnection()
+			c.closeConnection(TLSHandshakeError)
 			return nil
 		}
 		// Reset the read deadline
@@ -832,6 +836,35 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.mu.Unlock()
 
 	return c
+}
+
+// This will save off a closed client in a ring buffer such that
+// /connz can inspect. Useful for debugging, etc.
+func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
+	now := time.Now()
+
+	c.mu.Lock()
+
+	cc := &closedClient{}
+	cc.fill(c, nc, now)
+	cc.Stop = &now
+	cc.Reason = reason.String()
+
+	// Do subs, do not place by default in main ConnInfo
+	if len(c.subs) > 0 {
+		cc.subs = make([]string, 0, len(c.subs))
+		for _, sub := range c.subs {
+			cc.subs = append(cc.subs, string(sub.subject))
+		}
+	}
+	// Hold user as well.
+	cc.user = c.opts.Username
+	c.mu.Unlock()
+
+	// Place in the ring buffer
+	s.mu.Lock()
+	s.closed.append(cc)
+	s.mu.Unlock()
 }
 
 // Adds the given array of urls to the server's INFO.ClientConnectURLs
@@ -901,7 +934,7 @@ func tlsTimeout(c *client, conn *tls.Conn) {
 	if !cs.HandshakeComplete {
 		c.Errorf("TLS handshake timeout")
 		c.sendErr("Secure Connection - TLS Required")
-		c.closeConnection()
+		c.closeConnection(TLSHandshakeError)
 	}
 }
 
@@ -1087,6 +1120,24 @@ func (s *Server) startGoRoutine(f func()) {
 		go f()
 	}
 	s.grMu.Unlock()
+}
+
+func (s *Server) numClosedConns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed.len()
+}
+
+func (s *Server) totalClosedConns() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed.totalConns()
+}
+
+func (s *Server) closedClients() []*closedClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed.closedClients()
 }
 
 // getClientConnectURLs returns suitable URLs for clients to connect to the listen

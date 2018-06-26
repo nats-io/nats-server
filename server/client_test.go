@@ -549,7 +549,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	if s.sl.Count() != 2 {
 		t.Fatalf("Should have 2 subscriptions, got %d\n", s.sl.Count())
 	}
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	if s.sl.Count() != 0 {
 		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
 	}
@@ -557,7 +557,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	s, c, _ := setupClient()
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
 	ch := make(chan bool)
@@ -767,7 +767,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		}
 	}()
 	// Close the client
-	cli.closeConnection()
+	cli.closeConnection(ClientClosed)
 	ch <- true
 }
 
@@ -1076,5 +1076,128 @@ func TestAvoidSlowConsumerBigMessages(t *testing.T) {
 			t.Fatalf("Did not receive all large messages due to slow consumer status: %d of %d", r, expected)
 		}
 		t.Fatalf("Failed to receive all large messages: %d of %d\n", r, expected)
+	}
+}
+
+func closedConnsEqual(s *Server, num int, wait time.Duration) bool {
+	end := time.Now().Add(wait)
+	for time.Now().Before(end) {
+		if s.numClosedConns() == num {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	n := s.numClosedConns()
+	return n == num
+}
+
+func totalClosedConnsEqual(s *Server, num uint64, wait time.Duration) bool {
+	end := time.Now().Add(wait)
+	for time.Now().Before(end) {
+		if s.totalClosedConns() == num {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	n := s.totalClosedConns()
+	return n == num
+}
+
+func TestClosedConnsAccounting(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxClosedClients = 10
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	wait := 20 * time.Millisecond
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	nc.Close()
+
+	if !closedConnsEqual(s, 1, wait) {
+		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
+	}
+
+	conns := s.closedClients()
+	if lc := len(conns); lc != 1 {
+		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
+	}
+	if conns[0].Cid != 1 {
+		t.Fatalf("Expected CID to be 1, got %d\n", conns[0].Cid)
+	}
+
+	// Now create 21 more
+	for i := 0; i < 21; i++ {
+		nc, err = nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		nc.Close()
+	}
+
+	if !closedConnsEqual(s, opts.MaxClosedClients, wait) {
+		t.Fatalf("Closed conns expected to be %d, got %d\n",
+			opts.MaxClosedClients,
+			s.numClosedConns())
+	}
+
+	if !totalClosedConnsEqual(s, 22, wait) {
+		t.Fatalf("Closed conns expected to be 22, got %d\n",
+			s.numClosedConns())
+	}
+
+	conns = s.closedClients()
+	if lc := len(conns); lc != opts.MaxClosedClients {
+		t.Fatalf("len(conns) expected to be %d, got %d\n",
+			opts.MaxClosedClients, lc)
+	}
+
+	// Set it to the start after overflow.
+	cid := uint64(22 - opts.MaxClosedClients)
+	for _, ci := range conns {
+		cid++
+		if ci.Cid != cid {
+			t.Fatalf("Expected cid of %d, got %d\n", cid, ci.Cid)
+		}
+	}
+}
+
+func TestClosedConnsSubsAccounting(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Now create some subscriptions
+	numSubs := 10
+	for i := 0; i < numSubs; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		nc.Subscribe(subj, func(m *nats.Msg) {})
+	}
+	nc.Flush()
+	nc.Close()
+
+	if !closedConnsEqual(s, 1, 20*time.Millisecond) {
+		t.Fatalf("Closed conns expected to be 1, got %d\n",
+			s.numClosedConns())
+	}
+	conns := s.closedClients()
+	if lc := len(conns); lc != 1 {
+		t.Fatalf("len(conns) expected to be 1, got %d\n", lc)
+	}
+	ci := conns[0]
+
+	if len(ci.subs) != numSubs {
+		t.Fatalf("Expected number of Subs to be %d, got %d\n", numSubs, len(ci.subs))
 	}
 }
