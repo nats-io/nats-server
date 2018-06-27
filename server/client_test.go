@@ -84,6 +84,16 @@ func setupClient() (*Server, *client, *bufio.Reader) {
 	return s, c, cr
 }
 
+func checkClientsCount(t *testing.T, s *Server, expected int) {
+	t.Helper()
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if nc := s.NumClients(); nc != expected {
+			return fmt.Errorf("The number of expected connections was %v, got %v", expected, nc)
+		}
+		return nil
+	})
+}
+
 func TestClientCreateAndInfo(t *testing.T) {
 	c, l := setUpClientWithResponse()
 
@@ -575,22 +585,8 @@ func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 func TestClientMapRemoval(t *testing.T) {
 	s, c, _ := setupClient()
 	c.nc.Close()
-	end := time.Now().Add(1 * time.Second)
 
-	for time.Now().Before(end) {
-		s.mu.Lock()
-		lsc := len(s.clients)
-		s.mu.Unlock()
-		if lsc > 0 {
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	s.mu.Lock()
-	lsc := len(s.clients)
-	s.mu.Unlock()
-	if lsc > 0 {
-		t.Fatal("Client still in server map")
-	}
+	checkClientsCount(t, s, 0)
 }
 
 func TestAuthorizationTimeout(t *testing.T) {
@@ -721,23 +717,15 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Fatalf("Unexpected error reading PONG: %v", err)
 	}
 
-	getClient := func() *client {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for _, c := range s.clients {
-			return c
-		}
-		return nil
-	}
-	// Wait for client to be registered.
-	timeout := time.Now().Add(5 * time.Second)
+	// Check that client is registered.
+	checkClientsCount(t, s, 1)
 	var cli *client
-	for time.Now().Before(timeout) {
-		cli = getClient()
-		if cli != nil {
-			break
-		}
+	s.mu.Lock()
+	for _, c := range s.clients {
+		cli = c
+		break
 	}
+	s.mu.Unlock()
 	if cli == nil {
 		t.Fatal("Did not register client on time")
 	}
@@ -1009,15 +997,13 @@ func TestQueueAutoUnsubscribe(t *testing.T) {
 	}
 	nc.Flush()
 
-	wait := time.Now().Add(5 * time.Second)
-	for time.Now().Before(wait) {
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
 		nbar := atomic.LoadInt32(&rbar)
 		nbaz := atomic.LoadInt32(&rbaz)
 		if nbar == expected && nbaz == expected {
-			return
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
-		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
+		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
+			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
+	})
 }

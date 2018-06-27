@@ -23,28 +23,24 @@ import (
 	nats "github.com/nats-io/go-nats"
 )
 
-func closedConnsEqual(s *Server, num int, wait time.Duration) bool {
-	end := time.Now().Add(wait)
-	for time.Now().Before(end) {
-		if s.numClosedConns() == num {
-			break
+func checkClosedConns(t *testing.T, s *Server, num int, wait time.Duration) {
+	t.Helper()
+	checkFor(t, wait, 5*time.Millisecond, func() error {
+		if nc := s.numClosedConns(); nc != num {
+			return fmt.Errorf("Closed conns expected to be %v, got %v", num, nc)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	n := s.numClosedConns()
-	return n == num
+		return nil
+	})
 }
 
-func totalClosedConnsEqual(s *Server, num uint64, wait time.Duration) bool {
-	end := time.Now().Add(wait)
-	for time.Now().Before(end) {
-		if s.totalClosedConns() == num {
-			break
+func checkTotalClosedConns(t *testing.T, s *Server, num uint64, wait time.Duration) {
+	t.Helper()
+	checkFor(t, wait, 5*time.Millisecond, func() error {
+		if nc := s.totalClosedConns(); nc != num {
+			return fmt.Errorf("Total closed conns expected to be %v, got %v", num, nc)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	n := s.totalClosedConns()
-	return n == num
+		return nil
+	})
 }
 
 func TestClosedConnsAccounting(t *testing.T) {
@@ -62,9 +58,7 @@ func TestClosedConnsAccounting(t *testing.T) {
 	}
 	nc.Close()
 
-	if !closedConnsEqual(s, 1, wait) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, wait)
 
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
@@ -81,22 +75,11 @@ func TestClosedConnsAccounting(t *testing.T) {
 			t.Fatalf("Error on connect: %v", err)
 		}
 		nc.Close()
-		// FIXME: For now just sleep a bit to ensure that closed connections
-		// are added in the expected order for tests down below where we
-		// check for cid.
-		time.Sleep(15 * time.Millisecond)
+		checkTotalClosedConns(t, s, uint64(i+2), wait)
 	}
 
-	if !closedConnsEqual(s, opts.MaxClosedClients, wait) {
-		t.Fatalf("Closed conns expected to be %d, got %d\n",
-			opts.MaxClosedClients,
-			s.numClosedConns())
-	}
-
-	if !totalClosedConnsEqual(s, 22, wait) {
-		t.Fatalf("Closed conns expected to be 22, got %d\n",
-			s.numClosedConns())
-	}
+	checkClosedConns(t, s, opts.MaxClosedClients, wait)
+	checkTotalClosedConns(t, s, 22, wait)
 
 	conns = s.closedClients()
 	if lc := len(conns); lc != opts.MaxClosedClients {
@@ -135,10 +118,7 @@ func TestClosedConnsSubsAccounting(t *testing.T) {
 	nc.Flush()
 	nc.Close()
 
-	if !closedConnsEqual(s, 1, 20*time.Millisecond) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n",
-			s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 20*time.Millisecond)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be 1, got %d\n", lc)
@@ -170,9 +150,7 @@ func TestClosedAuthorizationTimeout(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
@@ -195,9 +173,7 @@ func TestClosedAuthorizationViolation(t *testing.T) {
 		t.Fatal("Expected failure for connection")
 	}
 
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
@@ -228,9 +204,7 @@ func TestClosedUPAuthorizationViolation(t *testing.T) {
 		t.Fatal("Expected failure for connection")
 	}
 
-	if !closedConnsEqual(s, 2, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 2, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 2, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 2 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 2, lc)
@@ -259,9 +233,7 @@ func TestClosedMaxPayload(t *testing.T) {
 	pub := fmt.Sprintf("PUB foo.bar 1024\r\n")
 	conn.Write([]byte(pub))
 
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
@@ -308,9 +280,7 @@ func TestClosedSlowConsumerWriteDeadline(t *testing.T) {
 	}
 
 	// At this point server should have closed connection c.
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
@@ -357,9 +327,7 @@ func TestClosedSlowConsumerPendingBytes(t *testing.T) {
 	}
 
 	// At this point server should have closed connection c.
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
@@ -384,9 +352,7 @@ func TestClosedTLSHandshake(t *testing.T) {
 		t.Fatal("Expected failure for connection")
 	}
 
-	if !closedConnsEqual(s, 1, 2*time.Second) {
-		t.Fatalf("Closed conns expected to be 1, got %d\n", s.numClosedConns())
-	}
+	checkClosedConns(t, s, 1, 2*time.Second)
 	conns := s.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
