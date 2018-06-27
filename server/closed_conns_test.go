@@ -267,7 +267,7 @@ func TestClosedMaxPayload(t *testing.T) {
 
 func TestClosedSlowConsumerWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
-	opts.WriteDeadline = 10 * time.Microsecond // Make very small to trip.
+	opts.WriteDeadline = 10 * time.Millisecond // Make very small to trip.
 	opts.MaxPending = 500 * 1024 * 1024        // Set high so it will not trip here.
 	s := RunServer(opts)
 	defer s.Shutdown()
