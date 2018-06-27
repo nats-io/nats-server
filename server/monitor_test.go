@@ -1437,18 +1437,7 @@ func TestConnzTLSInHandshake(t *testing.T) {
 	defer c.Close()
 
 	// Wait for the connection to be registered
-	timeout := time.Now().Add(2 * time.Second)
-	cc := 0
-	for time.Now().Before(timeout) {
-		cc = s.NumClients()
-		if cc == 1 {
-			break
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	if cc != 1 {
-		t.Fatalf("Expected 1 client, got %v", cc)
-	}
+	waitForClientConnCount(t, s, 1)
 
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
