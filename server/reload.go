@@ -281,7 +281,7 @@ func (r *routesOption) Apply(server *Server) {
 			if client.route.url == remove {
 				// Do not attempt to reconnect when route is removed.
 				client.setRouteNoReconnectOnClose()
-				client.closeConnection()
+				client.closeConnection(RouteRemoved)
 				server.Noticef("Removed route %v", remove)
 			}
 		}

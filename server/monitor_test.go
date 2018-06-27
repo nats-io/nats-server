@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -232,6 +233,19 @@ func waitForClientConnCount(t *testing.T, s *Server, count int) {
 	stackFatalf(t, "The number of expected connections was %v, got %v", count, s.NumClients())
 }
 
+func waitForClosedClientConnCount(t *testing.T, s *Server, count int) {
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		if s.numClosedConns() == count {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	stackFatalf(t,
+		"The number of expected closed connections was %v, got %v",
+		count, s.numClosedConns())
+}
+
 func TestConnz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -346,6 +360,7 @@ func TestConnzBadParams(t *testing.T) {
 	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"offset=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"limit=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"state=xxx", http.StatusBadRequest, textPlain)
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -418,15 +433,15 @@ func TestConnzWithCID(t *testing.T) {
 }
 
 // Helper to map to connection name
-func createConnMap(t *testing.T, cz *Connz) map[string]ConnInfo {
-	cm := make(map[string]ConnInfo)
+func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
+	cm := make(map[string]*ConnInfo)
 	for _, c := range cz.Conns {
 		cm[c.Name] = c
 	}
 	return cm
 }
 
-func getFooAndBar(t *testing.T, cm map[string]ConnInfo) (ConnInfo, ConnInfo) {
+func getFooAndBar(t *testing.T, cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
 
@@ -532,7 +547,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
 		nextLA := ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
@@ -564,7 +579,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub.Unsubscribe()
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
 		nextLA = ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
@@ -777,12 +792,13 @@ func TestConnzSortedBySubs(t *testing.T) {
 
 	firstClient := createClientConnSubscribeAndPublish(t, s)
 	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
+	defer firstClient.Close()
+
 	clients := make([]*nats.Conn, 3)
 	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t, s)
 		defer clients[i].Close()
 	}
-	defer firstClient.Close()
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
@@ -1121,6 +1137,126 @@ func TestConnzWithNamedClient(t *testing.T) {
 	}
 }
 
+func TestConnzWithStateForClosedConns(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	numEach := 10
+	// Create 10 closed, and 10 to leave open.
+	for i := 0; i < numEach; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.closed.conns", func(m *nats.Msg) {})
+		nc.Close()
+		nc = createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.open.conns", func(m *nats.Msg) {})
+		defer nc.Close()
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+
+	for mode := 0; mode < 2; mode++ {
+		// Look at all open
+		c := pollConz(t, s, mode, url+"connz?state=open", &ConnzOptions{State: ConnOpen})
+		if lc := len(c.Conns); lc != numEach {
+			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
+		}
+		// Look at all closed
+		c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+		if lc := len(c.Conns); lc != numEach {
+			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
+		}
+		// Look at all
+		c = pollConz(t, s, mode, url+"connz?state=ALL", &ConnzOptions{State: ConnAll})
+		if lc := len(c.Conns); lc != numEach*2 {
+			t.Fatalf("Expected %d connections in array, got %d\n", 2*numEach, lc)
+		}
+		// Look at CID #1, which is in closed.
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=open", &ConnzOptions{CID: 1, State: ConnOpen})
+		if lc := len(c.Conns); lc != 0 {
+			t.Fatalf("Expected no connections in open array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed", &ConnzOptions{CID: 1, State: ConnClosed})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=ALL", &ConnzOptions{CID: 1, State: ConnAll})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=true",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: true})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci := c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 1 {
+			t.Fatalf("Expected len(ci.Subs) to be 1 also, got %d\n", len(ci.Subs))
+		}
+		// Now ask for same thing without subs and make sure they are not returned.
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=false",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: false})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci = c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 0 {
+			t.Fatalf("Expected len(ci.Subs) to be 0 since subs=false, got %d\n", len(ci.Subs))
+		}
+
+		// CID #2 is in open
+		c = pollConz(t, s, mode, url+"connz?cid=2&state=open", &ConnzOptions{CID: 2, State: ConnOpen})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in open array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=2&state=closed", &ConnzOptions{CID: 2, State: ConnClosed})
+		if lc := len(c.Conns); lc != 0 {
+			t.Fatalf("Expected no connections in closed array, got %d\n", lc)
+		}
+	}
+}
+
+// Make sure options for ConnInfo like subs=1, authuser, etc do not cause a
+// race.
+func TestConnzClosedConnsRace(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// Create 100 closed connections.
+	for i := 0; i < 100; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Close()
+	}
+
+	urlWithoutSubs := fmt.Sprintf("http://localhost:%d/connz?state=closed", s.MonitorAddr().Port)
+	urlWithSubs := urlWithoutSubs + "&subs=true"
+
+	waitForClosedClientConnCount(t, s, 100)
+
+	wg := &sync.WaitGroup{}
+
+	fn := func(url string) {
+		deadline := time.Now().Add(1 * time.Second)
+		for time.Now().Before(deadline) {
+			c := pollConz(t, s, 0, url, nil)
+			if len(c.Conns) != 100 {
+				t.Errorf("Incorrect Results: %+v\n", c)
+			}
+		}
+		wg.Done()
+	}
+
+	wg.Add(2)
+	go fn(urlWithSubs)
+	go fn(urlWithoutSubs)
+	wg.Wait()
+}
+
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 	natsURL := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
@@ -1361,6 +1497,61 @@ func TestHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
 		stats := v.HTTPReqStats[e]
 		if stats != 0 {
 			t.Fatalf("Expected HTTPReqStats for %q to be 0, got %v", e, stats)
+		}
+	}
+}
+
+func TestClusterEmptyWhenNotDefined(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	body := readBody(t, fmt.Sprintf("http://localhost:%d/varz", s.MonitorAddr().Port))
+	var v map[string]interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+	}
+	// Cluster can empty, or be defined but that needs to be empty.
+	c, ok := v["cluster"]
+	if !ok {
+		return
+	}
+	if len(c.(map[string]interface{})) != 0 {
+		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
+	}
+}
+
+// Benchmark our Connz generation. Don't use HTTP here, just measure server endpoint.
+func Benchmark_Connz(b *testing.B) {
+	runtime.MemProfileRate = 0
+
+	s := runMonitorServerNoHTTPPort()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// Create 250 connections with 100 subs each.
+	for i := 0; i < 250; i++ {
+		nc, err := nats.Connect(url)
+		if err != nil {
+			b.Fatalf("Error on connection[%d] to %s: %v", i, url, err)
+		}
+		for x := 0; x < 100; x++ {
+			subj := fmt.Sprintf("foo.%d", x)
+			nc.Subscribe(subj, func(m *nats.Msg) {})
+		}
+		nc.Flush()
+		defer nc.Close()
+	}
+
+	b.ResetTimer()
+	runtime.MemProfileRate = 1
+
+	copts := &ConnzOptions{Subscriptions: false}
+	for i := 0; i < b.N; i++ {
+		_, err := s.Connz(copts)
+		if err != nil {
+			b.Fatalf("Error on Connz(): %v", err)
 		}
 	}
 }

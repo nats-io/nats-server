@@ -269,7 +269,7 @@ func (c *client) sendConnect(tlsRequired bool) {
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
-		c.closeConnection()
+		c.closeConnection(ProtocolViolation)
 		return
 	}
 	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
@@ -306,7 +306,7 @@ func (c *client) processRouteInfo(info *Info) {
 	// Detect route to self.
 	if c.route.remoteID == s.info.ID {
 		c.mu.Unlock()
-		c.closeConnection()
+		c.closeConnection(DuplicateRoute)
 		return
 	}
 
@@ -323,7 +323,7 @@ func (c *client) processRouteInfo(info *Info) {
 		if err != nil {
 			c.Errorf("Error parsing URL from INFO: %v\n", err)
 			c.mu.Unlock()
-			c.closeConnection()
+			c.closeConnection(ParseError)
 			return
 		}
 		c.route.url = url
@@ -366,7 +366,7 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
-		c.closeConnection()
+		c.closeConnection(DuplicateRoute)
 	}
 }
 
@@ -595,7 +595,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		if err := conn.Handshake(); err != nil {
 			c.Errorf("TLS route handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
-			c.closeConnection()
+			c.closeConnection(TLSHandshakeError)
 			return nil
 		}
 		// Reset the read deadline
@@ -631,7 +631,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	if !running {
 		c.mu.Unlock()
 		c.setRouteNoReconnectOnClose()
-		c.closeConnection()
+		c.closeConnection(ServerShutdown)
 		return nil
 	}
 

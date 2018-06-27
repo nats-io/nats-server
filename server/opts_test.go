@@ -28,19 +28,20 @@ import (
 
 func TestDefaultOptions(t *testing.T) {
 	golden := &Options{
-		Host:           DEFAULT_HOST,
-		Port:           DEFAULT_PORT,
-		MaxConn:        DEFAULT_MAX_CONNECTIONS,
-		HTTPHost:       DEFAULT_HOST,
-		PingInterval:   DEFAULT_PING_INTERVAL,
-		MaxPingsOut:    DEFAULT_PING_MAX_OUT,
-		TLSTimeout:     float64(TLS_TIMEOUT) / float64(time.Second),
-		AuthTimeout:    float64(AUTH_TIMEOUT) / float64(time.Second),
-		MaxControlLine: MAX_CONTROL_LINE_SIZE,
-		MaxPayload:     MAX_PAYLOAD_SIZE,
-		MaxPending:     MAX_PENDING_SIZE,
-		WriteDeadline:  DEFAULT_FLUSH_DEADLINE,
-		RQSubsSweep:    DEFAULT_REMOTE_QSUBS_SWEEPER,
+		Host:             DEFAULT_HOST,
+		Port:             DEFAULT_PORT,
+		MaxConn:          DEFAULT_MAX_CONNECTIONS,
+		HTTPHost:         DEFAULT_HOST,
+		PingInterval:     DEFAULT_PING_INTERVAL,
+		MaxPingsOut:      DEFAULT_PING_MAX_OUT,
+		TLSTimeout:       float64(TLS_TIMEOUT) / float64(time.Second),
+		AuthTimeout:      float64(AUTH_TIMEOUT) / float64(time.Second),
+		MaxControlLine:   MAX_CONTROL_LINE_SIZE,
+		MaxPayload:       MAX_PAYLOAD_SIZE,
+		MaxPending:       MAX_PENDING_SIZE,
+		WriteDeadline:    DEFAULT_FLUSH_DEADLINE,
+		RQSubsSweep:      DEFAULT_REMOTE_QSUBS_SWEEPER,
+		MaxClosedClients: DEFAULT_MAX_CLOSED_CLIENTS,
 	}
 
 	opts := &Options{}

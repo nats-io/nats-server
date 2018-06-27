@@ -549,7 +549,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	if s.sl.Count() != 2 {
 		t.Fatalf("Should have 2 subscriptions, got %d\n", s.sl.Count())
 	}
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	if s.sl.Count() != 0 {
 		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
 	}
@@ -557,7 +557,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	s, c, _ := setupClient()
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
 	ch := make(chan bool)
@@ -767,7 +767,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		}
 	}()
 	// Close the client
-	cli.closeConnection()
+	cli.closeConnection(ClientClosed)
 	ch <- true
 }
 
