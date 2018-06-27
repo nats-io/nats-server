@@ -419,7 +419,7 @@ func TestProcessCommandLineArgs(t *testing.T) {
 
 func TestWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
-	opts.WriteDeadline = 1 * time.Millisecond
+	opts.WriteDeadline = 30 * time.Millisecond
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -593,7 +593,16 @@ func TestCustomRouterAuthentication(t *testing.T) {
 	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://invalid@127.0.0.1:%d", clusterPort))
 	s2 := RunServer(opts2)
 	defer s2.Shutdown()
-	if nr := s2.NumRoutes(); nr != 0 {
+	timeout := time.Now().Add(2 * time.Second)
+	nr := 0
+	for time.Now().Before(timeout) {
+		nr = s2.NumRoutes()
+		if nr == 0 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if nr != 0 {
 		t.Fatalf("Expected no route, got %v", nr)
 	}
 

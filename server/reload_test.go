@@ -1855,12 +1855,12 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	opts.NoLog = true
+	opts.NoSigs = true
 	return RunServer(opts), opts, config
 }
 
 func newServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
-	opts.NoSigs = true
 	return New(opts), opts, config
 }
 

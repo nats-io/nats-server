@@ -81,6 +81,10 @@ func TestClosedConnsAccounting(t *testing.T) {
 			t.Fatalf("Error on connect: %v", err)
 		}
 		nc.Close()
+		// FIXME: For now just sleep a bit to ensure that closed connections
+		// are added in the expected order for tests down below where we
+		// check for cid.
+		time.Sleep(15 * time.Millisecond)
 	}
 
 	if !closedConnsEqual(s, opts.MaxClosedClients, wait) {

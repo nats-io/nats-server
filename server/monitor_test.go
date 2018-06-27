@@ -491,7 +491,7 @@ func TestConnzRTT(t *testing.T) {
 
 		rtt, err := time.ParseDuration(ci.RTT)
 		if err != nil {
-			t.Fatalf("Could not parse RTT properly, %v", err)
+			t.Fatalf("Could not parse RTT properly, %v (ci.RTT=%v)", err, ci.RTT)
 		}
 		if rtt <= 0 {
 			t.Fatal("Expected RTT to be valid and non-zero\n")
@@ -1435,6 +1435,9 @@ func TestConnzTLSInHandshake(t *testing.T) {
 		t.Fatalf("Error on dial: %v", err)
 	}
 	defer c.Close()
+
+	// Wait for the connection to be registered
+	waitForClientConnCount(t, s, 1)
 
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
