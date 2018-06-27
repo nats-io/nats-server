@@ -491,7 +491,7 @@ func TestConnzRTT(t *testing.T) {
 
 		rtt, err := time.ParseDuration(ci.RTT)
 		if err != nil {
-			t.Fatalf("Could not parse RTT properly, %v", err)
+			t.Fatalf("Could not parse RTT properly, %v (ci.RTT=%v)", err, ci.RTT)
 		}
 		if rtt <= 0 {
 			t.Fatal("Expected RTT to be valid and non-zero\n")
