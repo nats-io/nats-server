@@ -66,7 +66,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
-			Host: "localhost",
+			Host: "127.0.0.1",
 			Port: -1,
 		},
 		NoSigs: true,
@@ -105,10 +105,10 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 	newConfig := "tmp_b.conf"
 	defer os.Remove(orgConfig)
 	defer os.Remove(newConfig)
-	if err := ioutil.WriteFile(orgConfig, []byte("listen: localhost:-1"), 0666); err != nil {
+	if err := ioutil.WriteFile(orgConfig, []byte("listen: 127.0.0.1:-1"), 0666); err != nil {
 		t.Fatalf("Error creating config file: %v", err)
 	}
-	if err := ioutil.WriteFile(newConfig, []byte("listen: localhost:9999"), 0666); err != nil {
+	if err := ioutil.WriteFile(newConfig, []byte("listen: 127.0.0.1:9999"), 0666); err != nil {
 		t.Fatalf("Error creating config file: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
-			Host: "localhost",
+			Host: "127.0.0.1",
 			Port: -1,
 		},
 		NoSigs: true,
@@ -192,7 +192,7 @@ func TestConfigReload(t *testing.T) {
 	var content []byte
 	if runtime.GOOS != "windows" {
 		content = []byte(`
-			remote_syslog: "udp://localhost:514" # change on reload
+			remote_syslog: "udp://127.0.0.1:514" # change on reload
 			log_file:      "/tmp/gnatsd-2.log" # change on reload
 		`)
 	}
@@ -223,7 +223,7 @@ func TestConfigReload(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
-			Host: "localhost",
+			Host: "127.0.0.1",
 			Port: server.ClusterAddr().Port,
 		},
 		NoSigs: true,
@@ -257,8 +257,8 @@ func TestConfigReload(t *testing.T) {
 		t.Fatal("Expected Syslog to be true")
 	}
 	if runtime.GOOS != "windows" {
-		if updated.RemoteSyslog != "udp://localhost:514" {
-			t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://localhost:514\ngot: %s", updated.RemoteSyslog)
+		if updated.RemoteSyslog != "udp://127.0.0.1:514" {
+			t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://127.0.0.1:514\ngot: %s", updated.RemoteSyslog)
 		}
 		if updated.LogFile != "/tmp/gnatsd-2.log" {
 			t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
@@ -323,6 +323,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 
 	// Ensure we can connect as a sanity check.
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+
 	nc, err := nats.Connect(addr, nats.Secure())
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
@@ -1843,6 +1844,7 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 }
 
 func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
+	t.Helper()
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	opts.NoLog = true
 	opts.NoSigs = true
@@ -1850,11 +1852,13 @@ func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*
 }
 
 func newServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
+	t.Helper()
 	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
 	return New(opts), opts, config
 }
 
 func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Options, string) {
+	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Error getting working directory: %v", err)
@@ -1870,6 +1874,7 @@ func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (
 }
 
 func createSymlink(t *testing.T, symlinkName, fileName string) {
+	t.Helper()
 	os.Remove(symlinkName)
 	if err := os.Symlink(fileName, symlinkName); err != nil {
 		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)

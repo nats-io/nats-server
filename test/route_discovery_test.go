@@ -548,7 +548,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 
 	rc1ID := "2222"
 	rc1Port := 22
-	rc1Host := "localhost"
+	rc1Host := "127.0.0.1"
 
 	routeSend1, route1Expect := setupRouteEx(t, rc1, opts, rc1ID)
 	route1Expect(infoRe)
@@ -566,7 +566,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 
 	rc2ID := "2224"
 	rc2Port := 24
-	rc2Host := "localhost"
+	rc2Host := "127.0.0.1"
 
 	routeSend2, _ := setupRouteEx(t, rc2, opts, rc2ID)
 

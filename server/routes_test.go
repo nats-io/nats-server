@@ -46,7 +46,7 @@ func TestRouteConfig(t *testing.T) {
 
 	golden := &Options{
 		ConfigFile:  "./configs/cluster.conf",
-		Host:        "localhost",
+		Host:        "127.0.0.1",
 		Port:        4242,
 		Username:    "derek",
 		Password:    "porkchop",
@@ -64,8 +64,8 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	// Setup URLs
-	r1, _ := url.Parse("nats-route://foo:bar@localhost:4245")
-	r2, _ := url.Parse("nats-route://foo:bar@localhost:4246")
+	r1, _ := url.Parse("nats-route://foo:bar@127.0.0.1:4245")
+	r2, _ := url.Parse("nats-route://foo:bar@127.0.0.1:4246")
 
 	golden.Routes = []*url.URL{r1, r2}
 
@@ -76,7 +76,7 @@ func TestRouteConfig(t *testing.T) {
 }
 
 func TestClusterAdvertise(t *testing.T) {
-	lst, err := net.Listen("tcp", "localhost:0")
+	lst, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error starting listener: %v", err)
 	}
@@ -628,9 +628,9 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	opts := DefaultOptions()
 
 	// Since client will first connect to the route listen port, set the
-	// cluster's Host to localhost so it works on Windows too, since on
+	// cluster's Host to 127.0.0.1 so it works on Windows too, since on
 	// Windows, a client can't use 0.0.0.0 in a connect.
-	opts.Cluster.Host = "localhost"
+	opts.Cluster.Host = "127.0.0.1"
 	s := RunServer(opts)
 	defer s.Shutdown()
 
