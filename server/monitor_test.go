@@ -222,30 +222,6 @@ func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions)
 	return c
 }
 
-func waitForClientConnCount(t *testing.T, s *Server, count int) {
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
-		if s.NumClients() == count {
-			return
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	stackFatalf(t, "The number of expected connections was %v, got %v", count, s.NumClients())
-}
-
-func waitForClosedClientConnCount(t *testing.T, s *Server, count int) {
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
-		if s.numClosedConns() == count {
-			return
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	stackFatalf(t,
-		"The number of expected closed connections was %v, got %v",
-		count, s.numClosedConns())
-}
-
 func TestConnz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -344,7 +320,7 @@ func TestConnz(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		testConnz(mode)
-		waitForClientConnCount(t, s, 0)
+		checkClientsCount(t, s, 0)
 	}
 
 	// Test JSONP
@@ -503,7 +479,7 @@ func TestConnzRTT(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		testRTT(mode)
-		waitForClientConnCount(t, s, 0)
+		checkClientsCount(t, s, 0)
 	}
 }
 
@@ -975,7 +951,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	sc := RunServer(opts)
 	defer sc.Shutdown()
 
-	time.Sleep(time.Second)
+	checkClusterFormed(t, s, sc)
 
 	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
@@ -994,6 +970,8 @@ func TestConnzWithRoutes(t *testing.T) {
 	defer nc.Close()
 
 	nc.Subscribe("hello.bar", func(m *nats.Msg) {})
+	nc.Flush()
+	checkExpectedSubs(t, 1, s, sc)
 
 	// Now check routez
 	urls := []string{"routez", "routez?subs=1"}
@@ -1236,7 +1214,7 @@ func TestConnzClosedConnsRace(t *testing.T) {
 	urlWithoutSubs := fmt.Sprintf("http://localhost:%d/connz?state=closed", s.MonitorAddr().Port)
 	urlWithSubs := urlWithoutSubs + "&subs=true"
 
-	waitForClosedClientConnCount(t, s, 100)
+	checkClosedConns(t, s, 100, 2*time.Second)
 
 	wg := &sync.WaitGroup{}
 
@@ -1437,7 +1415,7 @@ func TestConnzTLSInHandshake(t *testing.T) {
 	defer c.Close()
 
 	// Wait for the connection to be registered
-	waitForClientConnCount(t, s, 1)
+	checkClientsCount(t, s, 1)
 
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)

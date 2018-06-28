@@ -25,27 +25,26 @@ import (
 
 // Helper function to check that a cluster is formed
 func checkClusterFormed(t *testing.T, servers ...*server.Server) {
-	// Wait for the cluster to form
-	var err string
+	t.Helper()
 	expectedNumRoutes := len(servers) - 1
-	maxTime := time.Now().Add(5 * time.Second)
-	for time.Now().Before(maxTime) {
-		err = ""
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
-				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
-				break
+				return fmt.Errorf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
 			}
 		}
-		if err != "" {
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			break
+		return nil
+	})
+}
+
+func checkNumRoutes(t *testing.T, s *server.Server, expected int) {
+	t.Helper()
+	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
+		if nr := s.NumRoutes(); nr != expected {
+			return fmt.Errorf("Expected %v routes, got %v", expected, nr)
 		}
-	}
-	if err != "" {
-		t.Fatalf("%s", err)
-	}
+		return nil
+	})
 }
 
 // Helper function to check that a server (or list of servers) have the

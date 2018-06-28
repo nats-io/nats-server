@@ -18,7 +18,24 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+	t.Helper()
+	timeout := time.Now().Add(totalWait)
+	var err error
+	for time.Now().Before(timeout) {
+		err = f()
+		if err == nil {
+			return
+		}
+		time.Sleep(sleepDur)
+	}
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+}
 
 type dummyLogger struct {
 	sync.Mutex

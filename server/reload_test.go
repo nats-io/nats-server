@@ -1441,18 +1441,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	srvb.Shutdown()
 
 	// Wait til route is dropped.
-	numRoutes := 0
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if numRoutes = srva.NumRoutes(); numRoutes == 0 {
-			break
-		} else {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	if numRoutes != 0 {
-		t.Fatalf("Expected 0 routes for server A, got %d", numRoutes)
-	}
+	checkNumRoutes(t, srva, 0)
 
 	// Now change config for server A to not solicit a route to server B.
 	createSymlink(t, srvaConfig, "./configs/reload/srv_a_4.conf")
@@ -1466,7 +1455,8 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	defer srvb.Shutdown()
 
 	// We should not have a cluster formed here.
-	deadline = time.Now().Add(2 * DEFAULT_ROUTE_RECONNECT)
+	numRoutes := 0
+	deadline := time.Now().Add(2 * DEFAULT_ROUTE_RECONNECT)
 	for time.Now().Before(deadline) {
 		if numRoutes = srva.NumRoutes(); numRoutes != 0 {
 			break
