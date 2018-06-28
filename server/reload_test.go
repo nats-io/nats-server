@@ -54,7 +54,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     config,
 		Host:           "0.0.0.0",
-		Port:           4222,
+		Port:           2233,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          false,
@@ -144,7 +144,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     config,
 		Host:           "0.0.0.0",
-		Port:           4222,
+		Port:           2233,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          false,
@@ -210,7 +210,7 @@ func TestConfigReload(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     config,
 		Host:           "0.0.0.0",
-		Port:           4222,
+		Port:           2233,
 		AuthTimeout:    1.0,
 		Debug:          false,
 		Trace:          false,
