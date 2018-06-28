@@ -21,7 +21,7 @@ func TestVerbosePing(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	doConnect(t, c, true, false, false)
@@ -40,7 +40,7 @@ func TestVerboseConnect(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	doConnect(t, c, true, false, false)
@@ -59,7 +59,7 @@ func TestVerbosePubSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	doConnect(t, c, true, false, false)

@@ -53,7 +53,7 @@ func flushConnection(b *testing.B, c net.Conn) {
 func benchPub(b *testing.B, subject, payload string) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
@@ -189,7 +189,7 @@ func Benchmark__AuthPub0b_Payload(b *testing.B) {
 func Benchmark_____________PubSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo 1\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -221,11 +221,11 @@ func Benchmark_____________PubSub(b *testing.B) {
 func Benchmark_____PubSubTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 
-	c2 := createClientConn(b, "localhost", PERF_PORT)
+	c2 := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c2)
 	sendProto(b, c2, "SUB foo 1\r\n")
 	flushConnection(b, c2)
@@ -257,11 +257,11 @@ func Benchmark_____PubSubTwoConns(b *testing.B) {
 func Benchmark_PubSub512kTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 
-	c2 := createClientConn(b, "localhost", PERF_PORT)
+	c2 := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c2)
 	sendProto(b, c2, "SUB foo 1\r\n")
 	flushConnection(b, c2)
@@ -296,7 +296,7 @@ func Benchmark_PubSub512kTwoConns(b *testing.B) {
 func Benchmark_____PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
 	sendProto(b, c, "SUB foo group1 2\r\n")
@@ -329,7 +329,7 @@ func Benchmark_____PubTwoQueueSub(b *testing.B) {
 func Benchmark____PubFourQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
 	sendProto(b, c, "SUB foo group1 2\r\n")
@@ -364,7 +364,7 @@ func Benchmark____PubFourQueueSub(b *testing.B) {
 func Benchmark___PubEightQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
-	c := createClientConn(b, "localhost", PERF_PORT)
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo group1 1\r\n")
 	sendProto(b, c, "SUB foo group1 2\r\n")

@@ -66,7 +66,7 @@ func TestOptions_RandomPort(t *testing.T) {
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     "./configs/test.conf",
-		Host:           "localhost",
+		Host:           "127.0.0.1",
 		Port:           4242,
 		Username:       "derek",
 		Password:       "porkchop",
@@ -102,7 +102,7 @@ func TestConfigFile(t *testing.T) {
 func TestTLSConfigFile(t *testing.T) {
 	golden := &Options{
 		ConfigFile:  "./configs/tls.conf",
-		Host:        "localhost",
+		Host:        "127.0.0.1",
 		Port:        4443,
 		Username:    "derek",
 		Password:    "foo",
@@ -139,7 +139,7 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatal("Expected 1 certificate")
 	}
 	cert := tlsConfig.Certificates[0].Leaf
-	if err := cert.VerifyHostname("localhost"); err != nil {
+	if err := cert.VerifyHostname("127.0.0.1"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
 	}
 
@@ -222,7 +222,7 @@ func TestTLSConfigFile(t *testing.T) {
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     "./configs/test.conf",
-		Host:           "localhost",
+		Host:           "127.0.0.1",
 		Port:           2222,
 		Username:       "derek",
 		Password:       "porkchop",
@@ -274,7 +274,7 @@ func TestMergeOverrides(t *testing.T) {
 
 func TestRemoveSelfReference(t *testing.T) {
 	url1, _ := url.Parse("nats-route://user:password@10.4.5.6:4223")
-	url2, _ := url.Parse("nats-route://user:password@localhost:4223")
+	url2, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
 	url3, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
 
 	routes := []*url.URL{url1, url2, url3}
@@ -420,6 +420,22 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	if !reflect.DeepEqual(golden, merged) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
 			golden, merged)
+	}
+}
+
+func TestDynamicPortOnListen(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/listen-1.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	if opts.Port != -1 {
+		t.Fatalf("Received incorrect port %v, expected -1\n", opts.Port)
+	}
+	if opts.HTTPPort != -1 {
+		t.Fatalf("Received incorrect monitoring port %v, expected -1\n", opts.HTTPPort)
+	}
+	if opts.HTTPSPort != -1 {
+		t.Fatalf("Received incorrect secure monitoring port %v, expected -1\n", opts.HTTPSPort)
 	}
 }
 
@@ -716,7 +732,7 @@ func TestParseWriteDeadline(t *testing.T) {
 func TestOptionsClone(t *testing.T) {
 	opts := &Options{
 		ConfigFile:     "./configs/test.conf",
-		Host:           "localhost",
+		Host:           "127.0.0.1",
 		Port:           2222,
 		Username:       "derek",
 		Password:       "porkchop",
@@ -947,15 +963,15 @@ func TestConfigureOptions(t *testing.T) {
 	}
 
 	// This should fail since -cluster is missing
-	expectedURL, _ := url.Parse("nats://localhost:6223")
+	expectedURL, _ := url.Parse("nats://127.0.0.1:6223")
 	expectToFail([]string{"-routes", expectedURL.String()}, "solicited routes")
 
 	// Ensure that we can set cluster and routes from command line
-	opts = mustNotFail([]string{"-cluster", "nats://localhost:6222", "-routes", expectedURL.String()})
-	if opts.Cluster.ListenStr != "nats://localhost:6222" {
+	opts = mustNotFail([]string{"-cluster", "nats://127.0.0.1:6222", "-routes", expectedURL.String()})
+	if opts.Cluster.ListenStr != "nats://127.0.0.1:6222" {
 		t.Fatalf("Unexpected Cluster.ListenStr=%q", opts.Cluster.ListenStr)
 	}
-	if opts.RoutesStr != "nats://localhost:6223" || len(opts.Routes) != 1 || opts.Routes[0].String() != expectedURL.String() {
+	if opts.RoutesStr != "nats://127.0.0.1:6223" || len(opts.Routes) != 1 || opts.Routes[0].String() != expectedURL.String() {
 		t.Fatalf("Unexpected RoutesStr: %q and Routes: %v", opts.RoutesStr, opts.Routes)
 	}
 
@@ -968,7 +984,7 @@ func TestConfigureOptions(t *testing.T) {
 
 	// Use a config with cluster configuration and override cluster listen string
 	expectedURL, _ = url.Parse("nats-route://ruser:top_secret@127.0.0.1:7246")
-	opts = mustNotFail([]string{"-c", "./configs/srv_a.conf", "-cluster", "nats://ivan:pwd@localhost:6222"})
+	opts = mustNotFail([]string{"-c", "./configs/srv_a.conf", "-cluster", "nats://ivan:pwd@127.0.0.1:6222"})
 	if opts.Cluster.Username != "ivan" || opts.Cluster.Password != "pwd" || opts.Cluster.Port != 6222 ||
 		len(opts.Routes) != 1 || opts.Routes[0].String() != expectedURL.String() {
 		t.Fatalf("Unexpected Cluster and/or Routes: %#v - %v", opts.Cluster, opts.Routes)
@@ -984,10 +1000,10 @@ func TestConfigureOptions(t *testing.T) {
 	// (adding -routes to have more than 1 set flag to check
 	// that Visit() stops when an error is found).
 	expectToFail([]string{"-cluster", ":", "-routes", ""}, "protocol")
-	expectToFail([]string{"-cluster", "nats://localhost", "-routes", ""}, "port")
-	expectToFail([]string{"-cluster", "nats://localhost:xxx", "-routes", ""}, "integer")
-	expectToFail([]string{"-cluster", "nats://ivan:localhost:6222", "-routes", ""}, "colons")
-	expectToFail([]string{"-cluster", "nats://ivan@localhost:6222", "-routes", ""}, "password")
+	expectToFail([]string{"-cluster", "nats://127.0.0.1", "-routes", ""}, "port")
+	expectToFail([]string{"-cluster", "nats://127.0.0.1:xxx", "-routes", ""}, "integer")
+	expectToFail([]string{"-cluster", "nats://ivan:127.0.0.1:6222", "-routes", ""}, "colons")
+	expectToFail([]string{"-cluster", "nats://ivan@127.0.0.1:6222", "-routes", ""}, "password")
 
 	// Override config file's TLS configuration from command line, and completely disable TLS
 	opts = mustNotFail([]string{"-c", "./configs/tls.conf", "-tls=false"})

@@ -43,7 +43,7 @@ func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
 
 func DefaultOptions() *Options {
 	return &Options{
-		Host:     "localhost",
+		Host:     "127.0.0.1",
 		Port:     -1,
 		HTTPPort: -1,
 		Cluster:  ClusterOpts{Port: -1},
@@ -353,7 +353,7 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	opts.Host = "x.x.x.x" // bad host
 	opts.Port = 4222
 	opts.HTTPHost = opts.Host
-	opts.Cluster.Host = "localhost"
+	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
 	opts.ProfPort = -1
 	s := New(opts)
