@@ -1199,8 +1199,7 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 	}
 }
 
-// Make sure options for ConnInfo like subs=1, authuser, etc do not cause a
-// race.
+// Make sure options for ConnInfo like subs=1, authuser, etc do not cause a race.
 func TestConnzClosedConnsRace(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1233,6 +1232,89 @@ func TestConnzClosedConnsRace(t *testing.T) {
 	go fn(urlWithSubs)
 	go fn(urlWithoutSubs)
 	wg.Wait()
+}
+
+// Make sure a bad client that is disconnected right away has proper values.
+func TestConnzClosedConnsBadClient(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+
+	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	rc.Close()
+
+	checkClosedConns(t, s, 1, 2*time.Second)
+
+	c := pollConz(t, s, 1, "", &ConnzOptions{State: ConnClosed})
+	if len(c.Conns) != 1 {
+		t.Errorf("Incorrect Results: %+v\n", c)
+	}
+	ci := c.Conns[0]
+
+	uptime := ci.Stop.Sub(ci.Start)
+	idle, err := time.ParseDuration(ci.Idle)
+	if err != nil {
+		t.Fatalf("Could not parse Idle: %v\n", err)
+	}
+	if idle > uptime {
+		t.Fatalf("Idle can't be larger then uptime, %v vs %v\n", idle, uptime)
+	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("LastActivity should not be Zero\n")
+	}
+}
+
+// Make sure a bad client that tries to connect plain to TLS has proper values.
+func TestConnzClosedConnsBadTLSClient(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "configs/certs/server.pem"
+	tc.KeyFile = "configs/certs/key.pem"
+
+	var err error
+	opts := DefaultMonitorOptions()
+	opts.TLSTimeout = 1.5 // 1.5 seconds
+	opts.TLSConfig, err = GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating TSL config: %v", err)
+	}
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	opts = s.getOpts()
+
+	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	rc.Write([]byte("CONNECT {}\r\n"))
+	rc.Close()
+
+	checkClosedConns(t, s, 1, 2*time.Second)
+
+	c := pollConz(t, s, 1, "", &ConnzOptions{State: ConnClosed})
+	if len(c.Conns) != 1 {
+		t.Errorf("Incorrect Results: %+v\n", c)
+	}
+	ci := c.Conns[0]
+
+	uptime := ci.Stop.Sub(ci.Start)
+	idle, err := time.ParseDuration(ci.Idle)
+	if err != nil {
+		t.Fatalf("Could not parse Idle: %v\n", err)
+	}
+	if idle > uptime {
+		t.Fatalf("Idle can't be larger then uptime, %v vs %v\n", idle, uptime)
+	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("LastActivity should not be Zero\n")
+	}
 }
 
 // Create a connection to test ConnInfo
