@@ -41,6 +41,7 @@ import (
 type Info struct {
 	ID                string   `json:"server_id"`
 	Version           string   `json:"version"`
+	Proto             int      `json:"proto"`
 	GitCommit         string   `json:"git_commit,omitempty"`
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
@@ -144,6 +145,7 @@ func New(opts *Options) *Server {
 	info := Info{
 		ID:           genID(),
 		Version:      VERSION,
+		Proto:        PROTO,
 		GitCommit:    gitCommit,
 		GoVersion:    runtime.Version(),
 		Host:         opts.Host,
