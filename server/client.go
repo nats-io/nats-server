@@ -154,8 +154,10 @@ type client struct {
 	rttStart time.Time
 
 	route *route
+
 	debug bool
 	trace bool
+	echo  bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 }
@@ -235,6 +237,7 @@ type subscription struct {
 }
 
 type clientOpts struct {
+	Echo          bool   `json:"echo"`
 	Verbose       bool   `json:"verbose"`
 	Pedantic      bool   `json:"pedantic"`
 	TLSRequired   bool   `json:"tls_required"`
@@ -247,7 +250,7 @@ type clientOpts struct {
 	Protocol      int    `json:"protocol"`
 }
 
-var defaultOpts = clientOpts{Verbose: true, Pedantic: true}
+var defaultOpts = clientOpts{Verbose: true, Pedantic: true, Echo: true}
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
@@ -267,6 +270,8 @@ func (c *client) initClient() {
 	c.out.mp = opts.MaxPending
 
 	c.subs = make(map[string]*subscription)
+	c.echo = true
+
 	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
 	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
 
@@ -696,6 +701,7 @@ func (c *client) processConnect(arg []byte) error {
 	// server now knows which protocol this client supports.
 	c.flags.set(connectReceived)
 	// Capture these under lock
+	c.echo = c.opts.Echo
 	proto := c.opts.Protocol
 	verbose := c.opts.Verbose
 	lang := c.opts.Lang
@@ -1272,6 +1278,13 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	}
 	client := sub.client
 	client.mu.Lock()
+
+	// Check echo
+	if c == client && !client.echo {
+		client.mu.Unlock()
+		return false
+	}
+
 	srv := client.srv
 
 	sub.nm++
