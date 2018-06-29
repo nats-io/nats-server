@@ -53,6 +53,7 @@ type route struct {
 }
 
 type connectInfo struct {
+	Echo     bool   `json:"echo"`
 	Verbose  bool   `json:"verbose"`
 	Pedantic bool   `json:"pedantic"`
 	User     string `json:"user,omitempty"`
@@ -259,6 +260,7 @@ func (c *client) sendConnect(tlsRequired bool) {
 		pass, _ = userInfo.Password()
 	}
 	cinfo := connectInfo{
+		Echo:     true,
 		Verbose:  false,
 		Pedantic: false,
 		User:     user,
