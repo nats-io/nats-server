@@ -468,6 +468,7 @@ func TestClientPubWithQueueSubNoEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	nc1.Flush()
 
 	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
 	if err != nil {
@@ -484,18 +485,22 @@ func TestClientPubWithQueueSubNoEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	nc2.Flush()
 
-	// Now publish 100 messages.
+	// Now publish 100 messages on nc1 which does not allow echo.
 	for i := 0; i < 100; i++ {
 		nc1.Publish("foo", []byte("Hello"))
 	}
 	nc1.Flush()
 	nc2.Flush()
 
-	num := atomic.LoadInt32(&n)
-	if num != int32(100) {
-		t.Fatalf("Expected all the msgs to be received by nc2, got %d\n", num)
-	}
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		num := atomic.LoadInt32(&n)
+		if num != int32(100) {
+			return fmt.Errorf("Expected all the msgs to be received by nc2, got %d\n", num)
+		}
+		return nil
+	})
 }
 
 func TestClientUnSub(t *testing.T) {
