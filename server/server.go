@@ -730,7 +730,10 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: int64(opts.MaxPayload), start: time.Now()}
+	max_pay := int64(opts.MaxPayload)
+	now := time.Now()
+
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: max_pay, start: now, last: now}
 
 	// Grab JSON info string
 	s.mu.Lock()
