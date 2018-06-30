@@ -14,7 +14,6 @@
 package server
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -29,6 +28,16 @@ import (
 	"github.com/nats-io/go-nats"
 )
 
+func checkNumRoutes(t *testing.T, s *Server, expected int) {
+	t.Helper()
+	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
+		if nr := s.NumRoutes(); nr != expected {
+			return fmt.Errorf("Expected %v routes, got %v", expected, nr)
+		}
+		return nil
+	})
+}
+
 func TestRouteConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/cluster.conf")
 	if err != nil {
@@ -37,7 +46,7 @@ func TestRouteConfig(t *testing.T) {
 
 	golden := &Options{
 		ConfigFile:  "./configs/cluster.conf",
-		Host:        "localhost",
+		Host:        "127.0.0.1",
 		Port:        4242,
 		Username:    "derek",
 		Password:    "porkchop",
@@ -55,8 +64,8 @@ func TestRouteConfig(t *testing.T) {
 	}
 
 	// Setup URLs
-	r1, _ := url.Parse("nats-route://foo:bar@localhost:4245")
-	r2, _ := url.Parse("nats-route://foo:bar@localhost:4246")
+	r1, _ := url.Parse("nats-route://foo:bar@127.0.0.1:4245")
+	r2, _ := url.Parse("nats-route://foo:bar@127.0.0.1:4246")
 
 	golden.Routes = []*url.URL{r1, r2}
 
@@ -67,7 +76,7 @@ func TestRouteConfig(t *testing.T) {
 }
 
 func TestClusterAdvertise(t *testing.T) {
-	lst, err := net.Listen("tcp", "localhost:0")
+	lst, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error starting listener: %v", err)
 	}
@@ -134,21 +143,15 @@ func TestClusterAdvertiseErrorOnStartup(t *testing.T) {
 		s.Start()
 		wg.Done()
 	}()
-	msg := ""
-	ok := false
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 		dl.Lock()
-		msg = dl.msg
+		msg := dl.msg
 		dl.Unlock()
 		if strings.Contains(msg, "Cluster.Advertise") {
-			ok = true
-			break
+			return nil
 		}
-	}
-	if !ok {
-		t.Fatalf("Did not get expected error, got %v", msg)
-	}
+		return fmt.Errorf("Did not get expected error, got %v", msg)
+	})
 	s.Shutdown()
 	wg.Wait()
 }
@@ -173,21 +176,15 @@ func TestClientAdvertise(t *testing.T) {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer nc.Close()
-	timeout := time.Now().Add(time.Second)
-	good := false
-	for time.Now().Before(timeout) {
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		ds := nc.DiscoveredServers()
 		if len(ds) == 1 {
 			if ds[0] == "nats://me:1" {
-				good = true
-				break
+				return nil
 			}
 		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	if !good {
-		t.Fatalf("Did not get expected discovered servers: %v", nc.DiscoveredServers())
-	}
+		return fmt.Errorf("Did not get expected discovered servers: %v", nc.DiscoveredServers())
+	})
 }
 
 func TestServerRoutesWithClients(t *testing.T) {
@@ -284,27 +281,16 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 
 // Helper function to check that a cluster is formed
 func checkClusterFormed(t *testing.T, servers ...*Server) {
-	// Wait for the cluster to form
-	var err string
+	t.Helper()
 	expectedNumRoutes := len(servers) - 1
-	maxTime := time.Now().Add(10 * time.Second)
-	for time.Now().Before(maxTime) {
-		err = ""
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
-				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
-				break
+				return fmt.Errorf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
 			}
 		}
-		if err != "" {
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			break
-		}
-	}
-	if err != "" {
-		stackFatalf(t, "%s", err)
-	}
+		return nil
+	})
 }
 
 // Helper function to generate next opts to make sure no port conflicts etc.
@@ -485,27 +471,16 @@ func TestChainedSolicitWorks(t *testing.T) {
 
 // Helper function to check that a server (or list of servers) have the
 // expected number of subscriptions.
-func checkExpectedSubs(expected int, servers ...*Server) error {
-	var err string
-	maxTime := time.Now().Add(10 * time.Second)
-	for time.Now().Before(maxTime) {
-		err = ""
+func checkExpectedSubs(t *testing.T, expected int, servers ...*Server) {
+	t.Helper()
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
 		for _, s := range servers {
 			if numSubs := int(s.NumSubscriptions()); numSubs != expected {
-				err = fmt.Sprintf("Expected %d subscriptions for server %q, got %d", expected, s.ID(), numSubs)
-				break
+				return fmt.Errorf("Expected %d subscriptions for server %q, got %d", expected, s.ID(), numSubs)
 			}
 		}
-		if err != "" {
-			time.Sleep(10 * time.Millisecond)
-		} else {
-			break
-		}
-	}
-	if err != "" {
-		return errors.New(err)
-	}
-	return nil
+		return nil
+	})
 }
 
 func TestTLSChainedSolicitWorks(t *testing.T) {
@@ -546,9 +521,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvSeed, srvA, srvB)
-	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
-		t.Fatalf("%v", err)
-	}
+	checkExpectedSubs(t, 1, srvA, srvB)
 
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, srvB.Addr().(*net.TCPAddr).Port)
 
@@ -583,17 +556,7 @@ func TestRouteTLSHandshakeError(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	maxTime := time.Now().Add(1 * time.Second)
-	for time.Now().Before(maxTime) {
-		if srv.NumRoutes() > 0 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		break
-	}
-	if srv.NumRoutes() > 0 {
-		t.Fatal("Route should have failed")
-	}
+	checkNumRoutes(t, srv, 0)
 }
 
 func TestBlockedShutdownOnRouteAcceptLoopFailure(t *testing.T) {
@@ -665,9 +628,9 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	opts := DefaultOptions()
 
 	// Since client will first connect to the route listen port, set the
-	// cluster's Host to localhost so it works on Windows too, since on
+	// cluster's Host to 127.0.0.1 so it works on Windows too, since on
 	// Windows, a client can't use 0.0.0.0 in a connect.
-	opts.Cluster.Host = "localhost"
+	opts.Cluster.Host = "127.0.0.1"
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -826,12 +789,8 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 		// Don't use discovered here, but Servers to have the full list.
 		// Also, there may be cases where the mesh is not formed yet,
 		// so try again on failure.
-		var (
-			ds      []string
-			timeout = time.Now().Add(5 * time.Second)
-		)
-		for time.Now().Before(timeout) {
-			ds = nc.Servers()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			ds := nc.Servers()
 			if len(ds) == len(expected) {
 				m := make(map[string]struct{}, len(ds))
 				for _, url := range ds {
@@ -845,12 +804,11 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 					}
 				}
 				if ok {
-					return
+					return nil
 				}
 			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		stackFatalf(t, "Expected %v, got %v", expected, ds)
+			return fmt.Errorf("Expected %v, got %v", expected, ds)
+		})
 	}
 	// Verify that we now know about s2
 	checkPool([]string{s1Url, s2Url})
@@ -972,8 +930,7 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		c.Flush()
 	}
 
-	wait := time.Now().Add(10 * time.Second)
-	for time.Now().Before(wait) {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		nbar := atomic.LoadInt32(&rbar)
 		nbaz := atomic.LoadInt32(&rbaz)
 		if nbar == expected && nbaz == expected {
@@ -986,15 +943,14 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 			nrqsb := len(srvB.rqsubs)
 			srvB.rqsMu.RUnlock()
 			if nrqsa != 0 || nrqsb != 0 {
-				t.Fatalf("Expected rqs mappings to have cleared, but got A:%d, B:%d\n",
+				return fmt.Errorf("Expected rqs mappings to have cleared, but got A:%d, B:%d",
 					nrqsa, nrqsb)
 			}
-			return
+			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
-		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
+		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
+			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
+	})
 }
 
 func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
@@ -1012,8 +968,16 @@ func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
 	// Start this way to increase chance of having the two connect
 	// to each other at the same time. This will cause one of the
 	// route to be dropped.
-	go srvA.Start()
-	go srvB.Start()
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		srvA.Start()
+		wg.Done()
+	}()
+	go func() {
+		srvB.Start()
+		wg.Done()
+	}()
 
 	checkClusterFormed(t, srvA, srvB)
 
@@ -1028,4 +992,8 @@ func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
 	}
 	checkMap(srvA)
 	checkMap(srvB)
+
+	srvB.Shutdown()
+	srvA.Shutdown()
+	wg.Wait()
 }

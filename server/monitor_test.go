@@ -17,8 +17,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +39,7 @@ const CLUSTER_PORT = -1
 
 func DefaultMonitorOptions() *Options {
 	return &Options{
-		Host:     "localhost",
+		Host:     "127.0.0.1",
 		Port:     CLIENT_PORT,
 		HTTPHost: "127.0.0.1",
 		HTTPPort: MONITOR_PORT,
@@ -100,7 +103,7 @@ func TestNoMonitorPort(t *testing.T) {
 	defer s.Shutdown()
 
 	// this test might be meaningless now that we're testing with random ports?
-	url := fmt.Sprintf("http://localhost:%d/", 11245)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", 11245)
 	if resp, err := http.Get(url + "varz"); err == nil {
 		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
@@ -159,7 +162,7 @@ func TestHandleVarz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
 		v := pollVarz(t, s, mode, url+"varz", nil)
@@ -221,22 +224,11 @@ func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions)
 	return c
 }
 
-func waitForClientConnCount(t *testing.T, s *Server, count int) {
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
-		if s.NumClients() == count {
-			return
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	stackFatalf(t, "The number of expected connections was %v, got %v", count, s.NumClients())
-}
-
 func TestConnz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	testConnz := func(mode int) {
 		c := pollConz(t, s, mode, url+"connz", nil)
@@ -330,7 +322,7 @@ func TestConnz(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		testConnz(mode)
-		waitForClientConnCount(t, s, 0)
+		checkClientsCount(t, s, 0)
 	}
 
 	// Test JSONP
@@ -341,11 +333,12 @@ func TestConnzBadParams(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/connz?", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/connz?", s.MonitorAddr().Port)
 	readBodyEx(t, url+"auth=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"offset=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"limit=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"state=xxx", http.StatusBadRequest, textPlain)
 }
 
 func TestConnzWithSubs(t *testing.T) {
@@ -358,7 +351,7 @@ func TestConnzWithSubs(t *testing.T) {
 	nc.Subscribe("hello.foo", func(m *nats.Msg) {})
 	ensureServerActivityRecorded(t, nc)
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?subs=1", &ConnzOptions{Subscriptions: true})
 		// Test inside details of each connection
@@ -388,7 +381,7 @@ func TestConnzWithCID(t *testing.T) {
 		}
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/connz?cid=%d", s.MonitorAddr().Port, cid)
+	url := fmt.Sprintf("http://127.0.0.1:%d/connz?cid=%d", s.MonitorAddr().Port, cid)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url, &ConnzOptions{CID: uint64(cid)})
 		// Test inside details of each connection
@@ -406,7 +399,7 @@ func TestConnzWithCID(t *testing.T) {
 			t.Fatalf("Expected to receive connection with %d subs, but received %d\n", 2, ci.NumSubs)
 		}
 		// Now test a miss
-		badUrl := fmt.Sprintf("http://localhost:%d/connz?cid=%d", s.MonitorAddr().Port, 100)
+		badUrl := fmt.Sprintf("http://127.0.0.1:%d/connz?cid=%d", s.MonitorAddr().Port, 100)
 		c = pollConz(t, s, mode, badUrl, &ConnzOptions{CID: uint64(100)})
 		if len(c.Conns) != 0 {
 			t.Fatalf("Expected no connections, got %d\n", len(c.Conns))
@@ -418,15 +411,15 @@ func TestConnzWithCID(t *testing.T) {
 }
 
 // Helper to map to connection name
-func createConnMap(t *testing.T, cz *Connz) map[string]ConnInfo {
-	cm := make(map[string]ConnInfo)
+func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
+	cm := make(map[string]*ConnInfo)
 	for _, c := range cz.Conns {
 		cm[c.Name] = c
 	}
 	return cm
 }
 
-func getFooAndBar(t *testing.T, cm map[string]ConnInfo) (ConnInfo, ConnInfo) {
+func getFooAndBar(t *testing.T, cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
 
@@ -442,7 +435,7 @@ func TestConnzRTT(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	testRTT := func(mode int) {
 		// Test with connections.
@@ -476,7 +469,7 @@ func TestConnzRTT(t *testing.T) {
 
 		rtt, err := time.ParseDuration(ci.RTT)
 		if err != nil {
-			t.Fatalf("Could not parse RTT properly, %v", err)
+			t.Fatalf("Could not parse RTT properly, %v (ci.RTT=%v)", err, ci.RTT)
 		}
 		if rtt <= 0 {
 			t.Fatal("Expected RTT to be valid and non-zero\n")
@@ -488,7 +481,7 @@ func TestConnzRTT(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		testRTT(mode)
-		waitForClientConnCount(t, s, 0)
+		checkClientsCount(t, s, 0)
 	}
 }
 
@@ -496,7 +489,7 @@ func TestConnzLastActivity(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	url += "connz?subs=1"
 	opts := &ConnzOptions{Subscriptions: true}
 
@@ -532,7 +525,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
 		nextLA := ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
@@ -564,7 +557,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub.Unsubscribe()
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
 		nextLA = ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
@@ -580,7 +573,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?offset=1&limit=1", &ConnzOptions{Offset: 1, Limit: 1})
@@ -660,7 +653,7 @@ func TestConnzDefaultSorted(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz", nil)
 		if c.Conns[0].Cid > c.Conns[1].Cid ||
@@ -681,13 +674,36 @@ func TestConnzSortedByCid(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=cid", &ConnzOptions{Sort: ByCid})
 		if c.Conns[0].Cid > c.Conns[1].Cid ||
 			c.Conns[1].Cid > c.Conns[2].Cid ||
 			c.Conns[2].Cid > c.Conns[3].Cid {
-			t.Fatalf("Expected conns sorted in ascending order by cid, got %v < %v\n", c.Conns[0].Cid, c.Conns[3].Cid)
+			t.Fatalf("Expected conns sorted in ascending order by cid, got [%v, %v, %v, %v]\n",
+				c.Conns[0].Cid, c.Conns[1].Cid, c.Conns[2].Cid, c.Conns[3].Cid)
+		}
+	}
+}
+
+func TestConnzSortedByStart(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	clients := make([]*nats.Conn, 4)
+	for i := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t, s)
+		defer clients[i].Close()
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?sort=start", &ConnzOptions{Sort: ByStart})
+		if c.Conns[0].Start.After(c.Conns[1].Start) ||
+			c.Conns[1].Start.After(c.Conns[2].Start) ||
+			c.Conns[2].Start.After(c.Conns[3].Start) {
+			t.Fatalf("Expected conns sorted in ascending order by startime, got [%v, %v, %v, %v]\n",
+				c.Conns[0].Start, c.Conns[1].Start, c.Conns[2].Start, c.Conns[3].Start)
 		}
 	}
 }
@@ -710,7 +726,7 @@ func TestConnzSortedByBytesAndMsgs(t *testing.T) {
 		defer clients[i].Close()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=bytes_to", &ConnzOptions{Sort: ByOutBytes})
 		if c.Conns[0].OutBytes < c.Conns[1].OutBytes ||
@@ -759,7 +775,7 @@ func TestConnzSortedByPending(t *testing.T) {
 	}
 	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=pending", &ConnzOptions{Sort: ByPending})
 		if c.Conns[0].Pending < c.Conns[1].Pending ||
@@ -777,14 +793,15 @@ func TestConnzSortedBySubs(t *testing.T) {
 
 	firstClient := createClientConnSubscribeAndPublish(t, s)
 	firstClient.Subscribe("hello.world", func(m *nats.Msg) {})
+	defer firstClient.Close()
+
 	clients := make([]*nats.Conn, 3)
 	for i := range clients {
 		clients[i] = createClientConnSubscribeAndPublish(t, s)
 		defer clients[i].Close()
 	}
-	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=subs", &ConnzOptions{Sort: BySubs})
 		if c.Conns[0].NumSubs < c.Conns[1].NumSubs ||
@@ -813,7 +830,7 @@ func TestConnzSortedByLast(t *testing.T) {
 		clients[i].Flush()
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=last", &ConnzOptions{Sort: ByLast})
 		if c.Conns[0].LastActivity.UnixNano() < c.Conns[1].LastActivity.UnixNano() ||
@@ -829,23 +846,194 @@ func TestConnzSortedByUptime(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	clients := make([]*nats.Conn, 5)
-	for i := range clients {
-		clients[i] = createClientConnSubscribeAndPublish(t, s)
-		defer clients[i].Close()
-		time.Sleep(250 * time.Millisecond)
+	for i := 0; i < 4; i++ {
+		client := createClientConnSubscribeAndPublish(t, s)
+		defer client.Close()
+		// Since we check times (now-start) does not have to be big.
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz?sort=uptime", &ConnzOptions{Sort: ByUptime})
-		// uptime is generated by Conn.Start
-		if c.Conns[0].Start.UnixNano() > c.Conns[1].Start.UnixNano() ||
-			c.Conns[1].Start.UnixNano() > c.Conns[2].Start.UnixNano() ||
-			c.Conns[2].Start.UnixNano() > c.Conns[3].Start.UnixNano() {
-			t.Fatalf("Expected conns sorted in ascending order by start time, got %v > one of [%v, %v, %v]\n",
-				c.Conns[0].Start, c.Conns[1].Start, c.Conns[2].Start, c.Conns[3].Start)
+		now := time.Now()
+		ups := make([]int, 4)
+		for i := 0; i < 4; i++ {
+			ups[i] = int(now.Sub(c.Conns[i].Start))
 		}
+		if !sort.IntsAreSorted(ups) {
+			d := make([]time.Duration, 4)
+			for i := 0; i < 4; i++ {
+				d[i] = time.Duration(ups[i])
+			}
+			t.Fatalf("Expected conns sorted in ascending order by uptime (now-Start), got %+v\n", d)
+		}
+	}
+}
+
+func TestConnzSortedByUptimeClosedConn(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	for i := time.Duration(1); i <= 4; i++ {
+		c := createClientConnSubscribeAndPublish(t, s)
+
+		// Grab client and asjust start time such that
+		client := s.getClient(uint64(i))
+		if client == nil {
+			t.Fatalf("Could nopt retrieve client for %d\n", i)
+		}
+		client.mu.Lock()
+		client.start = client.start.Add(-10 * (4 - i) * time.Second)
+		client.mu.Unlock()
+
+		c.Close()
+	}
+
+	checkClosedConns(t, s, 4, time.Second)
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?state=closed&sort=uptime", &ConnzOptions{State: ConnClosed, Sort: ByUptime})
+		ups := make([]int, 4)
+		for i := 0; i < 4; i++ {
+			ups[i] = int(c.Conns[i].Stop.Sub(c.Conns[i].Start))
+		}
+		if !sort.IntsAreSorted(ups) {
+			d := make([]time.Duration, 4)
+			for i := 0; i < 4; i++ {
+				d[i] = time.Duration(ups[i])
+			}
+			t.Fatalf("Expected conns sorted in ascending order by uptime, got %+v\n", d)
+		}
+	}
+}
+
+func TestConnzSortedByStopOnOpen(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// 4 clients
+	for i := 0; i < 4; i++ {
+		c, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Could not create client: %v\n", err)
+		}
+		defer c.Close()
+	}
+
+	c, err := s.Connz(&ConnzOptions{Sort: ByStop})
+	if err == nil {
+		t.Fatalf("Expected err to be non-nil, got %+v\n", c)
+	}
+}
+
+func TestConnzSortedByStopTimeClosedConn(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// 4 clients
+	for i := 0; i < 4; i++ {
+		c, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Could not create client: %v\n", err)
+		}
+		c.Close()
+	}
+	checkClosedConns(t, s, 4, time.Second)
+
+	//Now adjust the Stop times for these with some random values.
+	s.mu.Lock()
+	now := time.Now()
+	ccs := s.closed.closedClients()
+	for _, cc := range ccs {
+		newStop := now.Add(time.Duration(rand.Int()%120) * -time.Minute)
+		cc.Stop = &newStop
+	}
+	s.mu.Unlock()
+
+	url = fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?state=closed&sort=stop", &ConnzOptions{State: ConnClosed, Sort: ByStop})
+		ups := make([]int, 4)
+		nowU := time.Now().UnixNano()
+		for i := 0; i < 4; i++ {
+			ups[i] = int(nowU - c.Conns[i].Stop.UnixNano())
+		}
+		if !sort.IntsAreSorted(ups) {
+			d := make([]time.Duration, 4)
+			for i := 0; i < 4; i++ {
+				d[i] = time.Duration(ups[i])
+			}
+			t.Fatalf("Expected conns sorted in ascending order by stop time, got %+v\n", d)
+		}
+	}
+}
+
+func TestConnzSortedByReason(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// 20 clients
+	for i := 0; i < 20; i++ {
+		c, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Could not create client: %v\n", err)
+		}
+		c.Close()
+	}
+	checkClosedConns(t, s, 20, time.Second)
+
+	//Now adjust the Reasons for these with some random values.
+	s.mu.Lock()
+	ccs := s.closed.closedClients()
+	max := int(ServerShutdown)
+	for _, cc := range ccs {
+		cc.Reason = ClosedState(rand.Int() % max).String()
+	}
+	s.mu.Unlock()
+
+	url = fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz?state=closed&sort=reason", &ConnzOptions{State: ConnClosed, Sort: ByReason})
+		rs := make([]string, 20)
+		for i := 0; i < 20; i++ {
+			rs[i] = c.Conns[i].Reason
+		}
+		if !sort.StringsAreSorted(rs) {
+			t.Fatalf("Expected conns sorted in order by stop reason, got %#v\n", rs)
+		}
+	}
+}
+
+func TestConnzSortedByReasonOnOpen(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// 4 clients
+	for i := 0; i < 4; i++ {
+		c, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Could not create client: %v\n", err)
+		}
+		defer c.Close()
+	}
+
+	c, err := s.Connz(&ConnzOptions{Sort: ByReason})
+	if err == nil {
+		t.Fatalf("Expected err to be non-nil, got %+v\n", c)
 	}
 }
 
@@ -853,7 +1041,7 @@ func TestConnzSortedByIdle(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	testIdle := func(mode int) {
 		firstClient := createClientConnSubscribeAndPublish(t, s)
@@ -863,8 +1051,25 @@ func TestConnzSortedByIdle(t *testing.T) {
 
 		secondClient := createClientConnSubscribeAndPublish(t, s)
 		defer secondClient.Close()
-		secondClient.Subscribe("client.2", func(m *nats.Msg) {})
-		secondClient.Flush()
+
+		// Make it such that the second client started 10 secs ago. 10 is important since bug
+		// was strcmp, e.g. 1s vs 11s
+		var cid uint64
+		switch mode {
+		case 0:
+			cid = uint64(2)
+		case 1:
+			cid = uint64(4)
+		}
+		client := s.getClient(cid)
+		if client == nil {
+			t.Fatalf("Error looking up client %v\n", 2)
+		}
+
+		client.mu.Lock()
+		client.start = client.start.Add(-10 * time.Second)
+		client.last = client.start
+		client.mu.Unlock()
 
 		// The Idle granularity is a whole second
 		time.Sleep(time.Second)
@@ -890,9 +1095,9 @@ func TestConnzSortedByIdle(t *testing.T) {
 			t.Fatalf("Unable to parse duration %v, err=%v", c.Conns[0].Idle, err)
 		}
 
-		if idle1 < idle2 {
+		if idle2 < idle1 {
 			t.Fatalf("Expected conns sorted in descending order by Idle, got %v < %v\n",
-				idle1, idle2)
+				idle2, idle1)
 		}
 	}
 	for mode := 0; mode < 2; mode++ {
@@ -913,7 +1118,7 @@ func TestConnzSortBadRequest(t *testing.T) {
 	}
 	defer firstClient.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	readBodyEx(t, url+"connz?sort=foo", http.StatusBadRequest, textPlain)
 
 	if _, err := s.Connz(&ConnzOptions{Sort: "foo"}); err == nil {
@@ -937,17 +1142,17 @@ func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptio
 func TestConnzWithRoutes(t *testing.T) {
 
 	opts := DefaultMonitorOptions()
-	opts.Cluster.Host = "localhost"
+	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = CLUSTER_PORT
 
 	s := RunServer(opts)
 	defer s.Shutdown()
 
 	opts = &Options{
-		Host: "localhost",
+		Host: "127.0.0.1",
 		Port: -1,
 		Cluster: ClusterOpts{
-			Host: "localhost",
+			Host: "127.0.0.1",
 			Port: -1,
 		},
 		NoLog:  true,
@@ -959,9 +1164,9 @@ func TestConnzWithRoutes(t *testing.T) {
 	sc := RunServer(opts)
 	defer sc.Shutdown()
 
-	time.Sleep(time.Second)
+	checkClusterFormed(t, s, sc)
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		c := pollConz(t, s, mode, url+"connz", nil)
 		// Test contents..
@@ -978,6 +1183,8 @@ func TestConnzWithRoutes(t *testing.T) {
 	defer nc.Close()
 
 	nc.Subscribe("hello.bar", func(m *nats.Msg) {})
+	nc.Flush()
+	checkExpectedSubs(t, 1, s, sc)
 
 	// Now check routez
 	urls := []string{"routez", "routez?subs=1"}
@@ -1020,7 +1227,7 @@ func TestRoutezWithBadParams(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/routez?", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/routez?", s.MonitorAddr().Port)
 	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
 }
 
@@ -1044,7 +1251,7 @@ func TestSubsz(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
 		sl := pollSubsz(t, s, mode, url+"subscriptionsz", nil)
@@ -1071,7 +1278,7 @@ func TestHandleRoot(t *testing.T) {
 	nc := createClientConnSubscribeAndPublish(t, s)
 	defer nc.Close()
 
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port))
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port))
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
@@ -1104,7 +1311,7 @@ func TestConnzWithNamedClient(t *testing.T) {
 	nc := createClientConnWithName(t, clientName, s)
 	defer nc.Close()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		// Confirm server is exposing client name in monitoring endpoint.
 		c := pollConz(t, s, mode, url+"connz", nil)
@@ -1121,9 +1328,211 @@ func TestConnzWithNamedClient(t *testing.T) {
 	}
 }
 
+func TestConnzWithStateForClosedConns(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	numEach := 10
+	// Create 10 closed, and 10 to leave open.
+	for i := 0; i < numEach; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.closed.conns", func(m *nats.Msg) {})
+		nc.Close()
+		nc = createClientConnSubscribeAndPublish(t, s)
+		nc.Subscribe("hello.open.conns", func(m *nats.Msg) {})
+		defer nc.Close()
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+
+	for mode := 0; mode < 2; mode++ {
+		// Look at all open
+		c := pollConz(t, s, mode, url+"connz?state=open", &ConnzOptions{State: ConnOpen})
+		if lc := len(c.Conns); lc != numEach {
+			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
+		}
+		// Look at all closed
+		c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+		if lc := len(c.Conns); lc != numEach {
+			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
+		}
+		// Look at all
+		c = pollConz(t, s, mode, url+"connz?state=ALL", &ConnzOptions{State: ConnAll})
+		if lc := len(c.Conns); lc != numEach*2 {
+			t.Fatalf("Expected %d connections in array, got %d\n", 2*numEach, lc)
+		}
+		// Look at CID #1, which is in closed.
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=open", &ConnzOptions{CID: 1, State: ConnOpen})
+		if lc := len(c.Conns); lc != 0 {
+			t.Fatalf("Expected no connections in open array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed", &ConnzOptions{CID: 1, State: ConnClosed})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=ALL", &ConnzOptions{CID: 1, State: ConnAll})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=true",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: true})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci := c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 1 {
+			t.Fatalf("Expected len(ci.Subs) to be 1 also, got %d\n", len(ci.Subs))
+		}
+		// Now ask for same thing without subs and make sure they are not returned.
+		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=false",
+			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: false})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
+		}
+		ci = c.Conns[0]
+		if ci.NumSubs != 1 {
+			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
+		}
+		if len(ci.Subs) != 0 {
+			t.Fatalf("Expected len(ci.Subs) to be 0 since subs=false, got %d\n", len(ci.Subs))
+		}
+
+		// CID #2 is in open
+		c = pollConz(t, s, mode, url+"connz?cid=2&state=open", &ConnzOptions{CID: 2, State: ConnOpen})
+		if lc := len(c.Conns); lc != 1 {
+			t.Fatalf("Expected a connection in open array, got %d\n", lc)
+		}
+		c = pollConz(t, s, mode, url+"connz?cid=2&state=closed", &ConnzOptions{CID: 2, State: ConnClosed})
+		if lc := len(c.Conns); lc != 0 {
+			t.Fatalf("Expected no connections in closed array, got %d\n", lc)
+		}
+	}
+}
+
+// Make sure options for ConnInfo like subs=1, authuser, etc do not cause a race.
+func TestConnzClosedConnsRace(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// Create 100 closed connections.
+	for i := 0; i < 100; i++ {
+		nc := createClientConnSubscribeAndPublish(t, s)
+		nc.Close()
+	}
+
+	urlWithoutSubs := fmt.Sprintf("http://127.0.0.1:%d/connz?state=closed", s.MonitorAddr().Port)
+	urlWithSubs := urlWithoutSubs + "&subs=true"
+
+	checkClosedConns(t, s, 100, 2*time.Second)
+
+	wg := &sync.WaitGroup{}
+
+	fn := func(url string) {
+		deadline := time.Now().Add(1 * time.Second)
+		for time.Now().Before(deadline) {
+			c := pollConz(t, s, 0, url, nil)
+			if len(c.Conns) != 100 {
+				t.Errorf("Incorrect Results: %+v\n", c)
+			}
+		}
+		wg.Done()
+	}
+
+	wg.Add(2)
+	go fn(urlWithSubs)
+	go fn(urlWithoutSubs)
+	wg.Wait()
+}
+
+// Make sure a bad client that is disconnected right away has proper values.
+func TestConnzClosedConnsBadClient(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+
+	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	rc.Close()
+
+	checkClosedConns(t, s, 1, 2*time.Second)
+
+	c := pollConz(t, s, 1, "", &ConnzOptions{State: ConnClosed})
+	if len(c.Conns) != 1 {
+		t.Errorf("Incorrect Results: %+v\n", c)
+	}
+	ci := c.Conns[0]
+
+	uptime := ci.Stop.Sub(ci.Start)
+	idle, err := time.ParseDuration(ci.Idle)
+	if err != nil {
+		t.Fatalf("Could not parse Idle: %v\n", err)
+	}
+	if idle > uptime {
+		t.Fatalf("Idle can't be larger then uptime, %v vs %v\n", idle, uptime)
+	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("LastActivity should not be Zero\n")
+	}
+}
+
+// Make sure a bad client that tries to connect plain to TLS has proper values.
+func TestConnzClosedConnsBadTLSClient(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "configs/certs/server.pem"
+	tc.KeyFile = "configs/certs/key.pem"
+
+	var err error
+	opts := DefaultMonitorOptions()
+	opts.TLSTimeout = 1.5 // 1.5 seconds
+	opts.TLSConfig, err = GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating TSL config: %v", err)
+	}
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	opts = s.getOpts()
+
+	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	rc.Write([]byte("CONNECT {}\r\n"))
+	rc.Close()
+
+	checkClosedConns(t, s, 1, 2*time.Second)
+
+	c := pollConz(t, s, 1, "", &ConnzOptions{State: ConnClosed})
+	if len(c.Conns) != 1 {
+		t.Errorf("Incorrect Results: %+v\n", c)
+	}
+	ci := c.Conns[0]
+
+	uptime := ci.Stop.Sub(ci.Start)
+	idle, err := time.ParseDuration(ci.Idle)
+	if err != nil {
+		t.Fatalf("Could not parse Idle: %v\n", err)
+	}
+	if idle > uptime {
+		t.Fatalf("Idle can't be larger then uptime, %v vs %v\n", idle, uptime)
+	}
+	if ci.LastActivity.IsZero() {
+		t.Fatalf("LastActivity should not be Zero\n")
+	}
+}
+
 // Create a connection to test ConnInfo
 func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
-	natsURL := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
+	natsURL := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
 	client := nats.DefaultOptions
 	client.Servers = []string{natsURL}
 	nc, err := client.Connect()
@@ -1147,7 +1556,7 @@ func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 }
 
 func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {
-	natsURI := fmt.Sprintf("nats://localhost:%d", s.Addr().(*net.TCPAddr).Port)
+	natsURI := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
 
 	client := nats.DefaultOptions
 	client.Servers = []string{natsURI}
@@ -1163,7 +1572,7 @@ func TestStacksz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	url := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	body := readBody(t, url+"stacksz")
 	// Check content
 	str := string(body)
@@ -1300,6 +1709,9 @@ func TestConnzTLSInHandshake(t *testing.T) {
 	}
 	defer c.Close()
 
+	// Wait for the connection to be registered
+	checkClientsCount(t, s, 1)
+
 	start := time.Now()
 	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
@@ -1323,7 +1735,7 @@ func TestServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
-	murl := fmt.Sprintf("http://localhost:%d/", s.MonitorAddr().Port)
+	murl := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
 		v := pollVarz(t, s, mode, murl+"varz", nil)
@@ -1361,6 +1773,61 @@ func TestHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
 		stats := v.HTTPReqStats[e]
 		if stats != 0 {
 			t.Fatalf("Expected HTTPReqStats for %q to be 0, got %v", e, stats)
+		}
+	}
+}
+
+func TestClusterEmptyWhenNotDefined(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	body := readBody(t, fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port))
+	var v map[string]interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+	}
+	// Cluster can empty, or be defined but that needs to be empty.
+	c, ok := v["cluster"]
+	if !ok {
+		return
+	}
+	if len(c.(map[string]interface{})) != 0 {
+		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
+	}
+}
+
+// Benchmark our Connz generation. Don't use HTTP here, just measure server endpoint.
+func Benchmark_Connz(b *testing.B) {
+	runtime.MemProfileRate = 0
+
+	s := runMonitorServerNoHTTPPort()
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// Create 250 connections with 100 subs each.
+	for i := 0; i < 250; i++ {
+		nc, err := nats.Connect(url)
+		if err != nil {
+			b.Fatalf("Error on connection[%d] to %s: %v", i, url, err)
+		}
+		for x := 0; x < 100; x++ {
+			subj := fmt.Sprintf("foo.%d", x)
+			nc.Subscribe(subj, func(m *nats.Msg) {})
+		}
+		nc.Flush()
+		defer nc.Close()
+	}
+
+	b.ResetTimer()
+	runtime.MemProfileRate = 1
+
+	copts := &ConnzOptions{Subscriptions: false}
+	for i := 0; i < b.N; i++ {
+		_, err := s.Connz(copts)
+		if err != nil {
+			b.Fatalf("Error on Connz(): %v", err)
 		}
 	}
 }

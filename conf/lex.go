@@ -1031,7 +1031,7 @@ func lexFloat(lx *lexer) stateFn {
 // lexIPAddr consumes IP addrs, like 127.0.0.1:4222
 func lexIPAddr(lx *lexer) stateFn {
 	r := lx.next()
-	if unicode.IsDigit(r) || r == '.' || r == ':' {
+	if unicode.IsDigit(r) || r == '.' || r == ':' || r == '-' {
 		return lexIPAddr
 	}
 	lx.backup()

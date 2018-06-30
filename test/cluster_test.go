@@ -25,27 +25,26 @@ import (
 
 // Helper function to check that a cluster is formed
 func checkClusterFormed(t *testing.T, servers ...*server.Server) {
-	// Wait for the cluster to form
-	var err string
+	t.Helper()
 	expectedNumRoutes := len(servers) - 1
-	maxTime := time.Now().Add(5 * time.Second)
-	for time.Now().Before(maxTime) {
-		err = ""
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != expectedNumRoutes {
-				err = fmt.Sprintf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
-				break
+				return fmt.Errorf("Expected %d routes for server %q, got %d", expectedNumRoutes, s.ID(), numRoutes)
 			}
 		}
-		if err != "" {
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			break
+		return nil
+	})
+}
+
+func checkNumRoutes(t *testing.T, s *server.Server, expected int) {
+	t.Helper()
+	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
+		if nr := s.NumRoutes(); nr != expected {
+			return fmt.Errorf("Expected %v routes, got %v", expected, nr)
 		}
-	}
-	if err != "" {
-		t.Fatalf("%s", err)
-	}
+		return nil
+	})
 }
 
 // Helper function to check that a server (or list of servers) have the
@@ -486,45 +485,5 @@ func TestAutoUnsubscribePropagationOnClientDisconnect(t *testing.T) {
 	// No subs should be on the cluster when all clients is disconnected
 	if err := checkExpectedSubs(0, cluster...); err != nil {
 		t.Fatalf("%v", err)
-	}
-}
-
-func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
-	srvA, optsA := RunServerWithConfig("./configs/srv_a.conf")
-	defer srvA.Shutdown()
-
-	clientA := createClientConn(t, optsA.Host, optsA.Port)
-	defer clientA.Close()
-
-	sendA, expectA := setupConn(t, clientA)
-
-	// Now add lots of subscriptions. These will need to be forwarded
-	// to new routes when they are added.
-	subsTotal := 100000
-	for i := 0; i < subsTotal; i++ {
-		subject := fmt.Sprintf("FOO.BAR.BAZ.%d", i)
-		sendA(fmt.Sprintf("SUB %s %d\r\n", subject, i))
-	}
-	sendA("PING\r\n")
-	expectA(pongRe)
-
-	srvB, _ := RunServerWithConfig("./configs/srv_b.conf")
-	defer srvB.Shutdown()
-
-	checkClusterFormed(t, srvA, srvB)
-
-	// Now wait for all subscriptions to be processed.
-	if err := checkExpectedSubs(subsTotal, srvB); err != nil {
-		// Make sure we are not a slow consumer
-		// Check for slow consumer status
-		if srvA.NumSlowConsumers() > 0 {
-			t.Fatal("Did not receive all subscriptions due to slow consumer")
-		} else {
-			t.Fatalf("%v", err)
-		}
-	}
-	// Just double check the slow consumer status.
-	if srvA.NumSlowConsumers() > 0 {
-		t.Fatalf("Received a slow consumer notification: %d", srvA.NumSlowConsumers())
 	}
 }

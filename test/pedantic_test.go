@@ -33,7 +33,7 @@ func TestPedanticSub(t *testing.T) {
 	s := runPedanticServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send := sendCommand(t, c)
@@ -78,7 +78,7 @@ func TestPedanticPub(t *testing.T) {
 	s := runPedanticServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send := sendCommand(t, c)

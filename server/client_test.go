@@ -84,6 +84,16 @@ func setupClient() (*Server, *client, *bufio.Reader) {
 	return s, c, cr
 }
 
+func checkClientsCount(t *testing.T, s *Server, expected int) {
+	t.Helper()
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if nc := s.NumClients(); nc != expected {
+			return fmt.Errorf("The number of expected connections was %v, got %v", expected, nc)
+		}
+		return nil
+	})
+}
+
 func TestClientCreateAndInfo(t *testing.T) {
 	c, l := setUpClientWithResponse()
 
@@ -123,7 +133,7 @@ func TestClientConnect(t *testing.T) {
 	_, c, _ := setupClient()
 
 	// Basic Connect setting flags
-	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false}\r\n")
+	connectOp := []byte("CONNECT {\"verbose\":true,\"pedantic\":true,\"tls_required\":false,\"echo\":false}\r\n")
 	err := c.parse(connectOp)
 	if err != nil {
 		t.Fatalf("Received error: %v\n", err)
@@ -131,7 +141,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Echo: false}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -145,7 +155,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -160,7 +170,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -175,7 +185,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 }
@@ -192,7 +202,7 @@ func TestClientConnectProto(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Protocol: ClientProtoZero}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoZero}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -205,7 +215,7 @@ func TestClientConnectProto(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Protocol: ClientProtoInfo}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoInfo}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 	if c.opts.Protocol != ClientProtoInfo {
@@ -298,6 +308,26 @@ func TestClientSimplePubSub(t *testing.T) {
 		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
 	}
 	checkPayload(cr, []byte("hello\r\n"), t)
+}
+
+func TestClientPubSubNoEcho(t *testing.T) {
+	_, c, cr := setupClient()
+	// Specify no echo
+	connectOp := []byte("CONNECT {\"echo\":false}\r\n")
+	err := c.parse(connectOp)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+	// SUB/PUB
+	go c.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	// We should not receive anything but a PONG since we specified no echo.
+	if !strings.HasPrefix(l, "PONG\r\n") {
+		t.Fatalf("PONG response incorrect: %q\n", l)
+	}
 }
 
 func TestClientSimplePubSubWithReply(t *testing.T) {
@@ -404,6 +434,73 @@ func TestClientPubWithQueueSub(t *testing.T) {
 	if n1 < 20 || n2 < 20 {
 		t.Fatalf("Received wrong # of msgs per subscriber: %d - %d\n", n1, n2)
 	}
+}
+
+func TestClientPubWithQueueSubNoEcho(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	// Grab the client from server and set no echo by hand.
+	s.mu.Lock()
+	lc := len(s.clients)
+	c := s.clients[s.gcid]
+	s.mu.Unlock()
+
+	if lc != 1 {
+		t.Fatalf("Expected only 1 client but got %d\n", lc)
+	}
+	if c == nil {
+		t.Fatal("Expected to retrieve client\n")
+	}
+	c.mu.Lock()
+	c.echo = false
+	c.mu.Unlock()
+
+	// Queue sub on nc1.
+	_, err = nc1.QueueSubscribe("foo", "bar", func(*nats.Msg) {})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc1.Flush()
+
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	n := int32(0)
+	cb := func(m *nats.Msg) {
+		atomic.AddInt32(&n, 1)
+	}
+
+	_, err = nc2.QueueSubscribe("foo", "bar", cb)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc2.Flush()
+
+	// Now publish 100 messages on nc1 which does not allow echo.
+	for i := 0; i < 100; i++ {
+		nc1.Publish("foo", []byte("Hello"))
+	}
+	nc1.Flush()
+	nc2.Flush()
+
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		num := atomic.LoadInt32(&n)
+		if num != int32(100) {
+			return fmt.Errorf("Expected all the msgs to be received by nc2, got %d\n", num)
+		}
+		return nil
+	})
 }
 
 func TestClientUnSub(t *testing.T) {
@@ -549,7 +646,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	if s.sl.Count() != 2 {
 		t.Fatalf("Should have 2 subscriptions, got %d\n", s.sl.Count())
 	}
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	if s.sl.Count() != 0 {
 		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
 	}
@@ -557,7 +654,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	s, c, _ := setupClient()
-	c.closeConnection()
+	c.closeConnection(ClientClosed)
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
 	ch := make(chan bool)
@@ -575,22 +672,8 @@ func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 func TestClientMapRemoval(t *testing.T) {
 	s, c, _ := setupClient()
 	c.nc.Close()
-	end := time.Now().Add(1 * time.Second)
 
-	for time.Now().Before(end) {
-		s.mu.Lock()
-		lsc := len(s.clients)
-		s.mu.Unlock()
-		if lsc > 0 {
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	s.mu.Lock()
-	lsc := len(s.clients)
-	s.mu.Unlock()
-	if lsc > 0 {
-		t.Fatal("Client still in server map")
-	}
+	checkClientsCount(t, s, 0)
 }
 
 func TestAuthorizationTimeout(t *testing.T) {
@@ -721,23 +804,15 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Fatalf("Unexpected error reading PONG: %v", err)
 	}
 
-	getClient := func() *client {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for _, c := range s.clients {
-			return c
-		}
-		return nil
-	}
-	// Wait for client to be registered.
-	timeout := time.Now().Add(5 * time.Second)
+	// Check that client is registered.
+	checkClientsCount(t, s, 1)
 	var cli *client
-	for time.Now().Before(timeout) {
-		cli = getClient()
-		if cli != nil {
-			break
-		}
+	s.mu.Lock()
+	for _, c := range s.clients {
+		cli = c
+		break
 	}
+	s.mu.Unlock()
 	if cli == nil {
 		t.Fatal("Did not register client on time")
 	}
@@ -767,7 +842,7 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		}
 	}()
 	// Close the client
-	cli.closeConnection()
+	cli.closeConnection(ClientClosed)
 	ch <- true
 }
 
@@ -1009,72 +1084,13 @@ func TestQueueAutoUnsubscribe(t *testing.T) {
 	}
 	nc.Flush()
 
-	wait := time.Now().Add(5 * time.Second)
-	for time.Now().Before(wait) {
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
 		nbar := atomic.LoadInt32(&rbar)
 		nbaz := atomic.LoadInt32(&rbaz)
 		if nbar == expected && nbaz == expected {
-			return
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'\n",
-		expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
-}
-
-func TestAvoidSlowConsumerBigMessages(t *testing.T) {
-	opts := DefaultOptions() // Use defaults to make sure they avoid pending slow consumer.
-	s := RunServer(opts)
-	defer s.Shutdown()
-
-	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc1.Close()
-
-	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc2.Close()
-
-	data := make([]byte, 1024*1024) // 1MB payload
-	rand.Read(data)
-
-	expected := int32(1000)
-	received := int32(0)
-
-	done := make(chan bool)
-
-	// Create Subscription.
-	nc1.Subscribe("slow.consumer", func(m *nats.Msg) {
-		// Just eat it so that we are not measuring
-		// code time, just delivery.
-		atomic.AddInt32(&received, 1)
-		if received >= expected {
-			done <- true
-		}
+		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
+			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 	})
-
-	// Create Error handler
-	nc1.SetErrorHandler(func(c *nats.Conn, s *nats.Subscription, err error) {
-		t.Fatalf("Received an error on the subscription's connection: %v\n", err)
-	})
-
-	for i := int32(0); i < expected; i++ {
-		nc2.Publish("slow.consumer", data)
-	}
-	nc2.Flush()
-
-	select {
-	case <-done:
-		return
-	case <-time.After(10 * time.Second):
-		r := atomic.LoadInt32(&received)
-		if s.NumSlowConsumers() > 0 {
-			t.Fatalf("Did not receive all large messages due to slow consumer status: %d of %d", r, expected)
-		}
-		t.Fatalf("Failed to receive all large messages: %d of %d\n", r, expected)
-	}
 }

@@ -24,6 +24,8 @@ import (
 	"github.com/nats-io/go-nats"
 )
 
+// IMPORTANT: Tests in this file are not executed when running with the -race flag.
+
 // As we look to improve high fanout situations make sure we
 // have a test that checks ordering for all subscriptions from a single subscriber.
 func TestHighFanoutOrdering(t *testing.T) {
@@ -83,4 +85,44 @@ func TestHighFanoutOrdering(t *testing.T) {
 	defer ec.Close()
 
 	wg.Wait()
+}
+
+func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
+	srvA, optsA := RunServerWithConfig("./configs/srv_a.conf")
+	defer srvA.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	sendA, expectA := setupConn(t, clientA)
+
+	// Now add lots of subscriptions. These will need to be forwarded
+	// to new routes when they are added.
+	subsTotal := 100000
+	for i := 0; i < subsTotal; i++ {
+		subject := fmt.Sprintf("FOO.BAR.BAZ.%d", i)
+		sendA(fmt.Sprintf("SUB %s %d\r\n", subject, i))
+	}
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	srvB, _ := RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Now wait for all subscriptions to be processed.
+	if err := checkExpectedSubs(subsTotal, srvB); err != nil {
+		// Make sure we are not a slow consumer
+		// Check for slow consumer status
+		if srvA.NumSlowConsumers() > 0 {
+			t.Fatal("Did not receive all subscriptions due to slow consumer")
+		} else {
+			t.Fatalf("%v", err)
+		}
+	}
+	// Just double check the slow consumer status.
+	if srvA.NumSlowConsumers() > 0 {
+		t.Fatalf("Received a slow consumer notification: %d", srvA.NumSlowConsumers())
+	}
 }

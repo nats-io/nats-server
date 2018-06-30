@@ -25,9 +25,25 @@ import (
 	"github.com/nats-io/go-nats"
 )
 
+func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+	t.Helper()
+	timeout := time.Now().Add(totalWait)
+	var err error
+	for time.Now().Before(timeout) {
+		err = f()
+		if err == nil {
+			return
+		}
+		time.Sleep(sleepDur)
+	}
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+}
+
 func DefaultOptions() *Options {
 	return &Options{
-		Host:     "localhost",
+		Host:     "127.0.0.1",
 		Port:     -1,
 		HTTPPort: -1,
 		Cluster:  ClusterOpts{Port: -1},
@@ -337,7 +353,7 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 	opts.Host = "x.x.x.x" // bad host
 	opts.Port = 4222
 	opts.HTTPHost = opts.Host
-	opts.Cluster.Host = "localhost"
+	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
 	opts.ProfPort = -1
 	s := New(opts)
@@ -419,7 +435,7 @@ func TestProcessCommandLineArgs(t *testing.T) {
 
 func TestWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
-	opts.WriteDeadline = 1 * time.Millisecond
+	opts.WriteDeadline = 30 * time.Millisecond
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -593,9 +609,11 @@ func TestCustomRouterAuthentication(t *testing.T) {
 	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://invalid@127.0.0.1:%d", clusterPort))
 	s2 := RunServer(opts2)
 	defer s2.Shutdown()
-	if nr := s2.NumRoutes(); nr != 0 {
-		t.Fatalf("Expected no route, got %v", nr)
-	}
+
+	// s2 will attempt to connect to s, which should reject.
+	// Keep in mind that s2 will try again...
+	time.Sleep(50 * time.Millisecond)
+	checkNumRoutes(t, s2, 0)
 
 	opts3 := DefaultOptions()
 	opts3.Cluster.Host = "127.0.0.1"
@@ -603,9 +621,7 @@ func TestCustomRouterAuthentication(t *testing.T) {
 	s3 := RunServer(opts3)
 	defer s3.Shutdown()
 	checkClusterFormed(t, s, s3)
-	if nr := s3.NumRoutes(); nr != 1 {
-		t.Fatalf("Expected 1 route, got %v", nr)
-	}
+	checkNumRoutes(t, s3, 1)
 }
 
 func TestMonitoringNoTimeout(t *testing.T) {

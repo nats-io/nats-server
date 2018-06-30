@@ -38,7 +38,7 @@ type ClusterOpts struct {
 	Username       string            `json:"-"`
 	Password       string            `json:"-"`
 	AuthTimeout    float64           `json:"auth_timeout,omitempty"`
-	Permissions    *RoutePermissions `json:"permissions"`
+	Permissions    *RoutePermissions `json:"-"`
 	TLSTimeout     float64           `json:"-"`
 	TLSConfig      *tls.Config       `json:"-"`
 	ListenStr      string            `json:"-"`
@@ -49,47 +49,48 @@ type ClusterOpts struct {
 
 // Options block for gnatsd server.
 type Options struct {
-	ConfigFile      string        `json:"-"`
-	Host            string        `json:"addr"`
-	Port            int           `json:"port"`
-	ClientAdvertise string        `json:"-"`
-	Trace           bool          `json:"-"`
-	Debug           bool          `json:"-"`
-	NoLog           bool          `json:"-"`
-	NoSigs          bool          `json:"-"`
-	Logtime         bool          `json:"-"`
-	MaxConn         int           `json:"max_connections"`
-	Users           []*User       `json:"-"`
-	Username        string        `json:"-"`
-	Password        string        `json:"-"`
-	Authorization   string        `json:"-"`
-	PingInterval    time.Duration `json:"ping_interval"`
-	MaxPingsOut     int           `json:"ping_max"`
-	HTTPHost        string        `json:"http_host"`
-	HTTPPort        int           `json:"http_port"`
-	HTTPSPort       int           `json:"https_port"`
-	AuthTimeout     float64       `json:"auth_timeout"`
-	MaxControlLine  int           `json:"max_control_line"`
-	MaxPayload      int           `json:"max_payload"`
-	MaxPending      int64         `json:"max_pending"`
-	Cluster         ClusterOpts   `json:"cluster,omitempty"`
-	ProfPort        int           `json:"-"`
-	PidFile         string        `json:"-"`
-	PortsFileDir    string        `json:"-"`
-	LogFile         string        `json:"-"`
-	Syslog          bool          `json:"-"`
-	RemoteSyslog    string        `json:"-"`
-	Routes          []*url.URL    `json:"-"`
-	RoutesStr       string        `json:"-"`
-	TLSTimeout      float64       `json:"tls_timeout"`
-	TLS             bool          `json:"-"`
-	TLSVerify       bool          `json:"-"`
-	TLSCert         string        `json:"-"`
-	TLSKey          string        `json:"-"`
-	TLSCaCert       string        `json:"-"`
-	TLSConfig       *tls.Config   `json:"-"`
-	WriteDeadline   time.Duration `json:"-"`
-	RQSubsSweep     time.Duration `json:"-"`
+	ConfigFile       string        `json:"-"`
+	Host             string        `json:"addr"`
+	Port             int           `json:"port"`
+	ClientAdvertise  string        `json:"-"`
+	Trace            bool          `json:"-"`
+	Debug            bool          `json:"-"`
+	NoLog            bool          `json:"-"`
+	NoSigs           bool          `json:"-"`
+	Logtime          bool          `json:"-"`
+	MaxConn          int           `json:"max_connections"`
+	Users            []*User       `json:"-"`
+	Username         string        `json:"-"`
+	Password         string        `json:"-"`
+	Authorization    string        `json:"-"`
+	PingInterval     time.Duration `json:"ping_interval"`
+	MaxPingsOut      int           `json:"ping_max"`
+	HTTPHost         string        `json:"http_host"`
+	HTTPPort         int           `json:"http_port"`
+	HTTPSPort        int           `json:"https_port"`
+	AuthTimeout      float64       `json:"auth_timeout"`
+	MaxControlLine   int           `json:"max_control_line"`
+	MaxPayload       int           `json:"max_payload"`
+	MaxPending       int64         `json:"max_pending"`
+	Cluster          ClusterOpts   `json:"cluster,omitempty"`
+	ProfPort         int           `json:"-"`
+	PidFile          string        `json:"-"`
+  PortsFileDir    string         `json:"-"`
+	LogFile          string        `json:"-"`
+	Syslog           bool          `json:"-"`
+	RemoteSyslog     string        `json:"-"`
+	Routes           []*url.URL    `json:"-"`
+	RoutesStr        string        `json:"-"`
+	TLSTimeout       float64       `json:"tls_timeout"`
+	TLS              bool          `json:"-"`
+	TLSVerify        bool          `json:"-"`
+	TLSCert          string        `json:"-"`
+	TLSKey           string        `json:"-"`
+	TLSCaCert        string        `json:"-"`
+	TLSConfig        *tls.Config   `json:"-"`
+	WriteDeadline    time.Duration `json:"-"`
+	RQSubsSweep      time.Duration `json:"-"`
+	MaxClosedClients int           `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -974,6 +975,9 @@ func processOptions(opts *Options) {
 	if opts.RQSubsSweep == time.Duration(0) {
 		opts.RQSubsSweep = DEFAULT_REMOTE_QSUBS_SWEEPER
 	}
+	if opts.MaxClosedClients == 0 {
+		opts.MaxClosedClients = DEFAULT_MAX_CLOSED_CLIENTS
+	}
 }
 
 // ConfigureOptions accepts a flag set and augment it with NATS Server
@@ -1024,8 +1028,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
 	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
-	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://localhost:514).")
-	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://localhost:514).")
+	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")
+	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://127.0.0.1:514).")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
 	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")

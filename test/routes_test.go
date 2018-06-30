@@ -642,7 +642,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		sendRouteINFO := func(routeSend sendFun, routeExpect expectFun, urls []string) {
 			routeInfo := server.Info{}
 			routeInfo.ID = routeID
-			routeInfo.Host = "localhost"
+			routeInfo.Host = "127.0.0.1"
 			routeInfo.Port = 5222
 			routeInfo.ClientConnectURLs = urls
 			b, err := json.Marshal(routeInfo)
@@ -890,6 +890,9 @@ func TestRouteBasicPermissions(t *testing.T) {
 	}
 	defer subBbaz.Unsubscribe()
 	ncb.Flush()
+	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Create a connection to server A
 	nca, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port))
@@ -920,6 +923,14 @@ func TestRouteBasicPermissions(t *testing.T) {
 	}
 	defer subBfoo.Unsubscribe()
 	ncb.Flush()
+	// B should have now 3 subs
+	if err := checkExpectedSubs(3, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+	// and A still 2.
+	if err := checkExpectedSubs(2, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
 	// So producing on "foo" from A should not be forwarded to B.
 	if err := nca.Publish("foo", []byte("hello")); err != nil {
 		t.Fatalf("Error on publish: %v", err)
@@ -938,6 +949,10 @@ func TestRouteBasicPermissions(t *testing.T) {
 	}
 	defer subAbat.Unsubscribe()
 	nca.Flush()
+	// A should have 3 subs
+	if err := checkExpectedSubs(3, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
 	// And from B, send a message on that subject and make sure it is not received.
 	if err := ncb.Publish("bat", []byte("hello")); err != nil {
 		t.Fatalf("Error on publish: %v", err)
@@ -951,6 +966,10 @@ func TestRouteBasicPermissions(t *testing.T) {
 	// Stop subscription on foo from B
 	subBfoo.Unsubscribe()
 	ncb.Flush()
+	// Back to 2 subs on B
+	if err := checkExpectedSubs(2, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Create subscription on foo from A, this should be forwared to B.
 	subAfoo, err := nca.Subscribe("foo", cb)
@@ -965,6 +984,14 @@ func TestRouteBasicPermissions(t *testing.T) {
 	}
 	defer subAfoo2.Unsubscribe()
 	nca.Flush()
+	// A should have 5 subs
+	if err := checkExpectedSubs(5, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+	// B should have 4
+	if err := checkExpectedSubs(4, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 	// Send a message from B and check that it is received.
 	if err := ncb.Publish("foo", []byte("hello")); err != nil {
 		t.Fatalf("Error on publish: %v", err)
@@ -982,9 +1009,19 @@ func TestRouteBasicPermissions(t *testing.T) {
 	ncb.Close()
 	srvB.Shutdown()
 
+	// Since B had 2 local subs, A should go from 5 to 3
+	if err := checkExpectedSubs(3, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// Restart server B
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
 	defer srvB.Shutdown()
+	// Check that subs from A that can be sent to B are sent.
+	// That would be 2 (the 2 subscriptions on foo).
+	if err := checkExpectedSubs(2, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Connect to B and send on "foo" and make sure we receive
 	ncb, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port))

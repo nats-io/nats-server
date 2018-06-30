@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -37,13 +38,13 @@ func init() {
 
 // Connz represents detailed information on current client connections.
 type Connz struct {
-	ID       string     `json:"server_id"`
-	Now      time.Time  `json:"now"`
-	NumConns int        `json:"num_connections"`
-	Total    int        `json:"total"`
-	Offset   int        `json:"offset"`
-	Limit    int        `json:"limit"`
-	Conns    []ConnInfo `json:"connections"`
+	ID       string      `json:"server_id"`
+	Now      time.Time   `json:"now"`
+	NumConns int         `json:"num_connections"`
+	Total    int         `json:"total"`
+	Offset   int         `json:"offset"`
+	Limit    int         `json:"limit"`
+	Conns    []*ConnInfo `json:"connections"`
 }
 
 // ConnzOptions are the options passed to Connz()
@@ -67,31 +68,45 @@ type ConnzOptions struct {
 
 	// Filter for this explicit client connection.
 	CID uint64 `json:"cid"`
+
+	// Filter by connection state.
+	State ConnState `json:"state"`
 }
+
+// For filtering states of connections. We will only have two, open and closed.
+type ConnState int
+
+const (
+	ConnOpen = ConnState(iota)
+	ConnClosed
+	ConnAll
+)
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid            uint64    `json:"cid"`
-	IP             string    `json:"ip"`
-	Port           int       `json:"port"`
-	Start          time.Time `json:"start"`
-	LastActivity   time.Time `json:"last_activity"`
-	RTT            string    `json:"rtt,omitempty"`
-	Uptime         string    `json:"uptime"`
-	Idle           string    `json:"idle"`
-	Pending        int       `json:"pending_bytes"`
-	InMsgs         int64     `json:"in_msgs"`
-	OutMsgs        int64     `json:"out_msgs"`
-	InBytes        int64     `json:"in_bytes"`
-	OutBytes       int64     `json:"out_bytes"`
-	NumSubs        uint32    `json:"subscriptions"`
-	Name           string    `json:"name,omitempty"`
-	Lang           string    `json:"lang,omitempty"`
-	Version        string    `json:"version,omitempty"`
-	TLSVersion     string    `json:"tls_version,omitempty"`
-	TLSCipher      string    `json:"tls_cipher_suite,omitempty"`
-	AuthorizedUser string    `json:"authorized_user,omitempty"`
-	Subs           []string  `json:"subscriptions_list,omitempty"`
+	Cid            uint64     `json:"cid"`
+	IP             string     `json:"ip"`
+	Port           int        `json:"port"`
+	Start          time.Time  `json:"start"`
+	LastActivity   time.Time  `json:"last_activity"`
+	Stop           *time.Time `json:"stop,omitempty"`
+	Reason         string     `json:"reason,omitempty"`
+	RTT            string     `json:"rtt,omitempty"`
+	Uptime         string     `json:"uptime"`
+	Idle           string     `json:"idle"`
+	Pending        int        `json:"pending_bytes"`
+	InMsgs         int64      `json:"in_msgs"`
+	OutMsgs        int64      `json:"out_msgs"`
+	InBytes        int64      `json:"in_bytes"`
+	OutBytes       int64      `json:"out_bytes"`
+	NumSubs        uint32     `json:"subscriptions"`
+	Name           string     `json:"name,omitempty"`
+	Lang           string     `json:"lang,omitempty"`
+	Version        string     `json:"version,omitempty"`
+	TLSVersion     string     `json:"tls_version,omitempty"`
+	TLSCipher      string     `json:"tls_cipher_suite,omitempty"`
+	AuthorizedUser string     `json:"authorized_user,omitempty"`
+	Subs           []string   `json:"subscriptions_list,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -108,11 +123,12 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		offset  int
 		limit   = DefaultConnListSize
 		cid     = uint64(0)
+		state   = ConnOpen
 	)
 
 	if opts != nil {
 		// If no sort option given or sort is by uptime, then sort by cid
-		if opts.Sort == "" || opts.Sort == ByUptime {
+		if opts.Sort == "" {
 			sortOpt = ByCid
 		} else {
 			sortOpt = opts.Sort
@@ -130,6 +146,19 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if limit <= 0 {
 			limit = DefaultConnListSize
 		}
+		// state
+		state = opts.State
+
+		// ByStop only makes sense on closed connections
+		if sortOpt == ByStop && state != ConnClosed {
+			return nil, fmt.Errorf("Sort by stop only valid on closed connections")
+		}
+		// ByReason is the same.
+		if sortOpt == ByReason && state != ConnClosed {
+			return nil, fmt.Errorf("Sort by reason only valid on closed connections")
+		}
+
+		// If searching by CID
 		if opts.CID > 0 {
 			cid = opts.CID
 			limit = 1
@@ -142,171 +171,220 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		Now:    time.Now(),
 	}
 
-	// Walk the list
+	// Open clients
+	var openClients []*client
+	// Hold for closed clients if requested.
+	var closedClients []*closedClient
+
+	// Walk the open client list with server lock held.
 	s.mu.Lock()
-	tlsRequired := s.info.TLSRequired
 
 	// copy the server id for monitoring
 	c.ID = s.info.ID
 
-	// number total of clients. The resulting ConnInfo array
+	// Number of total clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
-	totalClients := len(s.clients)
-	c.Total = totalClients
+	switch state {
+	case ConnOpen:
+		c.Total = len(s.clients)
+	case ConnClosed:
+		c.Total = s.closed.len()
+		closedClients = s.closed.closedClients()
+	case ConnAll:
+		c.Total = len(s.clients) + s.closed.len()
+		closedClients = s.closed.closedClients()
+	}
 
-	var pairs Pairs
+	totalClients := c.Total
+	if cid > 0 { // Meaning we only want 1.
+		totalClients = 1
+	}
+	if state == ConnOpen || state == ConnAll {
+		openClients = make([]*client, 0, totalClients)
+	}
+
+	// Data structures for results.
+	var conns []ConnInfo // Limits allocs for actual ConnInfos.
+	var pconns ConnInfos
+
+	switch state {
+	case ConnOpen:
+		conns = make([]ConnInfo, totalClients)
+		pconns = make(ConnInfos, totalClients)
+	case ConnClosed:
+		pconns = make(ConnInfos, totalClients)
+	case ConnAll:
+		conns = make([]ConnInfo, cap(openClients))
+		pconns = make(ConnInfos, totalClients)
+	}
+
+	// Search by individual CID.
 	if cid > 0 {
-		client := s.clients[cid]
-		if client != nil {
-			pairs = append(pairs, Pair{Key: client, Val: int64(cid)})
+		if state == ConnClosed || state == ConnAll {
+			copyClosed := closedClients
+			closedClients = nil
+			for _, cc := range copyClosed {
+				if cc.Cid == cid {
+					closedClients = []*closedClient{cc}
+					break
+				}
+			}
+		} else if state == ConnOpen || state == ConnAll {
+			client := s.clients[cid]
+			if client != nil {
+				openClients = append(openClients, client)
+			}
 		}
 	} else {
-		i := 0
-		pairs = make(Pairs, totalClients)
-		for _, client := range s.clients {
-			client.mu.Lock()
-			switch sortOpt {
-			case ByCid:
-				pairs[i] = Pair{Key: client, Val: int64(client.cid)}
-			case BySubs:
-				pairs[i] = Pair{Key: client, Val: int64(len(client.subs))}
-			case ByPending:
-				pairs[i] = Pair{Key: client, Val: int64(client.out.pb)}
-			case ByOutMsgs:
-				pairs[i] = Pair{Key: client, Val: client.outMsgs}
-			case ByInMsgs:
-				pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inMsgs)}
-			case ByOutBytes:
-				pairs[i] = Pair{Key: client, Val: client.outBytes}
-			case ByInBytes:
-				pairs[i] = Pair{Key: client, Val: atomic.LoadInt64(&client.inBytes)}
-			case ByLast:
-				pairs[i] = Pair{Key: client, Val: client.last.UnixNano()}
-			case ByIdle:
-				pairs[i] = Pair{Key: client, Val: c.Now.Sub(client.last).Nanoseconds()}
+		// Gather all open clients.
+		if state == ConnOpen || state == ConnAll {
+			for _, client := range s.clients {
+				openClients = append(openClients, client)
 			}
-			client.mu.Unlock()
-			i++
 		}
 	}
 	s.mu.Unlock()
 
-	if totalClients > 0 && len(pairs) > 1 {
-		if sortOpt == ByCid {
-			// Return in ascending order
-			sort.Sort(pairs)
-		} else {
-			// Return in descending order
-			sort.Sort(sort.Reverse(pairs))
+	// Just return with empty array if nothing here.
+	if len(openClients) == 0 && len(closedClients) == 0 {
+		c.Conns = ConnInfos{}
+		return c, nil
+	}
+
+	// Now whip through and generate ConnInfo entries
+
+	// Open Clients
+	i := 0
+	for _, client := range openClients {
+		client.mu.Lock()
+		ci := &conns[i]
+		ci.fill(client, client.nc, c.Now)
+		// Fill in subscription data if requested.
+		if subs && len(client.subs) > 0 {
+			ci.Subs = make([]string, 0, len(client.subs))
+			for _, sub := range client.subs {
+				ci.Subs = append(ci.Subs, string(sub.subject))
+			}
 		}
+		// Fill in user if auth requested.
+		if auth {
+			ci.AuthorizedUser = client.opts.Username
+		}
+		client.mu.Unlock()
+		pconns[i] = ci
+		i++
+	}
+	// Closed Clients
+	var needCopy bool
+	if subs || auth {
+		needCopy = true
+	}
+	for _, cc := range closedClients {
+		// Copy if needed for any changes to the ConnInfo
+		if needCopy {
+			cx := *cc
+			cc = &cx
+		}
+		// Fill in subscription data if requested.
+		if subs && len(cc.subs) > 0 {
+			cc.Subs = cc.subs
+		}
+		// Fill in user if auth requested.
+		if auth {
+			cc.AuthorizedUser = cc.user
+		}
+		pconns[i] = &cc.ConnInfo
+		i++
+	}
+
+	switch sortOpt {
+	case ByCid, ByStart:
+		sort.Sort(byCid{pconns})
+	case BySubs:
+		sort.Sort(sort.Reverse(bySubs{pconns}))
+	case ByPending:
+		sort.Sort(sort.Reverse(byPending{pconns}))
+	case ByOutMsgs:
+		sort.Sort(sort.Reverse(byOutMsgs{pconns}))
+	case ByInMsgs:
+		sort.Sort(sort.Reverse(byInMsgs{pconns}))
+	case ByOutBytes:
+		sort.Sort(sort.Reverse(byOutBytes{pconns}))
+	case ByInBytes:
+		sort.Sort(sort.Reverse(byInBytes{pconns}))
+	case ByLast:
+		sort.Sort(sort.Reverse(byLast{pconns}))
+	case ByIdle:
+		sort.Sort(sort.Reverse(byIdle{pconns}))
+	case ByUptime:
+		sort.Sort(byUptime{pconns, time.Now()})
+	case ByStop:
+		sort.Sort(sort.Reverse(byStop{pconns}))
+	case ByReason:
+		sort.Sort(byReason{pconns})
 	}
 
 	minoff := c.Offset
 	maxoff := c.Offset + c.Limit
 
+	maxIndex := totalClients
+
 	// Make sure these are sane.
-	if minoff > totalClients {
-		minoff = totalClients
+	if minoff > maxIndex {
+		minoff = maxIndex
 	}
-	if maxoff > totalClients {
-		maxoff = totalClients
-	}
-	if pairs != nil {
-		pairs = pairs[minoff:maxoff]
+	if maxoff > maxIndex {
+		maxoff = maxIndex
 	}
 
-	// Now we have the real number of ConnInfo objects, we can set c.NumConns
-	// and allocate the array
-	c.NumConns = len(pairs)
-	c.Conns = make([]ConnInfo, c.NumConns)
+	// Now pare down to the requested size.
+	// TODO(dlc) - for very large number of connections we
+	// could save the whole list in a hash, send hash on first
+	// request and allow users to use has for subsequent pages.
+	// Low TTL, say < 1sec.
+	c.Conns = pconns[minoff:maxoff]
+	c.NumConns = len(c.Conns)
 
-	i := 0
-	for _, pair := range pairs {
-
-		client := pair.Key
-
-		client.mu.Lock()
-
-		// First, fill ConnInfo with current client's values. We will
-		// then overwrite the field used for the sort with what was stored
-		// in 'pair'.
-		ci := &c.Conns[i]
-
-		ci.Cid = client.cid
-		ci.Start = client.start
-		ci.LastActivity = client.last
-		ci.Uptime = myUptime(c.Now.Sub(client.start))
-		ci.Idle = myUptime(c.Now.Sub(client.last))
-		ci.RTT = client.getRTT()
-		ci.OutMsgs = client.outMsgs
-		ci.OutBytes = client.outBytes
-		ci.NumSubs = uint32(len(client.subs))
-		ci.Pending = int(client.out.pb)
-		ci.Name = client.opts.Name
-		ci.Lang = client.opts.Lang
-		ci.Version = client.opts.Version
-		// inMsgs and inBytes are updated outside of the client's lock, so
-		// we need to use atomic here.
-		ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
-		ci.InBytes = atomic.LoadInt64(&client.inBytes)
-
-		// Now overwrite the field that was used as the sort key, so results
-		// still look sorted even if the value has changed since sort occurred.
-		sortValue := pair.Val
-		switch sortOpt {
-		case BySubs:
-			ci.NumSubs = uint32(sortValue)
-		case ByPending:
-			ci.Pending = int(sortValue)
-		case ByOutMsgs:
-			ci.OutMsgs = sortValue
-		case ByInMsgs:
-			ci.InMsgs = sortValue
-		case ByOutBytes:
-			ci.OutBytes = sortValue
-		case ByInBytes:
-			ci.InBytes = sortValue
-		case ByLast:
-			ci.LastActivity = time.Unix(0, sortValue)
-		case ByIdle:
-			ci.Idle = myUptime(time.Duration(sortValue))
-		}
-
-		// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
-		// Exclude clients that are still doing handshake so we don't block in
-		// ConnectionState().
-		if tlsRequired && client.flags.isSet(handshakeComplete) && client.nc != nil {
-			conn := client.nc.(*tls.Conn)
-			cs := conn.ConnectionState()
-			ci.TLSVersion = tlsVersion(cs.Version)
-			ci.TLSCipher = tlsCipher(cs.CipherSuite)
-		}
-
-		switch conn := client.nc.(type) {
-		case *net.TCPConn, *tls.Conn:
-			addr := conn.RemoteAddr().(*net.TCPAddr)
-			ci.Port = addr.Port
-			ci.IP = addr.IP.String()
-		}
-
-		// Fill in subscription data if requested.
-		if subs {
-			sublist := make([]*subscription, 0, len(client.subs))
-			for _, sub := range client.subs {
-				sublist = append(sublist, sub)
-			}
-			ci.Subs = castToSliceString(sublist)
-		}
-
-		// Fill in user if auth requested.
-		if auth {
-			ci.AuthorizedUser = client.opts.Username
-		}
-
-		client.mu.Unlock()
-		i++
-	}
 	return c, nil
+}
+
+// Fills in the ConnInfo from the client.
+// client should be locked.
+func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
+	ci.Cid = client.cid
+	ci.Start = client.start
+	ci.LastActivity = client.last
+	ci.Uptime = myUptime(now.Sub(client.start))
+	ci.Idle = myUptime(now.Sub(client.last))
+	ci.RTT = client.getRTT()
+	ci.OutMsgs = client.outMsgs
+	ci.OutBytes = client.outBytes
+	ci.NumSubs = uint32(len(client.subs))
+	ci.Pending = int(client.out.pb)
+	ci.Name = client.opts.Name
+	ci.Lang = client.opts.Lang
+	ci.Version = client.opts.Version
+	// inMsgs and inBytes are updated outside of the client's lock, so
+	// we need to use atomic here.
+	ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
+	ci.InBytes = atomic.LoadInt64(&client.inBytes)
+
+	// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
+	// Exclude clients that are still doing handshake so we don't block in
+	// ConnectionState().
+	if client.flags.isSet(handshakeComplete) && nc != nil {
+		conn := nc.(*tls.Conn)
+		cs := conn.ConnectionState()
+		ci.TLSVersion = tlsVersion(cs.Version)
+		ci.TLSCipher = tlsCipher(cs.CipherSuite)
+	}
+
+	switch conn := nc.(type) {
+	case *net.TCPConn, *tls.Conn:
+		addr := conn.RemoteAddr().(*net.TCPAddr)
+		ci.Port = addr.Port
+		ci.IP = addr.IP.String()
+	}
 }
 
 // Assume lock is held
@@ -325,7 +403,7 @@ func (c *client) getRTT() string {
 	} else {
 		rtt = c.rtt.Truncate(time.Millisecond)
 	}
-	return fmt.Sprintf("%v", rtt)
+	return rtt.String()
 }
 
 func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, error) {
@@ -370,6 +448,26 @@ func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error
 	return val, nil
 }
 
+func decodeState(w http.ResponseWriter, r *http.Request) (ConnState, error) {
+	str := r.URL.Query().Get("state")
+	if str == "" {
+		return ConnOpen, nil
+	}
+	switch strings.ToLower(str) {
+	case "open":
+		return ConnOpen, nil
+	case "closed":
+		return ConnClosed, nil
+	case "any", "all":
+		return ConnAll, nil
+	}
+	// We do not understand intended state here.
+	w.WriteHeader(http.StatusBadRequest)
+	err := fmt.Errorf("Error decoding state for %s", str)
+	w.Write([]byte(err.Error()))
+	return 0, err
+}
+
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
@@ -389,8 +487,11 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-
 	cid, err := decodeUint64(w, r, "cid")
+	if err != nil {
+		return
+	}
+	state, err := decodeState(w, r)
 	if err != nil {
 		return
 	}
@@ -402,6 +503,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		Offset:        offset,
 		Limit:         limit,
 		CID:           cid,
+		State:         state,
 	}
 
 	s.mu.Lock()
@@ -421,14 +523,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	// Handle response
 	ResponseHandler(w, r, b)
-}
-
-func castToSliceString(input []*subscription) []string {
-	output := make([]string, 0, len(input))
-	for _, line := range input {
-		output = append(output, string(line.subject))
-	}
-	return output
 }
 
 // Subsz represents detail information on current connections.
@@ -499,12 +593,11 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			NumSubs:      uint32(len(r.subs)),
 		}
 
-		if subs {
-			sublist := make([]*subscription, 0, len(r.subs))
+		if subs && len(r.subs) > 0 {
+			ri.Subs = make([]string, 0, len(r.subs))
 			for _, sub := range r.subs {
-				sublist = append(sublist, sub)
+				ri.Subs = append(ri.Subs, string(sub.subject))
 			}
-			ri.Subs = castToSliceString(sublist)
 		}
 		switch conn := r.nc.(type) {
 		case *net.TCPConn, *tls.Conn:
@@ -753,4 +846,48 @@ func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
 	}
+}
+
+func (reason ClosedState) String() string {
+	switch reason {
+	case ClientClosed:
+		return "Client"
+	case AuthenticationTimeout:
+		return "Authentication Timeout"
+	case AuthenticationViolation:
+		return "Authentication Failure"
+	case TLSHandshakeError:
+		return "TLS Handshake Failure"
+	case SlowConsumerPendingBytes:
+		return "Slow Consumer (Pending Bytes)"
+	case SlowConsumerWriteDeadline:
+		return "Slow Consumer (Write Deadline)"
+	case WriteError:
+		return "Write Error"
+	case ReadError:
+		return "Read Error"
+	case ParseError:
+		return "Parse Error"
+	case StaleConnection:
+		return "Stale Connection"
+	case ProtocolViolation:
+		return "Protocol Violation"
+	case BadClientProtocolVersion:
+		return "Bad Client Protocol Version"
+	case WrongPort:
+		return "Incorrect Port"
+	case MaxConnectionsExceeded:
+		return "Maximum Connections Exceeded"
+	case MaxPayloadExceeded:
+		return "Maximum Message Payload Exceeded"
+	case MaxControlLineExceeded:
+		return "Maximum Control Line Exceeded"
+	case DuplicateRoute:
+		return "Duplicate Route"
+	case RouteRemoved:
+		return "Route Removed"
+	case ServerShutdown:
+		return "Server Shutdown"
+	}
+	return "Unknown State"
 }

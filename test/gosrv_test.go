@@ -40,7 +40,7 @@ func TestGoServerShutdownWithClients(t *testing.T) {
 	s := RunServer(&opts)
 	addr := s.Addr().(*net.TCPAddr)
 	for i := 0; i < 50; i++ {
-		createClientConn(t, "localhost", addr.Port)
+		createClientConn(t, "127.0.0.1", addr.Port)
 	}
 	s.Shutdown()
 	// Wait longer for client connections
