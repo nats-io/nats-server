@@ -33,7 +33,7 @@ func TestProtoBasics(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -60,7 +60,7 @@ func TestProtoErr(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -74,7 +74,7 @@ func TestUnsubMax(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -97,7 +97,7 @@ func TestQueueSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -131,7 +131,7 @@ func TestMultipleQueueSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -168,7 +168,7 @@ func TestPubToArgState(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -181,7 +181,7 @@ func TestSubToArgState(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -195,7 +195,7 @@ func TestProtoCrash(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := sendCommand(t, c), expectCommand(t, c)
@@ -215,7 +215,7 @@ func TestDuplicateProtoSub(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
@@ -247,7 +247,7 @@ func TestIncompletePubArg(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 	send, expect := setupConn(t, c)
 
@@ -281,7 +281,7 @@ func TestControlLineMaximums(t *testing.T) {
 	s := runProtoServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PROTO_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PROTO_TEST_PORT)
 	defer c.Close()
 
 	send, expect := setupConn(t, c)

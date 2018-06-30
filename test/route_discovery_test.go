@@ -297,37 +297,16 @@ func TestStressSeedSolicitWorks(t *testing.T) {
 
 			serversInfo := []serverInfo{{s1, opts}, {s2, s2Opts}, {s3, s3Opts}, {s4, s4Opts}}
 
-			var err error
-			maxTime := time.Now().Add(5 * time.Second)
-			for time.Now().Before(maxTime) {
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 				for j := 0; j < len(serversInfo); j++ {
-					err = checkConnected(t, serversInfo, j, true)
-					// If error, start this for loop from beginning
-					if err != nil {
-						// Sleep a bit before the next attempt
-						time.Sleep(100 * time.Millisecond)
-						break
+					if err := checkConnected(t, serversInfo, j, true); err != nil {
+						return err
 					}
 				}
-				// All servers checked ok, we are done, otherwise, try again
-				// until time is up
-				if err == nil {
-					break
-				}
-			}
-			// Report error
-			if err != nil {
-				t.Fatalf("Error: %v", err)
-			}
+				return nil
+			})
 		}()
-		maxTime := time.Now().Add(2 * time.Second)
-		for time.Now().Before(maxTime) {
-			if s1.NumRoutes() > 0 {
-				time.Sleep(10 * time.Millisecond)
-			} else {
-				break
-			}
-		}
+		checkNumRoutes(t, s1, 0)
 	}
 }
 
@@ -436,37 +415,16 @@ func TestStressChainedSolicitWorks(t *testing.T) {
 
 			serversInfo := []serverInfo{{s1, opts}, {s2, s2Opts}, {s3, s3Opts}, {s4, s4Opts}}
 
-			var err error
-			maxTime := time.Now().Add(5 * time.Second)
-			for time.Now().Before(maxTime) {
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 				for j := 0; j < len(serversInfo); j++ {
-					err = checkConnected(t, serversInfo, j, false)
-					// If error, start this for loop from beginning
-					if err != nil {
-						// Sleep a bit before the next attempt
-						time.Sleep(100 * time.Millisecond)
-						break
+					if err := checkConnected(t, serversInfo, j, false); err != nil {
+						return err
 					}
 				}
-				// All servers checked ok, we are done, otherwise, try again
-				// until time is up
-				if err == nil {
-					break
-				}
-			}
-			// Report error
-			if err != nil {
-				t.Fatalf("Error: %v", err)
-			}
+				return nil
+			})
 		}()
-		maxTime := time.Now().Add(2 * time.Second)
-		for time.Now().Before(maxTime) {
-			if s1.NumRoutes() > 0 {
-				time.Sleep(10 * time.Millisecond)
-			} else {
-				break
-			}
-		}
+		checkNumRoutes(t, s1, 0)
 	}
 }
 
@@ -590,7 +548,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 
 	rc1ID := "2222"
 	rc1Port := 22
-	rc1Host := "localhost"
+	rc1Host := "127.0.0.1"
 
 	routeSend1, route1Expect := setupRouteEx(t, rc1, opts, rc1ID)
 	route1Expect(infoRe)
@@ -608,7 +566,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 
 	rc2ID := "2224"
 	rc2Port := 24
-	rc2Host := "localhost"
+	rc2Host := "127.0.0.1"
 
 	routeSend2, _ := setupRouteEx(t, rc2, opts, rc2ID)
 

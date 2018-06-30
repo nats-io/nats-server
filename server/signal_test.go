@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -33,7 +34,7 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 	defer os.Remove(logFile)
 	defer os.Remove(logFile + ".bak")
 	opts := &Options{
-		Host:    "localhost",
+		Host:    "127.0.0.1",
 		Port:    -1,
 		NoSigs:  false,
 		LogFile: logFile,
@@ -102,6 +103,14 @@ func TestSignalToReloadConfig(t *testing.T) {
 }
 
 func TestProcessSignalNoProcesses(t *testing.T) {
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return nil, &exec.ExitError{}
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
 	err := ProcessSignal(CommandStop, "")
 	if err == nil {
 		t.Fatal("Expected error")

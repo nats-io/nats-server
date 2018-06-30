@@ -56,7 +56,7 @@ func TestPingSentToTLSConnection(t *testing.T) {
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PING_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PING_TEST_PORT)
 	defer c.Close()
 
 	checkInfoMsg(t, c)
@@ -104,7 +104,7 @@ func TestPingInterval(t *testing.T) {
 	s := runPingServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PING_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PING_TEST_PORT)
 	defer c.Close()
 
 	doConnect(t, c, false, false, false)
@@ -146,7 +146,7 @@ func TestUnpromptedPong(t *testing.T) {
 	s := runPingServer()
 	defer s.Shutdown()
 
-	c := createClientConn(t, "localhost", PING_TEST_PORT)
+	c := createClientConn(t, "127.0.0.1", PING_TEST_PORT)
 	defer c.Close()
 
 	doConnect(t, c, false, false, false)
