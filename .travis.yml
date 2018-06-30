@@ -6,7 +6,7 @@ install:
 - go get github.com/nats-io/go-nats
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
-- go get -u honnef.co/go/tools/cmd/megacheck
+- go get -u -insecure honnef.co/go/tools/cmd/megacheck
 - go get -u github.com/client9/misspell/cmd/misspell
 before_script:
 - EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")

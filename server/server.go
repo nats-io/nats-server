@@ -1030,6 +1030,13 @@ func (s *Server) NumClients() int {
 	return len(s.clients)
 }
 
+// getClient will return the client associated with cid.
+func (s *Server) getClient(cid uint64) *client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clients[cid]
+}
+
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()

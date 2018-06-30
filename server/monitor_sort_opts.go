@@ -13,6 +13,10 @@
 
 package server
 
+import (
+	"time"
+)
+
 // Represents a connection info list. We use pointers since it will be sorted.
 type ConnInfos []*ConnInfo
 
@@ -26,6 +30,7 @@ type SortOpt string
 // Possible sort options
 const (
 	ByCid      SortOpt = "cid"        // By connection ID
+	ByStart    SortOpt = "start"      // By connection start time, same as CID
 	BySubs     SortOpt = "subs"       // By number of subscriptions
 	ByPending  SortOpt = "pending"    // By amount of data in bytes waiting to be sent to client
 	ByOutMsgs  SortOpt = "msgs_to"    // By number of messages sent
@@ -35,6 +40,9 @@ const (
 	ByLast     SortOpt = "last"       // By the last activity
 	ByIdle     SortOpt = "idle"       // By the amount of inactivity
 	ByUptime   SortOpt = "uptime"     // By the amount of time connections exist
+	ByStop     SortOpt = "stop"       // By the stop time for a closed connection
+	ByReason   SortOpt = "reason"     // By the reason for a closed connection
+
 )
 
 // Individual sort options provide the Less for sort.Interface. Len and Swap are on cList.
@@ -83,12 +91,55 @@ func (l byLast) Less(i, j int) bool {
 // Idle time
 type byIdle struct{ ConnInfos }
 
-func (l byIdle) Less(i, j int) bool { return l.ConnInfos[i].Idle < l.ConnInfos[j].Idle }
+func (l byIdle) Less(i, j int) bool {
+	ii := l.ConnInfos[i].LastActivity.Sub(l.ConnInfos[i].Start)
+	ij := l.ConnInfos[j].LastActivity.Sub(l.ConnInfos[j].Start)
+	return ii < ij
+}
+
+// Uptime
+type byUptime struct {
+	ConnInfos
+	now time.Time
+}
+
+func (l byUptime) Less(i, j int) bool {
+	ci := l.ConnInfos[i]
+	cj := l.ConnInfos[j]
+	var upi, upj time.Duration
+	if ci.Stop == nil || ci.Stop.IsZero() {
+		upi = l.now.Sub(ci.Start)
+	} else {
+		upi = ci.Stop.Sub(ci.Start)
+	}
+	if cj.Stop == nil || cj.Stop.IsZero() {
+		upj = l.now.Sub(cj.Start)
+	} else {
+		upj = cj.Stop.Sub(cj.Start)
+	}
+	return upi < upj
+}
+
+// Stop
+type byStop struct{ ConnInfos }
+
+func (l byStop) Less(i, j int) bool {
+	ciStop := l.ConnInfos[i].Stop
+	cjStop := l.ConnInfos[j].Stop
+	return ciStop.Before(*cjStop)
+}
+
+// Reason
+type byReason struct{ ConnInfos }
+
+func (l byReason) Less(i, j int) bool {
+	return l.ConnInfos[i].Reason < l.ConnInfos[j].Reason
+}
 
 // IsValid determines if a sort option is valid
 func (s SortOpt) IsValid() bool {
 	switch s {
-	case "", ByCid, BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes, ByLast, ByIdle, ByUptime:
+	case "", ByCid, ByStart, BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes, ByLast, ByIdle, ByUptime, ByStop, ByReason:
 		return true
 	default:
 		return false
