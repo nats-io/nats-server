@@ -128,7 +128,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	if opts != nil {
 		// If no sort option given or sort is by uptime, then sort by cid
-		if opts.Sort == "" || opts.Sort == ByUptime {
+		if opts.Sort == "" {
 			sortOpt = ByCid
 		} else {
 			sortOpt = opts.Sort
@@ -148,6 +148,15 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		}
 		// state
 		state = opts.State
+
+		// ByStop only makes sense on closed connections
+		if sortOpt == ByStop && state != ConnClosed {
+			return nil, fmt.Errorf("Sort by stop only valid on closed connections")
+		}
+		// ByReason is the same.
+		if sortOpt == ByReason && state != ConnClosed {
+			return nil, fmt.Errorf("Sort by reason only valid on closed connections")
+		}
 
 		// If searching by CID
 		if opts.CID > 0 {
@@ -289,7 +298,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	switch sortOpt {
-	case ByCid:
+	case ByCid, ByStart:
 		sort.Sort(byCid{pconns})
 	case BySubs:
 		sort.Sort(sort.Reverse(bySubs{pconns}))
@@ -308,7 +317,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	case ByIdle:
 		sort.Sort(sort.Reverse(byIdle{pconns}))
 	case ByUptime:
-		sort.Sort(sort.Reverse(byCid{pconns}))
+		sort.Sort(byUptime{pconns, time.Now()})
+	case ByStop:
+		sort.Sort(sort.Reverse(byStop{pconns}))
+	case ByReason:
+		sort.Sort(byReason{pconns})
 	}
 
 	minoff := c.Offset
