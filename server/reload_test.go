@@ -1621,6 +1621,29 @@ func TestConfigReloadClusterNoAdvertise(t *testing.T) {
 	}
 }
 
+func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
+	conf := "maxsubs.conf"
+	if err := ioutil.WriteFile(conf, []byte(`max_subs: 1`), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		stackFatalf(t, "Error processing config file: %v", err)
+	}
+	opts.NoLog = true
+	opts.NoSigs = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if err := ioutil.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if err := s.Reload(); err == nil {
+		t.Fatal("Expected Reload to return an error")
+	}
+}
+
 func TestConfigReloadClientAdvertise(t *testing.T) {
 	conf := "clientadv.conf"
 	if err := ioutil.WriteFile(conf, []byte(`listen: "0.0.0.0:-1"`), 0666); err != nil {

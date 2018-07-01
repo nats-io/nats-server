@@ -766,6 +766,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 		return c
 	}
 
+	// If there is a max subscriptions specified, add to the client.
+	if opts.MaxSubs > 0 {
+		c.msubs = opts.MaxSubs
+	}
+
 	// If there is a max connections specified, check that adding
 	// this new client would not push us over the max
 	if opts.MaxConn > 0 && len(s.clients) >= opts.MaxConn {
