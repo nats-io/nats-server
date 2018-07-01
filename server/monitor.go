@@ -112,6 +112,9 @@ type ConnInfo struct {
 // DefaultConnListSize is the default size of the connection list.
 const DefaultConnListSize = 1024
 
+// DefaultSubListSize is the default size of the subscriptions list.
+const DefaultSubListSize = 1024
+
 const defaultStackBufSize = 10000
 
 // Connz returns a Connz struct containing inormation about connections.
@@ -525,15 +528,6 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
-// Subsz represents detail information on current connections.
-type Subsz struct {
-	*SublistStats
-}
-
-// SubszOptions are the options passed to Subsz.
-// As of now, there are no options defined.
-type SubszOptions struct{}
-
 // Routez represents detailed information on current client connections.
 type Routez struct {
 	ID        string       `json:"server_id"`
@@ -638,9 +632,119 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
+// Subsz represents detail information on current connections.
+type Subsz struct {
+	*SublistStats
+	Total  int         `json:"total"`
+	Offset int         `json:"offset"`
+	Limit  int         `json:"limit"`
+	Subs   []SubDetail `json:"subscriptions_list,omitempty"`
+}
+
+// SubszOptions are the options passed to Subsz.
+// As of now, there are no options defined.
+type SubszOptions struct {
+	// Offset is used for pagination. Subsz() only returns connections starting at this
+	// offset from the global results.
+	Offset int `json:"offset"`
+
+	// Limit is the maximum number of subscriptions that should be returned by Subsz().
+	Limit int `json:"limit"`
+
+	// Subscriptions indicates if subscriptions should be included in the results.
+	Subscriptions bool `json:"subscriptions"`
+
+	// Test the list against this subject. Needs to be literal since it signifies a publish subject.
+	// We will only return subscriptions that would match if a message was sent to this subject.
+	Test string `json:"test,omitempty"`
+}
+
+type SubDetail struct {
+	Subject string `json:"subject"`
+	Queue   string `json:"qgroup,omitempty"`
+	Sid     string `json:"sid"`
+	Msgs    int64  `json:"msgs"`
+	Max     int64  `json:"max,omitempty"`
+	Cid     uint64 `json:"cid"`
+}
+
 // Subsz returns a Subsz struct containing subjects statistics
-func (s *Server) Subsz(subszOpts *SubszOptions) (*Subsz, error) {
-	return &Subsz{s.sl.Stats()}, nil
+func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
+	var (
+		subdetail bool
+		test      bool
+		offset    int
+		limit     = DefaultSubListSize
+		testSub   = ""
+	)
+
+	if opts != nil {
+		subdetail = opts.Subscriptions
+		offset = opts.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		limit = opts.Limit
+		if limit <= 0 {
+			limit = DefaultSubListSize
+		}
+		if opts.Test != "" {
+			testSub = opts.Test
+			test = true
+			if !IsValidLiteralSubject(testSub) {
+				return nil, fmt.Errorf("Invalid test subject, must be valid publish subject:: %s", testSub)
+			}
+		}
+	}
+
+	sz := &Subsz{s.sl.Stats(), 0, offset, limit, nil}
+
+	if subdetail {
+		// Now add in subscription's details
+		var raw [4096]*subscription
+		subs := raw[:0]
+
+		s.sl.localSubs(&subs)
+		details := make([]SubDetail, len(subs))
+		i := 0
+		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
+		for _, sub := range subs {
+			// Check for filter
+			if test && !matchLiteral(testSub, string(sub.subject)) {
+				continue
+			}
+			if sub.client == nil {
+				continue
+			}
+			sub.client.mu.Lock()
+			details[i] = SubDetail{
+				Subject: string(sub.subject),
+				Queue:   string(sub.queue),
+				Sid:     string(sub.sid),
+				Msgs:    sub.nm,
+				Max:     sub.max,
+				Cid:     sub.client.cid,
+			}
+			sub.client.mu.Unlock()
+			i++
+		}
+		minoff := sz.Offset
+		maxoff := sz.Offset + sz.Limit
+
+		maxIndex := i
+
+		// Make sure these are sane.
+		if minoff > maxIndex {
+			minoff = maxIndex
+		}
+		if maxoff > maxIndex {
+			maxoff = maxIndex
+		}
+		sz.Subs = details[minoff:maxoff]
+		sz.Total = len(sz.Subs)
+	}
+
+	return sz, nil
 }
 
 // HandleSubsz processes HTTP requests for subjects stats.
@@ -649,9 +753,41 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	s.httpReqStats[SubszPath]++
 	s.mu.Unlock()
 
-	// As of now, no error is ever returned
-	st, _ := s.Subsz(nil)
-	b, err := json.MarshalIndent(st, "", "  ")
+	subs, err := decodeBool(w, r, "subs")
+	if err != nil {
+		return
+	}
+	offset, err := decodeInt(w, r, "offset")
+	if err != nil {
+		return
+	}
+	limit, err := decodeInt(w, r, "limit")
+	if err != nil {
+		return
+	}
+	testSub := r.URL.Query().Get("test")
+
+	subszOpts := &SubszOptions{
+		Subscriptions: subs,
+		Offset:        offset,
+		Limit:         limit,
+		Test:          testSub,
+	}
+
+	st, err := s.Subsz(subszOpts)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	var b []byte
+
+	if len(st.Subs) == 0 {
+		b, err = json.MarshalIndent(st.SublistStats, "", "  ")
+	} else {
+		b, err = json.MarshalIndent(st, "", "  ")
+	}
 	if err != nil {
 		s.Errorf("Error marshaling response to /subscriptionsz request: %v", err)
 	}

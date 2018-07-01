@@ -1254,7 +1254,7 @@ func TestSubsz(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
-		sl := pollSubsz(t, s, mode, url+"subscriptionsz", nil)
+		sl := pollSubsz(t, s, mode, url+"subsz", nil)
 		if sl.NumSubs != 0 {
 			t.Fatalf("Expected NumSubs of 0, got %d\n", sl.NumSubs)
 		}
@@ -1267,7 +1267,107 @@ func TestSubsz(t *testing.T) {
 	}
 
 	// Test JSONP
-	readBodyEx(t, url+"subscriptionsz?callback=callback", http.StatusOK, appJSContent)
+	readBodyEx(t, url+"subsz?callback=callback", http.StatusOK, appJSContent)
+}
+
+func TestSubszDetails(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t, s)
+	defer nc.Close()
+
+	nc.Subscribe("foo.*", func(m *nats.Msg) {})
+	nc.Subscribe("foo.bar", func(m *nats.Msg) {})
+	nc.Subscribe("foo.foo", func(m *nats.Msg) {})
+
+	nc.Publish("foo.bar", []byte("Hello"))
+	nc.Publish("foo.baz", []byte("Hello"))
+	nc.Publish("foo.foo", []byte("Hello"))
+
+	nc.Flush()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subsz?subs=1", &SubszOptions{Subscriptions: true})
+		if sl.NumSubs != 3 {
+			t.Fatalf("Expected NumSubs of 3, got %d\n", sl.NumSubs)
+		}
+		if sl.Total != 3 {
+			t.Fatalf("Expected Total of 3, got %d\n", sl.Total)
+		}
+		if len(sl.Subs) != 3 {
+			t.Fatalf("Expected subscription details for 3 subs, got %d\n", len(sl.Subs))
+		}
+	}
+}
+
+func TestSubszWithOffsetAndLimit(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t, s)
+	defer nc.Close()
+
+	for i := 0; i < 200; i++ {
+		nc.Subscribe(fmt.Sprintf("foo.%d", i), func(m *nats.Msg) {})
+	}
+	nc.Flush()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subsz?subs=1&offset=10&limit=100", &SubszOptions{Subscriptions: true, Offset: 10, Limit: 100})
+		if sl.NumSubs != 200 {
+			t.Fatalf("Expected NumSubs of 200, got %d\n", sl.NumSubs)
+		}
+		if sl.Total != 100 {
+			t.Fatalf("Expected Total of 100, got %d\n", sl.Total)
+		}
+		if sl.Offset != 10 {
+			t.Fatalf("Expected Offset of 10, got %d\n", sl.Offset)
+		}
+		if sl.Limit != 100 {
+			t.Fatalf("Expected Total of 100, got %d\n", sl.Limit)
+		}
+		if len(sl.Subs) != 100 {
+			t.Fatalf("Expected subscription details for 100 subs, got %d\n", len(sl.Subs))
+		}
+	}
+}
+
+func TestSubszTestPubSubject(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t, s)
+	defer nc.Close()
+
+	nc.Subscribe("foo.*", func(m *nats.Msg) {})
+	nc.Subscribe("foo.bar", func(m *nats.Msg) {})
+	nc.Subscribe("foo.foo", func(m *nats.Msg) {})
+	nc.Flush()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subsz?subs=1&test=foo.foo", &SubszOptions{Subscriptions: true, Test: "foo.foo"})
+		if sl.Total != 2 {
+			t.Fatalf("Expected Total of 2 match, got %d\n", sl.Total)
+		}
+		if len(sl.Subs) != 2 {
+			t.Fatalf("Expected subscription details for 2 matching subs, got %d\n", len(sl.Subs))
+		}
+		sl = pollSubsz(t, s, mode, url+"subsz?subs=1&test=foo", &SubszOptions{Subscriptions: true, Test: "foo"})
+		if len(sl.Subs) != 0 {
+			t.Fatalf("Expected no matching subs, got %d\n", len(sl.Subs))
+		}
+	}
+	// Make sure we get an error with invalid test subject.
+	testUrl := url + "subsz?subs=1&"
+	readBodyEx(t, testUrl+"test=*", http.StatusBadRequest, textPlain)
+	readBodyEx(t, testUrl+"test=foo.*", http.StatusBadRequest, textPlain)
+	readBodyEx(t, testUrl+"test=foo.>", http.StatusBadRequest, textPlain)
+	readBodyEx(t, testUrl+"test=foo..bar", http.StatusBadRequest, textPlain)
 }
 
 // Tests handle root
