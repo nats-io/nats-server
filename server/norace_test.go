@@ -47,7 +47,7 @@ func TestAvoidSlowConsumerBigMessages(t *testing.T) {
 	data := make([]byte, 1024*1024) // 1MB payload
 	rand.Read(data)
 
-	expected := int32(1000)
+	expected := int32(500)
 	received := int32(0)
 
 	done := make(chan bool)
@@ -67,7 +67,7 @@ func TestAvoidSlowConsumerBigMessages(t *testing.T) {
 		t.Fatalf("Received an error on the subscription's connection: %v\n", err)
 	})
 
-	for i := int32(0); i < expected; i++ {
+	for i := 0; i < int(expected); i++ {
 		nc2.Publish("slow.consumer", data)
 	}
 	nc2.Flush()

@@ -17,7 +17,7 @@ before_script:
 - megacheck $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
-- go test -i -race $EXCLUDE_VENDOR
+- go test -i $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
 after_success:
 - if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
