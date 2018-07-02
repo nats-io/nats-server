@@ -1006,8 +1006,8 @@ func TestDynamicBuffers(t *testing.T) {
 	nc.Flush()
 	m := stopRecording()
 
-	if m.rsz != maxBufSize {
-		t.Fatalf("Expected read buffer of %d, but got %d\n", maxBufSize, m.rsz)
+	if m.rsz != maxBufSize && m.rsz != maxBufSize/2 {
+		t.Fatalf("Expected read buffer of %d or %d, but got %d\n", maxBufSize, maxBufSize/2, m.rsz)
 	}
 	if m.wsz > startBufSize {
 		t.Fatalf("Expected write buffer of <= %d, but got %d\n", startBufSize, m.wsz)
