@@ -653,7 +653,6 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Expected connection to be disconnected")
 	}
-	nc.Close()
 }
 
 // Ensure Reload supports enabling token authentication. Test this by starting

@@ -67,6 +67,8 @@ func TestAvoidSlowConsumerBigMessages(t *testing.T) {
 		t.Fatalf("Received an error on the subscription's connection: %v\n", err)
 	})
 
+	nc1.Flush()
+
 	for i := 0; i < int(expected); i++ {
 		nc2.Publish("slow.consumer", data)
 	}
