@@ -59,6 +59,7 @@ type Options struct {
 	NoSigs           bool          `json:"-"`
 	Logtime          bool          `json:"-"`
 	MaxConn          int           `json:"max_connections"`
+	MaxSubs          int           `json:"max_subscriptions,omitempty"`
 	Users            []*User       `json:"-"`
 	Username         string        `json:"-"`
 	Password         string        `json:"-"`
@@ -295,6 +296,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.MaxPending = v.(int64)
 		case "max_connections", "max_conn":
 			o.MaxConn = int(v.(int64))
+		case "max_subscriptions", "max_subs":
+			o.MaxSubs = int(v.(int64))
 		case "ping_interval":
 			o.PingInterval = time.Duration(int(v.(int64))) * time.Second
 		case "ping_max":

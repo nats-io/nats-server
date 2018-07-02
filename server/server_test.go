@@ -386,6 +386,33 @@ func TestMaxConnections(t *testing.T) {
 	}
 }
 
+func TestMaxSubscriptions(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxSubs = 10
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc.Close()
+
+	for i := 0; i < 10; i++ {
+		_, err := nc.Subscribe(fmt.Sprintf("foo.%d", i), func(*nats.Msg) {})
+		if err != nil {
+			t.Fatalf("Error subscribing: %v\n", err)
+		}
+	}
+	// This should cause the error.
+	nc.Subscribe("foo.22", func(*nats.Msg) {})
+	nc.Flush()
+	if err := nc.LastError(); err == nil {
+		t.Fatal("Expected an error but got none\n")
+	}
+}
+
 func TestProcessCommandLineArgs(t *testing.T) {
 	var host string
 	var port int

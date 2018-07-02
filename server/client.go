@@ -131,6 +131,7 @@ type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
 	mpay  int64
+	msubs int
 	mu    sync.Mutex
 	typ   int
 	cid   uint64
@@ -775,6 +776,11 @@ func (c *client) maxConnExceeded() {
 	c.closeConnection(MaxConnectionsExceeded)
 }
 
+func (c *client) maxSubsExceeded() {
+	c.Errorf(ErrTooManySubs.Error())
+	c.sendErr(ErrTooManySubs.Error())
+}
+
 func (c *client) maxPayloadViolation(sz int, max int64) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, max)
 	c.sendErr("Maximum Payload Violation")
@@ -1141,6 +1147,13 @@ func (c *client) processSub(argo []byte) (err error) {
 		return nil
 	}
 
+	if c.msubs > 0 && len(c.subs) >= c.msubs {
+		c.mu.Unlock()
+		c.maxSubsExceeded()
+		return nil
+	}
+
+	// Check if we have a maximum on the number of subscriptions.
 	// We can have two SUB protocols coming from a route due to some
 	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)

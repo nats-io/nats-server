@@ -41,6 +41,10 @@ var (
 	// server has been reached.
 	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
 
+	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
+	// has been reached.
+	ErrTooManySubs = errors.New("Maximum Subscriptions Exceeded")
+
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
 	ErrClientConnectedToRoutePort = errors.New("Attempted To Connect To Route Port")
