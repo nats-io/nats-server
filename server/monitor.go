@@ -692,7 +692,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 			testSub = opts.Test
 			test = true
 			if !IsValidLiteralSubject(testSub) {
-				return nil, fmt.Errorf("Invalid test subject, must be valid publish subject:: %s", testSub)
+				return nil, fmt.Errorf("Invalid test subject, must be valid publish subject: %s", testSub)
 			}
 		}
 	}

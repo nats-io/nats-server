@@ -731,9 +731,10 @@ func (s *Server) createClient(conn net.Conn) *client {
 	opts := s.getOpts()
 
 	max_pay := int64(opts.MaxPayload)
+	max_subs := opts.MaxSubs
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: max_pay, start: now, last: now}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: max_pay, msubs: max_subs, start: now, last: now}
 
 	// Grab JSON info string
 	s.mu.Lock()
@@ -764,11 +765,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 	if !s.running {
 		s.mu.Unlock()
 		return c
-	}
-
-	// If there is a max subscriptions specified, add to the client.
-	if opts.MaxSubs > 0 {
-		c.msubs = opts.MaxSubs
 	}
 
 	// If there is a max connections specified, check that adding
