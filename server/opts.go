@@ -76,6 +76,7 @@ type Options struct {
 	Cluster          ClusterOpts   `json:"cluster,omitempty"`
 	ProfPort         int           `json:"-"`
 	PidFile          string        `json:"-"`
+	PortsFileDir     string        `json:"-"`
 	LogFile          string        `json:"-"`
 	Syslog           bool          `json:"-"`
 	RemoteSyslog     string        `json:"-"`
@@ -286,6 +287,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
 			o.PidFile = v.(string)
+		case "ports_file_dir":
+			o.PortsFileDir = v.(string)
 		case "prof_port":
 			o.ProfPort = int(v.(int64))
 		case "max_control_line":
@@ -790,6 +793,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.PidFile != "" {
 		opts.PidFile = flagOpts.PidFile
 	}
+	if flagOpts.PortsFileDir != "" {
+		opts.PortsFileDir = flagOpts.PortsFileDir
+	}
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
@@ -1020,6 +1026,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
+	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports)")
 	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
