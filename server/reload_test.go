@@ -606,21 +606,18 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	defer os.Remove(config)
 	defer server.Shutdown()
 
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	eh := func(nc *nats.Conn, sub *nats.Subscription, err error) { asyncErr <- err }
+	dh := func(*nats.Conn) { disconnected <- struct{}{} }
+
 	// Ensure we can connect as a sanity check.
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	nc, err := nats.Connect(addr, nats.Token("T0pS3cr3t"))
+	nc, err := nats.Connect(addr, nats.Token("T0pS3cr3t"), nats.ErrorHandler(eh), nats.DisconnectHandler(dh))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
-	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
-		asyncErr <- err
-	})
-	nc.SetDisconnectHandler(func(*nats.Conn) {
-		disconnected <- struct{}{}
-	})
 
 	// Change authentication token.
 	createSymlink(t, config, "./configs/reload/token_authentication_2.conf")
@@ -656,7 +653,6 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Expected connection to be disconnected")
 	}
-	nc.Close()
 }
 
 // Ensure Reload supports enabling token authentication. Test this by starting

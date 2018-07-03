@@ -862,7 +862,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
 	optsA.NoSigs, optsA.NoLog = true, true
-	optsA.RQSubsSweep = 250 * time.Millisecond
+	optsA.RQSubsSweep = 500 * time.Millisecond
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -882,6 +882,7 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer ncA.Close()
+
 	ncB, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
