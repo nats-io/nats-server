@@ -447,6 +447,8 @@ func TestAutoUnsubscribePropagation(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
+	time.Sleep(50 * time.Millisecond)
+
 	// Make sure number of subscriptions on B is correct
 	if subs := srvB.NumSubscriptions(); subs != 0 {
 		t.Fatalf("Expected no subscriptions on remote server, got %d\n", subs)
