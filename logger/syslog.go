@@ -31,6 +31,10 @@ type SysLogger struct {
 	trace  bool
 }
 
+// SetSyslogName sets the name to use for the syslog.
+// Currently used only on Windows.
+func SetSyslogName(name string) {}
+
 // GetSysLoggerTag generates the tag name for use in syslog statements. If
 // the executable is linked, the name of the link will be used as the tag,
 // otherwise, the name of the executable is used.  "gnatsd" is the default

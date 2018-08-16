@@ -22,9 +22,12 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
-const (
-	natsEventSource = "NATS-Server"
-)
+var natsEventSource = "NATS-Server"
+
+// SetSyslogName sets the name to use for the system log event source
+func SetSyslogName(name string) {
+	natsEventSource = name
+}
 
 // SysLogger logs to the windows event logger
 type SysLogger struct {

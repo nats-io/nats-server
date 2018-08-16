@@ -22,11 +22,17 @@ import (
 )
 
 const (
-	serviceName     = "gnatsd"
 	reopenLogCode   = 128
 	reopenLogCmd    = svc.Cmd(reopenLogCode)
 	acceptReopenLog = svc.Accepted(reopenLogCode)
 )
+
+var serviceName = "gnatsd"
+
+// SetServiceName allows setting a different service name
+func SetServiceName(name string) {
+	serviceName = name
+}
 
 // winServiceWrapper implements the svc.Handler interface for implementing
 // gnatsd as a Windows service.
