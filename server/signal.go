@@ -26,7 +26,12 @@ import (
 	"syscall"
 )
 
-const processName = "gnatsd"
+var processName = "gnatsd"
+
+// SetProcessName allows to change the expected name of the process.
+func SetProcessName(name string) {
+	processName = name
+}
 
 // Signal Handling
 func (s *Server) handleSignals() {
@@ -76,10 +81,10 @@ func ProcessSignal(command Command, pidStr string) error {
 			return err
 		}
 		if len(pids) == 0 {
-			return errors.New("no gnatsd processes running")
+			return fmt.Errorf("no %s processes running", processName)
 		}
 		if len(pids) > 1 {
-			errStr := "multiple gnatsd processes running:\n"
+			errStr := fmt.Sprintf("multiple %s processes running:\n", processName)
 			prefix := ""
 			for _, p := range pids {
 				errStr += fmt.Sprintf("%s%d", prefix, p)
