@@ -245,8 +245,8 @@ func sendProto(t tLogger, c net.Conn, op string) {
 
 var (
 	infoRe    = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
-	pingRe    = regexp.MustCompile(`PING\r\n`)
-	pongRe    = regexp.MustCompile(`PONG\r\n`)
+	pingRe    = regexp.MustCompile(`^PING\r\n`)
+	pongRe    = regexp.MustCompile(`^PONG\r\n`)
 	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
 	errRe     = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)

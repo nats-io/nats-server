@@ -1032,7 +1032,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 // Checks to make sure the route is still valid.
 func (s *Server) routeStillValid(rURL *url.URL) bool {
 	for _, ri := range s.getOpts().Routes {
-		if ri == rURL {
+		if ri.String() == rURL.String() {
 			return true
 		}
 	}

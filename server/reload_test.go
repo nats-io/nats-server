@@ -390,10 +390,12 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
-	// Ensure connecting fails.
-	if _, err := nats.Connect(addr); err == nil {
-		t.Fatal("Expected connect to fail")
+	// Ensure connecting is OK even without Secure (the client is now switching automatically).
+	nc, err = nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
 	}
+	nc.Close()
 
 	// Ensure connecting succeeds when using secure.
 	nc, err = nats.Connect(addr, nats.Secure())
@@ -1859,6 +1861,97 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	}
 	if err := os.Remove("gnatsd_old.pid"); err != nil {
 		t.Fatalf("Error reloading config, cannot delete file: %v", err)
+	}
+}
+
+func createConfFile(t *testing.T, content []byte) string {
+	t.Helper()
+	conf, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating conf file: %v", err)
+	}
+	fName := conf.Name()
+	conf.Close()
+	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+		os.Remove(fName)
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+	return fName
+}
+
+func TestConfigReloadClusterWorks(t *testing.T) {
+	confBTemplate := `
+		listen: -1
+		cluster: {
+			listen: 127.0.0.1:7244
+			authorization {
+				user: ruser
+				password: pwd
+				timeout: %d
+			}
+			routes = [
+				nats-route://ruser:pwd@127.0.0.1:7246
+			]
+		}`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, 3)))
+	defer os.Remove(confB)
+
+	confATemplate := `
+		listen: -1
+		cluster: {
+			listen: 127.0.0.1:7246
+			authorization {
+				user: ruser
+				password: pwd
+				timeout: %d
+			}
+			routes = [
+				nats-route://ruser:pwd@127.0.0.1:7244
+			]
+		}`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, 3)))
+	defer os.Remove(confA)
+
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	// Wait for the cluster to form and capture the connection IDs of each route
+	checkClusterFormed(t, srva, srvb)
+
+	getCID := func(s *Server) uint64 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, r := range s.routes {
+			return r.cid
+		}
+		return 0
+	}
+	acid := getCID(srva)
+	bcid := getCID(srvb)
+
+	// Update auth timeout to force a check of the connected route auth
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, 5))
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, 5))
+
+	// Wait a little bit to ensure that there is no issue with connection
+	// breaking at this point (this was an issue before).
+	time.Sleep(100 * time.Millisecond)
+
+	// Cluster should still exist
+	checkClusterFormed(t, srva, srvb)
+
+	// Check that routes were not re-created
+	newacid := getCID(srva)
+	newbcid := getCID(srvb)
+
+	if newacid != acid {
+		t.Fatalf("Expected server A route ID to be %v, got %v", acid, newacid)
+	}
+	if newbcid != bcid {
+		t.Fatalf("Expected server B route ID to be %v, got %v", bcid, newbcid)
 	}
 }
 

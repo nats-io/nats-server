@@ -86,7 +86,7 @@ func main() {
 		fs.Usage,
 		server.PrintTLSHelpAndDie)
 	if err != nil {
-		server.PrintAndDie(err.Error() + "\n" + usageStr)
+		server.PrintAndDie(err.Error())
 	}
 
 	// Create the server with appropriate options.
