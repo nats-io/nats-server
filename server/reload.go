@@ -278,7 +278,13 @@ func (r *routesOption) Apply(server *Server) {
 	// Remove routes.
 	for _, remove := range r.remove {
 		for _, client := range routes {
-			if client.route.url == remove {
+			var url *url.URL
+			client.mu.Lock()
+			if client.route != nil {
+				url = client.route.url
+			}
+			client.mu.Unlock()
+			if url != nil && urlsAreEqual(url, remove) {
 				// Do not attempt to reconnect when route is removed.
 				client.setRouteNoReconnectOnClose()
 				client.closeConnection(RouteRemoved)
@@ -695,7 +701,7 @@ func diffRoutes(old, new []*url.URL) (add, remove []*url.URL) {
 removeLoop:
 	for _, oldRoute := range old {
 		for _, newRoute := range new {
-			if oldRoute == newRoute {
+			if urlsAreEqual(oldRoute, newRoute) {
 				continue removeLoop
 			}
 		}
@@ -706,7 +712,7 @@ removeLoop:
 addLoop:
 	for _, newRoute := range new {
 		for _, oldRoute := range old {
-			if oldRoute == newRoute {
+			if urlsAreEqual(oldRoute, newRoute) {
 				continue addLoop
 			}
 		}

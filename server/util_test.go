@@ -15,6 +15,7 @@ package server
 
 import (
 	"math/rand"
+	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -75,6 +76,31 @@ func TestParseHostPort(t *testing.T) {
 	check("addr:addr", 0, "", 0, true)
 	check("addr:::1234", 0, "", 0, true)
 	check("", 0, "", 0, true)
+}
+
+func TestURLsAreEqual(t *testing.T) {
+	check := func(t *testing.T, u1Str, u2Str string, expectedSame bool) {
+		t.Helper()
+		u1, err := url.Parse(u1Str)
+		if err != nil {
+			t.Fatalf("Error parsing url %q: %v", u1Str, err)
+		}
+		u2, err := url.Parse(u2Str)
+		if err != nil {
+			t.Fatalf("Error parsing url %q: %v", u2Str, err)
+		}
+		same := urlsAreEqual(u1, u2)
+		if expectedSame && !same {
+			t.Fatalf("Expected %v and %v to be the same, they were not", u1, u2)
+		} else if !expectedSame && same {
+			t.Fatalf("Expected %v and %v to be different, they were not", u1, u2)
+		}
+	}
+	check(t, "nats://localhost:4222", "nats://localhost:4222", true)
+	check(t, "nats://ivan:pwd@localhost:4222", "nats://ivan:pwd@localhost:4222", true)
+	check(t, "nats://ivan@localhost:4222", "nats://ivan@localhost:4222", true)
+	check(t, "nats://ivan:@localhost:4222", "nats://ivan:@localhost:4222", true)
+	check(t, "nats://host1:4222", "nats://host2:4222", false)
 }
 
 func BenchmarkParseInt(b *testing.B) {
