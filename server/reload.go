@@ -656,11 +656,14 @@ func (s *Server) reloadAuthorization() {
 		s.removeUnauthorizedSubs(client)
 	}
 
-	for _, client := range routes {
+	for _, route := range routes {
 		// Disconnect any unauthorized routes.
-		if !s.isRouterAuthorized(client) {
-			client.setRouteNoReconnectOnClose()
-			client.authViolation()
+		// Do this only for route that were accepted, not initiated
+		// because in the later case, we don't have the user name/password
+		// of the remote server.
+		if !route.isSolicitedRoute() && !s.isRouterAuthorized(route) {
+			route.setRouteNoReconnectOnClose()
+			route.authViolation()
 		}
 	}
 }
