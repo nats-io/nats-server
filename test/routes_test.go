@@ -878,7 +878,8 @@ func TestRouteBasicPermissions(t *testing.T) {
 	cb := func(_ *nats.Msg) {
 		ch <- true
 	}
-	// Subscribe on on "bar" and "baz", which should be accepted by server A
+	// Subscribe on Server B on "bar" and "baz", which should be accepted by server A across the route
+	// Due to allowing "*"
 	subBbar, err := ncb.Subscribe("bar", cb)
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)

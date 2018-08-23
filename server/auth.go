@@ -74,8 +74,8 @@ type Permissions struct {
 // but describe what a server can import/export from and to
 // another server.
 type RoutePermissions struct {
-	Import []string `json:"import"`
-	Export []string `json:"export"`
+	Import *SubjectPermission `json:"import"`
+	Export *SubjectPermission `json:"export"`
 }
 
 // clone will clone an individual subject permission.
