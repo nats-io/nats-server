@@ -42,8 +42,12 @@ func TestUserClone(t *testing.T) {
 		Username: "foo",
 		Password: "bar",
 		Permissions: &Permissions{
-			Publish:   []string{"foo"},
-			Subscribe: []string{"bar"},
+			Publish: &SubjectPermission{
+				Allow: []string{"foo"},
+			},
+			Subscribe: &SubjectPermission{
+				Allow: []string{"bar"},
+			},
 		},
 	}
 
@@ -54,7 +58,7 @@ func TestUserClone(t *testing.T) {
 			user, clone)
 	}
 
-	clone.Permissions.Subscribe = []string{"baz"}
+	clone.Permissions.Subscribe.Allow = []string{"baz"}
 	if reflect.DeepEqual(user, clone) {
 		t.Fatal("Expected Users to be different")
 	}

@@ -329,13 +329,13 @@ func (c *client) setPermissions(perms *Permissions) {
 	c.perms.pcache = make(map[string]bool)
 
 	// Loop over publish permissions
-	for _, pubSubject := range perms.Publish {
+	for _, pubSubject := range perms.Publish.Allow {
 		sub := &subscription{subject: []byte(pubSubject)}
 		c.perms.pub.Insert(sub)
 	}
 
 	// Loop over subscribe permissions
-	for _, subSubject := range perms.Subscribe {
+	for _, subSubject := range perms.Subscribe.Allow {
 		sub := &subscription{subject: []byte(subSubject)}
 		c.perms.sub.Insert(sub)
 	}
