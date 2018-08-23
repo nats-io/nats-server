@@ -185,9 +185,13 @@ type outbound struct {
 	lft time.Duration // Last flush time.
 }
 
+type perm struct {
+	allow *Sublist
+	deny  *Sublist
+}
 type permissions struct {
-	sub    *Sublist
-	pub    *Sublist
+	sub    perm
+	pub    perm
 	pcache map[string]bool
 }
 
@@ -322,22 +326,39 @@ func (c *client) RegisterUser(user *User) {
 // Initializes client.perms structure.
 // Lock is held on entry.
 func (c *client) setPermissions(perms *Permissions) {
-	// Pre-allocate all to simplify checks later.
 	c.perms = &permissions{}
-	c.perms.sub = NewSublist()
-	c.perms.pub = NewSublist()
 	c.perms.pcache = make(map[string]bool)
 
 	// Loop over publish permissions
+	if len(perms.Publish.Allow) > 0 {
+		c.perms.pub.allow = NewSublist()
+	}
 	for _, pubSubject := range perms.Publish.Allow {
 		sub := &subscription{subject: []byte(pubSubject)}
-		c.perms.pub.Insert(sub)
+		c.perms.pub.allow.Insert(sub)
+	}
+	if len(perms.Publish.Deny) > 0 {
+		c.perms.pub.deny = NewSublist()
+	}
+	for _, pubSubject := range perms.Publish.Deny {
+		sub := &subscription{subject: []byte(pubSubject)}
+		c.perms.pub.deny.Insert(sub)
 	}
 
 	// Loop over subscribe permissions
+	if len(perms.Subscribe.Allow) > 0 {
+		c.perms.sub.allow = NewSublist()
+	}
 	for _, subSubject := range perms.Subscribe.Allow {
 		sub := &subscription{subject: []byte(subSubject)}
-		c.perms.sub.Insert(sub)
+		c.perms.sub.allow.Insert(sub)
+	}
+	if len(perms.Subscribe.Deny) > 0 {
+		c.perms.sub.deny = NewSublist()
+	}
+	for _, subSubject := range perms.Subscribe.Deny {
+		sub := &subscription{subject: []byte(subSubject)}
+		c.perms.sub.deny.Insert(sub)
 	}
 }
 
@@ -1184,11 +1205,24 @@ func (c *client) processSub(argo []byte) (err error) {
 
 // canSubscribe determines if the client is authorized to subscribe to the
 // given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(sub []byte) bool {
+func (c *client) canSubscribe(subject []byte) bool {
 	if c.perms == nil {
 		return true
 	}
-	return len(c.perms.sub.Match(string(sub)).psubs) > 0
+
+	allowed := true
+
+	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
+	if c.perms.sub.allow != nil {
+		r := c.perms.sub.allow.Match(string(subject))
+		allowed = len(r.psubs) != 0
+	}
+	// If we have a deny list and we think we are allowed, check that as well.
+	if allowed && c.perms.sub.deny != nil {
+		r := c.perms.sub.deny.Match(string(subject))
+		allowed = len(r.psubs) == 0
+	}
+	return allowed
 }
 
 // Low level unsubscribe for a given client.
@@ -1400,10 +1434,24 @@ func (c *client) pubAllowed(subject []byte) bool {
 	if ok {
 		return allowed
 	}
-	// Cache miss
-	r := c.perms.pub.Match(string(subject))
-	allowed = len(r.psubs) != 0
+
+	// Cache miss, check allow then deny as needed.
+	if c.perms.pub.allow != nil {
+		r := c.perms.pub.allow.Match(string(subject))
+		allowed = len(r.psubs) != 0
+	} else {
+		// No entries means all are allowed. Deny will overrule as needed.
+		allowed = true
+	}
+	// If we have a deny list and are currently allowed, check that as well.
+	if allowed && c.perms.pub.deny != nil {
+		r := c.perms.pub.deny.Match(string(subject))
+		allowed = len(r.psubs) == 0
+	}
+
+	// Update our cache here.
 	c.perms.pcache[string(subject)] = allowed
+
 	// Prune if needed.
 	if len(c.perms.pcache) > maxPermCacheSize {
 		c.prunePubPermsCache()
