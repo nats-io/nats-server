@@ -593,34 +593,19 @@ func parseSubjects(v interface{}) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
 	}
+	if err := checkSubjectArray(subjects); err != nil {
+		return nil, err
+	}
 	return subjects, nil
 }
 
 // Helper function to parse old style authorization configs.
 func parseOldPermissionStyle(v interface{}) (*SubjectPermission, error) {
-	p := &SubjectPermission{}
-	var subjects []string
-	switch v.(type) {
-	case string:
-		subjects = append(subjects, v.(string))
-	case []string:
-		subjects = v.([]string)
-	case []interface{}:
-		for _, i := range v.([]interface{}) {
-			subject, ok := i.(string)
-			if !ok {
-				return nil, fmt.Errorf("Subject in permissions array cannot be cast to string")
-			}
-			subjects = append(subjects, subject)
-		}
-	default:
-		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
-	}
-	if err := checkSubjectArray(subjects); err != nil {
+	subjects, err := parseSubjects(v)
+	if err != nil {
 		return nil, err
 	}
-	p.Allow = subjects
-	return p, nil
+	return &SubjectPermission{Allow: subjects}, nil
 }
 
 // Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
