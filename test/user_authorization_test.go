@@ -139,4 +139,8 @@ func TestUserAuthorizationProto(t *testing.T) {
 	expectResult(t, c, permErrRe)
 	sendProto(t, c, "SUB foo.baz 1\r\n")
 	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
 }
