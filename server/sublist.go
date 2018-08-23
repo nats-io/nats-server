@@ -92,8 +92,7 @@ func newLevel() *level {
 
 // New will create a default sublist
 func NewSublist() *Sublist {
-	//	return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
-	return &Sublist{root: newLevel()}
+	return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
 }
 
 // Insert adds a subscription into the sublist
@@ -231,7 +230,7 @@ func (s *Sublist) removeFromCache(subject string, sub *subscription) {
 		if !matchLiteral(k, subject) {
 			continue
 		}
-		// Since someone else may be referencing, can't modify the list
+		// Since someone else may be referecing, can't modify the list
 		// safely, just let it re-populate.
 		delete(s.cache, k)
 	}
@@ -267,14 +266,12 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	matchLevel(s.root, tokens, result)
 
 	// Add to our cache
-	if s.cache != nil {
-		s.cache[subject] = result
-		// Bound the number of entries to sublistMaxCache
-		if len(s.cache) > slCacheMax {
-			for k := range s.cache {
-				delete(s.cache, k)
-				break
-			}
+	s.cache[subject] = result
+	// Bound the number of entries to sublistMaxCache
+	if len(s.cache) > slCacheMax {
+		for k := range s.cache {
+			delete(s.cache, k)
+			break
 		}
 	}
 	s.Unlock()
