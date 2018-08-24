@@ -56,19 +56,43 @@ func (u *User) clone() *User {
 	return clone
 }
 
+// SubjectPermission is an individual allow and deny struct for publish
+// and subscribe authorizations.
+type SubjectPermission struct {
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
+}
+
 // Permissions are the allowed subjects on a per
 // publish or subscribe basis.
 type Permissions struct {
-	Publish   []string `json:"publish"`
-	Subscribe []string `json:"subscribe"`
+	Publish   *SubjectPermission `json:"publish"`
+	Subscribe *SubjectPermission `json:"subscribe"`
 }
 
 // RoutePermissions are similar to user permissions
 // but describe what a server can import/export from and to
 // another server.
 type RoutePermissions struct {
-	Import []string `json:"import"`
-	Export []string `json:"export"`
+	Import *SubjectPermission `json:"import"`
+	Export *SubjectPermission `json:"export"`
+}
+
+// clone will clone an individual subject permission.
+func (p *SubjectPermission) clone() *SubjectPermission {
+	if p == nil {
+		return nil
+	}
+	clone := &SubjectPermission{}
+	if p.Allow != nil {
+		clone.Allow = make([]string, len(p.Allow))
+		copy(clone.Allow, p.Allow)
+	}
+	if p.Deny != nil {
+		clone.Deny = make([]string, len(p.Deny))
+		copy(clone.Deny, p.Deny)
+	}
+	return clone
 }
 
 // clone performs a deep copy of the Permissions struct, returning a new clone
@@ -79,12 +103,10 @@ func (p *Permissions) clone() *Permissions {
 	}
 	clone := &Permissions{}
 	if p.Publish != nil {
-		clone.Publish = make([]string, len(p.Publish))
-		copy(clone.Publish, p.Publish)
+		clone.Publish = p.Publish.clone()
 	}
 	if p.Subscribe != nil {
-		clone.Subscribe = make([]string, len(p.Subscribe))
-		copy(clone.Subscribe, p.Subscribe)
+		clone.Subscribe = p.Subscribe.clone()
 	}
 	return clone
 }

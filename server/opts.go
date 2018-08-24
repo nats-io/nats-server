@@ -395,8 +395,14 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 				// The parsing sets Import into Publish and Export into Subscribe, convert
 				// accordingly.
 				opts.Cluster.Permissions = &RoutePermissions{
-					Import: auth.defaultPermissions.Publish,
-					Export: auth.defaultPermissions.Subscribe,
+					Import: &SubjectPermission{
+						Allow: auth.defaultPermissions.Publish.Allow,
+						Deny:  auth.defaultPermissions.Publish.Deny,
+					},
+					Export: &SubjectPermission{
+						Allow: auth.defaultPermissions.Subscribe.Allow,
+						Deny:  auth.defaultPermissions.Subscribe.Deny,
+					},
 				}
 			}
 		case "routes":
@@ -538,22 +544,34 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 		// Import is Publish
 		// Export is Subscribe
 		case "pub", "publish", "import":
-			subjects, err := parseSubjects(v)
+			perms, err := parseVariablePermissions(v)
 			if err != nil {
 				return nil, err
 			}
-			p.Publish = subjects
+			p.Publish = perms
 		case "sub", "subscribe", "export":
-			subjects, err := parseSubjects(v)
+			perms, err := parseVariablePermissions(v)
 			if err != nil {
 				return nil, err
 			}
-			p.Subscribe = subjects
+			p.Subscribe = perms
 		default:
 			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
 		}
 	}
 	return p, nil
+}
+
+// Tope level parser for authorization configurations.
+func parseVariablePermissions(v interface{}) (*SubjectPermission, error) {
+	switch v.(type) {
+	case map[string]interface{}:
+		// New style with allow and/or deny properties.
+		return parseSubjectPermission(v.(map[string]interface{}))
+	default:
+		// Old style
+		return parseOldPermissionStyle(v)
+	}
 }
 
 // Helper function to parse subject singeltons and/or arrays
@@ -575,17 +593,58 @@ func parseSubjects(v interface{}) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
 	}
-	return checkSubjectArray(subjects)
+	if err := checkSubjectArray(subjects); err != nil {
+		return nil, err
+	}
+	return subjects, nil
+}
+
+// Helper function to parse old style authorization configs.
+func parseOldPermissionStyle(v interface{}) (*SubjectPermission, error) {
+	subjects, err := parseSubjects(v)
+	if err != nil {
+		return nil, err
+	}
+	return &SubjectPermission{Allow: subjects}, nil
+}
+
+// Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
+func parseSubjectPermission(m map[string]interface{}) (*SubjectPermission, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+
+	p := &SubjectPermission{}
+
+	for k, v := range m {
+		switch strings.ToLower(k) {
+		case "allow":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Allow = subjects
+		case "deny":
+			subjects, err := parseSubjects(v)
+			if err != nil {
+				return nil, err
+			}
+			p.Deny = subjects
+		default:
+			return nil, fmt.Errorf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)
+		}
+	}
+	return p, nil
 }
 
 // Helper function to validate subjects, etc for account permissioning.
-func checkSubjectArray(sa []string) ([]string, error) {
+func checkSubjectArray(sa []string) error {
 	for _, s := range sa {
 		if !IsValidSubject(s) {
-			return nil, fmt.Errorf("Subject %q is not a valid subject", s)
+			return fmt.Errorf("Subject %q is not a valid subject", s)
 		}
 	}
-	return sa, nil
+	return nil
 }
 
 // PrintTLSHelpAndDie prints TLS usage and exits.

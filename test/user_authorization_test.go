@@ -98,4 +98,49 @@ func TestUserAuthorizationProto(t *testing.T) {
 	expectResult(t, c, permErrRe)
 
 	c.Close()
+
+	// This is the new style permissions with allow and deny clauses.
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "ns", DefaultPass)
+	expectResult(t, c, okRe)
+
+	// These should work
+	sendProto(t, c, "PUB SANDBOX.foo 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "PUB baz.bar 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "PUB baz.foo 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+
+	// These should error.
+	sendProto(t, c, "PUB foo 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB bar 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB foo.bar 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB foo.bar.baz 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB SYS.1 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+
+	// Subscriptions
+
+	// These should work ok.
+	sendProto(t, c, "SUB foo.bar 1\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "SUB foo.foo 1\r\n")
+	expectResult(t, c, okRe)
+
+	// These should error.
+	sendProto(t, c, "SUB foo 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
 }

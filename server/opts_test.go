@@ -587,22 +587,22 @@ func TestAuthorizationConfig(t *testing.T) {
 	if alice.Permissions.Publish == nil {
 		t.Fatalf("Expected Alice's publish permissions to be non-nil\n")
 	}
-	if len(alice.Permissions.Publish) != 1 {
+	if len(alice.Permissions.Publish.Allow) != 1 {
 		t.Fatalf("Expected Alice's publish permissions to have 1 element, got %d\n",
-			len(alice.Permissions.Publish))
+			len(alice.Permissions.Publish.Allow))
 	}
-	pubPerm := alice.Permissions.Publish[0]
+	pubPerm := alice.Permissions.Publish.Allow[0]
 	if pubPerm != "*" {
 		t.Fatalf("Expected Alice's publish permissions to be '*', got %q\n", pubPerm)
 	}
 	if alice.Permissions.Subscribe == nil {
 		t.Fatalf("Expected Alice's subscribe permissions to be non-nil\n")
 	}
-	if len(alice.Permissions.Subscribe) != 1 {
+	if len(alice.Permissions.Subscribe.Allow) != 1 {
 		t.Fatalf("Expected Alice's subscribe permissions to have 1 element, got %d\n",
-			len(alice.Permissions.Subscribe))
+			len(alice.Permissions.Subscribe.Allow))
 	}
-	subPerm := alice.Permissions.Subscribe[0]
+	subPerm := alice.Permissions.Subscribe.Allow[0]
 	if subPerm != ">" {
 		t.Fatalf("Expected Alice's subscribe permissions to be '>', got %q\n", subPerm)
 	}
@@ -634,13 +634,130 @@ func TestAuthorizationConfig(t *testing.T) {
 	if susan.Permissions.Subscribe == nil {
 		t.Fatalf("Expected Susan's subscribe permissions to be non-nil\n")
 	}
-	if len(susan.Permissions.Subscribe) != 1 {
+	if len(susan.Permissions.Subscribe.Allow) != 1 {
 		t.Fatalf("Expected Susan's subscribe permissions to have 1 element, got %d\n",
-			len(susan.Permissions.Subscribe))
+			len(susan.Permissions.Subscribe.Allow))
 	}
-	subPerm = susan.Permissions.Subscribe[0]
+	subPerm = susan.Permissions.Subscribe.Allow[0]
 	if subPerm != "PUBLIC.>" {
 		t.Fatalf("Expected Susan's subscribe permissions to be 'PUBLIC.>', got %q\n", subPerm)
+	}
+}
+
+// Test highly depends on contents of the config file listed below. Any changes to that file
+// may very well break this test.
+func TestNewStyleAuthorizationConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/new_style_authorization.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+
+	lu := len(opts.Users)
+	if lu != 2 {
+		t.Fatalf("Expected 2 users, got %d\n", lu)
+	}
+	// Build a map
+	mu := make(map[string]*User)
+	for _, u := range opts.Users {
+		mu[u.Username] = u
+	}
+	// Alice
+	alice, ok := mu["alice"]
+	if !ok {
+		t.Fatalf("Expected to see user Alice\n")
+	}
+	if alice.Permissions == nil {
+		t.Fatalf("Expected Alice's permissions to be non-nil\n")
+	}
+
+	if alice.Permissions.Publish == nil {
+		t.Fatalf("Expected Alice's publish permissions to be non-nil\n")
+	}
+	if len(alice.Permissions.Publish.Allow) != 3 {
+		t.Fatalf("Expected Alice's allowed publish permissions to have 3 elements, got %d\n",
+			len(alice.Permissions.Publish.Allow))
+	}
+	pubPerm := alice.Permissions.Publish.Allow[0]
+	if pubPerm != "foo" {
+		t.Fatalf("Expected Alice's first allowed publish permission to be 'foo', got %q\n", pubPerm)
+	}
+	pubPerm = alice.Permissions.Publish.Allow[1]
+	if pubPerm != "bar" {
+		t.Fatalf("Expected Alice's second allowed publish permission to be 'bar', got %q\n", pubPerm)
+	}
+	pubPerm = alice.Permissions.Publish.Allow[2]
+	if pubPerm != "baz" {
+		t.Fatalf("Expected Alice's third allowed publish permission to be 'baz', got %q\n", pubPerm)
+	}
+	if len(alice.Permissions.Publish.Deny) != 0 {
+		t.Fatalf("Expected Alice's denied publish permissions to have 0 elements, got %d\n",
+			len(alice.Permissions.Publish.Deny))
+	}
+
+	if alice.Permissions.Subscribe == nil {
+		t.Fatalf("Expected Alice's subscribe permissions to be non-nil\n")
+	}
+	if len(alice.Permissions.Subscribe.Allow) != 0 {
+		t.Fatalf("Expected Alice's allowed subscribe permissions to have 0 elements, got %d\n",
+			len(alice.Permissions.Subscribe.Allow))
+	}
+	if len(alice.Permissions.Subscribe.Deny) != 1 {
+		t.Fatalf("Expected Alice's denied subscribe permissions to have 1 element, got %d\n",
+			len(alice.Permissions.Subscribe.Deny))
+	}
+	subPerm := alice.Permissions.Subscribe.Deny[0]
+	if subPerm != "$SYSTEM.>" {
+		t.Fatalf("Expected Alice's only denied subscribe permission to be '$SYSTEM.>', got %q\n", subPerm)
+	}
+
+	// Bob
+	bob, ok := mu["bob"]
+	if !ok {
+		t.Fatalf("Expected to see user Bob\n")
+	}
+	if bob.Permissions == nil {
+		t.Fatalf("Expected Bob's permissions to be non-nil\n")
+	}
+
+	if bob.Permissions.Publish == nil {
+		t.Fatalf("Expected Bobs's publish permissions to be non-nil\n")
+	}
+	if len(bob.Permissions.Publish.Allow) != 1 {
+		t.Fatalf("Expected Bob's allowed publish permissions to have 1 element, got %d\n",
+			len(bob.Permissions.Publish.Allow))
+	}
+	pubPerm = bob.Permissions.Publish.Allow[0]
+	if pubPerm != "$SYSTEM.>" {
+		t.Fatalf("Expected Bob's first allowed publish permission to be '$SYSTEM.>', got %q\n", pubPerm)
+	}
+	if len(bob.Permissions.Publish.Deny) != 0 {
+		t.Fatalf("Expected Bob's denied publish permissions to have 0 elements, got %d\n",
+			len(bob.Permissions.Publish.Deny))
+	}
+
+	if bob.Permissions.Subscribe == nil {
+		t.Fatalf("Expected Bob's subscribe permissions to be non-nil\n")
+	}
+	if len(bob.Permissions.Subscribe.Allow) != 0 {
+		t.Fatalf("Expected Bob's allowed subscribe permissions to have 0 elements, got %d\n",
+			len(bob.Permissions.Subscribe.Allow))
+	}
+	if len(bob.Permissions.Subscribe.Deny) != 3 {
+		t.Fatalf("Expected Bobs's denied subscribe permissions to have 3 elements, got %d\n",
+			len(bob.Permissions.Subscribe.Deny))
+	}
+	subPerm = bob.Permissions.Subscribe.Deny[0]
+	if subPerm != "foo" {
+		t.Fatalf("Expected Bobs's first denied subscribe permission to be 'foo', got %q\n", subPerm)
+	}
+	subPerm = bob.Permissions.Subscribe.Deny[1]
+	if subPerm != "bar" {
+		t.Fatalf("Expected Bobs's second denied subscribe permission to be 'bar', got %q\n", subPerm)
+	}
+	subPerm = bob.Permissions.Subscribe.Deny[2]
+	if subPerm != "baz" {
+		t.Fatalf("Expected Bobs's third denied subscribe permission to be 'baz', got %q\n", subPerm)
 	}
 }
 

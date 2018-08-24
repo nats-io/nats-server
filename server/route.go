@@ -498,9 +498,14 @@ func (c *client) setRoutePermissions(perms *RoutePermissions) {
 	// The Import permission is mapped to Publish
 	// and Export permission is mapped to Subscribe.
 	// For meaning of Import/Export, see canImport and canExport.
-	p := &Permissions{
-		Publish:   perms.Import,
-		Subscribe: perms.Export,
+	p := &Permissions{}
+	p.Publish = &SubjectPermission{
+		Allow: perms.Import.Allow,
+		Deny:  perms.Import.Deny,
+	}
+	p.Subscribe = &SubjectPermission{
+		Allow: perms.Export.Allow,
+		Deny:  perms.Export.Deny,
 	}
 	c.setPermissions(p)
 }
