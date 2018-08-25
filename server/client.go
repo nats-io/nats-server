@@ -326,39 +326,46 @@ func (c *client) RegisterUser(user *User) {
 // Initializes client.perms structure.
 // Lock is held on entry.
 func (c *client) setPermissions(perms *Permissions) {
+	if perms == nil {
+		return
+	}
 	c.perms = &permissions{}
 	c.perms.pcache = make(map[string]bool)
 
 	// Loop over publish permissions
-	if len(perms.Publish.Allow) > 0 {
-		c.perms.pub.allow = NewSublist()
-	}
-	for _, pubSubject := range perms.Publish.Allow {
-		sub := &subscription{subject: []byte(pubSubject)}
-		c.perms.pub.allow.Insert(sub)
-	}
-	if len(perms.Publish.Deny) > 0 {
-		c.perms.pub.deny = NewSublist()
-	}
-	for _, pubSubject := range perms.Publish.Deny {
-		sub := &subscription{subject: []byte(pubSubject)}
-		c.perms.pub.deny.Insert(sub)
+	if perms.Publish != nil {
+		if len(perms.Publish.Allow) > 0 {
+			c.perms.pub.allow = NewSublist()
+		}
+		for _, pubSubject := range perms.Publish.Allow {
+			sub := &subscription{subject: []byte(pubSubject)}
+			c.perms.pub.allow.Insert(sub)
+		}
+		if len(perms.Publish.Deny) > 0 {
+			c.perms.pub.deny = NewSublist()
+		}
+		for _, pubSubject := range perms.Publish.Deny {
+			sub := &subscription{subject: []byte(pubSubject)}
+			c.perms.pub.deny.Insert(sub)
+		}
 	}
 
 	// Loop over subscribe permissions
-	if len(perms.Subscribe.Allow) > 0 {
-		c.perms.sub.allow = NewSublist()
-	}
-	for _, subSubject := range perms.Subscribe.Allow {
-		sub := &subscription{subject: []byte(subSubject)}
-		c.perms.sub.allow.Insert(sub)
-	}
-	if len(perms.Subscribe.Deny) > 0 {
-		c.perms.sub.deny = NewSublist()
-	}
-	for _, subSubject := range perms.Subscribe.Deny {
-		sub := &subscription{subject: []byte(subSubject)}
-		c.perms.sub.deny.Insert(sub)
+	if perms.Subscribe != nil {
+		if len(perms.Subscribe.Allow) > 0 {
+			c.perms.sub.allow = NewSublist()
+		}
+		for _, subSubject := range perms.Subscribe.Allow {
+			sub := &subscription{subject: []byte(subSubject)}
+			c.perms.sub.allow.Insert(sub)
+		}
+		if len(perms.Subscribe.Deny) > 0 {
+			c.perms.sub.deny = NewSublist()
+		}
+		for _, subSubject := range perms.Subscribe.Deny {
+			sub := &subscription{subject: []byte(subSubject)}
+			c.perms.sub.deny.Insert(sub)
+		}
 	}
 }
 
