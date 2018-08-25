@@ -202,23 +202,36 @@ func copyResult(r *SublistResult) *SublistResult {
 	return nr
 }
 
+// Adds a new sub to an existing result.
+func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
+	// Copy since others may have a reference.
+	nr := copyResult(r)
+	if sub.queue == nil {
+		nr.psubs = append(nr.psubs, sub)
+	} else {
+		if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
+			nr.qsubs[i] = append(nr.qsubs[i], sub)
+		} else {
+			nr.qsubs = append(nr.qsubs, []*subscription{sub})
+		}
+	}
+	return nr
+}
+
 // addToCache will add the new entry to existing cache
 // entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
+	// If literal we can direct match.
+	if IsValidLiteralSubject(subject) {
+		if r, ok := s.cache[subject]; ok {
+			s.cache[subject] = r.addSubToResult(sub)
+		}
+		return
+	}
+
 	for k, r := range s.cache {
 		if matchLiteral(k, subject) {
-			// Copy since others may have a reference.
-			nr := copyResult(r)
-			if sub.queue == nil {
-				nr.psubs = append(nr.psubs, sub)
-			} else {
-				if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
-					nr.qsubs[i] = append(nr.qsubs[i], sub)
-				} else {
-					nr.qsubs = append(nr.qsubs, []*subscription{sub})
-				}
-			}
-			s.cache[k] = nr
+			s.cache[k] = r.addSubToResult(sub)
 		}
 	}
 }
@@ -226,6 +239,11 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
 func (s *Sublist) removeFromCache(subject string, sub *subscription) {
+	// If literal we can direct match.
+	if IsValidLiteralSubject(subject) {
+		delete(s.cache, subject)
+		return
+	}
 	for k := range s.cache {
 		if !matchLiteral(k, subject) {
 			continue
@@ -501,7 +519,7 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 		if found && n.plist != nil {
 			// This will brute force remove the plist to perform
 			// correct behavior. Will get repopulated on a call
-			//to Match as needed.
+			// to Match as needed.
 			n.plist = nil
 		}
 		return found
@@ -558,7 +576,7 @@ func (s *Sublist) Stats() *SublistStats {
 	if st.NumMatches > 0 {
 		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
 	}
-	// whip through cache for fanout stats
+	// whip through cache for fanout stats, this can be off if cache is full and doing evictions.
 	tot, max := 0, 0
 	for _, r := range s.cache {
 		l := len(r.psubs) + len(r.qsubs)

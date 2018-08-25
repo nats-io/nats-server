@@ -15,12 +15,17 @@ package server
 
 import (
 	"fmt"
+	"math/rand"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	dbg "runtime/debug"
+
+	"github.com/nats-io/nuid"
 )
 
 func stackFatalf(t *testing.T, f string, args ...interface{}) {
@@ -731,7 +736,7 @@ func TestSublistRaceOnMatch(t *testing.T) {
 // -- Benchmarks Setup --
 
 var subs []*subscription
-var toks = []string{"apcera", "continuum", "component", "router", "api", "imgr", "jmgr", "auth"}
+var toks = []string{"synadia", "nats", "jetstream", "nkeys", "jwt", "deny", "auth", "drain"}
 var sl = NewSublist()
 
 func init() {
@@ -760,8 +765,8 @@ func subsInit(pre string) {
 
 func addWildcards() {
 	sl.Insert(newSub("cloud.>"))
-	sl.Insert(newSub("cloud.continuum.component.>"))
-	sl.Insert(newSub("cloud.*.*.router.*"))
+	sl.Insert(newSub("cloud.nats.component.>"))
+	sl.Insert(newSub("cloud.*.*.nkeys.*"))
 }
 
 // -- Benchmarks Setup End --
@@ -776,64 +781,64 @@ func Benchmark______________________SublistInsert(b *testing.B) {
 
 func Benchmark____________SublistMatchSingleToken(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera")
+		sl.Match("synadia")
 	}
 }
 
 func Benchmark______________SublistMatchTwoTokens(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera.continuum")
+		sl.Match("synadia.nats")
 	}
 }
 
 func Benchmark____________SublistMatchThreeTokens(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera.continuum.component")
+		sl.Match("synadia.nats.jetstream")
 	}
 }
 
 func Benchmark_____________SublistMatchFourTokens(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera.continuum.component.router")
+		sl.Match("synadia.nats.jetstream.nkeys")
 	}
 }
 
 func Benchmark_SublistMatchFourTokensSingleResult(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera.continuum.component.router")
+		sl.Match("synadia.nats.jetstream.nkeys")
 	}
 }
 
 func Benchmark_SublistMatchFourTokensMultiResults(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("cloud.continuum.component.router")
+		sl.Match("cloud.nats.component.router")
 	}
 }
 
 func Benchmark_______SublistMissOnLastTokenOfFive(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sl.Match("apcera.continuum.component.router.ZZZZ")
+		sl.Match("synadia.nats.jetstream.nkeys.ZZZZ")
 	}
 }
 
 func multiRead(b *testing.B, num int) {
-	b.StopTimer()
 	var swg, fwg sync.WaitGroup
 	swg.Add(num)
 	fwg.Add(num)
-	s := "apcera.continuum.component.router"
+	s := "synadia.nats.jetstream.nkeys"
 	for i := 0; i < num; i++ {
 		go func() {
 			swg.Done()
 			swg.Wait()
-			for i := 0; i < b.N; i++ {
+			n := b.N / num
+			for i := 0; i < n; i++ {
 				sl.Match(s)
 			}
 			fwg.Done()
 		}()
 	}
 	swg.Wait()
-	b.StartTimer()
+	b.ResetTimer()
 	fwg.Wait()
 }
 
@@ -850,7 +855,6 @@ func Benchmark__________Sublist1000XMultipleReads(b *testing.B) {
 }
 
 func Benchmark________________SublistMatchLiteral(b *testing.B) {
-	b.StopTimer()
 	cachedSubj := "foo.foo.foo.foo.foo.foo.foo.foo.foo.foo"
 	subjects := []string{
 		"foo.foo.foo.foo.foo.foo.foo.foo.foo.foo",
@@ -875,7 +879,7 @@ func Benchmark________________SublistMatchLiteral(b *testing.B) {
 		"foo.*.*.*.*.*.*.*.*.*",
 		"*.*.*.*.*.*.*.*.*.*",
 	}
-	b.StartTimer()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, subject := range subjects {
 			if !matchLiteral(cachedSubj, subject) {
@@ -887,13 +891,12 @@ func Benchmark________________SublistMatchLiteral(b *testing.B) {
 
 func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
 	var nsubs = 512
-	b.StopTimer()
 	s := NewSublist()
 	subject := "foo"
 	for i := 0; i < nsubs; i++ {
 		s.Insert(newSub(subject))
 	}
-	b.StartTimer()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r := s.Match(subject)
 		if len(r.psubs) != nsubs {
@@ -904,7 +907,6 @@ func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
 }
 
 func removeTest(b *testing.B, singleSubject, doBatch bool, qgroup string) {
-	b.StopTimer()
 	s := NewSublist()
 	subject := "foo"
 
@@ -921,7 +923,7 @@ func removeTest(b *testing.B, singleSubject, doBatch bool, qgroup string) {
 	}
 
 	// Actual test on Remove
-	b.StartTimer()
+	b.ResetTimer()
 	if doBatch {
 		s.RemoveBatch(subs)
 	} else {
@@ -956,7 +958,6 @@ func Benchmark_________SublistRemove1TokenQGBatch(b *testing.B) {
 }
 
 func removeMultiTest(b *testing.B, singleSubject, doBatch bool) {
-	b.StopTimer()
 	s := NewSublist()
 	subject := "foo"
 	var swg, fwg sync.WaitGroup
@@ -994,7 +995,7 @@ func removeMultiTest(b *testing.B, singleSubject, doBatch bool) {
 		}()
 	}
 	swg.Wait()
-	b.StartTimer()
+	b.ResetTimer()
 	fwg.Wait()
 }
 
@@ -1016,4 +1017,131 @@ func Benchmark__SublistRemove1kSingle2TokensMulti(b *testing.B) {
 // Batch version
 func Benchmark___SublistRemove1kBatch2TokensMulti(b *testing.B) {
 	removeMultiTest(b, false, true)
+}
+
+// Cache contention tests
+func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) {
+	var swg, fwg, mwg sync.WaitGroup
+	total := numMatchers + numAdders + numRemovers
+	swg.Add(total)
+	fwg.Add(total)
+	mwg.Add(numMatchers)
+
+	mu := sync.RWMutex{}
+	subs := make([]*subscription, 0, 8192)
+
+	quitCh := make(chan struct{})
+
+	// Set up a new sublist. subjects will be foo.bar.baz.N
+	s := NewSublist()
+	mu.Lock()
+	for i := 0; i < 10000; i++ {
+		sub := newSub(fmt.Sprintf("foo.bar.baz.%d", i))
+		s.Insert(sub)
+		subs = append(subs, sub)
+	}
+	mu.Unlock()
+
+	// Now warm up the cache
+	for i := 0; i < slCacheMax; i++ {
+		s.Match(fmt.Sprintf("foo.bar.baz.%d", i))
+	}
+
+	// Setup go routines.
+
+	// Adders
+	for i := 0; i < numAdders; i++ {
+		go func() {
+			swg.Done()
+			swg.Wait()
+			for {
+				select {
+				case <-quitCh:
+					fwg.Done()
+					return
+				default:
+					mu.Lock()
+					next := len(subs)
+					subj := "foo.bar.baz." + strconv.FormatInt(int64(next), 10)
+					sub := newSub(subj)
+					subs = append(subs, sub)
+					mu.Unlock()
+					s.Insert(sub)
+				}
+			}
+		}()
+	}
+
+	// Removers
+	for i := 0; i < numRemovers; i++ {
+		go func() {
+			prand := rand.New(rand.NewSource(time.Now().UnixNano()))
+			swg.Done()
+			swg.Wait()
+			for {
+				select {
+				case <-quitCh:
+					fwg.Done()
+					return
+				default:
+					mu.RLock()
+					lh := len(subs) - 1
+					index := prand.Intn(lh)
+					sub := subs[index]
+					mu.RUnlock()
+					//fmt.Printf("Removing %d with subject %q\n", index, sub.subject)
+					s.Remove(sub)
+				}
+			}
+		}()
+	}
+
+	// Matchers
+	for i := 0; i < numMatchers; i++ {
+		go func() {
+			id := nuid.New()
+			swg.Done()
+			swg.Wait()
+
+			// We will miss on purpose to blow the cache.
+			n := b.N / numMatchers
+			for i := 0; i < n; i++ {
+				subj := "foo.bar.baz." + id.Next()
+				s.Match(subj)
+			}
+			mwg.Done()
+			fwg.Done()
+		}()
+	}
+
+	swg.Wait()
+	b.ResetTimer()
+	mwg.Wait()
+	b.StopTimer()
+	close(quitCh)
+	fwg.Wait()
+}
+
+func Benchmark____SublistCacheContention10M10A10R(b *testing.B) {
+	cacheContentionTest(b, 10, 10, 10)
+}
+
+func Benchmark_SublistCacheContention100M100A100R(b *testing.B) {
+	cacheContentionTest(b, 100, 100, 100)
+}
+
+func Benchmark____SublistCacheContention1kM1kA1kR(b *testing.B) {
+	cacheContentionTest(b, 1024, 1024, 1024)
+}
+
+func Benchmark_SublistCacheContention10kM10kA10kR(b *testing.B) {
+	cacheContentionTest(b, 10*1024, 10*1024, 10*1024)
+}
+
+func Benchmark_prand(b *testing.B) {
+	prand := rand.New(rand.NewSource(time.Now().UnixNano()))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prand.Intn(4096)
+	}
 }
