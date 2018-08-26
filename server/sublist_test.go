@@ -495,6 +495,18 @@ func TestSublistMatchLiterals(t *testing.T) {
 	checkBool(matchLiteral("foo.>>>.bar", "foo.>>>.bar"), true, t)
 }
 
+func TestSubjectIsLiteral(t *testing.T) {
+	checkBool(subjectIsLiteral("foo"), true, t)
+	checkBool(subjectIsLiteral("foo.bar"), true, t)
+	checkBool(subjectIsLiteral("*"), false, t)
+	checkBool(subjectIsLiteral(">"), false, t)
+	checkBool(subjectIsLiteral("foo.*"), false, t)
+	checkBool(subjectIsLiteral("foo.>"), false, t)
+	checkBool(subjectIsLiteral("foo.*.>"), false, t)
+	checkBool(subjectIsLiteral("foo.*.bar"), false, t)
+	checkBool(subjectIsLiteral("foo.bar.>"), false, t)
+}
+
 func TestSublistBadSubjectOnRemove(t *testing.T) {
 	bad := "a.b..d"
 	sub := newSub(bad)
@@ -718,9 +730,7 @@ func TestSublistRaceOnMatch(t *testing.T) {
 				}
 			}
 			// Empty cache to maximize chance for race
-			s.Lock()
-			delete(s.cache, "foo.bar")
-			s.Unlock()
+			s.cache.Delete("foo.bar")
 		}
 	}
 	go f()
@@ -902,7 +912,7 @@ func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
 		if len(r.psubs) != nsubs {
 			b.Fatalf("Results len is %d, should be %d", len(r.psubs), nsubs)
 		}
-		delete(s.cache, subject)
+		s.cache.Delete(subject)
 	}
 }
 
@@ -1138,10 +1148,14 @@ func Benchmark_SublistCacheContention10kM10kA10kR(b *testing.B) {
 	cacheContentionTest(b, 10*1024, 10*1024, 10*1024)
 }
 
-func Benchmark_prand(b *testing.B) {
-	prand := rand.New(rand.NewSource(time.Now().UnixNano()))
-	b.ResetTimer()
+func Benchmark______________IsValidLiteralSubject(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		prand.Intn(4096)
+		IsValidLiteralSubject("foo.bar.baz.22")
+	}
+}
+
+func Benchmark___________________subjectIsLiteral(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		subjectIsLiteral("foo.bar.baz.22")
 	}
 }
