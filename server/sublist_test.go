@@ -316,6 +316,18 @@ func TestSublistCache(t *testing.T) {
 	if cc := s.CacheCount(); cc > slCacheMax {
 		t.Fatalf("Cache should be constrained by cacheMax, got %d for current count\n", cc)
 	}
+
+	// Test that adding to a wildcard properly adds to the cache.
+	s = NewSublist()
+	s.Insert(newSub("foo.*"))
+	s.Insert(newSub("foo.bar"))
+	r = s.Match("foo.baz")
+	verifyLen(r.psubs, 1, t)
+	r = s.Match("foo.bar")
+	verifyLen(r.psubs, 2, t)
+	s.Insert(newSub("foo.>"))
+	r = s.Match("foo.bar")
+	verifyLen(r.psubs, 3, t)
 }
 
 func TestSublistBasicQueueResults(t *testing.T) {
@@ -742,19 +754,6 @@ func TestSublistRaceOnMatch(t *testing.T) {
 		t.Fatalf(e.Error())
 	default:
 	}
-}
-
-// With new literal fast path make sure wildcards are added properly
-// to the cache.
-func TestSublistAddTopCacheWildcard(t *testing.T) {
-	s := NewSublist()
-	s.Insert(newSub("foo.*"))
-	s.Insert(newSub("foo.bar"))
-	r := s.Match("foo.bar")
-	verifyLen(r.psubs, 2, t)
-	s.Insert(newSub("foo.>"))
-	r = s.Match("foo.bar")
-	verifyLen(r.psubs, 3, t)
 }
 
 // -- Benchmarks Setup --
