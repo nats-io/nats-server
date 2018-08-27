@@ -238,7 +238,6 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 		r := v.(*SublistResult)
 		if matchLiteral(key, subject) {
 			s.cache.Store(key, r.addSubToResult(sub))
-			return false
 		}
 		return true
 	})

@@ -498,6 +498,7 @@ func TestSublistMatchLiterals(t *testing.T) {
 func TestSubjectIsLiteral(t *testing.T) {
 	checkBool(subjectIsLiteral("foo"), true, t)
 	checkBool(subjectIsLiteral("foo.bar"), true, t)
+	checkBool(subjectIsLiteral("foo*.bar"), true, t)
 	checkBool(subjectIsLiteral("*"), false, t)
 	checkBool(subjectIsLiteral(">"), false, t)
 	checkBool(subjectIsLiteral("foo.*"), false, t)
@@ -741,6 +742,19 @@ func TestSublistRaceOnMatch(t *testing.T) {
 		t.Fatalf(e.Error())
 	default:
 	}
+}
+
+// With new literal fast path make sure wildcards are added properly
+// to the cache.
+func TestSublistAddTopCacheWildcard(t *testing.T) {
+	s := NewSublist()
+	s.Insert(newSub("foo.*"))
+	s.Insert(newSub("foo.bar"))
+	r := s.Match("foo.bar")
+	verifyLen(r.psubs, 2, t)
+	s.Insert(newSub("foo.>"))
+	r = s.Match("foo.bar")
+	verifyLen(r.psubs, 3, t)
 }
 
 // -- Benchmarks Setup --
