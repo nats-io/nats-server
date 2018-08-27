@@ -313,12 +313,12 @@ func TestSublistCache(t *testing.T) {
 		s.Match(fmt.Sprintf("foo-%d\n", i))
 	}
 
-	// Let cleanup Go routine run.
-	runtime.Gosched()
-
-	if cc := s.CacheCount(); cc > slCacheMax {
-		t.Fatalf("Cache should be constrained by cacheMax, got %d for current count\n", cc)
-	}
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if cc := s.CacheCount(); cc > slCacheMax {
+			return fmt.Errorf("Cache should be constrained by cacheMax, got %d for current count", cc)
+		}
+		return nil
+	})
 
 	// Test that adding to a wildcard properly adds to the cache.
 	s = NewSublist()
