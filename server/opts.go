@@ -395,14 +395,8 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 				// The parsing sets Import into Publish and Export into Subscribe, convert
 				// accordingly.
 				opts.Cluster.Permissions = &RoutePermissions{
-					Import: &SubjectPermission{
-						Allow: auth.defaultPermissions.Publish.Allow,
-						Deny:  auth.defaultPermissions.Publish.Deny,
-					},
-					Export: &SubjectPermission{
-						Allow: auth.defaultPermissions.Subscribe.Allow,
-						Deny:  auth.defaultPermissions.Subscribe.Deny,
-					},
+					Import: auth.defaultPermissions.Publish,
+					Export: auth.defaultPermissions.Subscribe,
 				}
 			}
 		case "routes":
