@@ -313,6 +313,9 @@ func TestSublistCache(t *testing.T) {
 		s.Match(fmt.Sprintf("foo-%d\n", i))
 	}
 
+	// Let cleanup Go routine run.
+	runtime.Gosched()
+
 	if cc := s.CacheCount(); cc > slCacheMax {
 		t.Fatalf("Cache should be constrained by cacheMax, got %d for current count\n", cc)
 	}
