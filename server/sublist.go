@@ -42,6 +42,8 @@ var (
 const (
 	// cacheMax is used to bound limit the frontend cache
 	slCacheMax = 1024
+	// If we run a sweeper we will drain to this count.
+	slCacheSweep = 512
 	// plistMin is our lower bounds to create a fast plist for Match.
 	plistMin = 256
 )
@@ -60,8 +62,10 @@ type Sublist struct {
 	cacheHits uint64
 	inserts   uint64
 	removes   uint64
-	cache     map[string]*SublistResult
 	root      *level
+	cache     sync.Map
+	cacheNum  int32
+	ccSweep   int32
 	count     uint32
 }
 
@@ -92,7 +96,7 @@ func newLevel() *level {
 
 // New will create a default sublist
 func NewSublist() *Sublist {
-	return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
+	return &Sublist{root: newLevel()}
 }
 
 // Insert adds a subscription into the sublist
@@ -202,50 +206,76 @@ func copyResult(r *SublistResult) *SublistResult {
 	return nr
 }
 
+// Adds a new sub to an existing result.
+func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
+	// Copy since others may have a reference.
+	nr := copyResult(r)
+	if sub.queue == nil {
+		nr.psubs = append(nr.psubs, sub)
+	} else {
+		if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
+			nr.qsubs[i] = append(nr.qsubs[i], sub)
+		} else {
+			nr.qsubs = append(nr.qsubs, []*subscription{sub})
+		}
+	}
+	return nr
+}
+
 // addToCache will add the new entry to existing cache
 // entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
-	for k, r := range s.cache {
-		if matchLiteral(k, subject) {
-			// Copy since others may have a reference.
-			nr := copyResult(r)
-			if sub.queue == nil {
-				nr.psubs = append(nr.psubs, sub)
-			} else {
-				if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
-					nr.qsubs[i] = append(nr.qsubs[i], sub)
-				} else {
-					nr.qsubs = append(nr.qsubs, []*subscription{sub})
-				}
-			}
-			s.cache[k] = nr
+	// If literal we can direct match.
+	if subjectIsLiteral(subject) {
+		if v, ok := s.cache.Load(subject); ok {
+			r := v.(*SublistResult)
+			s.cache.Store(subject, r.addSubToResult(sub))
 		}
+		return
 	}
+	s.cache.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		r := v.(*SublistResult)
+		if matchLiteral(key, subject) {
+			s.cache.Store(key, r.addSubToResult(sub))
+		}
+		return true
+	})
 }
 
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
 func (s *Sublist) removeFromCache(subject string, sub *subscription) {
-	for k := range s.cache {
-		if !matchLiteral(k, subject) {
-			continue
+	// If literal we can direct match.
+	if subjectIsLiteral(subject) {
+		// Load for accounting
+		if _, ok := s.cache.Load(subject); ok {
+			s.cache.Delete(subject)
+			atomic.AddInt32(&s.cacheNum, -1)
 		}
-		// Since someone else may be referecing, can't modify the list
-		// safely, just let it re-populate.
-		delete(s.cache, k)
+		return
 	}
+	s.cache.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		if matchLiteral(key, subject) {
+			// Since someone else may be referecing, can't modify the list
+			// safely, just let it re-populate.
+			s.cache.Delete(key)
+			atomic.AddInt32(&s.cacheNum, -1)
+		}
+		return true
+	})
 }
 
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
-	s.RLock()
 	atomic.AddUint64(&s.matches, 1)
-	rc, ok := s.cache[subject]
-	s.RUnlock()
-	if ok {
+
+	// Check cache first.
+	if r, ok := s.cache.Load(subject); ok {
 		atomic.AddUint64(&s.cacheHits, 1)
-		return rc
+		return r.(*SublistResult)
 	}
 
 	tsa := [32]string{}
@@ -262,21 +292,34 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
 	result := &SublistResult{}
 
-	s.Lock()
+	s.RLock()
 	matchLevel(s.root, tokens, result)
+	s.RUnlock()
 
 	// Add to our cache
-	s.cache[subject] = result
-	// Bound the number of entries to sublistMaxCache
-	if len(s.cache) > slCacheMax {
-		for k := range s.cache {
-			delete(s.cache, k)
-			break
-		}
+	s.cache.Store(subject, result)
+	n := atomic.AddInt32(&s.cacheNum, 1)
+
+	if n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
+		go s.reduceCacheCount()
 	}
-	s.Unlock()
 
 	return result
+}
+
+// Remove entries in the cache until we are under the maximum.
+// TODO(dlc) this could be smarter now that its not inline.
+func (s *Sublist) reduceCacheCount() {
+	defer atomic.StoreInt32(&s.ccSweep, 0)
+	// If we are over the cache limit randomly drop until under the limit.
+	s.cache.Range(func(k, v interface{}) bool {
+		s.cache.Delete(k.(string))
+		n := atomic.AddInt32(&s.cacheNum, -1)
+		if n < slCacheSweep {
+			return false
+		}
+		return true
+	})
 }
 
 // This will add in a node's results to the total results.
@@ -501,7 +544,7 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 		if found && n.plist != nil {
 			// This will brute force remove the plist to perform
 			// correct behavior. Will get repopulated on a call
-			//to Match as needed.
+			// to Match as needed.
 			n.plist = nil
 		}
 		return found
@@ -527,9 +570,7 @@ func (s *Sublist) Count() uint32 {
 
 // CacheCount returns the number of result sets in the cache.
 func (s *Sublist) CacheCount() int {
-	s.RLock()
-	defer s.RUnlock()
-	return len(s.cache)
+	return int(atomic.LoadInt32(&s.cacheNum))
 }
 
 // Public stats for the sublist
@@ -551,25 +592,30 @@ func (s *Sublist) Stats() *SublistStats {
 
 	st := &SublistStats{}
 	st.NumSubs = s.count
-	st.NumCache = uint32(len(s.cache))
+	st.NumCache = uint32(atomic.LoadInt32(&s.cacheNum))
 	st.NumInserts = s.inserts
 	st.NumRemoves = s.removes
 	st.NumMatches = atomic.LoadUint64(&s.matches)
 	if st.NumMatches > 0 {
 		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
 	}
-	// whip through cache for fanout stats
+
+	// whip through cache for fanout stats, this can be off if cache is full and doing evictions.
 	tot, max := 0, 0
-	for _, r := range s.cache {
+	clen := 0
+	s.cache.Range(func(k, v interface{}) bool {
+		clen += 1
+		r := v.(*SublistResult)
 		l := len(r.psubs) + len(r.qsubs)
 		tot += l
 		if l > max {
 			max = l
 		}
-	}
+		return true
+	})
 	st.MaxFanout = uint32(max)
 	if tot > 0 {
-		st.AvgFanout = float64(tot) / float64(len(s.cache))
+		st.AvgFanout = float64(tot) / float64(clen)
 	}
 	return st
 }
@@ -612,6 +658,20 @@ func visitLevel(l *level, depth int) int {
 		}
 	}
 	return maxDepth
+}
+
+// Determine if the subject has any wildcards. Fast version, does not check for
+// valid subject. Used in caching layer.
+func subjectIsLiteral(subject string) bool {
+	for i, c := range subject {
+		if c == pwc || c == fwc {
+			if (i == 0 || subject[i-1] == btsep) &&
+				(i+1 == len(subject) || subject[i+1] == btsep) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // IsValidSubject returns true if a subject is valid, false otherwise
