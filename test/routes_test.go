@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1049,5 +1050,131 @@ func TestRouteBasicPermissions(t *testing.T) {
 	case <-ch:
 		t.Fatal("Message should not have been received")
 	case <-time.After(100 * time.Millisecond):
+	}
+
+	nca.Close()
+	ncb.Close()
+
+	srvA.Shutdown()
+	srvB.Shutdown()
+
+	optsA.Cluster.Permissions.Export = nil
+	srvA = RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvB = RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	nca, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca.Close()
+	// Subscribe on "bar" which is not imported
+	if _, err := nca.Subscribe("bar", cb); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if err := checkExpectedSubs(1, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+
+	// Publish from B, should not be received
+	ncb, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	if err := ncb.Publish("bar", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("Message should not have been received")
+	case <-time.After(100 * time.Millisecond):
+		//ok
+	}
+	// Subscribe on "baz" on B
+	if _, err := ncb.Subscribe("baz", cb); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if err := checkExpectedSubs(1, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+	if err := checkExpectedSubs(2, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+	// Publish from A, since there is no export restriction, message should be received.
+	if err := nca.Publish("baz", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	select {
+	case <-ch:
+	// ok
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Message should have been received")
+	}
+}
+
+func createConfFile(t *testing.T, content []byte) string {
+	t.Helper()
+	conf, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating conf file: %v", err)
+	}
+	fName := conf.Name()
+	conf.Close()
+	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+		os.Remove(fName)
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+	return fName
+}
+
+func TestRoutesOnlyImportOrExport(t *testing.T) {
+	contents := []string{
+		`import: "foo"`,
+		`import: {
+			allow: "foo"
+		}`,
+		`import: {
+			deny: "foo"
+		}`,
+		`import: {
+			allow: "foo"
+			deny: "foo"
+		}`,
+		`export: "foo"`,
+		`export: {
+			allow: "foo"
+		}`,
+		`export: {
+			deny: "foo"
+		}`,
+		`export: {
+			allow: "foo"
+			deny: "foo"
+		}`,
+	}
+	f := func(c string) {
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+			cluster {
+				port: -1
+				authorization {
+					user: ivan
+					password: pwd
+					permissions {
+						%s
+					}
+				}
+			}
+		`, c)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		s.Shutdown()
+	}
+	for _, c := range contents {
+		f(c)
 	}
 }
