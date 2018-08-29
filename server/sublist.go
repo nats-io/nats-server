@@ -222,7 +222,7 @@ func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
 	return nr
 }
 
-// addToCache will add the new entry to existing cache
+// addToCache will add the new entry to the existing cache
 // entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
 	// If literal we can direct match.
@@ -292,14 +292,15 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
 	result := &SublistResult{}
 
+	// Get result from the main structure and place into the shared cache.
+	// Hold the read lock to avoid race between match and store.
 	s.RLock()
 	matchLevel(s.root, tokens, result)
-	s.RUnlock()
-
-	// Add to our cache
 	s.cache.Store(subject, result)
 	n := atomic.AddInt32(&s.cacheNum, 1)
+	s.RUnlock()
 
+	// Reduce the cache count if we have exceeded our set maximum.
 	if n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
 		go s.reduceCacheCount()
 	}
