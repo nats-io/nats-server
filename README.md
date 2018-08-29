@@ -565,7 +565,7 @@ authorization {
 
 The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/server/gnatsd-authorization) documentation.
 
-Before server `1.3.0`, it was only possible to define permissions allowing an authenticated user to pubslih or subscribe to certain subjects. Starting with `1.3.0`, it is now possible to also define permissions denying the right to publish or subscribe to specific subjects.
+Before server `1.3.0`, it was only possible to define permissions allowing an authenticated user to publish or subscribe to certain subjects. Starting with `1.3.0`, it is now possible to also define permissions denying the right to publish or subscribe to specific subjects.
 
 Each permission grant is an object with two fields: what subject(s) the authenticated user is allowed (or denied the right) to publish to, and what subject(s) the authenticated user is allowed (or denied the right) to subscribe to. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
 
@@ -635,8 +635,10 @@ Bob is a RESPONDER to any of Alice's requests, so Bob needs to be able to subscr
 
 Important to note, in order to not break request/reply patterns you need to add rules as above with Alice and Bob for the "_INBOX.>" pattern. If an unauthorized client publishes or attempts to subscribe to a subject that is not in the allow-list, or is in the deny-list, the action fails and is logged at the server, and an error message is returned to the client.
 
-Most of the time it is fine to specify the subjects that an user is allowed to publish or subscribe to.
-However, in some instances, it is much easier to configure the subjects that an user is not allowed to publish/subscribe .
+Most of the time it is fine to specify the subjects that a user is allowed to publish or subscribe to.
+However, in some instances, it is much easier to configure the subjects that a user is not allowed to publish/subscribe.
+
+>Note that the `allow` clause is not required. If absent, it means that user is allowed to publish/subscribe to everything.
 
 Here is an example showing how to use `allow` and `deny` clauses.
 ```
