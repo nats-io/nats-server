@@ -50,10 +50,10 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[91226] 2018/07/03 16:43:34.327233 [INF] Starting nats-server version 1.2.0
-[91226] 2018/07/03 16:43:34.327306 [INF] Git commit [not set]
-[91226] 2018/07/03 16:43:34.327484 [INF] Listening for client connections on 0.0.0.0:4222
-[91226] 2018/07/03 16:43:34.327490 [INF] Server is ready
+[68229] 2018/08/29 11:50:53.789318 [INF] Starting nats-server version 1.3.0
+[68229] 2018/08/29 11:50:53.789381 [INF] Git commit [not set]
+[68229] 2018/08/29 11:50:53.789566 [INF] Listening for client connections on 0.0.0.0:4222
+[68229] 2018/08/29 11:50:53.789572 [INF] Server is ready
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
@@ -565,10 +565,27 @@ authorization {
 
 The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/server/gnatsd-authorization) documentation.
 
-Each permission grant is an object with two fields: what subject(s) the authenticated user can publish to, and what subject(s) the authenticated user can subscribe to. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
+Before server `1.3.0`, it was only possible to define permissions allowing an authenticated user to publish or subscribe to certain subjects. Starting with `1.3.0`, it is now possible to also define permissions denying the right to publish or subscribe to specific subjects.
+
+Each permission grant is an object with two fields: what subject(s) the authenticated user is allowed (or denied the right) to publish to, and what subject(s) the authenticated user is allowed (or denied the right) to subscribe to. The parser is generous at understanding what the intent is, so both arrays and singletons are processed. Subjects themselves can contain wildcards. Permissions make use of [variables](#variables).
 
 You set permissions by creating an entry inside of the `authorization` configuration block that conforms to the following syntax:
+```
+authorization {
+  PERMISSION_NAME = {
+    publish = {
+      allow = "singleton" or ["array", ...]
+      deny  = "singleton" or ["array", ...]
+    }
+    subscribe = {
+      allow = "singleton" or ["array", ...]
+      deny  = "singleton" or ["array", ...]
+    }
+  }
+}
+```
 
+Note that the old definition is still supported. The absence of `allow` or `deny` means that this is an `allow` permission.
 ```
 authorization {
   PERMISSION_NAME = {
@@ -579,7 +596,6 @@ authorization {
 ```
 
 Here is an example authorization configuration that defines four users, three of whom are assigned explicit permissions.
-
 ```
 authorization {
   ADMIN = {
@@ -615,9 +631,36 @@ Alice is a REQUESTOR and can publish requests on subjects "req.foo" or "req.bar"
 
 Charlie has no permissions granted and therefore inherits the default permission set. You set the inherited default permissions by assigning them to the default_permissions entry inside of the authorization configuration block.
 
-Bob is a RESPONDER to any of Alice's requests, so Bob needs to be able to subscribe to the request subjects and respond to Alice's reply subject which will be an _INBOX.>.
+Bob is a RESPONDER to any of Alice's requests, so Bob needs to be able to subscribe to the request subjects and respond to Alice's reply subject which will be an "_INBOX.>".
 
-Important to note, NATS Authorizations are whitelist only, meaning in order to not break request/reply patterns you need to add rules as above with Alice and Bob for the _INBOX.> pattern. If an unauthorized client publishes or attempts to subscribe to a subject that has not been whitelisted, the action fails and is logged at the server, and an error message is returned to the client.
+Important to note, in order to not break request/reply patterns you need to add rules as above with Alice and Bob for the "_INBOX.>" pattern. If an unauthorized client publishes or attempts to subscribe to a subject that is not in the allow-list, or is in the deny-list, the action fails and is logged at the server, and an error message is returned to the client.
+
+Most of the time it is fine to specify the subjects that a user is allowed to publish or subscribe to.
+However, in some instances, it is much easier to configure the subjects that a user is not allowed to publish/subscribe.
+
+>Note that the `allow` clause is not required. If absent, it means that user is allowed to publish/subscribe to everything.
+
+Here is an example showing how to use `allow` and `deny` clauses.
+```
+authorization {
+    myUserPerms = {
+      publish = {
+        allow = "*.*"
+        deny = ["SYS.*", "bar.baz", "foo.*"]
+      }
+      subscribe = {
+        allow = ["foo.*", "bar"]
+        deny = "foo.baz"
+      }
+    }
+    users = [
+        {user: myUser, password: pwd, permissions: $myUserPerms}
+    ]
+}
+```
+The above configuration means that user `myUser` is allowed to publish to subjects with 2 tokens (`allow = "*.*"`) but not to the subjects matching `SYS.*`, `bar.baz` or `foo.*`. The user can subscribe to subjects matching `foo.*` and subject `bar` but not `foo.baz`.
+Without the `deny` clause, you would have to explicitly list all the subjects the user can publish (and subscribe) without the ones in the deny list, which could prove difficult if the set size is huge.
+
 
 ### TLS
 
@@ -720,20 +763,20 @@ Examples using the test certificates which are self signed for localhost and 127
 ```bash
 > ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
-[91296] 2018/07/03 16:44:38.879267 [INF] Starting nats-server version 1.2.0
-[91296] 2018/07/03 16:44:38.879348 [INF] Git commit [not set]
-[91296] 2018/07/03 16:44:38.879546 [INF] Listening for client connections on 0.0.0.0:4222
-[91296] 2018/07/03 16:44:38.879553 [INF] TLS required for client connections
-[91296] 2018/07/03 16:44:38.879557 [INF] Server is ready
+[70346] 2018/08/29 12:47:20.958931 [INF] Starting nats-server version 1.3.0
+[70346] 2018/08/29 12:47:20.959010 [INF] Git commit [not set]
+[70346] 2018/08/29 12:47:20.959184 [INF] Listening for client connections on 0.0.0.0:4222
+[70346] 2018/08/29 12:47:20.959189 [INF] TLS required for client connections
+[70346] 2018/08/29 12:47:20.959202 [INF] Server is ready
 ```
 
 Notice that the log  indicates that the client connections will be required to use TLS.  If you run the server in Debug mode with `-D` or `-DV`, the logs will show the cipher suite selection for each connected client.
 
 ```
-[98991] 2018/07/05 08:47:51.043032 [DBG] 127.0.0.1:61950 - cid:1 - Client connection created
-[98991] 2018/07/05 08:47:51.043082 [DBG] 127.0.0.1:61950 - cid:1 - Starting TLS client connection handshake
-[98991] 2018/07/05 08:47:51.057104 [DBG] 127.0.0.1:61950 - cid:1 - TLS handshake complete
-[98991] 2018/07/05 08:47:51.057127 [DBG] 127.0.0.1:61950 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+[70374] 2018/08/29 12:47:56.080598 [DBG] ::1:59950 - cid:1 - Client connection created
+[70374] 2018/08/29 12:47:56.080799 [DBG] ::1:59950 - cid:1 - Starting TLS client connection handshake
+[70374] 2018/08/29 12:47:56.094915 [DBG] ::1:59950 - cid:1 - TLS handshake complete
+[70374] 2018/08/29 12:47:56.094933 [DBG] ::1:59950 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 ```
 
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
@@ -784,11 +827,11 @@ To enable monitoring via the configuration file, use `host:port` (there is no ex
 For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
 ```
-[99055] 2018/07/05 08:48:20.075091 [INF] Starting nats-server version 1.2.0
-[99055] 2018/07/05 08:48:20.075157 [INF] Git commit [not set]
-[99055] 2018/07/05 08:48:20.075331 [INF] Starting http monitor on 0.0.0.0:8222
-[99055] 2018/07/05 08:48:20.075377 [INF] Listening for client connections on 0.0.0.0:4222
-[99055] 2018/07/05 08:48:20.075381 [INF] Server is ready
+[70450] 2018/08/29 12:48:30.819682 [INF] Starting nats-server version 1.3.0
+[70450] 2018/08/29 12:48:30.819750 [INF] Git commit [not set]
+[70450] 2018/08/29 12:48:30.819918 [INF] Starting http monitor on 0.0.0.0:8222
+[70450] 2018/08/29 12:48:30.819960 [INF] Listening for client connections on 0.0.0.0:4222
+[70450] 2018/08/29 12:48:30.819964 [INF] Server is ready
 ```
 
 ## Development
@@ -830,8 +873,8 @@ NATS Office Hours will be on hiatus for the US summer season. Please join our [S
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.2.0
-[Release-image]: http://img.shields.io/badge/release-v1.2.0-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.3.0
+[Release-image]: http://img.shields.io/badge/release-v1.3.0-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
