@@ -661,6 +661,60 @@ authorization {
 The above configuration means that user `myUser` is allowed to publish to subjects with 2 tokens (`allow = "*.*"`) but not to the subjects matching `SYS.*`, `bar.baz` or `foo.*`. The user can subscribe to subjects matching `foo.*` and subject `bar` but not `foo.baz`.
 Without the `deny` clause, you would have to explicitly list all the subjects the user can publish (and subscribe) without the ones in the deny list, which could prove difficult if the set size is huge.
 
+#### Authorization and Clustering
+
+The NATS server also supports route permissions. Route permissions define subjects that are imported and exported between individual servers in a cluster. Permissions may be defined in the cluster configuration using the `import` and `export` clauses. This enables a variety of use cases, allowing for configurations that will enforce a directional flow of messages or only allow a subset of data.
+
+The following two server configurations will restrict messages that can flow between servers and allow
+a directional flow of messages:
+
+**Edge Server**
+
+```text
+cluster {
+  listen: 4244
+
+  authorization {
+    user: ruser
+    # bcrypted hash of "top_secret"
+    password: $2a$11$UaoHwUEqHaMwqo6L4kM2buOBnGFnSCWxNXY87hl.kCERqKK8WAXM.
+    timeout: 3
+    permissions {
+        import:["_INBOX.>", "global.>"]
+        export:["_INBOX.>", "global.>", "sensors.>"]
+    }
+  }
+
+  routes = [
+    nats-route://ruser:top_secret@cloudserver:4344
+  ]
+}
+```
+
+**Cloud Server**
+
+```text
+cluster {
+  listen: 4244
+
+  authorization {
+    user: ruser
+    # bcrypted hash of "top_secret"
+    password: $2a$11$UaoHwUEqHaMwqo6L4kM2buOBnGFnSCWxNXY87hl.kCERqKK8WAXM.
+    timeout: 3
+    permissions {
+        import:["_INBOX.>", "global.>", "sensors.>"]
+        export:["_INBOX.>", "global.>"]
+    }
+  }
+
+  routes = [
+    nats-route://ruser:top_secret@edgeserver:4244
+  ]
+}
+```
+
+The example above allows request/reply and messages published to any subject matching `global.>` to be freely propagated throughout the cluster.  The cloud server imports and locally delivers messages published to subjects matching `sensors.>`, but won't export messages published to subjects matching `sensors.>`.  This enforces a directional flow of sensor data from edge servers to the cloud servers.  Also, as new edge servers are added they will not receive sensor data from other edge servers.  Importing and exporting subjects in server clustering can provide additional security and optimize use of network resources.
 
 ### TLS
 
