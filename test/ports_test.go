@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +42,7 @@ func waitForFile(path string, dur time.Duration) ([]byte, error) {
 }
 
 func portFile(dirname string) string {
-	return path.Join(dirname, fmt.Sprintf("%s_%d.ports", path.Base(os.Args[0]), os.Getpid()))
+	return filepath.Join(dirname, fmt.Sprintf("%s_%d.ports", filepath.Base(os.Args[0]), os.Getpid()))
 }
 
 func TestPortsFile(t *testing.T) {
@@ -121,12 +121,16 @@ func TestPortsFileReload(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// make child temp dir A
-	dirA := path.Join(tempDir, "A")
+	dirA := filepath.Join(tempDir, "A")
 	os.MkdirAll(dirA, 0777)
 
 	// write the config file with a reference to A
-	config := fmt.Sprintf("ports_file_dir %s\nport -1", dirA)
-	confPath := path.Join(tempDir, fmt.Sprintf("%d.conf", os.Getpid()))
+	config := fmt.Sprintf(`
+		ports_file_dir: "%s"
+		port: -1
+	`, dirA)
+	config = strings.Replace(config, "\\", "/", -1)
+	confPath := filepath.Join(tempDir, fmt.Sprintf("%d.conf", os.Getpid()))
 	if err := ioutil.WriteFile(confPath, []byte(config), 0666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}
@@ -160,10 +164,14 @@ func TestPortsFileReload(t *testing.T) {
 	}
 
 	// change the configuration for the ports file to dirB
-	dirB := path.Join(tempDir, "B")
+	dirB := filepath.Join(tempDir, "B")
 	os.MkdirAll(dirB, 0777)
 
-	config = fmt.Sprintf("ports_file_dir %s\nport -1", dirB)
+	config = fmt.Sprintf(`
+		ports_file_dir: "%s"
+		port: -1
+	`, dirB)
+	config = strings.Replace(config, "\\", "/", -1)
 	if err := ioutil.WriteFile(confPath, []byte(config), 0666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}

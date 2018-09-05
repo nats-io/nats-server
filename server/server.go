@@ -23,7 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1329,7 +1329,7 @@ func (s *Server) portFile(dirHint string) string {
 	if dirname == _EMPTY_ {
 		return _EMPTY_
 	}
-	return path.Join(dirname, fmt.Sprintf("%s_%d.ports", path.Base(os.Args[0]), os.Getpid()))
+	return filepath.Join(dirname, fmt.Sprintf("%s_%d.ports", filepath.Base(os.Args[0]), os.Getpid()))
 }
 
 // Delete the ports file. If a non-empty dirHint is provided, the dirHint
