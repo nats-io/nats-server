@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -868,6 +869,63 @@ func TestRouteBasicPermissions(t *testing.T) {
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvA, srvB)
+
+	// Check for proper monitoring reporting for permissions.
+	murl := fmt.Sprintf("http://%s:%d/", optsA.HTTPHost, optsA.HTTPPort)
+	resp, err := http.Get(murl + "routez")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	// We expect to see imports and exports
+	if !strings.Contains(string(body), "imports") {
+		t.Fatal("Routez body should contain \"imports\" information.")
+	}
+	if !strings.Contains(string(body), "exports") {
+		t.Fatal("Routez body should contain \"exports\" information.")
+	}
+	rz := &server.Routez{}
+	if err := json.Unmarshal(body, rz); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+	if rz.Imports == nil || rz.Imports.Allow == nil ||
+		len(rz.Imports.Allow) != 1 || rz.Imports.Allow[0] != "foo" ||
+		rz.Imports.Deny != nil {
+		t.Fatalf("Unexpected Imports %v\n", rz.Imports)
+	}
+	if rz.Exports == nil || rz.Exports.Allow == nil || rz.Exports.Deny == nil ||
+		len(rz.Exports.Allow) != 1 || rz.Exports.Allow[0] != "*" ||
+		len(rz.Exports.Deny) != 2 || rz.Exports.Deny[0] != "foo" || rz.Exports.Deny[1] != "nats" {
+		t.Fatalf("Unexpected Exports %v\n", rz.Exports)
+	}
+
+	murl = fmt.Sprintf("http://%s:%d/", optsB.HTTPHost, optsB.HTTPPort)
+	resp, err = http.Get(murl + "routez")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+	// We expect to see NO imports and exports for server B.
+	if strings.Contains(string(body), "imports") {
+		t.Fatal("Routez body should NOT contain \"imports\" information.")
+	}
+	if strings.Contains(string(body), "exports") {
+		t.Fatal("Routez body should NOT contain \"exports\" information.")
+	}
 
 	// Create a connection to server B
 	ncb, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port))
