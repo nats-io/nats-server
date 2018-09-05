@@ -34,6 +34,7 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
+	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/util"
 )
 
@@ -419,6 +420,17 @@ func (s *Server) Shutdown() {
 
 	if opts.PortsFileDir != _EMPTY_ {
 		s.deletePortsFile(opts.PortsFileDir)
+	}
+
+	// Close logger if applicable. It allows tests on Windows
+	// to be able to do proper cleanup (delete log file).
+	s.logging.RLock()
+	log := s.logging.logger
+	s.logging.RUnlock()
+	if log != nil {
+		if l, ok := log.(*logger.Logger); ok {
+			l.Close()
+		}
 	}
 }
 
