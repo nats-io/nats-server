@@ -96,6 +96,9 @@ type Options struct {
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
+
+	// CheckConfig enables pedantic configuration file syntax checks.
+	CheckConfig bool `json:"-"`
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone
@@ -186,6 +189,27 @@ e.g.
 Available cipher suites include:
 `
 
+type token interface {
+	Value() interface{}
+	Line() int
+	IsUsedVariable() bool
+	SourceFile() string
+}
+
+type unknownConfigFieldErr struct {
+	field      string
+	token      token
+	configFile string
+}
+
+func (e *unknownConfigFieldErr) Error() string {
+	msg := fmt.Sprintf("unknown field %q", e.field)
+	if e.token != nil {
+		return msg + fmt.Sprintf(" in %s:%d", e.configFile, e.token.Line())
+	}
+	return msg
+}
+
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
@@ -194,6 +218,18 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 		return nil, err
 	}
 	return opts, nil
+}
+
+// unwrapValue can be used to get the token and value from an item
+// to be able to report the line number in case of an incorrect
+// configuration.
+func unwrapValue(v interface{}) (token, interface{}) {
+	switch tk := v.(type) {
+	case token:
+		return tk, tk.Value()
+	default:
+		return nil, v
+	}
 }
 
 // ProcessConfigFile updates the Options structure with options
@@ -216,12 +252,24 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		return nil
 	}
 
-	m, err := conf.ParseFile(configFile)
+	var (
+		m        map[string]interface{}
+		tk       token
+		pedantic bool = o.CheckConfig
+		err      error
+	)
+	if pedantic {
+		m, err = conf.ParseFileWithChecks(configFile)
+	} else {
+		m, err = conf.ParseFile(configFile)
+	}
 	if err != nil {
 		return err
 	}
-
 	for k, v := range m {
+		// When pedantic checks are enabled then need to unwrap
+		// to get the value along with reported error line.
+		tk, v = unwrapValue(v)
 		switch strings.ToLower(k) {
 		case "listen":
 			hp, err := parseListen(v)
@@ -243,8 +291,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "logtime":
 			o.Logtime = v.(bool)
 		case "authorization":
-			am := v.(map[string]interface{})
-			auth, err := parseAuthorization(am)
+			var auth *authorization
+			if pedantic {
+				auth, err = parseAuthorization(tk, o)
+			} else {
+				auth, err = parseAuthorization(v, o)
+			}
 			if err != nil {
 				return err
 			}
@@ -288,8 +340,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "https_port":
 			o.HTTPSPort = int(v.(int64))
 		case "cluster":
-			cm := v.(map[string]interface{})
-			if err := parseCluster(cm, o); err != nil {
+			var err error
+			if pedantic {
+				err = parseCluster(tk, o)
+			} else {
+				err = parseCluster(v, o)
+			}
+			if err != nil {
 				return err
 			}
 		case "logfile", "log_file":
@@ -319,8 +376,15 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "ping_max":
 			o.MaxPingsOut = int(v.(int64))
 		case "tls":
-			tlsm := v.(map[string]interface{})
-			tc, err := parseTLS(tlsm)
+			var (
+				tc  *TLSConfigOpts
+				err error
+			)
+			if pedantic {
+				tc, err = parseTLS(tk, o)
+			} else {
+				tc, err = parseTLS(v, o)
+			}
 			if err != nil {
 				return err
 			}
@@ -341,6 +405,14 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				// number of seconds.
 				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
+			}
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return &unknownConfigFieldErr{
+					field:      k,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
 			}
 		}
 	}
@@ -375,8 +447,17 @@ func parseListen(v interface{}) (*hostPort, error) {
 }
 
 // parseCluster will parse the cluster config.
-func parseCluster(cm map[string]interface{}, opts *Options) error {
+func parseCluster(v interface{}, opts *Options) error {
+	var (
+		cm       map[string]interface{}
+		tk       token
+		pedantic bool = opts.CheckConfig
+	)
+	_, v = unwrapValue(v)
+	cm = v.(map[string]interface{})
 	for mk, mv := range cm {
+		// Again, unwrap token value if line check is required.
+		tk, mv = unwrapValue(mv)
 		switch strings.ToLower(mk) {
 		case "listen":
 			hp, err := parseListen(mv)
@@ -390,8 +471,15 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 		case "host", "net":
 			opts.Cluster.Host = mv.(string)
 		case "authorization":
-			am := mv.(map[string]interface{})
-			auth, err := parseAuthorization(am)
+			var (
+				auth *authorization
+				err  error
+			)
+			if pedantic {
+				auth, err = parseAuthorization(tk, opts)
+			} else {
+				auth, err = parseAuthorization(mv, opts)
+			}
 			if err != nil {
 				return err
 			}
@@ -409,6 +497,7 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			ra := mv.([]interface{})
 			opts.Routes = make([]*url.URL, 0, len(ra))
 			for _, r := range ra {
+				_, r = unwrapValue(r)
 				routeURL := r.(string)
 				url, err := url.Parse(routeURL)
 				if err != nil {
@@ -417,8 +506,15 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 				opts.Routes = append(opts.Routes, url)
 			}
 		case "tls":
-			tlsm := mv.(map[string]interface{})
-			tc, err := parseTLS(tlsm)
+			var (
+				tc  *TLSConfigOpts
+				err error
+			)
+			if pedantic {
+				tc, err = parseTLS(tk, opts)
+			} else {
+				tc, err = parseTLS(mv, opts)
+			}
 			if err != nil {
 				return err
 			}
@@ -442,12 +538,20 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			if !ok {
 				return fmt.Errorf("Expected permissions to be a map/struct, got %+v", mv)
 			}
-			perms, err := parseUserPermissions(pm)
+			perms, err := parseUserPermissions(pm, opts)
 			if err != nil {
 				return err
 			}
 			// This will possibly override permissions that were define in auth block
 			setClusterPermissions(&opts.Cluster, perms)
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
 		}
 	}
 	return nil
@@ -468,9 +572,19 @@ func setClusterPermissions(opts *ClusterOpts, perms *Permissions) {
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(am map[string]interface{}) (*authorization, error) {
-	auth := &authorization{}
+func parseAuthorization(v interface{}, opts *Options) (*authorization, error) {
+	var (
+		am       map[string]interface{}
+		tk       token
+		pedantic bool           = opts.CheckConfig
+		auth     *authorization = &authorization{}
+	)
+
+	// Unwrap value first if pedantic config check enabled.
+	_, v = unwrapValue(v)
+	am = v.(map[string]interface{})
 	for mk, mv := range am {
+		tk, mv = unwrapValue(mv)
 		switch strings.ToLower(mk) {
 		case "user", "username":
 			auth.user = mv.(string)
@@ -488,22 +602,43 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			}
 			auth.timeout = at
 		case "users":
-			nkeys, users, err := parseUsers(mv)
+			var (
+				users []*User
+				err   error
+				nkeys []*NkeyUser
+			)
+			if pedantic {
+				nkeys, users, err = parseUsers(tk, opts)
+			} else {
+				nkeys, users, err = parseUsers(mv, opts)
+			}
 			if err != nil {
 				return nil, err
 			}
 			auth.users = users
 			auth.nkeys = nkeys
 		case "default_permission", "default_permissions", "permissions":
-			pm, ok := mv.(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("Expected default permissions to be a map/struct, got %+v", mv)
+			var (
+				permissions *Permissions
+				err         error
+			)
+			if pedantic {
+				permissions, err = parseUserPermissions(tk, opts)
+			} else {
+				permissions, err = parseUserPermissions(mv, opts)
 			}
-			permissions, err := parseUserPermissions(pm)
 			if err != nil {
 				return nil, err
 			}
 			auth.defaultPermissions = permissions
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
 		}
 
 		// Now check for permission defaults with multiple users, etc.
@@ -520,25 +655,39 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 }
 
 // Helper function to parse multiple users array with optional permissions.
-func parseUsers(mv interface{}) ([]*NkeyUser, []*User, error) {
+func parseUsers(mv interface{}, opts *Options) ([]*NkeyUser, []*User, error) {
+	var (
+		tk       token
+		pedantic bool    = opts.CheckConfig
+		users    []*User = []*User{}
+		keys     []*NkeyUser
+	)
+	_, mv = unwrapValue(mv)
+
 	// Make sure we have an array
 	uv, ok := mv.([]interface{})
 	if !ok {
 		return nil, nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
 	}
-	var users []*User
-	var keys []*NkeyUser
 	for _, u := range uv {
+		_, u = unwrapValue(u)
+
 		// Check its a map/struct
 		um, ok := u.(map[string]interface{})
 		if !ok {
 			return nil, nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
 		}
-		var perms *Permissions
-		var err error
-		user := &User{}
-		nkey := &NkeyUser{}
+
+		var (
+			user  *User     = &User{}
+			nkey  *NkeyUser = &NkeyUser{}
+			perms *Permissions
+			err   error
+		)
 		for k, v := range um {
+			// Also needs to unwrap first
+			tk, v = unwrapValue(v)
+
 			switch strings.ToLower(k) {
 			case "nkey":
 				nkey.Nkey = v.(string)
@@ -547,13 +696,21 @@ func parseUsers(mv interface{}) ([]*NkeyUser, []*User, error) {
 			case "pass", "password":
 				user.Password = v.(string)
 			case "permission", "permissions", "authorization":
-				pm, ok := v.(map[string]interface{})
-				if !ok {
-					return nil, nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
+				if pedantic {
+					perms, err = parseUserPermissions(tk, opts)
+				} else {
+					perms, err = parseUserPermissions(v, opts)
 				}
-				perms, err = parseUserPermissions(pm)
 				if err != nil {
 					return nil, nil, err
+				}
+			default:
+				if pedantic && tk != nil && !tk.IsUsedVariable() {
+					return nil, nil, &unknownConfigFieldErr{
+						field:      k,
+						token:      tk,
+						configFile: tk.SourceFile(),
+					}
 				}
 			}
 		}
@@ -588,38 +745,58 @@ func parseUsers(mv interface{}) ([]*NkeyUser, []*User, error) {
 }
 
 // Helper function to parse user/account permissions
-func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
-	p := &Permissions{}
+func parseUserPermissions(mv interface{}, opts *Options) (*Permissions, error) {
+	var (
+		tk       token
+		pedantic bool         = opts.CheckConfig
+		p        *Permissions = &Permissions{}
+	)
+	_, mv = unwrapValue(mv)
+	pm, ok := mv.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Expected permissions to be a map/struct, got %+v", mv)
+	}
 	for k, v := range pm {
+		tk, v = unwrapValue(v)
+
 		switch strings.ToLower(k) {
 		// For routes:
 		// Import is Publish
 		// Export is Subscribe
 		case "pub", "publish", "import":
-			perms, err := parseVariablePermissions(v)
+			perms, err := parseVariablePermissions(v, opts)
+
 			if err != nil {
 				return nil, err
 			}
 			p.Publish = perms
 		case "sub", "subscribe", "export":
-			perms, err := parseVariablePermissions(v)
+			perms, err := parseVariablePermissions(v, opts)
+
 			if err != nil {
 				return nil, err
 			}
 			p.Subscribe = perms
 		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, &unknownConfigFieldErr{
+					field:      k,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
 			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
 		}
 	}
 	return p, nil
 }
 
-// Tope level parser for authorization configurations.
-func parseVariablePermissions(v interface{}) (*SubjectPermission, error) {
-	switch v.(type) {
+// Top level parser for authorization configurations.
+func parseVariablePermissions(v interface{}, opts *Options) (*SubjectPermission, error) {
+	switch vv := v.(type) {
 	case map[string]interface{}:
 		// New style with allow and/or deny properties.
-		return parseSubjectPermission(v.(map[string]interface{}))
+		return parseSubjectPermission(vv, opts)
 	default:
 		// Old style
 		return parseOldPermissionStyle(v)
@@ -629,13 +806,15 @@ func parseVariablePermissions(v interface{}) (*SubjectPermission, error) {
 // Helper function to parse subject singeltons and/or arrays
 func parseSubjects(v interface{}) ([]string, error) {
 	var subjects []string
-	switch v.(type) {
+	switch vv := v.(type) {
 	case string:
-		subjects = append(subjects, v.(string))
+		subjects = append(subjects, vv)
 	case []string:
-		subjects = v.([]string)
+		subjects = vv
 	case []interface{}:
-		for _, i := range v.([]interface{}) {
+		for _, i := range vv {
+			_, i = unwrapValue(i)
+
 			subject, ok := i.(string)
 			if !ok {
 				return nil, fmt.Errorf("Subject in permissions array cannot be cast to string")
@@ -661,14 +840,15 @@ func parseOldPermissionStyle(v interface{}) (*SubjectPermission, error) {
 }
 
 // Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
-func parseSubjectPermission(m map[string]interface{}) (*SubjectPermission, error) {
+func parseSubjectPermission(v interface{}, opts *Options) (*SubjectPermission, error) {
+	m := v.(map[string]interface{})
 	if len(m) == 0 {
 		return nil, nil
 	}
-
 	p := &SubjectPermission{}
-
+	pedantic := opts.CheckConfig
 	for k, v := range m {
+		tk, v := unwrapValue(v)
 		switch strings.ToLower(k) {
 		case "allow":
 			subjects, err := parseSubjects(v)
@@ -683,6 +863,13 @@ func parseSubjectPermission(m map[string]interface{}) (*SubjectPermission, error
 			}
 			p.Deny = subjects
 		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, &unknownConfigFieldErr{
+					field:      k,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
 			return nil, fmt.Errorf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)
 		}
 	}
@@ -713,7 +900,6 @@ func PrintTLSHelpAndDie() {
 }
 
 func parseCipher(cipherName string) (uint16, error) {
-
 	cipher, exists := cipherMap[cipherName]
 	if !exists {
 		return 0, fmt.Errorf("Unrecognized cipher %s", cipherName)
@@ -731,9 +917,17 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
-	tc := TLSConfigOpts{}
+func parseTLS(v interface{}, opts *Options) (*TLSConfigOpts, error) {
+	var (
+		tlsm     map[string]interface{}
+		tk       token
+		tc       TLSConfigOpts = TLSConfigOpts{}
+		pedantic bool          = opts.CheckConfig
+	)
+	_, v = unwrapValue(v)
+	tlsm = v.(map[string]interface{})
 	for mk, mv := range tlsm {
+		tk, mv = unwrapValue(mv)
 		switch strings.ToLower(mk) {
 		case "cert_file":
 			certFile, ok := mv.(string)
@@ -766,6 +960,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 			}
 			tc.Ciphers = make([]uint16, 0, len(ra))
 			for _, r := range ra {
+				_, r = unwrapValue(r)
 				cipher, err := parseCipher(r.(string))
 				if err != nil {
 					return nil, err
@@ -779,6 +974,7 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 			}
 			tc.CurvePreferences = make([]tls.CurveID, 0, len(ra))
 			for _, r := range ra {
+				_, r = unwrapValue(r)
 				cps, err := parseCurvePreferences(r.(string))
 				if err != nil {
 					return nil, err
@@ -795,6 +991,14 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 			}
 			tc.Timeout = at
 		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
+
 			return nil, fmt.Errorf("error parsing tls config, unknown field [%q]", mk)
 		}
 	}
@@ -1134,6 +1338,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
 	fs.StringVar(&configFile, "c", "", "Configuration file.")
 	fs.StringVar(&configFile, "config", "", "Configuration file.")
+	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
 	fs.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	fs.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
@@ -1216,12 +1421,18 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		// This will update the options with values from the config file.
 		if err := opts.ProcessConfigFile(configFile); err != nil {
 			return nil, err
+		} else if opts.CheckConfig {
+			// Report configuration file syntax test was successful and exit.
+			return opts, nil
 		}
+
 		// Call this again to override config file options with options from command line.
 		// Note: We don't need to check error here since if there was an error, it would
 		// have been caught the first time this function was called (after setting up the
 		// flags).
 		fs.Parse(args)
+	} else if opts.CheckConfig {
+		return nil, fmt.Errorf("must specify [-c, --config] option to check configuration file syntax")
 	}
 
 	// Special handling of some flags
