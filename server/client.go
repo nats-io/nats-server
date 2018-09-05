@@ -242,17 +242,19 @@ type subscription struct {
 }
 
 type clientOpts struct {
-	Echo          bool   `json:"echo"`
-	Verbose       bool   `json:"verbose"`
-	Pedantic      bool   `json:"pedantic"`
-	TLSRequired   bool   `json:"tls_required"`
-	Authorization string `json:"auth_token"`
-	Username      string `json:"user"`
-	Password      string `json:"pass"`
-	Name          string `json:"name"`
-	Lang          string `json:"lang"`
-	Version       string `json:"version"`
-	Protocol      int    `json:"protocol"`
+	Echo          bool               `json:"echo"`
+	Verbose       bool               `json:"verbose"`
+	Pedantic      bool               `json:"pedantic"`
+	TLSRequired   bool               `json:"tls_required"`
+	Authorization string             `json:"auth_token"`
+	Username      string             `json:"user"`
+	Password      string             `json:"pass"`
+	Name          string             `json:"name"`
+	Lang          string             `json:"lang"`
+	Version       string             `json:"version"`
+	Protocol      int                `json:"protocol"`
+	Import        *SubjectPermission `json:"import,omitempty"` // Used for routes only
+	Export        *SubjectPermission `json:"export,omitempty"` // Used for routes only
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true, Echo: true}

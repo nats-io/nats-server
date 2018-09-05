@@ -41,20 +41,24 @@ import (
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
-	ID                string   `json:"server_id"`
-	Version           string   `json:"version"`
-	Proto             int      `json:"proto"`
-	GitCommit         string   `json:"git_commit,omitempty"`
-	GoVersion         string   `json:"go"`
-	Host              string   `json:"host"`
-	Port              int      `json:"port"`
-	AuthRequired      bool     `json:"auth_required,omitempty"`
-	TLSRequired       bool     `json:"tls_required,omitempty"`
-	TLSVerify         bool     `json:"tls_verify,omitempty"`
-	MaxPayload        int      `json:"max_payload"`
-	IP                string   `json:"ip,omitempty"`
-	CID               uint64   `json:"client_id,omitempty"`
-	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
+	ID           string `json:"server_id"`
+	Version      string `json:"version"`
+	Proto        int    `json:"proto"`
+	GitCommit    string `json:"git_commit,omitempty"`
+	GoVersion    string `json:"go"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	AuthRequired bool   `json:"auth_required,omitempty"`
+	TLSRequired  bool   `json:"tls_required,omitempty"`
+	TLSVerify    bool   `json:"tls_verify,omitempty"`
+	MaxPayload   int    `json:"max_payload"`
+	IP           string `json:"ip,omitempty"`
+	CID          uint64 `json:"client_id,omitempty"`
+
+	// Route Specific
+	ClientConnectURLs []string           `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
+	Import            *SubjectPermission `json:"import,omitempty"`
+	Export            *SubjectPermission `json:"export,omitempty"`
 }
 
 // Server is our main struct.

@@ -1936,23 +1936,38 @@ func TestRoutezPermissions(t *testing.T) {
 			rz := pollRoutez(t, servers[i], mode, url, nil)
 			// For server 1, we expect to see imports and exports
 			if i == 0 {
-				if rz.Imports == nil || rz.Imports.Allow == nil ||
-					len(rz.Imports.Allow) != 1 || rz.Imports.Allow[0] != "foo" ||
-					rz.Imports.Deny != nil {
-					t.Fatalf("Unexpected Imports %v", rz.Imports)
+				if rz.Import == nil || rz.Import.Allow == nil ||
+					len(rz.Import.Allow) != 1 || rz.Import.Allow[0] != "foo" ||
+					rz.Import.Deny != nil {
+					t.Fatalf("Unexpected Import %v", rz.Import)
 				}
-				if rz.Exports == nil || rz.Exports.Allow == nil || rz.Exports.Deny == nil ||
-					len(rz.Exports.Allow) != 1 || rz.Exports.Allow[0] != "*" ||
-					len(rz.Exports.Deny) != 2 || rz.Exports.Deny[0] != "foo" || rz.Exports.Deny[1] != "nats" {
-					t.Fatalf("Unexpected Exports %v", rz.Exports)
+				if rz.Export == nil || rz.Export.Allow == nil || rz.Export.Deny == nil ||
+					len(rz.Export.Allow) != 1 || rz.Export.Allow[0] != "*" ||
+					len(rz.Export.Deny) != 2 || rz.Export.Deny[0] != "foo" || rz.Export.Deny[1] != "nats" {
+					t.Fatalf("Unexpected Export %v", rz.Export)
 				}
 			} else {
-				// We expect to see NO imports and exports for server B.
-				if rz.Imports != nil {
-					t.Fatal("Routez body should NOT contain \"imports\" information.")
+				// We expect to see NO imports and exports for server B by default.
+				if rz.Import != nil {
+					t.Fatal("Routez body should NOT contain \"import\" information.")
 				}
-				if rz.Exports != nil {
-					t.Fatal("Routez body should NOT contain \"exports\" information.")
+				if rz.Export != nil {
+					t.Fatal("Routez body should NOT contain \"export\" information.")
+				}
+				// We do expect to see them show up for the information we have on Server A though.
+				if len(rz.Routes) != 1 {
+					t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
+				}
+				route := rz.Routes[0]
+				if route.Import == nil || route.Import.Allow == nil ||
+					len(route.Import.Allow) != 1 || route.Import.Allow[0] != "foo" ||
+					route.Import.Deny != nil {
+					t.Fatalf("Unexpected Import %v", route.Import)
+				}
+				if route.Export == nil || route.Export.Allow == nil || route.Export.Deny == nil ||
+					len(route.Export.Allow) != 1 || route.Export.Allow[0] != "*" ||
+					len(route.Export.Deny) != 2 || route.Export.Deny[0] != "foo" || route.Export.Deny[1] != "nats" {
+					t.Fatalf("Unexpected Export %v", route.Export)
 				}
 			}
 		}

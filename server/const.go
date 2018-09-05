@@ -55,8 +55,8 @@ const (
 	DEFAULT_HOST = "0.0.0.0"
 
 	// MAX_CONTROL_LINE_SIZE is the maximum allowed protocol control line size.
-	// 1k should be plenty since payloads sans connect string are separate
-	MAX_CONTROL_LINE_SIZE = 1024
+	// 4k should be plenty since payloads sans connect/info string are separate.
+	MAX_CONTROL_LINE_SIZE = 4096
 
 	// MAX_PAYLOAD_SIZE is the maximum allowed payload size. Should be using
 	// something different if > 1MB payloads are needed.
