@@ -316,10 +316,7 @@ func (s *Sublist) reduceCacheCount() {
 	s.cache.Range(func(k, v interface{}) bool {
 		s.cache.Delete(k.(string))
 		n := atomic.AddInt32(&s.cacheNum, -1)
-		if n < slCacheSweep {
-			return false
-		}
-		return true
+		return n >= slCacheSweep
 	})
 }
 
