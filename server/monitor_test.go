@@ -1896,6 +1896,69 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	}
 }
 
+func TestRoutezPermissions(t *testing.T) {
+	opts := DefaultMonitorOptions()
+	opts.Cluster.Host = "127.0.0.1"
+	opts.Cluster.Port = -1
+	opts.Cluster.Permissions = &RoutePermissions{
+		Import: &SubjectPermission{
+			Allow: []string{"foo"},
+		},
+		Export: &SubjectPermission{
+			Allow: []string{"*"},
+			Deny:  []string{"foo", "nats"},
+		},
+	}
+
+	s1 := RunServer(opts)
+	defer s1.Shutdown()
+
+	opts = DefaultMonitorOptions()
+	opts.Cluster.Host = "127.0.0.1"
+	opts.Cluster.Port = -1
+	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", s1.ClusterAddr().Port))
+	opts.Routes = []*url.URL{routeURL}
+	opts.HTTPPort = -1
+
+	s2 := RunServer(opts)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	urls := []string{
+		fmt.Sprintf("http://127.0.0.1:%d/routez", s1.MonitorAddr().Port),
+		fmt.Sprintf("http://127.0.0.1:%d/routez", s2.MonitorAddr().Port),
+	}
+	servers := []*Server{s1, s2}
+
+	for i, url := range urls {
+		for mode := 0; mode < 2; mode++ {
+			rz := pollRoutez(t, servers[i], mode, url, nil)
+			// For server 1, we expect to see imports and exports
+			if i == 0 {
+				if rz.Imports == nil || rz.Imports.Allow == nil ||
+					len(rz.Imports.Allow) != 1 || rz.Imports.Allow[0] != "foo" ||
+					rz.Imports.Deny != nil {
+					t.Fatalf("Unexpected Imports %v", rz.Imports)
+				}
+				if rz.Exports == nil || rz.Exports.Allow == nil || rz.Exports.Deny == nil ||
+					len(rz.Exports.Allow) != 1 || rz.Exports.Allow[0] != "*" ||
+					len(rz.Exports.Deny) != 2 || rz.Exports.Deny[0] != "foo" || rz.Exports.Deny[1] != "nats" {
+					t.Fatalf("Unexpected Exports %v", rz.Exports)
+				}
+			} else {
+				// We expect to see NO imports and exports for server B.
+				if rz.Imports != nil {
+					t.Fatal("Routez body should NOT contain \"imports\" information.")
+				}
+				if rz.Exports != nil {
+					t.Fatal("Routez body should NOT contain \"exports\" information.")
+				}
+			}
+		}
+	}
+}
+
 // Benchmark our Connz generation. Don't use HTTP here, just measure server endpoint.
 func Benchmark_Connz(b *testing.B) {
 	runtime.MemProfileRate = 0
