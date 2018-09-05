@@ -1066,6 +1066,13 @@ func TestConnzSortedByIdle(t *testing.T) {
 			t.Fatalf("Error looking up client %v\n", 2)
 		}
 
+		// We want to make sure that we set start/last after the server has finished
+		// updating this client's last activity. Doing another Flush() now (even though
+		// one is done in createClientConnSubscribeAndPublish) ensures that server has
+		// finished updating the client's last activity, since for that last flush there
+		// should be no new message/sub/unsub activity.
+		secondClient.Flush()
+
 		client.mu.Lock()
 		client.start = client.start.Add(-10 * time.Second)
 		client.last = client.start
@@ -1446,69 +1453,72 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 
 	for mode := 0; mode < 2; mode++ {
-		// Look at all open
-		c := pollConz(t, s, mode, url+"connz?state=open", &ConnzOptions{State: ConnOpen})
-		if lc := len(c.Conns); lc != numEach {
-			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
-		}
-		// Look at all closed
-		c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
-		if lc := len(c.Conns); lc != numEach {
-			t.Fatalf("Expected %d connections in array, got %d\n", numEach, lc)
-		}
-		// Look at all
-		c = pollConz(t, s, mode, url+"connz?state=ALL", &ConnzOptions{State: ConnAll})
-		if lc := len(c.Conns); lc != numEach*2 {
-			t.Fatalf("Expected %d connections in array, got %d\n", 2*numEach, lc)
-		}
-		// Look at CID #1, which is in closed.
-		c = pollConz(t, s, mode, url+"connz?cid=1&state=open", &ConnzOptions{CID: 1, State: ConnOpen})
-		if lc := len(c.Conns); lc != 0 {
-			t.Fatalf("Expected no connections in open array, got %d\n", lc)
-		}
-		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed", &ConnzOptions{CID: 1, State: ConnClosed})
-		if lc := len(c.Conns); lc != 1 {
-			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
-		}
-		c = pollConz(t, s, mode, url+"connz?cid=1&state=ALL", &ConnzOptions{CID: 1, State: ConnAll})
-		if lc := len(c.Conns); lc != 1 {
-			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
-		}
-		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=true",
-			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: true})
-		if lc := len(c.Conns); lc != 1 {
-			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
-		}
-		ci := c.Conns[0]
-		if ci.NumSubs != 1 {
-			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
-		}
-		if len(ci.Subs) != 1 {
-			t.Fatalf("Expected len(ci.Subs) to be 1 also, got %d\n", len(ci.Subs))
-		}
-		// Now ask for same thing without subs and make sure they are not returned.
-		c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=false",
-			&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: false})
-		if lc := len(c.Conns); lc != 1 {
-			t.Fatalf("Expected a connection in closed array, got %d\n", lc)
-		}
-		ci = c.Conns[0]
-		if ci.NumSubs != 1 {
-			t.Fatalf("Expected NumSubs to be 1, got %d\n", ci.NumSubs)
-		}
-		if len(ci.Subs) != 0 {
-			t.Fatalf("Expected len(ci.Subs) to be 0 since subs=false, got %d\n", len(ci.Subs))
-		}
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			// Look at all open
+			c := pollConz(t, s, mode, url+"connz?state=open", &ConnzOptions{State: ConnOpen})
+			if lc := len(c.Conns); lc != numEach {
+				return fmt.Errorf("Expected %d connections in array, got %d", numEach, lc)
+			}
+			// Look at all closed
+			c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+			if lc := len(c.Conns); lc != numEach {
+				return fmt.Errorf("Expected %d connections in array, got %d", numEach, lc)
+			}
+			// Look at all
+			c = pollConz(t, s, mode, url+"connz?state=ALL", &ConnzOptions{State: ConnAll})
+			if lc := len(c.Conns); lc != numEach*2 {
+				return fmt.Errorf("Expected %d connections in array, got %d", 2*numEach, lc)
+			}
+			// Look at CID #1, which is in closed.
+			c = pollConz(t, s, mode, url+"connz?cid=1&state=open", &ConnzOptions{CID: 1, State: ConnOpen})
+			if lc := len(c.Conns); lc != 0 {
+				return fmt.Errorf("Expected no connections in open array, got %d", lc)
+			}
+			c = pollConz(t, s, mode, url+"connz?cid=1&state=closed", &ConnzOptions{CID: 1, State: ConnClosed})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in closed array, got %d", lc)
+			}
+			c = pollConz(t, s, mode, url+"connz?cid=1&state=ALL", &ConnzOptions{CID: 1, State: ConnAll})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in closed array, got %d", lc)
+			}
+			c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=true",
+				&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: true})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in closed array, got %d", lc)
+			}
+			ci := c.Conns[0]
+			if ci.NumSubs != 1 {
+				return fmt.Errorf("Expected NumSubs to be 1, got %d", ci.NumSubs)
+			}
+			if len(ci.Subs) != 1 {
+				return fmt.Errorf("Expected len(ci.Subs) to be 1 also, got %d", len(ci.Subs))
+			}
+			// Now ask for same thing without subs and make sure they are not returned.
+			c = pollConz(t, s, mode, url+"connz?cid=1&state=closed&subs=false",
+				&ConnzOptions{CID: 1, State: ConnClosed, Subscriptions: false})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in closed array, got %d", lc)
+			}
+			ci = c.Conns[0]
+			if ci.NumSubs != 1 {
+				return fmt.Errorf("Expected NumSubs to be 1, got %d", ci.NumSubs)
+			}
+			if len(ci.Subs) != 0 {
+				return fmt.Errorf("Expected len(ci.Subs) to be 0 since subs=false, got %d", len(ci.Subs))
+			}
 
-		// CID #2 is in open
-		c = pollConz(t, s, mode, url+"connz?cid=2&state=open", &ConnzOptions{CID: 2, State: ConnOpen})
-		if lc := len(c.Conns); lc != 1 {
-			t.Fatalf("Expected a connection in open array, got %d\n", lc)
-		}
-		c = pollConz(t, s, mode, url+"connz?cid=2&state=closed", &ConnzOptions{CID: 2, State: ConnClosed})
-		if lc := len(c.Conns); lc != 0 {
-			t.Fatalf("Expected no connections in closed array, got %d\n", lc)
-		}
+			// CID #2 is in open
+			c = pollConz(t, s, mode, url+"connz?cid=2&state=open", &ConnzOptions{CID: 2, State: ConnOpen})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in open array, got %d", lc)
+			}
+			c = pollConz(t, s, mode, url+"connz?cid=2&state=closed", &ConnzOptions{CID: 2, State: ConnClosed})
+			if lc := len(c.Conns); lc != 0 {
+				return fmt.Errorf("Expected no connections in closed array, got %d", lc)
+			}
+			return nil
+		})
 	}
 }
 
