@@ -869,6 +869,7 @@ func TestRouteBasicPermissions(t *testing.T) {
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvA, srvB)
+	resetPreviousHTTPConnections()
 
 	// Check for proper monitoring reporting for permissions.
 	murl := fmt.Sprintf("http://%s:%d/", optsA.HTTPHost, optsA.HTTPPort)
