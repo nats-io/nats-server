@@ -59,8 +59,8 @@ func (u *User) clone() *User {
 // SubjectPermission is an individual allow and deny struct for publish
 // and subscribe authorizations.
 type SubjectPermission struct {
-	Allow []string `json:"allow"`
-	Deny  []string `json:"deny"`
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 // Permissions are the allowed subjects on a per

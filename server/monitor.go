@@ -530,10 +530,12 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 // Routez represents detailed information on current client connections.
 type Routez struct {
-	ID        string       `json:"server_id"`
-	Now       time.Time    `json:"now"`
-	NumRoutes int          `json:"num_routes"`
-	Routes    []*RouteInfo `json:"routes"`
+	ID        string             `json:"server_id"`
+	Now       time.Time          `json:"now"`
+	Imports   *SubjectPermission `json:"imports,omitempty"`
+	Exports   *SubjectPermission `json:"exports,omitempty"`
+	NumRoutes int                `json:"num_routes"`
+	Routes    []*RouteInfo       `json:"routes"`
 }
 
 // RoutezOptions are options passed to Routez
@@ -566,13 +568,20 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 	subs := routezOpts != nil && routezOpts.Subscriptions
 
-	// Walk the list
 	s.mu.Lock()
 	rs.NumRoutes = len(s.routes)
 
 	// copy the server id for monitoring
 	rs.ID = s.info.ID
 
+	// Check for defined permissions for all connected routes.
+	perms := s.getOpts().Cluster.Permissions
+	if perms != nil {
+		rs.Imports = perms.Import
+		rs.Exports = perms.Export
+	}
+
+	// Walk the list
 	for _, r := range s.routes {
 		r.mu.Lock()
 		ri := &RouteInfo{
