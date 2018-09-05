@@ -29,6 +29,81 @@ import (
 	"github.com/nats-io/go-nats"
 )
 
+func newServerWithConfig(t *testing.T, configFile string) (*Server, *Options, string) {
+	t.Helper()
+	content, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("Error loading file: %v", err)
+	}
+	return newServerWithContent(t, content)
+}
+
+func newServerWithContent(t *testing.T, content []byte) (*Server, *Options, string) {
+	t.Helper()
+	opts, tmpFile := newOptionsFromContent(t, content)
+	return New(opts), opts, tmpFile
+}
+
+func newOptionsFromContent(t *testing.T, content []byte) (*Options, string) {
+	t.Helper()
+	tmpFile := createConfFile(t, content)
+	opts, err := ProcessConfigFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoSigs = true
+	return opts, tmpFile
+}
+
+func createConfFile(t *testing.T, content []byte) string {
+	t.Helper()
+	conf, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating conf file: %v", err)
+	}
+	fName := conf.Name()
+	conf.Close()
+	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+		os.Remove(fName)
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+	return fName
+}
+
+func runReloadServerWithConfig(t *testing.T, configFile string) (*Server, *Options, string) {
+	t.Helper()
+	content, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("Error loading file: %v", err)
+	}
+	return runReloadServerWithContent(t, content)
+}
+
+func runReloadServerWithContent(t *testing.T, content []byte) (*Server, *Options, string) {
+	t.Helper()
+	opts, tmpFile := newOptionsFromContent(t, content)
+	opts.NoLog = true
+	opts.NoSigs = true
+	s := RunServer(opts)
+	return s, opts, tmpFile
+}
+
+func changeCurrentConfigContent(t *testing.T, curConfig, newConfig string) {
+	t.Helper()
+	content, err := ioutil.ReadFile(newConfig)
+	if err != nil {
+		t.Fatalf("Error loading file: %v", err)
+	}
+	changeCurrentConfigContentWithNewContent(t, curConfig, content)
+}
+
+func changeCurrentConfigContentWithNewContent(t *testing.T, curConfig string, content []byte) {
+	t.Helper()
+	if err := ioutil.WriteFile(curConfig, content, 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+}
+
 // Ensure Reload returns an error when attempting to reload a server that did
 // not start with a config file.
 func TestConfigReloadNoConfigFile(t *testing.T) {
@@ -45,7 +120,7 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 // Ensure Reload returns an error when attempting to change an option which
 // does not support reloading.
 func TestConfigReloadUnsupported(t *testing.T) {
-	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	server, opts, config := newServerWithConfig(t, "./configs/reload/test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -78,8 +153,8 @@ func TestConfigReloadUnsupported(t *testing.T) {
 			golden, opts)
 	}
 
-	// Change config file to bad config by replacing symlink.
-	createSymlink(t, config, "./configs/reload/reload_unsupported.conf")
+	// Change config file to bad config.
+	changeCurrentConfigContent(t, config, "./configs/reload/reload_unsupported.conf")
 
 	// This should fail because `cluster` host cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -101,18 +176,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 // we get an error. Using `listen` for now (test may need to be updated if
 // server is changed to support change of listen spec).
 func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
-	orgConfig := "tmp_a.conf"
-	newConfig := "tmp_b.conf"
-	defer os.Remove(orgConfig)
-	defer os.Remove(newConfig)
-	if err := ioutil.WriteFile(orgConfig, []byte("listen: 127.0.0.1:-1"), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
-	if err := ioutil.WriteFile(newConfig, []byte("listen: 127.0.0.1:9999"), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
-
-	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", orgConfig)
+	server, _, config := newServerWithContent(t, []byte("listen: 127.0.0.1:-1"))
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -121,7 +185,7 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	// Change config file with unsupported option hot-swap
-	createSymlink(t, config, newConfig)
+	changeCurrentConfigContentWithNewContent(t, config, []byte("listen: 127.0.0.1:9999"))
 
 	// This should fail because `listen` host cannot be changed.
 	if err := server.Reload(); err == nil || !strings.Contains(err.Error(), "not supported") {
@@ -135,7 +199,7 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
-	server, opts, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
+	server, opts, config := newServerWithConfig(t, "./configs/reload/test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -168,8 +232,8 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 			golden, opts)
 	}
 
-	// Change config file to bad config by replacing symlink.
-	createSymlink(t, config, "./configs/reload/invalid.conf")
+	// Change config file to bad config.
+	changeCurrentConfigContent(t, config, "./configs/reload/invalid.conf")
 
 	// This should fail because the new config should not parse.
 	if err := server.Reload(); err == nil {
@@ -189,21 +253,25 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 
 // Ensure Reload returns nil and the config is changed on success.
 func TestConfigReload(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/test.conf")
+	defer os.Remove(config)
+	defer os.Remove("gnatsd.pid")
+	defer os.Remove("gnatsd.log")
+	defer server.Shutdown()
+
+	dir := filepath.Dir(config)
 	var content []byte
 	if runtime.GOOS != "windows" {
 		content = []byte(`
 			remote_syslog: "udp://127.0.0.1:514" # change on reload
-			log_file:      "/tmp/gnatsd-2.log" # change on reload
+			syslog:        true # enable on reload
 		`)
 	}
-	platformConf := "platform.conf"
+	platformConf := filepath.Join(dir, "platform.conf")
 	defer os.Remove(platformConf)
 	if err := ioutil.WriteFile(platformConf, content, 0666); err != nil {
 		t.Fatalf("Unable to write config file: %v", err)
 	}
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/test.conf")
-	defer os.Remove(config)
-	defer server.Shutdown()
 
 	loaded := server.ConfigTime()
 
@@ -235,8 +303,8 @@ func TestConfigReload(t *testing.T) {
 			golden, opts)
 	}
 
-	// Change config file to new config by replacing symlink.
-	createSymlink(t, config, "./configs/reload/reload.conf")
+	// Change config file to new config.
+	changeCurrentConfigContent(t, config, "./configs/reload/reload.conf")
 
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
@@ -253,16 +321,16 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Logtime {
 		t.Fatal("Expected Logtime to be true")
 	}
-	if !updated.Syslog {
-		t.Fatal("Expected Syslog to be true")
-	}
 	if runtime.GOOS != "windows" {
+		if !updated.Syslog {
+			t.Fatal("Expected Syslog to be true")
+		}
 		if updated.RemoteSyslog != "udp://127.0.0.1:514" {
 			t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://127.0.0.1:514\ngot: %s", updated.RemoteSyslog)
 		}
-		if updated.LogFile != "/tmp/gnatsd-2.log" {
-			t.Fatalf("LogFile is incorrect.\nexpected: /tmp/gnatsd-2.log\ngot: %s", updated.LogFile)
-		}
+	}
+	if updated.LogFile != "gnatsd.log" {
+		t.Fatalf("LogFile is incorrect.\nexpected: gnatsd.log\ngot: %s", updated.LogFile)
 	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
@@ -288,8 +356,8 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Cluster.NoAdvertise {
 		t.Fatal("Expected NoAdvertise to be true")
 	}
-	if updated.PidFile != "/tmp/gnatsd.pid" {
-		t.Fatalf("PidFile is incorrect.\nexpected: /tmp/gnatsd.pid\ngot: %s", updated.PidFile)
+	if updated.PidFile != "gnatsd.pid" {
+		t.Fatalf("PidFile is incorrect.\nexpected: gnatsd.pid\ngot: %s", updated.PidFile)
 	}
 	if updated.MaxControlLine != 512 {
 		t.Fatalf("MaxControlLine is incorrect.\nexpected: 512\ngot: %d", updated.MaxControlLine)
@@ -317,7 +385,7 @@ func TestConfigReload(t *testing.T) {
 // key pair and client verification enabled, ensure reconnect fails, then
 // ensure reconnect succeeds when the client provides a cert.
 func TestConfigReloadRotateTLS(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/tls_test.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/tls_test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -336,7 +404,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Rotate cert and enable client verification.
-	createSymlink(t, config, "./configs/reload/tls_verify_test.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/tls_verify_test.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -372,7 +440,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 // TLS enabled, connect to it to verify, reload config with TLS enabled, ensure
 // reconnect fails, then ensure reconnect succeeds when using secure.
 func TestConfigReloadEnableTLS(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -385,7 +453,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 	nc.Close()
 
 	// Enable TLS.
-	createSymlink(t, config, "./configs/reload/tls_test.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/tls_test.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -410,7 +478,7 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 // ensure reconnect fails, then ensure reconnect succeeds when connecting
 // without secure.
 func TestConfigReloadDisableTLS(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/tls_test.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/tls_test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -423,7 +491,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	nc.Close()
 
 	// Disable TLS.
-	createSymlink(t, config, "./configs/reload/basic.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -446,8 +514,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 // reload config using a different username/password, ensure reconnect fails,
 // then ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadRotateUserAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
-		"./configs/reload/single_user_authentication_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/single_user_authentication_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -468,7 +535,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	})
 
 	// Change user credentials.
-	createSymlink(t, config, "./configs/reload/single_user_authentication_2.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/single_user_authentication_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -508,7 +575,7 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 // reload config using with a username/password, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadEnableUserAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -529,7 +596,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	createSymlink(t, config, "./configs/reload/single_user_authentication_1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/single_user_authentication_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -569,8 +636,7 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no credentials succeeds.
 func TestConfigReloadDisableUserAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
-		"./configs/reload/single_user_authentication_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/single_user_authentication_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -586,7 +652,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	createSymlink(t, config, "./configs/reload/basic.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -604,7 +670,7 @@ func TestConfigReloadDisableUserAuthentication(t *testing.T) {
 // verify, reload config using a different token, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct token.
 func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/token_authentication_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/token_authentication_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -622,7 +688,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 	defer nc.Close()
 
 	// Change authentication token.
-	createSymlink(t, config, "./configs/reload/token_authentication_2.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/token_authentication_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -662,7 +728,7 @@ func TestConfigReloadRotateTokenAuthentication(t *testing.T) {
 // config using with a token, ensure reconnect fails, then ensure reconnect
 // succeeds when using the correct token.
 func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -683,7 +749,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	createSymlink(t, config, "./configs/reload/token_authentication_1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/token_authentication_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -723,7 +789,7 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no token succeeds.
 func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/token_authentication_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/token_authentication_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -739,7 +805,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	createSymlink(t, config, "./configs/reload/basic.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -757,7 +823,7 @@ func TestConfigReloadDisableTokenAuthentication(t *testing.T) {
 // verify, reload config using a different user, ensure reconnect fails, then
 // ensure reconnect succeeds when using the correct credentials.
 func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/multiple_users_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/multiple_users_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -790,7 +856,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Change users credentials.
-	createSymlink(t, config, "./configs/reload/multiple_users_2.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/multiple_users_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -844,7 +910,7 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 // config using with users, ensure reconnect fails, then ensure reconnect
 // succeeds when using the correct credentials.
 func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -865,7 +931,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	})
 
 	// Enable authentication.
-	createSymlink(t, config, "./configs/reload/multiple_users_1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/multiple_users_1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -905,7 +971,7 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 // reload config using with authentication disabled, then ensure connecting
 // with no credentials succeeds.
 func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/multiple_users_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/multiple_users_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -921,7 +987,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 	})
 
 	// Disable authentication.
-	createSymlink(t, config, "./configs/reload/basic.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/basic.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -939,7 +1005,7 @@ func TestConfigReloadDisableUsersAuthentication(t *testing.T) {
 // reload config with new permissions, ensure the previous subscription was
 // closed and publishes fail, then ensure the new permissions succeed.
 func TestConfigReloadChangePermissions(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/authorization_1.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/authorization_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -997,7 +1063,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 
 	// Change permissions.
-	createSymlink(t, config, "./configs/reload/authorization_2.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/authorization_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1077,12 +1143,12 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 // Ensure Reload returns an error when attempting to change cluster address
 // host.
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {
-	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
+	server, _, config := runReloadServerWithConfig(t, "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
 	// Attempt to change cluster listen host.
-	createSymlink(t, config, "./configs/reload/srv_c_1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/srv_c_1.conf")
 
 	// This should fail because cluster address cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -1093,12 +1159,12 @@ func TestConfigReloadClusterHostUnsupported(t *testing.T) {
 // Ensure Reload returns an error when attempting to change cluster address
 // port.
 func TestConfigReloadClusterPortUnsupported(t *testing.T) {
-	server, _, config := newServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/srv_a_1.conf")
+	server, _, config := runReloadServerWithConfig(t, "./configs/reload/srv_a_1.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
 	// Attempt to change cluster listen port.
-	createSymlink(t, config, "./configs/reload/srv_b_1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/srv_b_1.conf")
 
 	// This should fail because cluster address cannot be changed.
 	if err := server.Reload(); err == nil {
@@ -1111,11 +1177,11 @@ func TestConfigReloadClusterPortUnsupported(t *testing.T) {
 // between them, then reloading with authorization and ensuring messages no
 // longer flow until reloading with the correct credentials.
 func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
-	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
+	srvb, srvbOpts, srvbConfig := runReloadServerWithConfig(t, "./configs/reload/srv_b_1.conf")
 	defer os.Remove(srvbConfig)
 	defer srvb.Shutdown()
 
-	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
+	srva, srvaOpts, srvaConfig := runReloadServerWithConfig(t, "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
 
@@ -1161,7 +1227,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 
 	// Enable route authorization.
-	createSymlink(t, srvbConfig, "./configs/reload/srv_b_2.conf")
+	changeCurrentConfigContent(t, srvbConfig, "./configs/reload/srv_b_2.conf")
 	if err := srvb.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1182,7 +1248,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 
 	// Reload Server A with correct route credentials.
-	createSymlink(t, srvaConfig, "./configs/reload/srv_a_2.conf")
+	changeCurrentConfigContent(t, srvaConfig, "./configs/reload/srv_a_2.conf")
 	defer os.Remove(srvaConfig)
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
@@ -1212,11 +1278,11 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 // between them, then reloading without authorization and ensuring messages
 // still flow.
 func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
-	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_2.conf")
+	srvb, srvbOpts, srvbConfig := runReloadServerWithConfig(t, "./configs/reload/srv_b_2.conf")
 	defer os.Remove(srvbConfig)
 	defer srvb.Shutdown()
 
-	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_2.conf")
+	srva, srvaOpts, srvaConfig := runReloadServerWithConfig(t, "./configs/reload/srv_a_2.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
 
@@ -1263,7 +1329,7 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 	}
 
 	// Disable route authorization.
-	createSymlink(t, srvbConfig, "./configs/reload/srv_b_1.conf")
+	changeCurrentConfigContent(t, srvbConfig, "./configs/reload/srv_b_1.conf")
 	if err := srvb.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1293,11 +1359,11 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 // reloading with a different route and ensuring messages flow through the new
 // cluster.
 func TestConfigReloadClusterRoutes(t *testing.T) {
-	srvb, srvbOpts, srvbConfig := runServerWithSymlinkConfig(t, "tmp_b.conf", "./configs/reload/srv_b_1.conf")
+	srvb, srvbOpts, srvbConfig := runReloadServerWithConfig(t, "./configs/reload/srv_b_1.conf")
 	defer os.Remove(srvbConfig)
 	defer srvb.Shutdown()
 
-	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
+	srva, srvaOpts, srvaConfig := runReloadServerWithConfig(t, "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
 
@@ -1354,7 +1420,7 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	}
 
 	// Reload cluster routes.
-	createSymlink(t, srvaConfig, "./configs/reload/srv_a_3.conf")
+	changeCurrentConfigContent(t, srvaConfig, "./configs/reload/srv_a_3.conf")
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1396,7 +1462,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	srvb, srvbOpts := RunServerWithConfig("./configs/reload/srv_b_1.conf")
 	defer srvb.Shutdown()
 
-	srva, srvaOpts, srvaConfig := runServerWithSymlinkConfig(t, "tmp_a.conf", "./configs/reload/srv_a_1.conf")
+	srva, srvaOpts, srvaConfig := runReloadServerWithConfig(t, "./configs/reload/srv_a_1.conf")
 	defer os.Remove(srvaConfig)
 	defer srva.Shutdown()
 
@@ -1443,7 +1509,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	checkNumRoutes(t, srva, 0)
 
 	// Now change config for server A to not solicit a route to server B.
-	createSymlink(t, srvaConfig, "./configs/reload/srv_a_4.conf")
+	changeCurrentConfigContent(t, srvaConfig, "./configs/reload/srv_a_4.conf")
 	defer os.Remove(srvaConfig)
 	if err := srva.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
@@ -1478,23 +1544,13 @@ func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
 }
 
 func TestConfigReloadClusterAdvertise(t *testing.T) {
-	conf := "routeadv.conf"
-	if err := ioutil.WriteFile(conf, []byte(`
-	listen: "0.0.0.0:-1"
-	cluster: {
+	s, _, conf := runReloadServerWithContent(t, []byte(`
 		listen: "0.0.0.0:-1"
-	}
-	`), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
+		cluster: {
+			listen: "0.0.0.0:-1"
+		}
+	`))
 	defer os.Remove(conf)
-	opts, err := ProcessConfigFile(conf)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	opts.NoLog = true
-	opts.NoSigs = true
-	s := RunServer(opts)
 	defer s.Shutdown()
 
 	orgClusterPort := s.ClusterAddr().Port
@@ -1503,7 +1559,7 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 		s.mu.Lock()
 		routeInfo := s.routeInfo
 		routeInfoJSON := Info{}
-		err = json.Unmarshal(s.routeInfoJSON[5:], &routeInfoJSON) // Skip "INFO "
+		err := json.Unmarshal(s.routeInfoJSON[5:], &routeInfoJSON) // Skip "INFO "
 		s.mu.Unlock()
 		if err != nil {
 			t.Fatalf("Error on Unmarshal: %v", err)
@@ -1559,24 +1615,14 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 }
 
 func TestConfigReloadClusterNoAdvertise(t *testing.T) {
-	conf := "routeadv.conf"
-	if err := ioutil.WriteFile(conf, []byte(`
-	listen: "0.0.0.0:-1"
-	client_advertise: "me:1"
-	cluster: {
+	s, _, conf := runReloadServerWithContent(t, []byte(`
 		listen: "0.0.0.0:-1"
-	}
-	`), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
+		client_advertise: "me:1"
+		cluster: {
+			listen: "0.0.0.0:-1"
+		}
+	`))
 	defer os.Remove(conf)
-	opts, err := ProcessConfigFile(conf)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	opts.NoLog = true
-	opts.NoSigs = true
-	s := RunServer(opts)
 	defer s.Shutdown()
 
 	s.mu.Lock()
@@ -1620,18 +1666,8 @@ func TestConfigReloadClusterNoAdvertise(t *testing.T) {
 }
 
 func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
-	conf := "maxsubs.conf"
-	if err := ioutil.WriteFile(conf, []byte(`max_subs: 1`), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
+	s, _, conf := runReloadServerWithContent(t, []byte(`max_subs: 1`))
 	defer os.Remove(conf)
-	opts, err := ProcessConfigFile(conf)
-	if err != nil {
-		stackFatalf(t, "Error processing config file: %v", err)
-	}
-	opts.NoLog = true
-	opts.NoSigs = true
-	s := RunServer(opts)
 	defer s.Shutdown()
 
 	if err := ioutil.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
@@ -1643,18 +1679,8 @@ func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
 }
 
 func TestConfigReloadClientAdvertise(t *testing.T) {
-	conf := "clientadv.conf"
-	if err := ioutil.WriteFile(conf, []byte(`listen: "0.0.0.0:-1"`), 0666); err != nil {
-		t.Fatalf("Error creating config file: %v", err)
-	}
+	s, _, conf := runReloadServerWithContent(t, []byte(`listen: "0.0.0.0:-1"`))
 	defer os.Remove(conf)
-	opts, err := ProcessConfigFile(conf)
-	if err != nil {
-		stackFatalf(t, "Error processing config file: %v", err)
-	}
-	opts.NoLog = true
-	opts.NoSigs = true
-	s := RunServer(opts)
 	defer s.Shutdown()
 
 	orgPort := s.Addr().(*net.TCPAddr).Port
@@ -1700,7 +1726,7 @@ func TestConfigReloadClientAdvertise(t *testing.T) {
 // server with no max connections, connecting two clients, reloading with a
 // max connections of one, and ensuring one client is disconnected.
 func TestConfigReloadMaxConnections(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -1729,7 +1755,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	}
 
 	// Set max connections to one.
-	createSymlink(t, config, "./configs/reload/max_connections.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/max_connections.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1757,7 +1783,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 // with a restrictive limit, and ensuring publishing an oversized message fails
 // and disconnects the client.
 func TestConfigReloadMaxPayload(t *testing.T) {
-	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -1794,7 +1820,7 @@ func TestConfigReloadMaxPayload(t *testing.T) {
 	}
 
 	// Set max payload to one.
-	createSymlink(t, config, "./configs/reload/max_payload.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/max_payload.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1821,8 +1847,7 @@ func TestConfigReloadMaxPayload(t *testing.T) {
 // a server with log and pid files, reloading new ones, then check that
 // we can rename and delete the old log/pid files.
 func TestConfigReloadRotateFiles(t *testing.T) {
-	opts, config := newOptionsWithSymlinkConfig(t, "tmp.conf", "./configs/reload/file_rotate.conf")
-	server := RunServer(opts)
+	server, _, config := runReloadServerWithConfig(t, "./configs/reload/file_rotate.conf")
 	defer func() {
 		os.Remove(config)
 		os.Remove("log1.txt")
@@ -1834,7 +1859,7 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	server.ConfigureLogger()
 
 	// Load a config that renames the files.
-	createSymlink(t, config, "./configs/reload/file_rotate1.conf")
+	changeCurrentConfigContent(t, config, "./configs/reload/file_rotate1.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
@@ -1862,21 +1887,6 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	if err := os.Remove("gnatsd_old.pid"); err != nil {
 		t.Fatalf("Error reloading config, cannot delete file: %v", err)
 	}
-}
-
-func createConfFile(t *testing.T, content []byte) string {
-	t.Helper()
-	conf, err := ioutil.TempFile("", "")
-	if err != nil {
-		t.Fatalf("Error creating conf file: %v", err)
-	}
-	fName := conf.Name()
-	conf.Close()
-	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
-		os.Remove(fName)
-		t.Fatalf("Error writing conf file: %v", err)
-	}
-	return fName
 }
 
 func TestConfigReloadClusterWorks(t *testing.T) {
@@ -1952,43 +1962,5 @@ func TestConfigReloadClusterWorks(t *testing.T) {
 	}
 	if newbcid != bcid {
 		t.Fatalf("Expected server B route ID to be %v, got %v", bcid, newbcid)
-	}
-}
-
-func runServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
-	t.Helper()
-	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
-	opts.NoLog = true
-	opts.NoSigs = true
-	return RunServer(opts), opts, config
-}
-
-func newServerWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Server, *Options, string) {
-	t.Helper()
-	opts, config := newOptionsWithSymlinkConfig(t, symlinkName, configName)
-	return New(opts), opts, config
-}
-
-func newOptionsWithSymlinkConfig(t *testing.T, symlinkName, configName string) (*Options, string) {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting working directory: %v", err)
-	}
-	config := filepath.Join(dir, symlinkName)
-	createSymlink(t, config, configName)
-	opts, err := ProcessConfigFile(config)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	opts.NoSigs = true
-	return opts, config
-}
-
-func createSymlink(t *testing.T, symlinkName, fileName string) {
-	t.Helper()
-	os.Remove(symlinkName)
-	if err := os.Symlink(fileName, symlinkName); err != nil {
-		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
 	}
 }
