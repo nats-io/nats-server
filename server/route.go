@@ -54,15 +54,13 @@ type route struct {
 }
 
 type connectInfo struct {
-	Echo     bool               `json:"echo"`
-	Verbose  bool               `json:"verbose"`
-	Pedantic bool               `json:"pedantic"`
-	User     string             `json:"user,omitempty"`
-	Pass     string             `json:"pass,omitempty"`
-	TLS      bool               `json:"tls_required"`
-	Name     string             `json:"name"`
-	Import   *SubjectPermission `json:"import,omitempty"`
-	Export   *SubjectPermission `json:"export,omitempty"`
+	Echo     bool   `json:"echo"`
+	Verbose  bool   `json:"verbose"`
+	Pedantic bool   `json:"pedantic"`
+	User     string `json:"user,omitempty"`
+	Pass     string `json:"pass,omitempty"`
+	TLS      bool   `json:"tls_required"`
+	Name     string `json:"name"`
 }
 
 // Used to hold onto mappings for unsubscribed
@@ -272,12 +270,6 @@ func (c *client) sendConnect(tlsRequired bool) {
 		Name:     c.srv.info.ID,
 	}
 
-	// Check for any permissions to send across.
-	if perms := c.srv.opts.Cluster.Permissions; perms != nil {
-		cinfo.Import = perms.Import
-		cinfo.Export = perms.Export
-	}
-
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
@@ -326,6 +318,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
 
+	// Copy over permissions as well.
 	c.opts.Import = info.Import
 	c.opts.Export = info.Export
 
@@ -818,10 +811,6 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 			rs := *c.route
 			r = &rs
 		}
-
-		// Snapshot permissions if they exist.
-		imports := c.opts.Import
-		exports := c.opts.Export
 		c.mu.Unlock()
 
 		remote.mu.Lock()
@@ -836,14 +825,6 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// on the opposite connection, and therefore end-up with both
 		// connections being dropped.
 		remote.route.retry = true
-
-		// If we had permissions we want to move these to the remote.
-		if imports != nil {
-			remote.opts.Import = imports
-		}
-		if exports != nil {
-			remote.opts.Export = exports
-		}
 		remote.mu.Unlock()
 	}
 
