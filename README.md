@@ -60,11 +60,11 @@ The server is started and listening for client connections on port 4222 (the def
 
 ### Clients
 
-The NATS ecosystem provides a large range of supported and community [clients](http://nats.io/documentation/clients/nats-clients/), including Go, Java, Node, and many more. For the complete up-to-date list, visit the [NATS download site](https://nats.io/download).
+The NATS ecosystem provides a large range of supported and community clients, including Go, Java, Node, and many more. For the complete up-to-date list, visit the [NATS download site](https://nats.io/download).
 
 ### Protocol
 
-The NATS server uses a [text based protocol](http://nats.io/documentation/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/documentation/internals/nats-protocol-demo/).
+The NATS server uses a [text based protocol](http://nats.io/doc/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/doc/internals/nats-protocol-demo/).
 
 ```sh
 > telnet demo.nats.io 4222
