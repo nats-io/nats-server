@@ -16,7 +16,7 @@ before_script:
 - go vet $EXCLUDE_VENDOR
 - misspell -error -locale US .
 - megacheck $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" == 1.11 ]]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
+- if [[ "$TRAVIS_GO_VERSION" == 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" == 1.11 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
