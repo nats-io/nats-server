@@ -253,6 +253,10 @@ type clientOpts struct {
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
 	Protocol      int    `json:"protocol"`
+
+	// Routes only
+	Import *SubjectPermission `json:"import,omitempty"`
+	Export *SubjectPermission `json:"export,omitempty"`
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true, Echo: true}

@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -268,6 +269,7 @@ func (c *client) sendConnect(tlsRequired bool) {
 		TLS:      tlsRequired,
 		Name:     c.srv.info.ID,
 	}
+
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
@@ -315,6 +317,10 @@ func (c *client) processRouteInfo(info *Info) {
 	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
+
+	// Copy over permissions as well.
+	c.opts.Import = info.Import
+	c.opts.Export = info.Export
 
 	// If we do not know this route's URL, construct one on the fly
 	// from the information provided.
@@ -911,6 +917,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	info := Info{
 		ID:           s.info.ID,
 		Version:      s.info.Version,
+		GoVersion:    runtime.Version(),
 		AuthRequired: false,
 		TLSRequired:  tlsReq,
 		TLSVerify:    tlsReq,
@@ -931,6 +938,11 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	// Check for Auth items
 	if opts.Cluster.Username != "" {
 		info.AuthRequired = true
+	}
+	// Check for permissions.
+	if opts.Cluster.Permissions != nil {
+		info.Import = opts.Cluster.Permissions.Import
+		info.Export = opts.Cluster.Permissions.Export
 	}
 	s.routeInfo = info
 	// Possibly override Host/Port and set IP based on Cluster.Advertise

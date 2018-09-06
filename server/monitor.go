@@ -532,8 +532,8 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 type Routez struct {
 	ID        string             `json:"server_id"`
 	Now       time.Time          `json:"now"`
-	Imports   *SubjectPermission `json:"imports,omitempty"`
-	Exports   *SubjectPermission `json:"exports,omitempty"`
+	Import    *SubjectPermission `json:"import,omitempty"`
+	Export    *SubjectPermission `json:"export,omitempty"`
 	NumRoutes int                `json:"num_routes"`
 	Routes    []*RouteInfo       `json:"routes"`
 }
@@ -546,19 +546,21 @@ type RoutezOptions struct {
 
 // RouteInfo has detailed information on a per connection basis.
 type RouteInfo struct {
-	Rid          uint64   `json:"rid"`
-	RemoteID     string   `json:"remote_id"`
-	DidSolicit   bool     `json:"did_solicit"`
-	IsConfigured bool     `json:"is_configured"`
-	IP           string   `json:"ip"`
-	Port         int      `json:"port"`
-	Pending      int      `json:"pending_size"`
-	InMsgs       int64    `json:"in_msgs"`
-	OutMsgs      int64    `json:"out_msgs"`
-	InBytes      int64    `json:"in_bytes"`
-	OutBytes     int64    `json:"out_bytes"`
-	NumSubs      uint32   `json:"subscriptions"`
-	Subs         []string `json:"subscriptions_list,omitempty"`
+	Rid          uint64             `json:"rid"`
+	RemoteID     string             `json:"remote_id"`
+	DidSolicit   bool               `json:"did_solicit"`
+	IsConfigured bool               `json:"is_configured"`
+	IP           string             `json:"ip"`
+	Port         int                `json:"port"`
+	Import       *SubjectPermission `json:"import,omitempty"`
+	Export       *SubjectPermission `json:"export,omitempty"`
+	Pending      int                `json:"pending_size"`
+	InMsgs       int64              `json:"in_msgs"`
+	OutMsgs      int64              `json:"out_msgs"`
+	InBytes      int64              `json:"in_bytes"`
+	OutBytes     int64              `json:"out_bytes"`
+	NumSubs      uint32             `json:"subscriptions"`
+	Subs         []string           `json:"subscriptions_list,omitempty"`
 }
 
 // Routez returns a Routez struct containing inormation about routes.
@@ -575,10 +577,9 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs.ID = s.info.ID
 
 	// Check for defined permissions for all connected routes.
-	perms := s.getOpts().Cluster.Permissions
-	if perms != nil {
-		rs.Imports = perms.Import
-		rs.Exports = perms.Export
+	if perms := s.getOpts().Cluster.Permissions; perms != nil {
+		rs.Import = perms.Import
+		rs.Export = perms.Export
 	}
 
 	// Walk the list
@@ -594,6 +595,8 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			InBytes:      atomic.LoadInt64(&r.inBytes),
 			OutBytes:     r.outBytes,
 			NumSubs:      uint32(len(r.subs)),
+			Import:       r.opts.Import,
+			Export:       r.opts.Export,
 		}
 
 		if subs && len(r.subs) > 0 {
