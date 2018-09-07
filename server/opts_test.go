@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -758,6 +759,111 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 	subPerm = bob.Permissions.Subscribe.Deny[2]
 	if subPerm != "baz" {
 		t.Fatalf("Expected Bobs's third denied subscribe permission to be 'baz', got %q\n", subPerm)
+	}
+}
+
+// Test new nkey users
+func TestNkeyUsersConfig(t *testing.T) {
+	confFileName := "nkeys.conf"
+	defer os.Remove(confFileName)
+	content := `
+    authorization {
+      users = [
+        {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV"}
+        {nkey: "UA3C5TBZYK5GJQJRWPMU6NFY5JNAEVQB2V2TUZFZDHFJFUYVKTTUOFKZ"}
+      ]
+    }`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	lu := len(opts.Nkeys)
+	if lu != 2 {
+		t.Fatalf("Expected 2 nkey users, got %d", lu)
+	}
+}
+
+func TestNkeyUsersWithPermsConfig(t *testing.T) {
+	confFileName := "nkeys.conf"
+	defer os.Remove(confFileName)
+	content := `
+    authorization {
+      users = [
+        {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV",
+         permissions = {
+           publish = "$SYSTEM.>"
+           subscribe = { deny = ["foo", "bar", "baz"] }
+         }
+        }
+      ]
+    }`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	lu := len(opts.Nkeys)
+	if lu != 1 {
+		t.Fatalf("Expected 1 nkey user, got %d", lu)
+	}
+	nk := opts.Nkeys[0]
+	if nk.Permissions == nil {
+		fmt.Printf("nk is %+v\n", nk)
+		t.Fatal("Expected to have permissions")
+	}
+	if nk.Permissions.Publish == nil {
+		t.Fatal("Expected to have publish permissions")
+	}
+	if nk.Permissions.Publish.Allow[0] != "$SYSTEM.>" {
+		t.Fatalf("Expected publish to allow \"$SYSTEM.>\", but got %v\n", nk.Permissions.Publish.Allow[0])
+	}
+	if nk.Permissions.Subscribe == nil {
+		t.Fatal("Expected to have subscribe permissions")
+	}
+	if nk.Permissions.Subscribe.Allow != nil {
+		t.Fatal("Expected to have no subscribe allow permissions")
+	}
+	deny := nk.Permissions.Subscribe.Deny
+	if deny == nil || len(deny) != 3 ||
+		deny[0] != "foo" || deny[1] != "bar" || deny[2] != "baz" {
+		t.Fatalf("Expected to have subscribe deny permissions, got %v", deny)
+	}
+}
+
+func TestBadNkeyConfig(t *testing.T) {
+	confFileName := "nkeys_bad.conf"
+	defer os.Remove(confFileName)
+	content := `
+    authorization {
+      users = [ {nkey: "Ufoo"}]
+    }`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if _, err := ProcessConfigFile(confFileName); err == nil {
+		t.Fatalf("Expected an error from nkey entry with password")
+	}
+}
+
+func TestNkeyWithPassConfig(t *testing.T) {
+	confFileName := "nkeys_pass.conf"
+	defer os.Remove(confFileName)
+	content := `
+    authorization {
+      users = [
+        {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV", pass: "foo"}
+      ]
+    }`
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if _, err := ProcessConfigFile(confFileName); err == nil {
+		t.Fatalf("Expected an error from bad nkey entry")
 	}
 }
 

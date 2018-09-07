@@ -137,6 +137,7 @@ type client struct {
 	cid   uint64
 	opts  clientOpts
 	start time.Time
+	nonce []byte
 	nc    net.Conn
 	ncs   string
 	out   outbound
@@ -246,6 +247,8 @@ type clientOpts struct {
 	Verbose       bool   `json:"verbose"`
 	Pedantic      bool   `json:"pedantic"`
 	TLSRequired   bool   `json:"tls_required"`
+	Nkey          string `json:"nkey"`
+	Sig           string `json:"sig"`
 	Authorization string `json:"auth_token"`
 	Username      string `json:"user"`
 	Password      string `json:"pass"`
