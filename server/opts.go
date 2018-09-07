@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/conf"
-	"github.com/nats-io/gnatsd/util"
 )
 
 // ClusterOpts are options for clusters.
@@ -120,10 +119,10 @@ func (o *Options) Clone() *Options {
 		}
 	}
 	if o.TLSConfig != nil {
-		clone.TLSConfig = util.CloneTLSConfig(o.TLSConfig)
+		clone.TLSConfig = o.TLSConfig.Clone()
 	}
 	if o.Cluster.TLSConfig != nil {
-		clone.Cluster.TLSConfig = util.CloneTLSConfig(o.Cluster.TLSConfig)
+		clone.Cluster.TLSConfig = o.Cluster.TLSConfig.Clone()
 	}
 	return clone
 }
@@ -767,14 +766,15 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		return nil, fmt.Errorf("error parsing certificate: %v", err)
 	}
 
-	// Create TLSConfig
+	// Create the tls.Config from our options.
 	// We will determine the cipher suites that we prefer.
+	// FIXME(dlc) change if ARM based.
 	config := tls.Config{
-		CurvePreferences:         tc.CurvePreferences,
-		Certificates:             []tls.Certificate{cert},
-		PreferServerCipherSuites: true,
 		MinVersion:               tls.VersionTLS12,
 		CipherSuites:             tc.Ciphers,
+		PreferServerCipherSuites: true,
+		CurvePreferences:         tc.CurvePreferences,
+		Certificates:             []tls.Certificate{cert},
 	}
 
 	// Require client certificates as needed

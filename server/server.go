@@ -35,7 +35,6 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/nats-io/gnatsd/logger"
-	"github.com/nats-io/gnatsd/util"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -669,7 +668,7 @@ func (s *Server) startMonitoring(secure bool) error {
 			port = 0
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
-		config := util.CloneTLSConfig(opts.TLSConfig)
+		config := opts.TLSConfig.Clone()
 		config.ClientAuth = tls.NoClientCert
 		httpListener, err = tls.Listen("tcp", hp, config)
 
