@@ -525,8 +525,8 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
+	disconnected := make(chan struct{}, 1)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -553,13 +553,15 @@ func TestConfigReloadRotateUserAuthentication(t *testing.T) {
 	conn.Close()
 
 	// Ensure the previous connection received an authorization error.
+	// Note that it is possible that client gets EOF and not able to
+	// process async error, so don't fail if we don't get it.
 	select {
 	case err := <-asyncErr:
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Expected authorization error")
+	case <-time.After(time.Second):
+		// Give it up to 1 sec.
 	}
 
 	// Ensure the previous connection was disconnected.
@@ -586,8 +588,8 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
+	disconnected := make(chan struct{}, 1)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -614,13 +616,14 @@ func TestConfigReloadEnableUserAuthentication(t *testing.T) {
 	conn.Close()
 
 	// Ensure the previous connection received an authorization error.
+	// Note that it is possible that client gets EOF and not able to
+	// process async error, so don't fail if we don't get it.
 	select {
 	case err := <-asyncErr:
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Expected authorization error")
+	case <-time.After(time.Second):
 	}
 
 	// Ensure the previous connection was disconnected.
@@ -739,8 +742,8 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
+	disconnected := make(chan struct{}, 1)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -767,13 +770,14 @@ func TestConfigReloadEnableTokenAuthentication(t *testing.T) {
 	conn.Close()
 
 	// Ensure the previous connection received an authorization error.
+	// Note that it is possible that client gets EOF and not able to
+	// process async error, so don't fail if we don't get it.
 	select {
 	case err := <-asyncErr:
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Expected authorization error")
+	case <-time.After(time.Second):
 	}
 
 	// Ensure the previous connection was disconnected.
@@ -834,8 +838,8 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
+	disconnected := make(chan struct{}, 1)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -874,13 +878,14 @@ func TestConfigReloadRotateUsersAuthentication(t *testing.T) {
 	conn.Close()
 
 	// Ensure the previous connection received an authorization error.
+	// Note that it is possible that client gets EOF and not able to
+	// process async error, so don't fail if we don't get it.
 	select {
 	case err := <-asyncErr:
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Expected authorization error")
+	case <-time.After(time.Second):
 	}
 
 	// Ensure the previous connection was disconnected.
@@ -921,8 +926,8 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	disconnected := make(chan struct{})
-	asyncErr := make(chan error)
+	disconnected := make(chan struct{}, 1)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -949,13 +954,14 @@ func TestConfigReloadEnableUsersAuthentication(t *testing.T) {
 	conn.Close()
 
 	// Ensure the previous connection received an authorization error.
+	// Note that it is possible that client gets EOF and not able to
+	// process async error, so don't fail if we don't get it.
 	select {
 	case err := <-asyncErr:
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Expected authorization error")
+	case <-time.After(time.Second):
 	}
 
 	// Ensure the previous connection was disconnected.
@@ -1015,7 +1021,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		t.Fatalf("Error creating client: %v", err)
 	}
 	defer nc.Close()
-	asyncErr := make(chan error)
+	asyncErr := make(chan error, 1)
 	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
 		asyncErr <- err
 	})
@@ -1070,6 +1076,8 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 
 	// Ensure we receive an error for the subscription that is no longer
 	// authorized.
+	// In this test, since connection is not closed by the server,
+	// the client must receive an -ERR
 	select {
 	case err := <-asyncErr:
 		if !strings.Contains(err.Error(), "permissions violation for subscription to \"_inbox.>\"") {
