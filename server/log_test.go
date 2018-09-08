@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -179,5 +180,167 @@ func TestReOpenLogFile(t *testing.T) {
 	}
 	if strings.HasSuffix(string(buf), "New message") {
 		t.Fatalf("New message was not appended after file was re-opened, got: %v", string(buf))
+	}
+}
+
+func TestNoPasswordsFromConnectTrace(t *testing.T) {
+	opts := DefaultOptions()
+	opts.NoLog = false
+	opts.Trace = true
+	opts.Username = "derek"
+	opts.Password = "s3cr3t"
+
+	s := &Server{opts: opts}
+	dl := &DummyLogger{}
+	s.SetLogger(dl, false, true)
+
+	_ = s.logging.logger.(*DummyLogger)
+	if s.logging.trace != 1 {
+		t.Fatalf("Expected trace 1, received value %d\n", s.logging.trace)
+	}
+	defer s.SetLogger(nil, false, false)
+
+	c, _, _ := newClientForServer(s)
+
+	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n")
+	err := c.parse(connectOp)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+
+	dl.Lock()
+	hasPass := strings.Contains(dl.msg, "s3cr3t")
+	dl.Unlock()
+
+	if hasPass {
+		t.Fatalf("Password detected in log output: %s", dl.msg)
+	}
+}
+
+func TestRemovePassFromTrace(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"user and pass",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass extra space",
+			"CONNECT {\"user\":\"derek\",\"pass\":  \"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":  \"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass is empty",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass is empty whitespace",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"               \"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass whitespace",
+			"CONNECT {\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":    \"[REDACTED]\"     }\r\n",
+		},
+		{
+			"only pass",
+			"CONNECT {\"pass\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"invalid json",
+			"CONNECT {pass:s3cr3t ,   password =  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password =  s3cr3t}",
+		},
+		{
+			"invalid json no whitespace after key",
+			"CONNECT {pass:s3cr3t ,   password=  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password=  s3cr3t}",
+		},
+		{
+			"both pass and wrong password key",
+			`CONNECT {"pass":"s3cr3t4", "password": "s3cr3t4"}`,
+			`CONNECT {"pass":"[REDACTED]", "password": "s3cr3t4"}`,
+		},
+		{
+			"invalid json",
+			"CONNECT {user = hello, password =  s3cr3t}",
+			"CONNECT {user = hello, password =  [REDACTED]}",
+		},
+		{
+			"complete connect",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"invalid json with only pass key",
+			"CONNECT {pass:s3cr3t\r\n",
+			"CONNECT {pass:[REDACTED]\r\n",
+		},
+		{
+			"invalid password key also filtered",
+			"CONNECT {\"password\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"password\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"single long password with whitespace",
+			"CONNECT {\"pass\":\"secret password which is very long\",}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"single long pass key is filtered",
+			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"duplicate keys only filtered once",
+			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
+		},
+		{
+			"invalid json with multiple keys only one is filtered",
+			"CONNECT {pass = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {pass = \"[REDACTED]\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+		},
+		{
+			"complete connect protocol",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"user and pass are filterered",
+			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"complete connect using password key with user and password being the same",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+		},
+		{
+			"complete connect with user password and name all the same",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+		},
+		{
+			"complete connect extra white space at the beginning",
+			"CONNECT 	 {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"foo\"}\r\n",
+			"CONNECT 	 {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"foo\"}\r\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := removePassFromTrace([]byte(test.input))
+			if !bytes.Equal(output, []byte(test.expected)) {
+				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
+			}
+		})
 	}
 }

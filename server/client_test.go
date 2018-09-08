@@ -52,6 +52,19 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	}()
 }
 
+func newClientForServer(s *Server) (*client, *bufio.Reader, string) {
+	cli, srv := net.Pipe()
+	cr := bufio.NewReaderSize(cli, maxBufSize)
+	ch := make(chan *client)
+	createClientAsync(ch, s, srv)
+	// So failing tests don't just hang.
+	cli.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _ := cr.ReadString('\n')
+	// Grab client
+	c := <-ch
+	return c, cr, l
+}
+
 var defaultServerOptions = Options{
 	Trace:  false,
 	Debug:  false,

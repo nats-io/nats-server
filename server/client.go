@@ -21,6 +21,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -701,8 +702,43 @@ func (c *client) processErr(errStr string) {
 	c.closeConnection(ParseError)
 }
 
+// Password pattern matcher.
+var passPat = regexp.MustCompile(`"?\s*pass\S*?"?\s*[:=]\s*"?(([^",\r\n}])*)`)
+
+// removePassFromTrace removes any notion of passwords from trace
+// messages for logging.
+func removePassFromTrace(arg []byte) []byte {
+	if !bytes.Contains(arg, []byte(`pass`)) {
+		return arg
+	}
+	// Take a copy of the connect proto just for the trace message.
+	var _arg [4096]byte
+	buf := append(_arg[:0], arg...)
+
+	m := passPat.FindAllSubmatchIndex(buf, -1)
+	if len(m) == 0 {
+		return arg
+	}
+
+	redactedPass := []byte("[REDACTED]")
+	for _, i := range m {
+		if len(i) < 4 {
+			continue
+		}
+		start := i[2]
+		end := i[3]
+
+		// Replace password substring.
+		buf = append(buf[:start], append(redactedPass, buf[end:]...)...)
+		break
+	}
+	return buf
+}
+
 func (c *client) processConnect(arg []byte) error {
-	c.traceInOp("CONNECT", arg)
+	if c.trace {
+		c.traceInOp("CONNECT", removePassFromTrace(arg))
+	}
 
 	c.mu.Lock()
 	// If we can't stop the timer because the callback is in progress...

@@ -111,6 +111,25 @@ func (p *Permissions) clone() *Permissions {
 	return clone
 }
 
+// checkAuthforWarnings will look for insecure settings and log concerns.
+// Lock is assumed held.
+func (s *Server) checkAuthforWarnings() {
+	warn := false
+	if s.opts.Password != "" && !isBcrypt(s.opts.Password) {
+		warn = true
+	}
+	for _, u := range s.users {
+		if !isBcrypt(u.Password) {
+			warn = true
+			break
+		}
+	}
+	if warn {
+		// Warning about using plaintext passwords.
+		s.Warnf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
+	}
+}
+
 // configureAuthorization will do any setup needed for authorization.
 // Lock is assumed held.
 func (s *Server) configureAuthorization() {

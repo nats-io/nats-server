@@ -284,6 +284,9 @@ func (s *Server) Start() {
 	}
 	s.Noticef("Git commit [%s]", gc)
 
+	// Check for insecure configurations.op
+	s.checkAuthforWarnings()
+
 	// Avoid RACE between Start() and Shutdown()
 	s.mu.Lock()
 	s.running = true
@@ -894,7 +897,9 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	// Place in the ring buffer
 	s.mu.Lock()
-	s.closed.append(cc)
+	if s.closed != nil {
+		s.closed.append(cc)
+	}
 	s.mu.Unlock()
 }
 
