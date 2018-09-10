@@ -27,6 +27,9 @@ type Logger interface {
 	// Log a notice statement
 	Noticef(format string, v ...interface{})
 
+	// Log a warning statement
+	Warnf(format string, v ...interface{})
+
 	// Log a fatal error
 	Fatalf(format string, v ...interface{})
 
@@ -141,6 +144,13 @@ func (s *Server) Noticef(format string, v ...interface{}) {
 func (s *Server) Errorf(format string, v ...interface{}) {
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
 		logger.Errorf(format, v...)
+	}, format, v...)
+}
+
+// Warnf logs a warning error
+func (s *Server) Warnf(format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Warnf(format, v...)
 	}, format, v...)
 }
 

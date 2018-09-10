@@ -60,6 +60,9 @@ func (d *dummyLogger) Tracef(format string, args ...interface{}) {
 func (d *dummyLogger) Noticef(format string, args ...interface{}) {
 }
 
+func (d *dummyLogger) Warnf(format string, args ...interface{}) {
+}
+
 func TestStackFatal(t *testing.T) {
 	d := &dummyLogger{}
 	stackFatalf(d, "test stack %d", 1)
