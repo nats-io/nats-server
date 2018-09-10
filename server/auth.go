@@ -145,8 +145,8 @@ func (s *Server) checkAuthforWarnings() {
 		}
 	}
 	if warn {
-		// Should be a warning but we currently do not have that option.
-		s.Errorf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
+		// Warning about using plaintext passwords.
+		s.Warnf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
 	}
 }
 
