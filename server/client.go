@@ -21,6 +21,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,7 @@ type client struct {
 	cid   uint64
 	opts  clientOpts
 	start time.Time
+	nonce []byte
 	nc    net.Conn
 	ncs   string
 	out   outbound
@@ -246,9 +248,11 @@ type clientOpts struct {
 	Verbose       bool   `json:"verbose"`
 	Pedantic      bool   `json:"pedantic"`
 	TLSRequired   bool   `json:"tls_required"`
-	Authorization string `json:"auth_token"`
-	Username      string `json:"user"`
-	Password      string `json:"pass"`
+	Nkey          string `json:"nkey,omitempty"`
+	Sig           string `json:"sig,omitempty"`
+	Authorization string `json:"auth_token,omitempty"`
+	Username      string `json:"user,omitempty"`
+	Password      string `json:"pass,omitempty"`
 	Name          string `json:"name"`
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
@@ -701,8 +705,35 @@ func (c *client) processErr(errStr string) {
 	c.closeConnection(ParseError)
 }
 
+// Password pattern matcher.
+var passPat = regexp.MustCompile(`"?\s*pass\S*\s*"?\s*[:=]\s*("?[^\s,}$]*)`)
+
+// This will remove any notion of passwords from trace messages
+// for logging.
+func removePassFromTrace(arg []byte) []byte {
+
+	if !bytes.Contains(arg, []byte("pass")) {
+		return arg
+	}
+	m := passPat.FindAllSubmatch(arg, -1)
+	if len(m) == 0 {
+		return arg
+	}
+
+	for _, match := range m {
+		if len(match) != 2 {
+			continue
+		}
+		arg = bytes.Replace(arg, match[1], []byte("[REDACTED]"), 1)
+
+	}
+	return arg
+}
+
 func (c *client) processConnect(arg []byte) error {
-	c.traceInOp("CONNECT", arg)
+	if c.trace {
+		c.traceInOp("CONNECT", removePassFromTrace(arg))
+	}
 
 	c.mu.Lock()
 	// If we can't stop the timer because the callback is in progress...

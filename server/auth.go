@@ -15,9 +15,11 @@ package server
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
+	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -37,6 +39,12 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// Nkey is for multiple nkey based users
+type NkeyUser struct {
+	Nkey        string       `json:"user"`
+	Permissions *Permissions `json:"permissions"`
+}
+
 // User is for multiple accounts/users.
 type User struct {
 	Username    string       `json:"user"`
@@ -53,6 +61,18 @@ func (u *User) clone() *User {
 	clone := &User{}
 	*clone = *u
 	clone.Permissions = u.Permissions.clone()
+	return clone
+}
+
+// clone performs a deep copy of the NkeyUser struct, returning a new clone with
+// all values copied.
+func (n *NkeyUser) clone() *NkeyUser {
+	if n == nil {
+		return nil
+	}
+	clone := &NkeyUser{}
+	*clone = *n
+	clone.Permissions = n.Permissions.clone()
 	return clone
 }
 
@@ -111,6 +131,25 @@ func (p *Permissions) clone() *Permissions {
 	return clone
 }
 
+// checkAuthforWarnings will look for insecure settings and log concerns.
+// Lock is assumed held.
+func (s *Server) checkAuthforWarnings() {
+	warn := false
+	if s.opts.Password != "" && !isBcrypt(s.opts.Password) {
+		warn = true
+	}
+	for _, u := range s.users {
+		if !isBcrypt(u.Password) {
+			warn = true
+			break
+		}
+	}
+	if warn {
+		// Warning about using plaintext passwords.
+		s.Warnf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
+	}
+}
+
 // configureAuthorization will do any setup needed for authorization.
 // Lock is assumed held.
 func (s *Server) configureAuthorization() {
@@ -125,10 +164,19 @@ func (s *Server) configureAuthorization() {
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
 		s.info.AuthRequired = true
-	} else if opts.Users != nil {
-		s.users = make(map[string]*User)
-		for _, u := range opts.Users {
-			s.users[u.Username] = u
+	} else if opts.Nkeys != nil || opts.Users != nil {
+		// Support both at the same time.
+		if opts.Nkeys != nil {
+			s.nkeys = make(map[string]*NkeyUser)
+			for _, u := range opts.Nkeys {
+				s.nkeys[u.Nkey] = u
+			}
+		}
+		if opts.Users != nil {
+			s.users = make(map[string]*User)
+			for _, u := range opts.Users {
+				s.users[u.Username] = u
+			}
 		}
 		s.info.AuthRequired = true
 	} else if opts.Username != "" || opts.Authorization != "" {
@@ -152,31 +200,72 @@ func (s *Server) checkAuthorization(c *client) bool {
 	}
 }
 
-// hasUsers leyt's us know if we have a users array.
-func (s *Server) hasUsers() bool {
-	s.mu.Lock()
-	hu := s.users != nil
-	s.mu.Unlock()
-	return hu
-}
-
 // isClientAuthorized will check the client against the proper authorization method and data.
-// This could be token or username/password based.
+// This could be nkey, token, or username/password based.
 func (s *Server) isClientAuthorized(c *client) bool {
-	// Snapshot server options.
-	opts := s.getOpts()
+	// Snapshot server options by hand and only grab what we really need.
+	s.optsMu.RLock()
+	customClientAuthentication := s.opts.CustomClientAuthentication
+	authorization := s.opts.Authorization
+	username := s.opts.Username
+	password := s.opts.Password
+	s.optsMu.RUnlock()
 
-	// Check custom auth first, then multiple users, then token, then single user/pass.
-	if opts.CustomClientAuthentication != nil {
-		return opts.CustomClientAuthentication.Check(c)
-	} else if s.hasUsers() {
-		s.mu.Lock()
-		user, ok := s.users[c.opts.Username]
+	// Check custom auth first, then nkeys, then multiple users, then token, then single user/pass.
+	if customClientAuthentication != nil {
+		return customClientAuthentication.Check(c)
+	}
+
+	var nkey *NkeyUser
+	var user *User
+	var ok bool
+
+	s.mu.Lock()
+	authRequired := s.info.AuthRequired
+	if !authRequired {
+		// TODO(dlc) - If they send us credentials should we fail?
 		s.mu.Unlock()
+		return true
+	}
 
+	// Check if we have nkeys or users for client.
+	hasNkeys := s.nkeys != nil
+	hasUsers := s.users != nil
+	if hasNkeys && c.opts.Nkey != "" {
+		nkey, ok = s.nkeys[c.opts.Nkey]
 		if !ok {
+			s.mu.Unlock()
 			return false
 		}
+	} else if hasUsers && c.opts.Username != "" {
+		user, ok = s.users[c.opts.Username]
+		if !ok {
+			s.mu.Unlock()
+			return false
+		}
+	}
+	s.mu.Unlock()
+
+	// Verify the signature against the nonce.
+	if nkey != nil {
+		if c.opts.Sig == "" {
+			return false
+		}
+		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+		if err != nil {
+			return false
+		}
+		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
+		if err != nil {
+			return false
+		}
+		if err := pub.Verify(c.nonce, sig); err != nil {
+			return false
+		}
+		return true
+	}
+
+	if user != nil {
 		ok = comparePasswords(user.Password, c.opts.Password)
 		// If we are authorized, register the user which will properly setup any permissions
 		// for pub/sub authorizations.
@@ -184,18 +273,18 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			c.RegisterUser(user)
 		}
 		return ok
-
-	} else if opts.Authorization != "" {
-		return comparePasswords(opts.Authorization, c.opts.Authorization)
-
-	} else if opts.Username != "" {
-		if opts.Username != c.opts.Username {
-			return false
-		}
-		return comparePasswords(opts.Password, c.opts.Password)
 	}
 
-	return true
+	if authorization != "" {
+		return comparePasswords(authorization, c.opts.Authorization)
+	} else if username != "" {
+		if username != c.opts.Username {
+			return false
+		}
+		return comparePasswords(password, c.opts.Password)
+	}
+
+	return false
 }
 
 // checkRouterAuth checks optional router authorization which can be nil or username/password.

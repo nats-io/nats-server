@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -40,24 +41,25 @@ import (
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
-	ID           string `json:"server_id"`
-	Version      string `json:"version"`
-	Proto        int    `json:"proto"`
-	GitCommit    string `json:"git_commit,omitempty"`
-	GoVersion    string `json:"go"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	AuthRequired bool   `json:"auth_required,omitempty"`
-	TLSRequired  bool   `json:"tls_required,omitempty"`
-	TLSVerify    bool   `json:"tls_verify,omitempty"`
-	MaxPayload   int    `json:"max_payload"`
-	IP           string `json:"ip,omitempty"`
-	CID          uint64 `json:"client_id,omitempty"`
+	ID                string   `json:"server_id"`
+	Version           string   `json:"version"`
+	Proto             int      `json:"proto"`
+	GitCommit         string   `json:"git_commit,omitempty"`
+	GoVersion         string   `json:"go"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	AuthRequired      bool     `json:"auth_required,omitempty"`
+	TLSRequired       bool     `json:"tls_required,omitempty"`
+	TLSVerify         bool     `json:"tls_verify,omitempty"`
+	MaxPayload        int      `json:"max_payload"`
+	IP                string   `json:"ip,omitempty"`
+	CID               uint64   `json:"client_id,omitempty"`
+	Nonce             string   `json:"nonce,omitempty"`
+	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
 
 	// Route Specific
-	ClientConnectURLs []string           `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
-	Import            *SubjectPermission `json:"import,omitempty"`
-	Export            *SubjectPermission `json:"export,omitempty"`
+	Import *SubjectPermission `json:"import,omitempty"`
+	Export *SubjectPermission `json:"export,omitempty"`
 }
 
 // Server is our main struct.
@@ -65,6 +67,7 @@ type Server struct {
 	gcid uint64
 	stats
 	mu            sync.Mutex
+	prand         *rand.Rand
 	info          Info
 	sl            *Sublist
 	configFile    string
@@ -77,6 +80,7 @@ type Server struct {
 	routes        map[uint64]*client
 	remotes       map[string]*client
 	users         map[string]*User
+	nkeys         map[string]*NkeyUser
 	totalClients  uint64
 	closed        *closedRingBuffer
 	done          chan bool
@@ -165,6 +169,7 @@ func New(opts *Options) *Server {
 	s := &Server{
 		configFile: opts.ConfigFile,
 		info:       info,
+		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
 		sl:         NewSublist(),
 		opts:       opts,
 		done:       make(chan bool, 1),
@@ -283,6 +288,9 @@ func (s *Server) Start() {
 		gc = "not set"
 	}
 	s.Noticef("Git commit [%s]", gc)
+
+	// Check for insecure configurations.op
+	s.checkAuthforWarnings()
 
 	// Avoid RACE between Start() and Shutdown()
 	s.mu.Lock()
@@ -749,6 +757,13 @@ func (s *Server) copyInfo() Info {
 		info.ClientConnectURLs = make([]string, len(s.info.ClientConnectURLs))
 		copy(info.ClientConnectURLs, s.info.ClientConnectURLs)
 	}
+	if s.nonceRequired() {
+		// Nonce handling
+		var raw [nonceLen]byte
+		nonce := raw[:]
+		s.generateNonce(nonce)
+		info.Nonce = string(nonce)
+	}
 	return info
 }
 
@@ -765,6 +780,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.copyInfo()
+	c.nonce = []byte(info.Nonce)
 	s.totalClients++
 	s.mu.Unlock()
 
@@ -894,7 +910,9 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	// Place in the ring buffer
 	s.mu.Lock()
-	s.closed.append(cc)
+	if s.closed != nil {
+		s.closed.append(cc)
+	}
 	s.mu.Unlock()
 }
 
