@@ -236,7 +236,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	if !comparePasswords(opts.Cluster.Password, c.opts.Password) {
 		return false
 	}
-	c.setRoutePermissions(opts.Cluster.Permissions)
 	return true
 }
 

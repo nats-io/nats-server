@@ -679,10 +679,11 @@ cluster {
     # bcrypted hash of "top_secret"
     password: $2a$11$UaoHwUEqHaMwqo6L4kM2buOBnGFnSCWxNXY87hl.kCERqKK8WAXM.
     timeout: 3
-    permissions {
-        import:["_INBOX.>", "global.>"]
-        export:["_INBOX.>", "global.>", "sensors.>"]
-    }
+  }
+
+  permissions {
+    import:["_INBOX.>", "global.>"]
+    export:["_INBOX.>", "global.>", "sensors.>"]
   }
 
   routes = [
@@ -702,10 +703,11 @@ cluster {
     # bcrypted hash of "top_secret"
     password: $2a$11$UaoHwUEqHaMwqo6L4kM2buOBnGFnSCWxNXY87hl.kCERqKK8WAXM.
     timeout: 3
-    permissions {
-        import:["_INBOX.>", "global.>", "sensors.>"]
-        export:["_INBOX.>", "global.>"]
-    }
+  }
+
+  permissions {
+    import:["_INBOX.>", "global.>", "sensors.>"]
+    export:["_INBOX.>", "global.>"]
   }
 
   routes = [
@@ -715,6 +717,11 @@ cluster {
 ```
 
 The example above allows request/reply and messages published to any subject matching `global.>` to be freely propagated throughout the cluster.  The cloud server imports and locally delivers messages published to subjects matching `sensors.>`, but won't export messages published to subjects matching `sensors.>`.  This enforces a directional flow of sensor data from edge servers to the cloud servers.  Also, as new edge servers are added they will not receive sensor data from other edge servers.  Importing and exporting subjects in server clustering can provide additional security and optimize use of network resources.
+
+> Note: When first introduced, the `permissions` block had to be defined in the `authorization` block forcing a cluster user to be defined in order for permissions to work.
+This has been changed and the `permissions` block is now moved to the top-level `cluster` block, allowing use of subject permissions even without the presence of an `authorization` block.
+If `permissions` are defined in both `authorization` and top-level `cluster` blocks, the content of `permissions` in the `authorization` block is ignored. It is recommended that the configuration
+files be updated to move the permissions to the top-level block.
 
 ### TLS
 

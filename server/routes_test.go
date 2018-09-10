@@ -999,3 +999,93 @@ func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
 	srvA.Shutdown()
 	wg.Wait()
 }
+
+func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
+
+	perms := &RoutePermissions{
+		Import: &SubjectPermission{
+			Allow: []string{"imp.foo"},
+			Deny:  []string{"imp.bar"},
+		},
+		Export: &SubjectPermission{
+			Allow: []string{"exp.foo"},
+			Deny:  []string{"exp.bar"},
+		},
+	}
+
+	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA.NoLog = true
+	optsA.NoSigs = true
+	optsA.Cluster.Permissions = perms
+	srva := RunServer(optsA)
+	defer srva.Shutdown()
+
+	optsB := DefaultOptions()
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	srvb := RunServer(optsB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Ensure permission is properly set
+	check := func(t *testing.T, s *Server) {
+		t.Helper()
+		var route *client
+		s.mu.Lock()
+		for _, r := range s.routes {
+			route = r
+			break
+		}
+		s.mu.Unlock()
+		route.mu.Lock()
+		perms := route.perms
+		route.mu.Unlock()
+		if perms == nil {
+			t.Fatal("Expected perms to be set")
+		}
+		if perms.pub.allow == nil || perms.pub.allow.Count() != 1 {
+			t.Fatal("unexpected pub allow perms")
+		}
+		if r := perms.pub.allow.Match("imp.foo"); len(r.psubs) != 1 {
+			t.Fatal("unexpected pub allow match")
+		}
+		if perms.pub.deny == nil || perms.pub.deny.Count() != 1 {
+			t.Fatal("unexpected pub deny perms")
+		}
+		if r := perms.pub.deny.Match("imp.bar"); len(r.psubs) != 1 {
+			t.Fatal("unexpected pub deny match")
+		}
+		if perms.sub.allow == nil || perms.sub.allow.Count() != 1 {
+			t.Fatal("unexpected sub allow perms")
+		}
+		if r := perms.sub.allow.Match("exp.foo"); len(r.psubs) != 1 {
+			t.Fatal("unexpected sub allow match")
+		}
+		if perms.sub.deny == nil || perms.sub.deny.Count() != 1 {
+			t.Fatal("unexpected sub deny perms")
+		}
+		if r := perms.sub.deny.Match("exp.bar"); len(r.psubs) != 1 {
+			t.Fatal("unexpected sub deny match")
+		}
+	}
+
+	// First check when permissions are set on the server accepting the route connection
+	check(t, srva)
+
+	srvb.Shutdown()
+	srva.Shutdown()
+
+	optsA.Cluster.Permissions = nil
+	optsB.Cluster.Permissions = perms
+
+	srva = RunServer(optsA)
+	defer srva.Shutdown()
+
+	srvb = RunServer(optsB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Now check for permissions set on server initiating the route connection
+	check(t, srvb)
+}
