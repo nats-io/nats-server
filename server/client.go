@@ -773,8 +773,13 @@ func (c *client) processConnect(arg []byte) error {
 
 	// Grab connection name of remote route.
 	if typ == ROUTER && r != nil {
+		var routePerms *RoutePermissions
+		if srv != nil {
+			routePerms = srv.getOpts().Cluster.Permissions
+		}
 		c.mu.Lock()
 		c.route.remoteID = c.opts.Name
+		c.setRoutePermissions(routePerms)
 		c.mu.Unlock()
 	}
 
