@@ -58,6 +58,9 @@ func TestSetLogger(t *testing.T) {
 	expectedStr = "This is a Trace"
 	server.Tracef(expectedStr)
 	dl.checkContent(t, expectedStr)
+	expectedStr = "This is a Warning"
+	server.Tracef(expectedStr)
+	dl.checkContent(t, expectedStr)
 
 	// Make sure that we can reset to fal
 	server.SetLogger(dl, false, false)
@@ -94,6 +97,11 @@ func (l *DummyLogger) Noticef(format string, v ...interface{}) {
 	l.msg = fmt.Sprintf(format, v...)
 }
 func (l *DummyLogger) Errorf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
+	l.msg = fmt.Sprintf(format, v...)
+}
+func (l *DummyLogger) Warnf(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()
 	l.msg = fmt.Sprintf(format, v...)

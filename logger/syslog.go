@@ -102,6 +102,11 @@ func (l *SysLogger) Noticef(format string, v ...interface{}) {
 	l.writer.Notice(fmt.Sprintf(format, v...))
 }
 
+// Warnf logs a notice statement
+func (l *SysLogger) Warnf(format string, v ...interface{}) {
+	l.writer.Notice(fmt.Sprintf(format, v...))
+}
+
 // Fatalf logs a fatal error
 func (l *SysLogger) Fatalf(format string, v ...interface{}) {
 	l.writer.Crit(fmt.Sprintf(format, v...))

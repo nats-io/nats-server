@@ -80,6 +80,11 @@ func (l *SysLogger) Noticef(format string, v ...interface{}) {
 	l.writer.Info(1, formatMsg("NOTICE", format, v...))
 }
 
+// Noticef logs a notice statement
+func (l *SysLogger) Warnf(format string, v ...interface{}) {
+	l.writer.Info(1, formatMsg("WARN", format, v...))
+}
+
 // Fatalf logs a fatal error
 func (l *SysLogger) Fatalf(format string, v ...interface{}) {
 	msg := formatMsg("FATAL", format, v...)
