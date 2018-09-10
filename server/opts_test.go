@@ -764,18 +764,14 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 
 // Test new nkey users
 func TestNkeyUsersConfig(t *testing.T) {
-	confFileName := "nkeys.conf"
-	defer os.Remove(confFileName)
-	content := `
+	confFileName := createConfFile(t, []byte(`
     authorization {
       users = [
         {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV"}
         {nkey: "UA3C5TBZYK5GJQJRWPMU6NFY5JNAEVQB2V2TUZFZDHFJFUYVKTTUOFKZ"}
       ]
-    }`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
+    }`))
+	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v", err)
@@ -787,9 +783,7 @@ func TestNkeyUsersConfig(t *testing.T) {
 }
 
 func TestNkeyUsersWithPermsConfig(t *testing.T) {
-	confFileName := "nkeys.conf"
-	defer os.Remove(confFileName)
-	content := `
+	confFileName := createConfFile(t, []byte(`
     authorization {
       users = [
         {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV",
@@ -799,10 +793,8 @@ func TestNkeyUsersWithPermsConfig(t *testing.T) {
          }
         }
       ]
-    }`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
+    }`))
+	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v", err)

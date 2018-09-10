@@ -267,12 +267,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 			// Check for nkeys
 			if auth.nkeys != nil {
-				if o.Users != nil {
-					return fmt.Errorf("Can not have users when nkeys are also defined.")
-				}
 				o.Nkeys = auth.nkeys
 			}
-
 		case "http":
 			hp, err := parseListen(v)
 			if err != nil {
@@ -474,16 +470,12 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			}
 			auth.timeout = at
 		case "users":
-			users, err := parseUsers(mv)
+			nkeys, users, err := parseUsers(mv)
 			if err != nil {
 				return nil, err
 			}
-			switch users.(type) {
-			case []*User:
-				auth.users = users.([]*User)
-			case []*NkeyUser:
-				auth.nkeys = users.([]*NkeyUser)
-			}
+			auth.users = users
+			auth.nkeys = nkeys
 		case "default_permission", "default_permissions", "permissions":
 			pm, ok := mv.(map[string]interface{})
 			if !ok {
@@ -510,11 +502,11 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 }
 
 // Helper function to parse multiple users array with optional permissions.
-func parseUsers(mv interface{}) (interface{}, error) {
+func parseUsers(mv interface{}) ([]*NkeyUser, []*User, error) {
 	// Make sure we have an array
 	uv, ok := mv.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+		return nil, nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
 	}
 	var users []*User
 	var keys []*NkeyUser
@@ -522,7 +514,7 @@ func parseUsers(mv interface{}) (interface{}, error) {
 		// Check its a map/struct
 		um, ok := u.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
+			return nil, nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
 		}
 		var perms *Permissions
 		var err error
@@ -539,11 +531,11 @@ func parseUsers(mv interface{}) (interface{}, error) {
 			case "permission", "permissions", "authorization":
 				pm, ok := v.(map[string]interface{})
 				if !ok {
-					return nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
+					return nil, nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
 				}
 				perms, err = parseUserPermissions(pm)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 		}
@@ -559,25 +551,22 @@ func parseUsers(mv interface{}) (interface{}, error) {
 
 		// Check to make sure we have at least username and password if defined.
 		if nkey.Nkey == "" && (user.Username == "" || user.Password == "") {
-			return nil, fmt.Errorf("User entry requires a user and a password")
+			return nil, nil, fmt.Errorf("User entry requires a user and a password")
 		} else if nkey.Nkey != "" {
-			// Make sure the nkey is legit.
+			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
-				return nil, fmt.Errorf("Not a valid public nkey for a user")
+				return nil, nil, fmt.Errorf("Not a valid public nkey for a user")
 			}
 			// If we have user or password defined here that is an error.
 			if user.Username != "" || user.Password != "" {
-				return nil, fmt.Errorf("Nkey users do not take usernames or passwords")
+				return nil, nil, fmt.Errorf("Nkey users do not take usernames or passwords")
 			}
 			keys = append(keys, nkey)
 		} else {
 			users = append(users, user)
 		}
 	}
-	if len(keys) > 0 {
-		return keys, nil
-	}
-	return users, nil
+	return keys, users, nil
 }
 
 // Helper function to parse user/account permissions

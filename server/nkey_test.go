@@ -21,6 +21,7 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +207,27 @@ func TestMixedClientConnect(t *testing.T) {
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)
+	}
+}
+
+func TestMixedClientConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+    authorization {
+      users = [
+        {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV"}
+        {user: alice, password: foo}
+      ]
+    }`))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error processing config file: %v", err)
+	}
+	if len(opts.Nkeys) != 1 {
+		t.Fatalf("Expected 1 nkey, got %d", len(opts.Nkeys))
+	}
+	if len(opts.Users) != 1 {
+		t.Fatalf("Expected 1 user, got %d", len(opts.Users))
 	}
 }
 
