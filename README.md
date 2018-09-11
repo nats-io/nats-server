@@ -64,7 +64,7 @@ The NATS ecosystem provides a large range of supported and community clients, in
 
 ### Protocol
 
-The NATS server uses a [text based protocol](http://nats.io/doc/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/doc/internals/nats-protocol-demo/).
+The NATS server uses a [text based protocol](http://nats.io/documentation/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/documentation/internals/nats-protocol-demo/).
 
 ```sh
 > telnet demo.nats.io 4222
@@ -193,7 +193,7 @@ Common Options:
 
 ## Configuration file
 
-Typically you configure the NATS server using a configuration file, an example of which is shown below. See also the [server configuration file](http://nats.io/doc/managing_the_server/configuration/) documentation for details on the configuration language.
+Typically you configure the NATS server using a configuration file, an example of which is shown below. See also the [server configuration file](http://nats.io/documentation/managing_the_server/configuration/) documentation for details on the configuration language.
 
 ```
 listen: localhost:4242 # host/port to listen for client connections
@@ -272,7 +272,7 @@ Any value in the configuration language can be a variable reference (`key=$VALUE
 
 ## Clustering
 
-Clustering lets you scale NATS messaging by having multiple NATS servers communicate with each other. Clustering lets messages published to one server be routed and received by a subscriber on another server. See also the [clustered NATS](http://nats.io/doc/managing_the_server/clustering/) documentation.
+Clustering lets you scale NATS messaging by having multiple NATS servers communicate with each other. Clustering lets messages published to one server be routed and received by a subscriber on another server. See also the [clustered NATS](http://nats.io/documentation/managing_the_server/clustering/) documentation.
 
 ### Full mesh required
 
@@ -328,7 +328,7 @@ Note that you don't have to connect all servers to the same *seed* server, any s
 
 The following example demonstrates how to run a cluster of 3 servers on the same host. We will start with the seed server and use the `-D` command line parameter to produce debug information.
 
-See also [clustered NATS](http://nats.io/doc/managing_the_server/clustering/) for clustered NATS examples using Docker.
+See also [clustered NATS](http://nats.io/documentation/managing_the_server/clustering/) for clustered NATS examples using Docker.
 
 ```
 gnatsd -p 4222 -cluster nats://localhost:4248
@@ -452,7 +452,7 @@ This section describes how to secure the NATS server, including authentication, 
 
 ### Authentication
 
-The NATS server supports single and multi-user/client authentication. See also the [server authentication](http://nats.io/doc/managing_the_server/authentication/) documentation.
+The NATS server supports single and multi-user/client authentication. See also the [server authentication](http://nats.io/documentation/managing_the_server/authentication/) documentation.
 
 **Single-user Authentication**
 
@@ -563,7 +563,7 @@ authorization {
 
 ### Authorization
 
-The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/doc/managing_the_server/authorization/) documentation.
+The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/managing_the_server/authorization/) documentation.
 
 Before server `1.3.0`, it was only possible to define permissions allowing an authenticated user to publish or subscribe to certain subjects. Starting with `1.3.0`, it is now possible to also define permissions denying the right to publish or subscribe to specific subjects.
 
@@ -868,7 +868,7 @@ Add into the server configuration file's authorization section.
 
 ## Monitoring
 
-If the monitoring port is enabled, the NATS server runs a lightweight HTTP server that has the following endpoints: /varz, /connz, /routez, and /subsz. All endpoints return a JSON object. See [NATS Server monitoring](http://nats.io/doc/managing_the_server/monitoring/) for endpoint examples.
+If the monitoring port is enabled, the NATS server runs a lightweight HTTP server that has the following endpoints: /varz, /connz, /routez, and /subsz. All endpoints return a JSON object. See [NATS Server monitoring](http://nats.io/documentation/managing_the_server/monitoring/) for endpoint examples.
 
 To see a demonstration of NATS monitoring, run a command similar to the following for each desired endpoint:
 
