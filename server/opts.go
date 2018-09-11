@@ -401,16 +401,9 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
-			if auth.defaultPermissions != nil {
-				// Import is whether or not we will send a SUB for interest to the other side.
-				// Export is whether or not we will accept a SUB from the remote for a given subject.
-				// Both only effect interest registration.
-				// The parsing sets Import into Publish and Export into Subscribe, convert
-				// accordingly.
-				opts.Cluster.Permissions = &RoutePermissions{
-					Import: auth.defaultPermissions.Publish,
-					Export: auth.defaultPermissions.Subscribe,
-				}
+			// Do not set permissions if they were specified in top-level cluster block.
+			if auth.defaultPermissions != nil && opts.Cluster.Permissions == nil {
+				setClusterPermissions(&opts.Cluster, auth.defaultPermissions)
 			}
 		case "routes":
 			ra := mv.([]interface{})
@@ -444,9 +437,34 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.NoAdvertise = mv.(bool)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
+		case "permissions":
+			pm, ok := mv.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("Expected permissions to be a map/struct, got %+v", mv)
+			}
+			perms, err := parseUserPermissions(pm)
+			if err != nil {
+				return err
+			}
+			// This will possibly override permissions that were define in auth block
+			setClusterPermissions(&opts.Cluster, perms)
 		}
 	}
 	return nil
+}
+
+// Sets cluster's permissions based on given pub/sub permissions,
+// doing the appropriate translation.
+func setClusterPermissions(opts *ClusterOpts, perms *Permissions) {
+	// Import is whether or not we will send a SUB for interest to the other side.
+	// Export is whether or not we will accept a SUB from the remote for a given subject.
+	// Both only effect interest registration.
+	// The parsing sets Import into Publish and Export into Subscribe, convert
+	// accordingly.
+	opts.Permissions = &RoutePermissions{
+		Import: perms.Publish,
+		Export: perms.Subscribe,
+	}
 }
 
 // Helper function to parse Authorization configs.

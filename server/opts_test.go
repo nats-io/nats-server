@@ -1250,3 +1250,161 @@ func TestConfigureOptions(t *testing.T) {
 		t.Fatal("Expected TLSConfig to be set")
 	}
 }
+
+func TestClusterPermissionsConfig(t *testing.T) {
+	template := `
+		cluster {
+			port: 1234
+			%s
+			authorization {
+				user: ivan
+				password: pwd
+				permissions {
+					import {
+						allow: "foo"
+					}
+					export {
+						allow: "bar"
+					}
+				}
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	if opts.Cluster.Permissions == nil {
+		t.Fatal("Expected cluster permissions to be set")
+	}
+	if opts.Cluster.Permissions.Import == nil {
+		t.Fatal("Expected cluster import permissions to be set")
+	}
+	if len(opts.Cluster.Permissions.Import.Allow) != 1 || opts.Cluster.Permissions.Import.Allow[0] != "foo" {
+		t.Fatalf("Expected cluster import permissions to have %q, got %v", "foo", opts.Cluster.Permissions.Import.Allow)
+	}
+	if opts.Cluster.Permissions.Export == nil {
+		t.Fatal("Expected cluster export permissions to be set")
+	}
+	if len(opts.Cluster.Permissions.Export.Allow) != 1 || opts.Cluster.Permissions.Export.Allow[0] != "bar" {
+		t.Fatalf("Expected cluster export permissions to have %q, got %v", "bar", opts.Cluster.Permissions.Export.Allow)
+	}
+
+	// Now add permissions in top level cluster and check
+	// that this is the one that is being used.
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, `
+		permissions {
+			import {
+				allow: "baz"
+			}
+			export {
+				allow: "bat"
+			}
+		}
+	`)))
+	defer os.Remove(conf)
+	opts, err = ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	if opts.Cluster.Permissions == nil {
+		t.Fatal("Expected cluster permissions to be set")
+	}
+	if opts.Cluster.Permissions.Import == nil {
+		t.Fatal("Expected cluster import permissions to be set")
+	}
+	if len(opts.Cluster.Permissions.Import.Allow) != 1 || opts.Cluster.Permissions.Import.Allow[0] != "baz" {
+		t.Fatalf("Expected cluster import permissions to have %q, got %v", "baz", opts.Cluster.Permissions.Import.Allow)
+	}
+	if opts.Cluster.Permissions.Export == nil {
+		t.Fatal("Expected cluster export permissions to be set")
+	}
+	if len(opts.Cluster.Permissions.Export.Allow) != 1 || opts.Cluster.Permissions.Export.Allow[0] != "bat" {
+		t.Fatalf("Expected cluster export permissions to have %q, got %v", "bat", opts.Cluster.Permissions.Export.Allow)
+	}
+
+	// Tests with invalid permissions
+	invalidPerms := []string{
+		`permissions: foo`,
+		`permissions {
+			unknown_field: "foo"
+		}`,
+		`permissions {
+			import: [1, 2, 3]
+		}`,
+		`permissions {
+			import {
+				unknown_field: "foo"
+			}
+		}`,
+		`permissions {
+			import {
+				allow {
+					x: y
+				}
+			}
+		}`,
+		`permissions {
+			import {
+				deny {
+					x: y
+				}
+			}
+		}`,
+		`permissions {
+			export: [1, 2, 3]
+		}`,
+		`permissions {
+			export {
+				unknown_field: "foo"
+			}
+		}`,
+		`permissions {
+			export {
+				allow {
+					x: y
+				}
+			}
+		}`,
+		`permissions {
+			export {
+				deny {
+					x: y
+				}
+			}
+		}`,
+	}
+	for _, perms := range invalidPerms {
+		conf = createConfFile(t, []byte(fmt.Sprintf(`
+			cluster {
+				port: 1234
+				%s
+			}
+		`, perms)))
+		_, err := ProcessConfigFile(conf)
+		os.Remove(conf)
+		if err == nil {
+			t.Fatalf("Expected failure for permissions %s", perms)
+		}
+	}
+
+	for _, perms := range invalidPerms {
+		conf = createConfFile(t, []byte(fmt.Sprintf(`
+			cluster {
+				port: 1234
+				authorization {
+					user: ivan
+					password: pwd
+					%s
+				}
+			}
+		`, perms)))
+		_, err := ProcessConfigFile(conf)
+		os.Remove(conf)
+		if err == nil {
+			t.Fatalf("Expected failure for permissions %s", perms)
+		}
+	}
+}
