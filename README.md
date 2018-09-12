@@ -155,6 +155,7 @@ Server Options:
     -c, --config <file>              Configuration file
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
         --client_advertise <string>  Client URL to advertise to other servers
+    -t                               Test configuration and exit
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
