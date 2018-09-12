@@ -36,6 +36,9 @@ func TestConfigCheck(t *testing.T) {
 
 		// errorLine is the location of the error.
 		errorLine int
+
+		// warning errors also include a reason optionally
+		reason string
 	}{
 		{
 			name: "when unknown field is used at top level",
@@ -446,6 +449,26 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: nil,
 		},
+		{
+			name: "when setting permissions within cluster authorization block",
+			config: `
+                cluster {
+                  authorization {
+                    permissions = {
+                      publish = { allow = ["foo", "bar"] }
+                    }
+                  }
+
+                  permissions = {
+                    publish = { deny = ["foo", "bar"] }
+                  }
+                }
+ 		`,
+			defaultErr:  nil,
+			pedanticErr: errors.New(`invalid use of field "authorization"`),
+			errorLine:   7,
+			reason:      `setting "permissions" within cluster authorization block is deprecated`,
+		},
 	}
 
 	checkConfig := func(config string, pedantic bool) error {
@@ -476,6 +499,9 @@ func TestConfigCheck(t *testing.T) {
 				expectedErr := test.pedanticErr
 				if err != nil && expectedErr != nil {
 					msg := fmt.Sprintf("%s in %s:%d", expectedErr.Error(), conf, test.errorLine)
+					if test.reason != "" {
+						msg += ": " + test.reason
+					}
 					if err.Error() != msg {
 						t.Errorf("Expected %q, got %q", msg, err.Error())
 					}

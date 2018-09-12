@@ -210,6 +210,22 @@ func (e *unknownConfigFieldErr) Error() string {
 	return msg
 }
 
+type configWarningErr struct {
+	field      string
+	token      token
+	configFile string
+	reason     string
+}
+
+func (e *configWarningErr) Error() string {
+	msg := fmt.Sprintf("invalid use of field %q", e.field)
+	if e.token != nil {
+		msg += fmt.Sprintf(" in %s:%d", e.configFile, e.token.Line())
+	}
+	msg += ": " + e.reason
+	return msg
+}
+
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
@@ -489,9 +505,21 @@ func parseCluster(v interface{}, opts *Options) error {
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
-			// Do not set permissions if they were specified in top-level cluster block.
-			if auth.defaultPermissions != nil && opts.Cluster.Permissions == nil {
-				setClusterPermissions(&opts.Cluster, auth.defaultPermissions)
+
+			if auth.defaultPermissions != nil {
+				if pedantic {
+					return &configWarningErr{
+						field:      mk,
+						token:      tk,
+						reason:     `setting "permissions" within cluster authorization block is deprecated`,
+						configFile: tk.SourceFile(),
+					}
+				}
+
+				// Do not set permissions if they were specified in top-level cluster block.
+				if opts.Cluster.Permissions == nil {
+					setClusterPermissions(&opts.Cluster, auth.defaultPermissions)
+				}
 			}
 		case "routes":
 			ra := mv.([]interface{})
@@ -534,11 +562,7 @@ func parseCluster(v interface{}, opts *Options) error {
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":
-			pm, ok := mv.(map[string]interface{})
-			if !ok {
-				return fmt.Errorf("Expected permissions to be a map/struct, got %+v", mv)
-			}
-			perms, err := parseUserPermissions(pm, opts)
+			perms, err := parseUserPermissions(mv, opts)
 			if err != nil {
 				return err
 			}
