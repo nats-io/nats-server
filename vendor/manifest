@@ -2,6 +2,14 @@
 	"version": 0,
 	"dependencies": [
 		{
+			"importpath": "github.com/nats-io/nkeys",
+			"repository": "https://github.com/nats-io/nkeys",
+			"vcs": "git",
+			"revision": "b1c20ce69b6a01afa42403ea6f7b408d6cbc8e4e",
+			"branch": "master",
+			"notests": true
+		},
+		{
 			"importpath": "github.com/nats-io/nuid",
 			"repository": "https://github.com/nats-io/nuid",
 			"vcs": "git",
@@ -25,6 +33,15 @@
 			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
 			"branch": "master",
 			"path": "/blowfish",
+			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/crypto/ed25519",
+			"repository": "https://go.googlesource.com/crypto",
+			"vcs": "git",
+			"revision": "0e37d006457bf46f9e6692014ba72ef82c33022c",
+			"branch": "master",
+			"path": "/ed25519",
 			"notests": true
 		},
 		{
