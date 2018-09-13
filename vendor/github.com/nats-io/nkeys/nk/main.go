@@ -14,6 +14,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"flag"
 	"io"
@@ -26,7 +27,7 @@ import (
 )
 
 func usage() {
-	log.Fatalf("Usage: nk [-gen type] [-sign file] [-verify file] [-inkey keyfile] [-pubin keyfile] [-pubout] [-e entropy]\n")
+	log.Fatalf("Usage: nk [-gen type] [-sign file] [-verify file] [-inkey keyfile] [-pubin keyfile] [-sigfile file] [-pubout] [-e entropy]\n")
 }
 
 func main() {
@@ -116,7 +117,7 @@ func sign(fname, keyFile string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%s", base64.RawURLEncoding.EncodeToString(sigraw))
+	log.Printf("%s", base64.StdEncoding.EncodeToString(sigraw))
 }
 
 func verify(fname, keyFile, pubFile, sigFile string) {
@@ -157,23 +158,37 @@ func verify(fname, keyFile, pubFile, sigFile string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sig, err := base64.RawURLEncoding.DecodeString(string(sigEnc))
+	sig, err := base64.StdEncoding.DecodeString(string(sigEnc))
 	if err != nil {
 		log.Fatal(err)
 	}
 	if err := kp.Verify(content, sig); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("verification succeeded")
+	log.Printf("Verified OK")
 }
 
 func createKey(keyType, entropy string) {
 	keyType = strings.ToLower(keyType)
-	var kp nkeys.KeyPair
-	var err error
+	var pre nkeys.PrefixByte
 
-	var ef io.Reader
+	switch keyType {
+	case "user":
+		pre = nkeys.PrefixByteUser
+	case "account":
+		pre = nkeys.PrefixByteAccount
+	case "server":
+		pre = nkeys.PrefixByteServer
+	case "cluster":
+		pre = nkeys.PrefixByteCluster
+	case "operator":
+		pre = nkeys.PrefixByteOperator
+	default:
+		log.Fatalf("Usage: nk -gen [user|account|server|cluster|operator]\n")
+	}
 
+	// See if we override entropy.
+	ef := rand.Reader
 	if entropy != "" {
 		r, err := os.Open(entropy)
 		if err != nil {
@@ -182,20 +197,13 @@ func createKey(keyType, entropy string) {
 		ef = r
 	}
 
-	switch keyType {
-	case "user":
-		kp, err = nkeys.CreateUser(ef)
-	case "account":
-		kp, err = nkeys.CreateAccount(ef)
-	case "server":
-		kp, err = nkeys.CreateServer(ef)
-	case "cluster":
-		kp, err = nkeys.CreateCluster(ef)
-	case "operator":
-		kp, err = nkeys.CreateOperator(ef)
-	default:
-		log.Fatalf("Usage: nk -gen [user|account|server|cluster|operator]\n")
+	// Create raw seed from source or random.
+	var rawSeed [32]byte
+	_, err := io.ReadFull(ef, rawSeed[:]) // Or some other random source.
+	if err != nil {
+		log.Fatalf("Error reading from %s: %v", ef, err)
 	}
+	kp, err := nkeys.FromRawSeed(pre, rawSeed[:])
 	if err != nil {
 		log.Fatalf("Error creating %s: %v", keyType, err)
 	}

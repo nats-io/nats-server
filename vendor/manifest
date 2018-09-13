@@ -5,7 +5,7 @@
 			"importpath": "github.com/nats-io/nkeys",
 			"repository": "https://github.com/nats-io/nkeys",
 			"vcs": "git",
-			"revision": "b1c20ce69b6a01afa42403ea6f7b408d6cbc8e4e",
+			"revision": "9206fa847ab4dfdf7378fb1965717f32978852e2",
 			"branch": "master",
 			"notests": true
 		},

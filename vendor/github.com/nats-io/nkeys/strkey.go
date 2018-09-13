@@ -83,7 +83,7 @@ func EncodeSeed(public PrefixByte, src []byte) (string, error) {
 		return "", err
 	}
 
-	if len(src) != ed25519.PrivateKeySize {
+	if len(src) != ed25519.SeedSize {
 		return "", ErrInvalidSeedLen
 	}
 

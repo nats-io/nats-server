@@ -37,7 +37,7 @@ type nonceInfo struct {
 }
 
 // This is a seed for a user. We can extract public and private keys from this for testing.
-const seed = "SUAOB32VQGYIOM622XYNXN4Q6GQR5I6DFZPPYZMNI5MMNVAQZDAL3OLH554ISOUTJM4EC6NWS5UHMS4CMONVVRW3VXXEQULMR6MDLPOEUVFPU"
+const seed = "SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY"
 
 func nkeyBasicSetup() (*Server, *client, *bufio.Reader, string) {
 	kp, _ := nkeys.FromSeed(seed)
@@ -161,7 +161,7 @@ func TestNkeyClientConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+	sig := base64.StdEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
@@ -199,7 +199,7 @@ func TestMixedClientConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+	sig := base64.StdEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
@@ -252,7 +252,7 @@ func BenchmarkNonceGeneration(b *testing.B) {
 	prand := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < b.N; i++ {
 		prand.Read(data)
-		base64.RawURLEncoding.Encode(b64, data)
+		base64.StdEncoding.Encode(b64, data)
 	}
 }
 
@@ -260,9 +260,9 @@ func BenchmarkPublicVerify(b *testing.B) {
 	data := make([]byte, nonceRawLen)
 	nonce := make([]byte, nonceLen)
 	mrand.Read(data)
-	base64.RawURLEncoding.Encode(nonce, data)
+	base64.StdEncoding.Encode(nonce, data)
 
-	user, err := nkeys.CreateUser(nil)
+	user, err := nkeys.CreateUser()
 	if err != nil {
 		b.Fatalf("Error creating User Nkey: %v", err)
 	}

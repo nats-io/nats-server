@@ -15,6 +15,7 @@ package nkeys
 
 import (
 	"bytes"
+	"crypto/rand"
 	"io"
 
 	"golang.org/x/crypto/ed25519"
@@ -26,12 +27,15 @@ type kp struct {
 }
 
 // createPair will create a KeyPair based on the rand entropy and a type/prefix byte. rand can be nil.
-func createPair(rand io.Reader, prefix PrefixByte) (KeyPair, error) {
-	_, privateKey, err := ed25519.GenerateKey(rand)
+func createPair(prefix PrefixByte) (KeyPair, error) {
+	var rawSeed [32]byte
+
+	_, err := io.ReadFull(rand.Reader, rawSeed[:])
 	if err != nil {
 		return nil, err
 	}
-	seed, err := EncodeSeed(prefix, privateKey)
+
+	seed, err := EncodeSeed(prefix, rawSeed[:])
 	if err != nil {
 		return nil, err
 	}
