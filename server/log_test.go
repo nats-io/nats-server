@@ -228,7 +228,10 @@ func TestRemovePassFromTrace(t *testing.T) {
 	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n")))
 	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":  \"s3cr3t\"}\r\n")))
 	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"password\":\"s3cr3t\",}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {pass:s3cr3t\r\n")))
+	check(removePassFromTrace([]byte("CONNECT {\"pass\":\"s3cr3t\",}\r\n")))
 	check(removePassFromTrace([]byte("CONNECT {pass:s3cr3t ,   password =  s3cr3t}")))
+	check(removePassFromTrace([]byte("CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n")))
+	check(removePassFromTrace([]byte("CONNECT {pass:s3cr3t\r\n")))
+	check(removePassFromTrace([]byte("CONNECT {\"password\":\"s3cr3t\",}\r\n")))
+	check(removePassFromTrace([]byte("CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n")))
 }

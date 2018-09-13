@@ -706,7 +706,7 @@ func (c *client) processErr(errStr string) {
 }
 
 // Password pattern matcher.
-var passPat = regexp.MustCompile(`"?\s*pass\S*\s*"?\s*[:=]\s*("?[^\s,}$]*)`)
+var passPat = regexp.MustCompile(`"?\s*pass\S*?"?[:=]\s*"?(([^"])*)`)
 
 // This will remove any notion of passwords from trace messages
 // for logging.
@@ -721,7 +721,7 @@ func removePassFromTrace(arg []byte) []byte {
 	}
 
 	for _, match := range m {
-		if len(match) != 2 {
+		if len(match) != 3 {
 			continue
 		}
 		arg = bytes.Replace(arg, match[1], []byte("[REDACTED]"), 1)
