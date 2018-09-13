@@ -251,7 +251,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		if c.opts.Sig == "" {
 			return false
 		}
-		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+		sig, err := base64.StdEncoding.DecodeString(c.opts.Sig)
 		if err != nil {
 			return false
 		}

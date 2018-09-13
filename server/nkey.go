@@ -19,8 +19,8 @@ import (
 
 // Raw length of the nonce challenge
 const (
-	nonceRawLen = 16
-	nonceLen    = 22 // base64.RawURLEncoding.EncodedLen(nonceRawLen)
+	nonceRawLen = 11
+	nonceLen    = 16 // base64.StdEncoding.EncodedLen(nonceRawLen)
 )
 
 // nonceRequired tells us if we should send a nonce.
@@ -35,5 +35,5 @@ func (s *Server) generateNonce(n []byte) {
 	var raw [nonceRawLen]byte
 	data := raw[:]
 	s.prand.Read(data)
-	base64.RawURLEncoding.Encode(n, data)
+	base64.StdEncoding.Encode(n, data)
 }
