@@ -681,7 +681,7 @@ func (s *Server) reloadAuthorization() {
 		}
 
 		// Remove any unauthorized subscriptions.
-		s.removeUnauthorizedSubs(client)
+		client.removeUnauthorizedSubs()
 	}
 
 	for _, route := range routes {

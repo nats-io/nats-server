@@ -69,13 +69,14 @@ type Server struct {
 	mu            sync.Mutex
 	prand         *rand.Rand
 	info          Info
-	sl            *Sublist
 	configFile    string
 	optsMu        sync.RWMutex
 	opts          *Options
 	running       bool
 	shutdown      bool
 	listener      net.Listener
+	gsl           *Sublist
+	accounts      map[string]*Account
 	clients       map[uint64]*client
 	routes        map[uint64]*client
 	remotes       map[string]*client
@@ -173,7 +174,7 @@ func New(opts *Options) *Server {
 		configFile: opts.ConfigFile,
 		info:       info,
 		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		sl:         NewSublist(),
+		gsl:        NewSublist(),
 		opts:       opts,
 		done:       make(chan bool, 1),
 		start:      now,
@@ -192,6 +193,9 @@ func New(opts *Options) *Server {
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(map[string]struct{})
 
+	// For tracking accounts
+	s.accounts = make(map[string]*Account)
+
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -209,6 +213,9 @@ func New(opts *Options) *Server {
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
 	s.quitCh = make(chan struct{})
+
+	// Used to setup Accounts.
+	s.configureAccounts()
 
 	// Used to setup Authorization.
 	s.configureAuthorization()
@@ -230,6 +237,16 @@ func (s *Server) setOpts(opts *Options) {
 	s.optsMu.Lock()
 	s.opts = opts
 	s.optsMu.Unlock()
+}
+
+func (s *Server) configureAccounts() {
+	// Check opts and walk through them. Making sure to create SLs.
+	for _, acc := range s.opts.Accounts {
+		if acc.sl == nil {
+			acc.sl = NewSublist()
+		}
+		s.accounts[acc.Name] = acc
+	}
 }
 
 func (s *Server) generateRouteInfoJSON() {
@@ -279,6 +296,52 @@ func (s *Server) isRunning() bool {
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
 	return ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+}
+
+// newAccountsAllowed returns whether or not new accounts can be created on the fly.
+func (s *Server) newAccountsAllowed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts.AllowNewAccounts
+}
+
+func (s *Server) LookupOrRegisterAccount(name string) (*Account, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if acc, ok := s.accounts[name]; ok {
+		return acc, false
+	}
+	acc := &Account{
+		Name: name,
+		sl:   NewSublist(),
+	}
+	s.accounts[name] = acc
+	return acc, true
+}
+
+// RegisterAccount will register an account. The account must be new
+// or this call will fail.
+func (s *Server) RegisterAccount(name string) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.accounts[name]; ok {
+		return nil, ErrAccountExists
+	}
+	acc := &Account{
+		Name: name,
+		sl:   NewSublist(),
+	}
+	s.accounts[name] = acc
+	return acc, nil
+}
+
+// LookupAccount is a public function to return the account structure
+// associated with name.
+func (s *Server) LookupAccount(name string) *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accounts[name]
 }
 
 // Start up the server, this will block.
@@ -778,7 +841,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	max_subs := opts.MaxSubs
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: max_pay, msubs: max_subs, start: now, last: now}
+	c := &client{srv: s, sl: s.gsl, nc: conn, opts: defaultOpts, mpay: max_pay, msubs: max_subs, start: now, last: now}
 
 	// Grab JSON info string
 	s.mu.Lock()
@@ -1088,7 +1151,13 @@ func (s *Server) getClient(cid uint64) *client {
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()
-	subs := s.sl.Count()
+	var subs uint32
+	for _, acc := range s.accounts {
+		if acc.sl != nil {
+			subs += acc.sl.Count()
+		}
+	}
+	subs += s.gsl.Count()
 	s.mu.Unlock()
 	return subs
 }

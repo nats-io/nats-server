@@ -16,7 +16,6 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
-	"fmt"
 	"strings"
 
 	"github.com/nats-io/nkeys"
@@ -39,17 +38,25 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// Accounts
+type Account struct {
+	Name string
+	sl   *Sublist
+}
+
 // Nkey is for multiple nkey based users
 type NkeyUser struct {
 	Nkey        string       `json:"user"`
-	Permissions *Permissions `json:"permissions"`
+	Permissions *Permissions `json:"permissions,omitempty"`
+	Account     *Account     `json:"account,omitempty"`
 }
 
 // User is for multiple accounts/users.
 type User struct {
 	Username    string       `json:"user"`
 	Password    string       `json:"password"`
-	Permissions *Permissions `json:"permissions"`
+	Permissions *Permissions `json:"permissions,omitempty"`
+	Account     *Account     `json:"account,omitempty"`
 }
 
 // clone performs a deep copy of the User struct, returning a new clone with
@@ -307,35 +314,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return false
 	}
 	return true
-}
-
-// removeUnauthorizedSubs removes any subscriptions the client has that are no
-// longer authorized, e.g. due to a config reload.
-func (s *Server) removeUnauthorizedSubs(c *client) {
-	c.mu.Lock()
-	if c.perms == nil {
-		c.mu.Unlock()
-		return
-	}
-
-	subs := make(map[string]*subscription, len(c.subs))
-	for sid, sub := range c.subs {
-		subs[sid] = sub
-	}
-	c.mu.Unlock()
-
-	for sid, sub := range subs {
-		if !c.canSubscribe(sub.subject) {
-			_ = s.sl.Remove(sub)
-			c.mu.Lock()
-			delete(c.subs, sid)
-			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
-				sub.subject, sub.sid))
-			s.Noticef("Removed sub %q for user %q - not authorized",
-				string(sub.subject), c.opts.Username)
-		}
-	}
 }
 
 // Support for bcrypt stored passwords and tokens.

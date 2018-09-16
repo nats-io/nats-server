@@ -52,6 +52,17 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	}()
 }
 
+func newClientForServer(s *Server) (*client, *bufio.Reader, string) {
+	cli, srv := net.Pipe()
+	cr := bufio.NewReaderSize(cli, maxBufSize)
+	ch := make(chan *client)
+	createClientAsync(ch, s, srv)
+	l, _ := cr.ReadString('\n')
+	// Grab client
+	c := <-ch
+	return c, cr, l
+}
+
 var defaultServerOptions = Options{
 	Trace:  false,
 	Debug:  false,
@@ -643,17 +654,17 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	}()
 	<-ch
 
-	if s.sl.Count() != 2 {
-		t.Fatalf("Should have 2 subscriptions, got %d\n", s.sl.Count())
+	if c.sl.Count() != 2 {
+		t.Fatalf("Should have 2 subscriptions, got %d\n", c.sl.Count())
 	}
 	c.closeConnection(ClientClosed)
-	if s.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	if c.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", s.gsl.Count())
 	}
 }
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
-	s, c, _ := setupClient()
+	_, c, _ := setupClient()
 	c.closeConnection(ClientClosed)
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
@@ -664,8 +675,8 @@ func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	}()
 	<-ch
 
-	if s.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	if c.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", c.sl.Count())
 	}
 }
 

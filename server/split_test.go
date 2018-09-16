@@ -24,8 +24,8 @@ func TestSplitBufferSubOp(t *testing.T) {
 	defer cli.Close()
 	defer trash.Close()
 
-	s := &Server{sl: NewSublist()}
-	c := &client{srv: s, subs: make(map[string]*subscription), nc: cli}
+	s := &Server{gsl: NewSublist()}
+	c := &client{srv: s, sl: s.gsl, subs: make(map[string]*subscription), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -43,7 +43,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
-	r := s.sl.Match("foo")
+	r := s.gsl.Match("foo")
 	if r == nil || len(r.psubs) != 1 {
 		t.Fatalf("Did not match subscription properly: %+v\n", r)
 	}
@@ -60,7 +60,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferUnsubOp(t *testing.T) {
-	s := &Server{sl: NewSublist()}
+	s := &Server{gsl: NewSublist()}
 	c := &client{srv: s, subs: make(map[string]*subscription)}
 
 	subop := []byte("SUB foo 1024\r\n")
@@ -87,7 +87,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
-	r := s.sl.Match("foo")
+	r := s.gsl.Match("foo")
 	if r != nil && len(r.psubs) != 0 {
 		t.Fatalf("Should be no subscriptions in results: %+v\n", r)
 	}
@@ -300,7 +300,7 @@ func TestSplitConnectArg(t *testing.T) {
 
 func TestSplitDanglingArgBuf(t *testing.T) {
 	s := New(&defaultServerOptions)
-	c := &client{srv: s, subs: make(map[string]*subscription)}
+	c := &client{srv: s, sl: s.gsl, subs: make(map[string]*subscription)}
 
 	// We test to make sure we do not dangle any argBufs after processing
 	// since that could lead to performance issues.

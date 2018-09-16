@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
-	"net"
 	"os"
 	"strings"
 	"testing"
@@ -54,17 +53,6 @@ func mixedSetup() (*Server, *client, *bufio.Reader, string) {
 	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
 	opts.Users = []*User{&User{Username: "derek", Password: "foo"}}
 	return rawSetup(opts)
-}
-
-func newClientForServer(s *Server) (*client, *bufio.Reader, string) {
-	cli, srv := net.Pipe()
-	cr := bufio.NewReaderSize(cli, maxBufSize)
-	ch := make(chan *client)
-	createClientAsync(ch, s, srv)
-	l, _ := cr.ReadString('\n')
-	// Grab client
-	c := <-ch
-	return c, cr, l
 }
 
 func TestServerInfoNonce(t *testing.T) {

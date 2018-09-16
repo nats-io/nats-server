@@ -62,6 +62,8 @@ type Options struct {
 	MaxSubs          int           `json:"max_subscriptions,omitempty"`
 	Nkeys            []*NkeyUser   `json:"-"`
 	Users            []*User       `json:"-"`
+	Accounts         []*Account    `json:"-"`
+	AllowNewAccounts bool          `json:"-"`
 	Username         string        `json:"-"`
 	Password         string        `json:"-"`
 	Authorization    string        `json:"-"`
@@ -227,7 +229,7 @@ func (e *configWarningErr) Error() string {
 }
 
 // ProcessConfigFile processes a configuration file.
-// FIXME(dlc): Hacky
+// FIXME(dlc): A bit hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
 	opts := &Options{}
 	if err := opts.ProcessConfigFile(configFile); err != nil {
@@ -306,6 +308,15 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.Trace = v.(bool)
 		case "logtime":
 			o.Logtime = v.(bool)
+		case "accounts":
+			if pedantic {
+				err = parseAccounts(tk, o)
+			} else {
+				err = parseAccounts(v, o)
+			}
+			if err != nil {
+				return err
+			}
 		case "authorization":
 			var auth *authorization
 			if pedantic {
@@ -593,6 +604,82 @@ func setClusterPermissions(opts *ClusterOpts, perms *Permissions) {
 		Import: perms.Publish,
 		Export: perms.Subscribe,
 	}
+}
+
+// parseAccounts will parse the different accounts syntax.
+func parseAccounts(v interface{}, opts *Options) error {
+	var pedantic = opts.CheckConfig
+	var tk token
+	_, v = unwrapValue(v)
+	uorn := make(map[string]struct{})
+
+	switch v.(type) {
+	case []interface{}, []string:
+		m := make(map[string]struct{}, len(v.([]interface{})))
+		for _, name := range v.([]interface{}) {
+			ns := name.(string)
+			if _, ok := m[ns]; ok {
+				return fmt.Errorf("Duplicate Account Entry: %s", ns)
+			}
+			opts.Accounts = append(opts.Accounts, &Account{Name: name.(string)})
+			m[ns] = struct{}{}
+		}
+	case map[string]interface{}:
+		m := make(map[string]struct{}, len(v.(map[string]interface{})))
+		for name, mv := range v.(map[string]interface{}) {
+			_, mv = unwrapValue(mv)
+			if _, ok := m[name]; ok {
+				return fmt.Errorf("Duplicate Account Entry: %s", name)
+			}
+			uv, ok := mv.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("Expected map entry for users")
+			}
+			acc := &Account{Name: name}
+			opts.Accounts = append(opts.Accounts, acc)
+			m[name] = struct{}{}
+
+			for k, v := range uv {
+				tk, mv = unwrapValue(v)
+				switch strings.ToLower(k) {
+				case "users":
+					var (
+						users []*User
+						err   error
+						nkeys []*NkeyUser
+					)
+					if pedantic {
+						nkeys, users, err = parseUsers(tk, opts)
+					} else {
+						nkeys, users, err = parseUsers(mv, opts)
+					}
+					if err != nil {
+						return err
+					}
+					for _, u := range users {
+						if _, ok := uorn[u.Username]; ok {
+							return fmt.Errorf("Duplicate user %q detected", u.Username)
+						}
+						uorn[u.Username] = struct{}{}
+						u.Account = acc
+					}
+					opts.Users = append(opts.Users, users...)
+
+					for _, u := range nkeys {
+						if _, ok := uorn[u.Nkey]; ok {
+							return fmt.Errorf("Duplicate nkey %q detected", u.Nkey)
+						}
+						uorn[u.Nkey] = struct{}{}
+						u.Account = acc
+					}
+					opts.Nkeys = append(opts.Nkeys, nkeys...)
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("Expected an array or map of account entries, got %T", v)
+	}
+	return nil
 }
 
 // Helper function to parse Authorization configs.

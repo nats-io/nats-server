@@ -578,7 +578,8 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	var raw [4096]*subscription
 	subs := raw[:0]
 
-	s.sl.localSubs(&subs)
+	// FIXME(dlc) this needs to be scoped per account when cluster proto changes.
+	s.gsl.localSubs(&subs)
 
 	route.mu.Lock()
 	closed := route.sendRouteSubProtos(subs, func(sub *subscription) bool {
@@ -691,7 +692,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 	}
 
-	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
+	c := &client{srv: s, sl: s.gsl, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
 
 	// Grab server variables
 	s.mu.Lock()
