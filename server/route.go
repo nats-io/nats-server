@@ -39,6 +39,18 @@ const (
 	Explicit
 )
 
+const (
+	// routeProtoZero is the original Route protocol from 2009.
+	// http://nats.io/documentation/internals/nats-protocol/
+	routeProtoZero = iota
+	// routeProtoInfo signals a route can receive more then the original INFO block.
+	// This can be used to update remote cluster permissions, etc...
+	routeProtoInfo
+)
+
+// Used by tests
+var testRouteProto = routeProtoInfo
+
 type route struct {
 	remoteID     string
 	didSolicit   bool
@@ -305,6 +317,9 @@ func (c *client) processRouteInfo(info *Info) {
 	// in closeConnection().
 	c.route.remoteID = info.ID
 
+	// Get the route's proto version
+	c.opts.Protocol = info.Proto
+
 	// Detect route to self.
 	if c.route.remoteID == s.info.ID {
 		c.mu.Unlock()
@@ -315,6 +330,14 @@ func (c *client) processRouteInfo(info *Info) {
 	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
+
+	// If this is an update due to config reload on the remote server,
+	// need to possibly send local subs to the remote server.
+	if c.flags.isSet(infoReceived) {
+		s.updateRemoteRoutePerms(c, info)
+		c.mu.Unlock()
+		return
+	}
 
 	// Copy over permissions as well.
 	c.opts.Import = info.Import
@@ -334,6 +357,10 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 		c.route.url = url
 	}
+
+	// Mark that the INFO protocol has been received. Will allow
+	// to detect INFO updates.
+	c.flags.set(infoReceived)
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
@@ -374,6 +401,47 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
 	}
+}
+
+// Possibly sends local subscriptions interest to this route
+// based on changes in the remote's Export permissions.
+// Lock assumed held on entry
+func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
+	// Interested only on Export permissions for the remote server.
+	// Create "fake" clients that we will use to check permissions
+	// using the old permissions...
+	oldPerms := &RoutePermissions{Export: route.opts.Export}
+	oldPermsTester := &client{}
+	oldPermsTester.setRoutePermissions(oldPerms)
+	// and the new ones.
+	newPerms := &RoutePermissions{Export: info.Export}
+	newPermsTester := &client{}
+	newPermsTester.setRoutePermissions(newPerms)
+
+	var (
+		_localSubs  [4096]*subscription
+		localSubs   = _localSubs[:0]
+		subsNeedSUB []*subscription
+	)
+	s.sl.localSubs(&localSubs)
+
+	for _, sub := range localSubs {
+		subj := sub.subject
+		// If the remote can now export but could not before, and this server can import this
+		// subject, then add to the list so we can send SUB protocol.
+		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && route.canImport(subj) {
+			subsNeedSUB = append(subsNeedSUB, sub)
+		}
+	}
+	for _, sub := range subsNeedSUB {
+		route.queueOutbound([]byte(fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))))
+		if route.out.pb > int64(route.out.sz*2) {
+			route.flushSignal()
+		}
+	}
+	route.flushSignal()
+	route.opts.Import = info.Import
+	route.opts.Export = info.Export
 }
 
 // sendAsyncInfoToClients sends an INFO protocol to all
@@ -835,6 +903,7 @@ func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
 	protoAsBytes := []byte(proto)
+	checkPerms := true
 	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
@@ -843,9 +912,12 @@ func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 		// route will have the same `perms`, so check with the first route
 		// and send SUB interest only if subject has a match in import permissions.
 		// If there is no match, we stop here.
-		if !route.canImport(sub.subject) {
-			route.mu.Unlock()
-			break
+		if checkPerms {
+			checkPerms = false
+			if !route.canImport(sub.subject) {
+				route.mu.Unlock()
+				break
+			}
 		}
 		route.sendProto(protoAsBytes, true)
 		route.mu.Unlock()
@@ -910,6 +982,9 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	s.mu.Lock()
+	// For tests, we want to be able to make this server behave
+	// as an older server.
+	proto := testRouteProto
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
@@ -920,6 +995,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		TLSRequired:  tlsReq,
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
+		Proto:        proto,
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {

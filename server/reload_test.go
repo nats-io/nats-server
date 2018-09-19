@@ -1967,3 +1967,462 @@ func TestConfigReloadClusterWorks(t *testing.T) {
 		t.Fatalf("Expected server B route ID to be %v, got %v", bcid, newbcid)
 	}
 }
+
+func TestConfigReloadClusterPerms(t *testing.T) {
+	confATemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				import {
+					allow: %s
+				}
+				export {
+					allow: %s
+				}
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `"foo"`, `"foo"`)))
+	defer os.Remove(confA)
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBTemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				import {
+					allow: %s
+				}
+				export {
+					allow: %s
+				}
+			}
+			routes = [
+				"nats://127.0.0.1:%d"
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, `"foo"`, `"foo"`, srva.ClusterAddr().Port)))
+	defer os.Remove(confB)
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Create a connection on A
+	nca, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", srva.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca.Close()
+	// Create a subscription on "foo" and "bar", only "foo" will be also on server B.
+	subFooOnA, err := nca.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	subBarOnA, err := nca.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Connect on B and do the same
+	ncb, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", srvb.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	// Create a subscription on "foo" and "bar", only "foo" will be also on server B.
+	subFooOnB, err := ncb.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	subBarOnB, err := ncb.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Check subscriptions on each server. There should be 3 on each server,
+	// foo and bar locally and foo from remote server.
+	checkExpectedSubs(t, 3, srva, srvb)
+
+	sendMsg := func(t *testing.T, subj string, nc *nats.Conn) {
+		t.Helper()
+		if err := nc.Publish(subj, []byte("msg")); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+
+	checkSub := func(t *testing.T, sub *nats.Subscription, shouldReceive bool) {
+		t.Helper()
+		_, err := sub.NextMsg(100 * time.Millisecond)
+		if shouldReceive && err != nil {
+			t.Fatalf("Expected message on %q, got %v", sub.Subject, err)
+		} else if !shouldReceive && err == nil {
+			t.Fatalf("Expected no message on %q, got one", sub.Subject)
+		}
+	}
+
+	// Produce from A and check received on both sides
+	sendMsg(t, "foo", nca)
+	checkSub(t, subFooOnA, true)
+	checkSub(t, subFooOnB, true)
+	// Now from B:
+	sendMsg(t, "foo", ncb)
+	checkSub(t, subFooOnA, true)
+	checkSub(t, subFooOnB, true)
+
+	// Publish on bar from A and make sure only local sub receives
+	sendMsg(t, "bar", nca)
+	checkSub(t, subBarOnA, true)
+	checkSub(t, subBarOnB, false)
+
+	// Publish on bar from B and make sure only local sub receives
+	sendMsg(t, "bar", ncb)
+	checkSub(t, subBarOnA, false)
+	checkSub(t, subBarOnB, true)
+
+	// We will now both import/export foo and bar. Start with reloading A.
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`, `["foo", "bar"]`))
+
+	// Since B has not been updated yet, the state should remain the same,
+	// that is 3 subs on each server.
+	checkExpectedSubs(t, 3, srva, srvb)
+
+	// Now update and reload B. Add "baz" for another test down below
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, `["foo", "bar", "baz"]`, `["foo", "bar", "baz"]`, srva.ClusterAddr().Port))
+
+	// Now 4 on each server
+	checkExpectedSubs(t, 4, srva, srvb)
+
+	// Make sure that we can receive all messages
+	sendMsg(t, "foo", nca)
+	checkSub(t, subFooOnA, true)
+	checkSub(t, subFooOnB, true)
+	sendMsg(t, "foo", ncb)
+	checkSub(t, subFooOnA, true)
+	checkSub(t, subFooOnB, true)
+
+	sendMsg(t, "bar", nca)
+	checkSub(t, subBarOnA, true)
+	checkSub(t, subBarOnB, true)
+	sendMsg(t, "bar", ncb)
+	checkSub(t, subBarOnA, true)
+	checkSub(t, subBarOnB, true)
+
+	// Create subscription on baz on server B.
+	subBazOnB, err := ncb.SubscribeSync("baz")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	// Check subscriptions count
+	checkExpectedSubs(t, 5, srvb)
+	checkExpectedSubs(t, 4, srva)
+
+	sendMsg(t, "baz", nca)
+	checkSub(t, subBazOnB, false)
+	sendMsg(t, "baz", ncb)
+	checkSub(t, subBazOnB, true)
+
+	// Test UNSUB by denying something that was previously imported
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"foo"`, `["foo", "bar"]`))
+	// Since A no longer imports "bar", we should have one less subscription
+	// on B (B will have received an UNSUB for bar)
+	checkExpectedSubs(t, 4, srvb)
+	// A, however, should still have same number of subs.
+	checkExpectedSubs(t, 4, srva)
+
+	// Remove all permissions from A.
+	reloadUpdateConfig(t, srva, confA, `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+		}
+	`)
+	// Server A should now have baz sub
+	checkExpectedSubs(t, 5, srvb)
+	checkExpectedSubs(t, 5, srva)
+
+	sendMsg(t, "baz", nca)
+	checkSub(t, subBazOnB, true)
+	sendMsg(t, "baz", ncb)
+	checkSub(t, subBazOnB, true)
+
+	// Finally, remove permissions from B
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(`
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			routes = [
+				"nats://127.0.0.1:%d"
+			]
+		}
+	`, srva.ClusterAddr().Port))
+	// Check expected subscriptions count.
+	checkExpectedSubs(t, 5, srvb)
+	checkExpectedSubs(t, 5, srva)
+}
+
+func TestConfigReloadClusterPermsImport(t *testing.T) {
+	confATemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				import: {
+					allow: %s
+				}
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `["foo", "bar"]`)))
+	defer os.Remove(confA)
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBTemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			routes = [
+				"nats://127.0.0.1:%d"
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port)))
+	defer os.Remove(confB)
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Create a connection on A
+	nca, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", srva.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca.Close()
+	// Create a subscription on "foo" and "bar"
+	if _, err := nca.SubscribeSync("foo"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if _, err := nca.SubscribeSync("bar"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	// Drop foo
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`))
+	checkExpectedSubs(t, 2, srva)
+	checkExpectedSubs(t, 1, srvb)
+
+	// Add it back
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	// Empty Import means implicit allow
+	reloadUpdateConfig(t, srva, confA, `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				export: ">"
+			}
+		}
+	`)
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	confATemplate = `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				import: {
+					allow: ["foo", "bar"]
+					deny: %s
+				}
+			}
+		}
+	`
+	// Now deny all:
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
+	checkExpectedSubs(t, 2, srva)
+	checkExpectedSubs(t, 0, srvb)
+
+	// Drop foo from the deny list
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`))
+	checkExpectedSubs(t, 2, srva)
+	checkExpectedSubs(t, 1, srvb)
+}
+
+func TestConfigReloadClusterPermsExport(t *testing.T) {
+	confATemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				export: {
+					allow: %s
+				}
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `["foo", "bar"]`)))
+	defer os.Remove(confA)
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBTemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			routes = [
+				"nats://127.0.0.1:%d"
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port)))
+	defer os.Remove(confB)
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Create a connection on B
+	ncb, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", srvb.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	// Create a subscription on "foo" and "bar"
+	if _, err := ncb.SubscribeSync("foo"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if _, err := ncb.SubscribeSync("bar"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	// Drop foo
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`))
+	checkExpectedSubs(t, 2, srvb)
+	checkExpectedSubs(t, 1, srva)
+
+	// Add it back
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	// Empty Export means implicit allow
+	reloadUpdateConfig(t, srva, confA, `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				import: ">"
+			}
+		}
+	`)
+	checkExpectedSubs(t, 2, srva, srvb)
+
+	confATemplate = `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				export: {
+					allow: ["foo", "bar"]
+					deny: %s
+				}
+			}
+		}
+	`
+	// Now deny all:
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
+	checkExpectedSubs(t, 0, srva)
+	checkExpectedSubs(t, 2, srvb)
+
+	// Drop foo from the deny list
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`))
+	checkExpectedSubs(t, 1, srva)
+	checkExpectedSubs(t, 2, srvb)
+}
+
+func TestConfigReloadClusterPermsOldServer(t *testing.T) {
+	confATemplate := `
+		port: -1
+		cluster {
+			listen: 127.0.0.1:-1
+			permissions {
+				export: {
+					allow: %s
+				}
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `["foo", "bar"]`)))
+	defer os.Remove(confA)
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	optsB := DefaultOptions()
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srva.ClusterAddr().Port))
+	// Make server B behave like an old server
+	testRouteProto = routeProtoZero
+	defer func() { testRouteProto = routeProtoInfo }()
+	srvb := RunServer(optsB)
+	defer srvb.Shutdown()
+	testRouteProto = routeProtoInfo
+
+	checkClusterFormed(t, srva, srvb)
+
+	// Get the route's connection ID
+	getRouteRID := func() uint64 {
+		rid := uint64(0)
+		srvb.mu.Lock()
+		for _, r := range srvb.routes {
+			r.mu.Lock()
+			rid = r.cid
+			r.mu.Unlock()
+			break
+		}
+		srvb.mu.Unlock()
+		return rid
+	}
+	orgRID := getRouteRID()
+
+	// Cause a config reload on A
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`))
+
+	// Check that new route gets created
+	check := func(t *testing.T) {
+		t.Helper()
+		checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+			if rid := getRouteRID(); rid == orgRID {
+				return fmt.Errorf("Route does not seem to have been recreated")
+			}
+			return nil
+		})
+	}
+	check(t)
+
+	// Save the current value
+	orgRID = getRouteRID()
+
+	// Add another server that supports INFO updates
+
+	optsC := DefaultOptions()
+	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srva.ClusterAddr().Port))
+	srvc := RunServer(optsC)
+	defer srvc.Shutdown()
+
+	checkClusterFormed(t, srva, srvb, srvc)
+
+	// Cause a config reload on A
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"foo"`))
+	// Check that new route gets created
+	check(t)
+}
