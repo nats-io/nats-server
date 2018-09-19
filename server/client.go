@@ -69,6 +69,7 @@ type clientFlag byte
 // Some client state represented as flags
 const (
 	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
+	infoReceived                             // The INFO protocol has been received
 	firstPongSent                            // The first PONG has been sent
 	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
 	clearConnection                          // Marks that clearConnection has already been called.
