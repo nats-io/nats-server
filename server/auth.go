@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"strings"
+	"sync"
 
 	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
@@ -38,10 +39,107 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// Import mapping struct
+type importMap struct {
+	acc    *Account
+	from   string
+	prefix string
+}
+
 // Accounts
 type Account struct {
-	Name string
-	sl   *Sublist
+	Name    string
+	mu      sync.RWMutex
+	sl      *Sublist
+	imports map[string]*importMap
+	exports map[string]map[string]*Account
+}
+
+// addImport will add in the import
+func (a *Account) addImport(account *Account, from, prefix string) error {
+	// First check to see if the account has authorized export of the subject.
+	if !account.checkImportAuthorized(a, from) {
+		return ErrAccountImportAuthorization
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if account == nil {
+		return ErrMissingAccount
+	}
+	if a.imports == nil {
+		a.imports = make(map[string]*importMap)
+	}
+	if prefix != "" && prefix[len(prefix)-1] != btsep {
+		prefix = prefix + string(btsep)
+	}
+	// TODO(dlc) - collisions, etc.
+	a.imports[from] = &importMap{account, from, prefix}
+	return nil
+}
+
+// Placeholder to denote public export.
+var isPublicExport = []*Account(nil)
+
+// addExport will add an export to the account. If accounts is nil
+// it will signify a public export, meaning anyone can impoort.
+func (a *Account) addExport(subject string, accounts []*Account) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a == nil {
+		return ErrMissingAccount
+	}
+	if a.exports == nil {
+		a.exports = make(map[string]map[string]*Account)
+	}
+	var ma map[string]*Account
+	for _, aa := range accounts {
+		if ma == nil {
+			ma = make(map[string]*Account, len(accounts))
+		}
+		ma[aa.Name] = aa
+	}
+	a.exports[subject] = ma
+	return nil
+}
+
+// Check if another account is authorized to import from us.
+func (a *Account) checkImportAuthorized(account *Account, subject string) bool {
+	// Find the subject in the exports list.
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.exports == nil || !IsValidSubject(subject) {
+		return false
+	}
+
+	// Check direct match of subject first
+	am, ok := a.exports[subject]
+	if ok {
+		// if am is nil that denotes a public export
+		if am == nil {
+			return true
+		}
+		// If we have a matching account we are authorized
+		_, ok := am[account.Name]
+		return ok
+	}
+	// ok if we are here we did not match directly so we need to test each one.
+	// The import subject arg has to take precedence, meaning the export
+	// has to be a true subset of the import claim. We already checked for
+	// exact matches above.
+
+	tokens := strings.Split(subject, tsep)
+	for subj, am := range a.exports {
+		if isSubsetMatch(tokens, subj) {
+			if am == nil {
+				return true
+			}
+			_, ok := am[account.Name]
+			return ok
+		}
+	}
+	return false
 }
 
 // Nkey is for multiple nkey based users

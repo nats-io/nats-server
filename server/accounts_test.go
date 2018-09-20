@@ -19,42 +19,40 @@ import (
 	"testing"
 )
 
-func simpleAccountServer(t *testing.T) *Server {
+func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
 	opts := defaultServerOptions
 	s := New(&opts)
 
 	// Now create two accounts.
-	_, err := s.RegisterAccount("foo")
+	f, err := s.RegisterAccount("foo")
 	if err != nil {
 		t.Fatalf("Error creating account 'foo': %v", err)
 	}
-	_, err = s.RegisterAccount("bar")
+	b, err := s.RegisterAccount("bar")
 	if err != nil {
 		t.Fatalf("Error creating account 'bar': %v", err)
 	}
-	return s
+	return s, f, b
 }
 
 func TestRegisterDuplicateAccounts(t *testing.T) {
-	s := simpleAccountServer(t)
+	s, _, _ := simpleAccountServer(t)
 	if _, err := s.RegisterAccount("foo"); err == nil {
 		t.Fatal("Expected an error registering 'foo' twice")
 	}
 }
 
 func TestAccountIsolation(t *testing.T) {
-	s := simpleAccountServer(t)
-	fooAcc := s.LookupAccount("foo")
-	barAcc := s.LookupAccount("bar")
+	s, fooAcc, barAcc := simpleAccountServer(t)
 	if fooAcc == nil || barAcc == nil {
 		t.Fatalf("Error retrieving accounts for 'foo' and 'bar'")
 	}
 	cfoo, crFoo, _ := newClientForServer(s)
-	if err := cfoo.RegisterWithAccount(fooAcc); err != nil {
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error register client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	if err := cbar.RegisterWithAccount(barAcc); err != nil {
+	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error register client with 'bar' account: %v", err)
 	}
 
@@ -146,7 +144,7 @@ func TestNewAccountsFromClients(t *testing.T) {
 // Clients can ask that the account be forced to be new. If it exists this is an error.
 func TestNewAccountRequireNew(t *testing.T) {
 	// This has foo and bar accounts already.
-	s := simpleAccountServer(t)
+	s, _, _ := simpleAccountServer(t)
 
 	c, cr, _ := newClientForServer(s)
 	connectOp := []byte("CONNECT {\"account\":\"foo\",\"new_account\":true}\r\n")
@@ -283,4 +281,294 @@ func TestAccountParseConfigDuplicateUsers(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected an error with double user entries")
 	}
+}
+
+func TestImportAuthorized(t *testing.T) {
+	_, foo, bar := simpleAccountServer(t)
+
+	checkBool(foo.checkImportAuthorized(bar, "foo"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "*"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, ">"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.*"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.>"), false, t)
+
+	foo.addExport("foo", isPublicExport)
+	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "bar"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "*"), false, t)
+
+	foo.addExport("*", []*Account{bar})
+	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "bar"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "baz"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, ">"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "*"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.*"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "*.*"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "*.>"), false, t)
+
+	// Reset and test '>' public export
+	_, foo, bar = simpleAccountServer(t)
+	foo.addExport(">", nil)
+	// Everything should work.
+	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "bar"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "baz"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, ">"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "*"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.*"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "*.*"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "*.>"), true, t)
+
+	// Reset and test pwc and fwc
+	s, foo, bar := simpleAccountServer(t)
+	foo.addExport("foo.*.baz.>", []*Account{bar})
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz.1"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz.*"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.*.baz.1.1"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.22.baz.22"), true, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz"), false, t)
+	checkBool(foo.checkImportAuthorized(bar, ""), false, t)
+	checkBool(foo.checkImportAuthorized(bar, "foo.bar.*.*"), false, t)
+
+	// Make sure we match the account as well
+
+	fb, _ := s.RegisterAccount("foobar")
+	bz, _ := s.RegisterAccount("baz")
+
+	checkBool(foo.checkImportAuthorized(fb, "foo.bar.baz.1"), false, t)
+	checkBool(foo.checkImportAuthorized(bz, "foo.bar.baz.1"), false, t)
+}
+
+func TestSimpleMapping(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Test first that trying to import with no matching export permission returns an error.
+	if err := cbar.acc.addImport(fooAcc, "foo", "import"); err != ErrAccountImportAuthorization {
+		t.Fatalf("Expected error of ErrAccountImportAuthorization but got %v", err)
+	}
+
+	// Now map the subject space between foo and bar.
+	// Need to do export first.
+	if err := cfoo.acc.addExport("foo", nil); err != nil { // Public with no accounts defined.
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := cbar.acc.addImport(fooAcc, "foo", "import"); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	// Normal Subscription on bar client.
+	go cbar.parse([]byte("SUB import.foo 1\r\nSUB import.foo bar 2\r\nPING\r\n"))
+	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
+	if err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// Now publish our message.
+	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+
+	checkMsg := func(l, sid string) {
+		t.Helper()
+		mraw := msgPat.FindAllStringSubmatch(l, -1)
+		if len(mraw) == 0 {
+			t.Fatalf("No message received")
+		}
+		matches := mraw[0]
+		if matches[SUB_INDEX] != "import.foo" {
+			t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		}
+		if matches[SID_INDEX] != sid {
+			t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		}
+	}
+
+	// Now check we got the message from normal subscription.
+	l, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	checkMsg(l, "1")
+	checkPayload(crBar, []byte("hello\r\n"), t)
+
+	l, err = crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'baz': %v", err)
+	}
+	checkMsg(l, "2")
+	checkPayload(crBar, []byte("hello\r\n"), t)
+}
+
+func TestNoPrefixWildcardMapping(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := cbar.acc.addImport(fooAcc, "*", ""); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	// Normal Subscription on bar client for literal "foo".
+	go cbar.parse([]byte("SUB foo 1\r\nPING\r\n"))
+	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
+	if err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// Now publish our message.
+	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+
+	// Now check we got the message from normal subscription.
+	l, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("hello\r\n"), t)
+}
+
+func TestPrefixWildcardMapping(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := cbar.acc.addImport(fooAcc, "*", "pub.imports."); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	// Normal Subscription on bar client for wildcard.
+	go cbar.parse([]byte("SUB pub.imports.* 1\r\nPING\r\n"))
+	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
+	if err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// Now publish our message.
+	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+
+	// Now check we got the messages from wildcard subscription.
+	l, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "pub.imports.foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("hello\r\n"), t)
+}
+
+func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := cbar.acc.addImport(fooAcc, "*", "pub.imports."); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	// Normal Subscription on bar client for wildcard.
+	go cbar.parse([]byte("SUB pub.imports.foo 1\r\nPING\r\n"))
+	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
+	if err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// Now publish our message.
+	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+
+	// Now check we got the messages from wildcard subscription.
+	l, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "pub.imports.foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("hello\r\n"), t)
 }

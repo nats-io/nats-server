@@ -58,4 +58,6 @@ var (
 
 	// ErrMissingAccount is returned when an account does not exist.
 	ErrMissingAccount = errors.New("Account Missing")
+
+	ErrAccountImportAuthorization = errors.New("Account Not Authorized: Subject Not Exported")
 )

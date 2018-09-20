@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -239,6 +240,7 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 
 type subscription struct {
 	client  *client
+	im      *importMap
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -319,7 +321,7 @@ func (c *client) initClient() {
 
 // RegisterWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
-func (c *client) RegisterWithAccount(acc *Account) error {
+func (c *client) registerWithAccount(acc *Account) error {
 	if acc == nil || acc.sl == nil {
 		return ErrBadAccount
 	}
@@ -831,7 +833,7 @@ func (c *client) processConnect(arg []byte) error {
 				}
 			}
 			// If we are here we can register ourselves with the new account.
-			if err := c.RegisterWithAccount(acc); err != nil {
+			if err := c.registerWithAccount(acc); err != nil {
 				c.Errorf("Problem registering with account [%s]", account)
 				c.sendErr("Account Failed Registration")
 				return ErrBadAccount
@@ -962,7 +964,7 @@ func (c *client) queueOutbound(data []byte) bool {
 			c.out.p = nil
 		}
 		// Check for a big message, and if found place directly on nb
-		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) <
+		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) < maxBufSize
 		if len(data) > maxBufSize {
 			c.out.nb = append(c.out.nb, data)
 			referenced = true
@@ -1287,16 +1289,18 @@ func (c *client) processSub(argo []byte) (err error) {
 		return nil
 	}
 
+	// Check if we have a maximum on the number of subscriptions.
 	if c.msubs > 0 && len(c.subs) >= c.msubs {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
 		return nil
 	}
 
-	// Check if we have a maximum on the number of subscriptions.
 	// We can have two SUB protocols coming from a route due to some
 	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)
+	var chkImports bool
+
 	if c.subs[sid] == nil {
 		c.subs[sid] = sub
 		if c.sl != nil {
@@ -1304,21 +1308,73 @@ func (c *client) processSub(argo []byte) (err error) {
 			if err != nil {
 				delete(c.subs, sid)
 			} else {
+				if c.acc != nil {
+					chkImports = true
+				}
 				shouldForward = c.typ != ROUTER
 			}
 		}
 	}
 	c.mu.Unlock()
+
 	if err != nil {
 		c.sendErr("Invalid Subject")
 		return nil
 	} else if c.opts.Verbose {
 		c.sendOK()
 	}
+	if chkImports {
+		if err := c.checkAccountImports(sub); err != nil {
+			c.Errorf(err.Error())
+		}
+	}
 	if shouldForward {
 		c.srv.broadcastSubscribe(sub)
 	}
 
+	return nil
+}
+
+// Check to see if we need to create a shadow subscription due to imports
+// in other accounts.
+// Assume lock is held
+func (c *client) checkAccountImports(sub *subscription) error {
+	c.mu.Lock()
+	acc := c.acc
+	c.mu.Unlock()
+
+	if acc == nil {
+		return ErrMissingAccount
+	}
+
+	subject := string(sub.subject)
+	tokens := strings.Split(subject, tsep)
+
+	var rims [32]*importMap
+	var ims = rims[:0]
+	acc.mu.RLock()
+	for _, im := range acc.imports {
+		if isSubsetMatch(tokens, im.prefix+im.from) {
+			ims = append(ims, im)
+		}
+	}
+	acc.mu.RUnlock()
+
+	// Now walk through collected importMaps
+	for _, im := range ims {
+		// We have a match for a local subscription with an import from another account.
+		// We will create a shadow subscription.
+		nsub := *sub // copy
+		nsub.im = im
+		if im.prefix != "" {
+			// redo subject here to match subject in the publisher account space.
+			// Just remove prefix from what they gave us. That maps into other space.
+			nsub.subject = sub.subject[len(im.prefix):]
+		}
+		if err := im.acc.sl.Insert(&nsub); err != nil {
+			return fmt.Errorf("Could not add shadow import subscription for account %q", im.acc.Name)
+		}
+	}
 	return nil
 }
 
@@ -1627,7 +1683,7 @@ func (c *client) processMsg(msg []byte) {
 	if genid == c.in.genid && c.in.results != nil {
 		r, ok = c.in.results[string(c.pa.subject)]
 	} else {
-		// reset our L1 completely.
+		// Reset our L1 completely.
 		c.in.results = make(map[string]*SublistResult)
 		c.in.genid = genid
 	}
@@ -1694,6 +1750,15 @@ func (c *client) processMsg(msg []byte) {
 			rmap[sub.client.route.remoteID] = routeSeen
 			sub.client.mu.Unlock()
 		}
+		// Check for mapped subs
+		if sub.im != nil && sub.im.prefix != "" {
+			// Redo the subject here on the fly.
+			msgh := c.msgb[:msgHeadProtoLen]
+			msgh = append(msgh, sub.im.prefix...)
+			msgh = append(msgh, c.pa.subject...)
+			msgh = append(msgh, ' ')
+			si = len(msgh)
+		}
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub)
 		c.deliverMsg(sub, mh, msg)
@@ -1714,6 +1779,15 @@ func (c *client) processMsg(msg []byte) {
 			index := (startIndex + i) % len(qsubs)
 			sub := qsubs[index]
 			if sub != nil {
+				// Check for mapped subs
+				if sub.im != nil && sub.im.prefix != "" {
+					// Redo the subject here on the fly.
+					msgh := c.msgb[:msgHeadProtoLen]
+					msgh = append(msgh, sub.im.prefix...)
+					msgh = append(msgh, c.pa.subject...)
+					msgh = append(msgh, ' ')
+					si = len(msgh)
+				}
 				mh := c.msgHeader(msgh[:si], sub)
 				if c.deliverMsg(sub, mh, msg) {
 					break
