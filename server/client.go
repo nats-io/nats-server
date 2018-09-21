@@ -238,9 +238,11 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 	return &state
 }
 
+// This is the main subscription struct that indicates
+// interest in published messages.
 type subscription struct {
 	client  *client
-	im      *importMap
+	im      *importMap // This is for importing support.
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -1634,18 +1636,8 @@ func (c *client) pubAllowed(subject []byte) bool {
 	return allowed
 }
 
-// prepMsgHeader will prepare the message header prefix
-func (c *client) prepMsgHeader() []byte {
-	// Use the scratch buffer..
-	msgh := c.msgb[:msgHeadProtoLen]
-
-	// msg header
-	msgh = append(msgh, c.pa.subject...)
-	return append(msgh, ' ')
-}
-
 // processMsg is called to process an inbound msg from a client.
-func (c *client) processMsg(msg []byte) {
+func (c *client) processInboundMsg(msg []byte) {
 	// Snapshot server.
 	srv := c.srv
 
@@ -1689,9 +1681,8 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	if !ok {
-		subject := string(c.pa.subject)
-		r = c.sl.Match(subject)
-		c.in.results[subject] = r
+		r = c.sl.Match(string(c.pa.subject))
+		c.in.results[string(c.pa.subject)] = r
 		// Prune the results cache. Keeps us from unbounded growth.
 		if len(c.in.results) > maxResultCacheSize {
 			n := 0
@@ -1704,6 +1695,26 @@ func (c *client) processMsg(msg []byte) {
 		}
 	}
 
+	// Check to see if we need to route this message to
+	// another account via a route entry.
+	if c.typ == CLIENT && c.acc != nil && c.acc.routes != nil {
+		c.acc.mu.RLock()
+		rm := c.acc.routes[string(c.pa.subject)]
+		c.acc.mu.RUnlock()
+		// Get the results from the other account for the mapped "to" subject.
+		if rm != nil && rm.acc != nil && rm.acc.sl != nil {
+			if rm.ae {
+				c.acc.removeRoute(rm.from)
+			}
+			if c.pa.reply != nil {
+				rm.acc.addImplicitRoute(c.acc, string(c.pa.reply), string(c.pa.reply), true)
+			}
+			// FIXME(dlc) - Do L1 cache trick from above.
+			rr := rm.acc.sl.Match(rm.to)
+			c.processMsgResults(rr, msg, []byte(rm.to))
+		}
+	}
+
 	// This is the fanout scale.
 	fanout := len(r.psubs) + len(r.qsubs)
 
@@ -1713,12 +1724,18 @@ func (c *client) processMsg(msg []byte) {
 	}
 
 	if c.typ == ROUTER {
-		c.processRoutedMsg(r, msg)
-		return
+		c.processRoutedMsgResults(r, msg)
+	} else if c.typ == CLIENT {
+		c.processMsgResults(r, msg, c.pa.subject)
 	}
+}
 
-	// Client connection processing here.
-	msgh := c.prepMsgHeader()
+// This processes the sublist results for a given message.
+func (c *client) processMsgResults(r *SublistResult, msg, subject []byte) {
+	// msg header
+	msgh := c.msgb[:msgHeadProtoLen]
+	msgh = append(msgh, subject...)
+	msgh = append(msgh, ' ')
 	si := len(msgh)
 
 	// Used to only send messages once across any given route.
@@ -1732,7 +1749,7 @@ func (c *client) processMsg(msg []byte) {
 		if sub.client.typ == ROUTER {
 			// Check to see if we have already sent it here.
 			if rmap == nil {
-				rmap = make(map[string]struct{}, srv.numRoutes())
+				rmap = make(map[string]struct{}, c.srv.numRoutes())
 			}
 			sub.client.mu.Lock()
 			if sub.client.nc == nil ||
@@ -1769,6 +1786,7 @@ func (c *client) processMsg(msg []byte) {
 	if c.in.prand == nil {
 		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
+
 	// Process queue subs
 	for i := 0; i < len(r.qsubs); i++ {
 		qsubs := r.qsubs[i]

@@ -46,17 +46,98 @@ type importMap struct {
 	prefix string
 }
 
-// Accounts
-type Account struct {
-	Name    string
-	mu      sync.RWMutex
-	sl      *Sublist
-	imports map[string]*importMap
-	exports map[string]map[string]*Account
+// Route mapping struct
+type routeMap struct {
+	acc  *Account
+	from string
+	to   string
+	ae   bool
 }
 
-// addImport will add in the import
+// Accounts
+type Account struct {
+	Name     string
+	mu       sync.RWMutex
+	sl       *Sublist
+	imports  map[string]*importMap
+	exports  map[string]map[string]*Account
+	services map[string]map[string]*Account
+	// TODO(dlc) sync.Map may be better.
+	routes map[string]*routeMap
+}
+
+func (a *Account) addService(accounts []*Account, subject string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a == nil {
+		return ErrMissingAccount
+	}
+	if a.services == nil {
+		a.services = make(map[string]map[string]*Account)
+	}
+	ma := a.services[subject]
+	if accounts != nil && ma == nil {
+		ma = make(map[string]*Account)
+	}
+	for _, a := range accounts {
+		ma[a.Name] = a
+	}
+	a.services[subject] = ma
+	return nil
+}
+
+// numRoutes returns the number of routes on this account.
+func (a *Account) numRoutes() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.routes)
+}
+
+// This will add a route to an account to send published messages / requests
+// to the destination account. From is the local subject to map, To is the
+// subject that will appear on the destination account. Destination will need
+// to have an import rule to allow access via addService.
+func (a *Account) addRoute(destination *Account, from, to string) error {
+	if destination == nil {
+		return ErrMissingAccount
+	}
+	if !IsValidLiteralSubject(from) || !IsValidLiteralSubject(to) {
+		return ErrInvalidSubject
+	}
+	// First check to see if the account has authorized us to route to the "to" subject.
+	if !destination.checkRouteAuthorized(a, to) {
+		return ErrAccountRouteAuthorization
+	}
+
+	return a.addImplicitRoute(destination, from, to, false)
+}
+
+// removeRoute will remove the route by subject.
+func (a *Account) removeRoute(subject string) {
+	a.mu.Lock()
+	delete(a.routes, subject)
+	a.mu.Unlock()
+}
+
+// Add a route to a connect from an implicit route created for a response to a request.
+// This does no checks and should be only called by the msg processing code. Use addRoute
+// above if responding to user input or config, etc.
+func (a *Account) addImplicitRoute(destination *Account, from, to string, autoexpire bool) error {
+	a.mu.Lock()
+	if a.routes == nil {
+		a.routes = make(map[string]*routeMap)
+	}
+	a.routes[from] = &routeMap{destination, from, to, autoexpire}
+	a.mu.Unlock()
+	return nil
+}
+
+// addImport will add in the import from a specific account.
 func (a *Account) addImport(account *Account, from, prefix string) error {
+	if account == nil {
+		return ErrMissingAccount
+	}
+
 	// First check to see if the account has authorized export of the subject.
 	if !account.checkImportAuthorized(a, from) {
 		return ErrAccountImportAuthorization
@@ -64,9 +145,6 @@ func (a *Account) addImport(account *Account, from, prefix string) error {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if account == nil {
-		return ErrMissingAccount
-	}
 	if a.imports == nil {
 		a.imports = make(map[string]*importMap)
 	}
@@ -101,6 +179,29 @@ func (a *Account) addExport(subject string, accounts []*Account) error {
 	}
 	a.exports[subject] = ma
 	return nil
+}
+
+// Check if another account is authorized to route requests to us.
+func (a *Account) checkRouteAuthorized(account *Account, subject string) bool {
+	// Find the subject in the services list.
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.services == nil || !IsValidLiteralSubject(subject) {
+		return false
+	}
+	// These are always literal subjects so just lookup.
+	am, ok := a.services[subject]
+	if !ok {
+		return false
+	}
+	// Check to see if we are public or if we need to search for the account.
+	if am == nil {
+		return true
+	}
+	// Check that we allow this account.
+	_, ok = am[account.Name]
+	return ok
 }
 
 // Check if another account is authorized to import from us.

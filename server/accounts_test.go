@@ -572,3 +572,100 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 	}
 	checkPayload(crBar, []byte("hello\r\n"), t)
 }
+
+func TestCrossAccountRequestReply(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Add in the service import for the requests. Make it public.
+	if err := cfoo.acc.addService(nil, "test.request"); err != nil {
+		t.Fatalf("Error adding account service import to client foo: %v", err)
+	}
+
+	// Test addRoute to make sure it requires accounts, and literalsubjects for both from and to subjects.
+	if err := cbar.acc.addRoute(nil, "foo", "test.request"); err != ErrMissingAccount {
+		t.Fatalf("Expected ErrMissingAccount but received %v.", err)
+	}
+	if err := cbar.acc.addRoute(fooAcc, "*", "test.request"); err != ErrInvalidSubject {
+		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
+	}
+	if err := cbar.acc.addRoute(fooAcc, "foo", "test..request."); err != ErrInvalidSubject {
+		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
+	}
+
+	// Now add in the Route for request to be routed to the foo account.
+	if err := cbar.acc.addRoute(fooAcc, "foo", "test.request"); err != nil {
+		t.Fatalf("Error adding account route to client bar: %v", err)
+	}
+
+	// Now setup the resonder under cfoo
+	cfoo.parse([]byte("SUB test.request 1\r\n"))
+
+	// Now send the request. Remember we expect the request on our local foo. We added the route
+	// with that "from" and will map it to "test.request"
+	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n"))
+
+	// Now read the request from crFoo
+	l, err := crFoo.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "test.request" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[REPLY_INDEX] != "bar" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	checkPayload(crFoo, []byte("help\r\n"), t)
+
+	go cfoo.parseAndFlush([]byte("PUB bar 2\r\n22\r\n"))
+
+	// Now read the response from crBar
+	l, err = crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw = msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches = mraw[0]
+	if matches[SUB_INDEX] != "bar" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "11" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[REPLY_INDEX] != "" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("22\r\n"), t)
+
+	// Make sure we have no routes on fooAcc. An implicit one was created
+	/// for the response but should be removed when the response was processed.
+	if nr := fooAcc.numRoutes(); nr != 0 {
+		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+	}
+}

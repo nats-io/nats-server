@@ -59,5 +59,9 @@ var (
 	// ErrMissingAccount is returned when an account does not exist.
 	ErrMissingAccount = errors.New("Account Missing")
 
+	// ErrAccountImportAuthorization is returned when an import is not authorized.
 	ErrAccountImportAuthorization = errors.New("Account Not Authorized: Subject Not Exported")
+
+	// ErrAccountRouteAuthorization is returned when a route is not authorized.
+	ErrAccountRouteAuthorization = errors.New("Account Not Authorized On Service")
 )

@@ -835,6 +835,7 @@ func (s *Server) copyInfo() Info {
 
 func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
+	// TODO(dlc) - This can get expensive.
 	opts := s.getOpts()
 
 	max_pay := int64(opts.MaxPayload)

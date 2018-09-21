@@ -212,12 +212,15 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 	c.Debugf("Redelivery failed, no queue subscribers for message on group '%q'", group)
 }
 
-// processRoutedMsg processes messages inbound from a route.
-func (c *client) processRoutedMsg(r *SublistResult, msg []byte) {
+// processRoutedMsgResults processes messages inbound from a route.
+func (c *client) processRoutedMsgResults(r *SublistResult, msg []byte) {
 	// Snapshot server.
 	srv := c.srv
 
-	msgh := c.prepMsgHeader()
+	// msg header
+	msgh := c.msgb[:msgHeadProtoLen]
+	msgh = append(msgh, c.pa.subject...)
+	msgh = append(msgh, ' ')
 	si := len(msgh)
 
 	// If we have a queue subscription, deliver direct
