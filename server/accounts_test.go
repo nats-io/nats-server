@@ -14,6 +14,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestAccountIsolation(t *testing.T) {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 	if !strings.HasPrefix(l, "PONG\r\n") {
-		t.Fatalf("PONG response incorrect: %q\n", l)
+		t.Fatalf("PONG response incorrect: %q", l)
 	}
 
 	go cfoo.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
@@ -83,7 +84,7 @@ func TestAccountIsolation(t *testing.T) {
 		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "1" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	checkPayload(crFoo, []byte("hello\r\n"), t)
 
@@ -93,7 +94,7 @@ func TestAccountIsolation(t *testing.T) {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 	if !strings.HasPrefix(l, "PONG\r\n") {
-		t.Fatalf("PONG response incorrect: %q\n", l)
+		t.Fatalf("PONG response incorrect: %q", l)
 	}
 }
 
@@ -190,7 +191,7 @@ func TestAccountSimpleConfig(t *testing.T) {
 		t.Fatalf("Received an error processing config file: %v", err)
 	}
 	if la := len(opts.Accounts); la != 2 {
-		t.Fatalf("Expected to see 2 accounts in opts, got %d\n", la)
+		t.Fatalf("Expected to see 2 accounts in opts, got %d", la)
 	}
 	if !accountNameExists("foo", opts.Accounts) {
 		t.Fatal("Expected a 'foo' account")
@@ -232,11 +233,11 @@ func TestAccountParseConfig(t *testing.T) {
 	}
 
 	if la := len(opts.Accounts); la != 2 {
-		t.Fatalf("Expected to see 2 accounts in opts, got %d\n", la)
+		t.Fatalf("Expected to see 2 accounts in opts, got %d", la)
 	}
 
 	if lu := len(opts.Users); lu != 4 {
-		t.Fatalf("Expected 4 total Users, got %d\n", lu)
+		t.Fatalf("Expected 4 total Users, got %d", lu)
 	}
 
 	var natsAcc *Account
@@ -391,10 +392,10 @@ func TestSimpleMapping(t *testing.T) {
 		}
 		matches := mraw[0]
 		if matches[SUB_INDEX] != "import.foo" {
-			t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+			t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 		}
 		if matches[SID_INDEX] != sid {
-			t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+			t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 		}
 	}
 
@@ -459,10 +460,10 @@ func TestNoPrefixWildcardMapping(t *testing.T) {
 	}
 	matches := mraw[0]
 	if matches[SUB_INDEX] != "foo" {
-		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "1" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	checkPayload(crBar, []byte("hello\r\n"), t)
 }
@@ -512,10 +513,10 @@ func TestPrefixWildcardMapping(t *testing.T) {
 	}
 	matches := mraw[0]
 	if matches[SUB_INDEX] != "pub.imports.foo" {
-		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "1" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	checkPayload(crBar, []byte("hello\r\n"), t)
 }
@@ -565,10 +566,10 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 	}
 	matches := mraw[0]
 	if matches[SUB_INDEX] != "pub.imports.foo" {
-		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "1" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	checkPayload(crBar, []byte("hello\r\n"), t)
 }
@@ -630,17 +631,19 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 	matches := mraw[0]
 	if matches[SUB_INDEX] != "test.request" {
-		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "1" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
-	if matches[REPLY_INDEX] != "bar" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	// Make sure this looks like _INBOX
+	if !strings.HasPrefix(matches[REPLY_INDEX], "_INBOX.") {
+		t.Fatalf("Expected an _INBOX.* like reply, got '%s'", matches[REPLY_INDEX])
 	}
 	checkPayload(crFoo, []byte("help\r\n"), t)
 
-	go cfoo.parseAndFlush([]byte("PUB bar 2\r\n22\r\n"))
+	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
+	go cfoo.parseAndFlush([]byte(replyOp))
 
 	// Now read the response from crBar
 	l, err = crBar.ReadString('\n')
@@ -653,13 +656,13 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 	matches = mraw[0]
 	if matches[SUB_INDEX] != "bar" {
-		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
 	}
 	if matches[SID_INDEX] != "11" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	if matches[REPLY_INDEX] != "" {
-		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
 	}
 	checkPayload(crBar, []byte("22\r\n"), t)
 
@@ -667,5 +670,15 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	/// for the response but should be removed when the response was processed.
 	if nr := fooAcc.numRoutes(); nr != 0 {
 		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+	}
+}
+
+func BenchmarkNewRouteReply(b *testing.B) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	c, _, _ := newClientForServer(s)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.newRouteReply()
 	}
 }

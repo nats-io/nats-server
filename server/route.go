@@ -194,7 +194,7 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 			rsub = sub
 			continue
 		}
-		mh := c.msgHeader(msgh[:], sub)
+		mh := c.msgHeader(msgh[:], sub, c.pa.reply)
 		if c.deliverMsg(sub, mh, msg) {
 			c.Debugf("Redelivery succeeded for message on group '%q'", group)
 			return
@@ -203,7 +203,7 @@ func (c *client) reRouteQMsg(r *SublistResult, msgh, msg, group []byte) {
 	// If we are here we failed to find a local, see if we snapshotted a
 	// remote sub, and if so deliver to that.
 	if rsub != nil {
-		mh := c.msgHeader(msgh[:], rsub)
+		mh := c.msgHeader(msgh[:], rsub, c.pa.reply)
 		if c.deliverMsg(rsub, mh, msg) {
 			c.Debugf("Re-routing message on group '%q' to remote server", group)
 			return
@@ -236,7 +236,7 @@ func (c *client) processRoutedMsgResults(r *SublistResult, msg []byte) {
 		}
 		didDeliver := false
 		if sub != nil {
-			mh := c.msgHeader(msgh[:si], sub)
+			mh := c.msgHeader(msgh[:si], sub, c.pa.reply)
 			didDeliver = c.deliverMsg(sub, mh, msg)
 		}
 		if !didDeliver && c.srv != nil {
@@ -261,7 +261,7 @@ func (c *client) processRoutedMsgResults(r *SublistResult, msg []byte) {
 		sub.client.mu.Unlock()
 
 		// Normal delivery
-		mh := c.msgHeader(msgh[:si], sub)
+		mh := c.msgHeader(msgh[:si], sub, c.pa.reply)
 		c.deliverMsg(sub, mh, msg)
 	}
 }

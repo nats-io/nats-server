@@ -1480,11 +1480,11 @@ func (c *client) processUnsub(arg []byte) error {
 	return nil
 }
 
-func (c *client) msgHeader(mh []byte, sub *subscription) []byte {
+func (c *client) msgHeader(mh []byte, sub *subscription, reply []byte) []byte {
 	mh = append(mh, sub.sid...)
 	mh = append(mh, ' ')
-	if c.pa.reply != nil {
-		mh = append(mh, c.pa.reply...)
+	if reply != nil {
+		mh = append(mh, reply...)
 		mh = append(mh, ' ')
 	}
 	mh = append(mh, c.pa.szb...)
@@ -1636,6 +1636,32 @@ func (c *client) pubAllowed(subject []byte) bool {
 	return allowed
 }
 
+// Used to mimic client like replies.
+const (
+	replyPrefix    = "_INBOX."
+	replyPrefixLen = len(replyPrefix)
+	digits         = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	base           = 62
+)
+
+// newRouteReply is used when rewriting replies that cross account boundaries.
+// These will look like _INBOX.XXXXXXXX, similar to the old style of replies for most clients.
+func (c *client) newRouteReply() []byte {
+	// Check to see if we have our own rand yet. Global rand
+	// has contention with lots of clients, etc.
+	if c.in.prand == nil {
+		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	var b = [15]byte{'_', 'I', 'N', 'B', 'O', 'X', '.'}
+	rn := c.in.prand.Int63()
+	for i, l := replyPrefixLen, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	return b[:]
+}
+
 // processMsg is called to process an inbound msg from a client.
 func (c *client) processInboundMsg(msg []byte) {
 	// Snapshot server.
@@ -1703,15 +1729,18 @@ func (c *client) processInboundMsg(msg []byte) {
 		c.acc.mu.RUnlock()
 		// Get the results from the other account for the mapped "to" subject.
 		if rm != nil && rm.acc != nil && rm.acc.sl != nil {
+			var nrr []byte
 			if rm.ae {
 				c.acc.removeRoute(rm.from)
 			}
 			if c.pa.reply != nil {
-				rm.acc.addImplicitRoute(c.acc, string(c.pa.reply), string(c.pa.reply), true)
+				// We want to remap this to provide anonymity.
+				nrr = c.newRouteReply()
+				rm.acc.addImplicitRoute(c.acc, string(nrr), string(c.pa.reply), true)
 			}
 			// FIXME(dlc) - Do L1 cache trick from above.
 			rr := rm.acc.sl.Match(rm.to)
-			c.processMsgResults(rr, msg, []byte(rm.to))
+			c.processMsgResults(rr, msg, []byte(rm.to), nrr)
 		}
 	}
 
@@ -1726,12 +1755,12 @@ func (c *client) processInboundMsg(msg []byte) {
 	if c.typ == ROUTER {
 		c.processRoutedMsgResults(r, msg)
 	} else if c.typ == CLIENT {
-		c.processMsgResults(r, msg, c.pa.subject)
+		c.processMsgResults(r, msg, c.pa.subject, c.pa.reply)
 	}
 }
 
 // This processes the sublist results for a given message.
-func (c *client) processMsgResults(r *SublistResult, msg, subject []byte) {
+func (c *client) processMsgResults(r *SublistResult, msg, subject, reply []byte) {
 	// msg header
 	msgh := c.msgb[:msgHeadProtoLen]
 	msgh = append(msgh, subject...)
@@ -1767,7 +1796,7 @@ func (c *client) processMsgResults(r *SublistResult, msg, subject []byte) {
 			rmap[sub.client.route.remoteID] = routeSeen
 			sub.client.mu.Unlock()
 		}
-		// Check for mapped subs
+		// Check for import mapped subs
 		if sub.im != nil && sub.im.prefix != "" {
 			// Redo the subject here on the fly.
 			msgh := c.msgb[:msgHeadProtoLen]
@@ -1777,7 +1806,7 @@ func (c *client) processMsgResults(r *SublistResult, msg, subject []byte) {
 			si = len(msgh)
 		}
 		// Normal delivery
-		mh := c.msgHeader(msgh[:si], sub)
+		mh := c.msgHeader(msgh[:si], sub, reply)
 		c.deliverMsg(sub, mh, msg)
 	}
 
@@ -1806,7 +1835,7 @@ func (c *client) processMsgResults(r *SublistResult, msg, subject []byte) {
 					msgh = append(msgh, ' ')
 					si = len(msgh)
 				}
-				mh := c.msgHeader(msgh[:si], sub)
+				mh := c.msgHeader(msgh[:si], sub, reply)
 				if c.deliverMsg(sub, mh, msg) {
 					break
 				}
