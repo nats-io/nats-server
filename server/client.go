@@ -242,7 +242,7 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 // interest in published messages.
 type subscription struct {
 	client  *client
-	im      *importMap // This is for importing support.
+	im      *streamImport // This is for importing support.
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -1352,10 +1352,10 @@ func (c *client) checkAccountImports(sub *subscription) error {
 	subject := string(sub.subject)
 	tokens := strings.Split(subject, tsep)
 
-	var rims [32]*importMap
+	var rims [32]*streamImport
 	var ims = rims[:0]
 	acc.mu.RLock()
-	for _, im := range acc.imports {
+	for _, im := range acc.imports.streams {
 		if isSubsetMatch(tokens, im.prefix+im.from) {
 			ims = append(ims, im)
 		}
@@ -1644,9 +1644,9 @@ const (
 	base           = 62
 )
 
-// newRouteReply is used when rewriting replies that cross account boundaries.
+// newServiceReply is used when rewriting replies that cross account boundaries.
 // These will look like _INBOX.XXXXXXXX, similar to the old style of replies for most clients.
-func (c *client) newRouteReply() []byte {
+func (c *client) newServiceReply() []byte {
 	// Check to see if we have our own rand yet. Global rand
 	// has contention with lots of clients, etc.
 	if c.in.prand == nil {
@@ -1722,21 +1722,21 @@ func (c *client) processInboundMsg(msg []byte) {
 	}
 
 	// Check to see if we need to route this message to
-	// another account via a route entry.
-	if c.typ == CLIENT && c.acc != nil && c.acc.routes != nil {
+	// another account.
+	if c.typ == CLIENT && c.acc != nil && c.acc.imports.services != nil {
 		c.acc.mu.RLock()
-		rm := c.acc.routes[string(c.pa.subject)]
+		rm := c.acc.imports.services[string(c.pa.subject)]
 		c.acc.mu.RUnlock()
 		// Get the results from the other account for the mapped "to" subject.
 		if rm != nil && rm.acc != nil && rm.acc.sl != nil {
 			var nrr []byte
 			if rm.ae {
-				c.acc.removeRoute(rm.from)
+				c.acc.removeServiceImport(rm.from)
 			}
 			if c.pa.reply != nil {
 				// We want to remap this to provide anonymity.
-				nrr = c.newRouteReply()
-				rm.acc.addImplicitRoute(c.acc, string(nrr), string(c.pa.reply), true)
+				nrr = c.newServiceReply()
+				rm.acc.addImplicitServiceImport(c.acc, string(nrr), string(c.pa.reply), true)
 			}
 			// FIXME(dlc) - Do L1 cache trick from above.
 			rr := rm.acc.sl.Match(rm.to)

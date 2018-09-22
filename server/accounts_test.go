@@ -287,60 +287,60 @@ func TestAccountParseConfigDuplicateUsers(t *testing.T) {
 func TestImportAuthorized(t *testing.T) {
 	_, foo, bar := simpleAccountServer(t)
 
-	checkBool(foo.checkImportAuthorized(bar, "foo"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "*"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, ">"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.*"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.>"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.>"), false, t)
 
-	foo.addExport("foo", isPublicExport)
-	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "bar"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "*"), false, t)
+	foo.addStreamExport("foo", isPublicExport)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*"), false, t)
 
-	foo.addExport("*", []*Account{bar})
-	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "bar"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "baz"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, ">"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "*"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.*"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "*.*"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "*.>"), false, t)
+	foo.addStreamExport("*", []*Account{bar})
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "baz"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.>"), false, t)
 
 	// Reset and test '>' public export
 	_, foo, bar = simpleAccountServer(t)
-	foo.addExport(">", nil)
+	foo.addStreamExport(">", nil)
 	// Everything should work.
-	checkBool(foo.checkImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "bar"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "baz"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, ">"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "*"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.*"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "*.*"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "*.>"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "baz"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.*"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.>"), true, t)
 
 	// Reset and test pwc and fwc
 	s, foo, bar := simpleAccountServer(t)
-	foo.addExport("foo.*.baz.>", []*Account{bar})
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz.1"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz.*"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.*.baz.1.1"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.22.baz.22"), true, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar.baz"), false, t)
-	checkBool(foo.checkImportAuthorized(bar, ""), false, t)
-	checkBool(foo.checkImportAuthorized(bar, "foo.bar.*.*"), false, t)
+	foo.addStreamExport("foo.*.baz.>", []*Account{bar})
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.1"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.*"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*.baz.1.1"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.22.baz.22"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ""), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.*.*"), false, t)
 
 	// Make sure we match the account as well
 
 	fb, _ := s.RegisterAccount("foobar")
 	bz, _ := s.RegisterAccount("baz")
 
-	checkBool(foo.checkImportAuthorized(fb, "foo.bar.baz.1"), false, t)
-	checkBool(foo.checkImportAuthorized(bz, "foo.bar.baz.1"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(fb, "foo.bar.baz.1"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bz, "foo.bar.baz.1"), false, t)
 }
 
 func TestSimpleMapping(t *testing.T) {
@@ -361,16 +361,16 @@ func TestSimpleMapping(t *testing.T) {
 	}
 
 	// Test first that trying to import with no matching export permission returns an error.
-	if err := cbar.acc.addImport(fooAcc, "foo", "import"); err != ErrAccountImportAuthorization {
+	if err := cbar.acc.addStreamImport(fooAcc, "foo", "import"); err != ErrStreamImportAuthorization {
 		t.Fatalf("Expected error of ErrAccountImportAuthorization but got %v", err)
 	}
 
 	// Now map the subject space between foo and bar.
 	// Need to do export first.
-	if err := cfoo.acc.addExport("foo", nil); err != nil { // Public with no accounts defined.
+	if err := cfoo.acc.addStreamExport("foo", nil); err != nil { // Public with no accounts defined.
 		t.Fatalf("Error adding account export to client foo: %v", err)
 	}
-	if err := cbar.acc.addImport(fooAcc, "foo", "import"); err != nil {
+	if err := cbar.acc.addStreamImport(fooAcc, "foo", "import"); err != nil {
 		t.Fatalf("Error adding account import to client bar: %v", err)
 	}
 
@@ -432,10 +432,10 @@ func TestNoPrefixWildcardMapping(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
 		t.Fatalf("Error adding account export to client foo: %v", err)
 	}
-	if err := cbar.acc.addImport(fooAcc, "*", ""); err != nil {
+	if err := cbar.acc.addStreamImport(fooAcc, "*", ""); err != nil {
 		t.Fatalf("Error adding account import to client bar: %v", err)
 	}
 
@@ -485,10 +485,10 @@ func TestPrefixWildcardMapping(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
 		t.Fatalf("Error adding account export to client foo: %v", err)
 	}
-	if err := cbar.acc.addImport(fooAcc, "*", "pub.imports."); err != nil {
+	if err := cbar.acc.addStreamImport(fooAcc, "*", "pub.imports."); err != nil {
 		t.Fatalf("Error adding account import to client bar: %v", err)
 	}
 
@@ -538,10 +538,10 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
 		t.Fatalf("Error adding account export to client foo: %v", err)
 	}
-	if err := cbar.acc.addImport(fooAcc, "*", "pub.imports."); err != nil {
+	if err := cbar.acc.addStreamImport(fooAcc, "*", "pub.imports."); err != nil {
 		t.Fatalf("Error adding account import to client bar: %v", err)
 	}
 
@@ -592,23 +592,23 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 
 	// Add in the service import for the requests. Make it public.
-	if err := cfoo.acc.addService(nil, "test.request"); err != nil {
+	if err := cfoo.acc.addServiceExport(nil, "test.request"); err != nil {
 		t.Fatalf("Error adding account service import to client foo: %v", err)
 	}
 
-	// Test addRoute to make sure it requires accounts, and literalsubjects for both from and to subjects.
-	if err := cbar.acc.addRoute(nil, "foo", "test.request"); err != ErrMissingAccount {
+	// Test addServiceImport to make sure it requires accounts, and literalsubjects for both from and to subjects.
+	if err := cbar.acc.addServiceImport(nil, "foo", "test.request"); err != ErrMissingAccount {
 		t.Fatalf("Expected ErrMissingAccount but received %v.", err)
 	}
-	if err := cbar.acc.addRoute(fooAcc, "*", "test.request"); err != ErrInvalidSubject {
+	if err := cbar.acc.addServiceImport(fooAcc, "*", "test.request"); err != ErrInvalidSubject {
 		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
 	}
-	if err := cbar.acc.addRoute(fooAcc, "foo", "test..request."); err != ErrInvalidSubject {
+	if err := cbar.acc.addServiceImport(fooAcc, "foo", "test..request."); err != ErrInvalidSubject {
 		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
 	}
 
 	// Now add in the Route for request to be routed to the foo account.
-	if err := cbar.acc.addRoute(fooAcc, "foo", "test.request"); err != nil {
+	if err := cbar.acc.addServiceImport(fooAcc, "foo", "test.request"); err != nil {
 		t.Fatalf("Error adding account route to client bar: %v", err)
 	}
 
@@ -666,9 +666,9 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 	checkPayload(crBar, []byte("22\r\n"), t)
 
-	// Make sure we have no routes on fooAcc. An implicit one was created
-	/// for the response but should be removed when the response was processed.
-	if nr := fooAcc.numRoutes(); nr != 0 {
+	// Make sure we have no service imports on fooAcc. An implicit one was created
+	// for the response but should be removed when the response was processed.
+	if nr := fooAcc.numServiceRoutes(); nr != 0 {
 		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
 	}
 }
@@ -679,6 +679,6 @@ func BenchmarkNewRouteReply(b *testing.B) {
 	c, _, _ := newClientForServer(s)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.newRouteReply()
+		c.newServiceReply()
 	}
 }

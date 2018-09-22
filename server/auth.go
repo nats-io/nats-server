@@ -39,65 +39,78 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
-// Import mapping struct
-type importMap struct {
+// Import stream mapping struct
+type streamImport struct {
 	acc    *Account
 	from   string
 	prefix string
 }
 
-// Route mapping struct
-type routeMap struct {
+// Import service mapping struct
+type serviceImport struct {
 	acc  *Account
 	from string
 	to   string
 	ae   bool
 }
 
-// Accounts
-type Account struct {
-	Name     string
-	mu       sync.RWMutex
-	sl       *Sublist
-	imports  map[string]*importMap
-	exports  map[string]map[string]*Account
-	services map[string]map[string]*Account
-	// TODO(dlc) sync.Map may be better.
-	routes map[string]*routeMap
+type importMap struct {
+	streams  map[string]*streamImport
+	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
 }
 
-func (a *Account) addService(accounts []*Account, subject string) error {
+type exportMap struct {
+	streams  map[string]map[string]*Account
+	services map[string]map[string]*Account
+}
+
+// Accounts
+type Account struct {
+	Name    string
+	mu      sync.RWMutex
+	sl      *Sublist
+	imports importMap
+	exports exportMap
+	/*
+		imports  map[string]*importMap
+		exports  map[string]map[string]*Account
+		services map[string]map[string]*Account
+		routes   map[string]*routeMap // TODO(dlc) sync.Map may be better.
+	*/
+}
+
+func (a *Account) addServiceExport(accounts []*Account, subject string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a == nil {
 		return ErrMissingAccount
 	}
-	if a.services == nil {
-		a.services = make(map[string]map[string]*Account)
+	if a.exports.services == nil {
+		a.exports.services = make(map[string]map[string]*Account)
 	}
-	ma := a.services[subject]
+	ma := a.exports.services[subject]
 	if accounts != nil && ma == nil {
 		ma = make(map[string]*Account)
 	}
 	for _, a := range accounts {
 		ma[a.Name] = a
 	}
-	a.services[subject] = ma
+	a.exports.services[subject] = ma
 	return nil
 }
 
-// numRoutes returns the number of routes on this account.
-func (a *Account) numRoutes() int {
+// numServiceRoutes returns the number of service routes on this account.
+func (a *Account) numServiceRoutes() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return len(a.routes)
+	return len(a.imports.services)
 }
 
 // This will add a route to an account to send published messages / requests
 // to the destination account. From is the local subject to map, To is the
 // subject that will appear on the destination account. Destination will need
 // to have an import rule to allow access via addService.
-func (a *Account) addRoute(destination *Account, from, to string) error {
+func (a *Account) addServiceImport(destination *Account, from, to string) error {
 	if destination == nil {
 		return ErrMissingAccount
 	}
@@ -105,54 +118,54 @@ func (a *Account) addRoute(destination *Account, from, to string) error {
 		return ErrInvalidSubject
 	}
 	// First check to see if the account has authorized us to route to the "to" subject.
-	if !destination.checkRouteAuthorized(a, to) {
-		return ErrAccountRouteAuthorization
+	if !destination.checkServiceImportAuthorized(a, to) {
+		return ErrServiceImportAuthorization
 	}
 
-	return a.addImplicitRoute(destination, from, to, false)
+	return a.addImplicitServiceImport(destination, from, to, false)
 }
 
-// removeRoute will remove the route by subject.
-func (a *Account) removeRoute(subject string) {
+// removeServiceImport will remove the route by subject.
+func (a *Account) removeServiceImport(subject string) {
 	a.mu.Lock()
-	delete(a.routes, subject)
+	delete(a.imports.services, subject)
 	a.mu.Unlock()
 }
 
-// Add a route to a connect from an implicit route created for a response to a request.
+// Add a route to connect from an implicit route created for a response to a request.
 // This does no checks and should be only called by the msg processing code. Use addRoute
 // above if responding to user input or config, etc.
-func (a *Account) addImplicitRoute(destination *Account, from, to string, autoexpire bool) error {
+func (a *Account) addImplicitServiceImport(destination *Account, from, to string, autoexpire bool) error {
 	a.mu.Lock()
-	if a.routes == nil {
-		a.routes = make(map[string]*routeMap)
+	if a.imports.services == nil {
+		a.imports.services = make(map[string]*serviceImport)
 	}
-	a.routes[from] = &routeMap{destination, from, to, autoexpire}
+	a.imports.services[from] = &serviceImport{destination, from, to, autoexpire}
 	a.mu.Unlock()
 	return nil
 }
 
-// addImport will add in the import from a specific account.
-func (a *Account) addImport(account *Account, from, prefix string) error {
+// addStreamImport will add in the stream import from a specific account.
+func (a *Account) addStreamImport(account *Account, from, prefix string) error {
 	if account == nil {
 		return ErrMissingAccount
 	}
 
 	// First check to see if the account has authorized export of the subject.
-	if !account.checkImportAuthorized(a, from) {
-		return ErrAccountImportAuthorization
+	if !account.checkStreamImportAuthorized(a, from) {
+		return ErrStreamImportAuthorization
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.imports == nil {
-		a.imports = make(map[string]*importMap)
+	if a.imports.streams == nil {
+		a.imports.streams = make(map[string]*streamImport)
 	}
 	if prefix != "" && prefix[len(prefix)-1] != btsep {
 		prefix = prefix + string(btsep)
 	}
 	// TODO(dlc) - collisions, etc.
-	a.imports[from] = &importMap{account, from, prefix}
+	a.imports.streams[from] = &streamImport{account, from, prefix}
 	return nil
 }
 
@@ -161,14 +174,14 @@ var isPublicExport = []*Account(nil)
 
 // addExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can impoort.
-func (a *Account) addExport(subject string, accounts []*Account) error {
+func (a *Account) addStreamExport(subject string, accounts []*Account) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a == nil {
 		return ErrMissingAccount
 	}
-	if a.exports == nil {
-		a.exports = make(map[string]map[string]*Account)
+	if a.exports.streams == nil {
+		a.exports.streams = make(map[string]map[string]*Account)
 	}
 	var ma map[string]*Account
 	for _, aa := range accounts {
@@ -177,45 +190,22 @@ func (a *Account) addExport(subject string, accounts []*Account) error {
 		}
 		ma[aa.Name] = aa
 	}
-	a.exports[subject] = ma
+	a.exports.streams[subject] = ma
 	return nil
 }
 
-// Check if another account is authorized to route requests to us.
-func (a *Account) checkRouteAuthorized(account *Account, subject string) bool {
-	// Find the subject in the services list.
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	if a.services == nil || !IsValidLiteralSubject(subject) {
-		return false
-	}
-	// These are always literal subjects so just lookup.
-	am, ok := a.services[subject]
-	if !ok {
-		return false
-	}
-	// Check to see if we are public or if we need to search for the account.
-	if am == nil {
-		return true
-	}
-	// Check that we allow this account.
-	_, ok = am[account.Name]
-	return ok
-}
-
 // Check if another account is authorized to import from us.
-func (a *Account) checkImportAuthorized(account *Account, subject string) bool {
+func (a *Account) checkStreamImportAuthorized(account *Account, subject string) bool {
 	// Find the subject in the exports list.
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if a.exports == nil || !IsValidSubject(subject) {
+	if a.exports.streams == nil || !IsValidSubject(subject) {
 		return false
 	}
 
 	// Check direct match of subject first
-	am, ok := a.exports[subject]
+	am, ok := a.exports.streams[subject]
 	if ok {
 		// if am is nil that denotes a public export
 		if am == nil {
@@ -231,7 +221,7 @@ func (a *Account) checkImportAuthorized(account *Account, subject string) bool {
 	// exact matches above.
 
 	tokens := strings.Split(subject, tsep)
-	for subj, am := range a.exports {
+	for subj, am := range a.exports.streams {
 		if isSubsetMatch(tokens, subj) {
 			if am == nil {
 				return true
@@ -241,6 +231,29 @@ func (a *Account) checkImportAuthorized(account *Account, subject string) bool {
 		}
 	}
 	return false
+}
+
+// Check if another account is authorized to route requests to this service.
+func (a *Account) checkServiceImportAuthorized(account *Account, subject string) bool {
+	// Find the subject in the services list.
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.exports.services == nil || !IsValidLiteralSubject(subject) {
+		return false
+	}
+	// These are always literal subjects so just lookup.
+	am, ok := a.exports.services[subject]
+	if !ok {
+		return false
+	}
+	// Check to see if we are public or if we need to search for the account.
+	if am == nil {
+		return true
+	}
+	// Check that we allow this account.
+	_, ok = am[account.Name]
+	return ok
 }
 
 // Nkey is for multiple nkey based users
