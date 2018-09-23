@@ -284,6 +284,152 @@ func TestAccountParseConfigDuplicateUsers(t *testing.T) {
 	}
 }
 
+func TestAccountParseConfigImportsExports(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/accounts.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if la := len(opts.Accounts); la != 3 {
+		t.Fatalf("Expected to see 3 accounts in opts, got %d", la)
+	}
+	if lu := len(opts.Nkeys); lu != 4 {
+		t.Fatalf("Expected 4 total Nkey users, got %d", lu)
+	}
+	if lu := len(opts.Users); lu != 0 {
+		t.Fatalf("Expected no Users, got %d", lu)
+	}
+	var natsAcc, synAcc *Account
+	for _, acc := range opts.Accounts {
+		if acc.Name == "nats.io" {
+			natsAcc = acc
+		}
+		if acc.Name == "synadia" {
+			synAcc = acc
+		}
+	}
+	if natsAcc == nil {
+		t.Fatalf("Error retrieving account for 'nats.io'")
+	}
+	if natsAcc.Nkey != "AB5UKNPVHDWBP5WODG742274I3OGY5FM3CBIFCYI4OFEH7Y23GNZPXFE" {
+		t.Fatalf("Expected nats account to have an nkey, got %q\n", natsAcc.Nkey)
+	}
+	// Check user assigned to the correct account.
+	for _, nk := range opts.Nkeys {
+		if nk.Nkey == "UBRYMDSRTC6AVJL6USKKS3FIOE466GMEU67PZDGOWYSYHWA7GSKO42VW" {
+			if nk.Account != natsAcc {
+				t.Fatalf("Expected user to be associated with natsAcc, got %q\n", nk.Account.Name)
+			}
+			break
+		}
+	}
+
+	// Now check for the imports and exports of streams and services.
+	if lis := len(natsAcc.imports.streams); lis != 2 {
+		t.Fatalf("Expected 2 imported streams, got %d\n", lis)
+	}
+	if lis := len(natsAcc.imports.services); lis != 1 {
+		t.Fatalf("Expected 1 imported service, got %d\n", lis)
+	}
+	if les := len(natsAcc.exports.services); les != 1 {
+		t.Fatalf("Expected 1 exported service, got %d\n", les)
+	}
+	if les := len(natsAcc.exports.streams); les != 0 {
+		t.Fatalf("Expected no exported streams, got %d\n", les)
+	}
+
+	if synAcc == nil {
+		t.Fatalf("Error retrieving account for 'synadia'")
+	}
+
+	if lis := len(synAcc.imports.streams); lis != 0 {
+		t.Fatalf("Expected no imported streams, got %d\n", lis)
+	}
+	if lis := len(synAcc.imports.services); lis != 1 {
+		t.Fatalf("Expected 1 imported service, got %d\n", lis)
+	}
+	if les := len(synAcc.exports.services); les != 2 {
+		t.Fatalf("Expected 2 exported service, got %d\n", les)
+	}
+	if les := len(synAcc.exports.streams); les != 2 {
+		t.Fatalf("Expected 2 exported streams, got %d\n", les)
+	}
+}
+
+func TestImportExportConfigFailures(t *testing.T) {
+	// Import from unknow account
+	cf := createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        imports = [{stream: {account: "synadia", subject:"foo"}}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with import from unknown account")
+	}
+	// Import a service with no account.
+	cf = createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        imports = [{service: subject:"foo.*"}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with import of a service with no account")
+	}
+	// Import a service with a wildcard subject.
+	cf = createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        imports = [{service: {account: "nats.io", subject:"foo.*"}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with import of a service with wildcard subject")
+	}
+	// Export with unknown keyword.
+	cf = createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        exports = [{service: "foo.*", wat:true}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with export with unknown keyword")
+	}
+	// Import with unknown keyword.
+	cf = createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        imports = [{stream: {account: nats.io, subject: "foo.*"}, wat:true}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with import with unknown keyword")
+	}
+	// Export with an account.
+	cf = createConfFile(t, []byte(`
+    accounts {
+      nats.io {
+        exports = [{service: {account: nats.io, subject:"foo.*"}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with export with account")
+	}
+}
+
 func TestImportAuthorized(t *testing.T) {
 	_, foo, bar := simpleAccountServer(t)
 
@@ -592,7 +738,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 
 	// Add in the service import for the requests. Make it public.
-	if err := cfoo.acc.addServiceExport(nil, "test.request"); err != nil {
+	if err := cfoo.acc.addServiceExport("test.request", nil); err != nil {
 		t.Fatalf("Error adding account service import to client foo: %v", err)
 	}
 

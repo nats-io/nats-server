@@ -309,11 +309,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "logtime":
 			o.Logtime = v.(bool)
 		case "accounts":
-			if pedantic {
-				err = parseAccounts(tk, o)
-			} else {
-				err = parseAccounts(v, o)
-			}
+			err = parseAccounts(v, o)
 			if err != nil {
 				return err
 			}
@@ -606,14 +602,40 @@ func setClusterPermissions(opts *ClusterOpts, perms *Permissions) {
 	}
 }
 
+// Temp structures to hold account import and export defintions since they need
+// to be processed after being parsed.
+type export struct {
+	acc  *Account
+	sub  string
+	accs []string
+}
+
+type importStream struct {
+	acc *Account
+	an  string
+	sub string
+	pre string
+}
+
+type importService struct {
+	acc *Account
+	an  string
+	sub string
+	to  string
+}
+
 // parseAccounts will parse the different accounts syntax.
 func parseAccounts(v interface{}, opts *Options) error {
-	var pedantic = opts.CheckConfig
-	var tk token
+	var (
+		pedantic       = opts.CheckConfig
+		importStreams  []*importStream
+		importServices []*importService
+		exportStreams  []*export
+		exportServices []*export
+	)
 	_, v = unwrapValue(v)
-	uorn := make(map[string]struct{})
-
 	switch v.(type) {
+	// Simple array of account names.
 	case []interface{}, []string:
 		m := make(map[string]struct{}, len(v.([]interface{})))
 		for _, name := range v.([]interface{}) {
@@ -621,27 +643,47 @@ func parseAccounts(v interface{}, opts *Options) error {
 			if _, ok := m[ns]; ok {
 				return fmt.Errorf("Duplicate Account Entry: %s", ns)
 			}
-			opts.Accounts = append(opts.Accounts, &Account{Name: name.(string)})
+			opts.Accounts = append(opts.Accounts, &Account{Name: ns})
 			m[ns] = struct{}{}
 		}
+	// More common map entry
 	case map[string]interface{}:
-		m := make(map[string]struct{}, len(v.(map[string]interface{})))
-		for name, mv := range v.(map[string]interface{}) {
-			_, mv = unwrapValue(mv)
-			if _, ok := m[name]; ok {
-				return fmt.Errorf("Duplicate Account Entry: %s", name)
-			}
-			uv, ok := mv.(map[string]interface{})
+		// Track users across accounts, must be unique across
+		// accounts and nkeys vs users.
+		uorn := make(map[string]struct{})
+		for aname, mv := range v.(map[string]interface{}) {
+			_, amv := unwrapValue(mv)
+			// These should be maps.
+			mv, ok := amv.(map[string]interface{})
 			if !ok {
-				return fmt.Errorf("Expected map entry for users")
+				return fmt.Errorf("Expected map entries for accounts")
 			}
-			acc := &Account{Name: name}
+			acc := &Account{Name: aname}
 			opts.Accounts = append(opts.Accounts, acc)
-			m[name] = struct{}{}
 
-			for k, v := range uv {
-				tk, mv = unwrapValue(v)
+			for k, v := range mv {
+				tk, mv := unwrapValue(v)
 				switch strings.ToLower(k) {
+				case "nkey":
+					nk, ok := mv.(string)
+					if !ok || !nkeys.IsValidPublicAccountKey(nk) {
+						return fmt.Errorf("Not a valid public nkey for an account: %q", v)
+					}
+					acc.Nkey = nk
+				case "imports":
+					streams, services, err := parseAccountImports(mv, acc, pedantic)
+					if err != nil {
+						return err
+					}
+					importStreams = append(importStreams, streams...)
+					importServices = append(importServices, services...)
+				case "exports":
+					streams, services, err := parseAccountExports(mv, acc, pedantic)
+					if err != nil {
+						return err
+					}
+					exportStreams = append(exportStreams, streams...)
+					exportServices = append(exportServices, services...)
 				case "users":
 					var (
 						users []*User
@@ -673,13 +715,307 @@ func parseAccounts(v interface{}, opts *Options) error {
 						u.Account = acc
 					}
 					opts.Nkeys = append(opts.Nkeys, nkeys...)
+				default:
+					if pedantic && tk != nil && !tk.IsUsedVariable() {
+						return &unknownConfigFieldErr{
+							field:      k,
+							token:      tk,
+							configFile: tk.SourceFile(),
+						}
+					}
 				}
 			}
 		}
-	default:
-		return fmt.Errorf("Expected an array or map of account entries, got %T", v)
 	}
+
+	// Parse Imports and Exports here after all accounts defined.
+	// Do exports first since they need to be defined for imports to succeed
+	// since we do permissions checks.
+
+	// Create a lookup map for accounts lookups.
+	am := make(map[string]*Account, len(opts.Accounts))
+	for _, a := range opts.Accounts {
+		am[a.Name] = a
+	}
+	// Do stream exports
+	for _, stream := range exportStreams {
+		// Make array of accounts if applicable.
+		var accounts []*Account
+		for _, an := range stream.accs {
+			ta := am[an]
+			if ta == nil {
+				return fmt.Errorf("%q account not defined for stream export", an)
+			}
+			accounts = append(accounts, ta)
+		}
+		if err := stream.acc.addStreamExport(stream.sub, accounts); err != nil {
+			return fmt.Errorf("Error adding stream export %q: %v", stream.sub, err)
+		}
+	}
+	for _, service := range exportServices {
+		// Make array of accounts if applicable.
+		var accounts []*Account
+		for _, an := range service.accs {
+			ta := am[an]
+			if ta == nil {
+				return fmt.Errorf("%q account not defined for service export", an)
+			}
+			accounts = append(accounts, ta)
+		}
+		if err := service.acc.addServiceExport(service.sub, accounts); err != nil {
+			return fmt.Errorf("Error adding service export %q: %v", service.sub, err)
+		}
+	}
+	for _, stream := range importStreams {
+		ta := am[stream.an]
+		if ta == nil {
+			return fmt.Errorf("%q account not defined for stream import", stream.an)
+		}
+		if err := stream.acc.addStreamImport(ta, stream.sub, stream.pre); err != nil {
+			return fmt.Errorf("Error adding stream import %q: %v", stream.sub, err)
+		}
+	}
+	for _, service := range importServices {
+		ta := am[service.an]
+		if ta == nil {
+			return fmt.Errorf("%q account not defined for service import", service.an)
+		}
+		if service.to == "" {
+			service.to = service.sub
+		}
+		if err := service.acc.addServiceImport(ta, service.to, service.sub); err != nil {
+			return fmt.Errorf("Error adding service import %q: %v", service.sub, err)
+		}
+	}
+
 	return nil
+}
+
+// Parse the account imports
+func parseAccountExports(v interface{}, acc *Account, pedantic bool) ([]*export, []*export, error) {
+	// This should be an array of objects/maps.
+	_, v = unwrapValue(v)
+	ims, ok := v.([]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("Exports should be an array, got %T", v)
+	}
+
+	var services []*export
+	var streams []*export
+
+	for _, v := range ims {
+		_, mv := unwrapValue(v)
+		io, ok := mv.(map[string]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("Export Items should be a map with type entry, got %T", mv)
+		}
+		// Should have stream or service
+		stream, service, err := parseExportStreamOrService(io, pedantic)
+		if err != nil {
+			return nil, nil, err
+		}
+		if service != nil {
+			service.acc = acc
+			services = append(services, service)
+		}
+		if stream != nil {
+			stream.acc = acc
+			streams = append(streams, stream)
+		}
+	}
+	return streams, services, nil
+}
+
+// Parse the account imports
+func parseAccountImports(v interface{}, acc *Account, pedantic bool) ([]*importStream, []*importService, error) {
+	// This should be an array of objects/maps.
+	_, v = unwrapValue(v)
+	ims, ok := v.([]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("Imports should be an array, got %T", v)
+	}
+
+	var services []*importService
+	var streams []*importStream
+
+	for _, v := range ims {
+		_, mv := unwrapValue(v)
+		io, ok := mv.(map[string]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("Import Items should be a map with type entry, got %T", mv)
+		}
+		// Should have stream or service
+		stream, service, err := parseImportStreamOrService(io, pedantic)
+		if err != nil {
+			return nil, nil, err
+		}
+		if service != nil {
+			service.acc = acc
+			services = append(services, service)
+		}
+		if stream != nil {
+			stream.acc = acc
+			streams = append(streams, stream)
+		}
+	}
+	return streams, services, nil
+}
+
+// Helper to parse an embedded account description for imported services or streams.
+func parseAccount(v map[string]interface{}, pedantic bool) (string, string, error) {
+	var accountName, subject string
+	for mk, mv := range v {
+		tk, mv := unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "account":
+			accountName = mv.(string)
+		case "subject":
+			subject = mv.(string)
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return "", "", &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
+		}
+	}
+	if accountName == "" || subject == "" {
+		return "", "", fmt.Errorf("Expect an account name and a subject")
+	}
+	return accountName, subject, nil
+}
+
+// Parse an import stream or service.
+// e.g.
+//   {stream: "public.>"} # No accounts means public.
+//   {stream: "synadia.private.>", accounts: [cncf, natsio]}
+//   {service: "pub.request"} # No accounts means public.
+//   {service: "pub.special.request", accounts: [nats.io]}
+func parseExportStreamOrService(v map[string]interface{}, pedantic bool) (*export, *export, error) {
+	var (
+		curStream  *export
+		curService *export
+		accounts   []string
+	)
+
+	for mk, mv := range v {
+		tk, mv := unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "stream":
+			if curService != nil {
+				return nil, nil, fmt.Errorf("Detected stream but already saw a service: %+v", mv)
+			}
+			curStream = &export{sub: mv.(string)}
+			if accounts != nil {
+				curStream.accs = accounts
+			}
+		case "service":
+			if curStream != nil {
+				return nil, nil, fmt.Errorf("Detected service but already saw a stream: %+v", mv)
+			}
+			curService = &export{sub: mv.(string)}
+			if accounts != nil {
+				curService.accs = accounts
+			}
+		case "accounts":
+			for _, iv := range mv.([]interface{}) {
+				_, mv := unwrapValue(iv)
+				accounts = append(accounts, mv.(string))
+			}
+			if curStream != nil {
+				curStream.accs = accounts
+			} else if curService != nil {
+				curService.accs = accounts
+			}
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, nil, &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
+			return nil, nil, fmt.Errorf("Unknown field %q parsing export service or stream", mk)
+		}
+
+	}
+	return curStream, curService, nil
+}
+
+// Parse an import stream or service.
+// e.g.
+//   {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
+//   {stream: {account: "synadia", subject:"synadia.private.*"}}
+//   {service: {account: "synadia", subject: "pub.special.request"}, subject: "synadia.request"}
+func parseImportStreamOrService(v map[string]interface{}, pedantic bool) (*importStream, *importService, error) {
+	var (
+		curStream  *importStream
+		curService *importService
+		pre, to    string
+	)
+
+	for mk, mv := range v {
+		tk, mv := unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "stream":
+			if curService != nil {
+				return nil, nil, fmt.Errorf("Detected stream but already saw a service: %+v", mv)
+			}
+			ac, ok := mv.(map[string]interface{})
+			if !ok {
+				return nil, nil, fmt.Errorf("Stream entry should be an account map, got %T", mv)
+			}
+			// Make sure this is a map with account and subject
+			accountName, subject, err := parseAccount(ac, pedantic)
+			if err != nil {
+				return nil, nil, err
+			}
+			curStream = &importStream{an: accountName, sub: subject}
+			if pre != "" {
+				curStream.pre = pre
+			}
+		case "service":
+			if curStream != nil {
+				return nil, nil, fmt.Errorf("Detected service but already saw a stream: %+v", mv)
+			}
+			ac, ok := mv.(map[string]interface{})
+			if !ok {
+				return nil, nil, fmt.Errorf("Service entry should be an account map, got %T", mv)
+			}
+			// Make sure this is a map with account and subject
+			accountName, subject, err := parseAccount(ac, pedantic)
+			if err != nil {
+				return nil, nil, err
+			}
+			curService = &importService{an: accountName, sub: subject}
+			if to != "" {
+				curService.to = to
+			}
+		case "prefix":
+			pre = mv.(string)
+			if curStream != nil {
+				curStream.pre = pre
+			}
+		case "to":
+			to = mv.(string)
+			if curService != nil {
+				curService.to = to
+			}
+		default:
+			if pedantic && tk != nil && !tk.IsUsedVariable() {
+				return nil, nil, &unknownConfigFieldErr{
+					field:      mk,
+					token:      tk,
+					configFile: tk.SourceFile(),
+				}
+			}
+			return nil, nil, fmt.Errorf("Unknown field %q parsing import service or stream", mk)
+		}
+
+	}
+	return curStream, curService, nil
 }
 
 // Helper function to parse Authorization configs.

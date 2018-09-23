@@ -39,6 +39,16 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// Accounts
+type Account struct {
+	Name    string
+	Nkey    string
+	mu      sync.RWMutex
+	sl      *Sublist
+	imports importMap
+	exports exportMap
+}
+
 // Import stream mapping struct
 type streamImport struct {
 	acc    *Account
@@ -64,22 +74,7 @@ type exportMap struct {
 	services map[string]map[string]*Account
 }
 
-// Accounts
-type Account struct {
-	Name    string
-	mu      sync.RWMutex
-	sl      *Sublist
-	imports importMap
-	exports exportMap
-	/*
-		imports  map[string]*importMap
-		exports  map[string]map[string]*Account
-		services map[string]map[string]*Account
-		routes   map[string]*routeMap // TODO(dlc) sync.Map may be better.
-	*/
-}
-
-func (a *Account) addServiceExport(accounts []*Account, subject string) error {
+func (a *Account) addServiceExport(subject string, accounts []*Account) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a == nil {
@@ -113,6 +108,10 @@ func (a *Account) numServiceRoutes() int {
 func (a *Account) addServiceImport(destination *Account, from, to string) error {
 	if destination == nil {
 		return ErrMissingAccount
+	}
+	// Empty means use from.
+	if to == "" {
+		to = from
 	}
 	if !IsValidLiteralSubject(from) || !IsValidLiteralSubject(to) {
 		return ErrInvalidSubject
