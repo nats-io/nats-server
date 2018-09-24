@@ -857,9 +857,12 @@ func (c *client) maxPayloadViolation(sz int, max int64) {
 }
 
 // queueOutbound queues data for client/route connections.
-// Return pending length.
+// Return if the data is referenced or not. If referenced, the caller
+// should not reuse the `data` array.
 // Lock should be held.
-func (c *client) queueOutbound(data []byte) {
+func (c *client) queueOutbound(data []byte) bool {
+	// Assume data will not be referenced
+	referenced := false
 	// Add to pending bytes total.
 	c.out.pb += int64(len(data))
 
@@ -869,7 +872,7 @@ func (c *client) queueOutbound(data []byte) {
 		c.clearConnection(SlowConsumerPendingBytes)
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
-		return
+		return false
 	}
 
 	if c.out.p == nil && len(data) < maxBufSize {
@@ -902,6 +905,7 @@ func (c *client) queueOutbound(data []byte) {
 		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) <
 		if len(data) > maxBufSize {
 			c.out.nb = append(c.out.nb, data)
+			referenced = true
 		} else {
 			// We will copy to primary.
 			if c.out.p == nil {
@@ -925,6 +929,7 @@ func (c *client) queueOutbound(data []byte) {
 	} else {
 		c.out.p = append(c.out.p, data...)
 	}
+	return referenced
 }
 
 // Assume the lock is held upon entry.
@@ -993,6 +998,12 @@ func (c *client) processPing() {
 		return
 	}
 	c.sendPong()
+
+	// If not a CLIENT, we are done
+	if c.typ != CLIENT {
+		c.mu.Unlock()
+		return
+	}
 
 	// The CONNECT should have been received, but make sure it
 	// is so before proceeding
@@ -1668,19 +1679,18 @@ func (c *client) processPingTimer() {
 
 	c.Debugf("%s Ping Timer", c.typeString())
 
-	// Check for violation
-	if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
-		c.Debugf("Stale Client Connection - Closing")
-		c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
-		c.clearConnection(StaleConnection)
-		return
-	}
-
 	// If we have had activity within the PingInterval no
 	// need to send a ping.
 	if delta := time.Since(c.last); delta < c.srv.getOpts().PingInterval {
 		c.Debugf("Delaying PING due to activity %v ago", delta.Round(time.Second))
 	} else {
+		// Check for violation
+		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
+			c.Debugf("Stale Client Connection - Closing")
+			c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
+			c.clearConnection(StaleConnection)
+			return
+		}
 		// Send PING
 		c.sendPing()
 	}
@@ -1825,12 +1835,9 @@ func (c *client) closeConnection(reason ClosedState) {
 
 		// Remove clients subscriptions.
 		srv.sl.RemoveBatch(subs)
-		if c.typ != ROUTER {
-			for _, sub := range subs {
-				// Forward on unsubscribes if we are not
-				// a router ourselves.
-				srv.broadcastUnSubscribe(sub)
-			}
+		if c.typ == CLIENT {
+			// Forward UNSUBs protocols to all routes
+			srv.broadcastUnSubscribeBatch(subs)
 		}
 	}
 

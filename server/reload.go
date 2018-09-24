@@ -766,7 +766,6 @@ func (s *Server) reloadClusterPermissions() {
 
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
-		sub.client.mu.Lock()
 		// Get all subs that can now be imported
 		couldImportThen := oldPermsTester.canImport(sub.subject)
 		canImportNow := newPermsTester.canImport(sub.subject)
@@ -780,7 +779,6 @@ func (s *Server) reloadClusterPermissions() {
 			// we can't so we need to send an UNSUB protocol
 			subsNeedUNSUB = append(subsNeedUNSUB, sub)
 		}
-		sub.client.mu.Unlock()
 	}
 
 	for _, route := range routes {
@@ -805,19 +803,10 @@ func (s *Server) reloadClusterPermissions() {
 		// that we now possibly allow with a change of Export permissions.
 		route.sendInfo(infoJSON)
 		// Now send SUB and UNSUB protocols as needed.
-		for _, sub := range subsNeedSUB {
-			route.queueOutbound([]byte(fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))))
-			if route.out.pb > int64(route.out.sz*2) {
-				route.flushSignal()
-			}
+		closed := route.sendRouteSubProtos(subsNeedSUB, nil)
+		if !closed {
+			route.sendRouteUnSubProtos(subsNeedUNSUB, nil)
 		}
-		for _, sub := range subsNeedUNSUB {
-			route.queueOutbound([]byte(fmt.Sprintf(unsubProto, routeSid(sub))))
-			if route.out.pb > int64(route.out.sz*2) {
-				route.flushSignal()
-			}
-		}
-		route.flushSignal()
 		route.mu.Unlock()
 	}
 	// Remove as a batch all the subs that we have removed from each route.
