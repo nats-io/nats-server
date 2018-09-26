@@ -872,7 +872,7 @@ func (c *client) queueOutbound(data []byte) bool {
 		c.clearConnection(SlowConsumerPendingBytes)
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
-		return false
+		return referenced
 	}
 
 	if c.out.p == nil && len(data) < maxBufSize {

@@ -612,11 +612,18 @@ func (c *client) sendRouteUnSubProtos(subs []*subscription, filter func(sub *sub
 // Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
 // Lock is held on entry.
 func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto bool, filter func(sub *subscription) bool) bool {
+	const staticBufSize = maxBufSize * 2
 	var (
-		_buf   [maxBufSize]byte
-		buf    = _buf[:0]
+		_buf   [staticBufSize]byte        // array on stack
+		buf    = _buf[:0]                 // our buffer will initially point to the stack buffer
+		mbs    = staticBufSize            // max size of the buffer
+		mpMax  = int(c.out.mp * 90 / 100) // 90% of max_pending
 		closed bool
 	)
+	// We need to make sure that we stay below the user defined max pending bytes.
+	if mbs > mpMax {
+		mbs = mpMax
+	}
 	for _, sub := range subs {
 		if filter != nil && !filter(sub) {
 			continue
@@ -633,22 +640,21 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto bool
 		}
 		// rsid + "\r\n"
 		curSize += len(rsid) + 2
-		if curSize >= maxBufSize {
+		if curSize >= mbs {
 			if c.queueOutbound(buf) {
-				buf = make([]byte, 0, maxBufSize)
+				// Need to allocate new array
+				buf = make([]byte, 0, mbs)
 			} else {
+				// We can reuse previous buffer
 				buf = buf[:0]
 			}
-			if c.out.pb >= int64(c.out.sz*2) {
-				// Update last activity because flushOutbound() will release
-				// the lock, which could cause pingTimer to think that this
-				// connection is stale otherwise.
-				c.last = time.Now()
-				c.flushOutbound()
-				closed = c.flags.isSet(clearConnection)
-				if closed {
-					break
-				}
+			// Update last activity because flushOutbound() will release
+			// the lock, which could cause pingTimer to think that this
+			// connection is stale otherwise.
+			c.last = time.Now()
+			c.flushOutbound()
+			if closed = c.flags.isSet(clearConnection); closed {
+				break
 			}
 		}
 		if isSubProto {
@@ -1028,8 +1034,11 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 // to all connected routes. Used when a client connection is closed. Note
 // that when that happens, the subscriptions' MAX have been cleared (force unsub).
 func (s *Server) broadcastUnSubscribeBatch(subs []*subscription) {
+	var (
+		_routes [32]*client
+		routes  = _routes[:0]
+	)
 	s.mu.Lock()
-	var routes []*client
 	for _, route := range s.routes {
 		routes = append(routes, route)
 	}

@@ -1089,3 +1089,32 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 	// Now check for permissions set on server initiating the route connection
 	check(t, srvb)
 }
+
+func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
+	optsA := DefaultOptions()
+	optsA.MaxPending = 1024
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	numSubs := 1000
+	for i := 0; i < numSubs; i++ {
+		nc.Subscribe("foo.bar", func(_ *nats.Msg) {})
+	}
+	checkExpectedSubs(t, numSubs, srvA)
+
+	// Now create a route between B and A
+	optsB := DefaultOptions()
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Check that all subs have been sent ok
+	checkExpectedSubs(t, numSubs, srvA, srvB)
+}
