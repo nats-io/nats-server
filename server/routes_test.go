@@ -985,12 +985,15 @@ func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
 
 	// Ensure that maps are empty
 	checkMap := func(s *Server) {
-		s.grMu.Lock()
-		l := len(s.grTmpClients)
-		s.grMu.Unlock()
-		if l != 0 {
-			stackFatalf(t, "grTmpClients map should be empty, got %v", l)
-		}
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			s.grMu.Lock()
+			l := len(s.grTmpClients)
+			s.grMu.Unlock()
+			if l != 0 {
+				return fmt.Errorf("grTmpClients map should be empty, got %v", l)
+			}
+			return nil
+		})
 	}
 	checkMap(srvA)
 	checkMap(srvB)

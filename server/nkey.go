@@ -26,6 +26,8 @@ const (
 // nonceRequired tells us if we should send a nonce.
 // Assumes server lock is held
 func (s *Server) nonceRequired() bool {
+	s.optsMu.RLock()
+	defer s.optsMu.RUnlock()
 	return len(s.opts.Nkeys) > 0
 }
 
