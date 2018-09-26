@@ -305,7 +305,8 @@ func (s *Server) newAccountsAllowed() bool {
 	return s.opts.AllowNewAccounts
 }
 
-func (s *Server) LookupOrRegisterAccount(name string) (*Account, bool) {
+// LookupOrRegisterAccount will return the given account if known or create a new entry.
+func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if acc, ok := s.accounts[name]; ok {
@@ -835,7 +836,6 @@ func (s *Server) copyInfo() Info {
 
 func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
-	// TODO(dlc) - This can get expensive.
 	opts := s.getOpts()
 
 	max_pay := int64(opts.MaxPayload)

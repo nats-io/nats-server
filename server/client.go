@@ -335,13 +335,42 @@ func (c *client) registerWithAccount(acc *Account) error {
 }
 
 // RegisterUser allows auth to call back into a new client
-// with the authenticated user. This is used to map any permissions
-// into the client.
+// with the authenticated user. This is used to map
+// any permissions into the client and setup accounts.
 func (c *client) RegisterUser(user *User) {
-	// Process Permissions and map into client connection structures.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Register with proper account and sublist.
+	if user.Account != nil {
+		c.acc = user.Account
+		c.sl = c.acc.sl
+	}
+
+	// Assign permissions.
+	if user.Permissions == nil {
+		// Reset perms to nil in case client previously had them.
+		c.perms = nil
+		return
+	}
+
+	c.setPermissions(user.Permissions)
+}
+
+// RegisterNkey allows auth to call back into a new nkey
+// client with the authenticated user. This is used to map
+// any permissions into the client and setup accounts.
+func (c *client) RegisterNkeyUser(user *NkeyUser) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Register with proper account and sublist.
+	if user.Account != nil {
+		c.acc = user.Account
+		c.sl = c.acc.sl
+	}
+
+	// Assign permissions.
 	if user.Permissions == nil {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
@@ -1339,7 +1368,6 @@ func (c *client) processSub(argo []byte) (err error) {
 
 // Check to see if we need to create a shadow subscription due to imports
 // in other accounts.
-// Assume lock is held
 func (c *client) checkAccountImports(sub *subscription) error {
 	c.mu.Lock()
 	acc := c.acc
@@ -1967,28 +1995,38 @@ func (c *client) typeString() string {
 // longer authorized, e.g. due to a config reload.
 func (c *client) removeUnauthorizedSubs() {
 	c.mu.Lock()
-	if c.perms == nil {
+	if c.perms == nil || c.sl == nil {
 		c.mu.Unlock()
 		return
 	}
 	srv := c.srv
-	subs := make(map[string]*subscription, len(c.subs))
-	for sid, sub := range c.subs {
-		subs[sid] = sub
+
+	var subsa [32]*subscription
+	subs := subsa[:0]
+	for _, sub := range c.subs {
+		subs = append(subs, sub)
+	}
+
+	var removedSubs [32]*subscription
+	removed := removedSubs[:0]
+
+	for _, sub := range subs {
+		if !c.canSubscribe(sub.subject) {
+			removed = append(removed, sub)
+			delete(c.subs, string(sub.sid))
+		}
 	}
 	c.mu.Unlock()
 
-	for sid, sub := range subs {
-		if c.sl != nil && !c.canSubscribe(sub.subject) {
-			_ = c.sl.Remove(sub)
-			c.mu.Lock()
-			delete(c.subs, sid)
-			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
-				sub.subject, sub.sid))
-			srv.Noticef("Removed sub %q for user %q - not authorized",
-				string(sub.subject), c.opts.Username)
-		}
+	// Remove unauthorized clients subscriptions.
+	c.sl.RemoveBatch(removed)
+
+	// Report back to client and logs.
+	for _, sub := range removed {
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
+			sub.subject, sub.sid))
+		srv.Noticef("Removed sub %q for user %q - not authorized",
+			string(sub.subject), c.opts.Username)
 	}
 }
 

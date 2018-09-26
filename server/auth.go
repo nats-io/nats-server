@@ -64,11 +64,13 @@ type serviceImport struct {
 	ae   bool
 }
 
+// importMap tracks the imported streams and services.
 type importMap struct {
 	streams  map[string]*streamImport
 	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
 }
 
+// exportMap tracks the exported streams and services.
 type exportMap struct {
 	streams  map[string]map[string]*Account
 	services map[string]map[string]*Account
@@ -364,7 +366,7 @@ func (s *Server) checkAuthforWarnings() {
 	}
 	if warn {
 		// Warning about using plaintext passwords.
-		s.Warnf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
+		s.Warnf("Plaintext passwords detected, use nkeys or bcrypt.")
 	}
 }
 
@@ -480,6 +482,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		if err := pub.Verify(c.nonce, sig); err != nil {
 			return false
 		}
+		c.RegisterNkeyUser(nkey)
 		return true
 	}
 

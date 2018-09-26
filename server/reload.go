@@ -762,7 +762,8 @@ func (s *Server) reloadClusterPermissions() {
 		subsNeedUNSUB    []*subscription
 		deleteRoutedSubs []*subscription
 	)
-	s.sl.localSubs(&localSubs)
+	// FIXME(dlc) - Change for accounts.
+	s.gsl.localSubs(&localSubs)
 
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
@@ -810,7 +811,8 @@ func (s *Server) reloadClusterPermissions() {
 		route.mu.Unlock()
 	}
 	// Remove as a batch all the subs that we have removed from each route.
-	s.sl.RemoveBatch(deleteRoutedSubs)
+	// FIXME(dlc) - Change for accounts.
+	s.gsl.RemoveBatch(deleteRoutedSubs)
 }
 
 // validateClusterOpts ensures the new ClusterOpts does not change host or

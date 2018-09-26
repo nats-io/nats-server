@@ -14,10 +14,14 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/nats-io/nkeys"
 )
 
 func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
@@ -45,9 +49,6 @@ func TestRegisterDuplicateAccounts(t *testing.T) {
 
 func TestAccountIsolation(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
-	if fooAcc == nil || barAcc == nil {
-		t.Fatalf("Error retrieving accounts for 'foo' and 'bar'")
-	}
 	cfoo, crFoo, _ := newClientForServer(s)
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error register client with 'foo' account: %v", err)
@@ -135,10 +136,18 @@ func TestNewAccountsFromClients(t *testing.T) {
 	opts.AllowNewAccounts = true
 	s = New(&opts)
 
-	c, _, _ = newClientForServer(s)
+	c, cr, _ = newClientForServer(s)
 	err := c.parse(connectOp)
 	if err != nil {
-		t.Fatalf("Received an error trying to create an account: %v", err)
+		t.Fatalf("Received an error trying to connect: %v", err)
+	}
+	go c.parse([]byte("PING\r\n"))
+	l, err = cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading response for client from server: %v", err)
+	}
+	if !strings.HasPrefix(l, "PONG\r\n") {
+		t.Fatalf("PONG response incorrect: %q", l)
 	}
 }
 
@@ -255,7 +264,6 @@ func TestAccountParseConfig(t *testing.T) {
 		if u.Username == "derek" {
 			if u.Account != natsAcc {
 				t.Fatalf("Expected to see the 'nats.io' account, but received %+v", u.Account)
-				break
 			}
 		}
 	}
@@ -302,8 +310,7 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	for _, acc := range opts.Accounts {
 		if acc.Name == "nats.io" {
 			natsAcc = acc
-		}
-		if acc.Name == "synadia" {
+		} else if acc.Name == "synadia" {
 			synAcc = acc
 		}
 	}
@@ -420,7 +427,7 @@ func TestImportExportConfigFailures(t *testing.T) {
 	cf = createConfFile(t, []byte(`
     accounts {
       nats.io {
-        exports = [{service: {account: nats.io, subject:"foo.*"}]
+        exports = [{service: {account: nats.io, subject:"foo.*"}}]
       }
     }
     `))
@@ -490,6 +497,7 @@ func TestImportAuthorized(t *testing.T) {
 }
 
 func TestSimpleMapping(t *testing.T) {
+	t.Helper()
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
 
@@ -555,7 +563,7 @@ func TestSimpleMapping(t *testing.T) {
 
 	l, err = crBar.ReadString('\n')
 	if err != nil {
-		t.Fatalf("Error reading from client 'baz': %v", err)
+		t.Fatalf("Error reading from client 'bar': %v", err)
 	}
 	checkMsg(l, "2")
 	checkPayload(crBar, []byte("hello\r\n"), t)
@@ -578,11 +586,11 @@ func TestNoPrefixWildcardMapping(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
-		t.Fatalf("Error adding account export to client foo: %v", err)
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding stream export to client foo: %v", err)
 	}
 	if err := cbar.acc.addStreamImport(fooAcc, "*", ""); err != nil {
-		t.Fatalf("Error adding account import to client bar: %v", err)
+		t.Fatalf("Error adding stream import to client bar: %v", err)
 	}
 
 	// Normal Subscription on bar client for literal "foo".
@@ -631,11 +639,12 @@ func TestPrefixWildcardMapping(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
-		t.Fatalf("Error adding account export to client foo: %v", err)
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding stream export to client foo: %v", err)
 	}
+	// Checking that trailing '.' is accepted, tested that it is auto added above.
 	if err := cbar.acc.addStreamImport(fooAcc, "*", "pub.imports."); err != nil {
-		t.Fatalf("Error adding account import to client bar: %v", err)
+		t.Fatalf("Error adding stream import to client bar: %v", err)
 	}
 
 	// Normal Subscription on bar client for wildcard.
@@ -684,11 +693,11 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil { // Public with no accounts defined.
-		t.Fatalf("Error adding account export to client foo: %v", err)
+	if err := cfoo.acc.addStreamExport(">", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding stream export to client foo: %v", err)
 	}
 	if err := cbar.acc.addStreamImport(fooAcc, "*", "pub.imports."); err != nil {
-		t.Fatalf("Error adding account import to client bar: %v", err)
+		t.Fatalf("Error adding stream import to client bar: %v", err)
 	}
 
 	// Normal Subscription on bar client for wildcard.
@@ -816,6 +825,133 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	// for the response but should be removed when the response was processed.
 	if nr := fooAcc.numServiceRoutes(); nr != 0 {
 		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+	}
+}
+
+func TestAccountMapsUsers(t *testing.T) {
+	// Used for the nkey users to properly sign.
+	seed1 := "SUAPM67TC4RHQLKBX55NIQXSMATZDOZK6FNEOSS36CAYA7F7TY66LP4BOM"
+	seed2 := "SUAIS5JPX4X4GJ7EIIJEQ56DH2GWPYJRPWN5XJEDENJOZHCBLI7SEPUQDE"
+
+	confFileName := createConfFile(t, []byte(`
+    accounts {
+      synadia {
+        users = [
+          {user: derek, password: foo},
+          {nkey: UCNGL4W5QX66CFX6A6DCBVDH5VOHMI7B2UZZU7TXAUQQSI2JPHULCKBR}
+        ]
+      }
+      nats {
+        users = [
+          {user: ivan, password: bar},
+          {nkey: UDPGQVFIWZ7Q5UH4I5E6DBCZULQS6VTVBG6CYBD7JV3G3N2GMQOMNAUH}
+        ]
+      }
+    }
+    `))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error parsing config file: %v", err)
+	}
+	s := New(opts)
+	synadia := s.LookupAccount("synadia")
+	nats := s.LookupAccount("nats")
+
+	if synadia == nil || nats == nil {
+		t.Fatalf("Expected non nil accounts during lookup")
+	}
+
+	// Make sure a normal log in maps the accounts correctly.
+	c, _, _ := newClientForServer(s)
+	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\"}\r\n")
+	c.parse(connectOp)
+	if c.acc != synadia {
+		t.Fatalf("Expected the client's account to match 'synadia', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != synadia.sl {
+		t.Fatalf("Expected the client's sublist to match 'synadia' account")
+	}
+
+	c, _, _ = newClientForServer(s)
+	connectOp = []byte("CONNECT {\"user\":\"ivan\",\"pass\":\"bar\"}\r\n")
+	c.parse(connectOp)
+	if c.acc != nats {
+		t.Fatalf("Expected the client's account to match 'nats', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != nats.sl {
+		t.Fatalf("Expected the client's sublist to match 'nats' account")
+	}
+
+	// Now test nkeys as well.
+	kp, _ := nkeys.FromSeed(seed1)
+	pubKey, _ := kp.PublicKey()
+
+	c, cr, l := newClientForServer(s)
+	// Check for Nonce
+	var info nonceInfo
+	err = json.Unmarshal([]byte(l[5:]), &info)
+	if err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Nonce == "" {
+		t.Fatalf("Expected a non-empty nonce with nkeys defined")
+	}
+	sigraw, err := kp.Sign([]byte(info.Nonce))
+	if err != nil {
+		t.Fatalf("Failed signing nonce: %v", err)
+	}
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK to us.
+	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+	if c.acc != synadia {
+		t.Fatalf("Expected the nkey client's account to match 'synadia', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != synadia.sl {
+		t.Fatalf("Expected the client's sublist to match 'synadia' account")
+	}
+
+	// Now nats account nkey user.
+	kp, _ = nkeys.FromSeed(seed2)
+	pubKey, _ = kp.PublicKey()
+
+	c, cr, l = newClientForServer(s)
+	// Check for Nonce
+	err = json.Unmarshal([]byte(l[5:]), &info)
+	if err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Nonce == "" {
+		t.Fatalf("Expected a non-empty nonce with nkeys defined")
+	}
+	sigraw, err = kp.Sign([]byte(info.Nonce))
+	if err != nil {
+		t.Fatalf("Failed signing nonce: %v", err)
+	}
+	sig = base64.StdEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK to us.
+	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+	if c.acc != nats {
+		t.Fatalf("Expected the nkey client's account to match 'nats', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != nats.sl {
+		t.Fatalf("Expected the client's sublist to match 'nats' account")
 	}
 }
 

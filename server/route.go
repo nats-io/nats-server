@@ -428,7 +428,7 @@ func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
 		_localSubs [4096]*subscription
 		localSubs  = _localSubs[:0]
 	)
-	s.sl.localSubs(&localSubs)
+	s.gsl.localSubs(&localSubs)
 
 	route.sendRouteSubProtos(localSubs, func(sub *subscription) bool {
 		subj := sub.subject

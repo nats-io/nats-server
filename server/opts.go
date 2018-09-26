@@ -915,7 +915,11 @@ func parseExportStreamOrService(v map[string]interface{}, pedantic bool) (*expor
 			if curStream != nil {
 				return nil, nil, fmt.Errorf("Detected service but already saw a stream: %+v", mv)
 			}
-			curService = &export{sub: mv.(string)}
+			mvs, ok := mv.(string)
+			if !ok {
+				return nil, nil, fmt.Errorf("Expected service to be string name, got %T", mv)
+			}
+			curService = &export{sub: mvs}
 			if accounts != nil {
 				curService.accs = accounts
 			}
