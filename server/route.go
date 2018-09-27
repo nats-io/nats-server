@@ -39,6 +39,18 @@ const (
 	Explicit
 )
 
+const (
+	// routeProtoZero is the original Route protocol from 2009.
+	// http://nats.io/documentation/internals/nats-protocol/
+	routeProtoZero = iota
+	// routeProtoInfo signals a route can receive more then the original INFO block.
+	// This can be used to update remote cluster permissions, etc...
+	routeProtoInfo
+)
+
+// Used by tests
+var testRouteProto = routeProtoInfo
+
 type route struct {
 	remoteID     string
 	didSolicit   bool
@@ -305,6 +317,9 @@ func (c *client) processRouteInfo(info *Info) {
 	// in closeConnection().
 	c.route.remoteID = info.ID
 
+	// Get the route's proto version
+	c.opts.Protocol = info.Proto
+
 	// Detect route to self.
 	if c.route.remoteID == s.info.ID {
 		c.mu.Unlock()
@@ -315,6 +330,14 @@ func (c *client) processRouteInfo(info *Info) {
 	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
+
+	// If this is an update due to config reload on the remote server,
+	// need to possibly send local subs to the remote server.
+	if c.flags.isSet(infoReceived) {
+		s.updateRemoteRoutePerms(c, info)
+		c.mu.Unlock()
+		return
+	}
 
 	// Copy over permissions as well.
 	c.opts.Import = info.Import
@@ -334,6 +357,10 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 		c.route.url = url
 	}
+
+	// Mark that the INFO protocol has been received. Will allow
+	// to detect INFO updates.
+	c.flags.set(infoReceived)
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
@@ -374,6 +401,41 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
 	}
+}
+
+// Possibly sends local subscriptions interest to this route
+// based on changes in the remote's Export permissions.
+// Lock assumed held on entry
+func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
+	// Interested only on Export permissions for the remote server.
+	// Create "fake" clients that we will use to check permissions
+	// using the old permissions...
+	oldPerms := &RoutePermissions{Export: route.opts.Export}
+	oldPermsTester := &client{}
+	oldPermsTester.setRoutePermissions(oldPerms)
+	// and the new ones.
+	newPerms := &RoutePermissions{Export: info.Export}
+	newPermsTester := &client{}
+	newPermsTester.setRoutePermissions(newPerms)
+
+	route.opts.Import = info.Import
+	route.opts.Export = info.Export
+
+	var (
+		_localSubs [4096]*subscription
+		localSubs  = _localSubs[:0]
+	)
+	s.sl.localSubs(&localSubs)
+
+	route.sendRouteSubProtos(localSubs, func(sub *subscription) bool {
+		subj := sub.subject
+		// If the remote can now export but could not before, and this server can import this
+		// subject, then send SUB protocol.
+		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && route.canImport(subj) {
+			return true
+		}
+		return false
+	})
 }
 
 // sendAsyncInfoToClients sends an INFO protocol to all
@@ -519,21 +581,102 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	s.sl.localSubs(&subs)
 
 	route.mu.Lock()
+	closed := route.sendRouteSubProtos(subs, func(sub *subscription) bool {
+		return route.canImport(sub.subject)
+	})
+	route.mu.Unlock()
+	if !closed {
+		route.Debugf("Sent local subscriptions to route")
+	}
+}
+
+// Sends SUBs protocols for the given subscriptions. If a filter is specified, it is
+// invoked for each subscription. If the filter returns false, the subscription is skipped.
+// This function may release the route's lock due to flushing of outbound data. A boolean
+// is returned to indicate if the connection has been closed during this call.
+// Lock is held on entry.
+func (c *client) sendRouteSubProtos(subs []*subscription, filter func(sub *subscription) bool) bool {
+	return c.sendRouteSubOrUnSubProtos(subs, true, filter)
+}
+
+// Sends UNSUBs protocols for the given subscriptions. If a filter is specified, it is
+// invoked for each subscription. If the filter returns false, the subscription is skipped.
+// This function may release the route's lock due to flushing of outbound data. A boolean
+// is returned to indicate if the connection has been closed during this call.
+// Lock is held on entry.
+func (c *client) sendRouteUnSubProtos(subs []*subscription, filter func(sub *subscription) bool) bool {
+	return c.sendRouteSubOrUnSubProtos(subs, false, filter)
+}
+
+// Low-level function that sends SUBs or UNSUBs protcols for the given subscriptions.
+// Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
+// Lock is held on entry.
+func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto bool, filter func(sub *subscription) bool) bool {
+	const staticBufSize = maxBufSize * 2
+	var (
+		_buf   [staticBufSize]byte // array on stack
+		buf    = _buf[:0]          // our buffer will initially point to the stack buffer
+		mbs    = staticBufSize     // max size of the buffer
+		mpMax  = int(c.out.mp / 2) // 50% of max_pending
+		closed bool
+	)
+	// We need to make sure that we stay below the user defined max pending bytes.
+	if mbs > mpMax {
+		mbs = mpMax
+	}
 	for _, sub := range subs {
-		// Send SUB interest only if subject has a match in import permissions
-		if !route.canImport(sub.subject) {
+		if filter != nil && !filter(sub) {
 			continue
 		}
-		proto := fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))
-		route.queueOutbound([]byte(proto))
-		if route.out.pb > int64(route.out.sz*2) {
-			route.flushSignal()
+		rsid := routeSid(sub)
+		// Check if proto is going to fit.
+		curSize := len(buf)
+		if isSubProto {
+			// "SUB " + subject + " " + queue + " " + ...
+			curSize += 4 + len(sub.subject) + 1 + len(sub.queue) + 1
+		} else {
+			// "UNSUB " + ...
+			curSize += 6
 		}
+		// rsid + "\r\n"
+		curSize += len(rsid) + 2
+		if curSize >= mbs {
+			if c.queueOutbound(buf) {
+				// Need to allocate new array
+				buf = make([]byte, 0, mbs)
+			} else {
+				// We can reuse previous buffer
+				buf = buf[:0]
+			}
+			// Update last activity because flushOutbound() will release
+			// the lock, which could cause pingTimer to think that this
+			// connection is stale otherwise.
+			c.last = time.Now()
+			c.flushOutbound()
+			if closed = c.flags.isSet(clearConnection); closed {
+				break
+			}
+		}
+		if isSubProto {
+			buf = append(buf, []byte("SUB ")...)
+			buf = append(buf, sub.subject...)
+			buf = append(buf, ' ')
+			if len(sub.queue) > 0 {
+				buf = append(buf, sub.queue...)
+			}
+		} else {
+			buf = append(buf, []byte("UNSUB ")...)
+		}
+		buf = append(buf, ' ')
+		buf = append(buf, rsid...)
+		buf = append(buf, []byte(CR_LF)...)
 	}
-	route.flushSignal()
-	route.mu.Unlock()
-
-	route.Debugf("Sent local subscriptions to route")
+	if !closed && len(buf) > 0 {
+		c.queueOutbound(buf)
+		c.flushOutbound()
+		closed = c.flags.isSet(clearConnection)
+	}
+	return closed
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
@@ -835,6 +978,7 @@ func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 		arg = []byte(proto[:len(proto)-LEN_CR_LF])
 	}
 	protoAsBytes := []byte(proto)
+	checkPerms := true
 	s.mu.Lock()
 	for _, route := range s.routes {
 		// FIXME(dlc) - Make same logic as deliverMsg
@@ -843,9 +987,12 @@ func (s *Server) broadcastInterestToRoutes(sub *subscription, proto string) {
 		// route will have the same `perms`, so check with the first route
 		// and send SUB interest only if subject has a match in import permissions.
 		// If there is no match, we stop here.
-		if !route.canImport(sub.subject) {
-			route.mu.Unlock()
-			break
+		if checkPerms {
+			checkPerms = false
+			if !route.canImport(sub.subject) {
+				route.mu.Unlock()
+				break
+			}
 		}
 		route.sendProto(protoAsBytes, true)
 		route.mu.Unlock()
@@ -883,6 +1030,27 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	s.broadcastInterestToRoutes(sub, proto)
 }
 
+// Sends UNSUB protocols for each of the subscriptions in the given array
+// to all connected routes. Used when a client connection is closed. Note
+// that when that happens, the subscriptions' MAX have been cleared (force unsub).
+func (s *Server) broadcastUnSubscribeBatch(subs []*subscription) {
+	var (
+		_routes [32]*client
+		routes  = _routes[:0]
+	)
+	s.mu.Lock()
+	for _, route := range s.routes {
+		routes = append(routes, route)
+	}
+	s.mu.Unlock()
+
+	for _, route := range routes {
+		route.mu.Lock()
+		route.sendRouteUnSubProtos(subs, nil)
+		route.mu.Unlock()
+	}
+}
+
 func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	defer func() {
 		if ch != nil {
@@ -910,6 +1078,9 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	s.mu.Lock()
+	// For tests, we want to be able to make this server behave
+	// as an older server.
+	proto := testRouteProto
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
@@ -920,6 +1091,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		TLSRequired:  tlsReq,
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
+		Proto:        proto,
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {

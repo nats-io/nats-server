@@ -128,6 +128,9 @@ type Server struct {
 	clientActualPort  int
 	clusterActualPort int
 
+	// Use during reload
+	oldClusterPerms *RoutePermissions
+
 	// Used by tests to check that http.Servers do
 	// not set any timeout.
 	monitoringServer *http.Server
