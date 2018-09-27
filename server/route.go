@@ -614,10 +614,10 @@ func (c *client) sendRouteUnSubProtos(subs []*subscription, filter func(sub *sub
 func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto bool, filter func(sub *subscription) bool) bool {
 	const staticBufSize = maxBufSize * 2
 	var (
-		_buf   [staticBufSize]byte        // array on stack
-		buf    = _buf[:0]                 // our buffer will initially point to the stack buffer
-		mbs    = staticBufSize            // max size of the buffer
-		mpMax  = int(c.out.mp * 90 / 100) // 90% of max_pending
+		_buf   [staticBufSize]byte // array on stack
+		buf    = _buf[:0]          // our buffer will initially point to the stack buffer
+		mbs    = staticBufSize     // max size of the buffer
+		mpMax  = int(c.out.mp / 2) // 50% of max_pending
 		closed bool
 	)
 	// We need to make sure that we stay below the user defined max pending bytes.
