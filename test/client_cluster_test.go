@@ -314,10 +314,12 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
+	checkExpectedSubs(1, srvA, srvB)
+
 	var resp string
 
 	for i := 0; i < 100; i++ {
-		if err := ec2.Request("foo-req", i, &resp, 100*time.Millisecond); err != nil {
+		if err := ec2.Request("foo-req", i, &resp, 250*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
@@ -360,6 +362,8 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	nc2.QueueSubscribe("foo-req", "booboo", func(m *nats.Msg) {
 		nc2.Publish(m.Reply, response)
 	})
+
+	checkExpectedSubs(2, srvA, srvB)
 
 	var resp string
 
