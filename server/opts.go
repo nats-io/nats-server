@@ -196,6 +196,7 @@ type token interface {
 	Line() int
 	IsUsedVariable() bool
 	SourceFile() string
+	Position() int
 }
 
 type unknownConfigFieldErr struct {
@@ -207,7 +208,7 @@ type unknownConfigFieldErr struct {
 func (e *unknownConfigFieldErr) Error() string {
 	msg := fmt.Sprintf("unknown field %q", e.field)
 	if e.token != nil {
-		return msg + fmt.Sprintf(" in %s:%d", e.configFile, e.token.Line())
+		return msg + fmt.Sprintf(" in %s:%d:%d", e.configFile, e.token.Line(), e.token.Position())
 	}
 	return msg
 }
@@ -222,7 +223,7 @@ type configWarningErr struct {
 func (e *configWarningErr) Error() string {
 	msg := fmt.Sprintf("invalid use of field %q", e.field)
 	if e.token != nil {
-		msg += fmt.Sprintf(" in %s:%d", e.configFile, e.token.Line())
+		msg += fmt.Sprintf(" in %s:%d:%d", e.configFile, e.token.Line(), e.token.Position())
 	}
 	msg += ": " + e.reason
 	return msg

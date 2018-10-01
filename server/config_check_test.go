@@ -37,6 +37,9 @@ func TestConfigCheck(t *testing.T) {
 		// errorLine is the location of the error.
 		errorLine int
 
+		// errorPos is the position of the error.
+		errorPos int
+
 		// warning errors also include a reason optionally
 		reason string
 	}{
@@ -48,20 +51,20 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "monitor"`),
 			errorLine:   2,
+			errorPos:    17,
 		},
 		{
 			name: "when default permissions are used at top level",
 			config: `
-		"default_permissions" {
-		  publish = ["_SANDBOX.>"]
-		  subscribe = ["_SANDBOX.>"]
-		}
-   		`,
+                "default_permissions" {
+                  publish = ["_SANDBOX.>"]
+                  subscribe = ["_SANDBOX.>"]
+                }
+                `,
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "default_permissions"`),
-
-			// NOTE: line number is '5' because it is where the map definition ends.
-			errorLine: 5,
+			errorLine:   2,
+			errorPos:    18,
 		},
 		{
 			name: "when authorization config is empty",
@@ -82,15 +85,16 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "foo"`),
 			errorLine:   3,
+			errorPos:    5,
 		},
 		{
 			name: "when authorization config has unknown fields",
 			config: `
-                port = 4222
+		port = 4222
 
 		authorization = {
-                  user = "hello"
-                  foo = "bar"
+		  user = "hello"
+		  foo = "bar"
 		  password = "world"
 		}
 
@@ -98,23 +102,25 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "foo"`),
 			errorLine:   6,
+			errorPos:    5,
 		},
 		{
 			name: "when user authorization config has unknown fields",
 			config: `
 		authorization = {
 		  users = [
-		    { 
-                      user = "foo"
-                      pass = "bar"
-                      token = "quux"
-                    }
+		    {
+		      user = "foo"
+		      pass = "bar"
+		      token = "quux"
+		    }
 		  ]
 		}
 		`,
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "token"`),
 			errorLine:   7,
+			errorPos:    9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields",
@@ -130,6 +136,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
 			pedanticErr: errors.New(`unknown field "inboxes"`),
 			errorLine:   5,
+			errorPos:    7,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields within allow or deny",
@@ -137,10 +144,10 @@ func TestConfigCheck(t *testing.T) {
 		authorization {
 		  permissions {
 		    subscribe = {
-                      allow = ["hello", "world"]
-                      deny = ["foo", "bar"]
-                      denied = "_INBOX.>"
-                    }
+		      allow = ["hello", "world"]
+		      deny = ["foo", "bar"]
+		      denied = "_INBOX.>"
+		    }
 		    publish = {}
 		  }
 		}
@@ -148,6 +155,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`Unknown field name "denied" parsing subject permissions, only 'allow' or 'deny' are permitted`),
 			pedanticErr: errors.New(`unknown field "denied"`),
 			errorLine:   7,
+			errorPos:    9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields within allow or deny",
@@ -155,10 +163,10 @@ func TestConfigCheck(t *testing.T) {
 		authorization {
 		  permissions {
 		    publish = {
-                      allow = ["hello", "world"]
-                      deny = ["foo", "bar"]
-                      allowed = "_INBOX.>"
-                    }
+		      allow = ["hello", "world"]
+		      deny = ["foo", "bar"]
+		      allowed = "_INBOX.>"
+		    }
 		    subscribe = {}
 		  }
 		}
@@ -166,13 +174,14 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`Unknown field name "allowed" parsing subject permissions, only 'allow' or 'deny' are permitted`),
 			pedanticErr: errors.New(`unknown field "allowed"`),
 			errorLine:   7,
+			errorPos:    9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields using arrays",
 			config: `
-                authorization {
+		authorization {
 
-		 default_permissions { 
+		 default_permissions {
 		   subscribe = ["a"]
 		   publish = ["b"]
 		   inboxes = ["c"]
@@ -184,18 +193,19 @@ func TestConfigCheck(t *testing.T) {
 		     pass = "bar"
 		   }
 		  ]
-	        }                       
+		}
 		`,
 			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
 			pedanticErr: errors.New(`unknown field "inboxes"`),
 			errorLine:   7,
+			errorPos:    6,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields using strings",
 			config: `
-                authorization {
+		authorization {
 
-		 default_permissions { 
+		 default_permissions {
 		   subscribe = "a"
 		   requests = "b"
 		   publish = "c"
@@ -207,11 +217,12 @@ func TestConfigCheck(t *testing.T) {
 		     pass = "bar"
 		   }
 		  ]
-	        }                       
+		}
 		`,
 			defaultErr:  errors.New(`Unknown field requests parsing permissions`),
 			pedanticErr: errors.New(`unknown field "requests"`),
 			errorLine:   6,
+			errorPos:    6,
 		},
 		{
 			name: "when user authorization permissions config is empty",
@@ -244,6 +255,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
 			pedanticErr: errors.New(`unknown field "inboxes"`),
 			errorLine:   6,
+			errorPos:    11,
 		},
 		{
 			name: "when clustering config is empty",
@@ -258,19 +270,19 @@ func TestConfigCheck(t *testing.T) {
 		{
 			name: "when unknown option is in clustering config",
 			config: `
-                # NATS Server Configuration
-                port = 4222
+		# NATS Server Configuration
+		port = 4222
 
 		cluster = {
 
-                  port = 6222
+		  port = 6222
 
 		  foo = "bar"
 
-                  authorization {
-                    user = "hello"
-                    pass = "world"
-                  }
+		  authorization {
+		    user = "hello"
+		    pass = "world"
+		  }
 
 		}
 		`,
@@ -278,6 +290,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "foo"`),
 			errorLine:   9,
+			errorPos:    5,
 		},
 		{
 			name: "when unknown option is in clustering authorization config",
@@ -292,6 +305,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "foo"`),
 			errorLine:   4,
+			errorPos:    7,
 		},
 		{
 			name: "when unknown option is in clustering authorization permissions config",
@@ -309,6 +323,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`Unknown field hello parsing permissions`),
 			pedanticErr: errors.New(`unknown field "hello"`),
 			errorLine:   7,
+			errorPos:    9,
 		},
 		{
 			name: "when unknown option is in tls config",
@@ -320,6 +335,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`error parsing tls config, unknown field ["hello"]`),
 			pedanticErr: errors.New(`unknown field "hello"`),
 			errorLine:   3,
+			errorPos:    5,
 		},
 		{
 			name: "when unknown option is in cluster tls config",
@@ -334,6 +350,7 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  errors.New(`error parsing tls config, unknown field ["foo"]`),
 			pedanticErr: errors.New(`unknown field "foo"`),
 			errorLine:   4,
+			errorPos:    7,
 		},
 		{
 			name: "when using cipher suites in the TLS config",
@@ -343,12 +360,13 @@ func TestConfigCheck(t *testing.T) {
 			"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 			"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
 		    ]
-                    preferences = []
+		    preferences = []
 		}
 		`,
 			defaultErr:  errors.New(`error parsing tls config, unknown field ["preferences"]`),
 			pedanticErr: errors.New(`unknown field "preferences"`),
 			errorLine:   7,
+			errorPos:    7,
 		},
 		{
 			name: "when using curve preferences in the TLS config",
@@ -359,27 +377,29 @@ func TestConfigCheck(t *testing.T) {
 			"CurveP384",
 			"CurveP521"
 		    ]
-                    suites = []
+		    suites = []
 		}
 		`,
 			defaultErr:  errors.New(`error parsing tls config, unknown field ["suites"]`),
 			pedanticErr: errors.New(`unknown field "suites"`),
 			errorLine:   8,
+			errorPos:    7,
 		},
 		{
 			name: "when unknown option is in cluster config with defined routes",
 			config: `
 		cluster {
-                  port = 6222
-                  routes = [
-                    nats://127.0.0.1:6222
-                  ]
-                  peers = []
+		  port = 6222
+		  routes = [
+		    nats://127.0.0.1:6222
+		  ]
+		  peers = []
 		}
 		`,
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "peers"`),
 			errorLine:   7,
+			errorPos:    5,
 		},
 		{
 			name: "when used as variable in authorization block it should not be considered as unknown field",
@@ -425,15 +445,16 @@ func TestConfigCheck(t *testing.T) {
 			defaultErr:  nil,
 			pedanticErr: errors.New(`unknown field "unused"`),
 			errorLine:   27,
+			errorPos:    5,
 		},
 		{
 			name: "when used as variable in top level config it should not be considered as unknown field",
 			config: `
-                monitoring_port = 8222
+		monitoring_port = 8222
 
-                http_port = $monitoring_port
+		http_port = $monitoring_port
 
-                port = 4222
+		port = 4222
 		`,
 			defaultErr:  nil,
 			pedanticErr: nil,
@@ -441,32 +462,33 @@ func TestConfigCheck(t *testing.T) {
 		{
 			name: "when used as variable in cluster config it should not be considered as unknown field",
 			config: `
-                cluster {
-                  clustering_port = 6222
-                  port = $clustering_port
-                }
- 		`,
+		cluster {
+		  clustering_port = 6222
+		  port = $clustering_port
+		}
+		`,
 			defaultErr:  nil,
 			pedanticErr: nil,
 		},
 		{
 			name: "when setting permissions within cluster authorization block",
 			config: `
-                cluster {
-                  authorization {
-                    permissions = {
-                      publish = { allow = ["foo", "bar"] }
-                    }
-                  }
+		cluster {
+		  authorization {
+		    permissions = {
+		      publish = { allow = ["foo", "bar"] }
+		    }
+		  }
 
-                  permissions = {
-                    publish = { deny = ["foo", "bar"] }
-                  }
-                }
- 		`,
+		  permissions = {
+		    publish = { deny = ["foo", "bar"] }
+		  }
+		}
+		`,
 			defaultErr:  nil,
 			pedanticErr: errors.New(`invalid use of field "authorization"`),
-			errorLine:   7,
+			errorLine:   3,
+			errorPos:    5,
 			reason:      `setting "permissions" within cluster authorization block is deprecated`,
 		},
 	}
@@ -498,7 +520,7 @@ func TestConfigCheck(t *testing.T) {
 				err := checkConfig(conf, true)
 				expectedErr := test.pedanticErr
 				if err != nil && expectedErr != nil {
-					msg := fmt.Sprintf("%s in %s:%d", expectedErr.Error(), conf, test.errorLine)
+					msg := fmt.Sprintf("%s in %s:%d:%d", expectedErr.Error(), conf, test.errorLine, test.errorPos)
 					if test.reason != "" {
 						msg += ": " + test.reason
 					}
@@ -528,7 +550,7 @@ func TestConfigCheckIncludes(t *testing.T) {
 	}
 	err := opts.ProcessConfigFile("./configs/include_conf_check_a.conf")
 	if err != nil {
-		t.Errorf("Unexpected error processing include files with configuration check enabled: %s", err)
+		t.Errorf("Unexpected error processing include files with configuration check enabled: %v", err)
 	}
 
 	opts = &Options{
@@ -536,9 +558,9 @@ func TestConfigCheckIncludes(t *testing.T) {
 	}
 	err = opts.ProcessConfigFile("./configs/include_bad_conf_check_a.conf")
 	if err == nil {
-		t.Errorf("Expected error processing include files with configuration check enabled: %s", err)
+		t.Errorf("Expected error processing include files with configuration check enabled: %v", err)
 	}
-	expectedErr := errors.New(`unknown field "monitoring_port" in configs/include_bad_conf_check_b.conf:2`)
+	expectedErr := errors.New(`unknown field "monitoring_port" in configs/include_bad_conf_check_b.conf:10:19`)
 	if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
 		t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
 	}
