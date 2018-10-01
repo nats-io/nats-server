@@ -594,6 +594,8 @@ func lexMapKeyStart(lx *lexer) stateFn {
 	switch {
 	case isKeySeparator(r):
 		return lx.errorf("Unexpected key separator '%v'.", r)
+	case r == arrayEnd:
+		return lx.errorf("Unexpected array end '%v' processing map.", r)
 	case unicode.IsSpace(r):
 		lx.next()
 		return lexSkip(lx, lexMapKeyStart)

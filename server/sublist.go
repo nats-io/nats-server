@@ -712,6 +712,52 @@ func IsValidLiteralSubject(subject string) bool {
 	return true
 }
 
+// This will test a subject as an array of tokens against a test subject
+// and determine if the tokens are matched. Both test subject and tokens
+// may contain wildcards. So foo.* is a subset match of [">", "*.*", "foo.*"],
+// but not of foo.bar, etc.
+func isSubsetMatch(tokens []string, test string) bool {
+	tsa := [32]string{}
+	tts := tsa[:0]
+	start := 0
+	for i := 0; i < len(test); i++ {
+		if test[i] == btsep {
+			tts = append(tts, test[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, test[start:])
+
+	// Walk the target tokens
+	for i, t2 := range tts {
+		if i >= len(tokens) {
+			return false
+		}
+		if t2[0] == fwc && len(t2) == 1 {
+			return true
+		}
+		t1 := tokens[i]
+		if t1[0] == fwc && len(t1) == 1 {
+			return false
+		}
+		if t1[0] == pwc && len(t1) == 1 {
+			m := t2[0] == pwc && len(t2) == 1
+			if !m {
+				return false
+			}
+			if i >= len(tts) {
+				return true
+			} else {
+				continue
+			}
+		}
+		if t2[0] != pwc && strings.Compare(t1, t2) != 0 {
+			return false
+		}
+	}
+	return len(tokens) == len(tts)
+}
+
 // matchLiteral is used to test literal subjects, those that do not have any
 // wildcards, with a target subject. This is used in the cache layer.
 func matchLiteral(literal, subject string) bool {
@@ -725,7 +771,7 @@ func matchLiteral(literal, subject string) bool {
 		// This function has been optimized for speed.
 		// For instance, do not set b:=subject[i] here since
 		// we may bump `i` in this loop to avoid `continue` or
-		// skiping common test in a particular test.
+		// skipping common test in a particular test.
 		// Run Benchmark_SublistMatchLiteral before making any change.
 		switch subject[i] {
 		case pwc:

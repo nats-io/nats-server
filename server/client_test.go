@@ -52,6 +52,19 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	}()
 }
 
+func newClientForServer(s *Server) (*client, *bufio.Reader, string) {
+	cli, srv := net.Pipe()
+	cr := bufio.NewReaderSize(cli, maxBufSize)
+	ch := make(chan *client)
+	createClientAsync(ch, s, srv)
+	// So failing tests don't just hang.
+	cli.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _ := cr.ReadString('\n')
+	// Grab client
+	c := <-ch
+	return c, cr, l
+}
+
 var defaultServerOptions = Options{
 	Trace:  false,
 	Debug:  false,
@@ -272,6 +285,7 @@ const (
 )
 
 func checkPayload(cr *bufio.Reader, expected []byte, t *testing.T) {
+	t.Helper()
 	// Read in payload
 	d := make([]byte, len(expected))
 	n, err := cr.Read(d)
@@ -384,13 +398,19 @@ func TestClientNoBodyPubSubWithReply(t *testing.T) {
 	}
 }
 
-func (c *client) parseFlushAndClose(op []byte) {
+// This needs to clear any flushOutbound flags since writeLoop not running.
+func (c *client) parseAndFlush(op []byte) {
 	c.parse(op)
 	for cp := range c.pcd {
 		cp.mu.Lock()
+		cp.flags.clear(flushOutbound)
 		cp.flushOutbound()
 		cp.mu.Unlock()
 	}
+}
+
+func (c *client) parseFlushAndClose(op []byte) {
+	c.parseAndFlush(op)
 	c.nc.Close()
 }
 
@@ -643,17 +663,17 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	}()
 	<-ch
 
-	if s.sl.Count() != 2 {
-		t.Fatalf("Should have 2 subscriptions, got %d\n", s.sl.Count())
+	if c.sl.Count() != 2 {
+		t.Fatalf("Should have 2 subscriptions, got %d\n", c.sl.Count())
 	}
 	c.closeConnection(ClientClosed)
-	if s.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	if c.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", s.gsl.Count())
 	}
 }
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
-	s, c, _ := setupClient()
+	_, c, _ := setupClient()
 	c.closeConnection(ClientClosed)
 	subs := []byte("SUB foo 1\r\nSUB bar 2\r\n")
 
@@ -664,8 +684,8 @@ func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	}()
 	<-ch
 
-	if s.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.sl.Count())
+	if c.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", c.sl.Count())
 	}
 }
 

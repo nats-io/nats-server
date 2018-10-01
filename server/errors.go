@@ -48,4 +48,20 @@ var (
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
 	ErrClientConnectedToRoutePort = errors.New("Attempted To Connect To Route Port")
+
+	// ErrAccountExists is returned when an account is attempted to be registered
+	// but already exists.
+	ErrAccountExists = errors.New("Account Exists")
+
+	// ErrBadAccount represents a malformed or incorrect account.
+	ErrBadAccount = errors.New("Bad Account")
+
+	// ErrMissingAccount is returned when an account does not exist.
+	ErrMissingAccount = errors.New("Account Missing")
+
+	// ErrStreamImportAuthorization is returned when a stream import is not authorized.
+	ErrStreamImportAuthorization = errors.New("Stream Import Not Authorized")
+
+	// ErrServiceImportAuthorization is returned when a service import is not authorized.
+	ErrServiceImportAuthorization = errors.New("Service Import Not Authorized")
 )

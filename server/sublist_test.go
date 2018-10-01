@@ -23,8 +23,6 @@ import (
 	"testing"
 	"time"
 
-	dbg "runtime/debug"
-
 	"github.com/nats-io/nuid"
 )
 
@@ -421,8 +419,8 @@ func TestSublistBasicQueueResults(t *testing.T) {
 }
 
 func checkBool(b, expected bool, t *testing.T) {
+	t.Helper()
 	if b != expected {
-		dbg.PrintStack()
 		t.Fatalf("Expected %v, but got %v\n", expected, b)
 	}
 }

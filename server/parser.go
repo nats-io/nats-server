@@ -234,7 +234,7 @@ func (c *client) parse(buf []byte) error {
 				if len(c.msgBuf) != c.pa.size+LEN_CR_LF {
 					goto parseErr
 				}
-				c.processMsg(c.msgBuf)
+				c.processInboundMsg(c.msgBuf)
 				c.argBuf, c.msgBuf = nil, nil
 				c.drop, c.as, c.state = 0, i+1, OP_START
 			default:

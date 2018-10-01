@@ -709,14 +709,15 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		}
 	}
 
-	sz := &Subsz{s.sl.Stats(), 0, offset, limit, nil}
+	// FIXME(dlc) - Make account aware.
+	sz := &Subsz{s.gsl.Stats(), 0, offset, limit, nil}
 
 	if subdetail {
 		// Now add in subscription's details
 		var raw [4096]*subscription
 		subs := raw[:0]
 
-		s.sl.localSubs(&subs)
+		s.gsl.localSubs(&subs)
 		details := make([]SubDetail, len(subs))
 		i := 0
 		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
@@ -938,7 +939,7 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	v.MaxPending = opts.MaxPending
 	v.WriteDeadline = opts.WriteDeadline
-	v.Subscriptions = s.sl.Count()
+	v.Subscriptions = s.gsl.Count()
 	v.ConfigLoadTime = s.configTime
 	// Need a copy here since s.httpReqStats can change while doing
 	// the marshaling down below.

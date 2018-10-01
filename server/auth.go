@@ -16,8 +16,8 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
-	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
@@ -39,17 +39,237 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// Accounts
+type Account struct {
+	Name    string
+	Nkey    string
+	mu      sync.RWMutex
+	sl      *Sublist
+	imports importMap
+	exports exportMap
+}
+
+// Import stream mapping struct
+type streamImport struct {
+	acc    *Account
+	from   string
+	prefix string
+}
+
+// Import service mapping struct
+type serviceImport struct {
+	acc  *Account
+	from string
+	to   string
+	ae   bool
+}
+
+// importMap tracks the imported streams and services.
+type importMap struct {
+	streams  map[string]*streamImport
+	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
+}
+
+// exportMap tracks the exported streams and services.
+type exportMap struct {
+	streams  map[string]map[string]*Account
+	services map[string]map[string]*Account
+}
+
+func (a *Account) addServiceExport(subject string, accounts []*Account) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a == nil {
+		return ErrMissingAccount
+	}
+	if a.exports.services == nil {
+		a.exports.services = make(map[string]map[string]*Account)
+	}
+	ma := a.exports.services[subject]
+	if accounts != nil && ma == nil {
+		ma = make(map[string]*Account)
+	}
+	for _, a := range accounts {
+		ma[a.Name] = a
+	}
+	a.exports.services[subject] = ma
+	return nil
+}
+
+// numServiceRoutes returns the number of service routes on this account.
+func (a *Account) numServiceRoutes() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.imports.services)
+}
+
+// This will add a route to an account to send published messages / requests
+// to the destination account. From is the local subject to map, To is the
+// subject that will appear on the destination account. Destination will need
+// to have an import rule to allow access via addService.
+func (a *Account) addServiceImport(destination *Account, from, to string) error {
+	if destination == nil {
+		return ErrMissingAccount
+	}
+	// Empty means use from.
+	if to == "" {
+		to = from
+	}
+	if !IsValidLiteralSubject(from) || !IsValidLiteralSubject(to) {
+		return ErrInvalidSubject
+	}
+	// First check to see if the account has authorized us to route to the "to" subject.
+	if !destination.checkServiceImportAuthorized(a, to) {
+		return ErrServiceImportAuthorization
+	}
+
+	return a.addImplicitServiceImport(destination, from, to, false)
+}
+
+// removeServiceImport will remove the route by subject.
+func (a *Account) removeServiceImport(subject string) {
+	a.mu.Lock()
+	delete(a.imports.services, subject)
+	a.mu.Unlock()
+}
+
+// Add a route to connect from an implicit route created for a response to a request.
+// This does no checks and should be only called by the msg processing code. Use addRoute
+// above if responding to user input or config, etc.
+func (a *Account) addImplicitServiceImport(destination *Account, from, to string, autoexpire bool) error {
+	a.mu.Lock()
+	if a.imports.services == nil {
+		a.imports.services = make(map[string]*serviceImport)
+	}
+	a.imports.services[from] = &serviceImport{destination, from, to, autoexpire}
+	a.mu.Unlock()
+	return nil
+}
+
+// addStreamImport will add in the stream import from a specific account.
+func (a *Account) addStreamImport(account *Account, from, prefix string) error {
+	if account == nil {
+		return ErrMissingAccount
+	}
+
+	// First check to see if the account has authorized export of the subject.
+	if !account.checkStreamImportAuthorized(a, from) {
+		return ErrStreamImportAuthorization
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.imports.streams == nil {
+		a.imports.streams = make(map[string]*streamImport)
+	}
+	if prefix != "" && prefix[len(prefix)-1] != btsep {
+		prefix = prefix + string(btsep)
+	}
+	// TODO(dlc) - collisions, etc.
+	a.imports.streams[from] = &streamImport{account, from, prefix}
+	return nil
+}
+
+// Placeholder to denote public export.
+var isPublicExport = []*Account(nil)
+
+// addExport will add an export to the account. If accounts is nil
+// it will signify a public export, meaning anyone can impoort.
+func (a *Account) addStreamExport(subject string, accounts []*Account) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a == nil {
+		return ErrMissingAccount
+	}
+	if a.exports.streams == nil {
+		a.exports.streams = make(map[string]map[string]*Account)
+	}
+	var ma map[string]*Account
+	for _, aa := range accounts {
+		if ma == nil {
+			ma = make(map[string]*Account, len(accounts))
+		}
+		ma[aa.Name] = aa
+	}
+	a.exports.streams[subject] = ma
+	return nil
+}
+
+// Check if another account is authorized to import from us.
+func (a *Account) checkStreamImportAuthorized(account *Account, subject string) bool {
+	// Find the subject in the exports list.
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.exports.streams == nil || !IsValidSubject(subject) {
+		return false
+	}
+
+	// Check direct match of subject first
+	am, ok := a.exports.streams[subject]
+	if ok {
+		// if am is nil that denotes a public export
+		if am == nil {
+			return true
+		}
+		// If we have a matching account we are authorized
+		_, ok := am[account.Name]
+		return ok
+	}
+	// ok if we are here we did not match directly so we need to test each one.
+	// The import subject arg has to take precedence, meaning the export
+	// has to be a true subset of the import claim. We already checked for
+	// exact matches above.
+
+	tokens := strings.Split(subject, tsep)
+	for subj, am := range a.exports.streams {
+		if isSubsetMatch(tokens, subj) {
+			if am == nil {
+				return true
+			}
+			_, ok := am[account.Name]
+			return ok
+		}
+	}
+	return false
+}
+
+// Check if another account is authorized to route requests to this service.
+func (a *Account) checkServiceImportAuthorized(account *Account, subject string) bool {
+	// Find the subject in the services list.
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if a.exports.services == nil || !IsValidLiteralSubject(subject) {
+		return false
+	}
+	// These are always literal subjects so just lookup.
+	am, ok := a.exports.services[subject]
+	if !ok {
+		return false
+	}
+	// Check to see if we are public or if we need to search for the account.
+	if am == nil {
+		return true
+	}
+	// Check that we allow this account.
+	_, ok = am[account.Name]
+	return ok
+}
+
 // Nkey is for multiple nkey based users
 type NkeyUser struct {
 	Nkey        string       `json:"user"`
-	Permissions *Permissions `json:"permissions"`
+	Permissions *Permissions `json:"permissions,omitempty"`
+	Account     *Account     `json:"account,omitempty"`
 }
 
 // User is for multiple accounts/users.
 type User struct {
 	Username    string       `json:"user"`
 	Password    string       `json:"password"`
-	Permissions *Permissions `json:"permissions"`
+	Permissions *Permissions `json:"permissions,omitempty"`
+	Account     *Account     `json:"account,omitempty"`
 }
 
 // clone performs a deep copy of the User struct, returning a new clone with
@@ -146,7 +366,7 @@ func (s *Server) checkAuthforWarnings() {
 	}
 	if warn {
 		// Warning about using plaintext passwords.
-		s.Warnf("Plaintext passwords detected. Use Nkeys or Bcrypt passwords in config files.")
+		s.Warnf("Plaintext passwords detected, use nkeys or bcrypt.")
 	}
 }
 
@@ -262,6 +482,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		if err := pub.Verify(c.nonce, sig); err != nil {
 			return false
 		}
+		c.RegisterNkeyUser(nkey)
 		return true
 	}
 
@@ -307,35 +528,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return false
 	}
 	return true
-}
-
-// removeUnauthorizedSubs removes any subscriptions the client has that are no
-// longer authorized, e.g. due to a config reload.
-func (s *Server) removeUnauthorizedSubs(c *client) {
-	c.mu.Lock()
-	if c.perms == nil {
-		c.mu.Unlock()
-		return
-	}
-
-	subs := make(map[string]*subscription, len(c.subs))
-	for sid, sub := range c.subs {
-		subs[sid] = sub
-	}
-	c.mu.Unlock()
-
-	for sid, sub := range subs {
-		if !c.canSubscribe(sub.subject) {
-			_ = s.sl.Remove(sub)
-			c.mu.Lock()
-			delete(c.subs, sid)
-			c.mu.Unlock()
-			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
-				sub.subject, sub.sid))
-			s.Noticef("Removed sub %q for user %q - not authorized",
-				string(sub.subject), c.opts.Username)
-		}
-	}
 }
 
 // Support for bcrypt stored passwords and tokens.
