@@ -497,7 +497,6 @@ func TestImportAuthorized(t *testing.T) {
 }
 
 func TestSimpleMapping(t *testing.T) {
-	t.Helper()
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
 
