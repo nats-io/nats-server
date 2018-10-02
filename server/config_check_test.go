@@ -40,8 +40,11 @@ func TestConfigCheck(t *testing.T) {
 		// errorPos is the position of the error.
 		errorPos int
 
-		// warning errors also include a reason optionally
+		// warning errors also include a reason optionally.
 		reason string
+
+		// newDefaultErr is a configuration error that includes source of error.
+		newDefaultErr error
 	}{
 		{
 			name: "when unknown field is used at top level",
@@ -491,6 +494,335 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:    5,
 			reason:      `setting "permissions" within cluster authorization block is deprecated`,
 		},
+		/////////////////////
+		// ACCOUNTS	   //
+		/////////////////////
+		{
+			name: "when accounts block is correctly configured",
+			config: `
+		http_port = 8222
+
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		        # SUAEL6RU3BSDAFKOHNTEOK5Q6FTM5FTAMWVIKBET6FHPO4JRII3CYELVNM
+		        nkey = "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+
+		  #
+		  # nats < synadia
+		  #
+		  nats {
+		    # SUAJTM55JH4BNYDA22DMDZJSRBRKVDGSLYK2HDIOCM3LPWCDXIDV5Q4CIE
+		    nkey = "ADRZ42QBM7SXQDXXTSVWT2WLLFYOQGAFC4TO6WOAXHEKQHIXR4HFYJDS"
+
+		    users [
+		      {
+		        # SUADZTYQAKTY5NQM7XRB5XR3C24M6ROGZLBZ6P5HJJSSOFUGC5YXOOECOM
+		        nkey = "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'nats.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" }, to: "nats.requests" }
+		    ]
+		  }
+
+		  #
+		  # cncf < synadia
+		  #
+		  cncf {
+		    # SAAFHDZX7SGZ2SWHPS22JRPPK5WX44NPLNXQHR5C5RIF6QRI3U65VFY6C4
+		    nkey = "AD4YRVUJF2KASKPGRMNXTYKIYSCB3IHHB4Y2ME6B2PDIV5QJ23C2ZRIT"
+
+		    users [
+		      {
+		        # SUAKINP3Z2BPUXWOFSW2FZC7TFJCMMU7DHKP2C62IJQUDASOCDSTDTRMJQ
+		        nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'synadia.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" } }
+		    ]
+		  }
+		}
+				`,
+			defaultErr:  nil,
+			pedanticErr: nil,
+		},
+		{
+			name: "when accounts block has unknown fields",
+			config: `
+		http_port = 8222
+
+		accounts {
+                  foo = "bar"
+		}
+				`,
+			newDefaultErr: errors.New(`Expected map entries for accounts`),
+			errorLine:     4,
+			errorPos:      3,
+		},
+		{
+			name: "when accounts block defines a global account",
+			config: `
+		http_port = 8222
+
+		accounts {
+                  $G = {
+                  }
+		}
+				`,
+			newDefaultErr: errors.New(`"$G" is a Reserved Account`),
+			errorLine:     4,
+			errorPos:      3,
+		},
+		{
+			name: "when accounts block uses an invalid public key",
+			config: `
+		accounts {
+                  synadia = {
+                    nkey = "invalid"
+                  }
+		}
+				`,
+			newDefaultErr: errors.New(`Not a valid public nkey for an account: "invalid"`),
+			errorLine:     4,
+			errorPos:      21,
+		},
+		{
+			name: "when accounts list includes reserved account",
+			config: `
+                port = 4222
+
+		accounts = [foo, bar, "$G"]
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`"$G" is a Reserved Account`),
+			errorLine:     4,
+			errorPos:      3,
+		},
+		{
+			name: "when accounts list includes a dupe entry",
+			config: `
+                port = 4222
+
+		accounts = [foo, bar, bar]
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Duplicate Account Entry: bar`),
+			errorLine:     4,
+			errorPos:      3,
+		},
+		{
+			name: "when accounts block includes a dupe user",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    users = [
+                      { user: "foo",   pass: "bar" },
+                      { user: "hello", pass: "world" },
+                      { user: "foo",   pass: "bar" }
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Duplicate user "foo" detected`),
+			errorLine:     6,
+			errorPos:      21,
+		},
+		{
+			name: "when accounts block includes a dupe nkey",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    users = [
+                      { nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ" },
+                      { nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ" },
+                      { nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ" }
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Duplicate nkey "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ" detected`),
+			errorLine:     6,
+			errorPos:      21,
+		},
+		{
+			name: "when accounts block imports are not a list",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = true
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Imports should be an array, got bool`),
+			errorLine:     6,
+			errorPos:      21,
+		},
+		{
+			name: "when accounts block exports are not a list",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = true
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Exports should be an array, got bool`),
+			errorLine:     6,
+			errorPos:      21,
+		},
+		{
+			name: "when accounts block imports items are not a map",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      false
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Import Items should be a map with type entry, got bool`),
+			errorLine:     7,
+			errorPos:      23,
+		},
+		{
+			name: "when accounts block export items are not a map",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = [
+                      false
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Export Items should be a map with type entry, got bool`),
+			errorLine:     7,
+			errorPos:      23,
+		},
+		{
+			name: "when accounts exports has a stream name that is not a string",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = [
+                      {
+                        stream: false
+                      }
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Expected stream name to be string, got bool`),
+			errorLine:     8,
+			errorPos:      25,
+		},
+		{
+			name: "when accounts exports has a service name that is not a string",
+			config: `
+		accounts = {
+                  nats {
+                    exports = [
+                      {
+                        service: false
+                      }
+                    ]
+                  }
+                }
+				`,
+			newDefaultErr: errors.New(`Expected service name to be string, got bool`),
+			errorLine:     6,
+			errorPos:      25,
+		},
+		{
+			name: "when accounts imports stream without name",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      { stream: { }}
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Expect an account name and a subject`),
+			errorLine:     7,
+			errorPos:      25,
+		},
+		{
+			name: "when accounts imports service without name",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      { service: { }}
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			newDefaultErr: errors.New(`Expect an account name and a subject`),
+			errorLine:     7,
+			errorPos:      25,
+		},
 	}
 
 	checkConfig := func(config string, pedantic bool) error {
@@ -518,7 +850,16 @@ func TestConfigCheck(t *testing.T) {
 
 			t.Run("with pedantic check enabled", func(t *testing.T) {
 				err := checkConfig(conf, true)
-				expectedErr := test.pedanticErr
+				var expectedErr error
+
+				// New default errors also include source of error
+				// like an error reported when running with pedantic flag.
+				if test.newDefaultErr != nil {
+					expectedErr = test.newDefaultErr
+				} else if test.pedanticErr != nil {
+					expectedErr = test.pedanticErr
+				}
+
 				if err != nil && expectedErr != nil {
 					msg := fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
 					if test.reason != "" {
@@ -528,16 +869,28 @@ func TestConfigCheck(t *testing.T) {
 						t.Errorf("Expected %q, got %q", msg, err.Error())
 					}
 				}
-				checkErr(t, err, test.pedanticErr)
+
+				checkErr(t, err, expectedErr)
 			})
 
 			t.Run("with pedantic check disabled", func(t *testing.T) {
 				err := checkConfig(conf, false)
-				expectedErr := test.defaultErr
-				if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
-					t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
+
+				// Gradually move to all errors including source of the error.
+				if err != nil && test.newDefaultErr != nil {
+					expectedErr := test.newDefaultErr
+					source := fmt.Sprintf("%s:%d:%d", conf, test.errorLine, test.errorPos)
+					expectedMsg := fmt.Sprintf("%s: %s", source, expectedErr.Error())
+					if err.Error() != expectedMsg {
+						t.Errorf("\nExpected: \n%q, \ngot: \n%q", expectedMsg, err.Error())
+					}
+				} else if err != nil && test.defaultErr != nil {
+					expectedErr := test.defaultErr
+					if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
+						t.Errorf("Expected: \n%q, \ngot: \n%q", expectedErr.Error(), err.Error())
+					}
+					checkErr(t, err, test.defaultErr)
 				}
-				checkErr(t, err, test.defaultErr)
 			})
 		})
 	}
@@ -562,6 +915,6 @@ func TestConfigCheckIncludes(t *testing.T) {
 	}
 	expectedErr := errors.New(`configs/include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"`)
 	if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
-		t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
+		t.Errorf("Expected: \n%q, got\n: %q", expectedErr.Error(), err.Error())
 	}
 }
