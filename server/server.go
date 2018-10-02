@@ -242,10 +242,7 @@ func (s *Server) setOpts(opts *Options) {
 func (s *Server) configureAccounts() {
 	// Check opts and walk through them. Making sure to create SLs.
 	for _, acc := range s.opts.Accounts {
-		if acc.sl == nil {
-			acc.sl = NewSublist()
-		}
-		s.accounts[acc.Name] = acc
+		s.registerAccount(acc)
 	}
 }
 
@@ -329,12 +326,23 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 	if _, ok := s.accounts[name]; ok {
 		return nil, ErrAccountExists
 	}
-	acc := &Account{
-		Name: name,
-		sl:   NewSublist(),
-	}
-	s.accounts[name] = acc
+	acc := &Account{Name: name}
+	s.registerAccount(acc)
 	return acc, nil
+}
+
+// Place common account setup here.
+func (s *Server) registerAccount(acc *Account) {
+	if acc.sl == nil {
+		acc.sl = NewSublist()
+	}
+	if acc.maxnae == 0 {
+		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
+	}
+	if acc.maxaettl == 0 {
+		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
+	}
+	s.accounts[acc.Name] = acc
 }
 
 // LookupAccount is a public function to return the account structure

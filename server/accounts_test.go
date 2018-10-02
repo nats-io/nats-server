@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nkeys"
 )
@@ -745,9 +746,9 @@ func TestCrossAccountRequestReply(t *testing.T) {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	// Add in the service import for the requests. Make it public.
+	// Add in the service export for the requests. Make it public.
 	if err := cfoo.acc.addServiceExport("test.request", nil); err != nil {
-		t.Fatalf("Error adding account service import to client foo: %v", err)
+		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 
 	// Test addServiceImport to make sure it requires accounts, and literalsubjects for both from and to subjects.
@@ -763,7 +764,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 
 	// Now add in the Route for request to be routed to the foo account.
 	if err := cbar.acc.addServiceImport(fooAcc, "foo", "test.request"); err != nil {
-		t.Fatalf("Error adding account route to client bar: %v", err)
+		t.Fatalf("Error adding account service import to client bar: %v", err)
 	}
 
 	// Now setup the resonder under cfoo
@@ -825,6 +826,54 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	if nr := fooAcc.numServiceRoutes(); nr != 0 {
 		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
 	}
+}
+
+func TestCrossAccountRequestReplyResponseMaps(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	ttl := 500 * time.Millisecond
+	barAcc.setMaxAutoExpireResponseMaps(5)
+	barAcc.setMaxAutoExpireTTL(ttl)
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+
+	if err := barAcc.addServiceExport("test.request", nil); err != nil {
+		t.Fatalf("Error adding account service export: %v", err)
+	}
+	if err := fooAcc.addServiceImport(barAcc, "foo", "test.request"); err != nil {
+		t.Fatalf("Error adding account service import: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		cfoo.parseAndFlush([]byte("PUB foo bar 4\r\nhelp\r\n"))
+	}
+
+	// We should expire because max.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nae := barAcc.numAutoExpireResponseMaps(); nae != 5 {
+			return fmt.Errorf("Number of responsemaps is %d", nae)
+		}
+		return nil
+	})
+
+	// Wait for the ttl to expire.
+	time.Sleep(2 * ttl)
+
+	// Now run prune and make sure we collect the timedout ones.
+	barAcc.pruneAutoExpireResponseMaps()
+
+	// We should expire because ttl.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nae := barAcc.numAutoExpireResponseMaps(); nae != 0 {
+			return fmt.Errorf("Number of responsemaps is %d", nae)
+		}
+		return nil
+	})
 }
 
 func TestAccountMapsUsers(t *testing.T) {
