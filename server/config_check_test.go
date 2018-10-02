@@ -520,7 +520,7 @@ func TestConfigCheck(t *testing.T) {
 				err := checkConfig(conf, true)
 				expectedErr := test.pedanticErr
 				if err != nil && expectedErr != nil {
-					msg := fmt.Sprintf("%s in %s:%d:%d", expectedErr.Error(), conf, test.errorLine, test.errorPos)
+					msg := fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
 					if test.reason != "" {
 						msg += ": " + test.reason
 					}
@@ -560,7 +560,7 @@ func TestConfigCheckIncludes(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error processing include files with configuration check enabled: %v", err)
 	}
-	expectedErr := errors.New(`unknown field "monitoring_port" in configs/include_bad_conf_check_b.conf:10:19`)
+	expectedErr := errors.New(`configs/include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"`)
 	if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
 		t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
 	}

@@ -208,7 +208,7 @@ type unknownConfigFieldErr struct {
 func (e *unknownConfigFieldErr) Error() string {
 	msg := fmt.Sprintf("unknown field %q", e.field)
 	if e.token != nil {
-		return msg + fmt.Sprintf(" in %s:%d:%d", e.configFile, e.token.Line(), e.token.Position())
+		return fmt.Sprintf("%s:%d:%d: %s", e.configFile, e.token.Line(), e.token.Position(), msg)
 	}
 	return msg
 }
@@ -223,7 +223,7 @@ type configWarningErr struct {
 func (e *configWarningErr) Error() string {
 	msg := fmt.Sprintf("invalid use of field %q", e.field)
 	if e.token != nil {
-		msg += fmt.Sprintf(" in %s:%d:%d", e.configFile, e.token.Line(), e.token.Position())
+		msg = fmt.Sprintf("%s:%d:%d: %s", e.configFile, e.token.Line(), e.token.Position(), msg)
 	}
 	msg += ": " + e.reason
 	return msg

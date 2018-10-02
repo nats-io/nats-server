@@ -394,12 +394,11 @@ func (p *parser) setValue(val interface{}) {
 		key := p.popKey()
 
 		if p.pedantic {
-			it := p.popItemKey()
-
 			// Change the position to the beginning of the key
 			// since more useful when reporting errors.
 			switch v := val.(type) {
 			case *token:
+				it := p.popItemKey()
 				v.item.pos = it.pos
 				v.item.line = it.line
 				ctx[key] = v
