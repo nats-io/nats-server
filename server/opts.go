@@ -199,34 +199,41 @@ type token interface {
 	Position() int
 }
 
+// configErr is a configuration error.
+type configErr struct {
+	token  token
+	reason string
+}
+
+func (e *configErr) Source() string {
+	return fmt.Sprintf("%s:%d:%d", e.token.SourceFile(), e.token.Line(), e.token.Position())
+}
+
+func (e *configErr) Error() string {
+	if e.token != nil {
+		return fmt.Sprintf("%s: %s", e.Source(), e.reason)
+	}
+	return e.reason
+}
+
+// unknownConfigFieldErr is an error reported in pedantic mode.
 type unknownConfigFieldErr struct {
-	field      string
-	token      token
-	configFile string
+	configErr
+	field string
 }
 
 func (e *unknownConfigFieldErr) Error() string {
-	msg := fmt.Sprintf("unknown field %q", e.field)
-	if e.token != nil {
-		return fmt.Sprintf("%s:%d:%d: %s", e.configFile, e.token.Line(), e.token.Position(), msg)
-	}
-	return msg
+	return fmt.Sprintf("%s: unknown field %q", e.Source(), e.field)
 }
 
+// configWarningErr is an error reported in pedantic mode.
 type configWarningErr struct {
-	field      string
-	token      token
-	configFile string
-	reason     string
+	configErr
+	field string
 }
 
 func (e *configWarningErr) Error() string {
-	msg := fmt.Sprintf("invalid use of field %q", e.field)
-	if e.token != nil {
-		msg = fmt.Sprintf("%s:%d:%d: %s", e.configFile, e.token.Line(), e.token.Position(), msg)
-	}
-	msg += ": " + e.reason
-	return msg
+	return fmt.Sprintf("%s: invalid use of field %q: %s", e.Source(), e.field, e.reason)
 }
 
 // ProcessConfigFile processes a configuration file.
@@ -270,25 +277,14 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if configFile == "" {
 		return nil
 	}
-
-	var (
-		m        map[string]interface{}
-		tk       token
-		pedantic bool = o.CheckConfig
-		err      error
-	)
-	if pedantic {
-		m, err = conf.ParseFileWithChecks(configFile)
-	} else {
-		m, err = conf.ParseFile(configFile)
-	}
+	m, err := conf.ParseFileWithChecks(configFile)
 	if err != nil {
 		return err
 	}
 	for k, v := range m {
 		// When pedantic checks are enabled then need to unwrap
 		// to get the value along with reported error line.
-		tk, v = unwrapValue(v)
+		tk, v := unwrapValue(v)
 		switch strings.ToLower(k) {
 		case "listen":
 			hp, err := parseListen(v)
@@ -310,17 +306,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "logtime":
 			o.Logtime = v.(bool)
 		case "accounts":
-			err = parseAccounts(v, o)
+			err := parseAccounts(tk, o)
 			if err != nil {
 				return err
 			}
 		case "authorization":
-			var auth *authorization
-			if pedantic {
-				auth, err = parseAuthorization(tk, o)
-			} else {
-				auth, err = parseAuthorization(v, o)
-			}
+			auth, err := parseAuthorization(tk, o)
 			if err != nil {
 				return err
 			}
@@ -366,12 +357,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "https_port":
 			o.HTTPSPort = int(v.(int64))
 		case "cluster":
-			var err error
-			if pedantic {
-				err = parseCluster(tk, o)
-			} else {
-				err = parseCluster(v, o)
-			}
+			err := parseCluster(tk, o)
 			if err != nil {
 				return err
 			}
@@ -406,11 +392,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				tc  *TLSConfigOpts
 				err error
 			)
-			if pedantic {
-				tc, err = parseTLS(tk, o)
-			} else {
-				tc, err = parseTLS(v, o)
-			}
+			tc, err = parseTLS(tk, o)
 			if err != nil {
 				return err
 			}
@@ -433,11 +415,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
 			}
 		default:
+			pedantic := o.CheckConfig
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return &unknownConfigFieldErr{
-					field:      k,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: k,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 		}
@@ -497,15 +481,7 @@ func parseCluster(v interface{}, opts *Options) error {
 		case "host", "net":
 			opts.Cluster.Host = mv.(string)
 		case "authorization":
-			var (
-				auth *authorization
-				err  error
-			)
-			if pedantic {
-				auth, err = parseAuthorization(tk, opts)
-			} else {
-				auth, err = parseAuthorization(mv, opts)
-			}
+			auth, err := parseAuthorization(tk, opts)
 			if err != nil {
 				return err
 			}
@@ -519,10 +495,11 @@ func parseCluster(v interface{}, opts *Options) error {
 			if auth.defaultPermissions != nil {
 				if pedantic {
 					return &configWarningErr{
-						field:      mk,
-						token:      tk,
-						reason:     `setting "permissions" within cluster authorization block is deprecated`,
-						configFile: tk.SourceFile(),
+						field: mk,
+						configErr: configErr{
+							token:  tk,
+							reason: `setting "permissions" within cluster authorization block is deprecated`,
+						},
 					}
 				}
 
@@ -548,11 +525,7 @@ func parseCluster(v interface{}, opts *Options) error {
 				tc  *TLSConfigOpts
 				err error
 			)
-			if pedantic {
-				tc, err = parseTLS(tk, opts)
-			} else {
-				tc, err = parseTLS(mv, opts)
-			}
+			tc, err = parseTLS(tk, opts)
 			if err != nil {
 				return err
 			}
@@ -581,9 +554,10 @@ func parseCluster(v interface{}, opts *Options) error {
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 		}
@@ -641,19 +615,20 @@ func parseAccounts(v interface{}, opts *Options) error {
 		exportStreams  []*export
 		exportServices []*export
 	)
-	_, v = unwrapValue(v)
-	switch v.(type) {
+	tk, v := unwrapValue(v)
+	switch vv := v.(type) {
 	// Simple array of account names.
 	case []interface{}, []string:
 		m := make(map[string]struct{}, len(v.([]interface{})))
-		for _, name := range v.([]interface{}) {
+		for _, n := range v.([]interface{}) {
+			_, name := unwrapValue(n)
 			ns := name.(string)
 			// Check for reserved names.
 			if isReservedAccount(ns) {
-				return fmt.Errorf("%q is a Reserved Account", ns)
+				return &configErr{tk, fmt.Sprintf("%q is a Reserved Account", ns)}
 			}
 			if _, ok := m[ns]; ok {
-				return fmt.Errorf("Duplicate Account Entry: %s", ns)
+				return &configErr{tk, fmt.Sprintf("Duplicate Account Entry: %s", ns)}
 			}
 			opts.Accounts = append(opts.Accounts, &Account{Name: ns})
 			m[ns] = struct{}{}
@@ -663,15 +638,15 @@ func parseAccounts(v interface{}, opts *Options) error {
 		// Track users across accounts, must be unique across
 		// accounts and nkeys vs users.
 		uorn := make(map[string]struct{})
-		for aname, mv := range v.(map[string]interface{}) {
+		for aname, mv := range vv {
 			_, amv := unwrapValue(mv)
 			// These should be maps.
 			mv, ok := amv.(map[string]interface{})
 			if !ok {
-				return fmt.Errorf("Expected map entries for accounts")
+				return &configErr{tk, "Expected map entries for accounts"}
 			}
 			if isReservedAccount(aname) {
-				return fmt.Errorf("%q is a Reserved Account", aname)
+				return &configErr{tk, fmt.Sprintf("%q is a Reserved Account", aname)}
 			}
 			acc := &Account{Name: aname}
 			opts.Accounts = append(opts.Accounts, acc)
@@ -682,40 +657,31 @@ func parseAccounts(v interface{}, opts *Options) error {
 				case "nkey":
 					nk, ok := mv.(string)
 					if !ok || !nkeys.IsValidPublicAccountKey(nk) {
-						return fmt.Errorf("Not a valid public nkey for an account: %q", v)
+						return &configErr{tk, fmt.Sprintf("Not a valid public nkey for an account: %q", mv)}
 					}
 					acc.Nkey = nk
 				case "imports":
-					streams, services, err := parseAccountImports(mv, acc, pedantic)
+					streams, services, err := parseAccountImports(tk, acc, pedantic)
 					if err != nil {
 						return err
 					}
 					importStreams = append(importStreams, streams...)
 					importServices = append(importServices, services...)
 				case "exports":
-					streams, services, err := parseAccountExports(mv, acc, pedantic)
+					streams, services, err := parseAccountExports(tk, acc, pedantic)
 					if err != nil {
 						return err
 					}
 					exportStreams = append(exportStreams, streams...)
 					exportServices = append(exportServices, services...)
 				case "users":
-					var (
-						users []*User
-						err   error
-						nkeys []*NkeyUser
-					)
-					if pedantic {
-						nkeys, users, err = parseUsers(tk, opts)
-					} else {
-						nkeys, users, err = parseUsers(mv, opts)
-					}
+					nkeys, users, err := parseUsers(mv, opts)
 					if err != nil {
 						return err
 					}
 					for _, u := range users {
 						if _, ok := uorn[u.Username]; ok {
-							return fmt.Errorf("Duplicate user %q detected", u.Username)
+							return &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
 						}
 						uorn[u.Username] = struct{}{}
 						u.Account = acc
@@ -724,18 +690,19 @@ func parseAccounts(v interface{}, opts *Options) error {
 
 					for _, u := range nkeys {
 						if _, ok := uorn[u.Nkey]; ok {
-							return fmt.Errorf("Duplicate nkey %q detected", u.Nkey)
+							return &configErr{tk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
 						}
 						uorn[u.Nkey] = struct{}{}
 						u.Account = acc
 					}
 					opts.Nkeys = append(opts.Nkeys, nkeys...)
 				default:
-					if pedantic && tk != nil && !tk.IsUsedVariable() {
+					if pedantic && !tk.IsUsedVariable() {
 						return &unknownConfigFieldErr{
-							field:      k,
-							token:      tk,
-							configFile: tk.SourceFile(),
+							field: k,
+							configErr: configErr{
+								token: tk,
+							},
 						}
 					}
 				}
@@ -809,23 +776,18 @@ func parseAccounts(v interface{}, opts *Options) error {
 // Parse the account imports
 func parseAccountExports(v interface{}, acc *Account, pedantic bool) ([]*export, []*export, error) {
 	// This should be an array of objects/maps.
-	_, v = unwrapValue(v)
+	tk, v := unwrapValue(v)
 	ims, ok := v.([]interface{})
 	if !ok {
-		return nil, nil, fmt.Errorf("Exports should be an array, got %T", v)
+		return nil, nil, &configErr{tk, fmt.Sprintf("Exports should be an array, got %T", v)}
 	}
 
 	var services []*export
 	var streams []*export
 
 	for _, v := range ims {
-		_, mv := unwrapValue(v)
-		io, ok := mv.(map[string]interface{})
-		if !ok {
-			return nil, nil, fmt.Errorf("Export Items should be a map with type entry, got %T", mv)
-		}
 		// Should have stream or service
-		stream, service, err := parseExportStreamOrService(io, pedantic)
+		stream, service, err := parseExportStreamOrService(v, pedantic)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -844,23 +806,18 @@ func parseAccountExports(v interface{}, acc *Account, pedantic bool) ([]*export,
 // Parse the account imports
 func parseAccountImports(v interface{}, acc *Account, pedantic bool) ([]*importStream, []*importService, error) {
 	// This should be an array of objects/maps.
-	_, v = unwrapValue(v)
+	tk, v := unwrapValue(v)
 	ims, ok := v.([]interface{})
 	if !ok {
-		return nil, nil, fmt.Errorf("Imports should be an array, got %T", v)
+		return nil, nil, &configErr{tk, fmt.Sprintf("Imports should be an array, got %T", v)}
 	}
 
 	var services []*importService
 	var streams []*importStream
 
 	for _, v := range ims {
-		_, mv := unwrapValue(v)
-		io, ok := mv.(map[string]interface{})
-		if !ok {
-			return nil, nil, fmt.Errorf("Import Items should be a map with type entry, got %T", mv)
-		}
 		// Should have stream or service
-		stream, service, err := parseImportStreamOrService(io, pedantic)
+		stream, service, err := parseImportStreamOrService(v, pedantic)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -889,15 +846,13 @@ func parseAccount(v map[string]interface{}, pedantic bool) (string, string, erro
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return "", "", &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 		}
-	}
-	if accountName == "" || subject == "" {
-		return "", "", fmt.Errorf("Expect an account name and a subject")
 	}
 	return accountName, subject, nil
 }
@@ -908,31 +863,40 @@ func parseAccount(v map[string]interface{}, pedantic bool) (string, string, erro
 //   {stream: "synadia.private.>", accounts: [cncf, natsio]}
 //   {service: "pub.request"} # No accounts means public.
 //   {service: "pub.special.request", accounts: [nats.io]}
-func parseExportStreamOrService(v map[string]interface{}, pedantic bool) (*export, *export, error) {
+func parseExportStreamOrService(v interface{}, pedantic bool) (*export, *export, error) {
 	var (
 		curStream  *export
 		curService *export
 		accounts   []string
 	)
-
-	for mk, mv := range v {
+	tk, v := unwrapValue(v)
+	vv, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, nil, &configErr{tk, fmt.Sprintf("Export Items should be a map with type entry, got %T", v)}
+	}
+	for mk, mv := range vv {
 		tk, mv := unwrapValue(mv)
 		switch strings.ToLower(mk) {
 		case "stream":
 			if curService != nil {
-				return nil, nil, fmt.Errorf("Detected stream but already saw a service: %+v", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Detected stream %q but already saw a service", mv)}
 			}
-			curStream = &export{sub: mv.(string)}
+
+			mvs, ok := mv.(string)
+			if !ok {
+				return nil, nil, &configErr{tk, fmt.Sprintf("Expected stream name to be string, got %T", mv)}
+			}
+			curStream = &export{sub: mvs}
 			if accounts != nil {
 				curStream.accs = accounts
 			}
 		case "service":
 			if curStream != nil {
-				return nil, nil, fmt.Errorf("Detected service but already saw a stream: %+v", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Detected service %q but already saw a stream", mv)}
 			}
 			mvs, ok := mv.(string)
 			if !ok {
-				return nil, nil, fmt.Errorf("Expected service to be string name, got %T", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Expected service name to be string, got %T", mv)}
 			}
 			curService = &export{sub: mvs}
 			if accounts != nil {
@@ -951,9 +915,10 @@ func parseExportStreamOrService(v map[string]interface{}, pedantic bool) (*expor
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, nil, &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 			return nil, nil, fmt.Errorf("Unknown field %q parsing export service or stream", mk)
@@ -968,28 +933,35 @@ func parseExportStreamOrService(v map[string]interface{}, pedantic bool) (*expor
 //   {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
 //   {stream: {account: "synadia", subject:"synadia.private.*"}}
 //   {service: {account: "synadia", subject: "pub.special.request"}, subject: "synadia.request"}
-func parseImportStreamOrService(v map[string]interface{}, pedantic bool) (*importStream, *importService, error) {
+func parseImportStreamOrService(v interface{}, pedantic bool) (*importStream, *importService, error) {
 	var (
 		curStream  *importStream
 		curService *importService
 		pre, to    string
 	)
-
-	for mk, mv := range v {
+	tk, mv := unwrapValue(v)
+	vv, ok := mv.(map[string]interface{})
+	if !ok {
+		return nil, nil, &configErr{tk, fmt.Sprintf("Import Items should be a map with type entry, got %T", mv)}
+	}
+	for mk, mv := range vv {
 		tk, mv := unwrapValue(mv)
 		switch strings.ToLower(mk) {
 		case "stream":
 			if curService != nil {
-				return nil, nil, fmt.Errorf("Detected stream but already saw a service: %+v", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Detected stream but already saw a service")}
 			}
 			ac, ok := mv.(map[string]interface{})
 			if !ok {
-				return nil, nil, fmt.Errorf("Stream entry should be an account map, got %T", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Stream entry should be an account map, got %T", mv)}
 			}
 			// Make sure this is a map with account and subject
 			accountName, subject, err := parseAccount(ac, pedantic)
 			if err != nil {
 				return nil, nil, err
+			}
+			if accountName == "" || subject == "" {
+				return nil, nil, &configErr{tk, fmt.Sprintf("Expect an account name and a subject")}
 			}
 			curStream = &importStream{an: accountName, sub: subject}
 			if pre != "" {
@@ -997,16 +969,19 @@ func parseImportStreamOrService(v map[string]interface{}, pedantic bool) (*impor
 			}
 		case "service":
 			if curStream != nil {
-				return nil, nil, fmt.Errorf("Detected service but already saw a stream: %+v", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Detected service but already saw a stream")}
 			}
 			ac, ok := mv.(map[string]interface{})
 			if !ok {
-				return nil, nil, fmt.Errorf("Service entry should be an account map, got %T", mv)
+				return nil, nil, &configErr{tk, fmt.Sprintf("Service entry should be an account map, got %T", mv)}
 			}
 			// Make sure this is a map with account and subject
 			accountName, subject, err := parseAccount(ac, pedantic)
 			if err != nil {
 				return nil, nil, err
+			}
+			if accountName == "" || subject == "" {
+				return nil, nil, &configErr{tk, fmt.Sprintf("Expect an account name and a subject")}
 			}
 			curService = &importService{an: accountName, sub: subject}
 			if to != "" {
@@ -1025,9 +1000,10 @@ func parseImportStreamOrService(v map[string]interface{}, pedantic bool) (*impor
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, nil, &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 			return nil, nil, fmt.Errorf("Unknown field %q parsing import service or stream", mk)
@@ -1068,31 +1044,14 @@ func parseAuthorization(v interface{}, opts *Options) (*authorization, error) {
 			}
 			auth.timeout = at
 		case "users":
-			var (
-				users []*User
-				err   error
-				nkeys []*NkeyUser
-			)
-			if pedantic {
-				nkeys, users, err = parseUsers(tk, opts)
-			} else {
-				nkeys, users, err = parseUsers(mv, opts)
-			}
+			nkeys, users, err := parseUsers(tk, opts)
 			if err != nil {
 				return nil, err
 			}
 			auth.users = users
 			auth.nkeys = nkeys
 		case "default_permission", "default_permissions", "permissions":
-			var (
-				permissions *Permissions
-				err         error
-			)
-			if pedantic {
-				permissions, err = parseUserPermissions(tk, opts)
-			} else {
-				permissions, err = parseUserPermissions(mv, opts)
-			}
+			permissions, err := parseUserPermissions(tk, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -1100,9 +1059,10 @@ func parseAuthorization(v interface{}, opts *Options) (*authorization, error) {
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 		}
@@ -1162,20 +1122,17 @@ func parseUsers(mv interface{}, opts *Options) ([]*NkeyUser, []*User, error) {
 			case "pass", "password":
 				user.Password = v.(string)
 			case "permission", "permissions", "authorization":
-				if pedantic {
-					perms, err = parseUserPermissions(tk, opts)
-				} else {
-					perms, err = parseUserPermissions(v, opts)
-				}
+				perms, err = parseUserPermissions(v, opts)
 				if err != nil {
 					return nil, nil, err
 				}
 			default:
 				if pedantic && tk != nil && !tk.IsUsedVariable() {
 					return nil, nil, &unknownConfigFieldErr{
-						field:      k,
-						token:      tk,
-						configFile: tk.SourceFile(),
+						field: k,
+						configErr: configErr{
+							token: tk,
+						},
 					}
 				}
 			}
@@ -1246,9 +1203,10 @@ func parseUserPermissions(mv interface{}, opts *Options) (*Permissions, error) {
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, &unknownConfigFieldErr{
-					field:      k,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: k,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
@@ -1331,9 +1289,10 @@ func parseSubjectPermission(v interface{}, opts *Options) (*SubjectPermission, e
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, &unknownConfigFieldErr{
-					field:      k,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: k,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 			return nil, fmt.Errorf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)
@@ -1459,9 +1418,10 @@ func parseTLS(v interface{}, opts *Options) (*TLSConfigOpts, error) {
 		default:
 			if pedantic && tk != nil && !tk.IsUsedVariable() {
 				return nil, &unknownConfigFieldErr{
-					field:      mk,
-					token:      tk,
-					configFile: tk.SourceFile(),
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
 				}
 			}
 
