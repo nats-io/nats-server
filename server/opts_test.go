@@ -1408,3 +1408,40 @@ func TestClusterPermissionsConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountUsersLoadedProperly(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	authorization {
+		users [
+			{user: ivan, password: bar}
+			{nkey : UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX}
+		]
+	}
+	accounts {
+		synadia {
+			users [
+				{user: derek, password: foo}
+				{nkey : UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E}
+			]
+		}
+	}
+	`))
+	check := func(t *testing.T) {
+		t.Helper()
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+		opts := s.getOpts()
+		if n := len(opts.Users); n != 2 {
+			t.Fatalf("Should have 2 users, got %v", n)
+		}
+		if n := len(opts.Nkeys); n != 2 {
+			t.Fatalf("Should have 2 nkeys, got %v", n)
+		}
+	}
+	// Repeat test since issue was with ordering of processing
+	// of authorization vs accounts that depends on range of a map (after actual parsing)
+	for i := 0; i < 20; i++ {
+		check(t)
+	}
+}
