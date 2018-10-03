@@ -4,6 +4,7 @@ import "testing"
 
 // Test to make sure we get what we expect.
 func expect(t *testing.T, lx *lexer, items []item) {
+	t.Helper()
 	for i := 0; i < len(items); i++ {
 		item := lx.nextItem()
 		_ = item.String()
@@ -22,40 +23,64 @@ func expect(t *testing.T, lx *lexer, items []item) {
 
 func TestPlainValue(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo")
 	expect(t, lx, expectedItems)
 }
 
 func TestSimpleKeyStringValues(t *testing.T) {
-	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "bar", 1},
-		{itemEOF, "", 1},
-	}
 	// Double quotes
+	expectedItems := []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 7},
+		{itemEOF, "", 1, 0},
+	}
 	lx := lex("foo = \"bar\"")
 	expect(t, lx, expectedItems)
+
 	// Single quotes
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 7},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo = 'bar'")
 	expect(t, lx, expectedItems)
+
 	// No spaces
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 5},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo='bar'")
 	expect(t, lx, expectedItems)
+
 	// NL
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 5},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo='bar'\r\n")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=\t'bar'\t")
 	expect(t, lx, expectedItems)
 }
 
 func TestComplexStringValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "bar\\r\\n  \\t", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar\\r\\n  \\t", 1, 7},
+		{itemEOF, "", 2, 0},
 	}
 
 	lx := lex("foo = 'bar\\r\\n  \\t'")
@@ -64,9 +89,9 @@ func TestComplexStringValues(t *testing.T) {
 
 func TestBinaryString(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "e", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemString, "e", 1, 9},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = \\x65")
 	expect(t, lx, expectedItems)
@@ -74,9 +99,9 @@ func TestBinaryString(t *testing.T) {
 
 func TestBinaryStringLatin1(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "\xe9", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemString, "\xe9", 1, 9},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = \\xe9")
 	expect(t, lx, expectedItems)
@@ -84,12 +109,18 @@ func TestBinaryStringLatin1(t *testing.T) {
 
 func TestSimpleKeyIntegerValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "123", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = 123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 4},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=123")
 	expect(t, lx, expectedItems)
 	lx = lex("foo=123\r\n")
@@ -98,12 +129,18 @@ func TestSimpleKeyIntegerValues(t *testing.T) {
 
 func TestSimpleKeyNegativeIntegerValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "-123", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "-123", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = -123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "-123", 1, 4},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=-123")
 	expect(t, lx, expectedItems)
 	lx = lex("foo=-123\r\n")
@@ -112,82 +149,82 @@ func TestSimpleKeyNegativeIntegerValues(t *testing.T) {
 
 func TestConvenientIntegerValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1k", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1k", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = 1k")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1K", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1K", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1K")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1m", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1m", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1m")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1M", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1M", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1M")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1g", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1g", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1g")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1G", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1G", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1G")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1MB", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1MB", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1MB")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "1Gb", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "1Gb", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = 1Gb")
 	expect(t, lx, expectedItems)
 
 	// Negative versions
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "-1m", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "-1m", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = -1m")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "-1GB", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "-1GB", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("foo = -1GB ")
 	expect(t, lx, expectedItems)
@@ -195,12 +232,18 @@ func TestConvenientIntegerValues(t *testing.T) {
 
 func TestSimpleKeyFloatValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemFloat, "22.2", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemFloat, "22.2", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = 22.2")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemFloat, "22.2", 1, 4},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=22.2")
 	expect(t, lx, expectedItems)
 	lx = lex("foo=22.2\r\n")
@@ -209,9 +252,9 @@ func TestSimpleKeyFloatValues(t *testing.T) {
 
 func TestBadBinaryStringEndingAfterZeroHexChars(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2, 1},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = xyz\\x\n")
 	expect(t, lx, expectedItems)
@@ -219,9 +262,9 @@ func TestBadBinaryStringEndingAfterZeroHexChars(t *testing.T) {
 
 func TestBadBinaryStringEndingAfterOneHexChar(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Expected two hexadecimal digits after '\\x', but hit end of line", 2, 1},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = xyz\\xF\n")
 	expect(t, lx, expectedItems)
@@ -229,9 +272,9 @@ func TestBadBinaryStringEndingAfterOneHexChar(t *testing.T) {
 
 func TestBadBinaryStringWithZeroHexChars(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Expected two hexadecimal digits after '\\x', but got ']\"'", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Expected two hexadecimal digits after '\\x', but got ']\"'", 1, 12},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex(`foo = "[\x]"`)
 	expect(t, lx, expectedItems)
@@ -239,9 +282,9 @@ func TestBadBinaryStringWithZeroHexChars(t *testing.T) {
 
 func TestBadBinaryStringWithOneHexChar(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Expected two hexadecimal digits after '\\x', but got 'e]'", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Expected two hexadecimal digits after '\\x', but got 'e]'", 1, 12},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex(`foo = "[\xe]"`)
 	expect(t, lx, expectedItems)
@@ -249,9 +292,9 @@ func TestBadBinaryStringWithOneHexChar(t *testing.T) {
 
 func TestBadFloatValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Floats must start with a digit", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Floats must start with a digit", 1, 7},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = .2")
 	expect(t, lx, expectedItems)
@@ -259,8 +302,8 @@ func TestBadFloatValues(t *testing.T) {
 
 func TestBadKey(t *testing.T) {
 	expectedItems := []item{
-		{itemError, "Unexpected key separator ':'", 1},
-		{itemEOF, "", 1},
+		{itemError, "Unexpected key separator ':'", 1, 1},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex(" :foo = 22")
 	expect(t, lx, expectedItems)
@@ -268,12 +311,18 @@ func TestBadKey(t *testing.T) {
 
 func TestSimpleKeyBoolValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemBool, "true", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemBool, "true", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = true")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemBool, "true", 1, 4},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=true")
 	expect(t, lx, expectedItems)
 	lx = lex("foo=true\r\n")
@@ -282,52 +331,64 @@ func TestSimpleKeyBoolValues(t *testing.T) {
 
 func TestComments(t *testing.T) {
 	expectedItems := []item{
-		{itemCommentStart, "", 1},
-		{itemText, " This is a comment", 1},
-		{itemEOF, "", 1},
+		{itemCommentStart, "", 1, 1},
+		{itemText, " This is a comment", 1, 1},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("# This is a comment")
 	expect(t, lx, expectedItems)
 	lx = lex("# This is a comment\r\n")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemCommentStart, "", 1, 2},
+		{itemText, " This is a comment", 1, 2},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("// This is a comment\r\n")
 	expect(t, lx, expectedItems)
 }
 
 func TestTopValuesWithComments(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "123", 1},
-		{itemCommentStart, "", 1},
-		{itemText, " This is a comment", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 6},
+		{itemCommentStart, "", 1, 12},
+		{itemText, " This is a comment", 1, 12},
+		{itemEOF, "", 1, 0},
 	}
 
 	lx := lex("foo = 123 // This is a comment")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 4},
+		{itemCommentStart, "", 1, 12},
+		{itemText, " This is a comment", 1, 12},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo=123    # This is a comment")
 	expect(t, lx, expectedItems)
 }
 
 func TestRawString(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "bar", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemString, "bar", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
-
 	lx := lex("foo = bar")
 	expect(t, lx, expectedItems)
-
 	lx = lex(`foo = bar' `) //'single-quote for emacs TODO: Remove me
 	expect(t, lx, expectedItems)
 }
 
 func TestDateValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemDatetime, "2016-05-04T18:53:41Z", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemDatetime, "2016-05-04T18:53:41Z", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 
 	lx := lex("foo = 2016-05-04T18:53:41Z")
@@ -336,33 +397,67 @@ func TestDateValues(t *testing.T) {
 
 func TestVariableValues(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemVariable, "bar", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemVariable, "bar", 1, 7},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = $bar")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemVariable, "bar", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo =$bar")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemVariable, "bar", 1, 5},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo $bar")
 	expect(t, lx, expectedItems)
 }
 
 func TestArrays(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemArrayStart, "", 1},
-		{itemInteger, "1", 1},
-		{itemInteger, "2", 1},
-		{itemInteger, "3", 1},
-		{itemString, "bar", 1},
-		{itemArrayEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemArrayStart, "", 1, 7},
+		{itemInteger, "1", 1, 7},
+		{itemInteger, "2", 1, 10},
+		{itemInteger, "3", 1, 13},
+		{itemString, "bar", 1, 17},
+		{itemArrayEnd, "", 1, 22},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = [1, 2, 3, 'bar']")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemArrayStart, "", 1, 7},
+		{itemInteger, "1", 1, 7},
+		{itemInteger, "2", 1, 9},
+		{itemInteger, "3", 1, 11},
+		{itemString, "bar", 1, 14},
+		{itemArrayEnd, "", 1, 19},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo = [1,2,3,'bar']")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemArrayStart, "", 1, 7},
+		{itemInteger, "1", 1, 7},
+		{itemInteger, "2", 1, 10},
+		{itemInteger, "3", 1, 12},
+		{itemString, "bar", 1, 15},
+		{itemArrayEnd, "", 1, 20},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo = [1, 2,3,'bar']")
 	expect(t, lx, expectedItems)
 }
@@ -380,23 +475,23 @@ foo = [
 
 func TestMultilineArrays(t *testing.T) {
 	expectedItems := []item{
-		{itemCommentStart, "", 2},
-		{itemText, " top level comment", 2},
-		{itemKey, "foo", 3},
-		{itemArrayStart, "", 3},
-		{itemInteger, "1", 4},
-		{itemCommentStart, "", 4},
-		{itemText, " One", 4},
-		{itemInteger, "2", 5},
-		{itemCommentStart, "", 5},
-		{itemText, " Two", 5},
-		{itemInteger, "3", 6},
-		{itemCommentStart, "", 6},
-		{itemText, " Three", 6},
-		{itemString, "bar", 7},
-		{itemString, "bar", 8},
-		{itemArrayEnd, "", 9},
-		{itemEOF, "", 9},
+		{itemCommentStart, "", 2, 2},
+		{itemText, " top level comment", 2, 2},
+		{itemKey, "foo", 3, 1},
+		{itemArrayStart, "", 3, 8},
+		{itemInteger, "1", 4, 2},
+		{itemCommentStart, "", 4, 6},
+		{itemText, " One", 4, 6},
+		{itemInteger, "2", 5, 2},
+		{itemCommentStart, "", 5, 7},
+		{itemText, " Two", 5, 7},
+		{itemInteger, "3", 6, 2},
+		{itemCommentStart, "", 6, 5},
+		{itemText, " Three", 6, 5},
+		{itemString, "bar", 7, 3},
+		{itemString, "bar", 8, 3},
+		{itemArrayEnd, "", 9, 2},
+		{itemEOF, "", 9, 0},
 	}
 	lx := lex(mlArray)
 	expect(t, lx, expectedItems)
@@ -415,19 +510,19 @@ foo = [
 
 func TestMultilineArraysNoSep(t *testing.T) {
 	expectedItems := []item{
-		{itemCommentStart, "", 2},
-		{itemText, " top level comment", 2},
-		{itemKey, "foo", 3},
-		{itemArrayStart, "", 3},
-		{itemInteger, "1", 4},
-		{itemCommentStart, "", 4},
-		{itemText, " foo", 4},
-		{itemInteger, "2", 5},
-		{itemInteger, "3", 6},
-		{itemString, "bar", 7},
-		{itemString, "bar", 8},
-		{itemArrayEnd, "", 9},
-		{itemEOF, "", 9},
+		{itemCommentStart, "", 2, 2},
+		{itemText, " top level comment", 2, 2},
+		{itemKey, "foo", 3, 1},
+		{itemArrayStart, "", 3, 8},
+		{itemInteger, "1", 4, 2},
+		{itemCommentStart, "", 4, 6},
+		{itemText, " foo", 4, 6},
+		{itemInteger, "2", 5, 2},
+		{itemInteger, "3", 6, 2},
+		{itemString, "bar", 7, 3},
+		{itemString, "bar", 8, 3},
+		{itemArrayEnd, "", 9, 2},
+		{itemEOF, "", 9, 0},
 	}
 	lx := lex(mlArrayNoSep)
 	expect(t, lx, expectedItems)
@@ -435,14 +530,14 @@ func TestMultilineArraysNoSep(t *testing.T) {
 
 func TestSimpleMap(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemMapStart, "", 1},
-		{itemKey, "ip", 1},
-		{itemString, "127.0.0.1", 1},
-		{itemKey, "port", 1},
-		{itemInteger, "4242", 1},
-		{itemMapEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		{itemKey, "ip", 1, 7},
+		{itemString, "127.0.0.1", 1, 11},
+		{itemKey, "port", 1, 23},
+		{itemInteger, "4242", 1, 30},
+		{itemMapEnd, "", 1, 35},
+		{itemEOF, "", 1, 0},
 	}
 
 	lx := lex("foo = {ip='127.0.0.1', port = 4242}")
@@ -458,18 +553,18 @@ foo = {
 
 func TestMultilineMap(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemMapStart, "", 2},
-		{itemKey, "ip", 3},
-		{itemString, "127.0.0.1", 3},
-		{itemCommentStart, "", 3},
-		{itemText, " the IP", 3},
-		{itemKey, "port", 4},
-		{itemInteger, "4242", 4},
-		{itemCommentStart, "", 4},
-		{itemText, " the port", 4},
-		{itemMapEnd, "", 5},
-		{itemEOF, "", 5},
+		{itemKey, "foo", 2, 1},
+		{itemMapStart, "", 2, 8},
+		{itemKey, "ip", 3, 3},
+		{itemString, "127.0.0.1", 3, 9},
+		{itemCommentStart, "", 3, 21},
+		{itemText, " the IP", 3, 21},
+		{itemKey, "port", 4, 3},
+		{itemInteger, "4242", 4, 9},
+		{itemCommentStart, "", 4, 16},
+		{itemText, " the port", 4, 16},
+		{itemMapEnd, "", 5, 2},
+		{itemEOF, "", 5, 0},
 	}
 
 	lx := lex(mlMap)
@@ -487,17 +582,17 @@ foo = {
 
 func TestNestedMaps(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemMapStart, "", 2},
-		{itemKey, "host", 3},
-		{itemMapStart, "", 3},
-		{itemKey, "ip", 4},
-		{itemString, "127.0.0.1", 4},
-		{itemKey, "port", 5},
-		{itemInteger, "4242", 5},
-		{itemMapEnd, "", 6},
-		{itemMapEnd, "", 7},
-		{itemEOF, "", 5},
+		{itemKey, "foo", 2, 1},
+		{itemMapStart, "", 2, 8},
+		{itemKey, "host", 3, 3},
+		{itemMapStart, "", 3, 11},
+		{itemKey, "ip", 4, 5},
+		{itemString, "127.0.0.1", 4, 11},
+		{itemKey, "port", 5, 5},
+		{itemInteger, "4242", 5, 11},
+		{itemMapEnd, "", 6, 4},
+		{itemMapEnd, "", 7, 2},
+		{itemEOF, "", 7, 0},
 	}
 
 	lx := lex(nestedMap)
@@ -506,12 +601,18 @@ func TestNestedMaps(t *testing.T) {
 
 func TestQuotedKeys(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "123", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo : 123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 1},
+		{itemInteger, "123", 1, 8},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("'foo' : 123")
 	expect(t, lx, expectedItems)
 	lx = lex("\"foo\" : 123")
@@ -520,37 +621,61 @@ func TestQuotedKeys(t *testing.T) {
 
 func TestQuotedKeysWithSpace(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, " foo", 1},
-		{itemInteger, "123", 1},
-		{itemEOF, "", 1},
+		{itemKey, " foo", 1, 1},
+		{itemInteger, "123", 1, 9},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("' foo' : 123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, " foo", 1, 1},
+		{itemInteger, "123", 1, 9},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("\" foo\" : 123")
 	expect(t, lx, expectedItems)
 }
 
 func TestColonKeySep(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "123", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 6},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo : 123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 4},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo:123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 5},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo: 123")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo:  123\r\n")
 	expect(t, lx, expectedItems)
 }
 
 func TestWhitespaceKeySep(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemInteger, "123", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 4},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo 123")
 	expect(t, lx, expectedItems)
@@ -558,6 +683,11 @@ func TestWhitespaceKeySep(t *testing.T) {
 	expect(t, lx, expectedItems)
 	lx = lex("foo\t123")
 	expect(t, lx, expectedItems)
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "123", 1, 5},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo\t\t123\r\n")
 	expect(t, lx, expectedItems)
 }
@@ -572,17 +702,17 @@ bs   = \\
 
 func TestEscapedString(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemString, "\t", 2},
-		{itemKey, "bar", 3},
-		{itemString, "\r", 3},
-		{itemKey, "baz", 4},
-		{itemString, "\n", 4},
-		{itemKey, "q", 5},
-		{itemString, "\"", 5},
-		{itemKey, "bs", 6},
-		{itemString, "\\", 6},
-		{itemEOF, "", 6},
+		{itemKey, "foo", 2, 1},
+		{itemString, "\t", 2, 9},
+		{itemKey, "bar", 3, 1},
+		{itemString, "\r", 3, 9},
+		{itemKey, "baz", 4, 1},
+		{itemString, "\n", 4, 9},
+		{itemKey, "q", 5, 1},
+		{itemString, "\"", 5, 9},
+		{itemKey, "bs", 6, 1},
+		{itemString, "\\", 6, 9},
+		{itemEOF, "", 6, 0},
 	}
 	lx := lex(escString)
 	expect(t, lx, expectedItems)
@@ -590,9 +720,9 @@ func TestEscapedString(t *testing.T) {
 
 func TestCompoundStringES(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "\\end", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "\\end", 1, 8},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = "\\end"`)
 	expect(t, lx, expectedItems)
@@ -600,9 +730,9 @@ func TestCompoundStringES(t *testing.T) {
 
 func TestCompoundStringSE(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "start\\", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "start\\", 1, 8},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = "start\\"`)
 	expect(t, lx, expectedItems)
@@ -610,9 +740,9 @@ func TestCompoundStringSE(t *testing.T) {
 
 func TestCompoundStringEE(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "Eq", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "Eq", 1, 12},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \x45\x71`)
 	expect(t, lx, expectedItems)
@@ -620,9 +750,9 @@ func TestCompoundStringEE(t *testing.T) {
 
 func TestCompoundStringSEE(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "startEq", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "startEq", 1, 12},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = start\x45\x71`)
 	expect(t, lx, expectedItems)
@@ -630,9 +760,9 @@ func TestCompoundStringSEE(t *testing.T) {
 
 func TestCompoundStringSES(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "start|end", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "start|end", 1, 9},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = start\x7Cend`)
 	expect(t, lx, expectedItems)
@@ -640,9 +770,9 @@ func TestCompoundStringSES(t *testing.T) {
 
 func TestCompoundStringEES(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "<>end", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "<>end", 1, 12},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \x3c\x3eend`)
 	expect(t, lx, expectedItems)
@@ -650,9 +780,9 @@ func TestCompoundStringEES(t *testing.T) {
 
 func TestCompoundStringESE(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "<middle>", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "<middle>", 1, 12},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \x3cmiddle\x3E`)
 	expect(t, lx, expectedItems)
@@ -660,9 +790,9 @@ func TestCompoundStringESE(t *testing.T) {
 
 func TestBadStringEscape(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemError, "Invalid escape character 'y'. Only the following escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemError, "Invalid escape character 'y'. Only the following escape characters are allowed: \\xXX, \\t, \\n, \\r, \\\", \\\\.", 1, 8},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \y`)
 	expect(t, lx, expectedItems)
@@ -670,9 +800,9 @@ func TestBadStringEscape(t *testing.T) {
 
 func TestNonBool(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "\\true", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "\\true", 1, 7},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \\true`)
 	expect(t, lx, expectedItems)
@@ -680,9 +810,9 @@ func TestNonBool(t *testing.T) {
 
 func TestNonVariable(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "\\$var", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "\\$var", 1, 7},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = \\$var`)
 	expect(t, lx, expectedItems)
@@ -690,9 +820,9 @@ func TestNonVariable(t *testing.T) {
 
 func TestEmptyStringDQ(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "", 1, 7},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = ""`)
 	expect(t, lx, expectedItems)
@@ -700,9 +830,9 @@ func TestEmptyStringDQ(t *testing.T) {
 
 func TestEmptyStringSQ(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "", 1},
-		{itemEOF, "", 2},
+		{itemKey, "foo", 1, 0},
+		{itemString, "", 1, 7},
+		{itemEOF, "", 2, 0},
 	}
 	lx := lex(`foo = ''`)
 	expect(t, lx, expectedItems)
@@ -719,17 +849,17 @@ foo  {
 
 func TestNestedWhitespaceMaps(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemMapStart, "", 2},
-		{itemKey, "host", 3},
-		{itemMapStart, "", 3},
-		{itemKey, "ip", 4},
-		{itemString, "127.0.0.1", 4},
-		{itemKey, "port", 5},
-		{itemInteger, "4242", 5},
-		{itemMapEnd, "", 6},
-		{itemMapEnd, "", 7},
-		{itemEOF, "", 5},
+		{itemKey, "foo", 2, 1},
+		{itemMapStart, "", 2, 7},
+		{itemKey, "host", 3, 3},
+		{itemMapStart, "", 3, 10},
+		{itemKey, "ip", 4, 5},
+		{itemString, "127.0.0.1", 4, 11},
+		{itemKey, "port", 5, 5},
+		{itemInteger, "4242", 5, 11},
+		{itemMapEnd, "", 6, 4},
+		{itemMapEnd, "", 7, 2},
+		{itemEOF, "", 7, 0},
 	}
 
 	lx := lex(nestedWhitespaceMap)
@@ -747,18 +877,18 @@ map {
 
 func TestOptionalSemicolons(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemInteger, "123", 2},
-		{itemKey, "bar", 3},
-		{itemString, "baz", 3},
-		{itemKey, "baz", 4},
-		{itemString, "boo", 4},
-		{itemKey, "map", 5},
-		{itemMapStart, "", 5},
-		{itemKey, "id", 6},
-		{itemInteger, "1", 6},
-		{itemMapEnd, "", 7},
-		{itemEOF, "", 5},
+		{itemKey, "foo", 2, 1},
+		{itemInteger, "123", 2, 7},
+		{itemKey, "bar", 3, 1},
+		{itemString, "baz", 3, 8},
+		{itemKey, "baz", 4, 1},
+		{itemString, "boo", 4, 8},
+		{itemKey, "map", 5, 1},
+		{itemMapStart, "", 5, 6},
+		{itemKey, "id", 6, 2},
+		{itemInteger, "1", 6, 7},
+		{itemMapEnd, "", 7, 2},
+		{itemEOF, "", 8, 0},
 	}
 
 	lx := lex(semicolons)
@@ -767,13 +897,13 @@ func TestOptionalSemicolons(t *testing.T) {
 
 func TestSemicolonChaining(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemString, "1", 1},
-		{itemKey, "bar", 1},
-		{itemFloat, "2.2", 1},
-		{itemKey, "baz", 1},
-		{itemBool, "true", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemString, "1", 1, 5},
+		{itemKey, "bar", 1, 9},
+		{itemFloat, "2.2", 1, 13},
+		{itemKey, "baz", 1, 18},
+		{itemBool, "true", 1, 22},
+		{itemEOF, "", 1, 0},
 	}
 
 	lx := lex("foo='1'; bar=2.2; baz=true;")
@@ -797,33 +927,32 @@ fkey = five # This should be a string
 
 func TestNonQuotedStrings(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 2},
-		{itemInteger, "123", 2},
-		{itemKey, "bar", 3},
-		{itemString, "baz", 3},
-		{itemKey, "baz", 4},
-		{itemString, "boo", 4},
-		{itemKey, "map", 5},
-		{itemMapStart, "", 5},
-		{itemKey, "id", 6},
-		{itemString, "one", 6},
-		{itemKey, "id2", 7},
-		{itemString, "onetwo", 7},
-		{itemMapEnd, "", 8},
-		{itemKey, "t", 9},
-		{itemBool, "true", 9},
-		{itemKey, "f", 10},
-		{itemBool, "false", 10},
-		{itemKey, "tstr", 11},
-		{itemString, "true", 11},
-		{itemKey, "tkey", 12},
-		{itemString, "two", 12},
-		{itemKey, "fkey", 13},
-		{itemString, "five", 13},
-		{itemCommentStart, "", 13},
-		{itemText, " This should be a string", 13},
-
-		{itemEOF, "", 14},
+		{itemKey, "foo", 2, 1},
+		{itemInteger, "123", 2, 7},
+		{itemKey, "bar", 3, 1},
+		{itemString, "baz", 3, 7},
+		{itemKey, "baz", 4, 1},
+		{itemString, "boo", 4, 5},
+		{itemKey, "map", 5, 1},
+		{itemMapStart, "", 5, 6},
+		{itemKey, "id", 6, 2},
+		{itemString, "one", 6, 5},
+		{itemKey, "id2", 7, 2},
+		{itemString, "onetwo", 7, 8},
+		{itemMapEnd, "", 8, 2},
+		{itemKey, "t", 9, 1},
+		{itemBool, "true", 9, 3},
+		{itemKey, "f", 10, 1},
+		{itemBool, "false", 10, 3},
+		{itemKey, "tstr", 11, 1},
+		{itemString, "true", 11, 7},
+		{itemKey, "tkey", 12, 1},
+		{itemString, "two", 12, 8},
+		{itemKey, "fkey", 13, 1},
+		{itemString, "five", 13, 8},
+		{itemCommentStart, "", 13, 14},
+		{itemText, " This should be a string", 13, 14},
+		{itemEOF, "", 14, 0},
 	}
 	lx := lex(noquotes)
 	expect(t, lx, expectedItems)
@@ -831,12 +960,12 @@ func TestNonQuotedStrings(t *testing.T) {
 
 func TestMapQuotedKeys(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemMapStart, "", 1},
-		{itemKey, "bar", 1},
-		{itemInteger, "4242", 1},
-		{itemMapEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		{itemKey, "bar", 1, 8},
+		{itemInteger, "4242", 1, 15},
+		{itemMapEnd, "", 1, 20},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = {'bar' = 4242}")
 	expect(t, lx, expectedItems)
@@ -846,15 +975,15 @@ func TestMapQuotedKeys(t *testing.T) {
 
 func TestSpecialCharsMapQuotedKeys(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemMapStart, "", 1},
-		{itemKey, "bar-1.2.3", 1},
-		{itemMapStart, "", 1},
-		{itemKey, "port", 1},
-		{itemInteger, "4242", 1},
-		{itemMapEnd, "", 1},
-		{itemMapEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		{itemKey, "bar-1.2.3", 1, 8},
+		{itemMapStart, "", 1, 22},
+		{itemKey, "port", 1, 23},
+		{itemInteger, "4242", 1, 28},
+		{itemMapEnd, "", 1, 34},
+		{itemMapEnd, "", 1, 35},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("foo = {'bar-1.2.3' = { port:4242 }}")
 	expect(t, lx, expectedItems)
@@ -872,15 +1001,15 @@ systems {
 
 func TestDoubleNestedMapsNewLines(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "systems", 2},
-		{itemMapStart, "", 2},
-		{itemKey, "allinone", 3},
-		{itemMapStart, "", 3},
-		{itemKey, "description", 4},
-		{itemString, "This is a description.", 4},
-		{itemMapEnd, "", 5},
-		{itemMapEnd, "", 6},
-		{itemEOF, "", 7},
+		{itemKey, "systems", 2, 1},
+		{itemMapStart, "", 2, 10},
+		{itemKey, "allinone", 3, 3},
+		{itemMapStart, "", 3, 13},
+		{itemKey, "description", 4, 5},
+		{itemString, "This is a description.", 4, 19},
+		{itemMapEnd, "", 5, 4},
+		{itemMapEnd, "", 6, 2},
+		{itemEOF, "", 7, 0},
 	}
 	lx := lex(mlnestedmap)
 	expect(t, lx, expectedItems)
@@ -894,8 +1023,8 @@ numbers (
 
 func TestBlockString(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "numbers", 2},
-		{itemString, "\n1234567890\n", 4},
+		{itemKey, "numbers", 2, 1},
+		{itemString, "\n1234567890\n", 4, 10},
 	}
 	lx := lex(blockexample)
 	expect(t, lx, expectedItems)
@@ -903,8 +1032,8 @@ func TestBlockString(t *testing.T) {
 
 func TestBlockStringEOF(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "numbers", 2},
-		{itemString, "\n1234567890\n", 4},
+		{itemKey, "numbers", 2, 1},
+		{itemString, "\n1234567890\n", 4, 10},
 	}
 	blockbytes := []byte(blockexample[0 : len(blockexample)-1])
 	blockbytes = append(blockbytes, 0)
@@ -923,8 +1052,8 @@ numbers (
 
 func TestBlockStringMultiLine(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "numbers", 2},
-		{itemString, "\n  12(34)56\n  (\n    7890\n  )\n", 7},
+		{itemKey, "numbers", 2, 1},
+		{itemString, "\n  12(34)56\n  (\n    7890\n  )\n", 7, 10},
 	}
 	lx := lex(mlblockexample)
 	expect(t, lx, expectedItems)
@@ -932,68 +1061,68 @@ func TestBlockStringMultiLine(t *testing.T) {
 
 func TestUnquotedIPAddr(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "listen", 1},
-		{itemString, "127.0.0.1:4222", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, "127.0.0.1:4222", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("listen: 127.0.0.1:4222")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemString, "127.0.0.1", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, "127.0.0.1", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen: 127.0.0.1")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemString, "apcera.me:80", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, "apcera.me:80", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen: apcera.me:80")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemString, "nats.io:-1", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, "nats.io:-1", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen: nats.io:-1")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemInteger, "-1", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemInteger, "-1", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen: -1")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemString, ":-1", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, ":-1", 1, 8},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen: :-1")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemString, ":80", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemString, ":80", 1, 9},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen = :80")
 	expect(t, lx, expectedItems)
 
 	expectedItems = []item{
-		{itemKey, "listen", 1},
-		{itemArrayStart, "", 1},
-		{itemString, "localhost:4222", 1},
-		{itemString, "localhost:4333", 1},
-		{itemArrayEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "listen", 1, 0},
+		{itemArrayStart, "", 1, 10},
+		{itemString, "localhost:4222", 1, 10},
+		{itemString, "localhost:4333", 1, 26},
+		{itemArrayEnd, "", 1, 41},
+		{itemEOF, "", 1, 0},
 	}
 	lx = lex("listen = [localhost:4222, localhost:4333]")
 	expect(t, lx, expectedItems)
@@ -1011,27 +1140,27 @@ authorization {
 
 func TestArrayOfMaps(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "authorization", 2},
-		{itemMapStart, "", 2},
-		{itemKey, "users", 3},
-		{itemArrayStart, "", 3},
-		{itemMapStart, "", 4},
-		{itemKey, "user", 4},
-		{itemString, "alice", 4},
-		{itemKey, "password", 4},
-		{itemString, "foo", 4},
-		{itemMapEnd, "", 4},
-		{itemMapStart, "", 5},
-		{itemKey, "user", 5},
-		{itemString, "bob", 5},
-		{itemKey, "password", 5},
-		{itemString, "bar", 5},
-		{itemMapEnd, "", 5},
-		{itemArrayEnd, "", 6},
-		{itemKey, "timeout", 7},
-		{itemFloat, "0.5", 7},
-		{itemMapEnd, "", 8},
-		{itemEOF, "", 9},
+		{itemKey, "authorization", 2, 1},
+		{itemMapStart, "", 2, 16},
+		{itemKey, "users", 3, 5},
+		{itemArrayStart, "", 3, 14},
+		{itemMapStart, "", 4, 8},
+		{itemKey, "user", 4, 8},
+		{itemString, "alice", 4, 14},
+		{itemKey, "password", 4, 21},
+		{itemString, "foo", 4, 31},
+		{itemMapEnd, "", 4, 35},
+		{itemMapStart, "", 5, 8},
+		{itemKey, "user", 5, 8},
+		{itemString, "bob", 5, 14},
+		{itemKey, "password", 5, 21},
+		{itemString, "bar", 5, 31},
+		{itemMapEnd, "", 5, 35},
+		{itemArrayEnd, "", 6, 6},
+		{itemKey, "timeout", 7, 5},
+		{itemFloat, "0.5", 7, 14},
+		{itemMapEnd, "", 8, 2},
+		{itemEOF, "", 9, 0},
 	}
 	lx := lex(arrayOfMaps)
 	expect(t, lx, expectedItems)
@@ -1039,8 +1168,8 @@ func TestArrayOfMaps(t *testing.T) {
 
 func TestInclude(t *testing.T) {
 	expectedItems := []item{
-		{itemInclude, "users.conf", 1},
-		{itemEOF, "", 1},
+		{itemInclude, "users.conf", 1, 9},
+		{itemEOF, "", 1, 0},
 	}
 	lx := lex("include \"users.conf\"")
 	expect(t, lx, expectedItems)
@@ -1048,28 +1177,53 @@ func TestInclude(t *testing.T) {
 	lx = lex("include 'users.conf'")
 	expect(t, lx, expectedItems)
 
+	expectedItems = []item{
+		{itemInclude, "users.conf", 1, 8},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("include users.conf")
 	expect(t, lx, expectedItems)
 }
 
 func TestMapInclude(t *testing.T) {
 	expectedItems := []item{
-		{itemKey, "foo", 1},
-		{itemMapStart, "", 1},
-		{itemInclude, "users.conf", 1},
-		{itemMapEnd, "", 1},
-		{itemEOF, "", 1},
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 5},
+		{itemInclude, "users.conf", 1, 14},
+		{itemMapEnd, "", 1, 26},
+		{itemEOF, "", 1, 0},
 	}
 
 	lx := lex("foo { include users.conf }")
 	expect(t, lx, expectedItems)
 
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 5},
+		{itemInclude, "users.conf", 1, 13},
+		{itemMapEnd, "", 1, 24},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo {include users.conf}")
 	expect(t, lx, expectedItems)
 
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 5},
+		{itemInclude, "users.conf", 1, 15},
+		{itemMapEnd, "", 1, 28},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo { include 'users.conf' }")
 	expect(t, lx, expectedItems)
 
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 5},
+		{itemInclude, "users.conf", 1, 15},
+		{itemMapEnd, "", 1, 27},
+		{itemEOF, "", 1, 0},
+	}
 	lx = lex("foo { include \"users.conf\"}")
 	expect(t, lx, expectedItems)
 }
@@ -1088,8 +1242,8 @@ func TestJSONCompat(t *testing.T) {
                         }
                         `,
 			expected: []item{
-				{itemKey, "http_port", 3},
-				{itemInteger, "8223", 3},
+				{itemKey, "http_port", 3, 28},
+				{itemInteger, "8223", 3, 40},
 			},
 		},
 		{
@@ -1101,10 +1255,10 @@ func TestJSONCompat(t *testing.T) {
                         }
                         `,
 			expected: []item{
-				{itemKey, "http_port", 3},
-				{itemInteger, "8223", 3},
-				{itemKey, "port", 4},
-				{itemInteger, "4223", 4},
+				{itemKey, "http_port", 3, 28},
+				{itemInteger, "8223", 3, 40},
+				{itemKey, "port", 4, 28},
+				{itemInteger, "4223", 4, 35},
 			},
 		},
 		{
@@ -1119,16 +1273,16 @@ func TestJSONCompat(t *testing.T) {
                         }
                         `,
 			expected: []item{
-				{itemKey, "http_port", 3},
-				{itemInteger, "8223", 3},
-				{itemKey, "port", 4},
-				{itemInteger, "4223", 4},
-				{itemKey, "max_payload", 5},
-				{itemString, "5MB", 5},
-				{itemKey, "debug", 6},
-				{itemBool, "true", 6},
-				{itemKey, "max_control_line", 7},
-				{itemInteger, "1024", 7},
+				{itemKey, "http_port", 3, 28},
+				{itemInteger, "8223", 3, 40},
+				{itemKey, "port", 4, 28},
+				{itemInteger, "4223", 4, 35},
+				{itemKey, "max_payload", 5, 28},
+				{itemString, "5MB", 5, 43},
+				{itemKey, "debug", 6, 28},
+				{itemBool, "true", 6, 36},
+				{itemKey, "max_control_line", 7, 28},
+				{itemInteger, "1024", 7, 47},
 			},
 		},
 		{
@@ -1136,10 +1290,10 @@ func TestJSONCompat(t *testing.T) {
 			input: `{"http_port": 8224,"port": 4224}
                         `,
 			expected: []item{
-				{itemKey, "http_port", 1},
-				{itemInteger, "8224", 1},
-				{itemKey, "port", 1},
-				{itemInteger, "4224", 1},
+				{itemKey, "http_port", 1, 2},
+				{itemInteger, "8224", 1, 14},
+				{itemKey, "port", 1, 20},
+				{itemInteger, "4224", 1, 27},
 			},
 		},
 		{
@@ -1148,10 +1302,10 @@ func TestJSONCompat(t *testing.T) {
                         }
                         `,
 			expected: []item{
-				{itemKey, "http_port", 1},
-				{itemInteger, "8225", 1},
-				{itemKey, "port", 1},
-				{itemInteger, "4225", 1},
+				{itemKey, "http_port", 1, 2},
+				{itemInteger, "8225", 1, 14},
+				{itemKey, "port", 1, 20},
+				{itemInteger, "4225", 1, 27},
 			},
 		},
 		{
@@ -1159,23 +1313,23 @@ func TestJSONCompat(t *testing.T) {
 			input: `{"http_port": 8227,"port": 4227,"write_deadline": "1h","cluster": {"port": 6222,"routes": ["nats://127.0.0.1:4222","nats://127.0.0.1:4223","nats://127.0.0.1:4224"]}}
                         `,
 			expected: []item{
-				{itemKey, "http_port", 1},
-				{itemInteger, "8227", 1},
-				{itemKey, "port", 1},
-				{itemInteger, "4227", 1},
-				{itemKey, "write_deadline", 1},
-				{itemString, "1h", 1},
-				{itemKey, "cluster", 1},
-				{itemMapStart, "", 1},
-				{itemKey, "port", 1},
-				{itemInteger, "6222", 1},
-				{itemKey, "routes", 1},
-				{itemArrayStart, "", 1},
-				{itemString, "nats://127.0.0.1:4222", 1},
-				{itemString, "nats://127.0.0.1:4223", 1},
-				{itemString, "nats://127.0.0.1:4224", 1},
-				{itemArrayEnd, "", 1},
-				{itemMapEnd, "", 1},
+				{itemKey, "http_port", 1, 2},
+				{itemInteger, "8227", 1, 14},
+				{itemKey, "port", 1, 20},
+				{itemInteger, "4227", 1, 27},
+				{itemKey, "write_deadline", 1, 33},
+				{itemString, "1h", 1, 51},
+				{itemKey, "cluster", 1, 56},
+				{itemMapStart, "", 1, 67},
+				{itemKey, "port", 1, 68},
+				{itemInteger, "6222", 1, 75},
+				{itemKey, "routes", 1, 81},
+				{itemArrayStart, "", 1, 91},
+				{itemString, "nats://127.0.0.1:4222", 1, 92},
+				{itemString, "nats://127.0.0.1:4223", 1, 116},
+				{itemString, "nats://127.0.0.1:4224", 1, 140},
+				{itemArrayEnd, "", 1, 163},
+				{itemMapEnd, "", 1, 164},
 			},
 		},
 		{
@@ -1196,23 +1350,23 @@ func TestJSONCompat(t *testing.T) {
                         }
                         `,
 			expected: []item{
-				{itemKey, "http_port", 3},
-				{itemInteger, "8227", 3},
-				{itemKey, "port", 4},
-				{itemInteger, "4227", 4},
-				{itemKey, "write_deadline", 5},
-				{itemString, "1h", 5},
-				{itemKey, "cluster", 6},
-				{itemMapStart, "", 6},
-				{itemKey, "port", 7},
-				{itemInteger, "6222", 7},
-				{itemKey, "routes", 8},
-				{itemArrayStart, "", 8},
-				{itemString, "nats://127.0.0.1:4222", 9},
-				{itemString, "nats://127.0.0.1:4223", 10},
-				{itemString, "nats://127.0.0.1:4224", 11},
-				{itemArrayEnd, "", 12},
-				{itemMapEnd, "", 13},
+				{itemKey, "http_port", 3, 28},
+				{itemInteger, "8227", 3, 40},
+				{itemKey, "port", 4, 28},
+				{itemInteger, "4227", 4, 35},
+				{itemKey, "write_deadline", 5, 28},
+				{itemString, "1h", 5, 46},
+				{itemKey, "cluster", 6, 28},
+				{itemMapStart, "", 6, 39},
+				{itemKey, "port", 7, 30},
+				{itemInteger, "6222", 7, 37},
+				{itemKey, "routes", 8, 30},
+				{itemArrayStart, "", 8, 40},
+				{itemString, "nats://127.0.0.1:4222", 9, 32},
+				{itemString, "nats://127.0.0.1:4223", 10, 32},
+				{itemString, "nats://127.0.0.1:4224", 11, 32},
+				{itemArrayEnd, "", 12, 30},
+				{itemMapEnd, "", 13, 28},
 			},
 		},
 	} {

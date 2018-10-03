@@ -49,6 +49,9 @@ type parser struct {
 	// Keys stack
 	keys []string
 
+	// Keys stack as items
+	ikeys []item
+
 	// The config file path, empty by default.
 	fp string
 
@@ -118,12 +121,17 @@ func (t *token) SourceFile() string {
 	return t.sourceFile
 }
 
+func (t *token) Position() int {
+	return t.item.pos
+}
+
 func parse(data, fp string, pedantic bool) (p *parser, err error) {
 	p = &parser{
 		mapping:  make(map[string]interface{}),
 		lx:       lex(data),
 		ctxs:     make([]interface{}, 0, 4),
 		keys:     make([]string, 0, 4),
+		ikeys:    make([]item, 0, 4),
 		fp:       filepath.Dir(fp),
 		pedantic: pedantic,
 	}
@@ -176,6 +184,20 @@ func (p *parser) popKey() string {
 	return last
 }
 
+func (p *parser) pushItemKey(key item) {
+	p.ikeys = append(p.ikeys, key)
+}
+
+func (p *parser) popItemKey() item {
+	if len(p.ikeys) == 0 {
+		panic("BUG in parser, item keys stack empty")
+	}
+	li := len(p.ikeys) - 1
+	last := p.ikeys[li]
+	p.ikeys = p.ikeys[0:li]
+	return last
+}
+
 func (p *parser) processItem(it item, fp string) error {
 	setValue := func(it item, v interface{}) {
 		if p.pedantic {
@@ -189,7 +211,14 @@ func (p *parser) processItem(it item, fp string) error {
 	case itemError:
 		return fmt.Errorf("Parse error on line %d: '%s'", it.line, it.val)
 	case itemKey:
+		// Keep track of the keys as items and strings,
+		// we do this in order to be able to still support
+		// includes without many breaking changes.
 		p.pushKey(it.val)
+
+		if p.pedantic {
+			p.pushItemKey(it)
+		}
 	case itemMapStart:
 		newCtx := make(map[string]interface{})
 		p.pushContext(newCtx)
@@ -270,12 +299,18 @@ func (p *parser) processItem(it item, fp string) error {
 		setValue(it, array)
 	case itemVariable:
 		if value, ok := p.lookupVariable(it.val); ok {
-			switch tk := value.(type) {
-			case *token:
-				// Mark that the variable was used.
-				tk.usedVariable = true
-				p.setValue(tk)
-			default:
+			if p.pedantic {
+				switch tk := value.(type) {
+				case *token:
+					// Mark the looked up variable as used, and make
+					// the variable reference become handled as a token.
+					tk.usedVariable = true
+					p.setValue(&token{it, tk.Value(), false, fp})
+				default:
+					// Special case to add position context to bcrypt references.
+					p.setValue(&token{it, value, false, fp})
+				}
+			} else {
 				p.setValue(value)
 			}
 		} else {
@@ -297,6 +332,13 @@ func (p *parser) processItem(it item, fp string) error {
 		}
 		for k, v := range m {
 			p.pushKey(k)
+
+			if p.pedantic {
+				switch tk := v.(type) {
+				case *token:
+					p.pushItemKey(tk.item)
+				}
+			}
 			p.setValue(v)
 		}
 	}
@@ -356,7 +398,20 @@ func (p *parser) setValue(val interface{}) {
 	// Map processing
 	if ctx, ok := p.ctx.(map[string]interface{}); ok {
 		key := p.popKey()
-		// FIXME(dlc), make sure to error if redefining same key?
-		ctx[key] = val
+
+		if p.pedantic {
+			// Change the position to the beginning of the key
+			// since more useful when reporting errors.
+			switch v := val.(type) {
+			case *token:
+				it := p.popItemKey()
+				v.item.pos = it.pos
+				v.item.line = it.line
+				ctx[key] = v
+			}
+		} else {
+			// FIXME(dlc), make sure to error if redefining same key?
+			ctx[key] = val
+		}
 	}
 }
