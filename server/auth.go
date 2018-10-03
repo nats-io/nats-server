@@ -16,8 +16,10 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
@@ -41,12 +43,16 @@ type ClientAuthentication interface {
 
 // Accounts
 type Account struct {
-	Name    string
-	Nkey    string
-	mu      sync.RWMutex
-	sl      *Sublist
-	imports importMap
-	exports exportMap
+	Name     string
+	Nkey     string
+	mu       sync.RWMutex
+	sl       *Sublist
+	imports  importMap
+	exports  exportMap
+	nae      int
+	maxnae   int
+	maxaettl time.Duration
+	prunning bool
 }
 
 // Import stream mapping struct
@@ -62,6 +68,7 @@ type serviceImport struct {
 	from string
 	to   string
 	ae   bool
+	ts   int64
 }
 
 // importMap tracks the imported streams and services.
@@ -129,8 +136,52 @@ func (a *Account) addServiceImport(destination *Account, from, to string) error 
 // removeServiceImport will remove the route by subject.
 func (a *Account) removeServiceImport(subject string) {
 	a.mu.Lock()
+	si, ok := a.imports.services[subject]
+	if ok && si != nil && si.ae {
+		a.nae--
+	}
 	delete(a.imports.services, subject)
 	a.mu.Unlock()
+}
+
+// Return the number of AutoExpireResponseMaps for request/reply. These are mapped to the account that
+func (a *Account) numAutoExpireResponseMaps() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.nae
+}
+
+// Set the max outstanding auto expire response maps.
+func (a *Account) setMaxAutoExpireResponseMaps(max int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.maxnae = max
+}
+
+// Set the max ttl for response maps.
+func (a *Account) setMaxAutoExpireTTL(ttl time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.maxaettl = ttl
+}
+
+// Return a list of the current autoExpireResponseMaps.
+func (a *Account) autoExpireResponseMaps() []*serviceImport {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.imports.services) == 0 {
+		return nil
+	}
+	aesis := make([]*serviceImport, 0, len(a.imports.services))
+	for _, si := range a.imports.services {
+		if si.ae {
+			aesis = append(aesis, si)
+		}
+	}
+	sort.Slice(aesis, func(i, j int) bool {
+		return aesis[i].ts < aesis[j].ts
+	})
+	return aesis
 }
 
 // Add a route to connect from an implicit route created for a response to a request.
@@ -141,9 +192,60 @@ func (a *Account) addImplicitServiceImport(destination *Account, from, to string
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
 	}
-	a.imports.services[from] = &serviceImport{destination, from, to, autoexpire}
+	si := &serviceImport{destination, from, to, autoexpire, 0}
+	a.imports.services[from] = si
+	if autoexpire {
+		a.nae++
+		si.ts = time.Now().Unix()
+		if a.nae > a.maxnae && !a.prunning {
+			a.prunning = true
+			go a.pruneAutoExpireResponseMaps()
+		}
+	}
 	a.mu.Unlock()
 	return nil
+}
+
+// This will prune the list to below the threshold and remove all ttl'd maps.
+func (a *Account) pruneAutoExpireResponseMaps() {
+	defer func() {
+		a.mu.Lock()
+		a.prunning = false
+		a.mu.Unlock()
+	}()
+
+	a.mu.RLock()
+	ttl := int64(a.maxaettl/time.Second) + 1
+	a.mu.RUnlock()
+
+	for {
+		sis := a.autoExpireResponseMaps()
+
+		// Check ttl items.
+		now := time.Now().Unix()
+		for i, si := range sis {
+			if now-si.ts >= ttl {
+				a.removeServiceImport(si.from)
+			} else {
+				sis = sis[i:]
+				break
+			}
+		}
+
+		a.mu.RLock()
+		numOver := a.nae - a.maxnae
+		a.mu.RUnlock()
+
+		if numOver <= 0 {
+			return
+		} else if numOver >= len(sis) {
+			numOver = len(sis) - 1
+		}
+		// These are in sorted order, remove at least numOver
+		for _, si := range sis[:numOver] {
+			a.removeServiceImport(si.from)
+		}
+	}
 }
 
 // addStreamImport will add in the stream import from a specific account.
