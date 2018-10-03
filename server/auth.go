@@ -52,7 +52,7 @@ type Account struct {
 	nae      int
 	maxnae   int
 	maxaettl time.Duration
-	prunning bool
+	pruning  bool
 }
 
 // Import stream mapping struct
@@ -197,8 +197,8 @@ func (a *Account) addImplicitServiceImport(destination *Account, from, to string
 	if autoexpire {
 		a.nae++
 		si.ts = time.Now().Unix()
-		if a.nae > a.maxnae && !a.prunning {
-			a.prunning = true
+		if a.nae > a.maxnae && !a.pruning {
+			a.pruning = true
 			go a.pruneAutoExpireResponseMaps()
 		}
 	}
@@ -210,7 +210,7 @@ func (a *Account) addImplicitServiceImport(destination *Account, from, to string
 func (a *Account) pruneAutoExpireResponseMaps() {
 	defer func() {
 		a.mu.Lock()
-		a.prunning = false
+		a.pruning = false
 		a.mu.Unlock()
 	}()
 
