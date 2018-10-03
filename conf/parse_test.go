@@ -12,6 +12,7 @@ import (
 // Test to make sure we get what we expect.
 
 func test(t *testing.T, data string, ex map[string]interface{}) {
+	t.Helper()
 	m, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Received err: %v\n", err)
@@ -272,4 +273,58 @@ func TestIncludes(t *testing.T) {
 	if !reflect.DeepEqual(m, ex) {
 		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
 	}
+}
+
+var varIncludedVariablesSample = `
+authorization {
+
+  include "./includes/passwords.conf"
+
+  CAROL_PASS: foo
+
+  users = [
+   {user: alice, password: $ALICE_PASS}
+   {user: bob,   password: $BOB_PASS}
+   {user: carol, password: $CAROL_PASS}
+  ]
+}
+`
+
+func TestIncludeVariablesWithChecks(t *testing.T) {
+	p, err := parse(varIncludedVariablesSample, "", true)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	key := "authorization"
+	m, ok := p.mapping[key]
+	if !ok {
+		t.Errorf("Expected %q to be in the config", key)
+	}
+	expectKeyVal := func(t *testing.T, m interface{}, expectedKey string, expectedVal string, expectedLine, expectedPos int) {
+		t.Helper()
+		tk := m.(*token)
+		v := tk.Value()
+		vv := v.(map[string]interface{})
+		value, ok := vv[expectedKey]
+		if !ok {
+			t.Errorf("Expected key %q", expectedKey)
+		}
+		tk, ok = value.(*token)
+		if !ok {
+			t.Fatalf("Expected token %v", value)
+		}
+		if tk.Line() != expectedLine {
+			t.Errorf("Expected token to be at line %d, got: %d", expectedLine, tk.Line())
+		}
+		if tk.Position() != expectedPos {
+			t.Errorf("Expected token to be at position %d, got: %d", expectedPos, tk.Position())
+		}
+		v = tk.Value()
+		if v != expectedVal {
+			t.Errorf("Expected %q, got: %s", expectedVal, v)
+		}
+	}
+	expectKeyVal(t, m, "ALICE_PASS", "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q", 2, 1)
+	expectKeyVal(t, m, "BOB_PASS", "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly", 3, 1)
+	expectKeyVal(t, m, "CAROL_PASS", "foo", 6, 3)
 }
