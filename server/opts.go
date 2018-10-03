@@ -338,11 +338,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				if auth.token != "" {
 					return fmt.Errorf("Can not have a token and a users array")
 				}
-				o.Users = auth.users
+				// Users may have been added from Accounts parsing, so do an append here
+				o.Users = append(o.Users, auth.users...)
 			}
 			// Check for nkeys
 			if auth.nkeys != nil {
-				o.Nkeys = auth.nkeys
+				// NKeys may have been added from Accounts parsing, so do an append here
+				o.Nkeys = append(o.Nkeys, auth.nkeys...)
 			}
 		case "http":
 			hp, err := parseListen(v)
