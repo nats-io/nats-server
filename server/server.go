@@ -196,6 +196,9 @@ func New(opts *Options) *Server {
 	// For tracking accounts
 	s.accounts = make(map[string]*Account)
 
+	// Create global account.
+	s.registerAccount(&Account{Name: globalAccountName, sl: s.gsl})
+
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -300,6 +303,12 @@ func (s *Server) newAccountsAllowed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.opts.AllowNewAccounts
+}
+
+// numReservedAccounts will return the number of reserved accounts configured in the server.
+// Currently this is 1 for the global default service.
+func (s *Server) numReservedAccounts() int {
+	return 1
 }
 
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
@@ -1166,7 +1175,6 @@ func (s *Server) NumSubscriptions() uint32 {
 			subs += acc.sl.Count()
 		}
 	}
-	subs += s.gsl.Count()
 	s.mu.Unlock()
 	return subs
 }

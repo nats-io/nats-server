@@ -41,6 +41,10 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
+// For backwards compatibility, users who are not explicitly defined into an
+// account will be grouped in the default global account.
+const globalAccountName = "$G"
+
 // Accounts
 type Account struct {
 	Name     string

@@ -627,6 +627,11 @@ type importService struct {
 	to  string
 }
 
+// Checks if an account name is reserved.
+func isReservedAccount(name string) bool {
+	return strings.Compare(name, globalAccountName) == 0
+}
+
 // parseAccounts will parse the different accounts syntax.
 func parseAccounts(v interface{}, opts *Options) error {
 	var (
@@ -643,6 +648,10 @@ func parseAccounts(v interface{}, opts *Options) error {
 		m := make(map[string]struct{}, len(v.([]interface{})))
 		for _, name := range v.([]interface{}) {
 			ns := name.(string)
+			// Check for reserved names.
+			if isReservedAccount(ns) {
+				return fmt.Errorf("%q is a Reserved Account", ns)
+			}
 			if _, ok := m[ns]; ok {
 				return fmt.Errorf("Duplicate Account Entry: %s", ns)
 			}
@@ -660,6 +669,9 @@ func parseAccounts(v interface{}, opts *Options) error {
 			mv, ok := amv.(map[string]interface{})
 			if !ok {
 				return fmt.Errorf("Expected map entries for accounts")
+			}
+			if isReservedAccount(aname) {
+				return fmt.Errorf("%q is a Reserved Account", aname)
 			}
 			acc := &Account{Name: aname}
 			opts.Accounts = append(opts.Accounts, acc)

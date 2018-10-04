@@ -56,6 +56,9 @@ var (
 	// ErrBadAccount represents a malformed or incorrect account.
 	ErrBadAccount = errors.New("Bad Account")
 
+	// ErrReservedAccount represents a reserved account that can not be created.
+	ErrReservedAccount = errors.New("Reserved Account")
+
 	// ErrMissingAccount is returned when an account does not exist.
 	ErrMissingAccount = errors.New("Account Missing")
 

@@ -108,8 +108,9 @@ func TestAccountFromOptions(t *testing.T) {
 	}
 	s := New(&opts)
 
-	if la := len(s.accounts); la != 2 {
-		t.Fatalf("Expected to have a server with two accounts, got %v", la)
+	ta := s.numReservedAccounts() + 2
+	if la := len(s.accounts); la != ta {
+		t.Fatalf("Expected to have a server with %d total accounts, got %v", ta, la)
 	}
 	// Check that sl is filled in.
 	fooAcc := s.LookupAccount("foo")
@@ -1000,6 +1001,30 @@ func TestAccountMapsUsers(t *testing.T) {
 	// Also test client sublist.
 	if c.sl != nats.sl {
 		t.Fatalf("Expected the client's sublist to match 'nats' account")
+	}
+}
+
+func TestAccountGlobalDefault(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+
+	acc := s.LookupAccount(globalAccountName)
+	if acc == nil {
+		t.Fatalf("Expected a global default account on a new server, got none.")
+	}
+	// Make sure we can not create one with same name..
+	_, err := s.RegisterAccount(globalAccountName)
+	if err == nil {
+		t.Fatalf("Expected error trying to create a new reserved account")
+	}
+
+	// Make sure we can not define one in a config file either.
+	confFileName := createConfFile(t, []byte(`accounts { $G {} }`))
+	defer os.Remove(confFileName)
+
+	_, err = ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error parsing config file with reserved account")
 	}
 }
 
