@@ -218,20 +218,94 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 }
 
 func TestRemovePassFromTrace(t *testing.T) {
-	pass := []byte("s3cr3t")
-	check := func(r []byte) {
-		t.Helper()
-		if bytes.Contains(r, pass) {
-			t.Fatalf("Found password in %q", r)
-		}
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			"CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {\"user\":\"derek\",\"pass\":  \"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":  \"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }\r\n",
+			"CONNECT {\"user\":\"derek\",\"pass\":    \"[REDACTED]\"     }\r\n",
+		},
+		{
+			"CONNECT {\"pass\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"CONNECT {pass:s3cr3t ,   password =  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password =  [REDACTED]}",
+		},
+		{
+			"CONNECT {pass:s3cr3t ,   password=  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password=  [REDACTED]}",
+		},
+		{
+			`CONNECT {"pass":"s3cr3t4", "password": "s3cr3t4"}`,
+			`CONNECT {"pass":"[REDACTED]", "password": "[REDACTED]"}`,
+		},
+		{
+			"CONNECT {user = hello, password =  s3cr3t}",
+			"CONNECT {user = hello, password =  [REDACTED]}",
+		},
+		{
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"CONNECT {pass:s3cr3t\r\n",
+			"CONNECT {pass:[REDACTED]\r\n",
+		},
+		{
+			"CONNECT {\"password\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"password\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"CONNECT {\"password\":\"very secret password which is very long\",}\r\n",
+			"CONNECT {\"password\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",\"pass\":\"[REDACTED]\",\"password\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {pass = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {pass = \"[REDACTED]\",pass= \"[REDACTED]\",password =\"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+		},
+		{
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+		},
 	}
-	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":  \"s3cr3t\"}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"pass\":\"s3cr3t\",}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {pass:s3cr3t ,   password =  s3cr3t}")))
-	check(removePassFromTrace([]byte("CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {pass:s3cr3t\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"password\":\"s3cr3t\",}\r\n")))
-	check(removePassFromTrace([]byte("CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n")))
+
+	for _, test := range tests {
+		t.Run("", func(t *testing.T) {
+			output := removePassFromTrace([]byte(test.input))
+			if !bytes.Equal(output, []byte(test.expected)) {
+				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
+			}
+		})
+	}
 }
