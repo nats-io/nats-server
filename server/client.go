@@ -21,7 +21,6 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -754,42 +753,32 @@ func (c *client) processErr(errStr string) {
 	c.closeConnection(ParseError)
 }
 
-// Password pattern matcher.
-var passPat = regexp.MustCompile(`"?\s*pass\S*?"?\s*[:=]\s*"?(([^",\r\n}])*)`)
-
-// This will remove any notion of passwords from trace messages
-// for logging.
+// removePassFromTrace removes any notion of passwords from trace
+// messages for logging.
 func removePassFromTrace(arg []byte) []byte {
 	if !bytes.Contains(arg, []byte("pass")) {
 		return arg
 	}
-	// Take a copy of the connect proto just for the trace message.
-	a := make([]byte, len(arg))
-	copy(a, arg)
-
-	m := passPat.FindAllSubmatchIndex(a, -1)
-	if len(m) == 0 {
-		return a
+	m := map[string]interface{}{}
+	err := json.Unmarshal(arg, &m)
+	if err != nil {
+		// Leave as is to be able to trace malformed connect
+		// messages.
+		return arg
 	}
 
-	j := 0
-	redactedPass := []byte("[REDACTED]")
-	redactedPassLen := len(redactedPass)
-	for _, i := range m {
-		if len(i) < 6 {
-			continue
-		}
-		// Need to shift the index in case password appears more than once,
-		// since the substrings are being removed in place.
-		start := i[2] + j
-		end := i[5] + j
-		passLen := end - start
-		j += redactedPassLen - passLen
-
-		// Replace all possible password substrings.
-		a = append(a[:start], append(redactedPass, a[end:]...)...)
+	redactedPass := "[REDACTED]"
+	if _, ok := m["password"]; ok {
+		m["password"] = redactedPass
 	}
-	return a
+	if _, ok := m["pass"]; ok {
+		m["pass"] = redactedPass
+	}
+	result, err := json.Marshal(m)
+	if err != nil {
+		return arg
+	}
+	return result
 }
 
 func (c *client) processConnect(arg []byte) error {

@@ -219,89 +219,107 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 
 func TestRemovePassFromTrace(t *testing.T) {
 	tests := []struct {
+		name     string
 		input    string
 		expected string
 	}{
 		{
-			"CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n",
-			"CONNECT {\"user\":\"derek\",\"pass\":\"[REDACTED]\"}\r\n",
+			"user and pass",
+			`{"user":"derek","pass":"s3cr3t"}`,
+			`{"pass":"[REDACTED]","user":"derek"}`,
 		},
 		{
-			"CONNECT {\"user\":\"derek\",\"pass\":  \"s3cr3t\"}\r\n",
-			"CONNECT {\"user\":\"derek\",\"pass\":  \"[REDACTED]\"}\r\n",
+			"user and pass",
+			"{\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }",
+			"{\"pass\":\"[REDACTED]\",\"user\":\"derek\"}",
 		},
 		{
-			"CONNECT {\"user\":\"derek\",\"pass\":    \"s3cr3t\"     }\r\n",
-			"CONNECT {\"user\":\"derek\",\"pass\":    \"[REDACTED]\"     }\r\n",
+			"user and password",
+			`{"user":"derek","password":  "s3cr3t"}`,
+			`{"password":"[REDACTED]","user":"derek"}`,
 		},
 		{
-			"CONNECT {\"pass\":\"s3cr3t\",}\r\n",
-			"CONNECT {\"pass\":\"[REDACTED]\",}\r\n",
+			"only pass",
+			"{\"pass\":\"s3cr3t\"}",
+			"{\"pass\":\"[REDACTED]\"}",
 		},
 		{
-			"CONNECT {pass:s3cr3t ,   password =  s3cr3t}",
-			"CONNECT {pass:[REDACTED],   password =  [REDACTED]}",
+			"only password",
+			"{\"password\":\"s3cr3t\"}",
+			"{\"password\":\"[REDACTED]\"}",
 		},
 		{
-			"CONNECT {pass:s3cr3t ,   password=  s3cr3t}",
-			"CONNECT {pass:[REDACTED],   password=  [REDACTED]}",
+			"pass and password",
+			`{"pass":"s3cr3t","password":"s3cr3t"}`,
+			`{"pass":"[REDACTED]","password":"[REDACTED]"}`,
 		},
 		{
-			`CONNECT {"pass":"s3cr3t4", "password": "s3cr3t4"}`,
-			`CONNECT {"pass":"[REDACTED]", "password": "[REDACTED]"}`,
+			"long password",
+			"{\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}",
+			"{\"pass\":\"[REDACTED]\"}",
 		},
 		{
-			"CONNECT {user = hello, password =  s3cr3t}",
-			"CONNECT {user = hello, password =  [REDACTED]}",
+			"multiple passwords",
+			"{\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}",
+			"{\"pass\":\"[REDACTED]\",\"password\":\"[REDACTED]\"}",
+		},
+		// NOTE: In the result the keys are changed to be in alphabetical order
+		{
+			"full connect example",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}",
+			"{\"echo\":true,\"name\":\"APM7JU94z77YzP6WTBEiuw\",\"pass\":\"[REDACTED]\",\"pedantic\":false,\"tls_required\":false,\"user\":\"foo\",\"verbose\":false}",
 		},
 		{
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"pass\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"full connect sample",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}",
+			"{\"echo\":true,\"name\":\"APM7JU94z77YzP6WTBEiuw\",\"password\":\"[REDACTED]\",\"pedantic\":false,\"tls_required\":false,\"user\":\"foo\",\"verbose\":false}",
 		},
 		{
-			"CONNECT {pass:s3cr3t\r\n",
-			"CONNECT {pass:[REDACTED]\r\n",
+			"user and password are the same",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"...\"}",
+			"{\"echo\":true,\"name\":\"...\",\"password\":\"[REDACTED]\",\"pedantic\":false,\"tls_required\":false,\"user\":\"s3cr3t\",\"verbose\":false}",
 		},
 		{
-			"CONNECT {\"password\":\"s3cr3t\",}\r\n",
-			"CONNECT {\"password\":\"[REDACTED]\",}\r\n",
+			"user, name and password are the same",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+			"{\"echo\":true,\"name\":\"s3cr3t\",\"pass\":\"[REDACTED]\",\"pedantic\":false,\"tls_required\":false,\"user\":\"s3cr3t\",\"verbose\":false}",
+		},
+		// No password leaves the connect message as is so keys are not sorted
+		{
+			"full connect example",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}",
+			"{\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}",
+		},
+		// If JSON payload is invalid then traced the message as is
+		{
+			"invalid JSON",
+			"{pass:s3cr3t ,   password=  s3cr3t}\r\n",
+			"{pass:s3cr3t ,   password=  s3cr3t}\r\n",
 		},
 		{
-			"CONNECT {\"password\":\"very secret password which is very long\",}\r\n",
-			"CONNECT {\"password\":\"[REDACTED]\",}\r\n",
+			"invalid JSON",
+			"{user = hello, password =  s3cr3t}",
+			"{user = hello, password =  s3cr3t}",
 		},
 		{
-			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}\r\n",
-			"CONNECT {\"pass\":\"[REDACTED]\"}\r\n",
+			"invalid JSON",
+			"{pass:s3cr3t\r\n",
+			"{pass:s3cr3t\r\n",
 		},
 		{
-			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
-			"CONNECT {\"pass\":\"[REDACTED]\",\"pass\":\"[REDACTED]\",\"password\":\"[REDACTED]\"}\r\n",
+			"invalid JSON",
+			"{\"password\":\"s3cr3t\",}\r\n",
+			"{\"password\":\"s3cr3t\",}\r\n",
 		},
 		{
-			"CONNECT {pass = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
-			"CONNECT {pass = \"[REDACTED]\",pass= \"[REDACTED]\",password =\"[REDACTED]\"}\r\n",
-		},
-		{
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
-		},
-		{
-			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"s3cr3t\"}\r\n",
-			"CONNECT {\"user\":\"s3cr3t\",\"pass\":\"[REDACTED]\"}\r\n",
-		},
-		{
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"...\"}\r\n",
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"...\"}\r\n",
-		},
-		{
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"s3cr3t\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
-			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"password\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+			"invalid JSON",
+			"{pass: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"{pass: \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
 		},
 	}
 
 	for _, test := range tests {
-		t.Run("", func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			output := removePassFromTrace([]byte(test.input))
 			if !bytes.Equal(output, []byte(test.expected)) {
 				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
