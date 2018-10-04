@@ -1008,13 +1008,11 @@ func TestAccountGlobalDefault(t *testing.T) {
 	opts := defaultServerOptions
 	s := New(&opts)
 
-	acc := s.LookupAccount(globalAccountName)
-	if acc == nil {
+	if acc := s.LookupAccount(globalAccountName); acc == nil {
 		t.Fatalf("Expected a global default account on a new server, got none.")
 	}
 	// Make sure we can not create one with same name..
-	_, err := s.RegisterAccount(globalAccountName)
-	if err == nil {
+	if _, err := s.RegisterAccount(globalAccountName); err == nil {
 		t.Fatalf("Expected error trying to create a new reserved account")
 	}
 
@@ -1022,8 +1020,7 @@ func TestAccountGlobalDefault(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`accounts { $G {} }`))
 	defer os.Remove(confFileName)
 
-	_, err = ProcessConfigFile(confFileName)
-	if err == nil {
+	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error parsing config file with reserved account")
 	}
 }

@@ -629,7 +629,7 @@ type importService struct {
 
 // Checks if an account name is reserved.
 func isReservedAccount(name string) bool {
-	return strings.Compare(name, globalAccountName) == 0
+	return name == globalAccountName
 }
 
 // parseAccounts will parse the different accounts syntax.
