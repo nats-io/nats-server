@@ -1,4 +1,4 @@
-// Copyright 2015-2018 The NATS Authors
+// Copyright 2018 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -63,7 +63,7 @@ func NewNcrCmd() (*ncrCmd, error) {
 	var err error
 
 	var cmd = ncrCmd{}
-	flag.BoolVar(&cmd.create, "g", false, "processArgs cluster and/or server keys")
+	flag.BoolVar(&cmd.create, "g", false, "generate cluster and/or server keys")
 	flag.StringVar(&cmd.cluster.path, "c", "", "cluster key path")
 	flag.StringVar(&cmd.server.path, "s", "", "server key or path")
 	flag.StringVar(&cmd.outFile, "o", "--", "output file (defaults to stdout)")
@@ -364,7 +364,7 @@ func loadFromPath(s string) (string, error) {
 }
 
 func parseNKey(s string) (nkeys.KeyPair, error) {
-	if s[0:1] == "S" {
+	if s[0] == 'S' {
 		return nkeys.FromSeed(s)
 	} else {
 		return nkeys.FromPublicKey(s)
