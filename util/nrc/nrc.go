@@ -21,7 +21,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nkeys"
@@ -40,6 +43,7 @@ func printUsage() {
 type ncrCmd struct {
 	makeNKeys *bool
 	outFile   *string
+	expiry    int64
 	cluster   keyInfo
 	server    keyInfo
 	token     string
@@ -52,23 +56,75 @@ type keyInfo struct {
 	seed string
 }
 
-func NewNcrCmd() *ncrCmd {
+func NewNcrCmd() (*ncrCmd, error) {
 	var args = ncrCmd{}
 
 	args.makeNKeys = flag.Bool("g", false, "generate cluster and/or server keys")
 	args.cluster.path = flag.String("c", "", "cluster key path")
 	args.server.path = flag.String("s", "", "server key or path")
 	args.outFile = flag.String("o", "--", "output file (defaults to stdout)")
+	expiry := flag.String("e", "", "token expiry (YYYY-MM-DD, 1m, 1h, 1d, 1M, 1y, 1w)")
 
 	log.SetFlags(0)
 	flag.Usage = usage
 	flag.Parse()
 
-	return &args
+	var err error
+	args.expiry, err = parseExpiry(*expiry)
+	if err != nil {
+		return nil, err
+	}
+
+	return &args, nil
+}
+
+func parseExpiry(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	re := regexp.MustCompile(`(\d){4}\-(\d){2}\-(\d){2}`)
+	if re.MatchString(s) {
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return 0, err
+		}
+		return t.Unix(), nil
+	}
+	re = regexp.MustCompile(`(?P<count>\d+)(?P<qualifier>[mhdMyw])`)
+	m := re.FindStringSubmatch(s)
+	if len(m) > 0 {
+		count, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		if count == 0 {
+			return 0, nil
+		}
+		dur := time.Duration(count)
+		now := time.Now()
+		switch m[2] {
+		case "m":
+			return now.Add(dur * time.Minute).Unix(), nil
+		case "h":
+			return now.Add(dur * time.Hour).Unix(), nil
+		case "d":
+			return now.Add(dur * time.Hour * 24).Unix(), nil
+		case "w":
+			return now.Add(dur * time.Hour * 24 * 7).Unix(), nil
+		case "M":
+			return now.AddDate(0, 1, 0).Unix(), nil
+		case "y":
+			return now.AddDate(1, 0, 0).Unix(), nil
+		}
+	}
+	return 0, fmt.Errorf("couldn't parse: %v", s)
 }
 
 func main() {
-	cmd := NewNcrCmd()
+	cmd, err := NewNcrCmd()
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err := cmd.run(); err != nil {
 		log.Fatal(err)
 	}
@@ -179,6 +235,9 @@ func (n *ncrCmd) generateToken() error {
 	var err error
 	// generate the JWT
 	sc := jwt.NewServerClaims(n.server.pub)
+	if n.expiry > 0 {
+		sc.Expires = n.expiry
+	}
 	n.token, err = sc.Encode(n.cluster.pair)
 	if err != nil {
 		return fmt.Errorf("error encoding server token: %v", err)
@@ -255,6 +314,7 @@ func (n *ncrCmd) doOutput() error {
 			n.server.printSeed(f)
 		}
 		fmt.Fprintln(f, "*************************************************************")
+		fmt.Fprintln(f)
 	}
 	n.printToken(f)
 	f.Sync()
