@@ -14,6 +14,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -45,7 +46,7 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := cmd.run(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("error: %v\n", err)
 	}
 }
 
@@ -128,16 +129,10 @@ func parseExpiry(s string) (int64, error) {
 // process arguments the cluster and server keys as per arguments
 func (n *ncrCmd) processArgs() error {
 	if err := n.cluster.init(n.create); err != nil {
-		return fmt.Errorf("error processing cluster keypair: %v", err)
-	}
-	if n.cluster.pair == nil {
-		return fmt.Errorf("mssing cluster key")
+		return err
 	}
 	if err := n.server.init(n.create); err != nil {
-		return fmt.Errorf("error processing cluster keypair: %v", err)
-	}
-	if n.server.pair == nil {
-		return fmt.Errorf("mssing server key")
+		return err
 	}
 	return nil
 }
@@ -180,7 +175,8 @@ func (sk *serverKey) init(create bool) error {
 		if err != nil {
 			return err
 		}
-	} else {
+	}
+	if sk.path != "" {
 		if looksLikeNKey(sk.path, sk.prefix) {
 			sk.pair, err = parseNKey(sk.path)
 			if err != nil {
@@ -206,9 +202,13 @@ func (sk *serverKey) init(create bool) error {
 			return fmt.Errorf("invalid server public key: %q", sk.pub)
 		}
 	}
+	if sk.pair == nil {
+		return errors.New("missing server key")
+	}
 
 	return nil
 }
+
 // cluster keys can only be created or loaded from files
 func (ck *clusterKey) init(create bool) error {
 	var err error
@@ -225,7 +225,8 @@ func (ck *clusterKey) init(create bool) error {
 		if err != nil {
 			return err
 		}
-	} else {
+	}
+	if ck.path != "" {
 		v, err := loadFromPath(ck.path)
 		if err != nil {
 			return err
@@ -243,6 +244,9 @@ func (ck *clusterKey) init(create bool) error {
 		if !nkeys.IsValidPublicClusterKey(ck.pub) {
 			return fmt.Errorf("invalid cluster public key: %q", ck.pub)
 		}
+	}
+	if ck.pair == nil {
+		return errors.New("missing cluster key")
 	}
 
 	return nil

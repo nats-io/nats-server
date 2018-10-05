@@ -11,11 +11,10 @@ import (
 	"time"
 )
 
-
 func TestParseDate(t *testing.T) {
 	type testd struct {
-		input string
-		output int64
+		input   string
+		output  int64
 		isError bool
 	}
 	tests := []testd{
@@ -314,10 +313,9 @@ func TestInvalidServerKey(t *testing.T) {
 	t.Fatal("should have failed - with bad server key")
 }
 
+type kpfun func() (nkeys.KeyPair, error)
 
-type kpfun func()(nkeys.KeyPair, error)
-
-func generateKeys(f kpfun, t *testing.T) (*serverKey) {
+func generateKeys(f kpfun, t *testing.T) *serverKey {
 	var err error
 	sk := serverKey{}
 	sk.pair, err = f()
@@ -336,7 +334,7 @@ func generateKeys(f kpfun, t *testing.T) (*serverKey) {
 	return &sk
 }
 
-func store(s string, t *testing.T)(string) {
+func store(s string, t *testing.T) string {
 	f, err := ioutil.TempFile("", "nkey")
 	if err != nil {
 		t.Fatal("error creating temp file", err)
