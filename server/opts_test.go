@@ -1274,7 +1274,9 @@ func TestClusterPermissionsConfig(t *testing.T) {
 	defer os.Remove(conf)
 	opts, err := ProcessConfigFile(conf)
 	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
+		if cerr, ok := err.(*processConfigErr); ok && len(cerr.Errors()) > 0 {
+			t.Fatalf("Error processing config file: %v", err)
+		}
 	}
 	if opts.Cluster.Permissions == nil {
 		t.Fatal("Expected cluster permissions to be set")
