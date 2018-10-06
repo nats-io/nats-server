@@ -193,9 +193,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	case ConnClosed:
 		c.Total = s.closed.len()
 		closedClients = s.closed.closedClients()
+		c.Total = len(closedClients)
 	case ConnAll:
-		c.Total = len(s.clients) + s.closed.len()
 		closedClients = s.closed.closedClients()
+		c.Total = len(s.clients) + len(closedClients)
 	}
 
 	totalClients := c.Total

@@ -55,21 +55,22 @@ func (rb *closedRingBuffer) totalConns() uint64 {
 	return rb.total
 }
 
-// This will not be sorted. Will return a copy of the list
-// which recipient can modify. If the contents of the client
-// itself need to be modified, meaning swapping in any optional items,
-// a copy should be made. We could introduce a new lock and hold that
-// but since we return this list inside monitor which allows programatic
-// access, we do not know when it would be done.
+// This will return a sorted copy of the list which recipient can
+// modify. If the contents of the client itself need to be modified,
+// meaning swapping in any optional items, a copy should be made. We
+// could introduce a new lock and hold that but since we return this
+// list inside monitor which allows programatic access, we do not
+// know when it would be done.
 func (rb *closedRingBuffer) closedClients() []*closedClient {
 	dup := make([]*closedClient, rb.len())
-	if rb.total <= uint64(cap(rb.conns)) {
+	head := rb.next()
+	if rb.total <= uint64(cap(rb.conns)) || head == 0 {
 		copy(dup, rb.conns[:rb.len()])
 	} else {
-		first := rb.next()
-		next := cap(rb.conns) - first
-		copy(dup, rb.conns[first:])
-		copy(dup[next:], rb.conns[:next])
+		fp := rb.conns[head:]
+		sp := rb.conns[:head]
+		copy(dup, fp)
+		copy(dup[len(fp):], sp)
 	}
 	return dup
 }
