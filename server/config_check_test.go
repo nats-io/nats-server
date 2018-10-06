@@ -335,10 +335,9 @@ func TestConfigCheck(t *testing.T) {
 		  hello = "world"
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["hello"]`),
-			pedanticErr: errors.New(`unknown field "hello"`),
-			errorLine:   3,
-			errorPos:    5,
+			newDefaultErr: errors.New(`error parsing tls config, unknown field ["hello"]`),
+			errorLine:     3,
+			errorPos:      5,
 		},
 		{
 			name: "when unknown option is in cluster tls config",
@@ -349,11 +348,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			// Backwards compatibility: also report error by default even if pedantic checks disabled.
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["foo"]`),
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   4,
-			errorPos:    7,
+			newDefaultErr: errors.New(`error parsing tls config, unknown field ["foo"]`),
+			errorLine:     4,
+			errorPos:      7,
 		},
 		{
 			name: "when using cipher suites in the TLS config",
@@ -366,10 +363,9 @@ func TestConfigCheck(t *testing.T) {
 		    preferences = []
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["preferences"]`),
-			pedanticErr: errors.New(`unknown field "preferences"`),
-			errorLine:   7,
-			errorPos:    7,
+			newDefaultErr: errors.New(`error parsing tls config, unknown field ["preferences"]`),
+			errorLine:     7,
+			errorPos:      7,
 		},
 		{
 			name: "when using curve preferences in the TLS config",
@@ -383,10 +379,22 @@ func TestConfigCheck(t *testing.T) {
 		    suites = []
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["suites"]`),
-			pedanticErr: errors.New(`unknown field "suites"`),
-			errorLine:   8,
-			errorPos:    7,
+			newDefaultErr: errors.New(`error parsing tls config, unknown field ["suites"]`),
+			errorLine:     8,
+			errorPos:      7,
+		},
+		{
+			name: "when using curve preferences in the TLS config",
+			config: `
+		tls = {
+		    curve_preferences: [
+			"CurveP5210000"
+		    ]
+		}
+		`,
+			newDefaultErr: errors.New(`Unrecognized curve preference CurveP5210000`),
+			errorLine:     4,
+			errorPos:      5,
 		},
 		{
 			name: "when unknown option is in cluster config with defined routes",
@@ -566,6 +574,102 @@ func TestConfigCheck(t *testing.T) {
 				`,
 			defaultErr:  nil,
 			pedanticErr: nil,
+		},
+		{
+			name: "when nkey is invalid within accounts block",
+			config: `
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		        # SUAEL6RU3BSDAFKOHNTEOK5Q6FTM5FTAMWVIKBET6FHPO4JRII3CYELVNM
+		        nkey = "SCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+
+		  #
+		  # nats < synadia
+		  #
+		  nats {
+		    # SUAJTM55JH4BNYDA22DMDZJSRBRKVDGSLYK2HDIOCM3LPWCDXIDV5Q4CIE
+		    nkey = "ADRZ42QBM7SXQDXXTSVWT2WLLFYOQGAFC4TO6WOAXHEKQHIXR4HFYJDS"
+
+		    users [
+		      {
+		        # SUADZTYQAKTY5NQM7XRB5XR3C24M6ROGZLBZ6P5HJJSSOFUGC5YXOOECOM
+		        nkey = "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'nats.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" }, to: "nats.requests" }
+		    ]
+		  }
+
+		  #
+		  # cncf < synadia
+		  #
+		  cncf {
+		    # SAAFHDZX7SGZ2SWHPS22JRPPK5WX44NPLNXQHR5C5RIF6QRI3U65VFY6C4
+		    nkey = "AD4YRVUJF2KASKPGRMNXTYKIYSCB3IHHB4Y2ME6B2PDIV5QJ23C2ZRIT"
+
+		    users [
+		      {
+		        # SUAKINP3Z2BPUXWOFSW2FZC7TFJCMMU7DHKP2C62IJQUDASOCDSTDTRMJQ
+		        nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'synadia.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" } }
+		    ]
+		  }
+		}
+				`,
+			newDefaultErr: errors.New(`Not a valid public nkey for a user`),
+			errorLine:     14,
+			errorPos:      11,
+		},
+		{
+			name: "when account user within accounts block has no user, pass",
+			config: `
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+		}
+				`,
+			newDefaultErr: errors.New(`User entry requires a user and a password`),
+			errorLine:     13,
+			errorPos:      10,
 		},
 		{
 			name: "when accounts block has unknown fields",
@@ -822,6 +926,234 @@ func TestConfigCheck(t *testing.T) {
 			newDefaultErr: errors.New(`Expect an account name and a subject`),
 			errorLine:     7,
 			errorPos:      25,
+		},
+		{
+			name: "when user authorization config has both token and users",
+			config: `
+		authorization = {
+                 token = "s3cr3t"
+		  users = [
+		    {
+		      user = "foo"
+		      pass = "bar"
+		    }
+		  ]
+		}
+		`,
+			newDefaultErr: errors.New(`Can not have a token and a users array`),
+			errorLine:     2,
+			errorPos:      3,
+		},
+		{
+			name: "when user authorization config has both token and user",
+			config: `
+		authorization = {
+  	          user = "foo"
+		  pass = "bar"
+		  users = [
+		    {
+		      user = "foo"
+		      pass = "bar"
+		    }
+		  ]
+		}
+		`,
+			newDefaultErr: errors.New(`Can not have a single user/pass and a users array`),
+			errorLine:     2,
+			errorPos:      3,
+		},
+		{
+			name: "when user authorization config has users not as a list",
+			config: `
+		authorization = {
+		  users = false
+		}
+		`,
+			newDefaultErr: errors.New(`Expected users field to be an array, got false`),
+			errorLine:     3,
+			errorPos:      5,
+		},
+		{
+			name: "when user authorization config has users not as a map",
+			config: `
+		authorization = {
+		  users = [false]
+		}
+		`,
+			newDefaultErr: errors.New(`Expected user entry to be a map/struct, got false`),
+			errorLine:     3,
+			errorPos:      14,
+		},
+		{
+			name: "when user authorization config has permissions not as a map",
+			config: `
+		authorization = {
+		  users = [{user: hello, pass: world}]
+                  permissions = false
+		}
+		`,
+			newDefaultErr: errors.New(`Expected permissions to be a map/struct, got false`),
+			errorLine:     4,
+			errorPos:      19,
+		},
+		{
+			name: "when user authorization permissions config has invalid fields within allow",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = [false, "hello", "world"]
+		      deny = ["foo", "bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine:     5,
+			errorPos:      18,
+		},
+		{
+			name: "when user authorization permissions config has invalid fields within deny",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = ["hello", "world"]
+		      deny = [true, "foo", "bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine:     6,
+			errorPos:      17,
+		},
+		{
+			name: "when user authorization permissions config has invalid type",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = false
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`Expected subject permissions to be a subject, or array of subjects, got bool`),
+			errorLine:     5,
+			errorPos:      9,
+		},
+		{
+			name: "when user authorization permissions subject is invalid",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = ["foo..bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`Subject "foo..bar" is not a valid subject`),
+			errorLine:     5,
+			errorPos:      9,
+		},
+		{
+			name: "when cluster config listen is invalid",
+			config: `
+		cluster {
+		  listen = "0.0.0.0:XXXX"
+		}
+		`,
+			newDefaultErr: errors.New(`Could not parse port "XXXX"`),
+			errorLine:     3,
+			errorPos:      5,
+		},
+		{
+			name: "when cluster config includes multiple users",
+			config: `
+		cluster {
+		  authorization {
+                    users = []
+                  }
+		}
+		`,
+			newDefaultErr: errors.New(`Cluster authorization does not allow multiple users`),
+			errorLine:     3,
+			errorPos:      5,
+		},
+		{
+			name: "when cluster routes are invalid",
+			config: `
+		cluster {
+                  routes = [
+                    "0.0.0.0:XXXX"
+                    "0.0.0.0:YYYY"
+                    "0.0.0.0:ZZZZ"
+                  ]
+		}
+		`,
+			newDefaultErr: errors.New(`error parsing route url ["0.0.0.0:XXXX"]`),
+			errorLine:     4,
+			errorPos:      22,
+		},
+		{
+			name: "when setting invalid permissions within cluster authorization block",
+			config: `
+		cluster {
+		  authorization {
+		    permissions = {
+		      publish = { 
+                        allow = [false, "foo", "bar"] 
+                      }
+		    }
+		  }
+
+		  # permissions = {
+		  #   publish = { deny = ["foo", "bar"] }
+		  # }
+		}
+		`,
+			newDefaultErr: errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine:     6,
+			errorPos:      34,
+		},
+		{
+			name: "when setting invalid permissions within cluster authorization block",
+			config: `
+		cluster {
+		  authorization {
+		    # permissions = {
+		    #   publish = { 
+                    #     allow = [false, "foo", "bar"] 
+                    #   }
+		    # }
+		  }
+
+		  permissions = {
+		    publish = { deny = [false, "foo", "bar"] }
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine:     12,
+			errorPos:      27,
+		},
+		{
+			name: "when setting invalid TLS config within cluster block",
+			config: `
+		cluster {
+		  tls {
+		  }
+		}
+		`,
+			newDefaultErr: errors.New(`error parsing X509 certificate/key pair: open : no such file or directory`),
+			errorLine:     3,
+			errorPos:      5,
 		},
 	}
 
