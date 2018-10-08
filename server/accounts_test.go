@@ -529,10 +529,8 @@ func TestSimpleMapping(t *testing.T) {
 		t.Fatalf("Error adding account import to client bar: %v", err)
 	}
 
-	// Normal Subscription on bar client.
-	go cbar.parse([]byte("SUB import.foo 1\r\nSUB import.foo bar 2\r\nPING\r\n"))
-	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
-	if err != nil {
+	// Normal and Queue Subscription on bar client.
+	if err := cbar.parse([]byte("SUB import.foo 1\r\nSUB import.foo bar 2\r\n")); err != nil {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 
@@ -568,6 +566,29 @@ func TestSimpleMapping(t *testing.T) {
 	}
 	checkMsg(l, "2")
 	checkPayload(crBar, []byte("hello\r\n"), t)
+
+	// We should have 2 subscriptions in both. Normal and Queue Subscriber
+	// for barAcc which are local, and 2 that are shadowed in fooAcc.
+	// Now make sure that when we unsubscribe we clean up properly for both.
+	if bslc := barAcc.sl.Count(); bslc != 2 {
+		t.Fatalf("Expected 2 normal subscriptions on barAcc, got %d", bslc)
+	}
+	if fslc := fooAcc.sl.Count(); fslc != 2 {
+		t.Fatalf("Expected 2 shadowed subscriptions on fooAcc, got %d", fslc)
+	}
+
+	// Now unsubscribe.
+	if err := cbar.parse([]byte("UNSUB 1\r\nUNSUB 2\r\n")); err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// We should have zero on both.
+	if bslc := barAcc.sl.Count(); bslc != 0 {
+		t.Fatalf("Expected no normal subscriptions on barAcc, got %d", bslc)
+	}
+	if fslc := fooAcc.sl.Count(); fslc != 0 {
+		t.Fatalf("Expected no shadowed subscriptions on fooAcc, got %d", fslc)
+	}
 }
 
 func TestNoPrefixWildcardMapping(t *testing.T) {

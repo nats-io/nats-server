@@ -242,7 +242,8 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 // interest in published messages.
 type subscription struct {
 	client  *client
-	im      *streamImport // This is for importing support.
+	im      *streamImport   // This is for import stream support.
+	shadow  []*subscription // This is to track shadowed accounts.
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -1382,6 +1383,7 @@ func (c *client) checkAccountImports(sub *subscription) error {
 
 	var rims [32]*streamImport
 	var ims = rims[:0]
+
 	acc.mu.RLock()
 	for _, im := range acc.imports.streams {
 		if isSubsetMatch(tokens, im.prefix+im.from) {
@@ -1389,6 +1391,8 @@ func (c *client) checkAccountImports(sub *subscription) error {
 		}
 	}
 	acc.mu.RUnlock()
+
+	var shadow []*subscription
 
 	// Now walk through collected importMaps
 	for _, im := range ims {
@@ -1402,9 +1406,20 @@ func (c *client) checkAccountImports(sub *subscription) error {
 			nsub.subject = sub.subject[len(im.prefix):]
 		}
 		if err := im.acc.sl.Insert(&nsub); err != nil {
-			return fmt.Errorf("Could not add shadow import subscription for account %q", im.acc.Name)
+			errs := fmt.Sprintf("Could not add shadow import subscription for account %q", im.acc.Name)
+			c.Debugf(errs)
+			return fmt.Errorf(errs)
 		}
+		if shadow == nil {
+			shadow = make([]*subscription, 0, len(ims))
+		}
+		shadow = append(shadow, &nsub)
 	}
+
+	c.mu.Lock()
+	sub.shadow = shadow
+	c.mu.Unlock()
+
 	return nil
 }
 
@@ -1455,6 +1470,14 @@ func (c *client) unsubscribe(sub *subscription) {
 	if c.typ == CLIENT && c.srv != nil && len(sub.queue) > 0 {
 		c.srv.holdRemoteQSub(sub)
 	}
+
+	// Check to see if we have shadown subscriptions.
+	for _, nsub := range sub.shadow {
+		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
+			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
+		}
+	}
+	sub.shadow = nil
 }
 
 func (c *client) processUnsub(arg []byte) error {
