@@ -582,7 +582,7 @@ func TestSimpleMapping(t *testing.T) {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 
-	// We should not have zero on both.
+	// We should have zero on both.
 	if bslc := barAcc.sl.Count(); bslc != 0 {
 		t.Fatalf("Expected no normal subscriptions on barAcc, got %d", bslc)
 	}
