@@ -21,7 +21,6 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -755,29 +754,32 @@ func (c *client) processErr(errStr string) {
 	c.closeConnection(ParseError)
 }
 
-// Password pattern matcher.
-var passPat = regexp.MustCompile(`"?\s*pass\S*?"?[:=]\s*"?(([^"])*)`)
-
-// This will remove any notion of passwords from trace messages
-// for logging.
+// removePassFromTrace removes any notion of passwords from trace
+// messages for logging.
 func removePassFromTrace(arg []byte) []byte {
-
 	if !bytes.Contains(arg, []byte("pass")) {
 		return arg
 	}
-	m := passPat.FindAllSubmatch(arg, -1)
-	if len(m) == 0 {
+	m := map[string]interface{}{}
+	err := json.Unmarshal(arg, &m)
+	if err != nil {
+		// Leave as is to be able to trace malformed connect
+		// messages.
 		return arg
 	}
 
-	for _, match := range m {
-		if len(match) != 3 {
-			continue
-		}
-		arg = bytes.Replace(arg, match[1], []byte("[REDACTED]"), 1)
-
+	redactedPass := "[REDACTED]"
+	if _, ok := m["password"]; ok {
+		m["password"] = redactedPass
 	}
-	return arg
+	if _, ok := m["pass"]; ok {
+		m["pass"] = redactedPass
+	}
+	result, err := json.Marshal(m)
+	if err != nil {
+		return arg
+	}
+	return result
 }
 
 func (c *client) processConnect(arg []byte) error {
