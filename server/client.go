@@ -756,28 +756,36 @@ func (c *client) processErr(errStr string) {
 }
 
 // Password pattern matcher.
-var passPat = regexp.MustCompile(`"?\s*pass\S*?"?[:=]\s*"?(([^"])*)`)
+var passPat = regexp.MustCompile(`"?\s*pass\S*?"?\s*[:=]\s*"?(([^",\r\n}])*)`)
 
-// This will remove any notion of passwords from trace messages
-// for logging.
+// removePassFromTrace removes any notion of passwords from trace
+// messages for logging.
 func removePassFromTrace(arg []byte) []byte {
-
-	if !bytes.Contains(arg, []byte("pass")) {
+	if !bytes.Contains(arg, []byte(`pass`)) {
 		return arg
 	}
-	m := passPat.FindAllSubmatch(arg, -1)
+	// Take a copy of the connect proto just for the trace message.
+	var _arg [4096]byte
+	buf := append(_arg[:0], arg...)
+
+	m := passPat.FindAllSubmatchIndex(buf, -1)
 	if len(m) == 0 {
 		return arg
 	}
 
-	for _, match := range m {
-		if len(match) != 3 {
+	redactedPass := []byte("[REDACTED]")
+	for _, i := range m {
+		if len(i) < 4 {
 			continue
 		}
-		arg = bytes.Replace(arg, match[1], []byte("[REDACTED]"), 1)
+		start := i[2]
+		end := i[3]
 
+		// Replace password substring.
+		buf = append(buf[:start], append(redactedPass, buf[end:]...)...)
+		break
 	}
-	return arg
+	return buf
 }
 
 func (c *client) processConnect(arg []byte) error {
