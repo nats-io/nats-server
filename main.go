@@ -31,6 +31,8 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
+    -key, --config_key <file>        Server nkey used to verify config signatures
+    -sig, --config_sig <file>        File with signatures to verify configuration
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
         --client_advertise <string>  Client URL to advertise to other servers
     -t                               Test configuration and exit

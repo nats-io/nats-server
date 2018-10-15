@@ -57,6 +57,9 @@ type parser struct {
 
 	// pedantic reports error when configuration is not correct.
 	pedantic bool
+
+	// includes is the list of files that have been included.
+	includes []string
 }
 
 // Parse will return a map of keys to interface{}, although concrete types
@@ -84,18 +87,18 @@ func ParseFile(fp string) (map[string]interface{}, error) {
 	return p.mapping, nil
 }
 
-func ParseFileWithChecks(fp string) (map[string]interface{}, error) {
+func ParseFileWithChecks(fp string) (map[string]interface{}, []string, error) {
 	data, err := ioutil.ReadFile(fp)
 	if err != nil {
-		return nil, fmt.Errorf("error opening config file: %v", err)
+		return nil, nil, fmt.Errorf("error opening config file: %v", err)
 	}
 
 	p, err := parse(string(data), fp, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return p.mapping, nil
+	return p.mapping, p.includes, nil
 }
 
 type token struct {
@@ -319,11 +322,17 @@ func (p *parser) processItem(it item, fp string) error {
 		}
 	case itemInclude:
 		var (
-			m   map[string]interface{}
-			err error
+			m        map[string]interface{}
+			includes []string
+			err      error
 		)
 		if p.pedantic {
-			m, err = ParseFileWithChecks(filepath.Join(p.fp, it.val))
+			p.includes = append(p.includes, it.val)
+
+			m, includes, err = ParseFileWithChecks(filepath.Join(p.fp, it.val))
+			if len(includes) > 0 {
+				p.includes = append(p.includes, includes...)
+			}
 		} else {
 			m, err = ParseFile(filepath.Join(p.fp, it.val))
 		}

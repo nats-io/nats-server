@@ -14,8 +14,10 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +104,18 @@ type Options struct {
 
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
+
+	// ConfigKey is the key from the server which can be used to verify
+	// the configuration.
+	ConfigKey string `json:"-"`
+
+	// ConfigSigFile is file which contains the signature or list of signatures
+	// to verify the configuration.
+	ConfigSigFile string `json:"-"`
+
+	// includes is a list of the files that were included
+	// to be part of the config.
+	includes []string
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone
@@ -246,11 +261,19 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if configFile == "" {
 		return nil
 	}
-	m, err := conf.ParseFileWithChecks(configFile)
+	m, includes, err := conf.ParseFileWithChecks(configFile)
 	if err != nil {
 		return err
 	}
-	// Collect all errors and warnings and report them all together.
+	o.includes = includes
+
+	// In case of using a signed config, check that that it is valid
+	// before continuing to process the options.
+	if err := o.VerifyConfig(); err != nil {
+		return err
+	}
+
+	// Collect all errors and warnings then report them all together.
 	errors := make([]error, 0)
 	warnings := make([]error, 0)
 
@@ -426,6 +449,93 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		return &processConfigErr{
 			errors:   errors,
 			warnings: warnings,
+		}
+	}
+
+	return nil
+}
+
+// VerifyConfig validates the configuration in case a server key
+// and signature file is present.
+func (o *Options) VerifyConfig() error {
+	if o.ConfigKey == "" || o.ConfigSigFile == "" {
+		return nil
+	}
+
+	key, err := ioutil.ReadFile(o.ConfigKey)
+	if err != nil {
+		return err
+	}
+
+	kp, err := nkeys.FromSeed(string(key))
+	if err != nil {
+		return err
+	}
+
+	sigfile, err := ioutil.ReadFile(o.ConfigSigFile)
+	if err != nil {
+		return err
+	}
+	configPath := filepath.Dir(o.ConfigFile)
+	verified := make(map[string]bool, 0)
+	for _, include := range o.includes {
+		verified[filepath.Join(configPath, include)] = false
+	}
+
+	// Verify entries in the sigfile.
+	check := func(signature []byte, fname string) error {
+		sig, err := base64.StdEncoding.DecodeString(string(signature))
+		if err != nil {
+			return err
+		}
+
+		data, err := ioutil.ReadFile(fname)
+		if err != nil {
+			return err
+		}
+
+		err = kp.Verify(data, sig)
+		if err != nil {
+			return err
+		}
+		verified[fname] = true
+
+		return nil
+	}
+
+	entries := bytes.Split(sigfile, []byte("\n"))
+	for _, entry := range entries {
+		if len(entry) > 1 && entry[0] == '#' {
+			// Allow commenting entries
+			continue
+		}
+
+		fields := bytes.Fields(entry)
+		if len(fields) == 0 {
+			// Skip line
+			continue
+		}
+
+		// Special case to verify only the main server config
+		// if no includes are present.
+		if len(fields) == 1 && len(o.includes) == 0 {
+			signature := fields[0]
+			if err := check(signature, string(o.ConfigFile)); err != nil {
+				return err
+			}
+			return nil
+		} else if (len(fields) == 1 && len(o.includes) > 1) || len(fields) > 2 {
+			return fmt.Errorf("nats: invalid sigfile")
+		}
+		signature := fields[0]
+		fname := fields[1]
+		if err := check(signature, filepath.Join(configPath, string(fname))); err != nil {
+			return err
+		}
+	}
+	for k, isVerified := range verified {
+		if !isVerified {
+			return fmt.Errorf("nats: found included file without signature: %q", k)
 		}
 	}
 
@@ -1615,6 +1725,16 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
+	if flagOpts.CheckConfig {
+		opts.CheckConfig = true
+	}
+	if flagOpts.ConfigKey != "" {
+		opts.ConfigKey = flagOpts.ConfigKey
+	}
+	if flagOpts.ConfigSigFile != "" {
+		opts.ConfigSigFile = flagOpts.ConfigSigFile
+	}
+
 	return &opts
 }
 
@@ -1823,6 +1943,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
 	fs.StringVar(&configFile, "c", "", "Configuration file.")
 	fs.StringVar(&configFile, "config", "", "Configuration file.")
+	fs.StringVar(&opts.ConfigKey, "key", "", "Server nkey used to verify config signatures.")
+	fs.StringVar(&opts.ConfigKey, "config_key", "", "Server nkey used to verify config signatures.")
+	fs.StringVar(&opts.ConfigSigFile, "sig", "", "Server nkey used to verify config signatures.")
+	fs.StringVar(&opts.ConfigSigFile, "config_sig", "", "File with signatures to verify configuration.")
 	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
 	fs.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
 	fs.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")

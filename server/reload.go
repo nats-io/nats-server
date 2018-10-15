@@ -508,6 +508,11 @@ func (s *Server) Reload() error {
 // reloadOptions reloads the server config with the provided options. If an
 // option that doesn't support hot-swapping is changed, this returns an error.
 func (s *Server) reloadOptions(newOpts *Options) error {
+	// Verify again on reload in case of using a signed config file.
+	if err := newOpts.VerifyConfig(); err != nil {
+		return err
+	}
+
 	changed, err := s.diffOptions(newOpts)
 	if err != nil {
 		return err
@@ -532,6 +537,11 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	)
 
 	for i := 0; i < oldConfig.NumField(); i++ {
+		// Skip not exported entries.
+		if !oldConfig.Field(i).CanInterface() || !newConfig.Field(i).CanInterface() {
+			continue
+		}
+
 		var (
 			field    = oldConfig.Type().Field(i)
 			oldValue = oldConfig.Field(i).Interface()
