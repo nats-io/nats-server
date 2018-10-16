@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -28,11 +29,8 @@ func TestConfigCheck(t *testing.T) {
 		// config is content of the configuration file.
 		config string
 
-		// defaultErr is the error we get pedantic checks are not enabled.
-		defaultErr error
-
-		// pedanticErr is the error we get when pedantic checks are enabled.
-		pedanticErr error
+		// warningErr is an error that does not prevent server from starting.
+		warningErr error
 
 		// errorLine is the location of the error.
 		errorLine int
@@ -40,18 +38,20 @@ func TestConfigCheck(t *testing.T) {
 		// errorPos is the position of the error.
 		errorPos int
 
-		// warning errors also include a reason optionally
+		// warning errors also include a reason optionally.
 		reason string
+
+		// newDefaultErr is a configuration error that includes source of error.
+		err error
 	}{
 		{
 			name: "when unknown field is used at top level",
 			config: `
                 monitor = "127.0.0.1:4442"
                 `,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "monitor"`),
-			errorLine:   2,
-			errorPos:    17,
+			err:       errors.New(`unknown field "monitor"`),
+			errorLine: 2,
+			errorPos:  17,
 		},
 		{
 			name: "when default permissions are used at top level",
@@ -61,10 +61,9 @@ func TestConfigCheck(t *testing.T) {
                   subscribe = ["_SANDBOX.>"]
                 }
                 `,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "default_permissions"`),
-			errorLine:   2,
-			errorPos:    18,
+			err:       errors.New(`unknown field "default_permissions"`),
+			errorLine: 2,
+			errorPos:  18,
 		},
 		{
 			name: "when authorization config is empty",
@@ -72,8 +71,7 @@ func TestConfigCheck(t *testing.T) {
 		authorization = {
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: nil,
+			err: nil,
 		},
 		{
 			name: "when authorization config has unknown fields",
@@ -82,10 +80,9 @@ func TestConfigCheck(t *testing.T) {
 		  foo = "bar"
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   3,
-			errorPos:    5,
+			err:       errors.New(`unknown field "foo"`),
+			errorLine: 3,
+			errorPos:  5,
 		},
 		{
 			name: "when authorization config has unknown fields",
@@ -99,10 +96,9 @@ func TestConfigCheck(t *testing.T) {
 		}
 
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   6,
-			errorPos:    5,
+			err:       errors.New(`unknown field "foo"`),
+			errorLine: 6,
+			errorPos:  5,
 		},
 		{
 			name: "when user authorization config has unknown fields",
@@ -117,10 +113,9 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "token"`),
-			errorLine:   7,
-			errorPos:    9,
+			err:       errors.New(`unknown field "token"`),
+			errorLine: 7,
+			errorPos:  9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields",
@@ -133,10 +128,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
-			pedanticErr: errors.New(`unknown field "inboxes"`),
-			errorLine:   5,
-			errorPos:    7,
+			err:       errors.New(`Unknown field "inboxes" parsing permissions`),
+			errorLine: 5,
+			errorPos:  7,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields within allow or deny",
@@ -152,10 +146,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field name "denied" parsing subject permissions, only 'allow' or 'deny' are permitted`),
-			pedanticErr: errors.New(`unknown field "denied"`),
-			errorLine:   7,
-			errorPos:    9,
+			err:       errors.New(`Unknown field name "denied" parsing subject permissions, only 'allow' or 'deny' are permitted`),
+			errorLine: 7,
+			errorPos:  9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields within allow or deny",
@@ -171,10 +164,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field name "allowed" parsing subject permissions, only 'allow' or 'deny' are permitted`),
-			pedanticErr: errors.New(`unknown field "allowed"`),
-			errorLine:   7,
-			errorPos:    9,
+			err:       errors.New(`Unknown field name "allowed" parsing subject permissions, only 'allow' or 'deny' are permitted`),
+			errorLine: 7,
+			errorPos:  9,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields using arrays",
@@ -195,10 +187,9 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
-			pedanticErr: errors.New(`unknown field "inboxes"`),
-			errorLine:   7,
-			errorPos:    6,
+			err:       errors.New(`Unknown field "inboxes" parsing permissions`),
+			errorLine: 7,
+			errorPos:  6,
 		},
 		{
 			name: "when user authorization permissions config has unknown fields using strings",
@@ -219,10 +210,9 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field requests parsing permissions`),
-			pedanticErr: errors.New(`unknown field "requests"`),
-			errorLine:   6,
-			errorPos:    6,
+			err:       errors.New(`Unknown field "requests" parsing permissions`),
+			errorLine: 6,
+			errorPos:  6,
 		},
 		{
 			name: "when user authorization permissions config is empty",
@@ -236,11 +226,10 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: nil,
+			err: nil,
 		},
 		{
-			name: "when unknown permissions are included in config",
+			name: "when unknown permissions are included in user config",
 			config: `
 		authorization = {
 		  users = [
@@ -252,10 +241,9 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  errors.New(`Unknown field inboxes parsing permissions`),
-			pedanticErr: errors.New(`unknown field "inboxes"`),
-			errorLine:   6,
-			errorPos:    11,
+			err:       errors.New(`Unknown field "inboxes" parsing permissions`),
+			errorLine: 6,
+			errorPos:  11,
 		},
 		{
 			name: "when clustering config is empty",
@@ -264,8 +252,7 @@ func TestConfigCheck(t *testing.T) {
 		}
 		`,
 
-			defaultErr:  nil,
-			pedanticErr: nil,
+			err: nil,
 		},
 		{
 			name: "when unknown option is in clustering config",
@@ -287,10 +274,9 @@ func TestConfigCheck(t *testing.T) {
 		}
 		`,
 
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   9,
-			errorPos:    5,
+			err:       errors.New(`unknown field "foo"`),
+			errorLine: 9,
+			errorPos:  5,
 		},
 		{
 			name: "when unknown option is in clustering authorization config",
@@ -302,28 +288,9 @@ func TestConfigCheck(t *testing.T) {
 		}
 		`,
 
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   4,
-			errorPos:    7,
-		},
-		{
-			name: "when unknown option is in clustering authorization permissions config",
-			config: `
-		cluster = {
-		  authorization {
-		    user = "foo"
-		    pass = "bar"
-		    permissions = {
-		      hello = "world"
-		    }
-		  }
-		}
-		`,
-			defaultErr:  errors.New(`Unknown field hello parsing permissions`),
-			pedanticErr: errors.New(`unknown field "hello"`),
-			errorLine:   7,
-			errorPos:    9,
+			err:       errors.New(`unknown field "foo"`),
+			errorLine: 4,
+			errorPos:  7,
 		},
 		{
 			name: "when unknown option is in tls config",
@@ -332,10 +299,9 @@ func TestConfigCheck(t *testing.T) {
 		  hello = "world"
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["hello"]`),
-			pedanticErr: errors.New(`unknown field "hello"`),
-			errorLine:   3,
-			errorPos:    5,
+			err:       errors.New(`error parsing tls config, unknown field ["hello"]`),
+			errorLine: 3,
+			errorPos:  5,
 		},
 		{
 			name: "when unknown option is in cluster tls config",
@@ -346,11 +312,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			// Backwards compatibility: also report error by default even if pedantic checks disabled.
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["foo"]`),
-			pedanticErr: errors.New(`unknown field "foo"`),
-			errorLine:   4,
-			errorPos:    7,
+			err:       errors.New(`error parsing tls config, unknown field ["foo"]`),
+			errorLine: 4,
+			errorPos:  7,
 		},
 		{
 			name: "when using cipher suites in the TLS config",
@@ -363,10 +327,9 @@ func TestConfigCheck(t *testing.T) {
 		    preferences = []
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["preferences"]`),
-			pedanticErr: errors.New(`unknown field "preferences"`),
-			errorLine:   7,
-			errorPos:    7,
+			err:       errors.New(`error parsing tls config, unknown field ["preferences"]`),
+			errorLine: 7,
+			errorPos:  7,
 		},
 		{
 			name: "when using curve preferences in the TLS config",
@@ -380,10 +343,22 @@ func TestConfigCheck(t *testing.T) {
 		    suites = []
 		}
 		`,
-			defaultErr:  errors.New(`error parsing tls config, unknown field ["suites"]`),
-			pedanticErr: errors.New(`unknown field "suites"`),
-			errorLine:   8,
-			errorPos:    7,
+			err:       errors.New(`error parsing tls config, unknown field ["suites"]`),
+			errorLine: 8,
+			errorPos:  7,
+		},
+		{
+			name: "when using curve preferences in the TLS config",
+			config: `
+		tls = {
+		    curve_preferences: [
+			"CurveP5210000"
+		    ]
+		}
+		`,
+			err:       errors.New(`Unrecognized curve preference CurveP5210000`),
+			errorLine: 4,
+			errorPos:  5,
 		},
 		{
 			name: "when unknown option is in cluster config with defined routes",
@@ -396,10 +371,9 @@ func TestConfigCheck(t *testing.T) {
 		  peers = []
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "peers"`),
-			errorLine:   7,
-			errorPos:    5,
+			err:       errors.New(`unknown field "peers"`),
+			errorLine: 7,
+			errorPos:  5,
 		},
 		{
 			name: "when used as variable in authorization block it should not be considered as unknown field",
@@ -442,10 +416,9 @@ func TestConfigCheck(t *testing.T) {
 		  ]
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`unknown field "unused"`),
-			errorLine:   27,
-			errorPos:    5,
+			err:       errors.New(`unknown field "unused"`),
+			errorLine: 27,
+			errorPos:  5,
 		},
 		{
 			name: "when used as variable in top level config it should not be considered as unknown field",
@@ -456,8 +429,7 @@ func TestConfigCheck(t *testing.T) {
 
 		port = 4222
 		`,
-			defaultErr:  nil,
-			pedanticErr: nil,
+			err: nil,
 		},
 		{
 			name: "when used as variable in cluster config it should not be considered as unknown field",
@@ -467,8 +439,7 @@ func TestConfigCheck(t *testing.T) {
 		  port = $clustering_port
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: nil,
+			err: nil,
 		},
 		{
 			name: "when setting permissions within cluster authorization block",
@@ -485,17 +456,615 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			defaultErr:  nil,
-			pedanticErr: errors.New(`invalid use of field "authorization"`),
-			errorLine:   3,
-			errorPos:    5,
-			reason:      `setting "permissions" within cluster authorization block is deprecated`,
+			warningErr: errors.New(`invalid use of field "authorization"`),
+			errorLine:  3,
+			errorPos:   5,
+			reason:     `setting "permissions" within cluster authorization block is deprecated`,
+		},
+		{
+			name: "when write deadline is used with deprecated usage",
+			config: `
+                write_deadline = 100
+		`,
+			warningErr: errors.New(`invalid use of field "write_deadline"`),
+			errorLine:  2,
+			errorPos:   17,
+			reason:     `write_deadline should be converted to a duration`,
+		},
+		/////////////////////
+		// ACCOUNTS	   //
+		/////////////////////
+		{
+			name: "when accounts block is correctly configured",
+			config: `
+		http_port = 8222
+
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		        # SUAEL6RU3BSDAFKOHNTEOK5Q6FTM5FTAMWVIKBET6FHPO4JRII3CYELVNM
+		        nkey = "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+
+		  #
+		  # nats < synadia
+		  #
+		  nats {
+		    # SUAJTM55JH4BNYDA22DMDZJSRBRKVDGSLYK2HDIOCM3LPWCDXIDV5Q4CIE
+		    nkey = "ADRZ42QBM7SXQDXXTSVWT2WLLFYOQGAFC4TO6WOAXHEKQHIXR4HFYJDS"
+
+		    users [
+		      {
+		        # SUADZTYQAKTY5NQM7XRB5XR3C24M6ROGZLBZ6P5HJJSSOFUGC5YXOOECOM
+		        nkey = "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'nats.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" }, to: "nats.requests" }
+		    ]
+		  }
+
+		  #
+		  # cncf < synadia
+		  #
+		  cncf {
+		    # SAAFHDZX7SGZ2SWHPS22JRPPK5WX44NPLNXQHR5C5RIF6QRI3U65VFY6C4
+		    nkey = "AD4YRVUJF2KASKPGRMNXTYKIYSCB3IHHB4Y2ME6B2PDIV5QJ23C2ZRIT"
+
+		    users [
+		      {
+		        # SUAKINP3Z2BPUXWOFSW2FZC7TFJCMMU7DHKP2C62IJQUDASOCDSTDTRMJQ
+		        nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'synadia.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" } }
+		    ]
+		  }
+		}
+				`,
+			err: nil,
+		},
+		{
+			name: "when nkey is invalid within accounts block",
+			config: `
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		        # SUAEL6RU3BSDAFKOHNTEOK5Q6FTM5FTAMWVIKBET6FHPO4JRII3CYELVNM
+		        nkey = "SCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+
+		  #
+		  # nats < synadia
+		  #
+		  nats {
+		    # SUAJTM55JH4BNYDA22DMDZJSRBRKVDGSLYK2HDIOCM3LPWCDXIDV5Q4CIE
+		    nkey = "ADRZ42QBM7SXQDXXTSVWT2WLLFYOQGAFC4TO6WOAXHEKQHIXR4HFYJDS"
+
+		    users [
+		      {
+		        # SUADZTYQAKTY5NQM7XRB5XR3C24M6ROGZLBZ6P5HJJSSOFUGC5YXOOECOM
+		        nkey = "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'nats.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" }, to: "nats.requests" }
+		    ]
+		  }
+
+		  #
+		  # cncf < synadia
+		  #
+		  cncf {
+		    # SAAFHDZX7SGZ2SWHPS22JRPPK5WX44NPLNXQHR5C5RIF6QRI3U65VFY6C4
+		    nkey = "AD4YRVUJF2KASKPGRMNXTYKIYSCB3IHHB4Y2ME6B2PDIV5QJ23C2ZRIT"
+
+		    users [
+		      {
+		        # SUAKINP3Z2BPUXWOFSW2FZC7TFJCMMU7DHKP2C62IJQUDASOCDSTDTRMJQ
+		        nkey = "UB57IEMPG4KOTPFV5A66QKE2HZ3XBXFHVRCCVMJEWKECMVN2HSH3VTSJ"
+		      }
+		    ]
+
+		    imports = [
+		      # This account has to send requests to 'synadia.requests' subject
+		      { service: { account: "synadia", subject: "synadia.requests" } }
+		    ]
+		  }
+		}
+				`,
+			err:       errors.New(`Not a valid public nkey for a user`),
+			errorLine: 14,
+			errorPos:  11,
+		},
+		{
+			name: "when account user within accounts block has no user, pass",
+			config: `
+		accounts {
+
+		  #
+		  # synadia > nats.io, cncf
+		  #
+		  synadia {
+		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
+		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+		    users [
+		      {
+		      }
+		    ]
+
+		    exports = [
+		      { service: "synadia.requests", accounts: [nats, cncf] }
+		    ]
+		  }
+		}
+				`,
+			err:       errors.New(`User entry requires a user and a password`),
+			errorLine: 13,
+			errorPos:  10,
+		},
+		{
+			name: "when accounts block has unknown fields",
+			config: `
+		http_port = 8222
+
+		accounts {
+                  foo = "bar"
+		}
+				`,
+			err:       errors.New(`Expected map entries for accounts`),
+			errorLine: 5,
+			errorPos:  19,
+		},
+		{
+			name: "when accounts block defines a global account",
+			config: `
+		http_port = 8222
+
+		accounts {
+                  $G = {
+                  }
+		}
+				`,
+			err:       errors.New(`"$G" is a Reserved Account`),
+			errorLine: 5,
+			errorPos:  19,
+		},
+		{
+			name: "when accounts block uses an invalid public key",
+			config: `
+		accounts {
+                  synadia = {
+                    nkey = "invalid"
+                  }
+		}
+				`,
+			err:       errors.New(`Not a valid public nkey for an account: "invalid"`),
+			errorLine: 4,
+			errorPos:  21,
+		},
+		{
+			name: "when accounts list includes reserved account",
+			config: `
+                port = 4222
+
+		accounts = [foo, bar, "$G"]
+
+                http_port = 8222
+				`,
+			err:       errors.New(`"$G" is a Reserved Account`),
+			errorLine: 4,
+			errorPos:  26,
+		},
+		{
+			name: "when accounts list includes a dupe entry",
+			config: `
+                port = 4222
+
+		accounts = [foo, bar, bar]
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Duplicate Account Entry: bar`),
+			errorLine: 4,
+			errorPos:  25,
+		},
+		{
+			name: "when accounts block includes a dupe user",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    users = [
+                      { user: "foo",   pass: "bar" },
+                      { user: "hello", pass: "world" },
+                      { user: "foo",   pass: "bar" }
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Duplicate user "foo" detected`),
+			errorLine: 6,
+			errorPos:  21,
+		},
+		{
+			name: "when accounts block imports are not a list",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = true
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Imports should be an array, got bool`),
+			errorLine: 6,
+			errorPos:  21,
+		},
+		{
+			name: "when accounts block exports are not a list",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = true
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Exports should be an array, got bool`),
+			errorLine: 6,
+			errorPos:  21,
+		},
+		{
+			name: "when accounts block imports items are not a map",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      false
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Import Items should be a map with type entry, got bool`),
+			errorLine: 7,
+			errorPos:  23,
+		},
+		{
+			name: "when accounts block export items are not a map",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = [
+                      false
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Export Items should be a map with type entry, got bool`),
+			errorLine: 7,
+			errorPos:  23,
+		},
+		{
+			name: "when accounts exports has a stream name that is not a string",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    exports = [
+                      {
+                        stream: false
+                      }
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Expected stream name to be string, got bool`),
+			errorLine: 8,
+			errorPos:  25,
+		},
+		{
+			name: "when accounts exports has a service name that is not a string",
+			config: `
+		accounts = {
+                  nats {
+                    exports = [
+                      {
+                        service: false
+                      }
+                    ]
+                  }
+                }
+				`,
+			err:       errors.New(`Expected service name to be string, got bool`),
+			errorLine: 6,
+			errorPos:  25,
+		},
+		{
+			name: "when accounts imports stream without name",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      { stream: { }}
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Expect an account name and a subject`),
+			errorLine: 7,
+			errorPos:  25,
+		},
+		{
+			name: "when accounts imports service without name",
+			config: `
+                port = 4222
+
+		accounts = {
+                  nats {
+                    imports = [
+                      { service: { }}
+                    ]
+                  }
+                }
+
+                http_port = 8222
+				`,
+			err:       errors.New(`Expect an account name and a subject`),
+			errorLine: 7,
+			errorPos:  25,
+		},
+		{
+			name: "when user authorization config has both token and users",
+			config: `
+		authorization = {
+                 token = "s3cr3t"
+		  users = [
+		    {
+		      user = "foo"
+		      pass = "bar"
+		    }
+		  ]
+		}
+		`,
+			err:       errors.New(`Can not have a token and a users array`),
+			errorLine: 2,
+			errorPos:  3,
+		},
+		{
+			name: "when user authorization config has both token and user",
+			config: `
+		authorization = {
+  	          user = "foo"
+		  pass = "bar"
+		  users = [
+		    {
+		      user = "foo"
+		      pass = "bar"
+		    }
+		  ]
+		}
+		`,
+			err:       errors.New(`Can not have a single user/pass and a users array`),
+			errorLine: 2,
+			errorPos:  3,
+		},
+		{
+			name: "when user authorization config has users not as a list",
+			config: `
+		authorization = {
+		  users = false
+		}
+		`,
+			err:       errors.New(`Expected users field to be an array, got false`),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "when user authorization config has users not as a map",
+			config: `
+		authorization = {
+		  users = [false]
+		}
+		`,
+			err:       errors.New(`Expected user entry to be a map/struct, got false`),
+			errorLine: 3,
+			errorPos:  14,
+		},
+		{
+			name: "when user authorization config has permissions not as a map",
+			config: `
+		authorization = {
+		  users = [{user: hello, pass: world}]
+                  permissions = false
+		}
+		`,
+			err:       errors.New(`Expected permissions to be a map/struct, got false`),
+			errorLine: 4,
+			errorPos:  19,
+		},
+		{
+			name: "when user authorization permissions config has invalid fields within allow",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = [false, "hello", "world"]
+		      deny = ["foo", "bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			err:       errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine: 5,
+			errorPos:  18,
+		},
+		{
+			name: "when user authorization permissions config has invalid fields within deny",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = ["hello", "world"]
+		      deny = [true, "foo", "bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			err:       errors.New(`Subject in permissions array cannot be cast to string`),
+			errorLine: 6,
+			errorPos:  17,
+		},
+		{
+			name: "when user authorization permissions config has invalid type",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = false
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			err:       errors.New(`Expected subject permissions to be a subject, or array of subjects, got bool`),
+			errorLine: 5,
+			errorPos:  9,
+		},
+		{
+			name: "when user authorization permissions subject is invalid",
+			config: `
+		authorization {
+		  permissions {
+		    publish = {
+		      allow = ["foo..bar"]
+		    }
+		    subscribe = {}
+		  }
+		}
+		`,
+			err:       errors.New(`Subject "foo..bar" is not a valid subject`),
+			errorLine: 5,
+			errorPos:  9,
+		},
+		{
+			name: "when cluster config listen is invalid",
+			config: `
+		cluster {
+		  listen = "0.0.0.0:XXXX"
+		}
+		`,
+			err:       errors.New(`Could not parse port "XXXX"`),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "when cluster config includes multiple users",
+			config: `
+		cluster {
+		  authorization {
+                    users = []
+                  }
+		}
+		`,
+			err:       errors.New(`Cluster authorization does not allow multiple users`),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "when cluster routes are invalid",
+			config: `
+		cluster {
+                  routes = [
+                    "0.0.0.0:XXXX"
+                    # "0.0.0.0:YYYY"
+                    # "0.0.0.0:ZZZZ"
+                  ]
+		}
+		`,
+			err:       errors.New(`error parsing route url ["0.0.0.0:XXXX"]`),
+			errorLine: 4,
+			errorPos:  22,
+		},
+		{
+			name: "when setting invalid TLS config within cluster block",
+			config: `
+		cluster {
+		  tls {
+		  }
+		}
+		`,
+			err:       errors.New(`error parsing X509 certificate/key pair: open : no such file or directory`),
+			errorLine: 3,
+			errorPos:  5,
 		},
 	}
 
-	checkConfig := func(config string, pedantic bool) error {
+	checkConfig := func(config string) error {
 		opts := &Options{
-			CheckConfig: pedantic,
+			CheckConfig: true,
 		}
 		return opts.ProcessConfigFile(config)
 	}
@@ -515,36 +1084,34 @@ func TestConfigCheck(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.config))
 			defer os.Remove(conf)
+			err := checkConfig(conf)
+			var expectedErr error
 
-			t.Run("with pedantic check enabled", func(t *testing.T) {
-				err := checkConfig(conf, true)
-				expectedErr := test.pedanticErr
-				if err != nil && expectedErr != nil {
-					msg := fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
-					if test.reason != "" {
-						msg += ": " + test.reason
-					}
-					if err.Error() != msg {
-						t.Errorf("Expected %q, got %q", msg, err.Error())
-					}
-				}
-				checkErr(t, err, test.pedanticErr)
-			})
+			// Check for either warnings or errors.
+			if test.err != nil {
+				expectedErr = test.err
+			} else if test.warningErr != nil {
+				expectedErr = test.warningErr
+			}
 
-			t.Run("with pedantic check disabled", func(t *testing.T) {
-				err := checkConfig(conf, false)
-				expectedErr := test.defaultErr
-				if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
-					t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
+			if err != nil && expectedErr != nil {
+				msg := fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
+				if test.reason != "" {
+					msg += ": " + test.reason
 				}
-				checkErr(t, err, test.defaultErr)
-			})
+				msg += "\n"
+				if err.Error() != msg {
+					t.Errorf("Expected:\n%q\ngot:\n%q", msg, err.Error())
+				}
+			}
+
+			checkErr(t, err, expectedErr)
 		})
 	}
 }
 
 func TestConfigCheckIncludes(t *testing.T) {
-	// Check happy path first using pedantic mode.
+	// Check happy path first.
 	opts := &Options{
 		CheckConfig: true,
 	}
@@ -560,8 +1127,51 @@ func TestConfigCheckIncludes(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error processing include files with configuration check enabled: %v", err)
 	}
-	expectedErr := errors.New(`configs/include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"`)
+	expectedErr := errors.New(`configs/include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"` + "\n")
 	if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
-		t.Errorf("Expected %q, got %q", expectedErr.Error(), err.Error())
+		t.Errorf("Expected: \n%q, got\n: %q", expectedErr.Error(), err.Error())
+	}
+}
+
+func TestConfigCheckMultipleErrors(t *testing.T) {
+	opts := &Options{
+		CheckConfig: true,
+	}
+	err := opts.ProcessConfigFile("./configs/multiple_errors.conf")
+	if err == nil {
+		t.Errorf("Expected error processing config files with multiple errors check enabled: %v", err)
+	}
+	cerr, ok := err.(*processConfigErr)
+	if !ok {
+		t.Fatalf("Expected a configuration process error")
+	}
+	got := len(cerr.Warnings())
+	expected := 1
+	if got != expected {
+		t.Errorf("Expected a %d warning, got: %d", expected, got)
+	}
+	got = len(cerr.Errors())
+	expected = 7
+	if got != 7 {
+		t.Errorf("Expected a %d errors, got: %d", expected, got)
+	}
+
+	errMsg := err.Error()
+
+	errs := []string{
+		`./configs/multiple_errors.conf:12:1: invalid use of field "write_deadline": write_deadline should be converted to a duration`,
+		`./configs/multiple_errors.conf:2:1: Cannot have a user/pass and token`,
+		`./configs/multiple_errors.conf:10:1: unknown field "monitoring"`,
+		`./configs/multiple_errors.conf:67:3: Cluster authorization does not allow multiple users`,
+		`./configs/multiple_errors.conf:21:5: Not a valid public nkey for an account: "OC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"`,
+		`./configs/multiple_errors.conf:26:9: Not a valid public nkey for a user`,
+		`./configs/multiple_errors.conf:36:5: Not a valid public nkey for an account: "ODRZ42QBM7SXQDXXTSVWT2WLLFYOQGAFC4TO6WOAXHEKQHIXR4HFYJDS"`,
+		`./configs/multiple_errors.conf:41:9: Not a valid public nkey for a user`,
+	}
+	for _, msg := range errs {
+		found := strings.Contains(errMsg, msg)
+		if !found {
+			t.Errorf("Expected to find error %q", msg)
+		}
 	}
 }

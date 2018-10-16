@@ -13,7 +13,10 @@
 
 package server
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrConnectionClosed represents an error condition on a closed connection.
@@ -68,3 +71,73 @@ var (
 	// ErrServiceImportAuthorization is returned when a service import is not authorized.
 	ErrServiceImportAuthorization = errors.New("Service Import Not Authorized")
 )
+
+// configErr is a configuration error.
+type configErr struct {
+	token  token
+	reason string
+}
+
+// Source reports the location of a configuration error.
+func (e *configErr) Source() string {
+	return fmt.Sprintf("%s:%d:%d", e.token.SourceFile(), e.token.Line(), e.token.Position())
+}
+
+// Error reports the location and reason from a configuration error.
+func (e *configErr) Error() string {
+	if e.token != nil {
+		return fmt.Sprintf("%s: %s", e.Source(), e.reason)
+	}
+	return e.reason
+}
+
+// unknownConfigFieldErr is an error reported in pedantic mode.
+type unknownConfigFieldErr struct {
+	configErr
+	field string
+}
+
+// Error reports that an unknown field was in the configuration.
+func (e *unknownConfigFieldErr) Error() string {
+	return fmt.Sprintf("%s: unknown field %q", e.Source(), e.field)
+}
+
+// configWarningErr is an error reported in pedantic mode.
+type configWarningErr struct {
+	configErr
+	field string
+}
+
+// Error reports a configuration warning.
+func (e *configWarningErr) Error() string {
+	return fmt.Sprintf("%s: invalid use of field %q: %s", e.Source(), e.field, e.reason)
+}
+
+// processConfigErr is the result of processing the configuration from the server.
+type processConfigErr struct {
+	errors   []error
+	warnings []error
+}
+
+// Error returns the collection of errors separated by new lines,
+// warnings appear first then hard errors.
+func (e *processConfigErr) Error() string {
+	var msg string
+	for _, err := range e.Warnings() {
+		msg += err.Error() + "\n"
+	}
+	for _, err := range e.Errors() {
+		msg += err.Error() + "\n"
+	}
+	return msg
+}
+
+// Warnings returns the list of warnings.
+func (e *processConfigErr) Warnings() []error {
+	return e.warnings
+}
+
+// Errors returns the list of errors.
+func (e *processConfigErr) Errors() []error {
+	return e.errors
+}
