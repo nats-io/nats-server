@@ -128,6 +128,7 @@ const (
 	DuplicateRoute
 	RouteRemoved
 	ServerShutdown
+	LameDuckMode
 )
 
 type client struct {
@@ -2103,8 +2104,8 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.sl.RemoveBatch(subs)
 
 	if srv != nil {
-		// This is a route that disconnected...
-		if len(connectURLs) > 0 {
+		// This is a route that disconnected, but we are not in lame duck mode...
+		if len(connectURLs) > 0 && !srv.isLameDuckMode() {
 			// Unless disabled, possibly update the server's INFO protocol
 			// and send to clients that know how to handle async INFOs.
 			if !srv.getOpts().Cluster.NoAdvertise {

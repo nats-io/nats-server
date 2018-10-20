@@ -1060,6 +1060,15 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 3,
 			errorPos:  5,
 		},
+		{
+			name: "invalid lame_duck_duration type",
+			config: `
+		lame_duck_duration: abc
+			`,
+			err:       errors.New(`error parsing lame_duck_duration: time: invalid duration abc`),
+			errorLine: 2,
+			errorPos:  3,
+		},
 	}
 
 	checkConfig := func(config string) error {

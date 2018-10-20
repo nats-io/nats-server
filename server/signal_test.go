@@ -312,3 +312,29 @@ func TestProcessSignalReloadProcess(t *testing.T) {
 		t.Fatal("Expected kill to be called")
 	}
 }
+
+func TestProcessSignalLameDuckMode(t *testing.T) {
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGUSR2 {
+			t.Fatalf("signal is incorrect.\nexpected: sigusr2\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(commandLDMode, "123"); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
+	}
+}

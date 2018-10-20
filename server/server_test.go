@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -696,5 +697,110 @@ func TestProfilingNoTimeout(t *testing.T) {
 	}
 	if srv.WriteTimeout != 0 {
 		t.Fatalf("WriteTimeout should not be set, was set to %v", srv.WriteTimeout)
+	}
+}
+
+func TestLameDuckMode(t *testing.T) {
+	optsA := DefaultOptions()
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.LameDuckDuration = 10 * time.Millisecond
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB := DefaultOptions()
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	total := 50
+	connectClients := func() []*nats.Conn {
+		ncs := make([]*nats.Conn, 0, total)
+		for i := 0; i < total; i++ {
+			nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port),
+				nats.ReconnectWait(50*time.Millisecond))
+			if err != nil {
+				t.Fatalf("Error on connect: %v", err)
+			}
+			ncs = append(ncs, nc)
+		}
+		return ncs
+	}
+	ncs := connectClients()
+
+	checkClientsCount(t, srvA, total)
+	checkClientsCount(t, srvB, 0)
+
+	start := time.Now()
+	srvA.lameDuckMode()
+	// Make sure that nothing bad happens if called twice
+	srvA.lameDuckMode()
+	elapsed := time.Since(start)
+	// It should have taken more than the allotted time of 10ms since we had 50 clients.
+	if elapsed <= optsA.LameDuckDuration {
+		t.Fatalf("Expected to take more than %v, got %v", optsA.LameDuckDuration, elapsed)
+	}
+
+	checkClientsCount(t, srvA, 0)
+	checkClientsCount(t, srvB, total)
+
+	// Check closed status on server A
+	cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+	if n := len(cz.Conns); n != total {
+		t.Fatalf("Expected %v closed connections, got %v", total, n)
+	}
+	for _, c := range cz.Conns {
+		checkReason(t, c.Reason, LameDuckMode)
+	}
+
+	for _, nc := range ncs {
+		nc.Close()
+	}
+
+	srvB.Shutdown()
+
+	optsA.LameDuckDuration = 1000 * time.Millisecond
+	srvA = RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	srvB = RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	ncs = connectClients()
+
+	checkClientsCount(t, srvA, total)
+	checkClientsCount(t, srvB, 0)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	start = time.Now()
+	go func() {
+		srvA.lameDuckMode()
+		wg.Done()
+	}()
+	// Check that while in lameDuckMode, it is not possible to connect
+	// to the server.
+	for !srvA.isLameDuckMode() {
+		time.Sleep(15 * time.Millisecond)
+	}
+	if _, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)); err != nats.ErrNoServers {
+		t.Fatalf("Expected %v, got %v", nats.ErrNoServers, err)
+	}
+	wg.Wait()
+	elapsed = time.Since(start)
+
+	checkClientsCount(t, srvA, 0)
+	checkClientsCount(t, srvB, total)
+
+	if elapsed > optsA.LameDuckDuration {
+		t.Fatalf("Expected to not take more than %v, got %v", optsA.LameDuckDuration, elapsed)
+	}
+
+	for _, nc := range ncs {
+		nc.Close()
 	}
 }

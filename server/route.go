@@ -1139,6 +1139,10 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	for s.isRunning() {
 		conn, err := l.Accept()
 		if err != nil {
+			if s.isLameDuckMode() {
+				s.ldmCh <- true
+				return
+			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				s.Debugf("Temporary Route Accept Errorf(%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)

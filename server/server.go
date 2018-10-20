@@ -136,6 +136,11 @@ type Server struct {
 	// not set any timeout.
 	monitoringServer *http.Server
 	profilingServer  *http.Server
+
+	// LameDuck mode
+	ldm       bool
+	ldmCh     chan bool
+	ldmDoneCh chan bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -594,6 +599,15 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	for s.isRunning() {
 		conn, err := l.Accept()
 		if err != nil {
+			if s.isLameDuckMode() {
+				// Signal that we are not accepting new clients
+				s.ldmCh <- true
+				// We need to wait for lameDuckMode() to notify us that it
+				// is done with closing clients. If we return before that,
+				// the s.Start() function would return and process would exit.
+				<-s.ldmDoneCh
+				return
+			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				s.Errorf("Temporary Client Accept Error (%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
@@ -887,8 +901,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// If server is not running, Shutdown() may have already gathered the
 	// list of connections to close. It won't contain this one, so we need
 	// to bail out now otherwise the readLoop started down there would not
-	// be interrupted.
-	if !s.running {
+	// be interrupted. Skip also if in lame duck mode.
+	if !s.running || s.ldm {
 		s.mu.Unlock()
 		return c
 	}
@@ -1539,4 +1553,99 @@ func (s *Server) serviceListeners() []net.Listener {
 		listeners = append(listeners, s.profiler)
 	}
 	return listeners
+}
+
+// Returns true if in lame duck mode.
+func (s *Server) isLameDuckMode() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ldm
+}
+
+// This function will close client and route listeners
+// then close clients at some interval to avoid a reconnecting storm.
+// Note that the routes are closed before so that when a client is
+// disconnected and reconnects to another server, that server does
+// not send to this server a route SUB.
+func (s *Server) lameDuckMode() {
+	s.mu.Lock()
+	// If we are in the process (or done) or if listener is not yet
+	// ready, just return.
+	if s.ldm || s.listener == nil {
+		s.mu.Unlock()
+		return
+	}
+	expected := 1
+	s.Noticef("Entering lame duck mode, stop accepting new clients")
+	s.ldm = true
+	s.ldmCh = make(chan bool, 1)
+	s.ldmDoneCh = make(chan bool, 1)
+	s.listener.Close()
+	s.listener = nil
+	if s.routeListener != nil {
+		s.routeListener.Close()
+		s.routeListener = nil
+		expected++
+	}
+	s.mu.Unlock()
+
+	// Wait for accept loop to be done to make sure that no new
+	// client can connect
+	for i := 0; i < expected; i++ {
+		<-s.ldmCh
+	}
+
+	durInMs := int64(s.getOpts().LameDuckDuration / time.Millisecond)
+	if durInMs < 1 {
+		durInMs = 1
+	}
+
+	// Close routes
+	s.mu.Lock()
+	routes := make([]*client, 0, len(s.routes))
+	for _, r := range s.routes {
+		routes = append(routes, r)
+	}
+	s.mu.Unlock()
+	for _, r := range routes {
+		r.setRouteNoReconnectOnClose()
+		r.closeConnection(LameDuckMode)
+	}
+
+	// Now capture all clients
+	s.mu.Lock()
+	numClients := int64(len(s.clients))
+	sd := int64(0)
+	pa := 0
+	if numClients < durInMs {
+		sd = (durInMs / numClients) * int64(time.Millisecond)
+	} else {
+		// There are more clients than granted milliseconds.
+		// We will still sleep 10ms from time to time. We will
+		// close by batch.
+		sd = int64(10 * time.Millisecond)
+		pa = int(numClients / durInMs)
+	}
+	clients := make([]*client, len(s.clients))
+	i := 0
+	for _, client := range s.clients {
+		clients[i] = client
+		i++
+	}
+	s.mu.Unlock()
+
+	s.Noticef("Closing existing clients")
+	for i, client := range clients {
+		client.closeConnection(LameDuckMode)
+		if sd > 0 || (i > 0 && i%pa == 0) {
+			time.Sleep(time.Duration(rand.Int63n(sd)))
+		}
+	}
+
+	s.Noticef("Lame duck mode ending")
+	// Release the AcceptLoop. If we don't have the AcceptLoop
+	// block, the process will exit as soon as s.Start() returns,
+	// which it would when closing the listener
+	s.ldmDoneCh <- true
+	s.Shutdown()
 }

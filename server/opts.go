@@ -95,6 +95,7 @@ type Options struct {
 	WriteDeadline    time.Duration `json:"-"`
 	RQSubsSweep      time.Duration `json:"-"`
 	MaxClosedClients int           `json:"-"`
+	LameDuckDuration time.Duration `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -409,6 +410,14 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				}
 				warnings = append(warnings, err)
 			}
+		case "lame_duck_duration":
+			dur, err := time.ParseDuration(v.(string))
+			if err != nil {
+				err := &configErr{tk, fmt.Sprintf("error parsing lame_duck_duration: %v", err)}
+				errors = append(errors, err)
+				continue
+			}
+			o.LameDuckDuration = dur
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -1781,6 +1790,9 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxClosedClients == 0 {
 		opts.MaxClosedClients = DEFAULT_MAX_CLOSED_CLIENTS
+	}
+	if opts.LameDuckDuration == 0 {
+		opts.LameDuckDuration = DEFAULT_LAME_DUCK_DURATION
 	}
 }
 

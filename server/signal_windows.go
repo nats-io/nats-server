@@ -76,6 +76,9 @@ func ProcessSignal(command Command, service string) error {
 	case CommandReload:
 		cmd = svc.ParamChange
 		to = svc.Running
+	case commandLDMode:
+		cmd = ldmCmd
+		to = svc.Running
 	default:
 		return fmt.Errorf("unknown signal %q", command)
 	}
