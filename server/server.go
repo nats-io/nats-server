@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +37,12 @@ import (
 
 	"github.com/nats-io/gnatsd/logger"
 )
+
+// Time to wait before starting closing clients when in LD mode.
+const lameDuckModeDefaultInitialDelay = int64(time.Second)
+
+// Make this a variable so that we can change during tests
+var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
 
 // Info is the information sent to clients to help them understand information
 // about this server.
@@ -131,6 +138,10 @@ type Server struct {
 	// not set any timeout.
 	monitoringServer *http.Server
 	profilingServer  *http.Server
+
+	// LameDuck mode
+	ldm   bool
+	ldmCh chan bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -348,6 +359,7 @@ func (s *Server) Shutdown() {
 		s.mu.Unlock()
 		return
 	}
+	s.Noticef("Server Exiting..")
 
 	opts := s.getOpts()
 
@@ -508,6 +520,13 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	for s.isRunning() {
 		conn, err := l.Accept()
 		if err != nil {
+			if s.isLameDuckMode() {
+				// Signal that we are not accepting new clients
+				s.ldmCh <- true
+				// Now wait for the Shutdown...
+				<-s.quitCh
+				return
+			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				s.Errorf("Temporary Client Accept Error (%v), sleeping %dms",
 					ne, tmpDelay/time.Millisecond)
@@ -527,7 +546,6 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 			s.grWG.Done()
 		})
 	}
-	s.Noticef("Server Exiting..")
 	s.done <- true
 }
 
@@ -793,8 +811,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// If server is not running, Shutdown() may have already gathered the
 	// list of connections to close. It won't contain this one, so we need
 	// to bail out now otherwise the readLoop started down there would not
-	// be interrupted.
-	if !s.running {
+	// be interrupted. Skip also if in lame duck mode.
+	if !s.running || s.ldm {
 		s.mu.Unlock()
 		return c
 	}
@@ -1440,4 +1458,91 @@ func (s *Server) serviceListeners() []net.Listener {
 		listeners = append(listeners, s.profiler)
 	}
 	return listeners
+}
+
+// Returns true if in lame duck mode.
+func (s *Server) isLameDuckMode() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ldm
+}
+
+// This function will close the client listener then close the clients
+// at some interval to avoid a reconnecting storm.
+func (s *Server) lameDuckMode() {
+	s.mu.Lock()
+	// Check if there is actually anything to do
+	if s.shutdown || s.ldm || s.listener == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.Noticef("Entering lame duck mode, stop accepting new clients")
+	s.ldm = true
+	s.ldmCh = make(chan bool, 1)
+	s.listener.Close()
+	s.listener = nil
+	s.mu.Unlock()
+
+	// Wait for accept loop to be done to make sure that no new
+	// client can connect
+	<-s.ldmCh
+
+	s.mu.Lock()
+	// Need to recheck few things
+	if s.shutdown || len(s.clients) == 0 {
+		s.mu.Unlock()
+		// If there is no client, we need to call Shutdown() to complete
+		// the LDMode. If server has been shutdown while lock was released,
+		// calling Shutdown() should be no-op.
+		s.Shutdown()
+		return
+	}
+	dur := int64(s.getOpts().LameDuckDuration)
+	numClients := int64(len(s.clients))
+	batch := 1
+	// Sleep interval between each client connection close.
+	si := dur / numClients
+	if si < 1 {
+		// Should not happen (except in test with very small LD duration), but
+		// if there are too many clients, batch the number of close and
+		// use a tiny sleep interval that will result in yield likely.
+		si = 1
+		batch = int(numClients / dur)
+	}
+	// Now capture all clients
+	clients := make([]*client, 0, len(s.clients))
+	for _, client := range s.clients {
+		clients = append(clients, client)
+	}
+	s.mu.Unlock()
+
+	t := time.NewTimer(time.Duration(atomic.LoadInt64(&lameDuckModeInitialDelay)))
+	// Delay start of closing of client connections in case
+	// we have several servers that we want to signal to enter LD mode
+	// and not have their client reconnect to each other.
+	select {
+	case <-t.C:
+		s.Noticef("Closing existing clients")
+	case <-s.quitCh:
+		return
+	}
+	for i, client := range clients {
+		client.closeConnection(ServerShutdown)
+		if batch == 1 || i%batch == 0 {
+			// We pick a random interval which will be at least si/2
+			v := rand.Int63n(si)
+			if v < si/2 {
+				v = si / 2
+			}
+			t.Reset(time.Duration(v))
+			// Sleep for given interval or bail out if kicked by Shutdown().
+			select {
+			case <-t.C:
+			case <-s.quitCh:
+				t.Stop()
+				return
+			}
+		}
+	}
+	s.Shutdown()
 }

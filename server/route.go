@@ -1111,7 +1111,12 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 	if tryForEver {
 		delay += DEFAULT_ROUTE_RECONNECT
 	}
-	time.Sleep(delay)
+	select {
+	case <-time.After(delay):
+	case <-s.quitCh:
+		s.grWG.Done()
+		return
+	}
 	s.connectToRoute(rURL, tryForEver)
 }
 

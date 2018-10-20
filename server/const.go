@@ -26,6 +26,9 @@ const (
 	CommandQuit   = Command("quit")
 	CommandReopen = Command("reopen")
 	CommandReload = Command("reload")
+
+	// private for now
+	commandLDMode = Command("ldm")
 )
 
 var (
@@ -121,4 +124,8 @@ const (
 
 	// DEFAULT_MAX_CLOSED_CLIENTS
 	DEFAULT_MAX_CLOSED_CLIENTS = 10000
+
+	// DEFAULT_LAME_DUCK_DURATION is the time in which the server spreads
+	// the closing of clients when signaled to go in lame duck mode.
+	DEFAULT_LAME_DUCK_DURATION = 30 * time.Second
 )

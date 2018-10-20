@@ -91,6 +91,7 @@ type Options struct {
 	WriteDeadline    time.Duration `json:"-"`
 	RQSubsSweep      time.Duration `json:"-"`
 	MaxClosedClients int           `json:"-"`
+	LameDuckDuration time.Duration `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -328,6 +329,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
 				fmt.Printf("WARNING: write_deadline should be converted to a duration\n")
 			}
+		case "lame_duck_duration":
+			dur, err := time.ParseDuration(v.(string))
+			if err != nil {
+				return fmt.Errorf("error parsing lame_duck_duration: %v", err)
+			}
+			o.LameDuckDuration = dur
 		}
 	}
 	return nil
@@ -1051,6 +1058,9 @@ func processOptions(opts *Options) {
 	}
 	if opts.MaxClosedClients == 0 {
 		opts.MaxClosedClients = DEFAULT_MAX_CLOSED_CLIENTS
+	}
+	if opts.LameDuckDuration == 0 {
+		opts.LameDuckDuration = DEFAULT_LAME_DUCK_DURATION
 	}
 }
 
