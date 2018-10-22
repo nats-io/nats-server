@@ -1038,8 +1038,6 @@ func (reason ClosedState) String() string {
 		return "Route Removed"
 	case ServerShutdown:
 		return "Server Shutdown"
-	case LameDuckMode:
-		return "Lame Duck Mode"
 	}
 	return "Unknown State"
 }

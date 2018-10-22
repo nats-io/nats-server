@@ -128,7 +128,6 @@ const (
 	DuplicateRoute
 	RouteRemoved
 	ServerShutdown
-	LameDuckMode
 )
 
 type client struct {
