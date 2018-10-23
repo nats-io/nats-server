@@ -26,6 +26,9 @@ const (
 	CommandQuit   = Command("quit")
 	CommandReopen = Command("reopen")
 	CommandReload = Command("reload")
+
+	// private for now
+	commandLDMode = Command("ldm")
 )
 
 var (
@@ -127,4 +130,8 @@ const (
 
 	// DEFAULT_TTL_AE_RESPONSE_MAP
 	DEFAULT_TTL_AE_RESPONSE_MAP = 10 * time.Minute
+
+	// DEFAULT_LAME_DUCK_DURATION is the time in which the server spreads
+	// the closing of clients when signaled to go in lame duck mode.
+	DEFAULT_LAME_DUCK_DURATION = 30 * time.Second
 )

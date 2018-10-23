@@ -43,6 +43,7 @@ func TestDefaultOptions(t *testing.T) {
 		WriteDeadline:    DEFAULT_FLUSH_DEADLINE,
 		RQSubsSweep:      DEFAULT_REMOTE_QSUBS_SWEEPER,
 		MaxClosedClients: DEFAULT_MAX_CLOSED_CLIENTS,
+		LameDuckDuration: DEFAULT_LAME_DUCK_DURATION,
 	}
 
 	opts := &Options{}
@@ -66,28 +67,29 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
-		ConfigFile:     "./configs/test.conf",
-		Host:           "127.0.0.1",
-		Port:           4242,
-		Username:       "derek",
-		Password:       "porkchop",
-		AuthTimeout:    1.0,
-		Debug:          false,
-		Trace:          true,
-		Logtime:        false,
-		HTTPPort:       8222,
-		PidFile:        "/tmp/gnatsd.pid",
-		ProfPort:       6543,
-		Syslog:         true,
-		RemoteSyslog:   "udp://foo.com:33",
-		MaxControlLine: 2048,
-		MaxPayload:     65536,
-		MaxConn:        100,
-		MaxSubs:        1000,
-		MaxPending:     10000000,
-		PingInterval:   60 * time.Second,
-		MaxPingsOut:    3,
-		WriteDeadline:  3 * time.Second,
+		ConfigFile:       "./configs/test.conf",
+		Host:             "127.0.0.1",
+		Port:             4242,
+		Username:         "derek",
+		Password:         "porkchop",
+		AuthTimeout:      1.0,
+		Debug:            false,
+		Trace:            true,
+		Logtime:          false,
+		HTTPPort:         8222,
+		PidFile:          "/tmp/gnatsd.pid",
+		ProfPort:         6543,
+		Syslog:           true,
+		RemoteSyslog:     "udp://foo.com:33",
+		MaxControlLine:   2048,
+		MaxPayload:       65536,
+		MaxConn:          100,
+		MaxSubs:          1000,
+		MaxPending:       10000000,
+		PingInterval:     60 * time.Second,
+		MaxPingsOut:      3,
+		WriteDeadline:    3 * time.Second,
+		LameDuckDuration: 4 * time.Second,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -248,7 +250,8 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
-		WriteDeadline: 3 * time.Second,
+		WriteDeadline:    3 * time.Second,
+		LameDuckDuration: 4 * time.Second,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

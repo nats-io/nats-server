@@ -395,8 +395,8 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 func (c *client) getRTT() string {
 	if c.rtt == 0 {
 		// If a real client, go ahead and send ping now to get a value
-		// for RTT. For tests and telnet, etc skip.
-		if c.flags.isSet(connectReceived) && c.opts.Lang != "" {
+		// for RTT. For tests and telnet, or if client is closing, etc skip.
+		if !c.flags.isSet(clearConnection) && c.flags.isSet(connectReceived) && c.opts.Lang != "" {
 			c.sendPing()
 		}
 		return ""

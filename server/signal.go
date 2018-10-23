@@ -40,11 +40,9 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGHUP)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 
-	s.grWG.Add(1)
 	go func() {
-		defer s.grWG.Done()
 		for {
 			select {
 			case sig := <-c:
@@ -56,6 +54,8 @@ func (s *Server) handleSignals() {
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.
 					s.ReOpenLogFile()
+				case syscall.SIGUSR2:
+					go s.lameDuckMode()
 				case syscall.SIGHUP:
 					// Config reload.
 					if err := s.Reload(); err != nil {
@@ -111,6 +111,8 @@ func ProcessSignal(command Command, pidStr string) error {
 		err = kill(pid, syscall.SIGUSR1)
 	case CommandReload:
 		err = kill(pid, syscall.SIGHUP)
+	case commandLDMode:
+		err = kill(pid, syscall.SIGUSR2)
 	default:
 		err = fmt.Errorf("unknown signal %q", command)
 	}
