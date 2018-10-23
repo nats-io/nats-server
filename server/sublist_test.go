@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func verifyNumLevels(s *Sublist, expected int, t *testing.T) {
 }
 
 func verifyQMember(qsubs [][]*subscription, val *subscription, t *testing.T) {
-	verifyMember(qsubs[findQSliceForSub(val, qsubs)], val, t)
+	verifyMember(qsubs[findQSlot(val.queue, qsubs)], val, t)
 }
 
 func verifyMember(r []*subscription, val *subscription, t *testing.T) {
@@ -86,12 +87,21 @@ func verifyMember(r []*subscription, val *subscription, t *testing.T) {
 
 // Helpers to generate test subscriptions.
 func newSub(subject string) *subscription {
-	return &subscription{subject: []byte(subject)}
+	c := &client{typ: CLIENT}
+	return &subscription{client: c, subject: []byte(subject)}
 }
 
 func newQSub(subject, queue string) *subscription {
 	if queue != "" {
 		return &subscription{subject: []byte(subject), queue: []byte(queue)}
+	}
+	return newSub(subject)
+}
+
+func newRemoteQSub(subject, queue string, num int32) *subscription {
+	if queue != "" {
+		c := &client{typ: ROUTER}
+		return &subscription{client: c, subject: []byte(subject), queue: []byte(queue), qw: num}
 	}
 	return newSub(subject)
 }
@@ -247,6 +257,34 @@ func TestSublistRemoveWithLargeSubs(t *testing.T) {
 	verifyLen(r.psubs, plistMin*2-3, t)
 }
 
+func TestSublistRemoveByClient(t *testing.T) {
+	s := NewSublist()
+	c := &client{}
+	for i := 0; i < 10; i++ {
+		subject := fmt.Sprintf("a.b.c.d.e.f.%d", i)
+		sub := &subscription{client: c, subject: []byte(subject)}
+		s.Insert(sub)
+	}
+	verifyCount(s, 10, t)
+	s.Insert(&subscription{client: c, subject: []byte(">")})
+	s.Insert(&subscription{client: c, subject: []byte("foo.*")})
+	s.Insert(&subscription{client: c, subject: []byte("foo"), queue: []byte("bar")})
+	s.Insert(&subscription{client: c, subject: []byte("foo"), queue: []byte("bar")})
+	s.Insert(&subscription{client: c, subject: []byte("foo.bar"), queue: []byte("baz")})
+	s.Insert(&subscription{client: c, subject: []byte("foo.bar"), queue: []byte("baz")})
+	verifyCount(s, 16, t)
+	genid := atomic.LoadUint64(&s.genid)
+	s.RemoveAllForClient(c)
+	verifyCount(s, 0, t)
+	// genid should be different
+	if genid == atomic.LoadUint64(&s.genid) {
+		t.Fatalf("GenId should have been changed after removal of subs")
+	}
+	if cc := s.CacheCount(); cc != 0 {
+		t.Fatalf("Cache should be zero, got %d", cc)
+	}
+}
+
 func TestSublistInvalidSubjectsInsert(t *testing.T) {
 	s := NewSublist()
 
@@ -398,8 +436,8 @@ func TestSublistBasicQueueResults(t *testing.T) {
 	r = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 2, t)
-	verifyLen(r.qsubs[findQSliceForSub(sub1, r.qsubs)], 1, t)
-	verifyLen(r.qsubs[findQSliceForSub(sub2, r.qsubs)], 2, t)
+	verifyLen(r.qsubs[findQSlot(sub1.queue, r.qsubs)], 1, t)
+	verifyLen(r.qsubs[findQSlot(sub2.queue, r.qsubs)], 2, t)
 	verifyQMember(r.qsubs, sub2, t)
 	verifyQMember(r.qsubs, sub3, t)
 	verifyQMember(r.qsubs, sub4, t)
@@ -755,6 +793,52 @@ func TestSublistRaceOnMatch(t *testing.T) {
 		t.Fatalf(e.Error())
 	default:
 	}
+}
+
+// Remote subscriptions for queue subscribers will be weighted such that a single subscription
+// is received, but represents all of the queue subscribers on the remote side.
+func TestSublistRemoteQueueSubscriptions(t *testing.T) {
+	s := NewSublist()
+	// Normals
+	s1 := newQSub("foo", "bar")
+	s2 := newQSub("foo", "bar")
+	s.Insert(s1)
+	s.Insert(s2)
+
+	// Now do weighted remotes.
+	rs1 := newRemoteQSub("foo", "bar", 10)
+	s.Insert(rs1)
+	rs2 := newRemoteQSub("foo", "bar", 10)
+	s.Insert(rs2)
+
+	// These are just shadowed in results, so should appear as 4 subs.
+	verifyCount(s, 4, t)
+
+	r := s.Match("foo")
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 22, t)
+
+	s.Remove(s1)
+	s.Remove(rs1)
+
+	verifyCount(s, 2, t)
+
+	// Now make sure our shadowed results are correct after a removal.
+	r = s.Match("foo")
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 11, t)
+
+	// Now do an update to an existing remote sub to update its weight.
+	rs2.qw = 1
+	s.UpdateRemoteQSub(rs2)
+
+	// Results should reflect new weight.
+	r = s.Match("foo")
+	verifyLen(r.psubs, 0, t)
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 2, t)
 }
 
 // -- Benchmarks Setup --

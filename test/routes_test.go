@@ -21,7 +21,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,25 +147,14 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")
 
-	// Make sure the SUB is broadcast via the route
-	buf := expectResult(t, rc, subRe)
-	matches := subRe.FindAllSubmatch(buf, -1)
-	rsid := string(matches[0][5])
-	if !strings.HasPrefix(rsid, "RSID:") {
-		t.Fatalf("Got wrong RSID: %s\n", rsid)
-	}
+	// Make sure the RS+ is broadcast via the route
+	expectResult(t, rc, rsubRe)
 
 	// Send UNSUB via client connection
 	send("UNSUB 22\r\n")
 
-	// Make sure the SUB is broadcast via the route
-	buf = expectResult(t, rc, unsubRe)
-	matches = unsubRe.FindAllSubmatch(buf, -1)
-	rsid2 := string(matches[0][1])
-
-	if rsid2 != rsid {
-		t.Fatalf("Expected rsid's to match. %q vs %q\n", rsid, rsid2)
-	}
+	// Make sure the RS- is broadcast via the route
+	expectResult(t, rc, runsubRe)
 
 	// Explicitly shutdown the server, otherwise this test would
 	// cause following test to fail.
@@ -217,18 +205,16 @@ func TestRouteForwardsMsgFromClients(t *testing.T) {
 		routeExpect(infoRe)
 	}
 
-	// Send SUB via route connection
-	routeSend("SUB foo RSID:2:22\r\n")
-	routeSend("PING\r\n")
+	// Send SUB via route connection, RS+
+	routeSend("RS+ $G foo\r\nPING\r\n")
 	routeExpect(pongRe)
 
 	// Send PUB via client connection
-	clientSend("PUB foo 2\r\nok\r\n")
-	clientSend("PING\r\n")
+	clientSend("PUB foo 2\r\nok\r\nPING\r\n")
 	clientExpect(pongRe)
 
 	matches := expectMsgs(1)
-	checkMsg(t, matches[0], "foo", "RSID:2:22", "", "2", "ok")
+	checkRmsg(t, matches[0], "$G", "foo", "", "2", "ok")
 }
 
 func TestRouteForwardsMsgToClients(t *testing.T) {
@@ -247,13 +233,12 @@ func TestRouteForwardsMsgToClients(t *testing.T) {
 	routeSend, _ := setupRoute(t, route, opts)
 
 	// Subscribe to foo
-	clientSend("SUB foo 1\r\n")
+	clientSend("SUB foo 1\r\nPING\r\n")
 	// Use ping roundtrip to make sure its processed.
-	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	// Send MSG proto via route connection
-	routeSend("MSG foo 1 2\r\nok\r\n")
+	// Send RMSG proto via route connection
+	routeSend("RMSG $G foo 2\r\nok\r\n")
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
@@ -270,10 +255,10 @@ func TestRouteOneHopSemantics(t *testing.T) {
 	routeSend, _ := setupRoute(t, route, opts)
 
 	// Express interest on this route for foo.
-	routeSend("SUB foo RSID:2:2\r\n")
+	routeSend("RS+ $G foo\r\n")
 
 	// Send MSG proto via route connection
-	routeSend("MSG foo 1 2\r\nok\r\n")
+	routeSend("RMSG foo 2\r\nok\r\n")
 
 	// Make sure it does not come back!
 	expectNothing(t, route)
@@ -296,14 +281,13 @@ func TestRouteOnlySendOnce(t *testing.T) {
 	expectMsgs := expectMsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo.
-	routeSend("SUB foo RSID:2:1\r\n")
-	routeSend("SUB foo RSID:2:2\r\n")
+	routeSend("RS+ $G foo\r\n")
+	routeSend("RS+ $G foo\r\n")
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
 	// Send PUB via client connection
-	clientSend("PUB foo 2\r\nok\r\n")
-	clientSend("PING\r\n")
+	clientSend("PUB foo 2\r\nok\r\nPING\r\n")
 	clientExpect(pongRe)
 
 	expectMsgs(1)
@@ -327,13 +311,11 @@ func TestRouteQueueSemantics(t *testing.T) {
 	expectAuthRequired(t, route)
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
 	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
-	expectMsgs := expectMsgsCommand(t, routeExpect)
+	expectMsgs := expectRmsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
-	qrsid1 := "QRSID:1:1"
-	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid1))
-	qrsid2 := "QRSID:1:2"
-	routeSend(fmt.Sprintf("SUB foo bar %s\r\n", qrsid2))
+	routeSend("RS+ $G foo bar 1\r\n")
+	routeSend("RS+ $G foo bar 2\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
@@ -347,75 +329,48 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	// Only 1
 	matches := expectMsgs(1)
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkRmsg(t, matches[0], "$G", "foo", "| bar", "2", "ok")
 
 	// Add normal Interest as well to route interest.
-	routeSend("SUB foo RSID:1:4\r\n")
+	routeSend("RS+ $G foo\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
 	// Send PUB via client connection
-	clientSend("PUB foo 2\r\nok\r\n")
+	clientSend("PUB foo 2\r\nok\r\nPING\r\n")
 	// Use ping roundtrip to make sure its processed.
-	clientSend("PING\r\n")
 	clientExpect(pongRe)
 
-	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
-	matches = expectMsgs(2)
-
-	// Expect first to be the normal subscriber, next will be the queue one.
-	if string(matches[0][sidIndex]) != "RSID:1:4" &&
-		string(matches[1][sidIndex]) != "RSID:1:4" {
-		t.Fatalf("Did not received routed sid\n")
-	}
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
-	checkMsg(t, matches[1], "foo", "", "", "2", "ok")
-
-	// Check the rsid to verify it is one of the queue group subscribers.
-	var rsid string
-	if matches[0][sidIndex][0] == 'Q' {
-		rsid = string(matches[0][sidIndex])
-	} else {
-		rsid = string(matches[1][sidIndex])
-	}
-	if rsid != qrsid1 && rsid != qrsid2 {
-		t.Fatalf("Expected a queue group rsid, got %s\n", rsid)
-	}
+	// Should be 1 now for everything. Always receive 1 message.
+	matches = expectMsgs(1)
+	checkRmsg(t, matches[0], "$G", "foo", "| bar", "2", "ok")
 
 	// Now create a queue subscription for the client as well as a normal one.
 	clientSend("SUB foo 1\r\n")
 	// Use ping roundtrip to make sure its processed.
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
-	routeExpect(subRe)
+	routeExpect(rsubRe)
 
-	clientSend("SUB foo bar 2\r\n")
+	clientSend("SUB foo bar 2\r\nPING\r\n")
 	// Use ping roundtrip to make sure its processed.
-	clientSend("PING\r\n")
 	clientExpect(pongRe)
-	routeExpect(subRe)
+	routeExpect(rsubRe)
 
 	// Deliver a MSG from the route itself, make sure the client receives both.
-	routeSend("MSG foo RSID:1:1 2\r\nok\r\n")
-	// Queue group one.
-	routeSend("MSG foo QRSID:1:2 2\r\nok\r\n")
-	// Invlaid queue sid.
-	routeSend("MSG foo QRSID 2\r\nok\r\n")    // cid and sid missing
-	routeSend("MSG foo QRSID:1 2\r\nok\r\n")  // cid not terminated with ':'
-	routeSend("MSG foo QRSID:1: 2\r\nok\r\n") // cid==1 but sid missing. It needs to be at least one character.
+	routeSend("RMSG $G foo | bar 2\r\nok\r\n")
 
 	// Use ping roundtrip to make sure its processed.
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
-	// Should be 2 now, 1 for all normal, and one for specific queue subscriber.
+	// Should get 2 msgs.
 	matches = clientExpectMsgs(2)
 
 	// Expect first to be the normal subscriber, next will be the queue one.
-	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
-	checkMsg(t, matches[1], "foo", "2", "", "2", "ok")
+	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {
@@ -442,22 +397,24 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	defer route1.Close()
 
 	expectAuthRequired(t, route1)
-	route1Send, _ := setupRouteEx(t, route1, opts, "ROUTE:2222")
+	route1Send, route1Expect := setupRouteEx(t, route1, opts, "ROUTE:2222")
 
 	route2 := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route2.Close()
 
 	expectAuthRequired(t, route2)
-	route2Send, _ := setupRouteEx(t, route2, opts, "ROUTE:2222")
+	route2Send, route2Expect := setupRouteEx(t, route2, opts, "ROUTE:2222")
 
 	// Send SUB via route connections
-	sub := "SUB foo RSID:2:22\r\n"
+	sub := "RS+ $G foo\r\nPING\r\n"
 	route1Send(sub)
 	route2Send(sub)
+	route1Expect(pongRe)
+	route2Expect(pongRe)
 
-	// Make sure we do not get anything on a MSG send to a router.
-	// Send MSG proto via route connection
-	route1Send("MSG foo 1 2\r\nok\r\n")
+	// Make sure we do not get anything on a RMSG send to a router.
+	// Send RMSG proto via route connection
+	route1Send("RMSG $G foo 2\r\nok\r\n")
 
 	expectNothing(t, route1)
 	expectNothing(t, route2)
@@ -468,8 +425,7 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	defer client.Close()
 
 	// Send PUB via client connection
-	clientSend("PUB foo 2\r\nok\r\n")
-	clientSend("PING\r\n")
+	clientSend("PUB foo 2\r\nok\r\nPING\r\n")
 	clientExpect(pongRe)
 
 	// We should only receive on one route, not both.
@@ -486,11 +442,11 @@ func TestMultipleRoutesSameId(t *testing.T) {
 		}
 	}
 
-	matches := msgRe.FindAllSubmatch(buf, -1)
+	matches := rmsgRe.FindAllSubmatch(buf, -1)
 	if len(matches) != 1 {
 		t.Fatalf("Expected 1 msg, got %d\n", len(matches))
 	}
-	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
+	checkRmsg(t, matches[0], "$G", "foo", "", "2", "ok")
 }
 
 func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
@@ -530,7 +486,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	// Trigger the send of local subs.
 	routeSend(infoJSON)
 
-	routeExpect(subRe)
+	routeExpect(rsubRe)
 
 	// Close and then re-open
 	route.Close()
@@ -543,7 +499,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	routeExpect(infoRe)
 
 	routeSend(infoJSON)
-	routeExpect(subRe)
+	routeExpect(rsubRe)
 }
 
 type ignoreLogger struct{}
@@ -990,8 +946,8 @@ func TestRouteBasicPermissions(t *testing.T) {
 	if err := checkExpectedSubs(5, srvA); err != nil {
 		t.Fatal(err.Error())
 	}
-	// B should have 4
-	if err := checkExpectedSubs(4, srvB); err != nil {
+	// B should have 3 since we coalesce te two for 'foo'
+	if err := checkExpectedSubs(3, srvB); err != nil {
 		t.Fatal(err.Error())
 	}
 	// Send a message from B and check that it is received.
@@ -1011,7 +967,7 @@ func TestRouteBasicPermissions(t *testing.T) {
 	ncb.Close()
 	srvB.Shutdown()
 
-	// Since B had 2 local subs, A should go from 5 to 3
+	// Since B had 2 local subs, A should still only go from 4 to 3
 	if err := checkExpectedSubs(3, srvA); err != nil {
 		t.Fatal(err.Error())
 	}
@@ -1020,8 +976,8 @@ func TestRouteBasicPermissions(t *testing.T) {
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
 	defer srvB.Shutdown()
 	// Check that subs from A that can be sent to B are sent.
-	// That would be 2 (the 2 subscriptions on foo).
-	if err := checkExpectedSubs(2, srvB); err != nil {
+	// That would be 2 (the 2 subscriptions on foo) as one.
+	if err := checkExpectedSubs(1, srvB); err != nil {
 		t.Fatal(err.Error())
 	}
 

@@ -663,12 +663,12 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 	}()
 	<-ch
 
-	if c.sl.Count() != 2 {
-		t.Fatalf("Should have 2 subscriptions, got %d\n", c.sl.Count())
+	if s.NumSubscriptions() != 2 {
+		t.Fatalf("Should have 2 subscriptions, got %d\n", s.NumSubscriptions())
 	}
 	c.closeConnection(ClientClosed)
-	if c.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.gsl.Count())
+	if s.NumSubscriptions() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", s.NumSubscriptions())
 	}
 }
 
@@ -684,8 +684,8 @@ func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
 	}()
 	<-ch
 
-	if c.sl.Count() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", c.sl.Count())
+	if c.acc.sl.Count() != 0 {
+		t.Fatalf("Should have no subscriptions after close, got %d\n", c.acc.sl.Count())
 	}
 }
 

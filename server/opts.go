@@ -93,7 +93,7 @@ type Options struct {
 	TLSCaCert        string        `json:"-"`
 	TLSConfig        *tls.Config   `json:"-"`
 	WriteDeadline    time.Duration `json:"-"`
-	RQSubsSweep      time.Duration `json:"-"`
+	RQSubsSweep      time.Duration `json:"-"` // Deprecated
 	MaxClosedClients int           `json:"-"`
 	LameDuckDuration time.Duration `json:"-"`
 
@@ -772,7 +772,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := stream.acc.addStreamExport(stream.sub, accounts); err != nil {
+		if err := stream.acc.AddStreamExport(stream.sub, accounts); err != nil {
 			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -790,7 +790,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := service.acc.addServiceExport(service.sub, accounts); err != nil {
+		if err := service.acc.AddServiceExport(service.sub, accounts); err != nil {
 			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -803,7 +803,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
-		if err := stream.acc.addStreamImport(ta, stream.sub, stream.pre); err != nil {
+		if err := stream.acc.AddStreamImport(ta, stream.sub, stream.pre); err != nil {
 			msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -819,7 +819,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 		if service.to == "" {
 			service.to = service.sub
 		}
-		if err := service.acc.addServiceImport(ta, service.to, service.sub); err != nil {
+		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
 			msg := fmt.Sprintf("Error adding service import %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue

@@ -863,7 +863,6 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
 	optsA.NoSigs, optsA.NoLog = true, true
-	optsA.RQSubsSweep = 500 * time.Millisecond
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -919,8 +918,21 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 				t.Fatalf("Error on auto-unsubscribe: %v", err)
 			}
 		}
-		c.Flush()
+		c.Subscribe("TEST.COMPLETE", func(m *nats.Msg) {})
 	}
+
+	// We coelasce now so for each server we will have all local (250) plus
+	// two from the remote side for each queue group. We also create one more
+	// and will wait til each server has 254 subscriptions, that will make sure
+	// that we have everything setup.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		subsA := srvA.NumSubscriptions()
+		subsB := srvB.NumSubscriptions()
+		if subsA != 254 || subsB != 254 {
+			return fmt.Errorf("Not all subs processed yet: %d and %d", subsA, subsB)
+		}
+		return nil
+	})
 
 	expected := int32(250)
 	// Now send messages from each server
@@ -937,17 +949,6 @@ func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
 		nbaz := atomic.LoadInt32(&rbaz)
 		if nbar == expected && nbaz == expected {
 			time.Sleep(500 * time.Millisecond)
-			// Now check all mappings are gone.
-			srvA.rqsMu.RLock()
-			nrqsa := len(srvA.rqsubs)
-			srvA.rqsMu.RUnlock()
-			srvB.rqsMu.RLock()
-			nrqsb := len(srvB.rqsubs)
-			srvB.rqsMu.RUnlock()
-			if nrqsa != 0 || nrqsb != 0 {
-				return fmt.Errorf("Expected rqs mappings to have cleared, but got A:%d, B:%d",
-					nrqsa, nrqsb)
-			}
 			return nil
 		}
 		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
@@ -1106,7 +1107,8 @@ func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
 	defer nc.Close()
 	numSubs := 1000
 	for i := 0; i < numSubs; i++ {
-		nc.Subscribe("foo.bar", func(_ *nats.Msg) {})
+		subj := fmt.Sprintf("fo.bar.%d", i)
+		nc.Subscribe(subj, func(_ *nats.Msg) {})
 	}
 	checkExpectedSubs(t, numSubs, srvA)
 

@@ -52,6 +52,10 @@ func (s *Server) ConfigureLogger() {
 		opts = s.getOpts()
 	)
 
+	if opts.NoLog {
+		return
+	}
+
 	syslog := opts.Syslog
 	if isWindowsService() && opts.LogFile == "" {
 		// Enable syslog if no log file is specified and we're running as a

@@ -69,13 +69,12 @@ func RunServer(opts *server.Options) *server.Server {
 }
 
 // LoadConfig loads a configuration from a filename
-func LoadConfig(configFile string) (opts *server.Options) {
+func LoadConfig(configFile string) *server.Options {
 	opts, err := server.ProcessConfigFile(configFile)
 	if err != nil {
 		panic(fmt.Sprintf("Error processing configuration file: %v", err))
 	}
-	opts.NoSigs, opts.NoLog = true, true
-	return
+	return opts
 }
 
 // RunServerWithConfig starts a new Go routine based server with a configuration file.
@@ -215,6 +214,13 @@ func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
+func setupConnWithAccount(t tLogger, c net.Conn, account string) (sendFun, expectFun) {
+	checkInfoMsg(t, c)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+	sendProto(t, c, cs)
+	return sendCommand(t, c), expectCommand(t, c)
+}
+
 type sendFun func(string)
 type expectFun func(*regexp.Regexp) []byte
 
@@ -250,24 +256,31 @@ var (
 	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
 	errRe     = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
-	subRe     = regexp.MustCompile(`SUB\s+([^\s]+)((\s+)([^\s]+))?\s+([^\s]+)\r\n`)
-	unsubRe   = regexp.MustCompile(`UNSUB\s+([^\s]+)(\s+(\d+))?\r\n`)
 	connectRe = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
+	rsubRe    = regexp.MustCompile(`RS\+\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	runsubRe  = regexp.MustCompile(`RS\-\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
+	rmsgRe    = regexp.MustCompile(`(?:(?:RMSG\s+([^\s]+)\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 )
 
 const (
+	// Regular Messages
 	subIndex   = 1
 	sidIndex   = 2
 	replyIndex = 4
 	lenIndex   = 5
 	msgIndex   = 6
+
+	// Routed Messages
+	accIndex           = 1
+	rsubIndex          = 2
+	replyAndQueueIndex = 3
 )
 
 // Test result from server against regexp
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 
@@ -277,9 +290,20 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	buf := expBuf[:n]
 
 	if !re.Match(buf) {
-		stackFatalf(t, "Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", buf, re)
+		stackFatalf(t, "Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'", buf, re)
 	}
 	return buf
+}
+
+func peek(c net.Conn) []byte {
+	expBuf := make([]byte, 32768)
+	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	n, err := c.Read(expBuf)
+	c.SetReadDeadline(time.Time{})
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return expBuf
 }
 
 func expectNothing(t tLogger, c net.Conn) {
@@ -292,7 +316,7 @@ func expectNothing(t tLogger, c net.Conn) {
 	}
 }
 
-// This will check that we got what we expected.
+// This will check that we got what we expected from a normal message.
 func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
 	if string(m[subIndex]) != subject {
 		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[subIndex])
@@ -308,6 +332,33 @@ func checkMsg(t tLogger, m [][]byte, subject, sid, reply, len, msg string) {
 	}
 	if string(m[msgIndex]) != msg {
 		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, m[msgIndex])
+	}
+}
+
+func checkRmsg(t tLogger, m [][]byte, account, subject, replyAndQueues, len, msg string) {
+	if string(m[accIndex]) != account {
+		stackFatalf(t, "Did not get correct account: expected '%s' got '%s'\n", account, m[accIndex])
+	}
+	if string(m[rsubIndex]) != subject {
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[rsubIndex])
+	}
+	if string(m[lenIndex]) != len {
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[lenIndex])
+	}
+	if string(m[replyAndQueueIndex]) != replyAndQueues {
+		stackFatalf(t, "Did not get correct reply/queues: expected '%s' got '%s'\n", replyAndQueues, m[replyAndQueueIndex])
+	}
+}
+
+// Closure for expectMsgs
+func expectRmsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
+	return func(expected int) [][][]byte {
+		buf := ef(rmsgRe)
+		matches := rmsgRe.FindAllSubmatch(buf, -1)
+		if len(matches) != expected {
+			stackFatalf(t, "Did not get correct # routed msgs: %d vs %d\n", len(matches), expected)
+		}
+		return matches
 	}
 }
 

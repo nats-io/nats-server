@@ -18,11 +18,15 @@ import (
 )
 
 type pubArg struct {
+	arg     []byte
+	account []byte
+	queues  [][]byte
+	//cacheKey []byte
 	subject []byte
 	reply   []byte
-	sid     []byte
-	szb     []byte
-	size    int
+	//	sid     []byte
+	szb  []byte
+	size int
 }
 
 type parseState struct {
@@ -73,6 +77,15 @@ const (
 	OP_SUB
 	OP_SUB_SPC
 	SUB_ARG
+	OP_A
+	OP_ASUB
+	OP_ASUB_SPC
+	ASUB_ARG
+	OP_AUSUB
+	OP_AUSUB_SPC
+	AUSUB_ARG
+	OP_R
+	OP_RS
 	OP_U
 	OP_UN
 	OP_UNS
@@ -121,11 +134,17 @@ func (c *client) parse(buf []byte) error {
 				c.state = OP_S
 			case 'U', 'u':
 				c.state = OP_U
-			case 'M', 'm':
+			case 'R', 'r':
 				if c.typ == CLIENT {
 					goto parseErr
 				} else {
-					c.state = OP_M
+					c.state = OP_R
+				}
+			case 'A', 'a':
+				if c.typ == CLIENT {
+					goto parseErr
+				} else {
+					c.state = OP_A
 				}
 			case 'C', 'c':
 				c.state = OP_C
@@ -243,6 +262,85 @@ func (c *client) parse(buf []byte) error {
 				}
 				continue
 			}
+		case OP_A:
+			switch b {
+			case '+':
+				c.state = OP_ASUB
+			case '-', 'u':
+				c.state = OP_AUSUB
+			default:
+				goto parseErr
+			}
+		case OP_ASUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_ASUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_ASUB_SPC:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = ASUB_ARG
+				c.as = i
+			}
+		case ASUB_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				if err := c.processAccountSub(arg); err != nil {
+					return err
+				}
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
+			}
+		case OP_AUSUB:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_AUSUB_SPC
+			default:
+				goto parseErr
+			}
+		case OP_AUSUB_SPC:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = AUSUB_ARG
+				c.as = i
+			}
+		case AUSUB_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				c.processAccountUnsub(arg)
+				c.drop, c.as, c.state = 0, i+1, OP_START
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
+			}
 		case OP_S:
 			switch b {
 			case 'U', 'u':
@@ -284,7 +382,13 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processSub(arg); err != nil {
+				var err error
+				if c.typ == CLIENT {
+					err = c.processSub(arg)
+				} else {
+					err = c.processRemoteSub(arg)
+				}
+				if err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, OP_START
@@ -292,6 +396,24 @@ func (c *client) parse(buf []byte) error {
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
 				}
+			}
+		case OP_R:
+			switch b {
+			case 'S', 's':
+				c.state = OP_RS
+			case 'M', 'm':
+				c.state = OP_M
+			default:
+				goto parseErr
+			}
+		case OP_RS:
+			switch b {
+			case '+':
+				c.state = OP_SUB
+			case '-':
+				c.state = OP_UNSUB
+			default:
+				goto parseErr
 			}
 		case OP_U:
 			switch b {
@@ -348,7 +470,13 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processUnsub(arg); err != nil {
+				var err error
+				if c.typ == CLIENT {
+					err = c.processUnsub(arg)
+				} else {
+					err = c.processRemoteUnsub(arg)
+				}
+				if err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, OP_START
@@ -510,7 +638,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processMsgArgs(arg); err != nil {
+				if err := c.processRoutedMsgArgs(arg); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
@@ -655,6 +783,7 @@ func (c *client) parse(buf []byte) error {
 
 	// Check for split buffer scenarios for any ARG state.
 	if c.state == SUB_ARG || c.state == UNSUB_ARG || c.state == PUB_ARG ||
+		c.state == ASUB_ARG || c.state == AUSUB_ARG ||
 		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
 		c.state == CONNECT_ARG || c.state == INFO_ARG {
 		// Setup a holder buffer to deal with split buffer scenario.
@@ -729,21 +858,14 @@ func protoSnippet(start int, buf []byte) string {
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
 func (c *client) clonePubArg() {
+	// Just copy and re-process original arg buffer.
 	c.argBuf = c.scratch[:0]
-	c.argBuf = append(c.argBuf, c.pa.subject...)
-	c.argBuf = append(c.argBuf, c.pa.reply...)
-	c.argBuf = append(c.argBuf, c.pa.sid...)
-	c.argBuf = append(c.argBuf, c.pa.szb...)
+	c.argBuf = append(c.argBuf, c.pa.arg...)
 
-	c.pa.subject = c.argBuf[:len(c.pa.subject)]
-
-	if c.pa.reply != nil {
-		c.pa.reply = c.argBuf[len(c.pa.subject) : len(c.pa.subject)+len(c.pa.reply)]
+	// This is a routed msg
+	if c.pa.account != nil {
+		c.processRoutedMsgArgs(c.argBuf)
+	} else {
+		c.processPub(c.argBuf)
 	}
-
-	if c.pa.sid != nil {
-		c.pa.sid = c.argBuf[len(c.pa.subject)+len(c.pa.reply) : len(c.pa.subject)+len(c.pa.reply)+len(c.pa.sid)]
-	}
-
-	c.pa.szb = c.argBuf[len(c.pa.subject)+len(c.pa.reply)+len(c.pa.sid):]
 }

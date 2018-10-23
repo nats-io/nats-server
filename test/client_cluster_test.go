@@ -128,7 +128,7 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	// Client options
 	opts := nats.GetDefaultOptions()
 	opts.Timeout = (5 * time.Second)
-	opts.ReconnectWait = (50 * time.Millisecond)
+	opts.ReconnectWait = (20 * time.Millisecond)
 	opts.MaxReconnect = 1000
 	opts.NoRandomize = true
 
@@ -267,7 +267,12 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	checkClusterFormed(t, srvA, srvB)
 
 	// Make sure subscriptions are propagated in the cluster
-	if err := checkExpectedSubs(4, srvA, srvB); err != nil {
+	// Clients will be connected to srvA, so that will be 4,
+	// but srvB will only have 2 now since we coaelsce.
+	if err := checkExpectedSubs(4, srvA); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := checkExpectedSubs(2, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 

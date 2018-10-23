@@ -37,10 +37,6 @@ func TestUserAuthorizationProto(t *testing.T) {
 	sendProto(t, c, "SUB foo 1\r\n")
 	expectResult(t, c, okRe)
 
-	// Check that we now reserve _SYS.> though for internal, so no clients.
-	sendProto(t, c, "PUB _SYS.HB 2\r\nok\r\n")
-	expectResult(t, c, permErrRe)
-
 	// Check that _ is ok
 	sendProto(t, c, "PUB _ 2\r\nok\r\n")
 	expectResult(t, c, okRe)

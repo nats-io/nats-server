@@ -213,7 +213,7 @@ func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
 	if sub.queue == nil {
 		nr.psubs = append(nr.psubs, sub)
 	} else {
-		if i := findQSliceForSub(sub, nr.qsubs); i >= 0 {
+		if i := findQSlot(sub.queue, nr.qsubs); i >= 0 {
 			nr.qsubs[i] = append(nr.qsubs[i], sub)
 		} else {
 			nr.qsubs = append(nr.qsubs, []*subscription{sub})
@@ -320,6 +320,23 @@ func (s *Sublist) reduceCacheCount() {
 	})
 }
 
+// Helper function for auto-expanding remote qsubs.
+func isRemoteQSub(sub *subscription) bool {
+	return sub != nil && sub.queue != nil && sub.client != nil && sub.client.typ == ROUTER
+}
+
+// This should be called when we update the weight of an existing
+// remote queue sub.
+func (s *Sublist) UpdateRemoteQSub(sub *subscription) {
+	// We could search to make sure we find it, but probably not worth
+	// it unless we are thrashing the cache. Just remove from our L2 and update
+	// the genid so L1 will be flushed.
+	s.Lock()
+	s.removeFromCache(string(sub.subject), sub)
+	atomic.AddUint64(&s.genid, 1)
+	s.Unlock()
+}
+
 // This will add in a node's results to the total results.
 func addNodeToResults(n *node, results *SublistResult) {
 	// Normal subscriptions
@@ -335,18 +352,23 @@ func addNodeToResults(n *node, results *SublistResult) {
 		if len(qr) == 0 {
 			continue
 		}
-		tsub := &subscription{subject: nil, queue: []byte(qname)}
 		// Need to find matching list in results
-		if i := findQSliceForSub(tsub, results.qsubs); i >= 0 {
-			for _, sub := range qr {
+		var i int
+		if i = findQSlot([]byte(qname), results.qsubs); i < 0 {
+			i = len(results.qsubs)
+			nqsub := make([]*subscription, 0, len(qr))
+			results.qsubs = append(results.qsubs, nqsub)
+		}
+		for _, sub := range qr {
+			if isRemoteQSub(sub) {
+				ns := atomic.LoadInt32(&sub.qw)
+				// Shadow these subscriptions
+				for n := 0; n < int(ns); n++ {
+					results.qsubs[i] = append(results.qsubs[i], sub)
+				}
+			} else {
 				results.qsubs[i] = append(results.qsubs[i], sub)
 			}
-		} else {
-			var nqsub []*subscription
-			for _, sub := range qr {
-				nqsub = append(nqsub, sub)
-			}
-			results.qsubs = append(results.qsubs, nqsub)
 		}
 	}
 }
@@ -355,12 +377,12 @@ func addNodeToResults(n *node, results *SublistResult) {
 // processing publishes in L1 on client. So we need to walk sequentially
 // for now. Keep an eye on this in case we start getting large number of
 // different queue subscribers for the same subject.
-func findQSliceForSub(sub *subscription, qsl [][]*subscription) int {
-	if sub.queue == nil {
+func findQSlot(queue []byte, qsl [][]*subscription) int {
+	if queue == nil {
 		return -1
 	}
 	for i, qr := range qsl {
-		if len(qr) > 0 && bytes.Equal(sub.queue, qr[0].queue) {
+		if len(qr) > 0 && bytes.Equal(queue, qr[0].queue) {
 			return i
 		}
 	}
@@ -494,6 +516,56 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	return nil
 }
 
+func (s *Sublist) checkNodeForClientSubs(n *node, c *client) {
+	var removed uint32
+	for _, sub := range n.psubs {
+		if sub.client == c {
+			if s.removeFromNode(n, sub) {
+				s.removeFromCache(string(sub.subject), sub)
+				removed++
+			}
+		}
+	}
+	// Queue subscriptions
+	for _, qr := range n.qsubs {
+		for _, sub := range qr {
+			if sub.client == c {
+				if s.removeFromNode(n, sub) {
+					s.removeFromCache(string(sub.subject), sub)
+					removed++
+				}
+			}
+		}
+	}
+	s.count -= removed
+	s.removes += uint64(removed)
+}
+
+func (s *Sublist) removeClientSubs(l *level, c *client) {
+	for _, n := range l.nodes {
+		s.checkNodeForClientSubs(n, c)
+		s.removeClientSubs(n.next, c)
+	}
+	if l.pwc != nil {
+		s.checkNodeForClientSubs(l.pwc, c)
+		s.removeClientSubs(l.pwc.next, c)
+	}
+	if l.fwc != nil {
+		s.checkNodeForClientSubs(l.fwc, c)
+		s.removeClientSubs(l.fwc.next, c)
+	}
+}
+
+func (s *Sublist) RemoveAllForClient(c *client) {
+	s.Lock()
+	removes := s.removes
+	s.removeClientSubs(s.root, c)
+	if s.removes != removes {
+		atomic.AddUint64(&s.genid, 1)
+	}
+	s.Unlock()
+}
+
 // pruneNode is used to prune an empty node from the tree.
 func (l *level) pruneNode(n *node, t string) {
 	if n == nil {
@@ -541,7 +613,7 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 		delete(n.psubs, sub)
 		if found && n.plist != nil {
 			// This will brute force remove the plist to perform
-			// correct behavior. Will get repopulated on a call
+			// correct behavior. Will get re-populated on a call
 			// to Match as needed.
 			n.plist = nil
 		}
@@ -549,12 +621,11 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 	}
 
 	// We have a queue group subscription here
-	qname := string(sub.queue)
-	qsub := n.qsubs[qname]
+	qsub := n.qsubs[string(sub.queue)]
 	_, found = qsub[sub]
 	delete(qsub, sub)
 	if len(qsub) == 0 {
-		delete(n.qsubs, qname)
+		delete(n.qsubs, string(sub.queue))
 	}
 	return found
 }
@@ -830,7 +901,7 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil && sub.client.typ == CLIENT {
+	if sub != nil && sub.client != nil && sub.client.typ == CLIENT && sub.im == nil {
 		*subs = append(*subs, sub)
 	}
 }
@@ -855,11 +926,9 @@ func (s *Sublist) addNodeToSubs(n *node, subs *[]*subscription) {
 }
 
 func (s *Sublist) collectLocalSubs(l *level, subs *[]*subscription) {
-	if len(l.nodes) > 0 {
-		for _, n := range l.nodes {
-			s.addNodeToSubs(n, subs)
-			s.collectLocalSubs(n.next, subs)
-		}
+	for _, n := range l.nodes {
+		s.addNodeToSubs(n, subs)
+		s.collectLocalSubs(n.next, subs)
 	}
 	if l.pwc != nil {
 		s.addNodeToSubs(l.pwc, subs)
