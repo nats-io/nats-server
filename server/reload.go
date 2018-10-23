@@ -229,11 +229,20 @@ func (a *authTimeoutOption) Apply(server *Server) {
 // setting.
 type usersOption struct {
 	authOption
-	newValue []*User
 }
 
 func (u *usersOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization users")
+}
+
+// nkeysOption implements the option interface for the authorization `users`
+// setting.
+type nkeysOption struct {
+	authOption
+}
+
+func (u *nkeysOption) Apply(server *Server) {
+	server.Noticef("Reloaded: authorization nkey users")
 }
 
 // clusterOption implements the option interface for the `cluster` setting.
@@ -462,6 +471,17 @@ func (c *clientAdvertiseOption) Apply(server *Server) {
 	server.Noticef("Reload: client_advertise = %s", c.newValue)
 }
 
+// accountsOption implements the option interface.
+// Ensure that authorization code is executed if any change in accounts
+type accountsOption struct {
+	authOption
+}
+
+// Apply is a no-op. Changes will be applied in reloadAuthorization
+func (a *accountsOption) Apply(s *Server) {
+	s.Noticef("Reloaded: accounts")
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -567,7 +587,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "authtimeout":
 			diffOpts = append(diffOpts, &authTimeoutOption{newValue: newValue.(float64)})
 		case "users":
-			diffOpts = append(diffOpts, &usersOption{newValue: newValue.([]*User)})
+			diffOpts = append(diffOpts, &usersOption{})
+		case "nkeys":
+			diffOpts = append(diffOpts, &nkeysOption{})
 		case "cluster":
 			newClusterOpts := newValue.(ClusterOpts)
 			oldClusterOpts := oldValue.(ClusterOpts)
@@ -604,6 +626,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				}
 			}
 			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
+		case "accounts":
+			diffOpts = append(diffOpts, &accountsOption{})
 		case "nolog", "nosigs":
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.
@@ -663,9 +687,35 @@ func (s *Server) applyOptions(opts []option) {
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 	s.configureAuthorization()
+	oldAccounts := s.accounts
+	gAccount := oldAccounts[globalAccountName]
+	s.accounts = make(map[string]*Account)
+	s.registerAccount(gAccount)
+	for _, newAcc := range s.opts.Accounts {
+		// For existing accounts, moved updated config to existing account
+		if acc, ok := oldAccounts[newAcc.Name]; ok {
+			acc.mu.RLock()
+			sl := acc.sl
+			acc.mu.RUnlock()
+			newAcc.mu.Lock()
+			newAcc.sl = sl
+			// Check if current and new config of this account are same
+			// in term of stream imports.
+			newAcc.checksti = !acc.checkStreamImportsEqual(newAcc)
+			newAcc.mu.Unlock()
+		}
+		s.registerAccount(newAcc)
+	}
+	// Gather clients that changed accounts. We will close them and they
+	// will reconnect, doing the right thing.
+	closeClients := make(map[uint64]*client, len(s.clients))
 	clients := make(map[uint64]*client, len(s.clients))
 	for i, client := range s.clients {
-		clients[i] = client
+		if s.clientHasMovedToDifferentAccount(client) {
+			closeClients[i] = client
+		} else {
+			clients[i] = client
+		}
 	}
 	routes := make(map[uint64]*client, len(s.routes))
 	for i, route := range s.routes {
@@ -673,16 +723,29 @@ func (s *Server) reloadAuthorization() {
 	}
 	s.mu.Unlock()
 
+	// Close clients that have moved accounts
+	for _, client := range closeClients {
+		client.closeConnection(ClientClosed)
+	}
+
 	for _, client := range clients {
 		// Disconnect any unauthorized clients.
 		if !s.isClientAuthorized(client) {
 			client.authViolation()
 			continue
 		}
-
-		// Remove any unauthorized subscriptions.
-		client.removeUnauthorizedSubs()
+		// Remove any unauthorized subscriptions and check for account imports.
+		client.processSubsOnConfigReload()
 	}
+
+	// Reset the check import flag now
+	s.mu.Lock()
+	for _, a := range s.accounts {
+		a.mu.Lock()
+		a.checksti = false
+		a.mu.Unlock()
+	}
+	s.mu.Unlock()
 
 	for _, route := range routes {
 		// Disconnect any unauthorized routes.
@@ -694,6 +757,42 @@ func (s *Server) reloadAuthorization() {
 			route.authViolation()
 		}
 	}
+}
+
+// Returns true if given client current account has changed (or user
+// no longer exist) in the new config, false if the user did not
+// change account.
+// Server lock is held on entry.
+func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
+	var (
+		nu *NkeyUser
+		u  *User
+	)
+	if c.opts.Nkey != "" {
+		if s.nkeys != nil {
+			nu = s.nkeys[c.opts.Nkey]
+		}
+	} else if c.opts.Username != "" {
+		if s.users != nil {
+			u = s.users[c.opts.Username]
+		}
+	} else {
+		return false
+	}
+	// Get the current account name
+	c.mu.Lock()
+	var curAccName string
+	if c.acc != nil {
+		curAccName = c.acc.Name
+	}
+	c.mu.Unlock()
+	if nu != nil && nu.Account != nil {
+		return curAccName != nu.Account.Name
+	} else if u != nil && u.Account != nil {
+		return curAccName != u.Account.Name
+	}
+	// There is no longer this user/nkey in the new config
+	return true
 }
 
 // reloadClusterPermissions reconfigures the cluster's permssions

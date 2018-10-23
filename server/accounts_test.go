@@ -1046,6 +1046,102 @@ func TestAccountGlobalDefault(t *testing.T) {
 	}
 }
 
+func TestAccountCheckStreamImportsEqual(t *testing.T) {
+	// Create bare accounts for this test
+	fooAcc := &Account{Name: "foo"}
+	if err := fooAcc.addStreamExport(">", nil); err != nil {
+		t.Fatalf("Error adding stream export: %v", err)
+	}
+
+	barAcc := &Account{Name: "bar"}
+	if err := barAcc.addStreamImport(fooAcc, "foo", "myPrefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	bazAcc := &Account{Name: "baz"}
+	if err := bazAcc.addStreamImport(fooAcc, "foo", "myPrefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if !barAcc.checkStreamImportsEqual(bazAcc) {
+		t.Fatal("Expected stream imports to be the same")
+	}
+
+	if err := bazAcc.addStreamImport(fooAcc, "foo.>", ""); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if barAcc.checkStreamImportsEqual(bazAcc) {
+		t.Fatal("Expected stream imports to be different")
+	}
+	if err := barAcc.addStreamImport(fooAcc, "foo.>", ""); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if !barAcc.checkStreamImportsEqual(bazAcc) {
+		t.Fatal("Expected stream imports to be the same")
+	}
+
+	// Create another account that is named "foo". We want to make sure
+	// that the comparison still works (based on account name, not pointer)
+	newFooAcc := &Account{Name: "foo"}
+	if err := newFooAcc.addStreamExport(">", nil); err != nil {
+		t.Fatalf("Error adding stream export: %v", err)
+	}
+	batAcc := &Account{Name: "bat"}
+	if err := batAcc.addStreamImport(newFooAcc, "foo", "myPrefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if err := batAcc.addStreamImport(newFooAcc, "foo.>", ""); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if !batAcc.checkStreamImportsEqual(barAcc) {
+		t.Fatal("Expected stream imports to be the same")
+	}
+	if !batAcc.checkStreamImportsEqual(bazAcc) {
+		t.Fatal("Expected stream imports to be the same")
+	}
+
+	// Test with account with different "from"
+	expAcc := &Account{Name: "new_acc"}
+	if err := expAcc.addStreamExport(">", nil); err != nil {
+		t.Fatalf("Error adding stream export: %v", err)
+	}
+	aAcc := &Account{Name: "a"}
+	if err := aAcc.addStreamImport(expAcc, "bar", ""); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	bAcc := &Account{Name: "b"}
+	if err := bAcc.addStreamImport(expAcc, "baz", ""); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if aAcc.checkStreamImportsEqual(bAcc) {
+		t.Fatal("Expected stream imports to be different")
+	}
+
+	// Test with account with different "prefix"
+	aAcc = &Account{Name: "a"}
+	if err := aAcc.addStreamImport(expAcc, "bar", "prefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	bAcc = &Account{Name: "b"}
+	if err := bAcc.addStreamImport(expAcc, "bar", "diff_prefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if aAcc.checkStreamImportsEqual(bAcc) {
+		t.Fatal("Expected stream imports to be different")
+	}
+
+	// Test with account with different "name"
+	expAcc = &Account{Name: "diff_name"}
+	if err := expAcc.addStreamExport(">", nil); err != nil {
+		t.Fatalf("Error adding stream export: %v", err)
+	}
+	bAcc = &Account{Name: "b"}
+	if err := bAcc.addStreamImport(expAcc, "bar", "prefix"); err != nil {
+		t.Fatalf("Error adding stream import: %v", err)
+	}
+	if aAcc.checkStreamImportsEqual(bAcc) {
+		t.Fatal("Expected stream imports to be different")
+	}
+}
+
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)
