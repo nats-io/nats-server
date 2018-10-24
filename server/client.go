@@ -1364,7 +1364,7 @@ func (c *client) processSub(argo []byte) (err error) {
 		c.sendOK()
 	}
 	if chkImports {
-		if err := c.checkAccountImports(sub); err != nil {
+		if err := c.addShadowSubscriptions(sub); err != nil {
 			c.Errorf(err.Error())
 		}
 	}
@@ -1375,9 +1375,10 @@ func (c *client) processSub(argo []byte) (err error) {
 	return nil
 }
 
-// Check to see if we need to create a shadow subscription due to imports
-// in other accounts.
-func (c *client) checkAccountImports(sub *subscription) error {
+// If the client's account has stream imports and there are matches for
+// this subscription's subject, then add shadow subscriptions in
+// other accounts that can export this subject.
+func (c *client) addShadowSubscriptions(sub *subscription) error {
 	c.mu.Lock()
 	acc := c.acc
 	c.mu.Unlock()
@@ -1454,10 +1455,10 @@ func (c *client) canSubscribe(subject []byte) bool {
 }
 
 // Low level unsubscribe for a given client.
-func (c *client) unsubscribe(sub *subscription) {
+func (c *client) unsubscribe(sub *subscription, force bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if sub.max > 0 && sub.nm < sub.max {
+	if !force && sub.max > 0 && sub.nm < sub.max {
 		c.Debugf(
 			"Deferring actual UNSUB(%s): %d max, %d received\n",
 			string(sub.subject), sub.max, sub.nm)
@@ -1527,7 +1528,7 @@ func (c *client) processUnsub(arg []byte) error {
 	c.mu.Unlock()
 
 	if unsub {
-		c.unsubscribe(sub)
+		c.unsubscribe(sub, false)
 	}
 	if shouldForward {
 		c.srv.broadcastUnSubscribe(sub)
@@ -1585,11 +1586,11 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 			if shouldForward {
 				defer srv.broadcastUnSubscribe(sub)
 			}
-			defer client.unsubscribe(sub)
+			defer client.unsubscribe(sub, true)
 		} else if sub.nm > sub.max {
 			c.Debugf("Auto-unsubscribe limit [%d] exceeded\n", sub.max)
 			client.mu.Unlock()
-			client.unsubscribe(sub)
+			client.unsubscribe(sub, true)
 			if shouldForward {
 				srv.broadcastUnSubscribe(sub)
 			}
@@ -2022,42 +2023,69 @@ func (c *client) typeString() string {
 	return "Unknown Type"
 }
 
-// removeUnauthorizedSubs removes any subscriptions the client has that are no
-// longer authorized, e.g. due to a config reload.
-func (c *client) removeUnauthorizedSubs() {
+// processSubsOnConfigReload removes any subscriptions the client has that are no
+// longer authorized, and check for imports (accounts) due to a config reload.
+func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	c.mu.Lock()
-	if c.perms == nil || c.sl == nil {
+	var (
+		checkPerms = c.perms != nil
+		checkAcc   = c.acc != nil
+	)
+	if c.sl == nil || (!checkPerms && !checkAcc) {
 		c.mu.Unlock()
 		return
 	}
-	srv := c.srv
-
-	var subsa [32]*subscription
-	subs := subsa[:0]
+	var (
+		_subs    [32]*subscription
+		subs     = _subs[:0]
+		_removed [32]*subscription
+		removed  = _removed[:0]
+		srv      = c.srv
+		userInfo = c.opts.Nkey
+	)
+	if userInfo == "" {
+		userInfo = c.opts.Username
+		if userInfo == "" {
+			userInfo = fmt.Sprintf("%v", c.cid)
+		}
+	}
+	if checkAcc {
+		// We actually only want to check if stream imports have changed.
+		if _, ok := awcsti[c.acc.Name]; !ok {
+			checkAcc = false
+		}
+	}
+	// Collect client's subs under the lock
 	for _, sub := range c.subs {
 		subs = append(subs, sub)
 	}
-
-	var removedSubs [32]*subscription
-	removed := removedSubs[:0]
-
-	for _, sub := range subs {
-		if !c.canSubscribe(sub.subject) {
-			removed = append(removed, sub)
-			delete(c.subs, string(sub.sid))
-		}
-	}
 	c.mu.Unlock()
 
-	// Remove unauthorized clients subscriptions.
-	c.sl.RemoveBatch(removed)
+	// We can call canSubscribe() without locking since the permissions are updated
+	// from config reload code prior to calling this function. So there is no risk
+	// of concurrent access to c.perms.
+	for _, sub := range subs {
+		if checkPerms && !c.canSubscribe(sub.subject) {
+			removed = append(removed, sub)
+			c.unsubscribe(sub, true)
+		} else if checkAcc {
+			c.mu.Lock()
+			oldShadows := sub.shadow
+			sub.shadow = nil
+			c.mu.Unlock()
+			c.addShadowSubscriptions(sub)
+			for _, nsub := range oldShadows {
+				nsub.im.acc.sl.Remove(nsub)
+			}
+		}
+	}
 
 	// Report back to client and logs.
 	for _, sub := range removed {
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
-		srv.Noticef("Removed sub %q for user %q - not authorized",
-			string(sub.subject), c.opts.Username)
+		srv.Noticef("Removed sub %q (sid %q) for user %q - not authorized",
+			sub.subject, sub.sid, userInfo)
 	}
 }
 

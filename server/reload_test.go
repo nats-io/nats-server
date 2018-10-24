@@ -14,8 +14,10 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nkeys"
 	"io/ioutil"
 	"net"
 	"os"
@@ -1543,11 +1545,12 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 }
 
 func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
+	t.Helper()
 	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
-		stackFatalf(t, "Error creating config file: %v", err)
+		t.Fatalf("Error creating config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
-		stackFatalf(t, "Error on reload: %v", err)
+		t.Fatalf("Error on reload: %v", err)
 	}
 }
 
@@ -2430,4 +2433,659 @@ func TestConfigReloadClusterPermsOldServer(t *testing.T) {
 	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"foo"`))
 	// Check that new route gets created
 	check(t)
+}
+
+func TestConfigReloadAccountUsers(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	accounts {
+		synadia {
+			users = [
+				{user: derek, password: derek}
+				{user: foo, password: foo}
+			]
+		}
+		nats.io {
+			users = [
+				{user: ivan, password: ivan}
+				{user: bar, password: bar}
+			]
+		}
+		acc_deleted_after_reload {
+			users = [
+				{user: gone, password: soon}
+				{user: baz, password: baz}
+				{user: bat, password: bat}
+			]
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Connect as exisiting users, should work.
+	nc, err := nats.Connect(fmt.Sprintf("nats://derek:derek@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	ch := make(chan bool, 2)
+	cb := func(_ *nats.Conn) {
+		ch <- true
+	}
+	nc2, err := nats.Connect(
+		fmt.Sprintf("nats://ivan:ivan@%s:%d", opts.Host, opts.Port),
+		nats.NoReconnect(),
+		nats.ClosedHandler(cb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+	nc3, err := nats.Connect(
+		fmt.Sprintf("nats://gone:soon@%s:%d", opts.Host, opts.Port),
+		nats.NoReconnect(),
+		nats.ClosedHandler(cb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc3.Close()
+	// These users will be moved from an account to another (to a specific or to global account)
+	// We will create subscriptions to ensure that they are moved to proper sublists too.
+	rch := make(chan bool, 4)
+	rcb := func(_ *nats.Conn) {
+		rch <- true
+	}
+	nc4, err := nats.Connect(fmt.Sprintf("nats://foo:foo@%s:%d", opts.Host, opts.Port),
+		nats.ReconnectWait(50*time.Millisecond), nats.ReconnectHandler(rcb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc4.Close()
+	if _, err := nc4.SubscribeSync("foo"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc5, err := nats.Connect(fmt.Sprintf("nats://bar:bar@%s:%d", opts.Host, opts.Port),
+		nats.ReconnectWait(50*time.Millisecond), nats.ReconnectHandler(rcb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc5.Close()
+	if _, err := nc5.SubscribeSync("bar"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc6, err := nats.Connect(fmt.Sprintf("nats://baz:baz@%s:%d", opts.Host, opts.Port),
+		nats.ReconnectWait(50*time.Millisecond), nats.ReconnectHandler(rcb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc6.Close()
+	if _, err := nc6.SubscribeSync("baz"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc7, err := nats.Connect(fmt.Sprintf("nats://bat:bat@%s:%d", opts.Host, opts.Port),
+		nats.ReconnectWait(50*time.Millisecond), nats.ReconnectHandler(rcb))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc7.Close()
+	if _, err := nc7.SubscribeSync("bat"); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Remove user from account and whole account
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	authorization {
+		users = [
+			{user: foo, password: foo}
+			{user: baz, password: baz}
+		]
+	}
+	accounts {
+		synadia {
+			users = [
+				{user: derek, password: derek}
+				{user: bar, password: bar}
+			]
+		}
+		nats.io {
+			users = [
+				{user: bat, password: bat}
+			]
+		}
+	}
+	`)
+	// nc2 and nc3 should be closed
+	if err := wait(ch); err != nil {
+		t.Fatal("Did not get the closed callback")
+	}
+	if err := wait(ch); err != nil {
+		t.Fatal("Did not get the closed callback")
+	}
+	// And first connection should still be connected
+	if !nc.IsConnected() {
+		t.Fatal("First connection should still be connected")
+	}
+
+	// Old account should be gone
+	if s.LookupAccount("acc_deleted_after_reload") != nil {
+		t.Fatal("old account should be gone")
+	}
+
+	// Check subscriptions. Since most of the users have been
+	// moving accounts, make sure we account for the reconnect
+	for i := 0; i < 4; i++ {
+		if err := wait(rch); err != nil {
+			t.Fatal("Did not get the reconnect cb")
+		}
+	}
+	// Still need to do the tests in a checkFor() because clients
+	// being reconnected does not mean that resent of subscriptions
+	// has already been processed.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		gAcc := s.LookupAccount(globalAccountName)
+		gAcc.mu.RLock()
+		n := gAcc.sl.Count()
+		fooMatch := gAcc.sl.Match("foo")
+		bazMatch := gAcc.sl.Match("baz")
+		gAcc.mu.RUnlock()
+		if n != 2 {
+			return fmt.Errorf("Global account should have 2 subs, got %v", n)
+		}
+		if len(fooMatch.psubs) != 1 {
+			return fmt.Errorf("Global account should have foo sub")
+		}
+		if len(bazMatch.psubs) != 1 {
+			return fmt.Errorf("Global account should have baz sub")
+		}
+
+		sAcc := s.LookupAccount("synadia")
+		sAcc.mu.RLock()
+		n = sAcc.sl.Count()
+		barMatch := sAcc.sl.Match("bar")
+		sAcc.mu.RUnlock()
+		if n != 1 {
+			return fmt.Errorf("Synadia account should have 1 sub, got %v", n)
+		}
+		if len(barMatch.psubs) != 1 {
+			return fmt.Errorf("Synadia account should have bar sub")
+		}
+
+		nAcc := s.LookupAccount("nats.io")
+		nAcc.mu.RLock()
+		n = nAcc.sl.Count()
+		batMatch := nAcc.sl.Match("bat")
+		nAcc.mu.RUnlock()
+		if n != 1 {
+			return fmt.Errorf("Nats.io account should have 1 sub, got %v", n)
+		}
+		if len(batMatch.psubs) != 1 {
+			return fmt.Errorf("Synadia account should have bar sub")
+		}
+		return nil
+	})
+}
+
+func TestConfigReloadAccountNKeyUsers(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	accounts {
+		synadia {
+			users = [
+				# Derek
+				{nkey : UCNGL4W5QX66CFX6A6DCBVDH5VOHMI7B2UZZU7TXAUQQSI2JPHULCKBR}
+			]
+		}
+		nats.io {
+			users = [
+				# Ivan
+				{nkey : UDPGQVFIWZ7Q5UH4I5E6DBCZULQS6VTVBG6CYBD7JV3G3N2GMQOMNAUH}
+			]
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	synadia := s.LookupAccount("synadia")
+	nats := s.LookupAccount("nats.io")
+
+	seed1 := "SUAPM67TC4RHQLKBX55NIQXSMATZDOZK6FNEOSS36CAYA7F7TY66LP4BOM"
+	seed2 := "SUAIS5JPX4X4GJ7EIIJEQ56DH2GWPYJRPWN5XJEDENJOZHCBLI7SEPUQDE"
+
+	kp, _ := nkeys.FromSeed(seed1)
+	pubKey, _ := kp.PublicKey()
+
+	c, cr, l := newClientForServer(s)
+	// Check for Nonce
+	var info nonceInfo
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Nonce == "" {
+		t.Fatalf("Expected a non-empty nonce with nkeys defined")
+	}
+	sigraw, err := kp.Sign([]byte(info.Nonce))
+	if err != nil {
+		t.Fatalf("Failed signing nonce: %v", err)
+	}
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK to us.
+	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+	if c.acc != synadia {
+		t.Fatalf("Expected the nkey client's account to match 'synadia', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != synadia.sl {
+		t.Fatalf("Expected the client's sublist to match 'synadia' account")
+	}
+
+	// Now nats account nkey user.
+	kp, _ = nkeys.FromSeed(seed2)
+	pubKey, _ = kp.PublicKey()
+
+	c, cr, l = newClientForServer(s)
+	// Check for Nonce
+	err = json.Unmarshal([]byte(l[5:]), &info)
+	if err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Nonce == "" {
+		t.Fatalf("Expected a non-empty nonce with nkeys defined")
+	}
+	sigraw, err = kp.Sign([]byte(info.Nonce))
+	if err != nil {
+		t.Fatalf("Failed signing nonce: %v", err)
+	}
+	sig = base64.StdEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK to us.
+	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+	if c.acc != nats {
+		t.Fatalf("Expected the nkey client's account to match 'nats', got %v", c.acc)
+	}
+	// Also test client sublist.
+	if c.sl != nats.sl {
+		t.Fatalf("Expected the client's sublist to match 'nats' account")
+	}
+
+	// Remove user from account and whole account
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	authorization {
+		users = [
+			# Ivan
+			{nkey : UDPGQVFIWZ7Q5UH4I5E6DBCZULQS6VTVBG6CYBD7JV3G3N2GMQOMNAUH}
+		]
+	}
+	accounts {
+		nats.io {
+			users = [
+				# Derek
+				{nkey : UCNGL4W5QX66CFX6A6DCBVDH5VOHMI7B2UZZU7TXAUQQSI2JPHULCKBR}
+			]
+		}
+	}
+	`)
+
+	s.mu.Lock()
+	nkeys := s.nkeys
+	s.mu.Unlock()
+	if n := len(nkeys); n != 2 {
+		t.Fatalf("NKeys map should have 2 users, got %v", n)
+	}
+	derek := nkeys["UCNGL4W5QX66CFX6A6DCBVDH5VOHMI7B2UZZU7TXAUQQSI2JPHULCKBR"]
+	if derek == nil {
+		t.Fatal("NKey for user Derek not found")
+	}
+	if derek.Account == nil || derek.Account.Name != "nats.io" {
+		t.Fatalf("Invalid account for user Derek: %#v", derek.Account)
+	}
+	ivan := nkeys["UDPGQVFIWZ7Q5UH4I5E6DBCZULQS6VTVBG6CYBD7JV3G3N2GMQOMNAUH"]
+	if ivan == nil {
+		t.Fatal("NKey for user Ivan not found")
+	}
+	if ivan.Account != nil {
+		t.Fatalf("Invalid account for user Ivan: %#v", ivan.Account)
+	}
+	if s.LookupAccount("synadia") != nil {
+		t.Fatal("Account Synadia should have been removed")
+	}
+}
+
+func TestConfigReloadAccountStreamsImportExport(t *testing.T) {
+	template := `
+	listen: "127.0.0.1:-1"
+	accounts {
+		synadia {
+			users [{user: derek, password: foo}]
+			exports = [
+				{stream: "private.>", accounts: [nats.io]}
+				{stream: %s}
+			]
+		}
+		nats.io {
+			users [
+				{user: ivan, password: bar, permissions: {subscribe: {deny: %s}}}
+			]
+			imports = [
+				{stream: {account: "synadia", subject: %s}}
+				{stream: {account: "synadia", subject: "private.natsio.*"}, prefix: %s}
+			]
+		}
+	}
+	`
+	// synadia account exports "private.>" to nats.io
+	// synadia account exports "foo.*"
+	// user ivan denies subscription on "xxx"
+	// nats.io account imports "foo.*" from synadia
+	// nats.io account imports "private.natsio.*" from synadia with prefix "ivan"
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, `"foo.*"`, `"xxx"`, `"foo.*"`, `"ivan"`)))
+	defer os.Remove(conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	derek, err := nats.Connect(fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer derek.Close()
+	checkClientsCount(t, s, 1)
+
+	ch := make(chan bool, 1)
+	ivan, err := nats.Connect(fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			if strings.Contains(err.Error(), "permissions violation") {
+				ch <- true
+			}
+		}))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ivan.Close()
+	checkClientsCount(t, s, 2)
+
+	subscribe := func(t *testing.T, nc *nats.Conn, subj string) *nats.Subscription {
+		t.Helper()
+		s, err := nc.SubscribeSync(subj)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		return s
+	}
+
+	subFooBar := subscribe(t, ivan, "foo.bar")
+	subFooBaz := subscribe(t, ivan, "foo.baz")
+	subFooBat := subscribe(t, ivan, "foo.bat")
+	subPriv := subscribe(t, ivan, "ivan.private.natsio.*")
+	ivan.Flush()
+
+	publish := func(t *testing.T, nc *nats.Conn, subj string) {
+		t.Helper()
+		if err := nc.Publish(subj, []byte("hello")); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+
+	nextMsg := func(t *testing.T, sub *nats.Subscription, expected bool) {
+		t.Helper()
+		dur := 100 * time.Millisecond
+		if expected {
+			dur = time.Second
+		}
+		_, err := sub.NextMsg(dur)
+		if expected && err != nil {
+			t.Fatalf("Expected a message on %s, got %v", sub.Subject, err)
+		} else if !expected && err != nats.ErrTimeout {
+			t.Fatalf("Expected a timeout on %s, got %v", sub.Subject, err)
+		}
+	}
+
+	// Checks the derek's user sublist for presence of given subject
+	// interest. Boolean says if interest is expected or not.
+	checkSublist := func(t *testing.T, subject string, shouldBeThere bool) {
+		t.Helper()
+		dcli := s.getClient(1)
+		dcli.mu.Lock()
+		r := dcli.sl.Match(subject)
+		dcli.mu.Unlock()
+		if shouldBeThere && len(r.psubs) != 1 {
+			t.Fatalf("%s should have 1 match in derek's sublist, got %v", subject, len(r.psubs))
+		} else if !shouldBeThere && len(r.psubs) > 0 {
+			t.Fatalf("%s should not be in derek's sublist", subject)
+		}
+	}
+
+	// Publish on all subjects and the subs should receive and
+	// subjects should be in sublist
+	publish(t, derek, "foo.bar")
+	nextMsg(t, subFooBar, true)
+	checkSublist(t, "foo.bar", true)
+
+	publish(t, derek, "foo.baz")
+	nextMsg(t, subFooBaz, true)
+	checkSublist(t, "foo.baz", true)
+
+	publish(t, derek, "foo.bat")
+	nextMsg(t, subFooBat, true)
+	checkSublist(t, "foo.bat", true)
+
+	publish(t, derek, "private.natsio.foo")
+	nextMsg(t, subPriv, true)
+	checkSublist(t, "private.natsio.foo", true)
+
+	// Also make sure that intra-account subscription works OK
+	ivanSub := subscribe(t, ivan, "ivan.sub")
+	publish(t, ivan, "ivan.sub")
+	nextMsg(t, ivanSub, true)
+	derekSub := subscribe(t, derek, "derek.sub")
+	publish(t, derek, "derek.sub")
+	nextMsg(t, derekSub, true)
+
+	// synadia account exports "private.>" to nats.io
+	// synadia account exports "foo.*"
+	// user ivan denies subscription on "foo.bat"
+	// nats.io account imports "foo.baz" from synadia
+	// nats.io account imports "private.natsio.*" from synadia with prefix "yyyy"
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template, `"foo.*"`, `"foo.bat"`, `"foo.baz"`, `"yyyy"`))
+
+	// Sub on foo.bar should now fail to receive
+	publish(t, derek, "foo.bar")
+	nextMsg(t, subFooBar, false)
+	checkSublist(t, "foo.bar", false)
+	// But foo.baz should be received
+	publish(t, derek, "foo.baz")
+	nextMsg(t, subFooBaz, true)
+	checkSublist(t, "foo.baz", true)
+	// Due to permissions, foo.bat should not
+	publish(t, derek, "foo.bat")
+	nextMsg(t, subFooBat, false)
+	checkSublist(t, "foo.bat", false)
+	// Prefix changed, so should not be received
+	publish(t, derek, "private.natsio.foo")
+	nextMsg(t, subPriv, false)
+	checkSublist(t, "private.natsio.foo", false)
+
+	// Wait for client notification of permissions error
+	if err := wait(ch); err != nil {
+		t.Fatal("Did not the permissions error")
+	}
+
+	publish(t, ivan, "ivan.sub")
+	nextMsg(t, ivanSub, true)
+	publish(t, derek, "derek.sub")
+	nextMsg(t, derekSub, true)
+
+	// Change export so that foo.* is no longer exported
+	// synadia account exports "private.>" to nats.io
+	// synadia account exports "xxx"
+	// user ivan denies subscription on "foo.bat"
+	// nats.io account imports "xxx" from synadia
+	// nats.io account imports "private.natsio.*" from synadia with prefix "ivan"
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template, `"xxx"`, `"foo.bat"`, `"xxx"`, `"ivan"`))
+
+	publish(t, derek, "foo.bar")
+	nextMsg(t, subFooBar, false)
+	checkSublist(t, "foo.bar", false)
+
+	publish(t, derek, "foo.baz")
+	nextMsg(t, subFooBaz, false)
+	checkSublist(t, "foo.baz", false)
+
+	publish(t, derek, "foo.bat")
+	nextMsg(t, subFooBat, false)
+	checkSublist(t, "foo.bat", false)
+
+	// Prefix changed back, so should receive
+	publish(t, derek, "private.natsio.foo")
+	nextMsg(t, subPriv, true)
+	checkSublist(t, "private.natsio.foo", true)
+
+	publish(t, ivan, "ivan.sub")
+	nextMsg(t, ivanSub, true)
+	publish(t, derek, "derek.sub")
+	nextMsg(t, derekSub, true)
+}
+
+func TestConfigReloadAccountServicesImportExport(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	accounts {
+		synadia {
+			users [{user: derek, password: foo}]
+			exports = [
+				{service: "pub.request"}
+				{service: "pub.special.request", accounts: [nats.io]}
+			]
+		}
+		nats.io {
+			users [{user: ivan, password: bar}]
+			imports = [
+				{service: {account: "synadia", subject: "pub.special.request"}, to: "foo"}
+				{service: {account: "synadia", subject: "pub.request"}, to: "bar"}
+			]
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	derek, err := nats.Connect(fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer derek.Close()
+	checkClientsCount(t, s, 1)
+
+	ivan, err := nats.Connect(fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ivan.Close()
+	checkClientsCount(t, s, 2)
+
+	if _, err := derek.Subscribe("pub.special.request", func(m *nats.Msg) {
+		derek.Publish(m.Reply, []byte("reply1"))
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if _, err := derek.Subscribe("pub.request", func(m *nats.Msg) {
+		derek.Publish(m.Reply, []byte("reply2"))
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if _, err := derek.Subscribe("pub.special.request.new", func(m *nats.Msg) {
+		derek.Publish(m.Reply, []byte("reply3"))
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	// Also create one that will be used for intra-account communication
+	if _, err := derek.Subscribe("derek.sub", func(m *nats.Msg) {
+		derek.Publish(m.Reply, []byte("private"))
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	derek.Flush()
+
+	// Create an intra-account sub for ivan too
+	if _, err := ivan.Subscribe("ivan.sub", func(m *nats.Msg) {
+		ivan.Publish(m.Reply, []byte("private"))
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	req := func(t *testing.T, nc *nats.Conn, subj string, reply string) {
+		t.Helper()
+		var timeout time.Duration
+		if reply != "" {
+			timeout = time.Second
+		} else {
+			timeout = 100 * time.Millisecond
+		}
+		msg, err := nc.Request(subj, []byte("request"), timeout)
+		if reply != "" {
+			if err != nil {
+				t.Fatalf("Expected reply %s on subject %s, got %v", reply, subj, err)
+			}
+			if string(msg.Data) != reply {
+				t.Fatalf("Expected reply %s on subject %s, got %s", reply, subj, msg.Data)
+			}
+		} else if err != nats.ErrTimeout {
+			t.Fatalf("Expected timeout on subject %s, got %v", subj, err)
+		}
+	}
+
+	req(t, ivan, "foo", "reply1")
+	req(t, ivan, "bar", "reply2")
+	// This not exported/imported, so should timeout
+	req(t, ivan, "baz", "")
+
+	// Check intra-account communication
+	req(t, ivan, "ivan.sub", "private")
+	req(t, derek, "derek.sub", "private")
+
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	accounts {
+		synadia {
+			users [{user: derek, password: foo}]
+			exports = [
+				{service: "pub.request"}
+				{service: "pub.special.request", accounts: [nats.io]}
+				{service: "pub.special.request.new", accounts: [nats.io]}
+			]
+		}
+		nats.io {
+			users [{user: ivan, password: bar}]
+			imports = [
+				{service: {account: "synadia", subject: "pub.special.request"}, to: "foo"}
+				{service: {account: "synadia", subject: "pub.special.request.new"}, to: "baz"}
+			]
+		}
+	}
+	`)
+	// This still should work
+	req(t, ivan, "foo", "reply1")
+	// This should not
+	req(t, ivan, "bar", "")
+	// This now should work
+	req(t, ivan, "baz", "reply3")
+
+	// Check intra-account communication
+	req(t, ivan, "ivan.sub", "private")
+	req(t, derek, "derek.sub", "private")
 }

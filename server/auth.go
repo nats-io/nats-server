@@ -340,6 +340,28 @@ func (a *Account) checkStreamImportAuthorized(account *Account, subject string) 
 	return false
 }
 
+// Returns true if `a` and `b` stream imports are the same. Note that the
+// check is done with the account's name, not the pointer. This is used
+// during config reload where we are comparing current and new config
+// in which pointers are different.
+// No lock is acquired in this function, so it is assumed that the
+// import maps are not changed while this executes.
+func (a *Account) checkStreamImportsEqual(b *Account) bool {
+	if len(a.imports.streams) != len(b.imports.streams) {
+		return false
+	}
+	for subj, aim := range a.imports.streams {
+		bim := b.imports.streams[subj]
+		if bim == nil {
+			return false
+		}
+		if aim.acc.Name != bim.acc.Name || aim.from != bim.from || aim.prefix != bim.prefix {
+			return false
+		}
+	}
+	return true
+}
+
 // Check if another account is authorized to route requests to this service.
 func (a *Account) checkServiceImportAuthorized(account *Account, subject string) bool {
 	// Find the subject in the services list.
