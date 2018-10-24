@@ -958,6 +958,78 @@ func TestNonQuotedStrings(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+var danglingquote = `
+listen: "localhost:4242
+
+http: localhost:8222
+`
+
+func TestDanglingQuotedString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "listen", 2, 1},
+		{itemError, "Unexpected EOF.", 5, 1},
+	}
+	lx := lex(danglingquote)
+	expect(t, lx, expectedItems)
+}
+
+var keydanglingquote = `
+foo = "
+listen: "
+
+http: localhost:8222
+
+"
+`
+
+func TestKeyDanglingQuotedString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 2, 1},
+		{itemString, "\nlisten: ", 3, 8},
+		{itemKey, "http", 5, 1},
+		{itemString, "localhost:8222", 5, 7},
+		{itemError, "Unexpected EOF.", 8, 1},
+	}
+	lx := lex(keydanglingquote)
+	expect(t, lx, expectedItems)
+}
+
+var danglingsquote = `
+listen: 'localhost:4242
+
+http: localhost:8222
+`
+
+func TestDanglingSingleQuotedString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "listen", 2, 1},
+		{itemError, "Unexpected EOF.", 5, 1},
+	}
+	lx := lex(danglingsquote)
+	expect(t, lx, expectedItems)
+}
+
+var keydanglingsquote = `
+foo = '
+listen: '
+
+http: localhost:8222
+
+'
+`
+
+func TestKeyDanglingSingleQuotedString(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 2, 1},
+		{itemString, "\nlisten: ", 3, 8},
+		{itemKey, "http", 5, 1},
+		{itemString, "localhost:8222", 5, 7},
+		{itemError, "Unexpected EOF.", 8, 1},
+	}
+	lx := lex(keydanglingsquote)
+	expect(t, lx, expectedItems)
+}
+
 func TestMapQuotedKeys(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1, 0},

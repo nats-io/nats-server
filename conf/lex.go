@@ -346,6 +346,12 @@ func lexDubQuotedKey(lx *lexer) stateFn {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexKeyEnd)
+	} else if r == eof {
+		if lx.pos > lx.start {
+			return lx.errorf("Unexpected EOF.")
+		}
+		lx.emit(itemEOF)
+		return nil
 	}
 	lx.next()
 	return lexDubQuotedKey
@@ -358,6 +364,12 @@ func lexQuotedKey(lx *lexer) stateFn {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexKeyEnd)
+	} else if r == eof {
+		if lx.pos > lx.start {
+			return lx.errorf("Unexpected EOF.")
+		}
+		lx.emit(itemEOF)
+		return nil
 	}
 	lx.next()
 	return lexQuotedKey
@@ -788,6 +800,12 @@ func lexQuotedString(lx *lexer) stateFn {
 		lx.next()
 		lx.ignore()
 		return lx.pop()
+	case r == eof:
+		if lx.pos > lx.start {
+			return lx.errorf("Unexpected EOF.")
+		}
+		lx.emit(itemEOF)
+		return nil
 	}
 	return lexQuotedString
 }
@@ -807,6 +825,12 @@ func lexDubQuotedString(lx *lexer) stateFn {
 		lx.next()
 		lx.ignore()
 		return lx.pop()
+	case r == eof:
+		if lx.pos > lx.start {
+			return lx.errorf("Unexpected EOF.")
+		}
+		lx.emit(itemEOF)
+		return nil
 	}
 	return lexDubQuotedString
 }
