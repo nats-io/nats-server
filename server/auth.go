@@ -57,7 +57,6 @@ type Account struct {
 	maxnae   int
 	maxaettl time.Duration
 	pruning  bool
-	checksti bool // check stream imports during a config reload
 }
 
 // Import stream mapping struct
@@ -341,12 +340,12 @@ func (a *Account) checkStreamImportAuthorized(account *Account, subject string) 
 	return false
 }
 
-// Returns true of `a` and `b` stream imports are the same. Note that the
+// Returns true if `a` and `b` stream imports are the same. Note that the
 // check is done with the account's name, not the pointer. This is used
 // during config reload where we are comparing current and new config
 // in which pointers are different.
 // No lock is acquired in this function, so it is assumed that the
-// import maps are not changed while this execute.
+// import maps are not changed while this executes.
 func (a *Account) checkStreamImportsEqual(b *Account) bool {
 	if len(a.imports.streams) != len(b.imports.streams) {
 		return false

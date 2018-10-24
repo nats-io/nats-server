@@ -2025,7 +2025,7 @@ func (c *client) typeString() string {
 
 // processSubsOnConfigReload removes any subscriptions the client has that are no
 // longer authorized, and check for imports (accounts) due to a config reload.
-func (c *client) processSubsOnConfigReload() {
+func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	c.mu.Lock()
 	var (
 		checkPerms = c.perms != nil
@@ -2051,9 +2051,9 @@ func (c *client) processSubsOnConfigReload() {
 	}
 	if checkAcc {
 		// We actually only want to check if stream imports have changed.
-		c.acc.mu.RLock()
-		checkAcc = c.acc.checksti
-		c.acc.mu.RUnlock()
+		if _, ok := awcsti[c.acc.Name]; !ok {
+			checkAcc = false
+		}
 	}
 	// Collect client's subs under the lock
 	for _, sub := range c.subs {
@@ -2082,9 +2082,9 @@ func (c *client) processSubsOnConfigReload() {
 
 	// Report back to client and logs.
 	for _, sub := range removed {
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %s)",
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
-		srv.Noticef("Removed sub %q (sid %s) for user %q - not authorized",
+		srv.Noticef("Removed sub %q (sid %q) for user %q - not authorized",
 			sub.subject, sub.sid, userInfo)
 	}
 }

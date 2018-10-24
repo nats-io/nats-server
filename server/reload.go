@@ -687,6 +687,11 @@ func (s *Server) applyOptions(opts []option) {
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 	s.configureAuthorization()
+
+	// This map will contain the names of accounts that have their streams
+	// import configuration changed.
+	awcsti := make(map[string]struct{}, len(s.opts.Accounts))
+
 	oldAccounts := s.accounts
 	gAccount := oldAccounts[globalAccountName]
 	s.accounts = make(map[string]*Account)
@@ -701,30 +706,37 @@ func (s *Server) reloadAuthorization() {
 			newAcc.sl = sl
 			// Check if current and new config of this account are same
 			// in term of stream imports.
-			newAcc.checksti = !acc.checkStreamImportsEqual(newAcc)
+			if !acc.checkStreamImportsEqual(newAcc) {
+				awcsti[newAcc.Name] = struct{}{}
+			}
 			newAcc.mu.Unlock()
 		}
 		s.registerAccount(newAcc)
 	}
 	// Gather clients that changed accounts. We will close them and they
 	// will reconnect, doing the right thing.
-	closeClients := make(map[uint64]*client, len(s.clients))
-	clients := make(map[uint64]*client, len(s.clients))
-	for i, client := range s.clients {
+	var (
+		cclientsa [64]*client
+		cclients  = cclientsa[:0]
+		clientsa  [64]*client
+		clients   = clientsa[:0]
+		routesa   [64]*client
+		routes    = routesa[:0]
+	)
+	for _, client := range s.clients {
 		if s.clientHasMovedToDifferentAccount(client) {
-			closeClients[i] = client
+			cclients = append(cclients, client)
 		} else {
-			clients[i] = client
+			clients = append(clients, client)
 		}
 	}
-	routes := make(map[uint64]*client, len(s.routes))
-	for i, route := range s.routes {
-		routes[i] = route
+	for _, route := range s.routes {
+		routes = append(routes, route)
 	}
 	s.mu.Unlock()
 
 	// Close clients that have moved accounts
-	for _, client := range closeClients {
+	for _, client := range cclients {
 		client.closeConnection(ClientClosed)
 	}
 
@@ -735,17 +747,8 @@ func (s *Server) reloadAuthorization() {
 			continue
 		}
 		// Remove any unauthorized subscriptions and check for account imports.
-		client.processSubsOnConfigReload()
+		client.processSubsOnConfigReload(awcsti)
 	}
-
-	// Reset the check import flag now
-	s.mu.Lock()
-	for _, a := range s.accounts {
-		a.mu.Lock()
-		a.checksti = false
-		a.mu.Unlock()
-	}
-	s.mu.Unlock()
 
 	for _, route := range routes {
 		// Disconnect any unauthorized routes.
@@ -791,7 +794,7 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 	} else if u != nil && u.Account != nil {
 		return curAccName != u.Account.Name
 	}
-	// There is no longer this user/nkey in the new config
+	// user/nkey no longer exists.
 	return true
 }
 
