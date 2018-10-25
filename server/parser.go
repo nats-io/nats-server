@@ -862,10 +862,13 @@ func (c *client) clonePubArg() {
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
+	trace := c.trace
+	c.trace = false
 	// This is a routed msg
 	if c.pa.account != nil {
 		c.processRoutedMsgArgs(c.argBuf)
 	} else {
 		c.processPub(c.argBuf)
 	}
+	c.trace = trace
 }
