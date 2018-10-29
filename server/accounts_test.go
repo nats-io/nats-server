@@ -160,8 +160,8 @@ func TestActiveAccounts(t *testing.T) {
 
 	s := New(&opts)
 
-	if s.activeAccounts != 0 {
-		t.Fatalf("Expected no active accounts, got %d", s.activeAccounts)
+	if s.NumActiveAccounts() != 0 {
+		t.Fatalf("Expected no active accounts, got %d", s.NumActiveAccounts())
 	}
 
 	addClientWithAccount := func(accName string) *client {
@@ -207,7 +207,7 @@ func TestActiveAccounts(t *testing.T) {
 	waitTilActiveCount := func(n int) {
 		t.Helper()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if active := s.activeAccounts; active != n {
+			if active := s.NumActiveAccounts(); active != n {
 				return fmt.Errorf("Number of active accounts is %d", active)
 			}
 			return nil

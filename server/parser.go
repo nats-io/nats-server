@@ -21,12 +21,10 @@ type pubArg struct {
 	arg     []byte
 	account []byte
 	queues  [][]byte
-	//cacheKey []byte
 	subject []byte
 	reply   []byte
-	//	sid     []byte
-	szb  []byte
-	size int
+	szb     []byte
+	size    int
 }
 
 type parseState struct {
@@ -198,6 +196,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
@@ -635,6 +634,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}

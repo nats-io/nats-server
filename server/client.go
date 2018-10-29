@@ -1435,7 +1435,7 @@ func (c *client) canSubscribe(subject []byte) bool {
 }
 
 // Low level unsubscribe for a given client.
-func (c *client) unsubscribe(sub *subscription, force bool) {
+func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !force && sub.max > 0 && sub.nm < sub.max {
@@ -1447,12 +1447,7 @@ func (c *client) unsubscribe(sub *subscription, force bool) {
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
 
 	delete(c.subs, string(sub.sid))
-	var acc *Account
-	if c.typ == CLIENT {
-		acc = c.acc
-	} else if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
-		// First part of SID for route is account name.
-		acc = c.srv.LookupAccount(string(sub.sid[:i]))
+	if c.typ != CLIENT {
 		c.removeReplySubTimeout(sub)
 	}
 
@@ -1487,7 +1482,7 @@ func (c *client) processUnsub(arg []byte) error {
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
 	// Indicate activity.
-	c.in.subs += 1
+	c.in.subs++
 
 	var sub *subscription
 
@@ -1501,6 +1496,7 @@ func (c *client) processUnsub(arg []byte) error {
 	var acc *Account
 
 	if sub, ok = c.subs[string(sid)]; ok {
+		acc = c.acc
 		if max > 0 {
 			sub.max = int64(max)
 		} else {
@@ -1508,7 +1504,6 @@ func (c *client) processUnsub(arg []byte) error {
 			sub.max = 0
 			unsub = true
 		}
-		acc = c.acc
 	}
 	c.mu.Unlock()
 
@@ -1517,7 +1512,7 @@ func (c *client) processUnsub(arg []byte) error {
 	}
 
 	if unsub {
-		c.unsubscribe(sub, false)
+		c.unsubscribe(acc, sub, false)
 		if acc != nil && ctype == CLIENT {
 			c.srv.updateRouteSubscriptionMap(acc, sub, -1)
 		}
@@ -1561,27 +1556,33 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	sub.nm++
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
-		// For routing..
-		shouldForward := client.typ != ROUTER && client.srv != nil
-		// If we are at the exact number, unsubscribe but
-		// still process the message in hand, otherwise
-		// unsubscribe and drop message on the floor.
-		if sub.nm == sub.max {
-			c.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'\n", sub.max, string(sub.sid))
-			// Due to defer, reverse the code order so that execution
-			// is consistent with other cases where we unsubscribe.
-			if shouldForward {
-				defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
+		if client.typ == ROUTER && sub.nm >= sub.max {
+			// The only router based messages that we will see here are remoteReplies.
+			// We handle these slightly differently.
+			defer client.removeReplySub(sub)
+		} else {
+			// For routing..
+			shouldForward := client.typ == CLIENT && client.srv != nil
+			// If we are at the exact number, unsubscribe but
+			// still process the message in hand, otherwise
+			// unsubscribe and drop message on the floor.
+			if sub.nm == sub.max {
+				client.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'\n", sub.max, string(sub.sid))
+				// Due to defer, reverse the code order so that execution
+				// is consistent with other cases where we unsubscribe.
+				if shouldForward {
+					defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
+				}
+				defer client.unsubscribe(client.acc, sub, true)
+			} else if sub.nm > sub.max {
+				client.Debugf("Auto-unsubscribe limit [%d] exceeded\n", sub.max)
+				client.mu.Unlock()
+				client.unsubscribe(client.acc, sub, true)
+				if shouldForward {
+					srv.updateRouteSubscriptionMap(client.acc, sub, -1)
+				}
+				return false
 			}
-			defer client.unsubscribe(sub, true)
-		} else if sub.nm > sub.max {
-			c.Debugf("Auto-unsubscribe limit [%d] exceeded\n", sub.max)
-			client.mu.Unlock()
-			client.unsubscribe(sub, true)
-			if shouldForward {
-				srv.updateRouteSubscriptionMap(client.acc, sub, -1)
-			}
-			return false
 		}
 	}
 
@@ -1719,7 +1720,7 @@ func (c *client) processInboundMsg(msg []byte) {
 func (c *client) processInboundClientMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.msgs += 1
+	c.in.msgs++
 	c.in.bytes += len(msg) - LEN_CR_LF
 
 	if c.trace {
@@ -2130,6 +2131,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	var (
 		checkPerms = c.perms != nil
 		checkAcc   = c.acc != nil
+		acc        = c.acc
 	)
 	if !checkPerms && !checkAcc {
 		c.mu.Unlock()
@@ -2151,7 +2153,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	}
 	if checkAcc {
 		// We actually only want to check if stream imports have changed.
-		if _, ok := awcsti[c.acc.Name]; !ok {
+		if _, ok := awcsti[acc.Name]; !ok {
 			checkAcc = false
 		}
 	}
@@ -2167,13 +2169,13 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range subs {
 		if checkPerms && !c.canSubscribe(sub.subject) {
 			removed = append(removed, sub)
-			c.unsubscribe(sub, true)
+			c.unsubscribe(acc, sub, true)
 		} else if checkAcc {
 			c.mu.Lock()
 			oldShadows := sub.shadow
 			sub.shadow = nil
 			c.mu.Unlock()
-			c.addShadowSubscriptions(c.acc, sub)
+			c.addShadowSubscriptions(acc, sub)
 			for _, nsub := range oldShadows {
 				nsub.im.acc.sl.Remove(nsub)
 			}
@@ -2273,7 +2275,7 @@ func (c *client) closeConnection(reason ClosedState) {
 					// connected routes.
 					key := string(sub.subject) + " " + string(sub.queue)
 					if esub, ok := qsubs[key]; ok {
-						esub.n += 1
+						esub.n++
 					} else {
 						qsubs[key] = &qsub{sub, 1}
 					}

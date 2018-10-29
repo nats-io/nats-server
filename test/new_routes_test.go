@@ -780,9 +780,6 @@ func TestNewRouteSinglePublishOnNewAccount(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	//srvA.SetLogger(logger.NewTestLogger("[srvA] - ", false), true, true)
-	//srvB.SetLogger(logger.NewTestLogger("[srvB] - ", false), true, true)
-
 	// Allow new accounts to be created on the fly.
 	optsA.AllowNewAccounts = true
 	optsB.AllowNewAccounts = true
@@ -1031,9 +1028,6 @@ func TestNewRouteServiceImport(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	//srvA.SetLogger(logger.NewTestLogger("[srvA] - ", false), true, true)
-	//srvB.SetLogger(logger.NewTestLogger("[srvB] - ", false), true, true)
-
 	// Do Accounts for the servers.
 	fooA, _ := registerAccounts(t, srvA)
 	fooB, barB := registerAccounts(t, srvB)
@@ -1098,9 +1092,6 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	srvA, srvB, optsA, optsB := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
-
-	//srvA.SetLogger(logger.NewTestLogger("[srvA] - ", false), true, true)
-	//srvB.SetLogger(logger.NewTestLogger("[srvB] - ", false), true, true)
 
 	// Do Accounts for the servers.
 	fooA, _ := registerAccounts(t, srvA)

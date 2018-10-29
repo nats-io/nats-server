@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -82,10 +83,10 @@ const (
 )
 
 // This will add a timer to watch over remote reply subjects in case
-// the fail to receive a response. The duration will be taken from the
+// they fail to receive a response. The duration will be taken from the
 // accounts map timeout to match.
 // Lock should be held upon entering.
-func (c *client) addReplySubTimeout(sub *subscription, d time.Duration) {
+func (c *client) addReplySubTimeout(acc *Account, sub *subscription, d time.Duration) {
 	if c.route.replySubs == nil {
 		c.route.replySubs = make(map[*subscription]*time.Timer)
 	}
@@ -95,8 +96,24 @@ func (c *client) addReplySubTimeout(sub *subscription, d time.Duration) {
 		delete(rs, sub)
 		sub.max = 0
 		c.mu.Unlock()
-		c.unsubscribe(sub, true)
+		c.unsubscribe(acc, sub, true)
 	})
+}
+
+// removeReplySub is called when we trip the max on remoteReply subs.
+func (c *client) removeReplySub(sub *subscription) {
+	if sub == nil {
+		return
+	}
+	// Lookup the account based on sub.sid.
+	if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
+		// First part of SID for route is account name.
+		acc := c.srv.LookupAccount(string(sub.sid[:i]))
+		acc.sl.Remove(sub)
+		c.mu.Lock()
+		c.removeReplySubTimeout(sub)
+		c.mu.Unlock()
+	}
 }
 
 // removeReplySubTimeout will remove a timer if it exists.
@@ -260,7 +277,7 @@ func (c *client) processInboundRouteMsg(msg []byte) {
 			ttl := acc.AutoExpireTTL()
 			c.mu.Lock()
 			c.subs[string(sid)] = sub
-			c.addReplySubTimeout(sub, ttl)
+			c.addReplySubTimeout(acc, sub, ttl)
 			c.mu.Unlock()
 		}
 	}
@@ -875,9 +892,15 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 
 		// Check if proto is going to fit.
 		curSize := len(buf)
-		// "RS+/- " account + subject + " " + queue + " " + account
-		curSize += 4 + len(accName) + len(sub.subject) + 1 + len(sub.queue) + 2
-
+		// "RS+/- " + account + " " + subject + " " [+ queue + " " + weight] + CRLF
+		curSize += 4 + len(accName) + 1 + len(sub.subject) + 1 + 2
+		if len(sub.queue) > 0 {
+			curSize += len(sub.queue)
+			if isSubProto {
+				// Estimate weightlen in 1000s
+				curSize += 1 + 4
+			}
+		}
 		if curSize >= mbs {
 			if c.queueOutbound(buf) {
 				// Need to allocate new array
