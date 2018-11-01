@@ -327,7 +327,6 @@ func (c *client) initClient() {
 		c.ncs = fmt.Sprintf("%s - cid:%d", conn, c.cid)
 	case ROUTER:
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
-		c.in.rcache = make(map[string]*routeCache, 32)
 	}
 }
 
