@@ -208,14 +208,19 @@ const (
 
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
+	// These are for clients who are bound to a single account.
 	genid   uint64
 	results map[string]*SublistResult
-	prand   *rand.Rand
-	msgs    int
-	bytes   int
-	subs    int
-	rsz     int // Read buffer size
-	srs     int // Short reads, used for dynamic buffer resizing.
+
+	// This is for routes to have their own L1 as well that is account aware.
+	rcache map[string]*routeCache
+
+	prand *rand.Rand
+	msgs  int
+	bytes int
+	subs  int
+	rsz   int // Read buffer size
+	srs   int // Short reads, used for dynamic buffer resizing.
 }
 
 func (c *client) String() (id string) {
@@ -322,6 +327,7 @@ func (c *client) initClient() {
 		c.ncs = fmt.Sprintf("%s - cid:%d", conn, c.cid)
 	case ROUTER:
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
+		c.in.rcache = make(map[string]*routeCache, 32)
 	}
 }
 
@@ -1712,7 +1718,7 @@ func (c *client) processInboundMsg(msg []byte) {
 	if c.typ == CLIENT {
 		c.processInboundClientMsg(msg)
 	} else {
-		c.processInboundRouteMsg(msg)
+		c.processInboundRoutedMsg(msg)
 	}
 }
 

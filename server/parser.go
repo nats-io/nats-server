@@ -19,11 +19,12 @@ import (
 
 type pubArg struct {
 	arg     []byte
+	rcache  []byte
 	account []byte
-	queues  [][]byte
 	subject []byte
 	reply   []byte
 	szb     []byte
+	queues  [][]byte
 	size    int
 }
 
@@ -255,6 +256,9 @@ func (c *client) parse(buf []byte) error {
 				c.processInboundMsg(c.msgBuf)
 				c.argBuf, c.msgBuf = nil, nil
 				c.drop, c.as, c.state = 0, i+1, OP_START
+				// Drop all pub args
+				c.pa.arg, c.pa.rcache, c.pa.account, c.pa.subject = nil, nil, nil, nil
+				c.pa.reply, c.pa.szb, c.pa.queues = nil, nil, nil
 			default:
 				if c.msgBuf != nil {
 					c.msgBuf = append(c.msgBuf, b)
