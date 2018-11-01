@@ -303,7 +303,7 @@ func (s *Server) logPid() error {
 	return ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 }
 
-// newAccountsAllowed returns whether or not new accounts can be created on the fly.
+// NewAccountsAllowed returns whether or not new accounts can be created on the fly.
 func (s *Server) NewAccountsAllowed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -877,11 +877,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	max_pay := int64(opts.MaxPayload)
-	max_subs := opts.MaxSubs
+	maxPay := int64(opts.MaxPayload)
+	maxSubs := opts.MaxSubs
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: max_pay, msubs: max_subs, start: now, last: now}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 
 	c.registerWithAccount(s.gacc)
 
@@ -1414,7 +1414,7 @@ type Ports struct {
 	Profile    []string `json:"profile,omitempty"`
 }
 
-// Attempts to resolve all the ports. If after maxWait the ports are not
+// PortsInfo attempts to resolve all the ports. If after maxWait the ports are not
 // resolved, it returns nil. Otherwise it returns a Ports struct
 // describing ports where the server can be contacted
 func (s *Server) PortsInfo(maxWait time.Duration) *Ports {

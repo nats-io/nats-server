@@ -1099,7 +1099,7 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 	var (
 		am   map[string]interface{}
 		tk   token
-		auth *authorization = &authorization{}
+		auth = &authorization{}
 	)
 
 	_, v = unwrapValue(v)
@@ -1167,8 +1167,8 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]error) ([]*NkeyUser, []*User, error) {
 	var (
 		tk    token
-		users []*User = []*User{}
 		keys  []*NkeyUser
+		users = []*User{}
 	)
 	tk, mv = unwrapValue(mv)
 
@@ -1189,8 +1189,8 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 		}
 
 		var (
-			user  *User     = &User{}
-			nkey  *NkeyUser = &NkeyUser{}
+			user  = &User{}
+			nkey  = &NkeyUser{}
 			perms *Permissions
 			err   error
 		)
@@ -1258,7 +1258,7 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 func parseUserPermissions(mv interface{}, opts *Options, errors, warnings *[]error) (*Permissions, error) {
 	var (
 		tk token
-		p  *Permissions = &Permissions{}
+		p  = &Permissions{}
 	)
 	tk, mv = unwrapValue(mv)
 	pm, ok := mv.(map[string]interface{})
@@ -1424,7 +1424,7 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 func parseTLS(v interface{}, opts *Options) (*TLSConfigOpts, error) {
 	var (
 		tlsm map[string]interface{}
-		tc   TLSConfigOpts = TLSConfigOpts{}
+		tc   = TLSConfigOpts{}
 	)
 	_, v = unwrapValue(v)
 	tlsm = v.(map[string]interface{})

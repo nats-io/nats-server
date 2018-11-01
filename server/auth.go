@@ -38,7 +38,7 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 }
 
-// Nkey is for multiple nkey based users
+// NkeyUser is for multiple nkey based users
 type NkeyUser struct {
 	Nkey        string       `json:"user"`
 	Permissions *Permissions `json:"permissions,omitempty"`

@@ -11,10 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sublist is a routing mechanism to handle subject distribution
-// and provides a facility to match subjects from published messages to
-// interested subscribers. Subscribers can have wildcard subjects to match
-// multiple published subjects.
 package server
 
 import (
@@ -24,6 +20,11 @@ import (
 	"sync"
 	"sync/atomic"
 )
+
+// Sublist is a routing mechanism to handle subject distribution and
+// provides a facility to match subjects from published messages to
+// interested subscribers. Subscribers can have wildcard subjects to
+// match multiple published subjects.
 
 // Common byte variables for wildcards and token separator.
 const (
@@ -48,7 +49,7 @@ const (
 	plistMin = 256
 )
 
-// A result structure better optimized for queue subs.
+// SublistResult is a result structure better optimized for queue subs.
 type SublistResult struct {
 	psubs []*subscription
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
@@ -94,7 +95,7 @@ func newLevel() *level {
 	return &level{nodes: make(map[string]*node)}
 }
 
-// New will create a default sublist
+// NewSublist will create a default sublist
 func NewSublist() *Sublist {
 	return &Sublist{root: newLevel()}
 }
@@ -325,7 +326,7 @@ func isRemoteQSub(sub *subscription) bool {
 	return sub != nil && sub.queue != nil && sub.client != nil && sub.client.typ == ROUTER
 }
 
-// This should be called when we update the weight of an existing
+// UpdateRemoteQSub should be called when we update the weight of an existing
 // remote queue sub.
 func (s *Sublist) UpdateRemoteQSub(sub *subscription) {
 	// We could search to make sure we find it, but probably not worth
@@ -556,6 +557,7 @@ func (s *Sublist) removeClientSubs(l *level, c *client) {
 	}
 }
 
+// RemoveAllForClient will remove all subscriptions for a given client.
 func (s *Sublist) RemoveAllForClient(c *client) {
 	s.Lock()
 	removes := s.removes
@@ -642,7 +644,7 @@ func (s *Sublist) CacheCount() int {
 	return int(atomic.LoadInt32(&s.cacheNum))
 }
 
-// Public stats for the sublist
+// SublistStats are public stats for the sublist
 type SublistStats struct {
 	NumSubs      uint32  `json:"num_subscriptions"`
 	NumCache     uint32  `json:"num_cache"`
@@ -673,7 +675,7 @@ func (s *Sublist) Stats() *SublistStats {
 	tot, max := 0, 0
 	clen := 0
 	s.cache.Range(func(k, v interface{}) bool {
-		clen += 1
+		clen++
 		r := v.(*SublistResult)
 		l := len(r.psubs) + len(r.qsubs)
 		tot += l
@@ -818,9 +820,8 @@ func isSubsetMatch(tokens []string, test string) bool {
 			}
 			if i >= len(tts) {
 				return true
-			} else {
-				continue
 			}
+			continue
 		}
 		if t2[0] != pwc && strings.Compare(t1, t2) != 0 {
 			return false

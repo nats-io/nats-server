@@ -73,7 +73,7 @@ type ConnzOptions struct {
 	State ConnState `json:"state"`
 }
 
-// For filtering states of connections. We will only have two, open and closed.
+// ConnState is for filtering states of connections. We will only have two, open and closed.
 type ConnState int
 
 const (
@@ -672,6 +672,7 @@ type SubszOptions struct {
 	Test string `json:"test,omitempty"`
 }
 
+// SubDetail is for verbose information for subscriptions.
 type SubDetail struct {
 	Subject string `json:"subject"`
 	Queue   string `json:"qgroup,omitempty"`

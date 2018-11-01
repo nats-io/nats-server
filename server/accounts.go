@@ -31,7 +31,8 @@ type rme struct {
 	n  int32 // number of subscriptions directly matching, local subs only.
 }
 
-// Accounts
+// Account are subject namespace definitions. By default no messages are shared between accounts.
+// You can share via exports and imports of streams and services.
 type Account struct {
 	Name     string
 	Nkey     string
@@ -82,7 +83,7 @@ func (a *Account) NumClients() int {
 	return a.clients
 }
 
-// Returns how many subjects we would send across a route when first
+// RoutedSubs returns how many subjects we would send across a route when first
 // connected or expressing interest. Local client subs.
 func (a *Account) RoutedSubs() int {
 	a.mu.RLock()
@@ -90,7 +91,7 @@ func (a *Account) RoutedSubs() int {
 	return len(a.rm)
 }
 
-// Returns total number of Subscriptions for this account.
+// TotalSubs returns total number of Subscriptions for this account.
 func (a *Account) TotalSubs() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -117,6 +118,7 @@ func (a *Account) removeClient(c *client) int {
 	return n
 }
 
+// AddServiceExport will configure the account with the defined export.
 func (a *Account) AddServiceExport(subject string, accounts []*Account) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -144,7 +146,7 @@ func (a *Account) numServiceRoutes() int {
 	return len(a.imports.services)
 }
 
-// This will add a route to an account to send published messages / requests
+// AddServiceImport will add a route to an account to send published messages / requests
 // to the destination account. From is the local subject to map, To is the
 // subject that will appear on the destination account. Destination will need
 // to have an import rule to allow access via addService.
@@ -186,7 +188,7 @@ func (a *Account) numAutoExpireResponseMaps() int {
 	return a.nae
 }
 
-// maxAutoExpireResponseMaps return the maximum number of
+// MaxAutoExpireResponseMaps return the maximum number of
 // auto expire response maps we will allow.
 func (a *Account) MaxAutoExpireResponseMaps() int {
 	a.mu.RLock()
@@ -194,21 +196,21 @@ func (a *Account) MaxAutoExpireResponseMaps() int {
 	return a.maxnae
 }
 
-// Set the max outstanding auto expire response maps.
+// SetMaxAutoExpireResponseMaps sets the max outstanding auto expire response maps.
 func (a *Account) SetMaxAutoExpireResponseMaps(max int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.maxnae = max
 }
 
-// expireTTL returns the ttl for response maps.
+// AutoExpireTTL returns the ttl for response maps.
 func (a *Account) AutoExpireTTL() time.Duration {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.maxaettl
 }
 
-// Set the ttl for response maps.
+// SetAutoExpireTTL sets the ttl for response maps.
 func (a *Account) SetAutoExpireTTL(ttl time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -298,7 +300,7 @@ func (a *Account) pruneAutoExpireResponseMaps() {
 	}
 }
 
-// addStreamImport will add in the stream import from a specific account.
+// AddStreamImport will add in the stream import from a specific account.
 func (a *Account) AddStreamImport(account *Account, from, prefix string) error {
 	if account == nil {
 		return ErrMissingAccount
@@ -322,10 +324,10 @@ func (a *Account) AddStreamImport(account *Account, from, prefix string) error {
 	return nil
 }
 
-// Placeholder to denote public export.
+// IsPublicExport is a placeholder to denote public export.
 var IsPublicExport = []*Account(nil)
 
-// addExport will add an export to the account. If accounts is nil
+// AddStreamExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can impoort.
 func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 	a.mu.Lock()

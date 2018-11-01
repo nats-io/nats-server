@@ -34,7 +34,7 @@ import (
 )
 
 type serverInfo struct {
-	Id           string `json:"server_id"`
+	ID           string `json:"server_id"`
 	Host         string `json:"host"`
 	Port         uint   `json:"port"`
 	Version      string `json:"version"`

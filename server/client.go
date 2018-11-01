@@ -37,10 +37,10 @@ const (
 )
 
 const (
-	// Original Client protocol from 2009.
+	// ClientProtoZero is the original Client protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
 	ClientProtoZero = iota
-	// This signals a client can receive more then the original INFO block.
+	// ClientProtoInfo signals a client can receive more then the original INFO block.
 	// This can be used to update clients on other cluster members, etc.
 	ClientProtoInfo
 )
@@ -103,9 +103,9 @@ func (cf *clientFlag) setIfNotSet(c clientFlag) bool {
 	return false
 }
 
-// Reason client was closed. This will be passed into
-// calls to clearConnection, but will only be stored
-// in ConnInfo for monitoring.
+// ClosedState is the reason client was closed. This will
+// be passed into calls to clearConnection, but will only
+// be stored in ConnInfo for monitoring.
 type ClosedState int
 
 const (

@@ -1206,7 +1206,7 @@ func TestNewRouteNoQueueSubscribersBounce(t *testing.T) {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 		numAnswers++
-		// After we have sent 20 go into drain mode for the ncA client.
+		// After we have sent 20 close the ncA client.
 		if i == 20 {
 			ncA.Close()
 		}

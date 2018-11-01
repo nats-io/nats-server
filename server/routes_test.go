@@ -365,10 +365,10 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
 
-	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
+	seedRouteURL := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
 		srvSeed.ClusterAddr().Port)
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(seedRouteUrl)
+	optsA.Routes = RoutesFromStr(seedRouteURL)
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -387,7 +387,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	nc1.Flush()
 
 	optsB := nextServerOpts(optsA)
-	optsB.Routes = RoutesFromStr(seedRouteUrl)
+	optsB.Routes = RoutesFromStr(seedRouteURL)
 
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -420,10 +420,10 @@ func TestChainedSolicitWorks(t *testing.T) {
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
 
-	seedRouteUrl := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
+	seedRouteURL := fmt.Sprintf("nats://%s:%d", optsSeed.Cluster.Host,
 		srvSeed.ClusterAddr().Port)
 	optsA := nextServerOpts(optsSeed)
-	optsA.Routes = RoutesFromStr(seedRouteUrl)
+	optsA.Routes = RoutesFromStr(seedRouteURL)
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()

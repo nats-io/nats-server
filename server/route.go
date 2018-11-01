@@ -40,13 +40,13 @@ const (
 )
 
 const (
-	// routeProtoZero is the original Route protocol from 2009.
+	// RouteProtoZero is the original Route protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
 	RouteProtoZero = iota
-	// routeProtoInfo signals a route can receive more then the original INFO block.
+	// RouteProtoInfo signals a route can receive more then the original INFO block.
 	// This can be used to update remote cluster permissions, etc...
 	RouteProtoInfo
-	// This is the new route/cluster protocol that provides account support.
+	// RouteProtoV2 is the new route/cluster protocol that provides account support.
 	RouteProtoV2
 )
 
@@ -139,7 +139,7 @@ func (c *client) processAccountSub(arg []byte) error {
 func (c *client) processAccountUnsub(arg []byte) {
 	// Placeholder in case we add in to the protocol active senders of
 	// informtation. For now we do not do account interest propagation.
-	c.traceInOp("AUSUB", arg)
+	c.traceInOp("A-", arg)
 }
 
 // Process an inbound RMSG specification from the remote route.
@@ -221,7 +221,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 func (c *client) processInboundRouteMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.msgs += 1
+	c.in.msgs++
 	c.in.bytes += len(msg) - LEN_CR_LF
 
 	if c.trace {
@@ -642,7 +642,7 @@ func (c *client) removeRemoteSubs() {
 func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	c.traceInOp("RS-", arg)
 
-	// Indicate activity.
+	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
 	srv := c.srv
@@ -732,9 +732,8 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 		if !srv.NewAccountsAllowed() {
 			c.Debugf("Unknown account %q for subject %q", accountName, sub.subject)
 			return nil
-		} else {
-			acc, _ = srv.LookupOrRegisterAccount(accountName)
 		}
+		acc, _ = srv.LookupOrRegisterAccount(accountName)
 	}
 
 	c.mu.Lock()
@@ -936,7 +935,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 				var b [12]byte
 				var i = len(b)
 				for l := sub.qw; l > 0; l /= 10 {
-					i -= 1
+					i--
 					b[i] = digits[l%10]
 				}
 				buf = append(buf, b[i:]...)
@@ -982,9 +981,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Initialize
 	c.initClient()
-
-	// Remember numAcccounts we are sending to the other side since things can change
-	// and we want to be deterministic about who sends first account list.
 
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure
