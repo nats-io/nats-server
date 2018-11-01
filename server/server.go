@@ -66,39 +66,35 @@ type Info struct {
 type Server struct {
 	gcid uint64
 	stats
-	mu            sync.Mutex
-	prand         *rand.Rand
-	info          Info
-	configFile    string
-	optsMu        sync.RWMutex
-	opts          *Options
-	running       bool
-	shutdown      bool
-	listener      net.Listener
-	gsl           *Sublist
-	accounts      map[string]*Account
-	clients       map[uint64]*client
-	routes        map[uint64]*client
-	remotes       map[string]*client
-	users         map[string]*User
-	nkeys         map[string]*NkeyUser
-	totalClients  uint64
-	closed        *closedRingBuffer
-	done          chan bool
-	start         time.Time
-	http          net.Listener
-	httpHandler   http.Handler
-	profiler      net.Listener
-	httpReqStats  map[string]uint64
-	routeListener net.Listener
-	routeInfo     Info
-	routeInfoJSON []byte
-	quitCh        chan struct{}
-
-	// Tracking for remote QRSID tags.
-	rqsMu       sync.RWMutex
-	rqsubs      map[string]rqsub
-	rqsubsTimer *time.Timer
+	mu             sync.Mutex
+	prand          *rand.Rand
+	info           Info
+	configFile     string
+	optsMu         sync.RWMutex
+	opts           *Options
+	running        bool
+	shutdown       bool
+	listener       net.Listener
+	gacc           *Account
+	accounts       map[string]*Account
+	activeAccounts int
+	clients        map[uint64]*client
+	routes         map[uint64]*client
+	remotes        map[string]*client
+	users          map[string]*User
+	nkeys          map[string]*NkeyUser
+	totalClients   uint64
+	closed         *closedRingBuffer
+	done           chan bool
+	start          time.Time
+	http           net.Listener
+	httpHandler    http.Handler
+	profiler       net.Listener
+	httpReqStats   map[string]uint64
+	routeListener  net.Listener
+	routeInfo      Info
+	routeInfoJSON  []byte
+	quitCh         chan struct{}
 
 	// Tracking Go routines
 	grMu         sync.Mutex
@@ -178,7 +174,6 @@ func New(opts *Options) *Server {
 		configFile: opts.ConfigFile,
 		info:       info,
 		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		gsl:        NewSublist(),
 		opts:       opts,
 		done:       make(chan bool, 1),
 		start:      now,
@@ -201,7 +196,8 @@ func New(opts *Options) *Server {
 	s.accounts = make(map[string]*Account)
 
 	// Create global account.
-	s.registerAccount(&Account{Name: globalAccountName, sl: s.gsl})
+	s.gacc = &Account{Name: globalAccountName}
+	s.registerAccount(s.gacc)
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
@@ -254,6 +250,11 @@ func (s *Server) configureAccounts() {
 }
 
 func (s *Server) generateRouteInfoJSON() {
+	// New proto wants a nonce.
+	var raw [nonceLen]byte
+	nonce := raw[:]
+	s.generateNonce(nonce)
+	s.routeInfo.Nonce = string(nonce)
 	b, _ := json.Marshal(s.routeInfo)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
@@ -302,8 +303,8 @@ func (s *Server) logPid() error {
 	return ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 }
 
-// newAccountsAllowed returns whether or not new accounts can be created on the fly.
-func (s *Server) newAccountsAllowed() bool {
+// NewAccountsAllowed returns whether or not new accounts can be created on the fly.
+func (s *Server) NewAccountsAllowed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.opts.AllowNewAccounts
@@ -313,6 +314,13 @@ func (s *Server) newAccountsAllowed() bool {
 // Currently this is 1 for the global default service.
 func (s *Server) numReservedAccounts() int {
 	return 1
+}
+
+// NumActiveAccounts reports number of active accounts on this server.
+func (s *Server) NumActiveAccounts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeAccounts
 }
 
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
@@ -326,7 +334,7 @@ func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew b
 		Name: name,
 		sl:   NewSublist(),
 	}
-	s.accounts[name] = acc
+	s.registerAccount(acc)
 	return acc, true
 }
 
@@ -354,6 +362,11 @@ func (s *Server) registerAccount(acc *Account) {
 	}
 	if acc.maxaettl == 0 {
 		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
+	}
+	// If we are capable of routing we will track subscription
+	// information for efficient interest propagation.
+	if s.opts != nil && s.opts.Cluster.Port != 0 {
+		acc.rm = make(map[string]*rme, 256)
 	}
 	s.accounts[acc.Name] = acc
 }
@@ -497,8 +510,6 @@ func (s *Server) Shutdown() {
 		s.profiler.Close()
 	}
 
-	// Clear any remote qsub mappings
-	s.clearRemoteQSubs()
 	s.mu.Unlock()
 
 	// Release go routines that wait on that channel
@@ -866,11 +877,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	max_pay := int64(opts.MaxPayload)
-	max_subs := opts.MaxSubs
+	maxPay := int64(opts.MaxPayload)
+	maxSubs := opts.MaxSubs
 	now := time.Now()
 
-	c := &client{srv: s, sl: s.gsl, nc: conn, opts: defaultOpts, mpay: max_pay, msubs: max_subs, start: now, last: now}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
+
+	c.registerWithAccount(s.gacc)
 
 	// Grab JSON info string
 	s.mu.Lock()
@@ -1180,14 +1193,14 @@ func (s *Server) getClient(cid uint64) *client {
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()
-	var subs uint32
+	var subs int
 	for _, acc := range s.accounts {
 		if acc.sl != nil {
-			subs += acc.sl.Count()
+			subs += acc.TotalSubs()
 		}
 	}
 	s.mu.Unlock()
-	return subs
+	return uint32(subs)
 }
 
 // NumSlowConsumers will report the number of slow consumers.
@@ -1401,7 +1414,7 @@ type Ports struct {
 	Profile    []string `json:"profile,omitempty"`
 }
 
-// Attempts to resolve all the ports. If after maxWait the ports are not
+// PortsInfo attempts to resolve all the ports. If after maxWait the ports are not
 // resolved, it returns nil. Otherwise it returns a Ports struct
 // describing ports where the server can be contacted
 func (s *Server) PortsInfo(maxWait time.Duration) *Ports {

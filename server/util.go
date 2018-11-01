@@ -23,12 +23,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nuid"
+	"github.com/nats-io/nkeys"
 )
 
-// Use nuid.
+// Use nkeys and the public key.
 func genID() string {
-	return nuid.Next()
+	kp, _ := nkeys.CreateServer()
+	pub, _ := kp.PublicKey()
+	return pub
 }
 
 // Ascii numbers 0-9

@@ -73,7 +73,7 @@ type ConnzOptions struct {
 	State ConnState `json:"state"`
 }
 
-// For filtering states of connections. We will only have two, open and closed.
+// ConnState is for filtering states of connections. We will only have two, open and closed.
 type ConnState int
 
 const (
@@ -672,6 +672,7 @@ type SubszOptions struct {
 	Test string `json:"test,omitempty"`
 }
 
+// SubDetail is for verbose information for subscriptions.
 type SubDetail struct {
 	Subject string `json:"subject"`
 	Queue   string `json:"qgroup,omitempty"`
@@ -711,14 +712,14 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.gsl.Stats(), 0, offset, limit, nil}
+	sz := &Subsz{s.gacc.sl.Stats(), 0, offset, limit, nil}
 
 	if subdetail {
 		// Now add in subscription's details
 		var raw [4096]*subscription
 		subs := raw[:0]
 
-		s.gsl.localSubs(&subs)
+		s.gacc.sl.localSubs(&subs)
 		details := make([]SubDetail, len(subs))
 		i := 0
 		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
@@ -940,7 +941,7 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	v.MaxPending = opts.MaxPending
 	v.WriteDeadline = opts.WriteDeadline
-	v.Subscriptions = s.gsl.Count()
+	v.Subscriptions = s.gacc.sl.Count()
 	v.ConfigLoadTime = s.configTime
 	// Need a copy here since s.httpReqStats can change while doing
 	// the marshaling down below.

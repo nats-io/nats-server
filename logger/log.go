@@ -90,6 +90,22 @@ func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
 	return l
 }
 
+// NewTestLogger creates a logger with output directed to Stderr with a prefix.
+// Useful for tracing in tests when multiple servers are in the same pid
+func NewTestLogger(prefix string, time bool) *Logger {
+	flags := 0
+	if time {
+		flags = log.LstdFlags | log.Lmicroseconds
+	}
+	l := &Logger{
+		logger: log.New(os.Stderr, prefix, flags),
+		debug:  true,
+		trace:  true,
+	}
+	setColoredLabelFormats(l)
+	return l
+}
+
 // Close implements the io.Closer interface to clean up
 // resources in the server's logger implementation.
 // Caller must ensure threadsafety.

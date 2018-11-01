@@ -818,7 +818,7 @@ func (s *Server) reloadClusterPermissions() {
 	for i, route := range s.routes {
 		// Count the number of routes that can understand receiving INFO updates.
 		route.mu.Lock()
-		if route.opts.Protocol >= routeProtoInfo {
+		if route.opts.Protocol >= RouteProtoInfo {
 			withNewProto++
 		}
 		route.mu.Unlock()
@@ -865,7 +865,7 @@ func (s *Server) reloadClusterPermissions() {
 		deleteRoutedSubs []*subscription
 	)
 	// FIXME(dlc) - Change for accounts.
-	s.gsl.localSubs(&localSubs)
+	s.gacc.sl.localSubs(&localSubs)
 
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
@@ -887,7 +887,7 @@ func (s *Server) reloadClusterPermissions() {
 	for _, route := range routes {
 		route.mu.Lock()
 		// If route is to older server, simply close connection.
-		if route.opts.Protocol < routeProtoInfo {
+		if route.opts.Protocol < RouteProtoInfo {
 			route.mu.Unlock()
 			route.closeConnection(RouteRemoved)
 			continue
@@ -906,15 +906,15 @@ func (s *Server) reloadClusterPermissions() {
 		// that we now possibly allow with a change of Export permissions.
 		route.sendInfo(infoJSON)
 		// Now send SUB and UNSUB protocols as needed.
-		closed := route.sendRouteSubProtos(subsNeedSUB, nil)
+		closed := route.sendRouteSubProtos(subsNeedSUB, false, nil)
 		if !closed {
-			route.sendRouteUnSubProtos(subsNeedUNSUB, nil)
+			route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
 		}
 		route.mu.Unlock()
 	}
 	// Remove as a batch all the subs that we have removed from each route.
 	// FIXME(dlc) - Change for accounts.
-	s.gsl.RemoveBatch(deleteRoutedSubs)
+	s.gacc.sl.RemoveBatch(deleteRoutedSubs)
 }
 
 // validateClusterOpts ensures the new ClusterOpts does not change host or

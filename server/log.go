@@ -52,6 +52,10 @@ func (s *Server) ConfigureLogger() {
 		opts = s.getOpts()
 	)
 
+	if opts.NoLog {
+		return
+	}
+
 	syslog := opts.Syslog
 	if isWindowsService() && opts.LogFile == "" {
 		// Enable syslog if no log file is specified and we're running as a
@@ -106,7 +110,7 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	s.logging.Unlock()
 }
 
-// If the logger is a file based logger, close and re-open the file.
+// ReOpenLogFile if the logger is a file based logger, close and re-open the file.
 // This allows for file rotation by 'mv'ing the file then signaling
 // the process to trigger this function.
 func (s *Server) ReOpenLogFile() {

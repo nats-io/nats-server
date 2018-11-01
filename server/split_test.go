@@ -24,8 +24,9 @@ func TestSplitBufferSubOp(t *testing.T) {
 	defer cli.Close()
 	defer trash.Close()
 
-	s := &Server{gsl: NewSublist()}
-	c := &client{srv: s, sl: s.gsl, subs: make(map[string]*subscription), nc: cli}
+	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account)}
+	s.registerAccount(s.gacc)
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -43,7 +44,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
-	r := s.gsl.Match("foo")
+	r := s.gacc.sl.Match("foo")
 	if r == nil || len(r.psubs) != 1 {
 		t.Fatalf("Did not match subscription properly: %+v\n", r)
 	}
@@ -60,8 +61,9 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferUnsubOp(t *testing.T) {
-	s := &Server{gsl: NewSublist()}
-	c := &client{srv: s, subs: make(map[string]*subscription)}
+	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account)}
+	s.registerAccount(s.gacc)
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription)}
 
 	subop := []byte("SUB foo 1024\r\n")
 	if err := c.parse(subop); err != nil {
@@ -87,7 +89,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START state vs %d\n", c.state)
 	}
-	r := s.gsl.Match("foo")
+	r := s.gacc.sl.Match("foo")
 	if r != nil && len(r.psubs) != 0 {
 		t.Fatalf("Should be no subscriptions in results: %+v\n", r)
 	}
@@ -300,7 +302,7 @@ func TestSplitConnectArg(t *testing.T) {
 
 func TestSplitDanglingArgBuf(t *testing.T) {
 	s := New(&defaultServerOptions)
-	c := &client{srv: s, sl: s.gsl, subs: make(map[string]*subscription)}
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription)}
 
 	// We test to make sure we do not dangle any argBufs after processing
 	// since that could lead to performance issues.
@@ -360,14 +362,14 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 
 	// MSG (the client has to be a ROUTE)
 	c = &client{subs: make(map[string]*subscription), typ: ROUTER}
-	msgop := []byte("MSG foo RSID:2:1 5\r\nhello\r\n")
+	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
 	c.parse(msgop[:5])
 	c.parse(msgop[5:10])
 	if c.argBuf == nil {
 		t.Fatal("Expected a non-nil argBuf")
 	}
-	if string(c.argBuf) != "foo RS" {
-		t.Fatalf("Expected argBuf to be \"foo 1 \", got %q", string(c.argBuf))
+	if string(c.argBuf) != "$foo " {
+		t.Fatalf("Expected argBuf to be \"$foo \", got %q", string(c.argBuf))
 	}
 	c.parse(msgop[10:])
 	if c.argBuf != nil {
@@ -384,21 +386,21 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	if c.argBuf == nil {
 		t.Fatal("Expected a non-nil argBuf")
 	}
+	if string(c.pa.account) != "$foo" {
+		t.Fatalf("Expected account to be \"$foo\", got %q", c.pa.account)
+	}
 	if string(c.pa.subject) != "foo" {
 		t.Fatalf("Expected subject to be \"foo\", got %q", c.pa.subject)
 	}
 	if string(c.pa.reply) != "" {
 		t.Fatalf("Expected reply to be \"\", got %q", c.pa.reply)
 	}
-	if string(c.pa.sid) != "RSID:2:1" {
-		t.Fatalf("Expected sid to \"RSID:2:1\", got %q", c.pa.sid)
-	}
 	if c.pa.size != 5 {
 		t.Fatalf("Expected sid to 5, got %v", c.pa.size)
 	}
 	// msg buffer should be
-	if c.msgBuf == nil || string(c.msgBuf) != "hel" {
-		t.Fatalf("Expected msgBuf to be \"hel\", got %q", c.msgBuf)
+	if c.msgBuf == nil || string(c.msgBuf) != "hello\r" {
+		t.Fatalf("Expected msgBuf to be \"hello\r\", got %q", c.msgBuf)
 	}
 	c.parse(msgop[23:])
 	// At the end, we should have cleaned-up both arg and msg buffers.
@@ -410,31 +412,29 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 }
 
-func TestSplitMsgArg(t *testing.T) {
+func TestSplitRoutedMsgArg(t *testing.T) {
 	_, c, _ := setupClient()
-	// Allow parser to process MSG
+	// Allow parser to process RMSG
 	c.typ = ROUTER
 
 	b := make([]byte, 1024)
 
-	copy(b, []byte("MSG hello.world RSID:14:8 6040\r\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+	copy(b, []byte("RMSG $G hello.world 6040\r\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
 	c.parse(b)
 
 	copy(b, []byte("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\r\n"))
 	c.parse(b)
 
+	wantAccount := "$G"
 	wantSubject := "hello.world"
-	wantSid := "RSID:14:8"
 	wantSzb := "6040"
 
+	if string(c.pa.account) != wantAccount {
+		t.Fatalf("Incorrect account: want %q, got %q", wantAccount, c.pa.account)
+	}
 	if string(c.pa.subject) != wantSubject {
 		t.Fatalf("Incorrect subject: want %q, got %q", wantSubject, c.pa.subject)
 	}
-
-	if string(c.pa.sid) != wantSid {
-		t.Fatalf("Incorrect sid: want %q, got %q", wantSid, c.pa.sid)
-	}
-
 	if string(c.pa.szb) != wantSzb {
 		t.Fatalf("Incorrect szb: want %q, got %q", wantSzb, c.pa.szb)
 	}
@@ -442,21 +442,21 @@ func TestSplitMsgArg(t *testing.T) {
 
 func TestSplitBufferMsgOp(t *testing.T) {
 	c := &client{subs: make(map[string]*subscription), typ: ROUTER}
-	msg := []byte("MSG foo.bar QRSID:15:3 _INBOX.22 11\r\nhello world\r")
+	msg := []byte("RMSG $G foo.bar _INBOX.22 11\r\nhello world\r")
 	msg1 := msg[:2]
 	msg2 := msg[2:9]
 	msg3 := msg[9:15]
 	msg4 := msg[15:22]
 	msg5 := msg[22:25]
 	msg6 := msg[25:37]
-	msg7 := msg[37:42]
-	msg8 := msg[42:]
+	msg7 := msg[37:40]
+	msg8 := msg[40:]
 
 	if err := c.parse(msg1); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if c.state != OP_MS {
-		t.Fatalf("Expected OP_MS state vs %d\n", c.state)
+	if c.state != OP_M {
+		t.Fatalf("Expected OP_M state vs %d\n", c.state)
 	}
 	if err := c.parse(msg2); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
@@ -492,9 +492,6 @@ func TestSplitBufferMsgOp(t *testing.T) {
 	// Check c.pa
 	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
 		t.Fatalf("MSG arg subject incorrect: '%s'\n", c.pa.subject)
-	}
-	if !bytes.Equal(c.pa.sid, []byte("QRSID:15:3")) {
-		t.Fatalf("MSG arg sid incorrect: '%s'\n", c.pa.sid)
 	}
 	if !bytes.Equal(c.pa.reply, []byte("_INBOX.22")) {
 		t.Fatalf("MSG arg reply subject incorrect: '%s'\n", c.pa.reply)

@@ -72,6 +72,15 @@ func checkExpectedSubs(expected int, servers ...*server.Server) error {
 	return nil
 }
 
+func runThreeServers(t *testing.T) (srvA, srvB, srvC *server.Server, optsA, optsB, optsC *server.Options) {
+	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
+	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
+	srvC, optsC = RunServerWithConfig("./configs/srv_c.conf")
+
+	checkClusterFormed(t, srvA, srvB, srvC)
+	return
+}
+
 func runServers(t *testing.T) (srvA, srvB *server.Server, optsA, optsB *server.Options) {
 	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
@@ -161,7 +170,8 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
+	// New cluster proto this will only be 1.
+	if err := checkExpectedSubs(1, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -188,7 +198,8 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids), srvB); err != nil {
+	// Normal foo and the queue group will be one a piece, so 2 + wc == 3
+	if err := checkExpectedSubs(3, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -219,7 +230,8 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectB(pongRe)
 
 	// Make sure the subs have propagated to srvA before continuing
-	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids)+len(qg2SidsB), srvA); err != nil {
+	// This will be all the subs on A and just 1 from B that gets coalesced.
+	if err := checkExpectedSubs(len(qg1SidsA)+len(pSids)+1, srvA); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -243,7 +255,7 @@ func TestClusterQueueSubs(t *testing.T) {
 	expectA(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(pSids)+len(qg2SidsB), srvB); err != nil {
+	if err := checkExpectedSubs(1+1+len(qg2SidsB), srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -302,7 +314,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	expectA1(pongRe)
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1SidsA), srvB); err != nil {
+	if err := checkExpectedSubs(1, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 
@@ -323,7 +335,7 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	pSids := []string{"1", "2"}
 
 	// Make sure the subs have propagated to srvB before continuing
-	if err := checkExpectedSubs(len(qg1SidsA)+2, srvB); err != nil {
+	if err := checkExpectedSubs(1+2, srvB); err != nil {
 		t.Fatalf("%v", err)
 	}
 

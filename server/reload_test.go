@@ -17,7 +17,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/nats-io/nkeys"
 	"io/ioutil"
 	"net"
 	"os"
@@ -27,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nkeys"
 
 	"github.com/nats-io/go-nats"
 )
@@ -1861,12 +1862,16 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	server, _, config := runReloadServerWithConfig(t, "./configs/reload/file_rotate.conf")
 	defer func() {
 		os.Remove(config)
+		os.Remove("log.txt")
+		os.Remove("gnatsd.pid")
 		os.Remove("log1.txt")
 		os.Remove("gnatsd1.pid")
 	}()
 	defer server.Shutdown()
 
 	// Configure the logger to enable actual logging
+	opts := server.getOpts()
+	opts.NoLog = false
 	server.ConfigureLogger()
 
 	// Load a config that renames the files.
@@ -2379,11 +2384,11 @@ func TestConfigReloadClusterPermsOldServer(t *testing.T) {
 	optsB := DefaultOptions()
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srva.ClusterAddr().Port))
 	// Make server B behave like an old server
-	testRouteProto = routeProtoZero
-	defer func() { testRouteProto = routeProtoInfo }()
+	testRouteProto = RouteProtoZero
+	defer func() { testRouteProto = RouteProtoInfo }()
 	srvb := RunServer(optsB)
 	defer srvb.Shutdown()
-	testRouteProto = routeProtoInfo
+	testRouteProto = RouteProtoInfo
 
 	checkClusterFormed(t, srva, srvb)
 
@@ -2683,10 +2688,6 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	if c.acc != synadia {
 		t.Fatalf("Expected the nkey client's account to match 'synadia', got %v", c.acc)
 	}
-	// Also test client sublist.
-	if c.sl != synadia.sl {
-		t.Fatalf("Expected the client's sublist to match 'synadia' account")
-	}
 
 	// Now nats account nkey user.
 	kp, _ = nkeys.FromSeed(seed2)
@@ -2716,10 +2717,6 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	}
 	if c.acc != nats {
 		t.Fatalf("Expected the nkey client's account to match 'nats', got %v", c.acc)
-	}
-	// Also test client sublist.
-	if c.sl != nats.sl {
-		t.Fatalf("Expected the client's sublist to match 'nats' account")
 	}
 
 	// Remove user from account and whole account
@@ -2860,7 +2857,7 @@ func TestConfigReloadAccountStreamsImportExport(t *testing.T) {
 		t.Helper()
 		dcli := s.getClient(1)
 		dcli.mu.Lock()
-		r := dcli.sl.Match(subject)
+		r := dcli.acc.sl.Match(subject)
 		dcli.mu.Unlock()
 		if shouldBeThere && len(r.psubs) != 1 {
 			t.Fatalf("%s should have 1 match in derek's sublist, got %v", subject, len(r.psubs))
