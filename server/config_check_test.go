@@ -646,11 +646,65 @@ func TestConfigCheck(t *testing.T) {
 
 		accounts {
                   foo = "bar"
-		}
-				`,
+		}`,
 			err:       errors.New(`Expected map entries for accounts`),
 			errorLine: 5,
 			errorPos:  19,
+		},
+		{
+			name: "when accounts has a referenced config variable within same block",
+			config: `
+			  accounts {
+			    PERMISSIONS = {
+				publish = {
+				  allow = ["foo","bar"]
+				  deny = ["quux"]
+				}
+			    }
+
+			    synadia {
+				nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+				users [
+				  {
+				    nkey = "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+				    permissions = $PERMISSIONS
+				  }
+				]
+				exports = [
+				  { stream: "synadia.>" }
+				]
+			    }
+			  }`,
+			err: nil,
+		},
+		{
+			name: "when accounts has an unreferenced config variables within same block",
+			config: `
+			  accounts {
+			    PERMISSIONS = {
+				publish = {
+				  allow = ["foo","bar"]
+				  deny = ["quux"]
+				}
+			    }
+
+			    synadia {
+				nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
+
+				users [
+				  {
+				    nkey = "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+				  }
+				]
+				exports = [
+				  { stream: "synadia.>" }
+				]
+			   }
+			 }`,
+			err:       errors.New(`unknown field "publish"`),
+			errorLine: 4,
+			errorPos:  5,
 		},
 		{
 			name: "when accounts block defines a global account",
