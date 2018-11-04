@@ -662,6 +662,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 		uorn := make(map[string]struct{})
 		for aname, mv := range vv {
 			tk, amv := unwrapValue(mv)
+
+			// Skip referenced config vars within the account block.
+			if tk.IsUsedVariable() {
+				continue
+			}
+
 			// These should be maps.
 			mv, ok := amv.(map[string]interface{})
 			if !ok {
