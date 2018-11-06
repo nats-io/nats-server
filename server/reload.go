@@ -870,8 +870,9 @@ func (s *Server) reloadClusterPermissions() {
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
 		// Get all subs that can now be imported
-		couldImportThen := oldPermsTester.canImport(sub.subject)
-		canImportNow := newPermsTester.canImport(sub.subject)
+		subj := string(sub.subject)
+		couldImportThen := oldPermsTester.canImport(subj)
+		canImportNow := newPermsTester.canImport(subj)
 		if canImportNow {
 			// If we could not before, then will need to send a SUB protocol.
 			if !couldImportThen {
@@ -896,7 +897,8 @@ func (s *Server) reloadClusterPermissions() {
 		for _, sub := range route.subs {
 			// If we can't export, we need to drop the subscriptions that
 			// we have on behalf of this route.
-			if !route.canExport(sub.subject) {
+			subj := string(sub.subject)
+			if !route.canExport(subj) {
 				delete(route.subs, string(sub.sid))
 				deleteRoutedSubs = append(deleteRoutedSubs, sub)
 			}

@@ -731,6 +731,11 @@ func visitLevel(l *level, depth int) int {
 	return maxDepth
 }
 
+// Determine if a subject has any wildcard tokens.
+func subjectHasWildcard(subject string) bool {
+	return !subjectIsLiteral(subject)
+}
+
 // Determine if the subject has any wildcards. Fast version, does not check for
 // valid subject. Used in caching layer.
 func subjectIsLiteral(subject string) bool {

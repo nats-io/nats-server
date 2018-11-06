@@ -505,7 +505,7 @@ func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
 	s.gacc.sl.localSubs(&localSubs)
 
 	route.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
-		subj := sub.subject
+		subj := string(sub.subject)
 		// If the remote can now export but could not before, and this server can import this
 		// subject, then send SUB protocol.
 		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && route.canImport(subj) {
@@ -613,7 +613,7 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 // canImport is whether or not we will send a SUB for interest to the other side.
 // This is for ROUTER connections only.
 // Lock is held on entry.
-func (c *client) canImport(subject []byte) bool {
+func (c *client) canImport(subject string) bool {
 	// Use pubAllowed() since this checks Publish permissions which
 	// is what Import maps to.
 	return c.pubAllowed(subject)
@@ -622,7 +622,7 @@ func (c *client) canImport(subject []byte) bool {
 // canExport is whether or not we will accept a SUB from the remote for a given subject.
 // This is for ROUTER connections only.
 // Lock is held on entry
-func (c *client) canExport(subject []byte) bool {
+func (c *client) canExport(subject string) bool {
 	// Use canSubscribe() since this checks Subscribe permissions which
 	// is what Export maps to.
 	return c.canSubscribe(subject)
@@ -635,6 +635,7 @@ func (c *client) setRoutePermissions(perms *RoutePermissions) {
 	// Reset if some were set
 	if perms == nil {
 		c.perms = nil
+		c.mperms = nil
 		return
 	}
 	// Convert route permissions to user permissions.
@@ -795,7 +796,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if !c.canExport(sub.subject) {
+	if !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
 		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
 		return nil
@@ -878,7 +879,7 @@ func (s *Server) sendSubsToRoute(route *client) {
 		a.mu.RUnlock()
 
 		closed = route.sendRouteSubProtos(subs, false, func(sub *subscription) bool {
-			return route.canImport(sub.subject)
+			return route.canImport(string(sub.subject))
 		})
 
 		if closed {
@@ -1308,7 +1309,7 @@ func (s *Server) broadcastSubscribe(sub *subscription) {
 	for _, route := range s.routes {
 		route.mu.Lock()
 		route.sendRouteSubProtos(subs, trace, func(sub *subscription) bool {
-			return route.canImport(sub.subject)
+			return route.canImport(string(sub.subject))
 		})
 		route.mu.Unlock()
 	}
@@ -1324,7 +1325,7 @@ func (s *Server) broadcastUnSubscribe(sub *subscription) {
 	for _, route := range s.routes {
 		route.mu.Lock()
 		route.sendRouteUnSubProtos(subs, trace, func(sub *subscription) bool {
-			return route.canImport(sub.subject)
+			return route.canImport(string(sub.subject))
 		})
 		route.mu.Unlock()
 	}

@@ -1,3 +1,7 @@
+# Tests are starting to consume enough memory during --race tests to exceed container env on Travis of 4GB.
+sudo: required
+dist: trusty
+
 language: go
 go:
 - 1.9.x

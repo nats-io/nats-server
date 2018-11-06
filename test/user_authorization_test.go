@@ -139,4 +139,58 @@ func TestUserAuthorizationProto(t *testing.T) {
 	expectResult(t, c, permErrRe)
 	sendProto(t, c, "SUB foo.baz 1\r\n")
 	expectResult(t, c, permErrRe)
+
+	// Deny clauses for subscriptions need to be able to allow subscriptions
+	// on larger scoped wildcards, but prevent delivery of a message whose
+	// subject matches a deny clause.
+
+	// Clear old stuff
+	c.Close()
+
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "ns", DefaultPass)
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB foo.* 1\r\n")
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB foo.* bar 2\r\n")
+	expectResult(t, c, okRe)
+
+	// Now send on foo.baz which should not be received on first client.
+	// Joe is a default user
+	nc := createClientConn(t, opts.Host, opts.Port)
+	defer nc.Close()
+	expectAuthRequired(t, nc)
+	doAuthConnect(t, nc, "", "ns-pub", DefaultPass)
+	expectResult(t, nc, okRe)
+
+	sendProto(t, nc, "PUB foo.baz 2\r\nok\r\n")
+	expectResult(t, nc, okRe)
+
+	// Expect nothing from the wildcard subscription.
+	expectNothing(t, c)
+
+	sendProto(t, c, "PING\r\n")
+	expectResult(t, c, pongRe)
+
+	// Now create a queue sub on our ns-pub user. We want to test that
+	// queue subscribers can be denied and delivery will route around.
+	sendProto(t, nc, "SUB foo.baz bar 2\r\n")
+	expectResult(t, nc, okRe)
+
+	// Make sure we always get the message on our queue subscriber.
+	// Do this several times since we should select the other subscriber
+	// but get permission denied..
+	for i := 0; i < 20; i++ {
+		sendProto(t, nc, "PUB foo.baz 2\r\nok\r\n")
+		buf := expectResult(t, nc, okRe)
+		if msgRe.Match(buf) {
+			continue
+		} else {
+			expectResult(t, nc, msgRe)
+		}
+	}
 }
