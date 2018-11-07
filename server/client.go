@@ -2249,8 +2249,10 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	// Collect client's subs under the lock
 	for _, sub := range c.subs {
 		subs = append(subs, sub)
-		// Just checking to rebuild mperms under the lock.
-		c.canSubscribe(string(sub.subject))
+		// Just checking to rebuild mperms under the lock, will collect removed though here.
+		if !c.canSubscribe(string(sub.subject)) {
+			removed = append(removed, sub)
+		}
 	}
 	c.mu.Unlock()
 
@@ -2258,10 +2260,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	// from config reload code prior to calling this function. So there is no risk
 	// of concurrent access to c.perms.
 	for _, sub := range subs {
-		if checkPerms && !c.canSubscribe(string(sub.subject)) {
-			removed = append(removed, sub)
-			c.unsubscribe(acc, sub, true)
-		} else if checkAcc {
+		if checkAcc {
 			c.mu.Lock()
 			oldShadows := sub.shadow
 			sub.shadow = nil
@@ -2275,6 +2274,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 
 	// Report back to client and logs.
 	for _, sub := range removed {
+		c.unsubscribe(acc, sub, true)
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
 		srv.Noticef("Removed sub %q (sid %q) for user %q - not authorized",
