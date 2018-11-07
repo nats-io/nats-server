@@ -1114,3 +1114,50 @@ func TestQueueAutoUnsubscribe(t *testing.T) {
 			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 	})
 }
+
+func TestClientTraceRace(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Activate trace logging
+	s.SetLogger(&DummyLogger{}, false, true)
+
+	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+	total := 10000
+	count := 0
+	ch := make(chan bool, 1)
+	if _, err := nc1.Subscribe("foo", func(_ *nats.Msg) {
+		count++
+		if count == total {
+			ch <- true
+		}
+	}); err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < total; i++ {
+			nc1.Publish("bar", []byte("hello"))
+		}
+	}()
+	for i := 0; i < total; i++ {
+		nc2.Publish("foo", []byte("hello"))
+	}
+	if err := wait(ch); err != nil {
+		t.Fatal("Did not get all our messages")
+	}
+	wg.Wait()
+}
