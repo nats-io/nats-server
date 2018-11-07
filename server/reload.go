@@ -681,23 +681,6 @@ func (s *Server) applyOptions(opts []option) {
 	s.Noticef("Reloaded server configuration")
 }
 
-// On reload we have clients that may exists that are connected
-// but are not assigned to an account. Check here and assign to
-// the global account.
-// Lock should be held.
-func (s *Server) assignGlobalAccountToOrphanUsers() {
-	for _, u := range s.users {
-		if u.Account == nil {
-			u.Account = s.gacc
-		}
-	}
-	for _, u := range s.nkeys {
-		if u.Account == nil {
-			u.Account = s.gacc
-		}
-	}
-}
-
 // reloadAuthorization reconfigures the server authorization settings,
 // disconnects any clients who are no longer authorized, and removes any
 // unauthorized subscriptions.
@@ -705,7 +688,6 @@ func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 
 	s.configureAuthorization()
-	s.assignGlobalAccountToOrphanUsers()
 
 	// This map will contain the names of accounts that have their streams
 	// import configuration changed.

@@ -151,6 +151,22 @@ func (s *Server) checkAuthforWarnings() {
 	}
 }
 
+// If opts.Users or opts.Nkeys have definitions without an account
+// defined assign them to the default global account.
+// Lock should be held.
+func (s *Server) assignGlobalAccountToOrphanUsers() {
+	for _, u := range s.users {
+		if u.Account == nil {
+			u.Account = s.gacc
+		}
+	}
+	for _, u := range s.nkeys {
+		if u.Account == nil {
+			u.Account = s.gacc
+		}
+	}
+}
+
 // configureAuthorization will do any setup needed for authorization.
 // Lock is assumed held.
 func (s *Server) configureAuthorization() {
@@ -179,6 +195,7 @@ func (s *Server) configureAuthorization() {
 				s.users[u.Username] = u
 			}
 		}
+		s.assignGlobalAccountToOrphanUsers()
 		s.info.AuthRequired = true
 	} else if opts.Username != "" || opts.Authorization != "" {
 		s.info.AuthRequired = true
