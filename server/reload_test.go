@@ -1096,7 +1096,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 	conn.Flush()
 
-	msg, err = fooSub.NextMsg(100 * time.Millisecond)
+	_, err = fooSub.NextMsg(100 * time.Millisecond)
 	if err != nats.ErrTimeout {
 		t.Fatalf("Received a message we shouldn't have")
 	}
@@ -1216,7 +1216,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 	conn.Flush()
 
-	msg, err = pubSub.NextMsg(100 * time.Millisecond)
+	_, err = pubSub.NextMsg(100 * time.Millisecond)
 	if err != nats.ErrTimeout {
 		t.Fatalf("Received a message we shouldn't have")
 	}
