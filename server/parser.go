@@ -201,7 +201,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processPub(arg); err != nil {
+				if err := c.processPub(c.trace, arg); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = OP_START, i+1, MSG_PAYLOAD
@@ -642,7 +642,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processRoutedMsgArgs(arg); err != nil {
+				if err := c.processRoutedMsgArgs(c.trace, arg); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
@@ -866,13 +866,10 @@ func (c *client) clonePubArg() {
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
-	trace := c.trace
-	c.trace = false
 	// This is a routed msg
 	if c.pa.account != nil {
-		c.processRoutedMsgArgs(c.argBuf)
+		c.processRoutedMsgArgs(false, c.argBuf)
 	} else {
-		c.processPub(c.argBuf)
+		c.processPub(false, c.argBuf)
 	}
-	c.trace = trace
 }

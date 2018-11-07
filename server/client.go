@@ -1209,8 +1209,8 @@ func (c *client) processPong() {
 	c.mu.Unlock()
 }
 
-func (c *client) processPub(arg []byte) error {
-	if c.trace {
+func (c *client) processPub(trace bool, arg []byte) error {
+	if trace {
 		c.traceInOp("PUB", arg)
 	}
 

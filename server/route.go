@@ -143,8 +143,8 @@ func (c *client) processAccountUnsub(arg []byte) {
 }
 
 // Process an inbound RMSG specification from the remote route.
-func (c *client) processRoutedMsgArgs(arg []byte) error {
-	if c.trace {
+func (c *client) processRoutedMsgArgs(trace bool, arg []byte) error {
+	if trace {
 		c.traceInOp("RMSG", arg)
 	}
 
