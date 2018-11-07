@@ -1071,14 +1071,72 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("world"), msg.Data)
 	}
 
+	// Susan will subscribe to two subjects, both will succeed but a send to foo.bar should not succeed
+	// however PUBLIC.foo should.
+	sconn, err := nats.Connect(addr, nats.UserInfo("susan", "baz"))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer sconn.Close()
+
+	asyncErr2 := make(chan error, 1)
+	sconn.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr2 <- err
+	})
+
+	fooSub, err := sconn.SubscribeSync("foo.*")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	sconn.Flush()
+
+	// Publishing from bob on foo.bar should not come through.
+	if err := conn.Publish("foo.bar", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	_, err = fooSub.NextMsg(100 * time.Millisecond)
+	if err != nats.ErrTimeout {
+		t.Fatalf("Received a message we shouldn't have")
+	}
+
+	pubSub, err := sconn.SubscribeSync("PUBLIC.*")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	sconn.Flush()
+
+	select {
+	case err := <-asyncErr2:
+		t.Fatalf("Received unexpected error for susan: %v", err)
+	default:
+	}
+
+	// This should work ok with original config.
+	if err := conn.Publish("PUBLIC.foo", []byte("hello monkey")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	msg, err = pubSub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello monkey" {
+		t.Fatalf("Msg is incorrect.\nexpected: %q\ngot: %q", "hello monkey", msg.Data)
+	}
+
+	///////////////////////////////////////////
 	// Change permissions.
+	///////////////////////////////////////////
+
 	changeCurrentConfigContent(t, config, "./configs/reload/authorization_2.conf")
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
-	// Ensure we receive an error for the subscription that is no longer
-	// authorized.
+	// Ensure we receive an error for the subscription that is no longer authorized.
 	// In this test, since connection is not closed by the server,
 	// the client must receive an -ERR
 	select {
@@ -1147,6 +1205,42 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	select {
 	case err := <-asyncErr:
 		t.Fatalf("Received unexpected error: %v", err)
+	default:
+	}
+
+	// Now check susan again.
+	//
+	// This worked ok with original config but should not deliver a message now.
+	if err := conn.Publish("PUBLIC.foo", []byte("hello monkey")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	_, err = pubSub.NextMsg(100 * time.Millisecond)
+	if err != nats.ErrTimeout {
+		t.Fatalf("Received a message we shouldn't have")
+	}
+
+	// Now check foo.bar, which did not work before but should work now..
+	if err := conn.Publish("foo.bar", []byte("hello?")); err != nil {
+		t.Fatalf("Error publishing message: %v", err)
+	}
+	conn.Flush()
+
+	msg, err = fooSub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello?" {
+		t.Fatalf("Msg is incorrect.\nexpected: %q\ngot: %q", "hello?", msg.Data)
+	}
+
+	// Once last check for no errors.
+	sconn.Flush()
+
+	select {
+	case err := <-asyncErr2:
+		t.Fatalf("Received unexpected error for susan: %v", err)
 	default:
 	}
 }
@@ -2740,7 +2834,9 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 
 	s.mu.Lock()
 	nkeys := s.nkeys
+	globalAcc := s.gacc
 	s.mu.Unlock()
+
 	if n := len(nkeys); n != 2 {
 		t.Fatalf("NKeys map should have 2 users, got %v", n)
 	}
@@ -2755,7 +2851,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	if ivan == nil {
 		t.Fatal("NKey for user Ivan not found")
 	}
-	if ivan.Account != nil {
+	if ivan.Account != globalAcc {
 		t.Fatalf("Invalid account for user Ivan: %#v", ivan.Account)
 	}
 	if s.LookupAccount("synadia") != nil {

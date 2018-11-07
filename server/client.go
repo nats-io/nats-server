@@ -133,27 +133,29 @@ const (
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
-	mpay  int64
-	msubs int
-	mu    sync.Mutex
-	typ   int
-	cid   uint64
-	opts  clientOpts
-	start time.Time
-	nonce []byte
-	nc    net.Conn
-	ncs   string
-	out   outbound
-	srv   *Server
-	acc   *Account
-	subs  map[string]*subscription
-	perms *permissions
-	in    readCache
-	pcd   map[*client]struct{}
-	atmr  *time.Timer
-	ping  pinfo
-	msgb  [msgScratchSize]byte
-	last  time.Time
+	mpay   int64
+	msubs  int
+	mu     sync.Mutex
+	typ    int
+	cid    uint64
+	opts   clientOpts
+	start  time.Time
+	nonce  []byte
+	nc     net.Conn
+	ncs    string
+	out    outbound
+	srv    *Server
+	acc    *Account
+	subs   map[string]*subscription
+	perms  *permissions
+	mperms *msgDeny
+	darray []string
+	in     readCache
+	pcd    map[*client]struct{}
+	atmr   *time.Timer
+	ping   pinfo
+	msgb   [msgScratchSize]byte
+	last   time.Time
 	parseState
 
 	rtt      time.Duration
@@ -200,10 +202,20 @@ type permissions struct {
 	pcache map[string]bool
 }
 
+// msgDeny is used when a user permission for subscriptions has a deny
+// clause but a subscription could be made that is of broader scope.
+// e.g. deny = "foo", but user subscribes to "*". That subscription should
+// succeed but no message sent on foo should be delivered.
+type msgDeny struct {
+	deny   *Sublist
+	dcache map[string]bool
+}
+
 const (
-	maxResultCacheSize = 512
-	maxPermCacheSize   = 32
-	pruneSize          = 16
+	maxResultCacheSize   = 512
+	maxDenyPermCacheSize = 256
+	maxPermCacheSize     = 128
+	pruneSize            = 32
 )
 
 // Used in readloop to cache hot subject lookups and group statistics.
@@ -376,6 +388,7 @@ func (c *client) RegisterUser(user *User) {
 	if user.Permissions == nil {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
+		c.mperms = nil
 		return
 	}
 
@@ -398,6 +411,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) {
 	if user.Permissions == nil {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
+		c.mperms = nil
 		return
 	}
 
@@ -442,11 +456,23 @@ func (c *client) setPermissions(perms *Permissions) {
 		}
 		if len(perms.Subscribe.Deny) > 0 {
 			c.perms.sub.deny = NewSublist()
+			// Also hold onto this array for later.
+			c.darray = perms.Subscribe.Deny
 		}
 		for _, subSubject := range perms.Subscribe.Deny {
 			sub := &subscription{subject: []byte(subSubject)}
 			c.perms.sub.deny.Insert(sub)
 		}
+	}
+}
+
+// This will load up the deny structure used for filtering delivered
+// messages based on a deny clause for subscriptions.
+// Lock should be held.
+func (c *client) loadMsgDenyFilter() {
+	c.mperms = &msgDeny{NewSublist(), make(map[string]bool)}
+	for _, sub := range c.darray {
+		c.mperms.deny.Insert(&subscription{subject: []byte(sub)})
 	}
 }
 
@@ -1298,11 +1324,11 @@ func (c *client) processSub(argo []byte) (err error) {
 
 	// Check permissions if applicable.
 	if ctype == ROUTER {
-		if !c.canExport(sub.subject) {
+		if !c.canExport(string(sub.subject)) {
 			c.mu.Unlock()
 			return nil
 		}
-	} else if !c.canSubscribe(sub.subject) {
+	} else if !c.canSubscribe(string(sub.subject)) {
 		c.mu.Unlock()
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
@@ -1419,7 +1445,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 
 // canSubscribe determines if the client is authorized to subscribe to the
 // given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(subject []byte) bool {
+func (c *client) canSubscribe(subject string) bool {
 	if c.perms == nil {
 		return true
 	}
@@ -1428,13 +1454,28 @@ func (c *client) canSubscribe(subject []byte) bool {
 
 	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
 	if c.perms.sub.allow != nil {
-		r := c.perms.sub.allow.Match(string(subject))
+		r := c.perms.sub.allow.Match(subject)
 		allowed = len(r.psubs) != 0
 	}
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {
-		r := c.perms.sub.deny.Match(string(subject))
+		r := c.perms.sub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
+
+		// We use the actual subscription to signal us to spin up the deny mperms
+		// and cache. We check if the subject is a wildcard that contains any of
+		// the deny clauses.
+		// FIXME(dlc) - We could be smarter and track when these go away and remove.
+		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
+			// Whip through the deny array and check if this wildcard subject is within scope.
+			for _, sub := range c.darray {
+				tokens := strings.Split(sub, tsep)
+				if isSubsetMatch(tokens, sub) {
+					c.loadMsgDenyFilter()
+					break
+				}
+			}
+		}
 	}
 	return allowed
 }
@@ -1526,6 +1567,25 @@ func (c *client) processUnsub(arg []byte) error {
 	return nil
 }
 
+// checkDenySub will check if we are allowed to deliver this message in the
+// presence of deny clauses for subscriptions. Deny clauses will not prevent
+// larger scoped wildcard subscriptions, so we need to check at delivery time.
+// Lock should be held.
+func (c *client) checkDenySub(subject string) bool {
+	if denied, ok := c.mperms.dcache[subject]; ok {
+		return denied
+	} else if r := c.mperms.deny.Match(subject); len(r.psubs) != 0 {
+		c.mperms.dcache[subject] = true
+		return true
+	} else {
+		c.mperms.dcache[subject] = false
+	}
+	if len(c.mperms.dcache) > maxDenyPermCacheSize {
+		c.pruneDenyCache()
+	}
+	return false
+}
+
 func (c *client) msgHeader(mh []byte, sub *subscription, reply []byte) []byte {
 	if len(sub.sid) > 0 {
 		mh = append(mh, sub.sid...)
@@ -1552,6 +1612,13 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	// Check echo
 	if c == client && !client.echo {
+		client.mu.Unlock()
+		return false
+	}
+
+	// Check if we have a subscribe deny clause. This will trigger us to check the subject
+	// for a match against the denied subjects.
+	if client.mperms != nil && client.checkDenySub(string(c.pa.subject)) {
 		client.mu.Unlock()
 		return false
 	}
@@ -1637,7 +1704,21 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	return true
 }
 
-// pruneCache will prune the cache via randomly
+// pruneDenyCache will prune the deny cache via randomly
+// deleting items. Doing so pruneSize items at a time.
+// Lock must be held for this one since it is shared under
+// deliverMsg.
+func (c *client) pruneDenyCache() {
+	r := 0
+	for subject := range c.mperms.dcache {
+		delete(c.mperms.dcache, subject)
+		if r++; r > pruneSize {
+			break
+		}
+	}
+}
+
+// prunePubPermsCache will prune the cache via randomly
 // deleting items. Doing so pruneSize items at a time.
 func (c *client) prunePubPermsCache() {
 	r := 0
@@ -1650,18 +1731,18 @@ func (c *client) prunePubPermsCache() {
 }
 
 // pubAllowed checks on publish permissioning.
-func (c *client) pubAllowed(subject []byte) bool {
-	if c.perms == nil {
+func (c *client) pubAllowed(subject string) bool {
+	if c.perms == nil || (c.perms.pub.allow == nil && c.perms.pub.deny == nil) {
 		return true
 	}
 	// Check if published subject is allowed if we have permissions in place.
-	allowed, ok := c.perms.pcache[string(subject)]
+	allowed, ok := c.perms.pcache[subject]
 	if ok {
 		return allowed
 	}
 	// Cache miss, check allow then deny as needed.
 	if c.perms.pub.allow != nil {
-		r := c.perms.pub.allow.Match(string(subject))
+		r := c.perms.pub.allow.Match(subject)
 		allowed = len(r.psubs) != 0
 	} else {
 		// No entries means all are allowed. Deny will overrule as needed.
@@ -1669,7 +1750,7 @@ func (c *client) pubAllowed(subject []byte) bool {
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && c.perms.pub.deny != nil {
-		r := c.perms.pub.deny.Match(string(subject))
+		r := c.perms.pub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
 	}
 	// Update our cache here.
@@ -1733,7 +1814,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	}
 
 	// Check pub permissions
-	if c.perms != nil && !c.pubAllowed(c.pa.subject) {
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
 		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
@@ -2162,33 +2243,36 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 			checkAcc = false
 		}
 	}
+	// We will clear any mperms we have here. It will rebuild on the fly with canSubscribe,
+	// so we do that here as we collect them. We will check result down below.
+	c.mperms = nil
 	// Collect client's subs under the lock
 	for _, sub := range c.subs {
-		subs = append(subs, sub)
+		// Just checking to rebuild mperms under the lock, will collect removed though here.
+		// Only collect under subs array of canSubscribe and checkAcc true.
+		if !c.canSubscribe(string(sub.subject)) {
+			removed = append(removed, sub)
+		} else if checkAcc {
+			subs = append(subs, sub)
+		}
 	}
 	c.mu.Unlock()
 
-	// We can call canSubscribe() without locking since the permissions are updated
-	// from config reload code prior to calling this function. So there is no risk
-	// of concurrent access to c.perms.
+	// This list is all subs who are allowed and we need to check accounts.
 	for _, sub := range subs {
-		if checkPerms && !c.canSubscribe(sub.subject) {
-			removed = append(removed, sub)
-			c.unsubscribe(acc, sub, true)
-		} else if checkAcc {
-			c.mu.Lock()
-			oldShadows := sub.shadow
-			sub.shadow = nil
-			c.mu.Unlock()
-			c.addShadowSubscriptions(acc, sub)
-			for _, nsub := range oldShadows {
-				nsub.im.acc.sl.Remove(nsub)
-			}
+		c.mu.Lock()
+		oldShadows := sub.shadow
+		sub.shadow = nil
+		c.mu.Unlock()
+		c.addShadowSubscriptions(acc, sub)
+		for _, nsub := range oldShadows {
+			nsub.im.acc.sl.Remove(nsub)
 		}
 	}
 
-	// Report back to client and logs.
+	// Unsubscribe all that need to be removed and report back to client and logs.
 	for _, sub := range removed {
+		c.unsubscribe(acc, sub, true)
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
 		srv.Noticef("Removed sub %q (sid %q) for user %q - not authorized",
