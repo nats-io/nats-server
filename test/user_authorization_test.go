@@ -193,4 +193,31 @@ func TestUserAuthorizationProto(t *testing.T) {
 			expectResult(t, nc, msgRe)
 		}
 	}
+
+	// Clear old stuff
+	c.Close()
+
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "ns", DefaultPass)
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB foo.bar 1\r\n")
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB foo.bar.baz 2\r\n")
+	expectResult(t, c, errRe)
+
+	sendProto(t, c, "SUB > 3\r\n")
+	expectResult(t, c, errRe)
+
+	sendProto(t, c, "SUB SYS.> 4\r\n")
+	expectResult(t, c, errRe)
+
+	sendProto(t, c, "SUB SYS.TEST.foo 5\r\n")
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB SYS.bar 5\r\n")
+	expectResult(t, c, errRe)
 }

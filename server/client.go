@@ -1466,7 +1466,7 @@ func (c *client) canSubscribe(subject string) bool {
 		// and cache. We check if the subject is a wildcard that contains any of
 		// the deny clauses.
 		// FIXME(dlc) - We could be smarter and track when these go away and remove.
-		if c.mperms == nil && subjectHasWildcard(subject) {
+		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
 			// Whip through the deny array and check if this wildcard subject is within scope.
 			for _, sub := range c.darray {
 				tokens := strings.Split(sub, tsep)
@@ -1618,11 +1618,9 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
-	if client.mperms != nil {
-		if client.checkDenySub(string(c.pa.subject)) {
-			client.mu.Unlock()
-			return false
-		}
+	if client.mperms != nil && client.checkDenySub(string(c.pa.subject)) {
+		client.mu.Unlock()
+		return false
 	}
 
 	srv := client.srv
@@ -2245,9 +2243,14 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 			checkAcc = false
 		}
 	}
+	// We will clear any mperms we have here. It will rebuild on the fly with canSubscribe,
+	// so we do that here as we collect them. We will check result down below.
+	c.mperms = nil
 	// Collect client's subs under the lock
 	for _, sub := range c.subs {
 		subs = append(subs, sub)
+		// Just checking to rebuild mperms under the lock.
+		c.canSubscribe(string(sub.subject))
 	}
 	c.mu.Unlock()
 
