@@ -2248,31 +2248,29 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	c.mperms = nil
 	// Collect client's subs under the lock
 	for _, sub := range c.subs {
-		subs = append(subs, sub)
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
+		// Only collect under subs array of canSubscribe and checkAcc true.
 		if !c.canSubscribe(string(sub.subject)) {
 			removed = append(removed, sub)
+		} else if checkAcc {
+			subs = append(subs, sub)
 		}
 	}
 	c.mu.Unlock()
 
-	// We can call canSubscribe() without locking since the permissions are updated
-	// from config reload code prior to calling this function. So there is no risk
-	// of concurrent access to c.perms.
+	// This list is all subs who are allowed and we need to check accounts.
 	for _, sub := range subs {
-		if checkAcc {
-			c.mu.Lock()
-			oldShadows := sub.shadow
-			sub.shadow = nil
-			c.mu.Unlock()
-			c.addShadowSubscriptions(acc, sub)
-			for _, nsub := range oldShadows {
-				nsub.im.acc.sl.Remove(nsub)
-			}
+		c.mu.Lock()
+		oldShadows := sub.shadow
+		sub.shadow = nil
+		c.mu.Unlock()
+		c.addShadowSubscriptions(acc, sub)
+		for _, nsub := range oldShadows {
+			nsub.im.acc.sl.Remove(nsub)
 		}
 	}
 
-	// Report back to client and logs.
+	// Unsubscribe all that need to be removed and report back to client and logs.
 	for _, sub := range removed {
 		c.unsubscribe(acc, sub, true)
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
