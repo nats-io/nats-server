@@ -836,6 +836,99 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 	checkPayload(crBar, []byte("hello\r\n"), t)
 }
 
+func TestMultipleImportsAndSingleWCSub(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	if err := fooAcc.AddStreamExport("foo", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding stream export to account foo: %v", err)
+	}
+	if err := fooAcc.AddStreamExport("bar", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding stream export to account foo: %v", err)
+	}
+
+	if err := barAcc.AddStreamImport(fooAcc, "foo", "pub."); err != nil {
+		t.Fatalf("Error adding stream import to account bar: %v", err)
+	}
+	if err := barAcc.AddStreamImport(fooAcc, "bar", "pub."); err != nil {
+		t.Fatalf("Error adding stream import to account bar: %v", err)
+	}
+
+	// Wildcard Subscription on bar client for both imports.
+	cbar.parse([]byte("SUB pub.* 1\r\n"))
+
+	// Now publish a message on 'foo' and 'bar'
+	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\nPUB bar 5\r\nworld\r\n"))
+
+	// Now check we got the messages from the wildcard subscription.
+	l, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "pub.foo" {
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("hello\r\n"), t)
+
+	l, err = crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw = msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches = mraw[0]
+	if matches[SUB_INDEX] != "pub.bar" {
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("world\r\n"), t)
+
+	// Check subscription count.
+	if fslc := fooAcc.sl.Count(); fslc != 2 {
+		t.Fatalf("Expected 2 shadowed subscriptions on fooAcc, got %d", fslc)
+	}
+	if bslc := barAcc.sl.Count(); bslc != 1 {
+		t.Fatalf("Expected 1 normal subscriptions on barAcc, got %d", bslc)
+	}
+
+	// Now unsubscribe.
+	if err := cbar.parse([]byte("UNSUB 1\r\n")); err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+	// We should have zero on both.
+	if bslc := barAcc.sl.Count(); bslc != 0 {
+		t.Fatalf("Expected no normal subscriptions on barAcc, got %d", bslc)
+	}
+	if fslc := fooAcc.sl.Count(); fslc != 0 {
+		t.Fatalf("Expected no shadowed subscriptions on fooAcc, got %d", fslc)
+	}
+}
+
 func TestCrossAccountRequestReply(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
