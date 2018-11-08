@@ -790,6 +790,21 @@ func IsValidLiteralSubject(subject string) bool {
 	return true
 }
 
+// Calls into the function isSubsetMatch()
+func subjectIsSubsetMatch(subject, test string) bool {
+	tsa := [32]string{}
+	tts := tsa[:0]
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, subject[start:])
+	return isSubsetMatch(tts, test)
+}
+
 // This will test a subject as an array of tokens against a test subject
 // and determine if the tokens are matched. Both test subject and tokens
 // may contain wildcards. So foo.* is a subset match of [">", "*.*", "foo.*"],

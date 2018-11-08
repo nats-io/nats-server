@@ -1343,8 +1343,6 @@ func (c *client) processSub(argo []byte) (err error) {
 		return nil
 	}
 
-	// We can have two SUB protocols coming from a route due to some
-	// race conditions. We should make sure that we process only one.
 	sid := string(sub.sid)
 	acc := c.acc
 
@@ -1388,50 +1386,79 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		return ErrMissingAccount
 	}
 
-	var rims [32]*streamImport
-	var ims = rims[:0]
-	var tokens []string
+	var (
+		rims   [32]*streamImport
+		ims    = rims[:0]
+		rfroms [32]*streamImport
+		froms  = rfroms[:0]
+		tokens []string
+		tsa    [32]string
+		hasWC  bool
+	)
 
 	acc.mu.RLock()
+	// Loop over the import subjects. We have 3 scenarios. If we exact
+	// match or we know the proposed subject is a strict subset of the
+	// import we can subscribe the subcsription's subject directly.
+	// The third scenario is where the proposed subject has a wildcard
+	// and may not be an exact subset, but is a match. Therefore we have to
+	// subscribe to the import subject, not the subscription's subject.
 	for _, im := range acc.imports.streams {
+		subj := string(sub.subject)
+		if subj == im.prefix+im.from {
+			ims = append(ims, im)
+			continue
+		}
 		if tokens == nil {
-			tokens = strings.Split(string(sub.subject), tsep)
+			tokens = tsa[:0]
+			start := 0
+			for i := 0; i < len(subj); i++ {
+				//This is not perfect, but the test below will
+				// be more exact, this is just to trigger the
+				// additional test.
+				if subj[i] == pwc || subj[i] == fwc {
+					hasWC = true
+				} else if subj[i] == btsep {
+					tokens = append(tokens, subj[start:i])
+					start = i + 1
+				}
+			}
+			tokens = append(tokens, subj[start:])
 		}
 		if isSubsetMatch(tokens, im.prefix+im.from) {
 			ims = append(ims, im)
+		} else if hasWC {
+			if subjectIsSubsetMatch(im.prefix+im.from, subj) {
+				froms = append(froms, im)
+			}
 		}
 	}
 	acc.mu.RUnlock()
 
 	var shadow []*subscription
 
+	if len(ims) > 0 || len(froms) > 0 {
+		shadow = make([]*subscription, 0, len(ims)+len(froms))
+	}
+
 	// Now walk through collected importMaps
 	for _, im := range ims {
-		// We have a match for a local subscription with an import from another account.
 		// We will create a shadow subscription.
-		nsub := *sub // copy
-		nsub.im = im
-		if im.prefix != "" {
-			// redo subject here to match subject in the publisher account space.
-			// Just remove prefix from what they gave us. That maps into other space.
-			nsub.subject = sub.subject[len(im.prefix):]
+		nsub, err := c.addShadowSub(sub, im, false)
+		if err != nil {
+			return err
 		}
-
-		c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
-
-		if err := im.acc.sl.Insert(&nsub); err != nil {
-			errs := fmt.Sprintf("Could not add shadow import subscription for account %q", im.acc.Name)
-			c.Debugf(errs)
-			return fmt.Errorf(errs)
+		shadow = append(shadow, nsub)
+	}
+	// Now walk through importMaps that we need to subscribe
+	// exactly to the from property.
+	for _, im := range froms {
+		// We will create a shadow subscription.
+		nsub, err := c.addShadowSub(sub, im, true)
+		if err != nil {
+			return err
 		}
-		// Update our route map here.
-		c.srv.updateRouteSubscriptionMap(im.acc, &nsub, 1)
-		// FIXME(dlc) - make sure to remove as well!
-
-		if shadow == nil {
-			shadow = make([]*subscription, 0, len(ims))
-		}
-		shadow = append(shadow, &nsub)
+		shadow = append(shadow, nsub)
 	}
 
 	if shadow != nil {
@@ -1441,6 +1468,31 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	}
 
 	return nil
+}
+
+// Add in the shadow subscription.
+func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool) (*subscription, error) {
+	nsub := *sub // copy
+	nsub.im = im
+	if useFrom {
+		nsub.subject = []byte(im.from)
+	} else if im.prefix != "" {
+		// redo subject here to match subject in the publisher account space.
+		// Just remove prefix from what they gave us. That maps into other space.
+		nsub.subject = sub.subject[len(im.prefix):]
+	}
+
+	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
+
+	if err := im.acc.sl.Insert(&nsub); err != nil {
+		errs := fmt.Sprintf("Could not add shadow import subscription for account %q", im.acc.Name)
+		c.Debugf(errs)
+		return nil, fmt.Errorf(errs)
+	}
+
+	// Update our route map here.
+	c.srv.updateRouteSubscriptionMap(im.acc, &nsub, 1)
+	return &nsub, nil
 }
 
 // canSubscribe determines if the client is authorized to subscribe to the
