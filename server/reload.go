@@ -694,12 +694,13 @@ func (s *Server) reloadAuthorization() {
 	awcsti := make(map[string]struct{}, len(s.opts.Accounts))
 
 	oldAccounts := s.accounts
-	gAccount := oldAccounts[globalAccountName]
 	s.accounts = make(map[string]*Account)
-	s.registerAccount(gAccount)
+	s.registerAccount(s.gacc)
 	for _, newAcc := range s.opts.Accounts {
-		// For existing accounts, moved updated config to existing account
 		if acc, ok := oldAccounts[newAcc.Name]; ok {
+			// If account exist in latest config, "transfer" the account's
+			// sublist to the new account object before registering it
+			// in s.accounts.
 			acc.mu.RLock()
 			sl := acc.sl
 			acc.mu.RUnlock()
