@@ -365,9 +365,14 @@ func (s *Server) registerAccount(acc *Account) {
 	}
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
-	if s.opts != nil && s.opts.Cluster.Port != 0 {
+	// During config reload, it is possible that account was
+	// already created (global account), so use locking and
+	// make sure we create only if needed.
+	acc.mu.Lock()
+	if acc.rm == nil && s.opts != nil && s.opts.Cluster.Port != 0 {
 		acc.rm = make(map[string]*rme, 256)
 	}
+	acc.mu.Unlock()
 	s.accounts[acc.Name] = acc
 }
 
