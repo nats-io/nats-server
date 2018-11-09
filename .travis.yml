@@ -1,10 +1,5 @@
-# Tests are starting to consume enough memory during --race tests to exceed container env on Travis of 4GB.
-sudo: required
-dist: trusty
-
 language: go
 go:
-- 1.9.x
 - 1.10.x
 - 1.11.x
 install:
@@ -24,6 +19,7 @@ before_script:
 - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race $EXCLUDE_VENDOR; fi
+- go test -run=TestNoRace $EXCLUDE_VENDOR
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]]; then ./scripts/cov.sh TRAVIS; else GOGC=10 go test -race -p=1 $EXCLUDE_VENDOR; fi
 after_success:
 - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi

@@ -742,6 +742,8 @@ func TestNewRouteQueueSubsDistribution(t *testing.T) {
 	}
 	sendA("PING\r\n")
 	expectA(pongRe)
+	sendB("PING\r\n")
+	expectB(pongRe)
 
 	sender := createClientConn(t, optsA.Host, optsA.Port)
 	defer sender.Close()

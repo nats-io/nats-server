@@ -21,7 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -858,102 +857,6 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	// The implicit server that we just shutdown should have been removed from the pool
 	checkPool(expected)
 	nc.Close()
-}
-
-func TestRoutedQueueAutoUnsubscribe(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/seed.conf")
-	optsA.NoSigs, optsA.NoLog = true, true
-	srvA := RunServer(optsA)
-	defer srvA.Shutdown()
-
-	srvARouteURL := fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, srvA.ClusterAddr().Port)
-	optsB := nextServerOpts(optsA)
-	optsB.Routes = RoutesFromStr(srvARouteURL)
-
-	srvB := RunServer(optsB)
-	defer srvB.Shutdown()
-
-	// Wait for these 2 to connect to each other
-	checkClusterFormed(t, srvA, srvB)
-
-	// Have a client connection to each server
-	ncA, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer ncA.Close()
-
-	ncB, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer ncB.Close()
-
-	rbar := int32(0)
-	barCb := func(m *nats.Msg) {
-		atomic.AddInt32(&rbar, 1)
-	}
-	rbaz := int32(0)
-	bazCb := func(m *nats.Msg) {
-		atomic.AddInt32(&rbaz, 1)
-	}
-
-	// Create 125 queue subs with auto-unsubscribe to each server for
-	// group bar and group baz. So 250 total per queue group.
-	cons := []*nats.Conn{ncA, ncB}
-	for _, c := range cons {
-		for i := 0; i < 125; i++ {
-			qsub, err := c.QueueSubscribe("foo", "bar", barCb)
-			if err != nil {
-				t.Fatalf("Error on subscribe: %v", err)
-			}
-			if err := qsub.AutoUnsubscribe(1); err != nil {
-				t.Fatalf("Error on auto-unsubscribe: %v", err)
-			}
-			qsub, err = c.QueueSubscribe("foo", "baz", bazCb)
-			if err != nil {
-				t.Fatalf("Error on subscribe: %v", err)
-			}
-			if err := qsub.AutoUnsubscribe(1); err != nil {
-				t.Fatalf("Error on auto-unsubscribe: %v", err)
-			}
-		}
-		c.Subscribe("TEST.COMPLETE", func(m *nats.Msg) {})
-	}
-
-	// We coelasce now so for each server we will have all local (250) plus
-	// two from the remote side for each queue group. We also create one more
-	// and will wait til each server has 254 subscriptions, that will make sure
-	// that we have everything setup.
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		subsA := srvA.NumSubscriptions()
-		subsB := srvB.NumSubscriptions()
-		if subsA != 254 || subsB != 254 {
-			return fmt.Errorf("Not all subs processed yet: %d and %d", subsA, subsB)
-		}
-		return nil
-	})
-
-	expected := int32(250)
-	// Now send messages from each server
-	for i := int32(0); i < expected; i++ {
-		c := cons[i%2]
-		c.Publish("foo", []byte("Don't Drop Me!"))
-	}
-	for _, c := range cons {
-		c.Flush()
-	}
-
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		nbar := atomic.LoadInt32(&rbar)
-		nbaz := atomic.LoadInt32(&rbaz)
-		if nbar == expected && nbaz == expected {
-			time.Sleep(500 * time.Millisecond)
-			return nil
-		}
-		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
-			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
-	})
 }
 
 func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {

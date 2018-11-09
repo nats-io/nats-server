@@ -25,10 +25,12 @@ import (
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
+//            The test name should be prefixed with TestNoRace so we can run only
+//            those tests: go test -run=TestNoRace ...
 
 // As we look to improve high fanout situations make sure we
 // have a test that checks ordering for all subscriptions from a single subscriber.
-func TestHighFanoutOrdering(t *testing.T) {
+func TestNoRaceHighFanoutOrdering(t *testing.T) {
 	opts := &server.Options{Host: "127.0.0.1", Port: server.RANDOM_PORT}
 
 	s := RunServer(opts)
@@ -87,7 +89,7 @@ func TestHighFanoutOrdering(t *testing.T) {
 	wg.Wait()
 }
 
-func TestRouteFormTimeWithHighSubscriptions(t *testing.T) {
+func TestNoRaceRouteFormTimeWithHighSubscriptions(t *testing.T) {
 	srvA, optsA := RunServerWithConfig("./configs/srv_a.conf")
 	defer srvA.Shutdown()
 
