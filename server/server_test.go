@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -649,6 +650,9 @@ func TestProfilingNoTimeout(t *testing.T) {
 }
 
 func TestLameDuckMode(t *testing.T) {
+	atomic.StoreInt64(&lameDuckModeInitialDelay, 0)
+	defer atomic.StoreInt64(&lameDuckModeInitialDelay, lameDuckModeDefaultInitialDelay)
+
 	optsA := DefaultOptions()
 	optsA.Cluster.Host = "127.0.0.1"
 	srvA := RunServer(optsA)
@@ -796,4 +800,50 @@ func TestLameDuckMode(t *testing.T) {
 	checkClientsCount(t, srvB, total)
 
 	stopClientsAndSrvB(ncs)
+
+	// Now test that we introduce delay before starting closing client connections.
+	// This allow to "signal" multiple servers and avoid their clients to reconnect
+	// to a server that is going to be going in LD mode.
+	atomic.StoreInt64(&lameDuckModeInitialDelay, int64(100*time.Millisecond))
+
+	optsA.LameDuckDuration = 10 * time.Millisecond
+	srvA = RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	optsB.LameDuckDuration = 10 * time.Millisecond
+	srvB = RunServer(optsB)
+	defer srvB.Shutdown()
+
+	optsC := DefaultOptions()
+	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	optsC.LameDuckDuration = 10 * time.Millisecond
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB, srvC)
+
+	rt := int32(0)
+	nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port),
+		nats.ReconnectWait(15*time.Millisecond),
+		nats.ReconnectHandler(func(*nats.Conn) {
+			atomic.AddInt32(&rt, 1)
+		}))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	go srvA.lameDuckMode()
+	// Wait a bit, but less than lameDuckModeInitialDelay that we set in this
+	// test to 100ms.
+	time.Sleep(30 * time.Millisecond)
+	go srvB.lameDuckMode()
+
+	srvA.grWG.Wait()
+	srvB.grWG.Wait()
+	checkClientsCount(t, srvC, 1)
+	if n := atomic.LoadInt32(&rt); n != 1 {
+		t.Fatalf("Expected client to reconnect only once, got %v", n)
+	}
 }

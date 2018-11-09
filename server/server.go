@@ -38,6 +38,12 @@ import (
 	"github.com/nats-io/gnatsd/logger"
 )
 
+// Time to wait before starting closing clients when in LD mode.
+const lameDuckModeDefaultInitialDelay = int64(time.Second)
+
+// Make this a variable so that we can change during tests
+var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
+
 // Info is the information sent to clients to help them understand information
 // about this server.
 type Info struct {
@@ -1621,8 +1627,16 @@ func (s *Server) lameDuckMode() {
 	}
 	s.mu.Unlock()
 
-	t := time.NewTimer(10 * time.Second)
-	s.Noticef("Closing existing clients")
+	t := time.NewTimer(time.Duration(atomic.LoadInt64(&lameDuckModeInitialDelay)))
+	// Delay start of closing of client connections in case
+	// we have several servers that we want to signal to enter LD mode
+	// and not have their client reconnect to each other.
+	select {
+	case <-t.C:
+		s.Noticef("Closing existing clients")
+	case <-s.quitCh:
+		return
+	}
 	for i, client := range clients {
 		client.closeConnection(ServerShutdown)
 		if batch == 1 || i%batch == 0 {
