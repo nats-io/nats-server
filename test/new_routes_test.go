@@ -16,6 +16,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -933,11 +934,11 @@ func registerAccounts(t *testing.T, s *server.Server) (*server.Account, *server.
 	// Now create two accounts.
 	f, err := s.RegisterAccount("$foo")
 	if err != nil {
-		t.Fatalf("Error creating account 'foo': %v", err)
+		t.Fatalf("Error creating account '$foo': %v", err)
 	}
 	b, err := s.RegisterAccount("$bar")
 	if err != nil {
-		t.Fatalf("Error creating account 'bar': %v", err)
+		t.Fatalf("Error creating account '$bar': %v", err)
 	}
 	return f, b
 }
@@ -1009,6 +1010,71 @@ func TestNewRouteStreamImport(t *testing.T) {
 	sendA("PUB foo 2\r\nok\r\nPING\r\n")
 	expectA(pongRe)
 	expectNothing(t, clientA)
+}
+
+func TestNewRouteStreamImportLargeFanout(t *testing.T) {
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	// Do Accounts for the servers.
+	// This account will export a stream.
+	fooA, err := srvA.RegisterAccount("$foo")
+	if err != nil {
+		t.Fatalf("Error creating account '$foo': %v", err)
+	}
+	fooB, err := srvB.RegisterAccount("$foo")
+	if err != nil {
+		t.Fatalf("Error creating account '$foo': %v", err)
+	}
+
+	// Add export to both.
+	addStreamExport("foo", isPublic, fooA, fooB)
+
+	// Now we will create 100 accounts who will all import from foo.
+	fanout := 100
+	barA := make([]*server.Account, fanout)
+	for i := 0; i < fanout; i++ {
+		acc := fmt.Sprintf("$bar-%d", i)
+		barA[i], err = srvB.RegisterAccount(acc)
+		if err != nil {
+			t.Fatalf("Error creating account %q: %v", acc, err)
+		}
+		// Add import abilities to server B's bar account from foo.
+		barA[i].AddStreamImport(fooB, "foo", "")
+	}
+
+	// clientA will be connected to srvA and be the stream producer.
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	// Now setup fanout clients on srvB who will do a sub from account $bar
+	// that should map account $foo's foo subject.
+	clientB := make([]net.Conn, fanout)
+	sendB := make([]sendFun, fanout)
+	expectB := make([]expectFun, fanout)
+
+	for i := 0; i < fanout; i++ {
+		clientB[i] = createClientConn(t, optsB.Host, optsB.Port)
+		defer clientB[i].Close()
+		sendB[i], expectB[i] = setupConnWithAccount(t, clientB[i], barA[i].Name)
+		sendB[i]("SUB foo 1\r\nPING\r\n")
+		expectB[i](pongRe)
+	}
+
+	// Since we do not shadow all the bar acounts on srvA they will be dropped
+	// when they hit the other side, which means we could only have one sub for
+	// all the imports on srvA, and srvB will have 2*fanout, one normal and one
+	// that represents the import.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if ns := srvA.NumSubscriptions(); ns != uint32(1) {
+			return fmt.Errorf("Number of subscriptions is %d", ns)
+		}
+		if ns := srvB.NumSubscriptions(); ns != uint32(2*fanout) {
+			return fmt.Errorf("Number of subscriptions is %d", ns)
+		}
+		return nil
+	})
 }
 
 func TestNewRouteReservedReply(t *testing.T) {
