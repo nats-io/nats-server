@@ -1284,3 +1284,50 @@ func TestNewRouteNoQueueSubscribersBounce(t *testing.T) {
 		t.Fatalf("Expect to get all 500 responses, got %d", numAnswers)
 	}
 }
+
+func TestNewRouteLargeDistinctQueueSubscribers(t *testing.T) {
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
+
+	ncA, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Failed to create connection for ncA: %v\n", err)
+	}
+	defer ncA.Close()
+
+	ncB, err := nats.Connect(urlB)
+	if err != nil {
+		t.Fatalf("Failed to create connection for ncB: %v\n", err)
+	}
+	defer ncB.Close()
+
+	const nqsubs = 100
+
+	qsubs := make([]*nats.Subscription, 100)
+
+	// Create 100 queue subscribers on B all with different queue groups.
+	for i := 0; i < nqsubs; i++ {
+		qg := fmt.Sprintf("worker-%d", i)
+		qsubs[i], _ = ncB.QueueSubscribeSync("foo", qg)
+	}
+	ncB.Flush()
+
+	// Send 10 messages. We should receive 1000 responses.
+	for i := 0; i < 10; i++ {
+		ncA.Publish("foo", nil)
+	}
+	ncA.Flush()
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		for i := 0; i < nqsubs; i++ {
+			if n, _, _ := qsubs[i].Pending(); n != 10 {
+				return fmt.Errorf("Number of messgaes is %d", n)
+			}
+		}
+		return nil
+	})
+}
