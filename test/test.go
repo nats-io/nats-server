@@ -221,6 +221,14 @@ func setupConnWithAccount(t tLogger, c net.Conn, account string) (sendFun, expec
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
+func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (sendFun, expectFun) {
+	checkInfoMsg(t, c)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"protocol\":1,\"user\":%q,\"pass\":%q}\r\n",
+		false, false, false, username, password)
+	sendProto(t, c, cs)
+	return sendCommand(t, c), expectCommand(t, c)
+}
+
 type sendFun func(string)
 type expectFun func(*regexp.Regexp) []byte
 
@@ -260,6 +268,8 @@ var (
 	rsubRe    = regexp.MustCompile(`RS\+\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
 	runsubRe  = regexp.MustCompile(`RS\-\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
 	rmsgRe    = regexp.MustCompile(`(?:(?:RMSG\s+([^\s]+)\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	asubRe    = regexp.MustCompile(`A\+\s+([^\r\n]+)\r\n`)
+	aunsubRe  = regexp.MustCompile(`A\-\s+([^\r\n]+)\r\n`)
 )
 
 const (

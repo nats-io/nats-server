@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -47,6 +48,35 @@ type ClusterOpts struct {
 	ConnectRetries int               `json:"-"`
 }
 
+// GatewayOpts are options for gateways.
+type GatewayOpts struct {
+	Name               string               `json:"name"`
+	Host               string               `json:"addr,omitempty"`
+	Port               int                  `json:"port,omitempty"`
+	Username           string               `json:"-"`
+	Password           string               `json:"-"`
+	AuthTimeout        float64              `json:"auth_timeout,omitempty"`
+	TLSConfig          *tls.Config          `json:"-"`
+	TLSTimeout         float64              `json:"tls_timeout,omitempty"`
+	Advertise          string               `json:"advertise,omitempty"`
+	ConnectRetries     int                  `json:"connect_retries,omitempty"`
+	DefaultPermissions *GatewayPermissions  `json:"default_permissions,omitempty"`
+	Gateways           []*RemoteGatewayOpts `json:"gateways,omitempty"`
+	RejectUnknown      bool                 `json:"reject_unknown,omitempty"`
+
+	// Not exported, for tests.
+	resolver netResolver
+}
+
+// RemoteGatewayOpts are options for connecting to a remote gateway
+type RemoteGatewayOpts struct {
+	Name        string              `json:"name"`
+	TLSConfig   *tls.Config         `json:"-"`
+	TLSTimeout  float64             `json:"tls_timeout,omitempty"`
+	URLs        []*url.URL          `json:"urls,omitempty"`
+	Permissions *GatewayPermissions `json:"permissions,omitempty"`
+}
+
 // Options block for gnatsd server.
 type Options struct {
 	ConfigFile       string        `json:"-"`
@@ -77,6 +107,7 @@ type Options struct {
 	MaxPayload       int           `json:"max_payload"`
 	MaxPending       int64         `json:"max_pending"`
 	Cluster          ClusterOpts   `json:"cluster,omitempty"`
+	Gateway          GatewayOpts   `json:"gateway,omitempty"`
 	ProfPort         int           `json:"-"`
 	PidFile          string        `json:"-"`
 	PortsFileDir     string        `json:"-"`
@@ -103,6 +134,13 @@ type Options struct {
 
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
+
+	// private fields, used for testing
+	gatewaysSolicitDelay time.Duration
+}
+
+type netResolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone
@@ -127,12 +165,7 @@ func (o *Options) Clone() *Options {
 	}
 
 	if o.Routes != nil {
-		clone.Routes = make([]*url.URL, len(o.Routes))
-		for i, route := range o.Routes {
-			routeCopy := &url.URL{}
-			*routeCopy = *route
-			clone.Routes[i] = routeCopy
-		}
+		clone.Routes = deepCopyURLs(o.Routes)
 	}
 	if o.TLSConfig != nil {
 		clone.TLSConfig = o.TLSConfig.Clone()
@@ -140,7 +173,29 @@ func (o *Options) Clone() *Options {
 	if o.Cluster.TLSConfig != nil {
 		clone.Cluster.TLSConfig = o.Cluster.TLSConfig.Clone()
 	}
+	if o.Gateway.TLSConfig != nil {
+		clone.Gateway.TLSConfig = o.Gateway.TLSConfig.Clone()
+	}
+	if len(o.Gateway.Gateways) > 0 {
+		clone.Gateway.Gateways = make([]*RemoteGatewayOpts, len(o.Gateway.Gateways))
+		for i, g := range o.Gateway.Gateways {
+			clone.Gateway.Gateways[i] = g.clone()
+		}
+	}
 	return clone
+}
+
+func deepCopyURLs(urls []*url.URL) []*url.URL {
+	if urls == nil {
+		return nil
+	}
+	curls := make([]*url.URL, len(urls))
+	for i, u := range urls {
+		cu := &url.URL{}
+		*cu = *u
+		curls[i] = cu
+	}
+	return curls
 }
 
 // Configuration file authorization section.
@@ -350,6 +405,11 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				errors = append(errors, err)
 				continue
 			}
+		case "gateway":
+			if err := parseGateway(tk, o, &errors, &warnings); err != nil {
+				errors = append(errors, err)
+				continue
+			}
 		case "logfile", "log_file":
 			o.LogFile = v.(string)
 		case "syslog":
@@ -377,7 +437,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "ping_max":
 			o.MaxPingsOut = int(v.(int64))
 		case "tls":
-			tc, err := parseTLS(tk, o)
+			tc, err := parseTLS(tk)
 			if err != nil {
 				errors = append(errors, err)
 				continue
@@ -556,35 +616,20 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			}
 		case "routes":
 			ra := mv.([]interface{})
-			opts.Routes = make([]*url.URL, 0, len(ra))
-			for _, r := range ra {
-				tk, r := unwrapValue(r)
-				routeURL := r.(string)
-				url, err := url.Parse(routeURL)
-				if err != nil {
-					err := &configErr{tk, fmt.Sprintf("error parsing route url [%q]", routeURL)}
-					*errors = append(*errors, err)
-					continue
-				}
-				opts.Routes = append(opts.Routes, url)
+			routes, errs := parseURLs(ra, "route")
+			if errs != nil {
+				*errors = append(*errors, errs...)
+				continue
 			}
+			opts.Routes = routes
 		case "tls":
-			tc, err := parseTLS(tk, opts)
+			config, timeout, err := getTLSConfig(tk)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
-			if opts.Cluster.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
-				*errors = append(*errors, err)
-				continue
-			}
-			// For clusters, we will force strict verification. We also act
-			// as both client and server, so will mirror the rootCA to the
-			// clientCA pool.
-			opts.Cluster.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			opts.Cluster.TLSConfig.RootCAs = opts.Cluster.TLSConfig.ClientCAs
-			opts.Cluster.TLSTimeout = tc.Timeout
+			opts.Cluster.TLSConfig = config
+			opts.Cluster.TLSTimeout = timeout
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
@@ -592,7 +637,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":
-			perms, err := parseUserPermissions(mv, opts, errors, warnings)
+			perms, err := parseUserPermissions(mv, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -613,6 +658,206 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		}
 	}
 	return nil
+}
+
+func parseURLs(a []interface{}, typ string) ([]*url.URL, []error) {
+	var (
+		errors []error
+		urls   = make([]*url.URL, 0, len(a))
+	)
+	for _, u := range a {
+		tk, u := unwrapValue(u)
+		sURL := u.(string)
+		url, err := parseURL(sURL, typ)
+		if err != nil {
+			err := &configErr{tk, err.Error()}
+			errors = append(errors, err)
+			continue
+		}
+		urls = append(urls, url)
+	}
+	return urls, errors
+}
+
+func parseURL(u string, typ string) (*url.URL, error) {
+	urlStr := strings.TrimSpace(u)
+	url, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing %s url [%q]", typ, urlStr)
+	}
+	return url, nil
+}
+
+func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error) error {
+	tk, v := unwrapValue(v)
+	gm, ok := v.(map[string]interface{})
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected gateway to be a map, got %T", v)}
+	}
+	for mk, mv := range gm {
+		// Again, unwrap token value if line check is required.
+		tk, mv = unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "name":
+			o.Gateway.Name = mv.(string)
+		case "listen":
+			hp, err := parseListen(mv)
+			if err != nil {
+				err := &configErr{tk, err.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Gateway.Host = hp.host
+			o.Gateway.Port = hp.port
+		case "port":
+			o.Gateway.Port = int(mv.(int64))
+		case "host", "net":
+			o.Gateway.Host = mv.(string)
+		case "authorization":
+			auth, err := parseAuthorization(tk, o, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			if auth.users != nil {
+				*errors = append(*errors, &configErr{tk, "Gateway authorization does not allow multiple users"})
+				continue
+			}
+			o.Gateway.Username = auth.user
+			o.Gateway.Password = auth.pass
+			o.Gateway.AuthTimeout = auth.timeout
+		case "tls":
+			config, timeout, err := getTLSConfig(tk)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Gateway.TLSConfig = config
+			o.Gateway.TLSTimeout = timeout
+		case "advertise":
+			o.Gateway.Advertise = mv.(string)
+		case "connect_retries":
+			o.Gateway.ConnectRetries = int(mv.(int64))
+		case "default_permissions":
+			perms, err := parseGatewayPermissions(mv, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Gateway.DefaultPermissions = perms
+		case "gateways":
+			gateways, err := parseGateways(mv, errors, warnings)
+			if err != nil {
+				return err
+			}
+			o.Gateway.Gateways = gateways
+		case "reject_unknown":
+			o.Gateway.RejectUnknown = mv.(bool)
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+// Parse TLS and returns a TLSConfig and TLSTimeout.
+// Used by cluster and gateway parsing.
+func getTLSConfig(tk token) (*tls.Config, float64, error) {
+	tc, err := parseTLS(tk)
+	if err != nil {
+		return nil, 0, err
+	}
+	config, err := GenTLSConfig(tc)
+	if err != nil {
+		err := &configErr{tk, err.Error()}
+		return nil, 0, err
+	}
+	// For clusters/gateways, we will force strict verification. We also act
+	// as both client and server, so will mirror the rootCA to the
+	// clientCA pool.
+	config.ClientAuth = tls.RequireAndVerifyClientCert
+	config.RootCAs = config.ClientCAs
+	return config, tc.Timeout, nil
+}
+
+func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteGatewayOpts, error) {
+	tk, v := unwrapValue(v)
+	// Make sure we have an array
+	ga, ok := v.([]interface{})
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected gateways field to be an array, got %T", v)}
+	}
+	gateways := []*RemoteGatewayOpts{}
+	for _, g := range ga {
+		tk, g = unwrapValue(g)
+		// Check its a map/struct
+		gm, ok := g.(map[string]interface{})
+		if !ok {
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected gateway entry to be a map/struct, got %v", g)})
+			continue
+		}
+		gateway := &RemoteGatewayOpts{}
+		for k, v := range gm {
+			tk, v = unwrapValue(v)
+			switch strings.ToLower(k) {
+			case "name":
+				gateway.Name = v.(string)
+			case "tls":
+				tls, timeout, err := getTLSConfig(tk)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
+				gateway.TLSConfig = tls
+				gateway.TLSTimeout = timeout
+			case "url":
+				url, err := parseURL(v.(string), "gateway")
+				if err != nil {
+					*errors = append(*errors, &configErr{tk, err.Error()})
+					continue
+				}
+				gateway.URLs = append(gateway.URLs, url)
+			case "urls":
+				urls, errs := parseURLs(v.([]interface{}), "gateway")
+				if errs != nil {
+					for _, e := range errs {
+						*errors = append(*errors, e)
+					}
+					continue
+				}
+				gateway.URLs = urls
+			case "permissions":
+				perms, err := parseGatewayPermissions(v, errors, warnings)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
+				gateway.Permissions = perms
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: k,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		gateways = append(gateways, gateway)
+	}
+	return gateways, nil
 }
 
 // Sets cluster's permissions based on given pub/sub permissions,
@@ -1168,7 +1413,7 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 			auth.users = users
 			auth.nkeys = nkeys
 		case "default_permission", "default_permissions", "permissions":
-			permissions, err := parseUserPermissions(tk, opts, errors, warnings)
+			permissions, err := parseUserPermissions(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1243,7 +1488,7 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 			case "pass", "password":
 				user.Password = v.(string)
 			case "permission", "permissions", "authorization":
-				perms, err = parseUserPermissions(tk, opts, errors, warnings)
+				perms, err = parseUserPermissions(tk, errors, warnings)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
@@ -1292,7 +1537,7 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 }
 
 // Helper function to parse user/account permissions
-func parseUserPermissions(mv interface{}, opts *Options, errors, warnings *[]error) (*Permissions, error) {
+func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissions, error) {
 	var (
 		tk token
 		p  = &Permissions{}
@@ -1310,14 +1555,14 @@ func parseUserPermissions(mv interface{}, opts *Options, errors, warnings *[]err
 		// Import is Publish
 		// Export is Subscribe
 		case "pub", "publish", "import":
-			perms, err := parseVariablePermissions(v, opts, errors, warnings)
+			perms, err := parseVariablePermissions(v, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Publish = perms
 		case "sub", "subscribe", "export":
-			perms, err := parseVariablePermissions(v, opts, errors, warnings)
+			perms, err := parseVariablePermissions(v, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1334,15 +1579,55 @@ func parseUserPermissions(mv interface{}, opts *Options, errors, warnings *[]err
 }
 
 // Top level parser for authorization configurations.
-func parseVariablePermissions(v interface{}, opts *Options, errors, warnings *[]error) (*SubjectPermission, error) {
+func parseVariablePermissions(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
 	switch vv := v.(type) {
 	case map[string]interface{}:
 		// New style with allow and/or deny properties.
-		return parseSubjectPermission(vv, opts, errors, warnings)
+		return parseSubjectPermission(vv, errors, warnings)
 	default:
 		// Old style
 		return parseOldPermissionStyle(v, errors, warnings)
 	}
+}
+
+// Helper function to parse gateway permissions
+func parseGatewayPermissions(v interface{}, errors *[]error, warnings *[]error) (*GatewayPermissions, error) {
+	tk, v := unwrapValue(v)
+	pm, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected permissions to be a map/struct, got %+v", v)}
+	}
+	perms := &GatewayPermissions{}
+	for k, v := range pm {
+		tk, v := unwrapValue(v)
+		switch strings.ToLower(k) {
+		case "import":
+			sp, err := parseVariablePermissions(v, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			perms.Import = sp
+		case "export":
+			sp, err := parseVariablePermissions(v, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			perms.Export = sp
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: k,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+	return perms, nil
 }
 
 // Helper function to parse subject singeltons and/or arrays
@@ -1384,7 +1669,7 @@ func parseOldPermissionStyle(v interface{}, errors, warnings *[]error) (*Subject
 }
 
 // Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
-func parseSubjectPermission(v interface{}, opts *Options, errors, warnings *[]error) (*SubjectPermission, error) {
+func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
 	m := v.(map[string]interface{})
 	if len(m) == 0 {
 		return nil, nil
@@ -1458,7 +1743,7 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(v interface{}, opts *Options) (*TLSConfigOpts, error) {
+func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 	var (
 		tlsm map[string]interface{}
 		tc   = TLSConfigOpts{}
@@ -1830,6 +2115,11 @@ func processOptions(opts *Options) {
 	}
 	if opts.LameDuckDuration == 0 {
 		opts.LameDuckDuration = DEFAULT_LAME_DUCK_DURATION
+	}
+	if opts.Gateway.Port != 0 {
+		if opts.Gateway.Host == "" {
+			opts.Gateway.Host = DEFAULT_HOST
+		}
 	}
 }
 

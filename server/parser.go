@@ -388,10 +388,13 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				if c.typ == CLIENT {
+				switch c.typ {
+				case CLIENT:
 					err = c.processSub(arg)
-				} else {
+				case ROUTER:
 					err = c.processRemoteSub(arg)
+				case GATEWAY:
+					err = c.processGatewaySubjectSub(arg)
 				}
 				if err != nil {
 					return err
@@ -476,10 +479,13 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				if c.typ == CLIENT {
+				switch c.typ {
+				case CLIENT:
 					err = c.processUnsub(arg)
-				} else {
+				case ROUTER:
 					err = c.processRemoteUnsub(arg)
+				case GATEWAY:
+					err = c.processGatewaySubjectUnsub(arg)
 				}
 				if err != nil {
 					return err

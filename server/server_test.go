@@ -14,11 +14,14 @@
 package server
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -845,5 +848,171 @@ func TestLameDuckMode(t *testing.T) {
 	checkClientsCount(t, srvC, 1)
 	if n := atomic.LoadInt32(&rt); n != 1 {
 		t.Fatalf("Expected client to reconnect only once, got %v", n)
+	}
+}
+
+func TestServerValidateGatewaysOptions(t *testing.T) {
+	baseOpt := testDefaultOptionsForGateway("A")
+	u, _ := url.Parse("host:5222")
+	g := &RemoteGatewayOpts{
+		URLs: []*url.URL{u},
+	}
+	baseOpt.Gateway.Gateways = append(baseOpt.Gateway.Gateways, g)
+
+	for _, test := range []struct {
+		name        string
+		opts        func() *Options
+		expectedErr string
+	}{
+		{
+			name: "gateway_has_no_name",
+			opts: func() *Options {
+				o := baseOpt.Clone()
+				o.Gateway.Name = ""
+				return o
+			},
+			expectedErr: "has no name",
+		},
+		{
+			name: "gateway_has_no_port",
+			opts: func() *Options {
+				o := baseOpt.Clone()
+				o.Gateway.Port = 0
+				return o
+			},
+			expectedErr: "no port specified",
+		},
+		{
+			name: "gateway_dst_has_no_name",
+			opts: func() *Options {
+				o := baseOpt.Clone()
+				return o
+			},
+			expectedErr: "has no name",
+		},
+		{
+			name: "gateway_dst_urls_is_nil",
+			opts: func() *Options {
+				o := baseOpt.Clone()
+				o.Gateway.Gateways[0].Name = "B"
+				o.Gateway.Gateways[0].URLs = nil
+				return o
+			},
+			expectedErr: "has no URL",
+		},
+		{
+			name: "gateway_dst_urls_is_empty",
+			opts: func() *Options {
+				o := baseOpt.Clone()
+				o.Gateway.Gateways[0].Name = "B"
+				o.Gateway.Gateways[0].URLs = []*url.URL{}
+				return o
+			},
+			expectedErr: "has no URL",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateOptions(test.opts()); err == nil || !strings.Contains(err.Error(), test.expectedErr) {
+				t.Fatalf("Expected error about %q, got %v", test.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestAcceptError(t *testing.T) {
+	o := DefaultOptions()
+	s := New(o)
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+	defer s.Shutdown()
+	orgDelay := time.Hour
+	delay := s.acceptError("Test", fmt.Errorf("any error"), orgDelay)
+	if delay != orgDelay {
+		t.Fatalf("With this type of error, delay should have stayed same, got %v", delay)
+	}
+
+	// Create any net.Error and make it a temporary
+	ne := &net.DNSError{IsTemporary: true}
+	orgDelay = 10 * time.Millisecond
+	delay = s.acceptError("Test", ne, orgDelay)
+	if delay != 2*orgDelay {
+		t.Fatalf("Expected delay to double, got %v", delay)
+	}
+	// Now check the max
+	orgDelay = 60 * ACCEPT_MAX_SLEEP / 100
+	delay = s.acceptError("Test", ne, orgDelay)
+	if delay != ACCEPT_MAX_SLEEP {
+		t.Fatalf("Expected delay to double, got %v", delay)
+	}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	start := time.Now()
+	go func() {
+		s.acceptError("Test", ne, orgDelay)
+		wg.Done()
+	}()
+	time.Sleep(100 * time.Millisecond)
+	// This should kick out the sleep in acceptError
+	s.Shutdown()
+	if dur := time.Since(start); dur >= ACCEPT_MAX_SLEEP {
+		t.Fatalf("Shutdown took too long: %v", dur)
+	}
+}
+
+type myDummyDNSResolver struct {
+	ips []string
+	err error
+}
+
+func (r *myDummyDNSResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.ips, nil
+}
+
+func TestGetRandomIP(t *testing.T) {
+	s := &Server{}
+	resolver := &myDummyDNSResolver{}
+	// no port...
+	if _, err := s.getRandomIP(resolver, "noport"); err == nil || !strings.Contains(err.Error(), "port") {
+		t.Fatalf("Expected error about port missing, got %v", err)
+	}
+	resolver.err = fmt.Errorf("on purpose")
+	if _, err := s.getRandomIP(resolver, "localhost:4222"); err == nil || !strings.Contains(err.Error(), "on purpose") {
+		t.Fatalf("Expected error about no port, got %v", err)
+	}
+	resolver.err = nil
+	a, err := s.getRandomIP(resolver, "localhost:4222")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if a != "localhost:4222" {
+		t.Fatalf("Expected address to be %q, got %q", "localhost:4222", a)
+	}
+	resolver.ips = []string{"1.2.3.4"}
+	a, err = s.getRandomIP(resolver, "localhost:4222")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if a != "1.2.3.4:4222" {
+		t.Fatalf("Expected address to be %q, got %q", "1.2.3.4:4222", a)
+	}
+	// Check for randomness
+	resolver.ips = []string{"1.2.3.4", "2.2.3.4", "3.2.3.4"}
+	dist := [3]int{}
+	for i := 0; i < 100; i++ {
+		ip, err := s.getRandomIP(resolver, "localhost:4222")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		v := int(ip[0]-'0') - 1
+		dist[v]++
+	}
+	for i, d := range dist {
+		if d < 23 || d > 43 {
+			t.Fatalf("Unexpected distribution for ip %v, got %v", i, d)
+		}
 	}
 }
