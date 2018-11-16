@@ -50,7 +50,7 @@ func TestClosedConnsAccounting(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	wait := 20 * time.Millisecond
+	wait := time.Second
 
 	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
 	if err != nil {

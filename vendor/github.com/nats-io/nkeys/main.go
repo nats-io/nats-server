@@ -34,11 +34,12 @@ var (
 
 // KeyPair provides the central interface to nkeys.
 type KeyPair interface {
-	Seed() (string, error)
-	PublicKey() (string, error)
-	PrivateKey() (string, error)
+	Seed() ([]byte, error)
+	PublicKey() ([]byte, error)
+	PrivateKey() ([]byte, error)
 	Sign(input []byte) ([]byte, error)
 	Verify(input []byte, sig []byte) error
+	Wipe()
 }
 
 // CreateUser will create a User typed KeyPair.
@@ -67,7 +68,7 @@ func CreateOperator() (KeyPair, error) {
 }
 
 // FromPublicKey will create a KeyPair capable of verifying signatures.
-func FromPublicKey(public string) (KeyPair, error) {
+func FromPublicKey(public []byte) (KeyPair, error) {
 	raw, err := decode(public)
 	if err != nil {
 		return nil, err
@@ -80,12 +81,13 @@ func FromPublicKey(public string) (KeyPair, error) {
 }
 
 // FromSeed will create a KeyPair capable of signing and verifying signatures.
-func FromSeed(seed string) (KeyPair, error) {
+func FromSeed(seed []byte) (KeyPair, error) {
 	_, _, err := DecodeSeed(seed)
 	if err != nil {
 		return nil, err
 	}
-	return &kp{seed}, nil
+	copy := append([]byte{}, seed...)
+	return &kp{copy}, nil
 }
 
 // Create a KeyPair from the raw 32 byte seed for a given type.

@@ -36,6 +36,8 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/nats-io/gnatsd/logger"
+	"github.com/nats-io/jwt"
+	"github.com/nats-io/nkeys"
 )
 
 // Time to wait before starting closing clients when in LD mode.
@@ -84,6 +86,7 @@ type Server struct {
 	gacc           *Account
 	accounts       map[string]*Account
 	activeAccounts int
+	accResolver    AccountResolver
 	clients        map[uint64]*client
 	routes         map[uint64]*client
 	remotes        map[string]*client
@@ -142,6 +145,9 @@ type Server struct {
 	// LameDuck mode
 	ldm   bool
 	ldmCh chan bool
+
+	// Trusted public operator keys.
+	trustedNkeys []string
 }
 
 // Make sure all are 64bits for atomic use
@@ -184,6 +190,11 @@ func New(opts *Options) *Server {
 		done:       make(chan bool, 1),
 		start:      now,
 		configTime: now,
+	}
+
+	// ProcessTrustedNkeys
+	if !s.processTrustedNkeys() {
+		return nil
 	}
 
 	s.mu.Lock()
@@ -266,6 +277,68 @@ func (s *Server) generateRouteInfoJSON() {
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
+// isTrustedIssuer will check that the issuer is a trusted public key.
+// This is used to make sure and account was signed by a trusted operator.
+func (s *Server) isTrustedIssuer(issuer string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, tk := range s.trustedNkeys {
+		if tk == issuer {
+			return true
+		}
+	}
+	return false
+}
+
+// processTrustedNkeys will process stamped and option based
+// trusted nkeys. Returns success.
+func (s *Server) processTrustedNkeys() bool {
+	if trustedNkeys != "" && !s.initStampedTrustedNkeys() {
+		return false
+	} else if s.opts.TrustedNkeys != nil {
+		for _, key := range s.opts.TrustedNkeys {
+			if !nkeys.IsValidPublicOperatorKey([]byte(key)) {
+				return false
+			}
+			s.trustedNkeys = s.opts.TrustedNkeys
+		}
+	}
+	return true
+}
+
+// checkTrustedNkeyString will check that the string is a valid array
+// of public operator nkeys.
+func checkTrustedNkeyString(keys string) []string {
+	tks := strings.Fields(keys)
+	if len(tks) == 0 {
+		return nil
+	}
+	// Walk all the keys and make sure they are valid.
+	for _, key := range tks {
+		if !nkeys.IsValidPublicOperatorKey([]byte(key)) {
+			return nil
+		}
+	}
+	return tks
+}
+
+// initStampedTrustedNkeys will check the stamped trusted keys
+// and will set the server field 'trustedNkeys'. Returns whether
+// it succeeded or not.
+func (s *Server) initStampedTrustedNkeys() bool {
+	tks := checkTrustedNkeyString(trustedNkeys)
+	if len(tks) == 0 {
+		return false
+	}
+	// Check to see if we have an override in options, which will
+	// cause us to fail also.
+	if len(s.opts.TrustedNkeys) > 0 {
+		return false
+	}
+	s.trustedNkeys = tks
+	return true
+}
+
 // PrintAndDie is exported for access in other packages.
 func PrintAndDie(msg string) {
 	fmt.Fprintf(os.Stderr, "%s\n", msg)
@@ -329,6 +402,20 @@ func (s *Server) NumActiveAccounts() int {
 	return s.activeAccounts
 }
 
+// incActiveAccounts() just adds one under lock.
+func (s *Server) incActiveAccounts() {
+	s.mu.Lock()
+	s.activeAccounts++
+	s.mu.Unlock()
+}
+
+// dev=cActiveAccounts() just subtracts one under lock.
+func (s *Server) decActiveAccounts() {
+	s.mu.Lock()
+	s.activeAccounts--
+	s.mu.Unlock()
+}
+
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
 func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
 	s.mu.Lock()
@@ -369,6 +456,9 @@ func (s *Server) registerAccount(acc *Account) {
 	if acc.maxaettl == 0 {
 		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
 	}
+	if acc.clients == nil {
+		acc.clients = make(map[*client]*client)
+	}
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
 	// During config reload, it is possible that account was
@@ -387,7 +477,93 @@ func (s *Server) registerAccount(acc *Account) {
 func (s *Server) LookupAccount(name string) *Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.accounts[name]
+
+	acc := s.accounts[name]
+	if acc != nil {
+		// If we are expired and we have a resolver, then
+		// return the latest information from the resolver.
+		if s.accResolver != nil && acc.IsExpired() {
+			s.UpdateAccount(acc)
+		}
+		return acc
+	}
+	// If we have a resolver see if it can fetch the account.
+	return s.FetchAccount(name)
+}
+
+// This will fetch new claims and if found update the account with new claims.
+func (s *Server) UpdateAccount(acc *Account) bool {
+	// TODO(dlc) - Make configurable
+	if time.Since(acc.updated) < time.Second {
+		s.Debugf("Requested account update for [%s] ignored, too soon", acc.Name)
+		return false
+	}
+	claimJWT, err := s.fetchRawAccountClaims(acc.Name)
+	if err != nil {
+		return false
+	}
+	acc.updated = time.Now()
+	if acc.claimJWT != "" && acc.claimJWT == claimJWT {
+		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
+		return false
+	}
+	accClaims, err := s.verifyAccountClaims(claimJWT)
+	if err == nil && accClaims != nil {
+		s.UpdateAccountClaims(acc, accClaims)
+		return true
+	}
+	return false
+}
+
+// fetchRawAccountClaims will grab raw account claims iff we have a resolver.
+func (s *Server) fetchRawAccountClaims(name string) (string, error) {
+	accResolver := s.accResolver
+	if accResolver == nil {
+		return "", ErrNoAccountResolver
+	}
+	// Need to do actual Fetch without the lock.
+	s.mu.Unlock()
+	claimJWT, err := accResolver.Fetch(name)
+	s.mu.Lock()
+	if err != nil {
+		return "", err
+	}
+	return claimJWT, nil
+}
+
+// fetchAccountClaims will attempt to fetch new claims if a resolver is present.
+func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, error) {
+	claimJWT, err := s.fetchRawAccountClaims(name)
+	if err != nil {
+		return nil, err
+	}
+	return s.verifyAccountClaims(claimJWT)
+}
+
+// verifyAccountClaims will decode and validate any account claims.
+func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, error) {
+	if accClaims, err := jwt.DecodeAccountClaims(claimJWT); err != nil {
+		return nil, err
+	} else {
+		vr := jwt.CreateValidationResults()
+		accClaims.Validate(vr)
+		if vr.IsBlocking(true) {
+			return nil, ErrAccountValidation
+		}
+		return accClaims, nil
+	}
+}
+
+// This will fetch an account from a resolver if defined.
+// Lock should be held.
+func (s *Server) FetchAccount(name string) *Account {
+	if accClaims, _ := s.fetchAccountClaims(name); accClaims != nil {
+		if acc := s.buildInternalAccount(accClaims); acc != nil {
+			s.registerAccount(acc)
+			return acc
+		}
+	}
+	return nil
 }
 
 // Start up the server, this will block.

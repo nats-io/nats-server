@@ -34,6 +34,9 @@ const (
 var (
 	// gitCommit injected at build
 	gitCommit string
+	// trustedNkeys is a whitespace  separated array of
+	// trusted operator public nkeys.
+	trustedNkeys string
 )
 
 const (

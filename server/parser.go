@@ -113,9 +113,9 @@ func (c *client) parse(buf []byte) error {
 		mcl = c.srv.getOpts().MaxControlLine
 	}
 
-	// snapshot this, and reset when we receive a
+	// Snapshot this, and reset when we receive a
 	// proper CONNECT if needed.
-	authSet := c.isAuthTimerSet()
+	authSet := c.awaitingAuth()
 
 	// Move to loop instead of range syntax to allow jumping of i
 	for i = 0; i < len(buf); i++ {
@@ -595,7 +595,7 @@ func (c *client) parse(buf []byte) error {
 				}
 				c.drop, c.state = 0, OP_START
 				// Reset notion on authSet
-				authSet = c.isAuthTimerSet()
+				authSet = c.awaitingAuth()
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -837,7 +837,7 @@ func (c *client) parse(buf []byte) error {
 
 authErr:
 	c.authViolation()
-	return ErrAuthorization
+	return ErrAuthentication
 
 parseErr:
 	c.sendErr("Unknown Protocol Operation")

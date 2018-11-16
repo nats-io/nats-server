@@ -22,11 +22,14 @@ var (
 	// ErrConnectionClosed represents an error condition on a closed connection.
 	ErrConnectionClosed = errors.New("Connection Closed")
 
-	// ErrAuthorization represents an error condition on failed authorization.
-	ErrAuthorization = errors.New("Authorization Error")
+	// ErrAuthorization represents an error condition on failed authentication.
+	ErrAuthentication = errors.New("Authentication Error")
 
 	// ErrAuthTimeout represents an error condition on failed authorization due to timeout.
-	ErrAuthTimeout = errors.New("Authorization Timeout")
+	ErrAuthTimeout = errors.New("Authentication Timeout")
+
+	// ErrAuthExpired represents an expired authorization due to timeout.
+	ErrAuthExpired = errors.New("Authentication Expired")
 
 	// ErrMaxPayload represents an error condition when the payload is too big.
 	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
@@ -64,6 +67,12 @@ var (
 
 	// ErrMissingAccount is returned when an account does not exist.
 	ErrMissingAccount = errors.New("Account Missing")
+
+	// ErrAccountValidation is returned when an account has failed validation.
+	ErrAccountValidation = errors.New("Account Validation Failed")
+
+	// ErrNoAccountResolver is returned when we attempt an update but do not have an account resolver.
+	ErrNoAccountResolver = errors.New("Account Resolver Missing")
 
 	// ErrStreamImportAuthorization is returned when a stream import is not authorized.
 	ErrStreamImportAuthorization = errors.New("Stream Import Not Authorized")

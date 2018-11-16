@@ -51,40 +51,43 @@ const (
 var b32Enc = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // Encode will encode a raw key or seed with the prefix and crc16 and then base32 encoded.
-func Encode(prefix PrefixByte, src []byte) (string, error) {
+func Encode(prefix PrefixByte, src []byte) ([]byte, error) {
 	if err := checkValidPrefixByte(prefix); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var raw bytes.Buffer
 
 	// write prefix byte
 	if err := raw.WriteByte(byte(prefix)); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// write payload
 	if _, err := raw.Write(src); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Calculate and write crc16 checksum
 	err := binary.Write(&raw, binary.LittleEndian, crc16(raw.Bytes()))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return b32Enc.EncodeToString(raw.Bytes()), nil
+	data := raw.Bytes()
+	buf := make([]byte, b32Enc.EncodedLen(len(data)))
+	b32Enc.Encode(buf, data)
+	return buf[:], nil
 }
 
 // EncodeSeed will encode a raw key with the prefix and then seed prefix and crc16 and then base32 encoded.
-func EncodeSeed(public PrefixByte, src []byte) (string, error) {
+func EncodeSeed(public PrefixByte, src []byte) ([]byte, error) {
 	if err := checkValidPublicPrefixByte(public); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if len(src) != ed25519.SeedSize {
-		return "", ErrInvalidSeedLen
+		return nil, ErrInvalidSeedLen
 	}
 
 	// In order to make this human printable for both bytes, we need to do a little
@@ -99,24 +102,35 @@ func EncodeSeed(public PrefixByte, src []byte) (string, error) {
 
 	// write payload
 	if _, err := raw.Write(src); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Calculate and write crc16 checksum
 	err := binary.Write(&raw, binary.LittleEndian, crc16(raw.Bytes()))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return b32Enc.EncodeToString(raw.Bytes()), nil
+	data := raw.Bytes()
+	buf := make([]byte, b32Enc.EncodedLen(len(data)))
+	b32Enc.Encode(buf, data)
+	return buf, nil
 }
 
-// decode will decode the base32 string and check crc16 and the prefix for validity.
-func decode(src string) ([]byte, error) {
-	raw, err := b32Enc.DecodeString(src)
+// IsValidEncoding will tell you if the encoding is a valid key.
+func IsValidEncoding(src []byte) bool {
+	_, err := decode(src)
+	return err == nil
+}
+
+// decode will decode the base32 and check crc16 and the prefix for validity.
+func decode(src []byte) ([]byte, error) {
+	raw := make([]byte, b32Enc.EncodedLen(len(src)))
+	n, err := b32Enc.Decode(raw, src)
 	if err != nil {
 		return nil, err
 	}
+	raw = raw[:n]
 
 	if len(raw) < 4 {
 		return nil, ErrInvalidEncoding
@@ -133,11 +147,11 @@ func decode(src string) ([]byte, error) {
 		return nil, err
 	}
 
-	return raw[0 : len(raw)-2], nil
+	return raw[:len(raw)-2], nil
 }
 
 // Decode will decode the base32 string and check crc16 and enforce the prefix is what is expected.
-func Decode(expectedPrefix PrefixByte, src string) ([]byte, error) {
+func Decode(expectedPrefix PrefixByte, src []byte) ([]byte, error) {
 	if err := checkValidPrefixByte(expectedPrefix); err != nil {
 		return nil, err
 	}
@@ -155,7 +169,7 @@ func Decode(expectedPrefix PrefixByte, src string) ([]byte, error) {
 
 // DecodeSeed will decode the base32 string and check crc16 and enforce the prefix is a seed
 // and the subsequent type is a valid type.
-func DecodeSeed(src string) (PrefixByte, []byte, error) {
+func DecodeSeed(src []byte) (PrefixByte, []byte, error) {
 	raw, err := decode(src)
 	if err != nil {
 		return PrefixByteSeed, nil, err
@@ -174,31 +188,31 @@ func DecodeSeed(src string) (PrefixByte, []byte, error) {
 }
 
 // IsValidPublicUserKey will decode and verify the string is a valid encoded Public User Key.
-func IsValidPublicUserKey(src string) bool {
+func IsValidPublicUserKey(src []byte) bool {
 	_, err := Decode(PrefixByteUser, src)
 	return err == nil
 }
 
 // IsValidPublicAccountKey will decode and verify the string is a valid encoded Public Account Key.
-func IsValidPublicAccountKey(src string) bool {
+func IsValidPublicAccountKey(src []byte) bool {
 	_, err := Decode(PrefixByteAccount, src)
 	return err == nil
 }
 
 // IsValidPublicServerKey will decode and verify the string is a valid encoded Public Server Key.
-func IsValidPublicServerKey(src string) bool {
+func IsValidPublicServerKey(src []byte) bool {
 	_, err := Decode(PrefixByteServer, src)
 	return err == nil
 }
 
 // IsValidPublicClusterKey will decode and verify the string is a valid encoded Public Cluster Key.
-func IsValidPublicClusterKey(src string) bool {
+func IsValidPublicClusterKey(src []byte) bool {
 	_, err := Decode(PrefixByteCluster, src)
 	return err == nil
 }
 
 // IsValidPublicOperatorKey will decode and verify the string is a valid encoded Public Operator Key.
-func IsValidPublicOperatorKey(src string) bool {
+func IsValidPublicOperatorKey(src []byte) bool {
 	_, err := Decode(PrefixByteOperator, src)
 	return err == nil
 }
