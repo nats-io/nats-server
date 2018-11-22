@@ -330,7 +330,7 @@ func (a *Account) pruneAutoExpireResponseMaps() {
 	}
 }
 
-// AddStreamImport will add in the stream import from a specific account with optional token.
+// AddStreamImportWithClaim will add in the stream import from a specific account with optional token.
 func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string, imClaim *jwt.Import) error {
 	if account == nil {
 		return ErrMissingAccount
@@ -411,7 +411,7 @@ func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject st
 			return true
 		}
 		// Check if token required
-		if ea != nil && ea.tokenReq {
+		if ea.tokenReq {
 			return a.checkActivation(account, imClaim, true)
 		}
 		// If we have a matching account we are authorized
@@ -429,7 +429,7 @@ func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject st
 				return true
 			}
 			// Check if token required
-			if ea != nil && ea.tokenReq {
+			if ea.tokenReq {
 				return a.checkActivation(account, imClaim, true)
 			}
 			_, ok := ea.approved[account.Name]
@@ -465,11 +465,12 @@ func (a *Account) activationExpired(subject string) {
 	}
 	// FIXME(dlc) - check services too?
 	si := a.imports.streams[subject]
-	a.mu.RUnlock()
-
 	if si == nil || si.invalid {
+		a.mu.RUnlock()
 		return
 	}
+	a.mu.RUnlock()
+
 	if si.acc.checkActivation(a, si.claim, false) {
 		// The token has been updated most likely and we are good to go.
 		return
@@ -669,9 +670,9 @@ func (s *Server) SetAccountResolver(ar AccountResolver) {
 	s.mu.Unlock()
 }
 
-// UpdateAccountClaims will update and existing account with new claims.
+// updateAccountClaims will update and existing account with new claims.
 // This will replace any exports or imports previously defined.
-func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
+func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	if a == nil {
 		return
 	}
@@ -756,7 +757,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 // Helper to build an internal account structure from a jwt.AccountClaims.
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	acc := &Account{Name: ac.Subject, Issuer: ac.Issuer}
-	s.UpdateAccountClaims(acc, ac)
+	s.updateAccountClaims(acc, ac)
 	return acc
 }
 

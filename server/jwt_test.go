@@ -151,6 +151,7 @@ func TestJWTUserBadTrusted(t *testing.T) {
 	}
 }
 
+// Test that if a user tries to connect with an expired user JWT we do the right thing.
 func TestJWTUserExpired(t *testing.T) {
 	// Create a new user that we will make sure has expired.
 	nkp, _ := nkeys.CreateUser()
@@ -482,7 +483,7 @@ func TestJWTAccountRenew(t *testing.T) {
 	if acc == nil {
 		t.Fatalf("Expected to retrive the account")
 	}
-	s.UpdateAccountClaims(acc, nac)
+	s.updateAccountClaims(acc, nac)
 
 	// Now make sure we can connect.
 	c, cr, l = newClientForServer(s)
@@ -669,7 +670,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
 
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 
 	// Our service import should have failed with a bad token.
 	if les := len(acc.imports.services); les != 0 {
@@ -694,7 +695,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 	// Our service import should have succeeded.
 	if les := len(acc.imports.services); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -724,7 +725,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 	// Our service import should have succeeded. Should be the only one since we reset.
 	if les := len(acc.imports.services); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -740,7 +741,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 0 {
 		t.Fatalf("Expected imports services len of 0, got %d", les)
@@ -764,7 +765,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -858,7 +859,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
 	acc := s.LookupAccount(string(barPub))
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 
 	checkShadow(0)
 
@@ -870,7 +871,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(barPub), barJWT)
-	s.UpdateAccountClaims(acc, barAC)
+	s.updateAccountClaims(acc, barAC)
 
 	checkShadow(1)
 
@@ -881,7 +882,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.UpdateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
 
 	checkShadow(0)
 
@@ -893,7 +894,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.UpdateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
 
 	checkShadow(0)
 
@@ -906,7 +907,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.UpdateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
 
 	checkShadow(1)
 }

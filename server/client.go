@@ -1031,11 +1031,7 @@ func (c *client) authViolation() {
 		s.mu.Unlock()
 	}
 	if hasTrustedNkeys {
-		if c.opts.JWT != "" {
-			c.Errorf("%v", ErrAuthentication)
-		} else {
-			c.Errorf("%v", ErrAuthentication)
-		}
+		c.Errorf("%v", ErrAuthentication)
 	} else if hasNkeys {
 		c.Errorf("%s - Nkey %q",
 			ErrAuthentication.Error(),

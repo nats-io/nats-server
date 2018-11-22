@@ -192,7 +192,6 @@ func New(opts *Options) *Server {
 		configTime: now,
 	}
 
-	// ProcessTrustedNkeys
 	if !s.processTrustedNkeys() {
 		return nil
 	}
@@ -300,8 +299,8 @@ func (s *Server) processTrustedNkeys() bool {
 			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
-			s.trustedNkeys = s.opts.TrustedNkeys
 		}
+		s.trustedNkeys = s.opts.TrustedNkeys
 	}
 	return true
 }
@@ -326,13 +325,12 @@ func checkTrustedNkeyString(keys string) []string {
 // and will set the server field 'trustedNkeys'. Returns whether
 // it succeeded or not.
 func (s *Server) initStampedTrustedNkeys() bool {
-	tks := checkTrustedNkeyString(trustedNkeys)
-	if len(tks) == 0 {
+	// Check to see if we have an override in options, which will cause us to fail.
+	if len(s.opts.TrustedNkeys) > 0 {
 		return false
 	}
-	// Check to see if we have an override in options, which will
-	// cause us to fail also.
-	if len(s.opts.TrustedNkeys) > 0 {
+	tks := checkTrustedNkeyString(trustedNkeys)
+	if len(tks) == 0 {
 		return false
 	}
 	s.trustedNkeys = tks
@@ -509,13 +507,14 @@ func (s *Server) UpdateAccount(acc *Account) bool {
 	}
 	accClaims, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
-		s.UpdateAccountClaims(acc, accClaims)
+		s.updateAccountClaims(acc, accClaims)
 		return true
 	}
 	return false
 }
 
 // fetchRawAccountClaims will grab raw account claims iff we have a resolver.
+// Lock is held upon entry.
 func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	accResolver := s.accResolver
 	if accResolver == nil {

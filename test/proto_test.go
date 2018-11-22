@@ -26,6 +26,7 @@ const PROTO_TEST_PORT = 9922
 func runProtoServer() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = PROTO_TEST_PORT
+	opts.MaxControlLine = 256
 	return RunServer(&opts)
 }
 
