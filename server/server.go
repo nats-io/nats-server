@@ -297,7 +297,7 @@ func (s *Server) processTrustedNkeys() bool {
 		return false
 	} else if s.opts.TrustedNkeys != nil {
 		for _, key := range s.opts.TrustedNkeys {
-			if !nkeys.IsValidPublicOperatorKey([]byte(key)) {
+			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
 			s.trustedNkeys = s.opts.TrustedNkeys
@@ -315,7 +315,7 @@ func checkTrustedNkeyString(keys string) []string {
 	}
 	// Walk all the keys and make sure they are valid.
 	for _, key := range tks {
-		if !nkeys.IsValidPublicOperatorKey([]byte(key)) {
+		if !nkeys.IsValidPublicOperatorKey(key) {
 			return nil
 		}
 	}

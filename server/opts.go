@@ -444,7 +444,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 			// Do a quick sanity check on keys
 			for _, key := range o.TrustedNkeys {
-				if !nkeys.IsValidPublicOperatorKey([]byte(key)) {
+				if !nkeys.IsValidPublicOperatorKey(key) {
 					err := &configErr{tk, fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
 					errors = append(errors, err)
 				}
@@ -719,7 +719,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				switch strings.ToLower(k) {
 				case "nkey":
 					nk, ok := mv.(string)
-					if !ok || !nkeys.IsValidPublicAccountKey([]byte(nk)) {
+					if !ok || !nkeys.IsValidPublicAccountKey(nk) {
 						err := &configErr{tk, fmt.Sprintf("Not a valid public nkey for an account: %q", mv)}
 						*errors = append(*errors, err)
 						continue
@@ -1276,7 +1276,7 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 			return nil, nil, &configErr{tk, fmt.Sprintf("User entry requires a user and a password")}
 		} else if nkey.Nkey != "" {
 			// Make sure the nkey a proper public nkey for a user..
-			if !nkeys.IsValidPublicUserKey([]byte(nkey.Nkey)) {
+			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
 				return nil, nil, &configErr{tk, fmt.Sprintf("Not a valid public nkey for a user")}
 			}
 			// If we have user or password defined here that is an error.

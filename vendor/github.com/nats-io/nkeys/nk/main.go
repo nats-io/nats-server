@@ -164,7 +164,7 @@ func verify(fname, keyFile, pubFile, sigFile string) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		kp, err = nkeys.FromPublicKey(public)
+		kp, err = nkeys.FromPublicKey(string(public))
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -249,7 +249,7 @@ func createVanityKey(keyType, vanity, entropy string, max int) nkeys.KeyPair {
 		fmt.Fprintf(os.Stderr, "\r\033[mcomputing\033[m %s ", string(spin))
 		kp := genKeyPair(pre, entropy)
 		pub, _ := kp.PublicKey()
-		if bytes.HasPrefix(pub[1:], []byte(vanity)) {
+		if bytes.HasPrefix([]byte(pub)[1:], []byte(vanity)) {
 			fmt.Fprintf(os.Stderr, "\r")
 			return kp
 		}

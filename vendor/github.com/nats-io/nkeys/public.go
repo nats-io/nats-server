@@ -28,8 +28,12 @@ type pub struct {
 
 // PublicKey will return the encoded public key associated with the KeyPair.
 // All KeyPairs have a public key.
-func (p *pub) PublicKey() ([]byte, error) {
-	return Encode(p.pre, p.pub)
+func (p *pub) PublicKey() (string, error) {
+	pk, err := Encode(p.pre, p.pub)
+	if err != nil {
+		return "", err
+	}
+	return string(pk), nil
 }
 
 // Seed will return an error since this is not available for public key only KeyPairs.

@@ -2,10 +2,18 @@
 	"version": 0,
 	"dependencies": [
 		{
+			"importpath": "github.com/nats-io/jwt",
+			"repository": "https://github.com/nats-io/jwt",
+			"vcs": "git",
+			"revision": "c9990f0bf372fd746f55af838ab0b64bbdf8d8ed",
+			"branch": "master",
+			"notests": true
+		},
+		{
 			"importpath": "github.com/nats-io/nkeys",
 			"repository": "https://github.com/nats-io/nkeys",
 			"vcs": "git",
-			"revision": "f9a6cffeb5910dad4674c41f28abde89ce590d50",
+			"revision": "cdc461ca8f466aeeea6eca667cde553efe40bc31",
 			"branch": "master",
 			"notests": true
 		},
@@ -13,7 +21,15 @@
 			"importpath": "github.com/nats-io/nuid",
 			"repository": "https://github.com/nats-io/nuid",
 			"vcs": "git",
-			"revision": "28b996b57a46dd0c2aa3a3dc7fa8780878331d00",
+			"revision": "3024a71c3cbe30667286099921591e6fcc328230",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/pkg/errors",
+			"repository": "https://github.com/pkg/errors",
+			"vcs": "git",
+			"revision": "059132a15dd08d6704c67711dae0cf35ab991756",
 			"branch": "master",
 			"notests": true
 		},
@@ -21,7 +37,7 @@
 			"importpath": "golang.org/x/crypto/bcrypt",
 			"repository": "https://go.googlesource.com/crypto",
 			"vcs": "git",
-			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
+			"revision": "3d3f9f413869b949e48070b5bc593aa22cc2b8f2",
 			"branch": "master",
 			"path": "/bcrypt",
 			"notests": true
@@ -30,7 +46,7 @@
 			"importpath": "golang.org/x/crypto/blowfish",
 			"repository": "https://go.googlesource.com/crypto",
 			"vcs": "git",
-			"revision": "9477e0b78b9ac3d0b03822fd95422e2fe07627cd",
+			"revision": "3d3f9f413869b949e48070b5bc593aa22cc2b8f2",
 			"branch": "master",
 			"path": "/blowfish",
 			"notests": true
@@ -39,7 +55,7 @@
 			"importpath": "golang.org/x/crypto/ed25519",
 			"repository": "https://go.googlesource.com/crypto",
 			"vcs": "git",
-			"revision": "0e37d006457bf46f9e6692014ba72ef82c33022c",
+			"revision": "3d3f9f413869b949e48070b5bc593aa22cc2b8f2",
 			"branch": "master",
 			"path": "/ed25519",
 			"notests": true

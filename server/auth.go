@@ -265,7 +265,6 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		// So we have a valid user jwt here.
 		juc, err = jwt.DecodeUserClaims(c.opts.JWT)
 		if err != nil {
-			// Should we debug log here?
 			s.mu.Unlock()
 			c.Debugf("User JWT not valid: %v", err)
 			return false
@@ -322,7 +321,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			c.Debugf("Signature not valid base64")
 			return false
 		}
-		pub, err := nkeys.FromPublicKey([]byte(juc.Subject))
+		pub, err := nkeys.FromPublicKey(juc.Subject)
 		if err != nil {
 			c.Debugf("User nkey not valid: %v", err)
 			return false
@@ -347,7 +346,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		if err != nil {
 			return false
 		}
-		pub, err := nkeys.FromPublicKey([]byte(c.opts.Nkey))
+		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
 		if err != nil {
 			return false
 		}

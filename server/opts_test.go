@@ -808,7 +808,6 @@ func TestNkeyUsersWithPermsConfig(t *testing.T) {
 	}
 	nk := opts.Nkeys[0]
 	if nk.Permissions == nil {
-		fmt.Printf("nk is %+v\n", nk)
 		t.Fatal("Expected to have permissions")
 	}
 	if nk.Permissions.Publish == nil {

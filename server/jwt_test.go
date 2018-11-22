@@ -681,8 +681,8 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	serviceImport = &jwt.Import{Account: string(fooPub), Subject: "req.echo", Type: jwt.Service}
 
 	activation := jwt.NewActivationClaims(string(barPub))
-	activation.Exports = jwt.Exports{}
-	activation.Exports.Add(&jwt.Export{Subject: "req.echo", Type: jwt.Service})
+	activation.ImportSubject = "req.echo"
+	activation.ImportType = jwt.Service
 	actJWT, err := activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -705,8 +705,8 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	serviceImport = &jwt.Import{Account: string(fooPub), Subject: "req.add", Type: jwt.Service}
 
 	activation = jwt.NewActivationClaims(string(barPub))
-	activation.Exports = jwt.Exports{}
-	activation.Exports.Add(&jwt.Export{Subject: "req.add", Type: jwt.Service})
+	activation.ImportSubject = "req.add"
+	activation.ImportType = jwt.Service
 	actJWT, err = activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -751,8 +751,8 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	streamImport = &jwt.Import{Account: string(fooPub), Subject: "private", To: "import.private", Type: jwt.Stream}
 
 	activation = jwt.NewActivationClaims(string(barPub))
-	activation.Exports = jwt.Exports{}
-	activation.Exports.Add(&jwt.Export{Subject: "private", Type: jwt.Stream})
+	activation.ImportSubject = "private"
+	activation.ImportType = jwt.Stream
 	actJWT, err = activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -943,8 +943,8 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	streamImport := &jwt.Import{Account: string(fooPub), Subject: "foo", To: "import.", Type: jwt.Stream}
 
 	activation := jwt.NewActivationClaims(string(barPub))
-	activation.Exports = jwt.Exports{}
-	activation.Exports.Add(&jwt.Export{Subject: "foo", Type: jwt.Stream})
+	activation.ImportSubject = "foo"
+	activation.ImportType = jwt.Stream
 	activation.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	activation.Expires = time.Now().Add(time.Second).Unix()
 	actJWT, err := activation.Encode(fooKP)

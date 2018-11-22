@@ -25,26 +25,29 @@ import (
 type PrefixByte byte
 
 const (
-	//PrefixByteSeed is the version byte used for encoded NATS Seeds
+	// PrefixByteSeed is the version byte used for encoded NATS Seeds
 	PrefixByteSeed PrefixByte = 18 << 3 // Base32-encodes to 'S...'
 
-	//PrefixBytePrivate is the version byte used for encoded NATS Private keys
+	// PrefixBytePrivate is the version byte used for encoded NATS Private keys
 	PrefixBytePrivate PrefixByte = 15 << 3 // Base32-encodes to 'P...'
 
-	//PrefixByteServer is the version byte used for encoded NATS Servers
+	// PrefixByteServer is the version byte used for encoded NATS Servers
 	PrefixByteServer PrefixByte = 13 << 3 // Base32-encodes to 'N...'
 
-	//PrefixByteCluster is the version byte used for encoded NATS Clusters
+	// PrefixByteCluster is the version byte used for encoded NATS Clusters
 	PrefixByteCluster PrefixByte = 2 << 3 // Base32-encodes to 'C...'
 
-	//PrefixByteOperator is the version byte used for encoded NATS Operators
+	// PrefixByteOperator is the version byte used for encoded NATS Operators
 	PrefixByteOperator PrefixByte = 14 << 3 // Base32-encodes to 'O...'
 
-	//PrefixByteAccount is the version byte used for encoded NATS Accounts
+	// PrefixByteAccount is the version byte used for encoded NATS Accounts
 	PrefixByteAccount PrefixByte = 0 // Base32-encodes to 'A...'
 
-	//PrefixByteUser is the version byte used for encoded NATS Users
+	// PrefixByteUser is the version byte used for encoded NATS Users
 	PrefixByteUser PrefixByte = 20 << 3 // Base32-encodes to 'U...'
+
+	// PrefixByteUnknown is for unknown prefixes.
+	PrefixByteUknown PrefixByte = 23 << 3 // Base32-encodes to 'X...'
 )
 
 // Set our encoding to not include padding '=='
@@ -155,12 +158,10 @@ func Decode(expectedPrefix PrefixByte, src []byte) ([]byte, error) {
 	if err := checkValidPrefixByte(expectedPrefix); err != nil {
 		return nil, err
 	}
-
 	raw, err := decode(src)
 	if err != nil {
 		return nil, err
 	}
-
 	if prefix := PrefixByte(raw[0]); prefix != expectedPrefix {
 		return nil, ErrInvalidPrefixByte
 	}
@@ -187,58 +188,72 @@ func DecodeSeed(src []byte) (PrefixByte, []byte, error) {
 	return PrefixByte(b2), raw[2:], nil
 }
 
+func Prefix(src string) PrefixByte {
+	b, err := decode([]byte(src))
+	if err != nil {
+		return PrefixByteUknown
+	}
+	prefix := PrefixByte(b[0])
+	err = checkValidPrefixByte(prefix)
+	if err == nil {
+		return prefix
+	}
+	// Might be a seed.
+	b1 := b[0] & 248
+	if PrefixByte(b1) == PrefixByteSeed {
+		return PrefixByteSeed
+	}
+	return PrefixByteUknown
+}
+
+// IsValidPublicKey will decode and verify that the string is a valid encoded public key.
+func IsValidPublicKey(src string) bool {
+	b, err := decode([]byte(src))
+	if err != nil {
+		return false
+	}
+	if prefix := PrefixByte(b[0]); checkValidPublicPrefixByte(prefix) != nil {
+		return false
+	}
+	return true
+}
+
 // IsValidPublicUserKey will decode and verify the string is a valid encoded Public User Key.
-func IsValidPublicUserKey(src []byte) bool {
-	_, err := Decode(PrefixByteUser, src)
+func IsValidPublicUserKey(src string) bool {
+	_, err := Decode(PrefixByteUser, []byte(src))
 	return err == nil
 }
 
 // IsValidPublicAccountKey will decode and verify the string is a valid encoded Public Account Key.
-func IsValidPublicAccountKey(src []byte) bool {
-	_, err := Decode(PrefixByteAccount, src)
+func IsValidPublicAccountKey(src string) bool {
+	_, err := Decode(PrefixByteAccount, []byte(src))
 	return err == nil
 }
 
 // IsValidPublicServerKey will decode and verify the string is a valid encoded Public Server Key.
-func IsValidPublicServerKey(src []byte) bool {
-	_, err := Decode(PrefixByteServer, src)
+func IsValidPublicServerKey(src string) bool {
+	_, err := Decode(PrefixByteServer, []byte(src))
 	return err == nil
 }
 
 // IsValidPublicClusterKey will decode and verify the string is a valid encoded Public Cluster Key.
-func IsValidPublicClusterKey(src []byte) bool {
-	_, err := Decode(PrefixByteCluster, src)
+func IsValidPublicClusterKey(src string) bool {
+	_, err := Decode(PrefixByteCluster, []byte(src))
 	return err == nil
 }
 
 // IsValidPublicOperatorKey will decode and verify the string is a valid encoded Public Operator Key.
-func IsValidPublicOperatorKey(src []byte) bool {
-	_, err := Decode(PrefixByteOperator, src)
+func IsValidPublicOperatorKey(src string) bool {
+	_, err := Decode(PrefixByteOperator, []byte(src))
 	return err == nil
 }
 
 // checkValidPrefixByte returns an error if the provided value
 // is not one of the defined valid prefix byte constants.
 func checkValidPrefixByte(prefix PrefixByte) error {
-	if prefix == PrefixByteOperator {
-		return nil
-	}
-	if prefix == PrefixByteServer {
-		return nil
-	}
-	if prefix == PrefixByteCluster {
-		return nil
-	}
-	if prefix == PrefixByteAccount {
-		return nil
-	}
-	if prefix == PrefixByteUser {
-		return nil
-	}
-	if prefix == PrefixByteSeed {
-		return nil
-	}
-	if prefix == PrefixBytePrivate {
+	switch prefix {
+	case PrefixByteOperator, PrefixByteServer, PrefixByteCluster,
+		PrefixByteAccount, PrefixByteUser, PrefixByteSeed, PrefixBytePrivate:
 		return nil
 	}
 	return ErrInvalidPrefixByte
@@ -247,20 +262,29 @@ func checkValidPrefixByte(prefix PrefixByte) error {
 // checkValidPublicPrefixByte returns an error if the provided value
 // is not one of the public defined valid prefix byte constants.
 func checkValidPublicPrefixByte(prefix PrefixByte) error {
-	if prefix == PrefixByteServer {
-		return nil
-	}
-	if prefix == PrefixByteCluster {
-		return nil
-	}
-	if prefix == PrefixByteOperator {
-		return nil
-	}
-	if prefix == PrefixByteAccount {
-		return nil
-	}
-	if prefix == PrefixByteUser {
+	switch prefix {
+	case PrefixByteServer, PrefixByteCluster, PrefixByteOperator, PrefixByteAccount, PrefixByteUser:
 		return nil
 	}
 	return ErrInvalidPrefixByte
+}
+
+func (p PrefixByte) String() string {
+	switch p {
+	case PrefixByteOperator:
+		return "operator"
+	case PrefixByteServer:
+		return "server"
+	case PrefixByteCluster:
+		return "cluster"
+	case PrefixByteAccount:
+		return "account"
+	case PrefixByteUser:
+		return "user"
+	case PrefixByteSeed:
+		return "seed"
+	case PrefixBytePrivate:
+		return "private"
+	}
+	return "unknown"
 }

@@ -519,10 +519,10 @@ func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool
 		if act.Expires <= tn {
 			return false
 		}
-		if expTimer && len(act.Exports) > 0 {
+		if expTimer {
 			expiresAt := time.Duration(act.Expires - tn)
 			time.AfterFunc(expiresAt*time.Second, func() {
-				acc.activationExpired(string(act.Exports[0].Subject))
+				acc.activationExpired(string(act.ImportSubject))
 			})
 		}
 	}
