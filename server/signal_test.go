@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/logger"
+	"github.com/nats-io/go-nats"
 )
 
 func TestSignalToReOpenLogFile(t *testing.T) {
@@ -336,5 +337,116 @@ func TestProcessSignalLameDuckMode(t *testing.T) {
 
 	if !called {
 		t.Fatal("Expected kill to be called")
+	}
+}
+
+func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
+	opts := &Options{
+		Host:             "127.0.0.1",
+		Port:             -1,
+		NoSigs:           false,
+		NoLog:            true,
+		LameDuckDuration: 2 * time.Second,
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create single NATS Connection which will cause the server
+	// to delay the shutdown.
+	doneCh := make(chan struct{}, 0)
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port),
+		nats.DisconnectHandler(func(*nats.Conn) {
+			close(doneCh)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Trigger lame duck based shutdown.
+	go s.lameDuckMode()
+
+	// Wait for client to be disconnected.
+	select {
+	case <-doneCh:
+		break
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for client to disconnect")
+	}
+
+	// Termination signal should not cause server to shutdown
+	// while in lame duck mode already.
+	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+
+	// Wait for server shutdown due to lame duck shutdown.
+	timeoutCh := make(chan error, 0)
+	timer := time.AfterFunc(2*time.Second, func() {
+		timeoutCh <- errors.New("Timed out waiting for server shutdown")
+	})
+	for range time.NewTicker(1 * time.Millisecond).C {
+		select {
+		case err := <-timeoutCh:
+			t.Fatal(err)
+		default:
+		}
+
+		if !s.isRunning() {
+			timer.Stop()
+			break
+		}
+	}
+}
+
+func TestProcessSignalTerm(t *testing.T) {
+	opts := &Options{
+		Host:   "127.0.0.1",
+		Port:   -1,
+		NoSigs: false,
+		NoLog:  true,
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create single NATS Connection which will cause the server
+	// to delay the shutdown.
+	doneCh := make(chan struct{}, 0)
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port),
+		nats.DisconnectHandler(func(*nats.Conn) {
+			close(doneCh)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Send termination signal to process.
+	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+
+	// Wait for client to be disconnected.
+	select {
+	case <-doneCh:
+		break
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for client to disconnect")
+	}
+
+	// Wait for server shutdown due to lame duck shutdown.
+	timeoutCh := make(chan error, 0)
+	timer := time.AfterFunc(2*time.Second, func() {
+		timeoutCh <- errors.New("Timed out waiting for server shutdown")
+	})
+	for range time.NewTicker(1 * time.Millisecond).C {
+		select {
+		case err := <-timeoutCh:
+			t.Fatal(err)
+		default:
+		}
+
+		if !s.isRunning() {
+			timer.Stop()
+			break
+		}
 	}
 }

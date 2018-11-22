@@ -40,7 +40,7 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 
 	go func() {
 		for {
@@ -51,6 +51,15 @@ func (s *Server) handleSignals() {
 				case syscall.SIGINT:
 					s.Noticef("Server Exiting..")
 					os.Exit(0)
+				case syscall.SIGTERM:
+					// Shutdown unless graceful shutdown already in progress.
+					s.mu.Lock()
+					ldm := s.ldm
+					s.mu.Unlock()
+
+					if !ldm {
+						s.Shutdown()
+					}
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.
 					s.ReOpenLogFile()
