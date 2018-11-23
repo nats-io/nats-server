@@ -338,3 +338,46 @@ func TestProcessSignalLameDuckMode(t *testing.T) {
 		t.Fatal("Expected kill to be called")
 	}
 }
+
+func TestProcessSignalLameDuckModeWait(t *testing.T) {
+	killBefore := kill
+	sleepBefore := sleep
+	envvar := "LAME_DUCK_DURATION"
+
+	os.Setenv(envvar, "10")
+	defer os.Unsetenv(envvar)
+
+	var calledKill, calledSleep bool
+	kill = func(pid int, signal syscall.Signal) error {
+		calledKill = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGUSR2 {
+			t.Fatalf("signal is incorrect.\nexpected: sigusr2\ngot: %v", signal)
+		}
+		return nil
+	}
+	sleep = func(got time.Duration) {
+		calledSleep = true
+		expected := 10 * time.Second
+		if got != expected {
+			t.Fatalf("lame duck wait is incorrect.\nexpected: %v\ngot: %v", expected, got)
+		}
+	}
+	defer func() {
+		kill = killBefore
+		sleep = sleepBefore
+	}()
+
+	if err := ProcessSignal(commandLDMode, "123"); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !calledKill {
+		t.Fatal("Expected kill to be called")
+	}
+	if !calledSleep {
+		t.Fatal("Expected sleep to be called")
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var processName = "gnatsd"
@@ -113,6 +114,17 @@ func ProcessSignal(command Command, pidStr string) error {
 		err = kill(pid, syscall.SIGHUP)
 	case commandLDMode:
 		err = kill(pid, syscall.SIGUSR2)
+
+		// Optionally allow to wait for lame duck shutdown to complete.
+		v := os.Getenv("LAME_DUCK_DURATION")
+		if v == "" {
+			break
+		}
+		secs, err := strconv.Atoi(v)
+		if err != nil {
+			break
+		}
+		sleep(time.Duration(secs) * time.Second)
 	default:
 		err = fmt.Errorf("unknown signal %q", command)
 	}
@@ -162,4 +174,9 @@ var kill = func(pid int, signal syscall.Signal) error {
 
 var pgrep = func() ([]byte, error) {
 	return exec.Command("pgrep", processName).Output()
+}
+
+var sleep = func(duration time.Duration) {
+	time.Sleep(duration)
+	return
 }
