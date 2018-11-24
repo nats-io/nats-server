@@ -23,11 +23,11 @@ import (
 
 // kp is the internal struct for a kepypair using seed.
 type kp struct {
-	seed string
+	seed []byte
 }
 
-// createPair will create a KeyPair based on the rand entropy and a type/prefix byte. rand can be nil.
-func createPair(prefix PrefixByte) (KeyPair, error) {
+// CreatePair will create a KeyPair based on the rand entropy and a type/prefix byte. rand can be nil.
+func CreatePair(prefix PrefixByte) (KeyPair, error) {
 	var rawSeed [32]byte
 
 	_, err := io.ReadFull(rand.Reader, rawSeed[:])
@@ -57,8 +57,14 @@ func (pair *kp) keys() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	return ed25519.GenerateKey(bytes.NewReader(raw))
 }
 
+// Wipe will randomize the contents of the seed key
+func (pair *kp) Wipe() {
+	io.ReadFull(rand.Reader, pair.seed)
+	pair.seed = nil
+}
+
 // Seed will return the encoded seed.
-func (pair *kp) Seed() (string, error) {
+func (pair *kp) Seed() ([]byte, error) {
 	return pair.seed, nil
 }
 
@@ -73,14 +79,18 @@ func (pair *kp) PublicKey() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return Encode(public, pub)
+	pk, err := Encode(public, pub)
+	if err != nil {
+		return "", err
+	}
+	return string(pk), nil
 }
 
 // PrivateKey will return the encoded private key for KeyPair.
-func (pair *kp) PrivateKey() (string, error) {
+func (pair *kp) PrivateKey() ([]byte, error) {
 	_, priv, err := pair.keys()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	return Encode(PrefixBytePrivate, priv)
 }

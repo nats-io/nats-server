@@ -1197,7 +1197,6 @@ func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) 
 					index := prand.Intn(lh)
 					sub := subs[index]
 					mu.RUnlock()
-					//fmt.Printf("Removing %d with subject %q\n", index, sub.subject)
 					s.Remove(sub)
 				}
 			}

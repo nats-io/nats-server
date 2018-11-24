@@ -1039,6 +1039,8 @@ func (reason ClosedState) String() string {
 		return "Route Removed"
 	case ServerShutdown:
 		return "Server Shutdown"
+	case AuthenticationExpired:
+		return "Authentication Expired"
 	}
 	return "Unknown State"
 }

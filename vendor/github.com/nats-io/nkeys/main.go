@@ -19,6 +19,9 @@ import (
 	"errors"
 )
 
+// Version
+const Version = "0.0.1"
+
 // Errors
 var (
 	ErrInvalidPrefixByte = errors.New("nkeys: invalid prefix byte")
@@ -34,41 +37,42 @@ var (
 
 // KeyPair provides the central interface to nkeys.
 type KeyPair interface {
-	Seed() (string, error)
+	Seed() ([]byte, error)
 	PublicKey() (string, error)
-	PrivateKey() (string, error)
+	PrivateKey() ([]byte, error)
 	Sign(input []byte) ([]byte, error)
 	Verify(input []byte, sig []byte) error
+	Wipe()
 }
 
 // CreateUser will create a User typed KeyPair.
 func CreateUser() (KeyPair, error) {
-	return createPair(PrefixByteUser)
+	return CreatePair(PrefixByteUser)
 }
 
 // CreateAccount will create an Account typed KeyPair.
 func CreateAccount() (KeyPair, error) {
-	return createPair(PrefixByteAccount)
+	return CreatePair(PrefixByteAccount)
 }
 
 // CreateServer will create a Server typed KeyPair.
 func CreateServer() (KeyPair, error) {
-	return createPair(PrefixByteServer)
+	return CreatePair(PrefixByteServer)
 }
 
 // CreateCluster will create a Cluster typed KeyPair.
 func CreateCluster() (KeyPair, error) {
-	return createPair(PrefixByteCluster)
+	return CreatePair(PrefixByteCluster)
 }
 
 // CreateOperator will create an Operator typed KeyPair.
 func CreateOperator() (KeyPair, error) {
-	return createPair(PrefixByteOperator)
+	return CreatePair(PrefixByteOperator)
 }
 
 // FromPublicKey will create a KeyPair capable of verifying signatures.
 func FromPublicKey(public string) (KeyPair, error) {
-	raw, err := decode(public)
+	raw, err := decode([]byte(public))
 	if err != nil {
 		return nil, err
 	}
@@ -80,12 +84,13 @@ func FromPublicKey(public string) (KeyPair, error) {
 }
 
 // FromSeed will create a KeyPair capable of signing and verifying signatures.
-func FromSeed(seed string) (KeyPair, error) {
+func FromSeed(seed []byte) (KeyPair, error) {
 	_, _, err := DecodeSeed(seed)
 	if err != nil {
 		return nil, err
 	}
-	return &kp{seed}, nil
+	copy := append([]byte{}, seed...)
+	return &kp{copy}, nil
 }
 
 // Create a KeyPair from the raw 32 byte seed for a given type.

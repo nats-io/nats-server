@@ -527,60 +527,60 @@ func TestImportExportConfigFailures(t *testing.T) {
 func TestImportAuthorized(t *testing.T) {
 	_, foo, bar := simpleAccountServer(t)
 
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, ">"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.>"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.>", nil), false, t)
 
 	foo.AddStreamExport("foo", IsPublicExport)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*", nil), false, t)
 
 	foo.AddStreamExport("*", []*Account{bar})
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "baz"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, ">"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*.*"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*.>"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "baz", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.*", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.>", nil), false, t)
 
 	// Reset and test '>' public export
 	_, foo, bar = simpleAccountServer(t)
 	foo.AddStreamExport(">", nil)
 	// Everything should work.
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "bar"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "baz"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, ">"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*.*"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "*.>"), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "baz", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, ">", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.*", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "*.>", nil), true, t)
 
 	// Reset and test pwc and fwc
 	s, foo, bar := simpleAccountServer(t)
 	foo.AddStreamExport("foo.*.baz.>", []*Account{bar})
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.1"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.*"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*.baz.1.1"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.22.baz.22"), true, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, ""), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.*.*"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.1", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz.*", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.*.baz.1.1", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.22.baz.22", nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.baz", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.bar.*.*", nil), false, t)
 
 	// Make sure we match the account as well
 
 	fb, _ := s.RegisterAccount("foobar")
 	bz, _ := s.RegisterAccount("baz")
 
-	checkBool(foo.checkStreamImportAuthorized(fb, "foo.bar.baz.1"), false, t)
-	checkBool(foo.checkStreamImportAuthorized(bz, "foo.bar.baz.1"), false, t)
+	checkBool(foo.checkStreamImportAuthorized(fb, "foo.bar.baz.1", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bz, "foo.bar.baz.1", nil), false, t)
 }
 
 func TestSimpleMapping(t *testing.T) {
@@ -929,6 +929,82 @@ func TestMultipleImportsAndSingleWCSub(t *testing.T) {
 	}
 }
 
+// Make sure the AddServiceExport function is additive if called multiple times.
+func TestAddServiceExport(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	bazAcc, err := s.RegisterAccount("$baz")
+	if err != nil {
+		t.Fatalf("Error creating account 'baz': %v", err)
+	}
+	defer s.Shutdown()
+
+	if err := fooAcc.AddServiceExport("test.request", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr := fooAcc.exports.services["test.request"]
+	if tr != nil {
+		t.Fatalf("Expected no authorized accounts, got %d", len(tr.approved))
+	}
+	if err := fooAcc.AddServiceExport("test.request", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.services["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 1 {
+		t.Fatalf("Expected 1 authorized accounts, got %d", ls)
+	}
+	if err := fooAcc.AddServiceExport("test.request", []*Account{bazAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.services["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 2 {
+		t.Fatalf("Expected 2 authorized accounts, got %d", ls)
+	}
+}
+
+// Make sure the AddStreamExport function is additive if called multiple times.
+func TestAddStreamExport(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	bazAcc, err := s.RegisterAccount("$baz")
+	if err != nil {
+		t.Fatalf("Error creating account 'baz': %v", err)
+	}
+	defer s.Shutdown()
+
+	if err := fooAcc.AddStreamExport("test.request", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr := fooAcc.exports.streams["test.request"]
+	if tr != nil {
+		t.Fatalf("Expected no authorized accounts, got %d", len(tr.approved))
+	}
+	if err := fooAcc.AddStreamExport("test.request", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.streams["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 1 {
+		t.Fatalf("Expected 1 authorized accounts, got %d", ls)
+	}
+	if err := fooAcc.AddStreamExport("test.request", []*Account{bazAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.streams["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 2 {
+		t.Fatalf("Expected 2 authorized accounts, got %d", ls)
+	}
+}
+
 func TestCrossAccountRequestReply(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
@@ -1135,7 +1211,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	}
 
 	// Now test nkeys as well.
-	kp, _ := nkeys.FromSeed(seed1)
+	kp, _ := nkeys.FromSeed([]byte(seed1))
 	pubKey, _ := kp.PublicKey()
 
 	c, cr, l := newClientForServer(s)
@@ -1166,7 +1242,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	}
 
 	// Now nats account nkey user.
-	kp, _ = nkeys.FromSeed(seed2)
+	kp, _ = nkeys.FromSeed([]byte(seed2))
 	pubKey, _ = kp.PublicKey()
 
 	c, cr, l = newClientForServer(s)

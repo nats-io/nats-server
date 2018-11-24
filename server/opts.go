@@ -96,6 +96,7 @@ type Options struct {
 	RQSubsSweep      time.Duration `json:"-"` // Deprecated
 	MaxClosedClients int           `json:"-"`
 	LameDuckDuration time.Duration `json:"-"`
+	TrustedNkeys     []string      `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -418,6 +419,36 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				continue
 			}
 			o.LameDuckDuration = dur
+		case "trusted":
+			switch v.(type) {
+			case string:
+				o.TrustedNkeys = []string{v.(string)}
+			case []string:
+				o.TrustedNkeys = v.([]string)
+			case []interface{}:
+				keys := make([]string, 0, len(v.([]interface{})))
+				for _, mv := range v.([]interface{}) {
+					tk, mv = unwrapValue(mv)
+					if key, ok := mv.(string); ok {
+						keys = append(keys, key)
+					} else {
+						err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type in array %T", mv)}
+						errors = append(errors, err)
+						continue
+					}
+				}
+				o.TrustedNkeys = keys
+			default:
+				err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
+				errors = append(errors, err)
+			}
+			// Do a quick sanity check on keys
+			for _, key := range o.TrustedNkeys {
+				if !nkeys.IsValidPublicOperatorKey(key) {
+					err := &configErr{tk, fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
+					errors = append(errors, err)
+				}
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

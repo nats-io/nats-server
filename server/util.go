@@ -30,7 +30,7 @@ import (
 func genID() string {
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
-	return pub
+	return string(pub)
 }
 
 // Ascii numbers 0-9

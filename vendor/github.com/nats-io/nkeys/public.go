@@ -14,6 +14,9 @@
 package nkeys
 
 import (
+	"crypto/rand"
+	"io"
+
 	"golang.org/x/crypto/ed25519"
 )
 
@@ -26,17 +29,21 @@ type pub struct {
 // PublicKey will return the encoded public key associated with the KeyPair.
 // All KeyPairs have a public key.
 func (p *pub) PublicKey() (string, error) {
-	return Encode(p.pre, p.pub)
+	pk, err := Encode(p.pre, p.pub)
+	if err != nil {
+		return "", err
+	}
+	return string(pk), nil
 }
 
 // Seed will return an error since this is not available for public key only KeyPairs.
-func (p *pub) Seed() (string, error) {
-	return "", ErrPublicKeyOnly
+func (p *pub) Seed() ([]byte, error) {
+	return nil, ErrPublicKeyOnly
 }
 
 // PrivateKey will return an error since this is not available for public key only KeyPairs.
-func (p *pub) PrivateKey() (string, error) {
-	return "", ErrPublicKeyOnly
+func (p *pub) PrivateKey() ([]byte, error) {
+	return nil, ErrPublicKeyOnly
 }
 
 // Sign will return an error since this is not available for public key only KeyPairs.
@@ -50,4 +57,10 @@ func (p *pub) Verify(input []byte, sig []byte) error {
 		return ErrInvalidSignature
 	}
 	return nil
+}
+
+// Wipe will randomize the public key and erase the pre byte.
+func (p *pub) Wipe() {
+	p.pre = '0'
+	io.ReadFull(rand.Reader, p.pub)
 }

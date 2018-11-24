@@ -14,9 +14,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/base64"
 	"flag"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -26,8 +29,11 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+// this will be set during compilation when a release is made on tools
+var Version string
+
 func usage() {
-	log.Fatalf("Usage: nk [-gen type] [-sign file] [-verify file] [-inkey keyfile] [-pubin keyfile] [-sigfile file] [-pubout] [-e entropy]\n")
+	log.Fatalf("Usage: nk [-v] [-gen type] [-sign file] [-verify file] [-inkey keyfile] [-pubin keyfile] [-sigfile file] [-pubout] [-e entropy]\n")
 }
 
 func main() {
@@ -43,15 +49,38 @@ func main() {
 	var keyType = flag.String("gen", "", "Generate key for <type>, e.g. nk -gen user")
 	var pubout = flag.Bool("pubout", false, "Output public key")
 
+	var version = flag.Bool("v", false, "Show version")
+	var vanPre = flag.String("pre", "", "Attempt to generate public key given prefix, e.g. nk -gen user -pre derek")
+	var vanMax = flag.Int("maxpre", 1000000, "Maximum attempts at generating the correct key prefix")
+
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
 
 	flag.Usage = usage
 	flag.Parse()
 
+	if *version {
+		fmt.Printf("nk version %s\n", Version)
+	}
+
 	// Create Key
 	if *keyType != "" {
-		createKey(*keyType, *entropy)
+		var kp nkeys.KeyPair
+		// Check to see if we are trying to do a vanity public key.
+		if *vanPre != "" {
+			kp = createVanityKey(*keyType, *vanPre, *entropy, *vanMax)
+		} else {
+			kp = genKeyPair(preForType(*keyType), *entropy)
+		}
+		seed, err := kp.Seed()
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("%s", seed)
+		if *pubout || *vanPre != "" {
+			pub, _ := kp.PublicKey()
+			log.Printf("%s", pub)
+		}
 		return
 	}
 
@@ -81,12 +110,8 @@ func main() {
 }
 
 func printPublicFromSeed(keyFile string) {
-	seed, err := ioutil.ReadFile(keyFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	kp, err := nkeys.FromSeed(string(seed))
+	seed := readKeyFile(keyFile)
+	kp, err := nkeys.FromSeed(seed)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,12 +123,8 @@ func sign(fname, keyFile string) {
 	if keyFile == "" {
 		log.Fatalf("Sign requires a seed/private key via -inkey <file>")
 	}
-	seed, err := ioutil.ReadFile(keyFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	kp, err := nkeys.FromSeed(string(seed))
+	seed := readKeyFile(keyFile)
+	kp, err := nkeys.FromSeed(seed)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -135,7 +156,7 @@ func verify(fname, keyFile, pubFile, sigFile string) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		kp, err = nkeys.FromSeed(string(seed))
+		kp, err = nkeys.FromSeed(seed)
 	} else {
 		// Public Key
 		var public []byte
@@ -168,25 +189,26 @@ func verify(fname, keyFile, pubFile, sigFile string) {
 	log.Printf("Verified OK")
 }
 
-func createKey(keyType, entropy string) {
+func preForType(keyType string) nkeys.PrefixByte {
 	keyType = strings.ToLower(keyType)
-	var pre nkeys.PrefixByte
-
 	switch keyType {
 	case "user":
-		pre = nkeys.PrefixByteUser
+		return nkeys.PrefixByteUser
 	case "account":
-		pre = nkeys.PrefixByteAccount
+		return nkeys.PrefixByteAccount
 	case "server":
-		pre = nkeys.PrefixByteServer
+		return nkeys.PrefixByteServer
 	case "cluster":
-		pre = nkeys.PrefixByteCluster
+		return nkeys.PrefixByteCluster
 	case "operator":
-		pre = nkeys.PrefixByteOperator
+		return nkeys.PrefixByteOperator
 	default:
 		log.Fatalf("Usage: nk -gen [user|account|server|cluster|operator]\n")
 	}
+	return nkeys.PrefixByte(0)
+}
 
+func genKeyPair(pre nkeys.PrefixByte, entropy string) nkeys.KeyPair {
 	// See if we override entropy.
 	ef := rand.Reader
 	if entropy != "" {
@@ -205,11 +227,71 @@ func createKey(keyType, entropy string) {
 	}
 	kp, err := nkeys.FromRawSeed(pre, rawSeed[:])
 	if err != nil {
-		log.Fatalf("Error creating %s: %v", keyType, err)
+		log.Fatalf("Error creating %c: %v", pre, err)
 	}
-	seed, err := kp.Seed()
+	return kp
+}
+
+var b32Enc = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+func createVanityKey(keyType, vanity, entropy string, max int) nkeys.KeyPair {
+	spinners := []rune(`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`)
+	pre := preForType(keyType)
+	vanity = strings.ToUpper(vanity)
+	// Check to make sure we can base32 into it by trying to decode it.
+	_, err := b32Enc.DecodeString(vanity)
+	if err != nil {
+		log.Fatalf("Can not generate base32 encoded strings to match '%s'", vanity)
+	}
+
+	for i := 0; i < max; i++ {
+		spin := spinners[i%len(spinners)]
+		fmt.Fprintf(os.Stderr, "\r\033[mcomputing\033[m %s ", string(spin))
+		kp := genKeyPair(pre, entropy)
+		pub, _ := kp.PublicKey()
+		if bytes.HasPrefix([]byte(pub)[1:], []byte(vanity)) {
+			fmt.Fprintf(os.Stderr, "\r")
+			return kp
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\r")
+	log.Fatalf("Failed to generate prefix after %d attempts", max)
+	return nil
+}
+
+func readKeyFile(filename string) []byte {
+	var key []byte
+	contents, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%s", seed)
+	defer wipeSlice(contents)
+
+	lines := bytes.Split(contents, []byte("\n"))
+	for _, line := range lines {
+		if nkeys.IsValidEncoding(line) {
+			key = make([]byte, len(line))
+			copy(key, line)
+			return key
+		}
+	}
+	if key == nil {
+		log.Fatalf("Could not find a valid key")
+	}
+	return key
+}
+
+func isValidLeadingByte(c byte) bool {
+	switch c {
+	case 'S', 'P', 'N', 'C', 'O', 'A', 'U':
+		return true
+	default:
+		return false
+	}
+}
+
+func wipeSlice(buf []byte) {
+	for i := range buf {
+		buf[i] = 'x'
+	}
 }

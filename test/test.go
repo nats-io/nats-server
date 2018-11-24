@@ -40,7 +40,7 @@ var DefaultTestOptions = server.Options{
 	Port:           4222,
 	NoLog:          true,
 	NoSigs:         true,
-	MaxControlLine: 256,
+	MaxControlLine: 2048,
 }
 
 // RunDefaultServer starts a new Go routine based server using the default options

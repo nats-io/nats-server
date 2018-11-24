@@ -36,13 +36,13 @@ type nonceInfo struct {
 }
 
 // This is a seed for a user. We can extract public and private keys from this for testing.
-const seed = "SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY"
+var seed = []byte("SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY")
 
 func nkeyBasicSetup() (*Server, *client, *bufio.Reader, string) {
 	kp, _ := nkeys.FromSeed(seed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: string(pub)}}
 	return rawSetup(opts)
 }
 
@@ -50,7 +50,7 @@ func mixedSetup() (*Server, *client, *bufio.Reader, string) {
 	kp, _ := nkeys.FromSeed(seed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: string(pub)}}
 	opts.Users = []*User{&User{Username: "derek", Password: "foo"}}
 	return rawSetup(opts)
 }
