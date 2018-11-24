@@ -481,16 +481,26 @@ func (s *Server) LookupAccount(name string) *Account {
 		// If we are expired and we have a resolver, then
 		// return the latest information from the resolver.
 		if s.accResolver != nil && acc.IsExpired() {
-			s.UpdateAccount(acc)
+			s.updateAccount(acc)
 		}
 		return acc
 	}
 	// If we have a resolver see if it can fetch the account.
-	return s.FetchAccount(name)
+	return s.fetchAccount(name)
 }
 
-// This will fetch new claims and if found update the account with new claims.
+/*
+// UpdateAccount will fetch new claims and if found update the account.
 func (s *Server) UpdateAccount(acc *Account) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateAccount(acc)
+}
+*/
+
+// This will fetch new claims and if found update the account with new claims.
+// Lock should be held upon entry.
+func (s *Server) updateAccount(acc *Account) bool {
 	// TODO(dlc) - Make configurable
 	if time.Since(acc.updated) < time.Second {
 		s.Debugf("Requested account update for [%s] ignored, too soon", acc.Name)
@@ -554,8 +564,8 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, error
 }
 
 // This will fetch an account from a resolver if defined.
-// Lock should be held.
-func (s *Server) FetchAccount(name string) *Account {
+// Lock should be held upon entry.
+func (s *Server) fetchAccount(name string) *Account {
 	if accClaims, _ := s.fetchAccountClaims(name); accClaims != nil {
 		if acc := s.buildInternalAccount(accClaims); acc != nil {
 			s.registerAccount(acc)

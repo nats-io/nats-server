@@ -149,13 +149,17 @@ func (a *Account) AddServiceExport(subject string, accounts []*Account) error {
 		a.exports.services = make(map[string]*exportAuth)
 	}
 	ea := a.exports.services[subject]
-	if accounts != nil && ea == nil {
-		ea = &exportAuth{}
+	if accounts != nil {
+		if ea == nil {
+			ea = &exportAuth{}
+		}
 		// empty means auth required but will be import token.
 		if len(accounts) == 0 {
 			ea.tokenReq = true
 		} else {
-			ea.approved = make(map[string]*Account)
+			if ea.approved == nil {
+				ea.approved = make(map[string]*Account, len(accounts))
+			}
 			for _, acc := range accounts {
 				ea.approved[acc.Name] = acc
 			}
@@ -373,18 +377,22 @@ func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 	if a.exports.streams == nil {
 		a.exports.streams = make(map[string]*exportAuth)
 	}
-	ea := a.exports.services[subject]
-	if accounts != nil && ea == nil {
-		ea = &exportAuth{}
+	ea := a.exports.streams[subject]
+	if accounts != nil {
+		if ea == nil {
+			ea = &exportAuth{}
+		}
 		// empty means auth required but will be import token.
 		if len(accounts) == 0 {
 			ea.tokenReq = true
 		} else {
-			ea.approved = make(map[string]*Account)
+			if ea.approved == nil {
+				ea.approved = make(map[string]*Account, len(accounts))
+			}
+			for _, acc := range accounts {
+				ea.approved[acc.Name] = acc
+			}
 		}
-	}
-	for _, acc := range accounts {
-		ea.approved[acc.Name] = acc
 	}
 	a.exports.streams[subject] = ea
 	return nil
@@ -700,7 +708,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	for _, i := range ac.Imports {
 		acc := s.accounts[i.Account]
 		if acc == nil {
-			if acc = s.FetchAccount(i.Account); acc == nil {
+			if acc = s.fetchAccount(i.Account); acc == nil {
 				s.Debugf("Can't locate account [%s] for import of [%v] %s", i.Account, i.Subject, i.Type)
 				continue
 			}

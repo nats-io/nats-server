@@ -929,6 +929,82 @@ func TestMultipleImportsAndSingleWCSub(t *testing.T) {
 	}
 }
 
+// Make sure the AddServiceExport function is additive if called multiple times.
+func TestAddServiceExport(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	bazAcc, err := s.RegisterAccount("$baz")
+	if err != nil {
+		t.Fatalf("Error creating account 'baz': %v", err)
+	}
+	defer s.Shutdown()
+
+	if err := fooAcc.AddServiceExport("test.request", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr := fooAcc.exports.services["test.request"]
+	if tr != nil {
+		t.Fatalf("Expected no authorized accounts, got %d", len(tr.approved))
+	}
+	if err := fooAcc.AddServiceExport("test.request", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.services["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 1 {
+		t.Fatalf("Expected 1 authorized accounts, got %d", ls)
+	}
+	if err := fooAcc.AddServiceExport("test.request", []*Account{bazAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.services["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 2 {
+		t.Fatalf("Expected 2 authorized accounts, got %d", ls)
+	}
+}
+
+// Make sure the AddStreamExport function is additive if called multiple times.
+func TestAddStreamExport(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	bazAcc, err := s.RegisterAccount("$baz")
+	if err != nil {
+		t.Fatalf("Error creating account 'baz': %v", err)
+	}
+	defer s.Shutdown()
+
+	if err := fooAcc.AddStreamExport("test.request", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr := fooAcc.exports.streams["test.request"]
+	if tr != nil {
+		t.Fatalf("Expected no authorized accounts, got %d", len(tr.approved))
+	}
+	if err := fooAcc.AddStreamExport("test.request", []*Account{barAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.streams["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 1 {
+		t.Fatalf("Expected 1 authorized accounts, got %d", ls)
+	}
+	if err := fooAcc.AddStreamExport("test.request", []*Account{bazAcc}); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	tr = fooAcc.exports.streams["test.request"]
+	if tr == nil {
+		t.Fatalf("Expected authorized accounts, got nil")
+	}
+	if ls := len(tr.approved); ls != 2 {
+		t.Fatalf("Expected 2 authorized accounts, got %d", ls)
+	}
+}
+
 func TestCrossAccountRequestReply(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
