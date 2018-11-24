@@ -1,8 +1,9 @@
 package jwt
 
 import (
+	"errors"
+
 	"github.com/nats-io/nkeys"
-	"github.com/pkg/errors"
 )
 
 // OperatorLimits are used to limit access by an account
