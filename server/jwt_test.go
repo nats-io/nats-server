@@ -515,7 +515,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	apub, _ := akp.PublicKey()
 	nac := jwt.NewAccountClaims(string(apub))
 	nac.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
-	nac.Expires = time.Now().Unix()
+	nac.Expires = time.Now().Add(time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
@@ -524,6 +524,9 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	addAccountToMemResolver(s, string(apub), ajwt)
 	// Force it to be loaded by the server and start the expiration timer.
 	acc := s.LookupAccount(string(apub))
+	if acc == nil {
+		t.Fatalf("Could not retrieve account for %q", apub)
+	}
 
 	// Create a new user
 	nkp, _ := nkeys.CreateUser()
@@ -541,6 +544,9 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	json.Unmarshal([]byte(l[5:]), &info)
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
 	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	// Wait for expiration.
+	time.Sleep(time.Second)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail since the account is expired.
@@ -978,7 +984,6 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	sig := base64.StdEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
 	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nSUB import.foo 1\r\nPING\r\n", ujwt, sig)
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
@@ -1011,4 +1016,387 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 
 	// Should have expired and been removed.
 	checkShadow(0)
+}
+
+func TestJWTAccountLimitsSubs(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC.Limits.Subs = 10
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+
+	// Create a client.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(string(pub))
+	ujwt, err := nuc.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	quit := make(chan bool)
+	defer func() { quit <- true }()
+
+	pab := make(chan []byte, 16)
+
+	parseAsync := func(cs []byte) {
+		pab <- cs
+	}
+
+	go func() {
+		for {
+			select {
+			case cs := <-pab:
+				c.parse(cs)
+			case <-quit:
+				return
+			}
+		}
+	}()
+
+	// PING needed to flush the +OK/-ERR to us.
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
+	parseAsync([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG")
+	}
+
+	// Check to make sure we have the limit set.
+	// Account first
+	fooAcc := s.LookupAccount(string(fooPub))
+	fooAcc.mu.RLock()
+	if fooAcc.msubs != 10 {
+		fooAcc.mu.RUnlock()
+		t.Fatalf("Expected account to have msubs of 10, got %d", fooAcc.msubs)
+	}
+	fooAcc.mu.RUnlock()
+	// Now test that the client has limits too.
+	c.mu.Lock()
+	if c.msubs != 10 {
+		c.mu.Unlock()
+		t.Fatalf("Expected client msubs to be 10, got %d", c.msubs)
+	}
+	c.mu.Unlock()
+
+	// Now make sure its enforced.
+	/// These should all work ok.
+	for i := 0; i < 10; i++ {
+		cs := fmt.Sprintf("SUB foo %d\r\nPING\r\n", i)
+		parseAsync([]byte(cs))
+		l, _ = cr.ReadString('\n')
+		if !strings.HasPrefix(l, "+OK") {
+			t.Fatalf("Expected an OK, got: %v", l)
+		}
+		l, _ = cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG")
+		}
+	}
+
+	// This one should fail.
+	cs = fmt.Sprintf("SUB foo 22\r\n")
+	parseAsync([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR") {
+		t.Fatalf("Expected an ERR, got: %v", l)
+	}
+	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
+	}
+
+	// Now update the claims and expect if max is lower to be disconnected.
+	fooAC.Limits.Subs = 5
+	fooJWT, err = fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	s.updateAccountClaims(fooAcc, fooAC)
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR") {
+		t.Fatalf("Expected an ERR, got: %v", l)
+	}
+	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
+	}
+}
+
+func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	// override with server setting of 2.
+	opts := s.getOpts()
+	opts.MaxSubs = 2
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC.Limits.Subs = 10
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	fooAcc := s.LookupAccount(string(fooPub))
+	fooAcc.mu.RLock()
+	if fooAcc.msubs != 10 {
+		fooAcc.mu.RUnlock()
+		t.Fatalf("Expected account to have msubs of 10, got %d", fooAcc.msubs)
+	}
+	fooAcc.mu.RUnlock()
+
+	// Create a client.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(string(pub))
+	ujwt, err := nuc.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nSUB foo 1\r\nSUB bar 2\r\nSUB baz 3\r\nPING\r\n", ujwt, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
+	}
+}
+
+func TestJWTAccountLimitsMaxPayload(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC.Limits.Payload = 8
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+
+	// Create a client.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(string(pub))
+	ujwt, err := nuc.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	quit := make(chan bool)
+	defer func() { quit <- true }()
+
+	pab := make(chan []byte, 16)
+
+	parseAsync := func(cs []byte) {
+		pab <- cs
+	}
+
+	go func() {
+		for {
+			select {
+			case cs := <-pab:
+				c.parse(cs)
+			case <-quit:
+				return
+			}
+		}
+	}()
+
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
+	parseAsync([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG")
+	}
+
+	// Check to make sure we have the limit set.
+	// Account first
+	fooAcc := s.LookupAccount(string(fooPub))
+	fooAcc.mu.RLock()
+	if fooAcc.mpay != 8 {
+		fooAcc.mu.RUnlock()
+		t.Fatalf("Expected account to have mpay of 8, got %d", fooAcc.mpay)
+	}
+	fooAcc.mu.RUnlock()
+	// Now test that the client has limits too.
+	c.mu.Lock()
+	if c.mpay != 8 {
+		c.mu.Unlock()
+		t.Fatalf("Expected client to have mpay of 10, got %d", c.mpay)
+	}
+	c.mu.Unlock()
+
+	cs = fmt.Sprintf("PUB foo 4\r\nXXXX\r\nPING\r\n")
+	parseAsync([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG")
+	}
+
+	cs = fmt.Sprintf("PUB foo 10\r\nXXXXXXXXXX\r\nPING\r\n")
+	parseAsync([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+	if !strings.Contains(l, "Maximum Payload") {
+		t.Fatalf("Expected an ERR for max payload violation, got: %v", l)
+	}
+}
+
+func TestJWTAccountLimitsMaxPayloadButServerOverrides(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	// override with server setting of 4.
+	opts := s.getOpts()
+	opts.MaxPayload = 4
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC.Limits.Payload = 8
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+
+	// Create a client.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(string(pub))
+	ujwt, err := nuc.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPUB foo 6\r\nXXXXXX\r\nPING\r\n", ujwt, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+	if !strings.Contains(l, "Maximum Payload") {
+		t.Fatalf("Expected an ERR for max payload violation, got: %v", l)
+	}
+}
+
+// NOTE: For now this is single server, will change to adapt for network wide.
+// TODO(dlc) - Make cluster/gateway aware.
+func TestJWTAccountLimitsMaxConns(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC.Limits.Conn = 8
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, string(fooPub), fooJWT)
+
+	newClient := func(expPre string) {
+		t.Helper()
+		// Create a client.
+		nkp, _ := nkeys.CreateUser()
+		pub, _ := nkp.PublicKey()
+		nuc := jwt.NewUserClaims(string(pub))
+		ujwt, err := nuc.Encode(fooKP)
+		if err != nil {
+			t.Fatalf("Error generating user JWT: %v", err)
+		}
+		c, cr, l := newClientForServer(s)
+
+		// Sign Nonce
+		var info nonceInfo
+		json.Unmarshal([]byte(l[5:]), &info)
+		sigraw, _ := nkp.Sign([]byte(info.Nonce))
+		sig := base64.StdEncoding.EncodeToString(sigraw)
+		cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\", \"verbose\":true}\r\nPING\r\n", ujwt, sig)
+		go c.parse([]byte(cs))
+		l, _ = cr.ReadString('\n')
+		if !strings.HasPrefix(l, expPre) {
+			t.Fatalf("Expected a response starting with %q", expPre)
+		}
+	}
+
+	for i := 0; i < 8; i++ {
+		newClient("+OK")
+	}
+	// Now this one should fail.
+	newClient("-ERR ")
 }

@@ -1029,10 +1029,14 @@ func (reason ClosedState) String() string {
 		return "Incorrect Port"
 	case MaxConnectionsExceeded:
 		return "Maximum Connections Exceeded"
+	case MaxAccountConnectionsExceeded:
+		return "Maximum Account Connections Exceeded"
 	case MaxPayloadExceeded:
 		return "Maximum Message Payload Exceeded"
 	case MaxControlLineExceeded:
 		return "Maximum Control Line Exceeded"
+	case MaxSubscriptionsExceeded:
+		return "Maximum Subscriptions Exceeded"
 	case DuplicateRoute:
 		return "Duplicate Route"
 	case RouteRemoved:

@@ -52,11 +52,19 @@ type Account struct {
 	rm       map[string]*rme
 	imports  importMap
 	exports  exportMap
-	nae      int
+	limits
+	nae     int
+	pruning bool
+	expired bool
+}
+
+// Account based limits.
+type limits struct {
+	mpay     int32
+	msubs    int
+	mconns   int
 	maxnae   int
 	maxaettl time.Duration
-	pruning  bool
-	expired  bool
 }
 
 // Import stream mapping struct
@@ -102,6 +110,16 @@ func (a *Account) NumClients() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.clients)
+}
+
+// MaxClientsReached returns if we have reached our limit for number of connections.
+func (a *Account) MaxClientsReached() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.mconns != 0 {
+		return len(a.clients) >= a.mconns
+	}
+	return false
 }
 
 // RoutedSubs returns how many subjects we would send across a route when first
@@ -693,6 +711,16 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.exports = exportMap{}
 	a.imports = importMap{}
 
+	gatherClients := func() []*client {
+		a.mu.RLock()
+		clients := make([]*client, 0, len(a.clients))
+		for _, c := range a.clients {
+			clients = append(clients, c)
+		}
+		a.mu.RUnlock()
+		return clients
+	}
+
 	for _, e := range ac.Exports {
 		switch e.Type {
 		case jwt.Stream:
@@ -723,13 +751,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	// Now let's apply any needed changes from import/export changes.
 	if !a.checkStreamImportsEqual(old) {
 		awcsti := map[string]struct{}{a.Name: struct{}{}}
-		a.mu.RLock()
-		clients := make([]*client, 0, len(a.clients))
-		for _, c := range a.clients {
-			clients = append(clients, c)
-		}
-		a.mu.RUnlock()
-		for _, c := range clients {
+		for _, c := range gatherClients() {
 			c.processSubsOnConfigReload(awcsti)
 		}
 	}
@@ -759,7 +781,19 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 
-	// FIXME(dlc) - Limits etc..
+	// Now do limits if they are present.
+	a.msubs = int(ac.Limits.Subs)
+	a.mpay = int32(ac.Limits.Payload)
+	a.mconns = int(ac.Limits.Conn)
+	for i, c := range gatherClients() {
+		if a.mconns > 0 && i >= a.mconns {
+			c.maxAccountConnExceeded()
+			continue
+		}
+		c.mu.Lock()
+		c.applyAccountLimits()
+		c.mu.Unlock()
+	}
 }
 
 // Helper to build an internal account structure from a jwt.AccountClaims.

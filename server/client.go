@@ -124,9 +124,11 @@ const (
 	ProtocolViolation
 	BadClientProtocolVersion
 	WrongPort
+	MaxAccountConnectionsExceeded
 	MaxConnectionsExceeded
 	MaxPayloadExceeded
 	MaxControlLineExceeded
+	MaxSubscriptionsExceeded
 	DuplicateRoute
 	RouteRemoved
 	ServerShutdown
@@ -136,7 +138,7 @@ const (
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
-	mpay   int64
+	mpay   int32
 	msubs  int
 	mu     sync.Mutex
 	typ    int
@@ -359,6 +361,16 @@ func (c *client) initClient() {
 	}
 }
 
+// Helper function to report errors.
+func (c *client) reportErrRegisterAccount(acc *Account, err error) {
+	if err == ErrTooManyAccountConnections {
+		c.maxAccountConnExceeded()
+		return
+	}
+	c.Errorf("Problem registering with account [%s]", acc.Name)
+	c.sendErr("Failed Account Registration")
+}
+
 // RegisterWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
 func (c *client) registerWithAccount(acc *Account) error {
@@ -371,14 +383,60 @@ func (c *client) registerWithAccount(acc *Account) error {
 			c.srv.decActiveAccounts()
 		}
 	}
+	// Check if we have a max connections violation
+	if acc.MaxClientsReached() {
+		return ErrTooManyAccountConnections
+	}
+
 	// Add in new one.
 	if prev := acc.addClient(c); prev == 0 && c.srv != nil {
 		c.srv.incActiveAccounts()
 	}
+
 	c.mu.Lock()
 	c.acc = acc
+	c.applyAccountLimits()
 	c.mu.Unlock()
+
 	return nil
+}
+
+// Apply account limits
+// Lock is held on entry.
+// FIXME(dlc) - Should server be able to override here?
+func (c *client) applyAccountLimits() {
+	if c.acc == nil {
+		return
+	}
+	// Set here, check for more details below. Only set if non-zero.
+	if c.acc.msubs > 0 {
+		c.msubs = c.acc.msubs
+	}
+	if c.acc.mpay > 0 {
+		c.mpay = c.acc.mpay
+	}
+
+	opts := c.srv.getOpts()
+
+	// We check here if the server has an option set that is lower than the account limit.
+	if c.mpay != 0 && opts.MaxPayload != 0 && int32(opts.MaxPayload) < c.acc.mpay {
+		c.Errorf("Max Payload set to %d from server config which overrides %d from account claims", opts.MaxPayload, c.acc.mpay)
+		c.mpay = int32(opts.MaxPayload)
+	}
+
+	// We check here if the server has an option set that is lower than the account limit.
+	if c.msubs != 0 && opts.MaxSubs != 0 && opts.MaxSubs < c.acc.msubs {
+		c.Errorf("Max Subscriptions set to %d from server config which overrides %d from account claims", opts.MaxSubs, c.acc.msubs)
+		c.msubs = opts.MaxSubs
+	}
+
+	if c.msubs > 0 && len(c.subs) > c.msubs {
+		go func() {
+			c.maxSubsExceeded()
+			time.Sleep(20 * time.Millisecond)
+			c.closeConnection(MaxSubscriptionsExceeded)
+		}()
+	}
 }
 
 // RegisterUser allows auth to call back into a new client
@@ -388,8 +446,7 @@ func (c *client) RegisterUser(user *User) {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
-			c.Errorf("Problem registering with account [%s]", user.Account.Name)
-			c.sendErr("Failed Account Registration")
+			c.reportErrRegisterAccount(user.Account, err)
 			return
 		}
 	}
@@ -415,8 +472,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
-			c.Errorf("Problem registering with account [%s]", user.Account.Name)
-			c.sendErr("Failed Account Registration")
+			c.reportErrRegisterAccount(user.Account, err)
 			return
 		}
 	}
@@ -954,8 +1010,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 			// If we are here we can register ourselves with the new account.
 			if err := c.registerWithAccount(acc); err != nil {
-				c.Errorf("Problem registering with account [%s]", account)
-				c.sendErr("Failed Account Registration")
+				c.reportErrRegisterAccount(acc, err)
 				return ErrBadAccount
 			}
 		} else if c.acc == nil {
@@ -1047,6 +1102,11 @@ func (c *client) authViolation() {
 	c.closeConnection(AuthenticationViolation)
 }
 
+func (c *client) maxAccountConnExceeded() {
+	c.sendErrAndErr(ErrTooManyAccountConnections.Error())
+	c.closeConnection(MaxAccountConnectionsExceeded)
+}
+
 func (c *client) maxConnExceeded() {
 	c.sendErrAndErr(ErrTooManyConnections.Error())
 	c.closeConnection(MaxConnectionsExceeded)
@@ -1056,7 +1116,7 @@ func (c *client) maxSubsExceeded() {
 	c.sendErrAndErr(ErrTooManySubs.Error())
 }
 
-func (c *client) maxPayloadViolation(sz int, max int64) {
+func (c *client) maxPayloadViolation(sz int, max int32) {
 	c.Errorf("%s: %d vs %d", ErrMaxPayload.Error(), sz, max)
 	c.sendErr("Maximum Payload Violation")
 	c.closeConnection(MaxPayloadExceeded)
@@ -1304,8 +1364,8 @@ func (c *client) processPub(trace bool, arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
-	maxPayload := atomic.LoadInt64(&c.mpay)
-	if maxPayload > 0 && int64(c.pa.size) > maxPayload {
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	if maxPayload > 0 && int32(c.pa.size) > maxPayload {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}

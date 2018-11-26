@@ -47,6 +47,10 @@ var (
 	// server has been reached.
 	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
 
+	// ErrTooManyAccountConnections signals that an acount has reached its maximum number of active
+	// connections.
+	ErrTooManyAccountConnections = errors.New("Maximum Account Active Connections Exceeded")
+
 	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
 	// has been reached.
 	ErrTooManySubs = errors.New("Maximum Subscriptions Exceeded")

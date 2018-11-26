@@ -489,15 +489,6 @@ func (s *Server) LookupAccount(name string) *Account {
 	return s.fetchAccount(name)
 }
 
-/*
-// UpdateAccount will fetch new claims and if found update the account.
-func (s *Server) UpdateAccount(acc *Account) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.updateAccount(acc)
-}
-*/
-
 // This will fetch new claims and if found update the account with new claims.
 // Lock should be held upon entry.
 func (s *Server) updateAccount(acc *Account) bool {
@@ -1073,7 +1064,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	maxPay := int64(opts.MaxPayload)
+	maxPay := int32(opts.MaxPayload)
 	maxSubs := opts.MaxSubs
 	now := time.Now()
 
