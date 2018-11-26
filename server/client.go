@@ -362,7 +362,7 @@ func (c *client) initClient() {
 }
 
 // Helper function to report errors.
-func (c *client) reporteErrRegisterAccount(acc *Account, err error) {
+func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	if err == ErrTooManyAccountConnections {
 		c.maxAccountConnExceeded()
 		return
@@ -446,7 +446,7 @@ func (c *client) RegisterUser(user *User) {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
-			c.reporteErrRegisterAccount(user.Account, err)
+			c.reportErrRegisterAccount(user.Account, err)
 			return
 		}
 	}
@@ -472,7 +472,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
-			c.reporteErrRegisterAccount(user.Account, err)
+			c.reportErrRegisterAccount(user.Account, err)
 			return
 		}
 	}
@@ -1010,7 +1010,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 			// If we are here we can register ourselves with the new account.
 			if err := c.registerWithAccount(acc); err != nil {
-				c.reporteErrRegisterAccount(acc, err)
+				c.reportErrRegisterAccount(acc, err)
 				return ErrBadAccount
 			}
 		} else if c.acc == nil {
