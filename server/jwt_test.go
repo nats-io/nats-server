@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -42,7 +43,7 @@ func opTrustBasicSetup() *Server {
 	kp, _ := nkeys.FromSeed(oSeed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.TrustedNkeys = []string{string(pub)}
+	opts.TrustedNkeys = []string{pub}
 	s, _, _, _ := rawSetup(opts)
 	return s
 }
@@ -51,7 +52,7 @@ func buildMemAccResolver(s *Server) {
 	kp, _ := nkeys.FromSeed(aSeed)
 	pub, _ := kp.PublicKey()
 	mr := &MemAccResolver{}
-	mr.Store(string(pub), aJWT)
+	mr.Store(pub, aJWT)
 	s.mu.Lock()
 	s.accResolver = mr
 	s.mu.Unlock()
@@ -156,7 +157,7 @@ func TestJWTUserExpired(t *testing.T) {
 	// Create a new user that we will make sure has expired.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	nuc.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	nuc.Expires = time.Now().Add(-2 * time.Second).Unix()
 
@@ -192,7 +193,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	// Create a new user that we will make sure has expired.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	nuc.IssuedAt = time.Now().Unix()
 	nuc.Expires = time.Now().Add(time.Second).Unix()
 
@@ -228,7 +229,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	}
 
 	// Now we should expire after 1 second or so.
-	time.Sleep(time.Second)
+	time.Sleep(1250 * time.Millisecond)
 
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
@@ -242,7 +243,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 func TestJWTUserPermissionClaims(t *testing.T) {
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 
 	nuc.Permissions.Pub.Allow.Add("foo")
 	nuc.Permissions.Pub.Allow.Add("bar")
@@ -309,7 +310,7 @@ func TestJWTAccountExpired(t *testing.T) {
 	// Create an account that will be expired.
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(string(apub))
+	nac := jwt.NewAccountClaims(apub)
 	nac.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	nac.Expires = time.Now().Add(-2 * time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
@@ -317,12 +318,12 @@ func TestJWTAccountExpired(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(apub), ajwt)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	jwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -356,7 +357,7 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	// Create an account that will expire.
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(string(apub))
+	nac := jwt.NewAccountClaims(apub)
 	nac.IssuedAt = time.Now().Unix()
 	nac.Expires = time.Now().Add(time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
@@ -364,12 +365,12 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(apub), ajwt)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	jwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -396,7 +397,7 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	}
 
 	// Now we should expire after 1 second or so.
-	time.Sleep(time.Second)
+	time.Sleep(1250 * time.Millisecond)
 
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
@@ -433,7 +434,7 @@ func TestJWTAccountRenew(t *testing.T) {
 	// Create an account that has expired.
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(string(apub))
+	nac := jwt.NewAccountClaims(apub)
 	nac.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	nac.Expires = time.Now().Add(-2 * time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
@@ -441,12 +442,12 @@ func TestJWTAccountRenew(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(apub), ajwt)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -478,8 +479,8 @@ func TestJWTAccountRenew(t *testing.T) {
 	}
 
 	// Update the account
-	addAccountToMemResolver(s, string(apub), ajwt)
-	acc := s.LookupAccount(string(apub))
+	addAccountToMemResolver(s, apub, ajwt)
+	acc := s.LookupAccount(apub)
 	if acc == nil {
 		t.Fatalf("Expected to retrive the account")
 	}
@@ -513,7 +514,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	// Create an account that has expired.
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(string(apub))
+	nac := jwt.NewAccountClaims(apub)
 	nac.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	nac.Expires = time.Now().Add(time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
@@ -521,9 +522,9 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(apub), ajwt)
+	addAccountToMemResolver(s, apub, ajwt)
 	// Force it to be loaded by the server and start the expiration timer.
-	acc := s.LookupAccount(string(apub))
+	acc := s.LookupAccount(apub)
 	if acc == nil {
 		t.Fatalf("Could not retrieve account for %q", apub)
 	}
@@ -531,7 +532,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	// Create a new user
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -546,7 +547,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	sig := base64.StdEncoding.EncodeToString(sigraw)
 
 	// Wait for expiration.
-	time.Sleep(time.Second)
+	time.Sleep(1250 * time.Millisecond)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail since the account is expired.
@@ -566,7 +567,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	}
 
 	// Update the account
-	addAccountToMemResolver(s, string(apub), ajwt)
+	addAccountToMemResolver(s, apub, ajwt)
 	// Make sure the too quick update suppression does not bite us.
 	acc.updated = time.Now().Add(-1 * time.Hour)
 
@@ -601,7 +602,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 
 	// Now create Exports.
 	streamExport := &jwt.Export{Subject: "foo", Type: jwt.Stream}
@@ -615,9 +616,9 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	acc := s.LookupAccount(string(fooPub))
+	acc := s.LookupAccount(fooPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
@@ -643,18 +644,18 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 
 	barKP, _ := nkeys.CreateAccount()
 	barPub, _ := barKP.PublicKey()
-	barAC := jwt.NewAccountClaims(string(barPub))
+	barAC := jwt.NewAccountClaims(barPub)
 
-	streamImport := &jwt.Import{Account: string(fooPub), Subject: "foo", To: "import.foo", Type: jwt.Stream}
-	serviceImport := &jwt.Import{Account: string(fooPub), Subject: "req.echo", Type: jwt.Service}
+	streamImport := &jwt.Import{Account: fooPub, Subject: "foo", To: "import.foo", Type: jwt.Stream}
+	serviceImport := &jwt.Import{Account: fooPub, Subject: "req.echo", Type: jwt.Service}
 	barAC.Imports.Add(streamImport, serviceImport)
 	barJWT, err := barAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 
-	acc = s.LookupAccount(string(barPub))
+	acc = s.LookupAccount(barPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
@@ -667,14 +668,14 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 
 	// Now add in a bad activation token.
-	barAC = jwt.NewAccountClaims(string(barPub))
-	serviceImport = &jwt.Import{Account: string(fooPub), Subject: "req.echo", Token: "not a token", Type: jwt.Service}
+	barAC = jwt.NewAccountClaims(barPub)
+	serviceImport = &jwt.Import{Account: fooPub, Subject: "req.echo", Token: "not a token", Type: jwt.Service}
 	barAC.Imports.Add(serviceImport)
 	barJWT, err = barAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 
 	s.updateAccountClaims(acc, barAC)
 
@@ -684,10 +685,10 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 
 	// Now make a correct one.
-	barAC = jwt.NewAccountClaims(string(barPub))
-	serviceImport = &jwt.Import{Account: string(fooPub), Subject: "req.echo", Type: jwt.Service}
+	barAC = jwt.NewAccountClaims(barPub)
+	serviceImport = &jwt.Import{Account: fooPub, Subject: "req.echo", Type: jwt.Service}
 
-	activation := jwt.NewActivationClaims(string(barPub))
+	activation := jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "req.echo"
 	activation.ImportType = jwt.Service
 	actJWT, err := activation.Encode(fooKP)
@@ -700,7 +701,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 	// Our service import should have succeeded.
 	if les := len(acc.imports.services); les != 1 {
@@ -708,10 +709,10 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 
 	// Now test url
-	barAC = jwt.NewAccountClaims(string(barPub))
-	serviceImport = &jwt.Import{Account: string(fooPub), Subject: "req.add", Type: jwt.Service}
+	barAC = jwt.NewAccountClaims(barPub)
+	serviceImport = &jwt.Import{Account: fooPub, Subject: "req.add", Type: jwt.Service}
 
-	activation = jwt.NewActivationClaims(string(barPub))
+	activation = jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "req.add"
 	activation.ImportType = jwt.Service
 	actJWT, err = activation.Encode(fooKP)
@@ -730,7 +731,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 	// Our service import should have succeeded. Should be the only one since we reset.
 	if les := len(acc.imports.services); les != 1 {
@@ -738,15 +739,15 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 
 	// Now streams
-	barAC = jwt.NewAccountClaims(string(barPub))
-	streamImport = &jwt.Import{Account: string(fooPub), Subject: "private", To: "import.private", Type: jwt.Stream}
+	barAC = jwt.NewAccountClaims(barPub)
+	streamImport = &jwt.Import{Account: fooPub, Subject: "private", To: "import.private", Type: jwt.Stream}
 
 	barAC.Imports.Add(streamImport)
 	barJWT, err = barAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 0 {
@@ -754,10 +755,10 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 
 	// Now add in activation.
-	barAC = jwt.NewAccountClaims(string(barPub))
-	streamImport = &jwt.Import{Account: string(fooPub), Subject: "private", To: "import.private", Type: jwt.Stream}
+	barAC = jwt.NewAccountClaims(barPub)
+	streamImport = &jwt.Import{Account: fooPub, Subject: "private", To: "import.private", Type: jwt.Stream}
 
-	activation = jwt.NewActivationClaims(string(barPub))
+	activation = jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "private"
 	activation.ImportType = jwt.Stream
 	actJWT, err = activation.Encode(fooKP)
@@ -770,7 +771,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 1 {
@@ -788,7 +789,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	streamExport := &jwt.Export{Subject: "foo", Type: jwt.Stream}
 
 	fooAC.Exports.Add(streamExport)
@@ -796,24 +797,24 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
 	barKP, _ := nkeys.CreateAccount()
 	barPub, _ := barKP.PublicKey()
-	barAC := jwt.NewAccountClaims(string(barPub))
-	streamImport := &jwt.Import{Account: string(fooPub), Subject: "foo", To: "import", Type: jwt.Stream}
+	barAC := jwt.NewAccountClaims(barPub)
+	streamImport := &jwt.Import{Account: fooPub, Subject: "foo", To: "import", Type: jwt.Stream}
 
 	barAC.Imports.Add(streamImport)
 	barJWT, err := barAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(barKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -858,13 +859,13 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	checkShadow(1)
 
 	// Now update bar and remove the import which should make the shadow go away.
-	barAC = jwt.NewAccountClaims(string(barPub))
+	barAC = jwt.NewAccountClaims(barPub)
 	barJWT, err = barAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
-	acc := s.LookupAccount(string(barPub))
+	addAccountToMemResolver(s, barPub, barJWT)
+	acc := s.LookupAccount(barPub)
 	s.updateAccountClaims(acc, barAC)
 
 	checkShadow(0)
@@ -876,19 +877,19 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 
 	checkShadow(1)
 
 	// Now change export and make sure it goes away as well. So no exports anymore.
-	fooAC = jwt.NewAccountClaims(string(fooPub))
+	fooAC = jwt.NewAccountClaims(fooPub)
 	fooJWT, err = fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
 	checkShadow(0)
 
@@ -899,21 +900,21 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
 	checkShadow(0)
 
 	// Now put it back as normal.
-	fooAC = jwt.NewAccountClaims(string(fooPub))
+	fooAC = jwt.NewAccountClaims(fooPub)
 	streamExport = &jwt.Export{Subject: "foo", Type: jwt.Stream}
 	fooAC.Exports.Add(streamExport)
 	fooJWT, err = fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	s.updateAccountClaims(s.LookupAccount(string(fooPub)), fooAC)
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
 	checkShadow(1)
 }
@@ -928,7 +929,7 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	streamExport := &jwt.Export{Subject: "foo", Type: jwt.Stream, TokenReq: true}
 	fooAC.Exports.Add(streamExport)
 
@@ -937,19 +938,19 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	acc := s.LookupAccount(string(fooPub))
+	acc := s.LookupAccount(fooPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
 
 	barKP, _ := nkeys.CreateAccount()
 	barPub, _ := barKP.PublicKey()
-	barAC := jwt.NewAccountClaims(string(barPub))
-	streamImport := &jwt.Import{Account: string(fooPub), Subject: "foo", To: "import.", Type: jwt.Stream}
+	barAC := jwt.NewAccountClaims(barPub)
+	streamImport := &jwt.Import{Account: fooPub, Subject: "foo", To: "import.", Type: jwt.Stream}
 
-	activation := jwt.NewActivationClaims(string(barPub))
+	activation := jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "foo"
 	activation.ImportType = jwt.Stream
 	activation.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
@@ -964,12 +965,12 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(barPub), barJWT)
+	addAccountToMemResolver(s, barPub, barJWT)
 
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(barKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1012,10 +1013,30 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	// We created a SUB on foo which should create a shadow subscription.
 	checkShadow(1)
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(1250 * time.Millisecond)
 
 	// Should have expired and been removed.
 	checkShadow(0)
+}
+
+// Helper function to generate an async parser and a quit chan. This allows us to
+// parse multiple control statements in same go routine since by default these are
+// not protected in the server.
+func genAsyncParser(c *client) (func(string), chan bool) {
+	pab := make(chan []byte, 16)
+	pas := func(cs string) { pab <- []byte(cs) }
+	quit := make(chan bool)
+	go func() {
+		for {
+			select {
+			case cs := <-pab:
+				c.parse(cs)
+			case <-quit:
+				return
+			}
+		}
+	}()
+	return pas, quit
 }
 
 func TestJWTAccountLimitsSubs(t *testing.T) {
@@ -1028,18 +1049,18 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	fooAC.Limits.Subs = 10
 	fooJWT, err := fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1053,29 +1074,12 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
 	sig := base64.StdEncoding.EncodeToString(sigraw)
 
-	quit := make(chan bool)
+	parseAsync, quit := genAsyncParser(c)
 	defer func() { quit <- true }()
-
-	pab := make(chan []byte, 16)
-
-	parseAsync := func(cs []byte) {
-		pab <- cs
-	}
-
-	go func() {
-		for {
-			select {
-			case cs := <-pab:
-				c.parse(cs)
-			case <-quit:
-				return
-			}
-		}
-	}()
 
 	// PING needed to flush the +OK/-ERR to us.
 	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
-	parseAsync([]byte(cs))
+	parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)
@@ -1087,7 +1091,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 
 	// Check to make sure we have the limit set.
 	// Account first
-	fooAcc := s.LookupAccount(string(fooPub))
+	fooAcc := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.msubs != 10 {
 		fooAcc.mu.RUnlock()
@@ -1106,7 +1110,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	/// These should all work ok.
 	for i := 0; i < 10; i++ {
 		cs := fmt.Sprintf("SUB foo %d\r\nPING\r\n", i)
-		parseAsync([]byte(cs))
+		parseAsync(cs)
 		l, _ = cr.ReadString('\n')
 		if !strings.HasPrefix(l, "+OK") {
 			t.Fatalf("Expected an OK, got: %v", l)
@@ -1119,7 +1123,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 
 	// This one should fail.
 	cs = fmt.Sprintf("SUB foo 22\r\n")
-	parseAsync([]byte(cs))
+	parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR") {
 		t.Fatalf("Expected an ERR, got: %v", l)
@@ -1134,7 +1138,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 	s.updateAccountClaims(fooAcc, fooAC)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR") {
@@ -1159,14 +1163,14 @@ func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	fooAC.Limits.Subs = 10
 	fooJWT, err := fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
-	fooAcc := s.LookupAccount(string(fooPub))
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	fooAcc := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.msubs != 10 {
 		fooAcc.mu.RUnlock()
@@ -1177,7 +1181,7 @@ func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1212,18 +1216,18 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	fooAC.Limits.Payload = 8
 	fooJWT, err := fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1237,28 +1241,11 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
 	sig := base64.StdEncoding.EncodeToString(sigraw)
 
-	quit := make(chan bool)
+	parseAsync, quit := genAsyncParser(c)
 	defer func() { quit <- true }()
 
-	pab := make(chan []byte, 16)
-
-	parseAsync := func(cs []byte) {
-		pab <- cs
-	}
-
-	go func() {
-		for {
-			select {
-			case cs := <-pab:
-				c.parse(cs)
-			case <-quit:
-				return
-			}
-		}
-	}()
-
 	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
-	parseAsync([]byte(cs))
+	parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "PONG") {
 		t.Fatalf("Expected a PONG")
@@ -1266,7 +1253,7 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 
 	// Check to make sure we have the limit set.
 	// Account first
-	fooAcc := s.LookupAccount(string(fooPub))
+	fooAcc := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.mpay != 8 {
 		fooAcc.mu.RUnlock()
@@ -1282,14 +1269,14 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	c.mu.Unlock()
 
 	cs = fmt.Sprintf("PUB foo 4\r\nXXXX\r\nPING\r\n")
-	parseAsync([]byte(cs))
+	parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "PONG") {
 		t.Fatalf("Expected a PONG")
 	}
 
 	cs = fmt.Sprintf("PUB foo 10\r\nXXXXXXXXXX\r\nPING\r\n")
-	parseAsync([]byte(cs))
+	parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
@@ -1313,18 +1300,18 @@ func TestJWTAccountLimitsMaxPayloadButServerOverrides(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	fooAC.Limits.Payload = 8
 	fooJWT, err := fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
 	// Create a client.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(string(pub))
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1361,20 +1348,20 @@ func TestJWTAccountLimitsMaxConns(t *testing.T) {
 	// Create accounts and imports/exports.
 	fooKP, _ := nkeys.CreateAccount()
 	fooPub, _ := fooKP.PublicKey()
-	fooAC := jwt.NewAccountClaims(string(fooPub))
+	fooAC := jwt.NewAccountClaims(fooPub)
 	fooAC.Limits.Conn = 8
 	fooJWT, err := fooAC.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
-	addAccountToMemResolver(s, string(fooPub), fooJWT)
+	addAccountToMemResolver(s, fooPub, fooJWT)
 
 	newClient := func(expPre string) {
 		t.Helper()
 		// Create a client.
 		nkp, _ := nkeys.CreateUser()
 		pub, _ := nkp.PublicKey()
-		nuc := jwt.NewUserClaims(string(pub))
+		nuc := jwt.NewUserClaims(pub)
 		ujwt, err := nuc.Encode(fooKP)
 		if err != nil {
 			t.Fatalf("Error generating user JWT: %v", err)
@@ -1399,4 +1386,172 @@ func TestJWTAccountLimitsMaxConns(t *testing.T) {
 	}
 	// Now this one should fail.
 	newClient("-ERR ")
+}
+
+func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.Reader, string) {
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
+	return c, cr, cs
+}
+
+func TestJWTAccountServiceImportExpires(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+	serviceExport := &jwt.Export{Subject: "foo", Type: jwt.Service}
+
+	fooAC.Exports.Add(serviceExport)
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	barKP, _ := nkeys.CreateAccount()
+	barPub, _ := barKP.PublicKey()
+	barAC := jwt.NewAccountClaims(barPub)
+	serviceImport := &jwt.Import{Account: fooPub, Subject: "foo", Type: jwt.Service}
+
+	barAC.Imports.Add(serviceImport)
+	barJWT, err := barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, barPub, barJWT)
+
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
+	expectMsg := func(cr *bufio.Reader, sub, pay string) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		expected := "MSG " + sub
+		if !strings.HasPrefix(l, expected) {
+			t.Fatalf("Expected %q, got %q", expected, l)
+		}
+		l, _ = cr.ReadString('\n')
+		if l != pay+"\r\n" {
+			t.Fatalf("Expected %q, got %q", pay, l)
+		}
+		expectPong(cr)
+	}
+
+	// Create a client that will send the request
+	ca, cra, csa := createClient(t, s, barKP)
+	ca.trace = true
+
+	parseAsyncA, quitA := genAsyncParser(ca)
+	defer func() { quitA <- true }()
+	parseAsyncA(csa)
+	expectPong(cra)
+
+	// Create the client that will respond to the requests.
+	cb, crb, csb := createClient(t, s, fooKP)
+	cb.trace = true
+
+	parseAsyncB, quitB := genAsyncParser(cb)
+	defer func() { quitB <- true }()
+	parseAsyncB(csb)
+	expectPong(crb)
+
+	// Create Subscriber.
+	parseAsyncB("SUB foo 1\r\nPING\r\n")
+	expectPong(crb)
+
+	// Send Request
+	parseAsyncA("PUB foo 2\r\nhi\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should receive the request. PING needed to flush.
+	parseAsyncB("PING\r\n")
+	expectMsg(crb, "foo", "hi")
+
+	// Now update the exported service to require auth.
+	fooAC = jwt.NewAccountClaims(fooPub)
+	serviceExport = &jwt.Export{Subject: "foo", Type: jwt.Service, TokenReq: true}
+
+	fooAC.Exports.Add(serviceExport)
+	fooJWT, err = fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
+
+	// Send Another Request
+	parseAsyncA("PUB foo 2\r\nhi\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should not receive the request this time.
+	parseAsyncB("PING\r\n")
+	expectPong(crb)
+
+	// Now get an activation token such that it will work, but will expire.
+	barAC = jwt.NewAccountClaims(barPub)
+	serviceImport = &jwt.Import{Account: fooPub, Subject: "foo", Type: jwt.Service}
+
+	activation := jwt.NewActivationClaims(barPub)
+	activation.ImportSubject = "foo"
+	activation.ImportType = jwt.Service
+	activation.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
+	activation.Expires = time.Now().Add(time.Second).Unix()
+	actJWT, err := activation.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating activation token: %v", err)
+	}
+	serviceImport.Token = actJWT
+
+	barAC.Imports.Add(serviceImport)
+	barJWT, err = barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, barPub, barJWT)
+	s.updateAccountClaims(s.LookupAccount(barPub), barAC)
+
+	// Now it should work again.
+	// Send Another Request
+	parseAsyncA("PUB foo 3\r\nhi2\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should receive the request. PING needed to flush.
+	parseAsyncB("PING\r\n")
+	expectMsg(crb, "foo", "hi2")
+
+	// Now wait for it to expire, then retry.
+	time.Sleep(1250 * time.Millisecond)
+
+	// Send Another Request
+	parseAsyncA("PUB foo 3\r\nhi3\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should receive the request. PING needed to flush.
+	parseAsyncB("PING\r\n")
+	expectPong(crb)
 }
