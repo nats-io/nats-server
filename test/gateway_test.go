@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"regexp"
@@ -233,10 +234,28 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	gASend("RMSG $foo foo 2\r\nok\r\n")
 	gAExpect(runsubRe)
 	// Subscribe on foo, should get an RS+ that removes the no-interest
-	clientSend("SUB foo 1\r\nPING\r\n")
+	clientSend("SUB foo 4\r\nPING\r\n")
 	clientExpect(pongRe)
 	gAExpect(rsubRe)
 	// Send on bar, message should be received.
+	gASend("RMSG $foo bar 2\r\nok\r\n")
+	clientExpect(msgRe)
+	// Unsub foo and bar
+	clientSend("UNSUB 3\r\nUNSUB 4\r\nPING\r\n")
+	clientExpect(pongRe)
+	expectNothing(t, gA)
+	// Send on both foo and bar expect RS-
+	gASend("RMSG $foo foo 2\r\nok\r\n")
+	gAExpect(runsubRe)
+	gASend("RMSG $foo bar 2\r\nok\r\n")
+	gAExpect(runsubRe)
+	// Now have client create sub on "*", this should cause RS+ on foo
+	// and RS+ on bar.
+	clientSend("SUB * 5\r\nPING\r\n")
+	clientExpect(pongRe)
+	expectNumberOfProtos(t, gAExpect, rsubRe, 2)
+	gASend("RMSG $foo foo 2\r\nok\r\n")
+	clientExpect(msgRe)
 	gASend("RMSG $foo bar 2\r\nok\r\n")
 	clientExpect(msgRe)
 }
@@ -314,4 +333,31 @@ func TestGatewayQueue(t *testing.T) {
 	expectNothing(t, gA)
 	gASend("PING\r\n")
 	gAExpect(pongRe)
+
+	// Have A send a message on subject that has no sub
+	gASend("RMSG $foo new.subject 2\r\nok\r\n")
+	gAExpect(runsubRe)
+	// Now create a queue sub and check that we do not receive
+	// an RS+ without the queue name.
+	clientSend("SUB new.* queue 9\r\nPING\r\n")
+	clientExpect(pongRe)
+	buf := gAExpect(rsubRe)
+	if !bytes.Contains(buf, []byte("new.* queue")) {
+		t.Fatalf("Should have receives RS+ for new.* for queue, did not: %v", buf)
+	}
+	// Check for no other RS+. A should still keep an RS- for plain
+	// sub on new.subject
+	expectNothing(t, gA)
+	// Send message, expected to be received by client
+	gASend("RMSG $foo new.subject | queue 2\r\nok\r\n")
+	clientExpect(msgRe)
+	// Unsubscribe the queue sub
+	clientSend("UNSUB 9\r\nPING\r\n")
+	clientExpect(pongRe)
+	// A should receive RS- for this queue sub
+	buf = gAExpect(runsubRe)
+	if !bytes.Contains(buf, []byte("new.* queue")) {
+		t.Fatalf("Should have receives RS- for new.* for queue, did not: %v", buf)
+	}
+	expectNothing(t, gA)
 }

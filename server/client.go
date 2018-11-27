@@ -244,8 +244,8 @@ type readCache struct {
 	genid   uint64
 	results map[string]*SublistResult
 
-	// This is for routes to have their own L1 as well that is account aware.
-	rcache map[string]*routeCache
+	// This is for routes and gateways to have their own L1 as well that is account aware.
+	pacache map[string]*perAccountCache
 
 	// This is for when we deliver messages across a route. We use this structure
 	// to make sure to only send one message and properly scope to queues as needed.
@@ -257,6 +257,18 @@ type readCache struct {
 	subs  int
 	rsz   int // Read buffer size
 	srs   int // Short reads, used for dynamic buffer resizing.
+}
+
+const (
+	maxPerAccountCacheSize   = 32768
+	prunePerAccountCacheSize = 512
+)
+
+// perAccountCache is for L1 semantics for inbound messages from a route or gateway to mimic the performance of clients.
+type perAccountCache struct {
+	acc     *Account
+	results *SublistResult
+	genid   uint64
 }
 
 func (c *client) String() (id string) {
@@ -981,16 +993,14 @@ func (c *client) processConnect(arg []byte) error {
 
 	if srv != nil {
 		// Applicable to clients only:
-		if typ == CLIENT {
-			// As soon as c.opts is unmarshalled and if the proto is at
-			// least ClientProtoInfo, we need to increment the following counter.
-			// This is decremented when client is removed from the server's
-			// clients map.
-			if proto >= ClientProtoInfo {
-				srv.mu.Lock()
-				srv.cproto++
-				srv.mu.Unlock()
-			}
+		// As soon as c.opts is unmarshalled and if the proto is at
+		// least ClientProtoInfo, we need to increment the following counter.
+		// This is decremented when client is removed from the server's
+		// clients map.
+		if typ == CLIENT && proto >= ClientProtoInfo {
+			srv.mu.Lock()
+			srv.cproto++
+			srv.mu.Unlock()
 		}
 
 		// Check for Auth
@@ -1322,7 +1332,12 @@ func (c *client) processPong() {
 	c.mu.Lock()
 	c.ping.out = 0
 	c.rtt = time.Since(c.rttStart)
+	srv := c.srv
+	reorderGWs := c.typ == GATEWAY && c.gw.outbound
 	c.mu.Unlock()
+	if reorderGWs {
+		srv.gateway.orderOutboundConnections()
+	}
 }
 
 func (c *client) processPub(trace bool, arg []byte) error {
@@ -2043,15 +2058,26 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		c.checkForImportServices(c.acc, msg)
 	}
 
+	var queuesa [16][]byte
+	queues := queuesa[:0]
+
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply)
+		var qnames *[][]byte
+		// If we have queue subs in this cluster, then if we run in gateway
+		// mode and the remote gateways have queue subs, then we need to
+		// collect the queue groups this message was sent to so that we
+		// exclude them when sending to gateways.
+		if len(r.qsubs) > 0 && c.srv.gateway.enabled && c.srv.gatewaysHaveQSubs() {
+			qnames = &queues
+		}
+		c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, qnames)
 	}
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
-		c.sendMsgToGateways(msg, c.pa.subject, c.pa.reply, len(r.qsubs) == 0)
+		c.sendMsgToGateways(msg, queues)
 	}
 }
 
@@ -2079,7 +2105,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := rm.acc.sl.Match(rm.to)
-		c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr)
+		c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, nil)
 	}
 }
 
@@ -2118,8 +2144,12 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 	}
 }
 
+func collectQueueName(queues *[][]byte, queue []byte) {
+	*queues = append(*queues, queue)
+}
+
 // This processes the sublist results for a given message.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte) {
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte, queues *[][]byte) {
 	// msg header for clients.
 	msgh := c.msgb[1:msgHeadProtoLen]
 	msgh = append(msgh, subject...)
@@ -2225,6 +2255,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 					continue
 				} else {
 					c.addSubToRouteTargets(sub)
+					if queues != nil {
+						collectQueueName(queues, sub.queue)
+					}
 				}
 				break
 			}
@@ -2242,6 +2275,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			if c.deliverMsg(sub, mh, msg) {
 				// Clear rsub
 				rsub = nil
+				if queues != nil {
+					collectQueueName(queues, sub.queue)
+				}
 				break
 			}
 		}
@@ -2250,6 +2286,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// If we are here we tried to deliver to a local qsub
 			// but failed. So we will send it to a remote.
 			c.addSubToRouteTargets(rsub)
+			if queues != nil {
+				collectQueueName(queues, rsub.queue)
+			}
 		}
 	}
 
@@ -2260,7 +2299,7 @@ sendToRoutes:
 		return
 	}
 
-	// We address by index to avoimd struct copy. We have inline structs for memory
+	// We address by index to avoid struct copy. We have inline structs for memory
 	// layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
@@ -2675,6 +2714,69 @@ func (c *client) getRTTValue() time.Duration {
 	rtt := c.rtt
 	c.mu.Unlock()
 	return rtt
+}
+
+// Creates a cache suitable for ROUTER and GATEWAY connections to
+// retrieve subject interest on a given account.
+func createPerAccountCache() map[string]*perAccountCache {
+	return make(map[string]*perAccountCache, maxPerAccountCacheSize)
+}
+
+// This function is used by ROUTER and GATEWAY connections to
+// look for a subject on a given account (since these type of
+// connections are not bound to a specific account).
+// If the c.pa.subject is found in the cache, the cached result
+// is returned, otherwse, we match the account's sublist and update
+// the cache. The cache is pruned if reaching a certain size.
+func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
+	var (
+		acc *Account
+		pac *perAccountCache
+		r   *SublistResult
+		ok  bool
+	)
+	// Check our cache.
+	if pac, ok = c.in.pacache[string(c.pa.pacache)]; ok {
+		// Check the genid to see if it's still valid.
+		if genid := atomic.LoadUint64(&pac.acc.sl.genid); genid != pac.genid {
+			ok = false
+			delete(c.in.pacache, string(c.pa.pacache))
+		} else {
+			acc = pac.acc
+			r = pac.results
+		}
+	}
+
+	if !ok {
+		// Match correct account and sublist.
+		acc = c.srv.LookupAccount(string(c.pa.account))
+		if acc == nil {
+			return nil, nil
+		}
+
+		// Match against the account sublist.
+		r = acc.sl.Match(string(c.pa.subject))
+
+		// Store in our cache
+		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&acc.sl.genid)}
+
+		// Check if we need to prune.
+		if len(c.in.pacache) > maxPerAccountCacheSize {
+			c.prunePerAccountCache()
+		}
+	}
+	return acc, r
+}
+
+// prunePerAccountCache will prune off a random number of cache entries.
+func (c *client) prunePerAccountCache() {
+	n := 0
+	for cacheKey := range c.in.pacache {
+		delete(c.in.pacache, cacheKey)
+		if n++; n > prunePerAccountCacheSize {
+			break
+		}
+	}
 }
 
 // Logging functionality scoped to a client or route.

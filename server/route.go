@@ -227,31 +227,8 @@ func (c *client) processRoutedMsgArgs(trace bool, arg []byte) error {
 	// Common ones processed after check for arg length
 	c.pa.account = args[0]
 	c.pa.subject = args[1]
-	c.pa.rcache = arg[:len(args[0])+len(args[1])+1]
+	c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
 	return nil
-}
-
-const (
-	maxRouteCacheSize   = 32768
-	pruneRouteCacheSize = 512
-)
-
-// routeCache is for L1 semantics for inbound messages from a route to mimic the performance of clients.
-type routeCache struct {
-	acc     *Account
-	results *SublistResult
-	genid   uint64
-}
-
-// pruneRouteCache will prune off a random number of cache entries.
-func (c *client) pruneRouteCache() {
-	n := 0
-	for cacheKey := range c.in.rcache {
-		delete(c.in.rcache, cacheKey)
-		if n++; n > pruneRouteCacheSize {
-			break
-		}
-	}
 }
 
 // processInboundRouteMsg is called to process an inbound msg from a route.
@@ -274,43 +251,10 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
-	var (
-		acc *Account
-		rc  *routeCache
-		r   *SublistResult
-		ok  bool
-	)
-
-	// Check our cache first.
-	if rc, ok = c.in.rcache[string(c.pa.rcache)]; ok {
-		// Check the genid to see if it's still valid.
-		if genid := atomic.LoadUint64(&rc.acc.sl.genid); genid != rc.genid {
-			ok = false
-			delete(c.in.rcache, string(c.pa.rcache))
-		} else {
-			acc = rc.acc
-			r = rc.results
-		}
-	}
-
-	if !ok {
-		// Match correct account and sublist.
-		acc = c.srv.LookupAccount(string(c.pa.account))
-		if acc == nil {
-			c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
-			return
-		}
-
-		// Match against the account sublist.
-		r = acc.sl.Match(string(c.pa.subject))
-
-		// Store in our cache
-		c.in.rcache[string(c.pa.rcache)] = &routeCache{acc, r, atomic.LoadUint64(&acc.sl.genid)}
-
-		// Check if we need to prune.
-		if len(c.in.rcache) > maxRouteCacheSize {
-			c.pruneRouteCache()
-		}
+	acc, r := c.getAccAndResultFromCache()
+	if acc == nil {
+		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
+		return
 	}
 
 	// Check to see if we need to map/route to another account.
@@ -347,7 +291,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		}
 	}
 
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply)
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, nil)
 }
 
 // Lock should be held entering here.
@@ -786,7 +730,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	c.mu.Unlock()
 
 	if sendToGWs {
-		srv.sendQueueUnsubToGateways(accountName, sub)
+		srv.sendQueueUnsubToGateways(accountName, sub, true)
 	}
 
 	if c.opts.Verbose {
@@ -891,10 +835,14 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 		// For a plain sub, this will send an RS+ to gateways only if
 		// we had previously sent an RS-. In other words, we don't send
 		// an RS+ per plain sub.
-		// For queue subs, we will send an RS+, but if we are here, we
-		// know there is a single qsub per account/subject/queue:
-		// sendToGWs is true only if we did not find that key before.
-		srv.sendSubInterestToGateways(acc.Name, sub)
+		if sub.queue == nil {
+			srv.endSubjectNoInterestForGateways(acc.Name, sub)
+		} else {
+			// For queue subs, we will send an RS+, but if we are here, we
+			// know there is a single qsub per account/subject/queue:
+			// sendToGWs is true only if we did not find that key before.
+			srv.sendQueueSubToGateways(acc.Name, sub, true)
+		}
 	}
 	return nil
 }
@@ -1093,8 +1041,8 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	// Initialize the route cache.
-	c.in.rcache = make(map[string]*routeCache, maxRouteCacheSize)
+	// Initialize the per-account cache.
+	c.in.pacache = createPerAccountCache()
 
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure
@@ -1356,17 +1304,20 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		s.broadcastSubscribe(sub)
 		// Here we want to send RS+ only when going from 0 to 1
 		if s.gateway.enabled && added && entryN == 1 {
-			// Sends an RS+ to gateways if this is a queue sub,
-			// or if a plain sub but only if we had previously
-			// sent an RS- to the gateways.
-			s.sendSubInterestToGateways(acc.Name, sub)
+			// If plain sub, send an RS+ only if we had previously
+			// sent an RS-
+			if sub.queue == nil {
+				s.endSubjectNoInterestForGateways(acc.Name, sub)
+			} else {
+				s.sendQueueSubToGateways(acc.Name, sub, false)
+			}
 		}
 	} else {
 		s.broadcastUnSubscribe(sub)
 		// Last of the queue member of this group, so send to
 		// gateways.
 		if s.gateway.enabled && sub.queue != nil {
-			s.sendQueueUnsubToGateways(acc.Name, sub)
+			s.sendQueueUnsubToGateways(acc.Name, sub, false)
 		}
 	}
 }

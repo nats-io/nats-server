@@ -183,7 +183,7 @@ func New(opts *Options) *Server {
 	// server will always be started with configuration parsing (that could
 	// report issues). Its options can be (incorrectly) set by hand when
 	// server is embedded. If there is an error, return nil.
-	// TODO: Should probably have a new NewServer() API that returns (*Server, error)
+	// TODO(ik): Should probably have a new NewServer() API that returns (*Server, error)
 	// so user can know what's wrong.
 	if err := validateOptions(opts); err != nil {
 		return nil
@@ -1376,7 +1376,7 @@ func (s *Server) removeClient(c *client) {
 	case ROUTER:
 		s.removeRoute(c)
 	case GATEWAY:
-		s.removeRemoteGateway(c)
+		s.removeRemoteGatewayConnection(c)
 	}
 }
 

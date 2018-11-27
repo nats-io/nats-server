@@ -528,12 +528,17 @@ func TestGatewayTLS(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	// s2 should have an inbound gateway
 	waitForInboundGateways(t, s2, 1, time.Second)
+	// and vice-versa
+	waitForOutboundGateways(t, s2, 1, time.Second)
+	waitForInboundGateways(t, s1, 1, time.Second)
 
 	// Stop s2 server
 	s2.Shutdown()
 
 	// gateway should go away
 	waitForOutboundGateways(t, s1, 0, time.Second)
+	waitForInboundGateways(t, s1, 0, time.Second)
+	waitForOutboundGateways(t, s2, 0, time.Second)
 	waitForInboundGateways(t, s2, 0, time.Second)
 
 	// Restart server
@@ -542,6 +547,8 @@ func TestGatewayTLS(t *testing.T) {
 
 	// gateway should reconnect
 	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+	waitForOutboundGateways(t, s2, 1, 2*time.Second)
+	waitForInboundGateways(t, s1, 1, 2*time.Second)
 	waitForInboundGateways(t, s2, 1, 2*time.Second)
 
 	s1.Shutdown()
@@ -552,32 +559,26 @@ func TestGatewayTLS(t *testing.T) {
 	// Make an explicit TLS config for remote gateway config "B"
 	// on cluster A.
 	o1.Gateway.Gateways[0].TLSConfig = o1.Gateway.TLSConfig.Clone()
+	u, _ := url.Parse(fmt.Sprintf("tls://localhost:%d", s2.GatewayAddr().Port))
+	o1.Gateway.Gateways[0].URLs = []*url.URL{u}
 	// Make the TLSTimeout so small that it should fail to connect.
 	smallTimeout := 0.00000001
 	o1.Gateway.Gateways[0].TLSTimeout = smallTimeout
 	s1 = runGatewayServer(o1)
 	defer s1.Shutdown()
 
-	// s2 should be able to create connection to s1 though
-	waitForOutboundGateways(t, s2, 1, 2*time.Second)
 	// Check that s1 reports connection failures
 	waitForGatewayFailedConnect(t, s1, "B", true, 2*time.Second)
 
 	// Check that TLSConfig from s1's remote "B" is based on
 	// what we have configured.
 	cfg := s1.getRemoteGateway("B")
-	var (
-		tlsConfig *tls.Config
-		timeout   float64
-	)
 	cfg.RLock()
-	if cfg.TLSConfig != nil {
-		tlsConfig = cfg.TLSConfig.Clone()
-	}
-	timeout = cfg.TLSTimeout
+	tlsName := cfg.tlsName
+	timeout := cfg.TLSTimeout
 	cfg.RUnlock()
-	if tlsConfig.ServerName != "127.0.0.1" {
-		t.Fatalf("Expected server name to be localhost, got %v", tlsConfig.ServerName)
+	if tlsName != "localhost" {
+		t.Fatalf("Expected server name to be localhost, got %v", tlsName)
 	}
 	if timeout != smallTimeout {
 		t.Fatalf("Expected tls timeout to be %v, got %v", smallTimeout, timeout)
@@ -961,7 +962,7 @@ func TestGatewayRejectUnknown(t *testing.T) {
 	waitForInboundGateways(t, s1, 1, time.Second)
 
 	// It should not have a registered remote gateway with C (s3)
-	if s1.getOutboundGateway("C") != nil {
+	if s1.getOutboundGatewayConnection("C") != nil {
 		t.Fatalf("A should not have outbound gateway to C")
 	}
 	if s1.getRemoteGateway("C") != nil {
@@ -983,7 +984,7 @@ func TestGatewayRejectUnknown(t *testing.T) {
 	waitForOutboundGateways(t, s3, 1, time.Second)
 	waitForInboundGateways(t, s3, 1, time.Second)
 	// It should not have a registered remote gateway with C (s3)
-	if s1.getOutboundGateway("C") != nil {
+	if s1.getOutboundGatewayConnection("C") != nil {
 		t.Fatalf("A should not have outbound gateway to C")
 	}
 	if s1.getRemoteGateway("C") != nil {
@@ -1087,9 +1088,9 @@ func TestGatewayAccountInterest(t *testing.T) {
 			t.Fatalf("Expected %d message(s) to be sent over, got %v", expected, out)
 		}
 	}
-	gwcb := s1.getOutboundGateway("B")
+	gwcb := s1.getOutboundGatewayConnection("B")
 	checkCount(t, gwcb, 1)
-	gwcc := s1.getOutboundGateway("C")
+	gwcc := s1.getOutboundGatewayConnection("C")
 	checkCount(t, gwcc, 1)
 
 	// S2 should have sent a protocol indicating no interest.
@@ -1134,7 +1135,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 	waitForOutboundGateways(t, s3, 2, 2*time.Second)
 
 	// First refresh gwcc
-	gwcc = s1.getOutboundGateway("C")
+	gwcc = s1.getOutboundGatewayConnection("C")
 	// Verify that it's count is 0
 	checkCount(t, gwcc, 0)
 	// Publish and now...
@@ -1176,24 +1177,31 @@ func TestGatewaySubjectInterest(t *testing.T) {
 			t.Fatalf("Expected %d message(s) to be sent over, got %v", expected, out)
 		}
 	}
-	gwcb := s1.getOutboundGateway("B")
+	gwcb := s1.getOutboundGatewayConnection("B")
 	checkCount(t, gwcb, 1)
 
 	// S2 should have sent a protocol indicating no subject interest.
-	checkForNoInterest := func(t *testing.T) {
+	checkForNoInterest := func(t *testing.T, subject string, expectNoInterest bool) {
 		t.Helper()
 		checkFor(t, time.Second, 15*time.Millisecond, func() error {
 			sni, _ := gwcb.gw.noInterest.Load("$foo")
 			if sni == nil {
 				return fmt.Errorf("Did not receive subject no-interest")
 			}
-			if _, subjNoInterest := sni.(*sync.Map).Load("foo"); !subjNoInterest {
-				return fmt.Errorf("Did not receive subject no-interest")
+			_, subjNoInterest := sni.(*sync.Map).Load(subject)
+			if expectNoInterest {
+				if subjNoInterest {
+					return nil
+				}
+				return fmt.Errorf("Did not receive subject no-interest on %q", subject)
+			}
+			if subjNoInterest {
+				return fmt.Errorf("No-interest on subject %q was not cleared", subject)
 			}
 			return nil
 		})
 	}
-	checkForNoInterest(t)
+	checkForNoInterest(t, "foo", true)
 	// Second send should not go through to B
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
@@ -1209,17 +1217,8 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	checkExpectedSubs(t, 0, s1)
 
 	// This should clear the no interest for this subject
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		sni, _ := gwcb.gw.noInterest.Load("$foo")
-		if sni == nil {
-			return fmt.Errorf("Did not receive subject no interest")
-		}
-		if _, noInterest := sni.(*sync.Map).Load("foo"); noInterest {
-			return fmt.Errorf("No-interest on foo should have been cleared")
-		}
-		return nil
-	})
-	// Third send should not go through to B
+	checkForNoInterest(t, "foo", false)
+	// Third send should go to B
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 2)
@@ -1235,12 +1234,34 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 3)
 
-	checkForNoInterest(t)
+	checkForNoInterest(t, "foo", true)
 
 	// Send one more time and now it should not go to B
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 3)
+
+	// Send on bar, message should go over.
+	natsPub(t, nc, "bar", []byte("hello"))
+	natsFlush(t, nc)
+	checkCount(t, gwcb, 4)
+
+	// But now we should have receives an RS- on bar.
+	checkForNoInterest(t, "bar", true)
+
+	// Check that wildcards are supported. Create a subscription on '*' on B.
+	// This should clear the no-interest on both "foo" and "bar"
+	natsSub(t, ncb, "*", func(_ *nats.Msg) {})
+	natsFlush(t, ncb)
+	checkExpectedSubs(t, 1, s2)
+	checkExpectedSubs(t, 0, s1)
+	checkForNoInterest(t, "foo", false)
+	checkForNoInterest(t, "bar", false)
+	// Publish on message on foo and one on bar and they should go.
+	natsPub(t, nc, "foo", []byte("hello"))
+	natsPub(t, nc, "bar", []byte("hello"))
+	natsFlush(t, nc)
+	checkCount(t, gwcb, 6)
 
 	// Restart B and that should clear everything on A
 	s2.Shutdown()
@@ -1250,13 +1271,13 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
 
-	gwcb = s1.getOutboundGateway("B")
+	gwcb = s1.getOutboundGatewayConnection("B")
 	checkCount(t, gwcb, 0)
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 1)
 
-	checkForNoInterest(t)
+	checkForNoInterest(t, "foo", true)
 
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
@@ -1291,18 +1312,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	checkExpectedSubs(t, 1, s2, s2bis)
 
 	// Check that subject no-interest on A was cleared.
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		gw := s1.getOutboundGateway("B").gw
-		sni, _ := gw.noInterest.Load("$foo")
-		if sni == nil {
-			t.Fatalf("Account is marked as no-interest, it should not")
-		}
-		sn := sni.(*sync.Map)
-		if _, noInterest := sn.Load("foo"); noInterest {
-			return fmt.Errorf("No-interest still registered")
-		}
-		return nil
-	})
+	checkForNoInterest(t, "foo", false)
 
 	// Now publish. Remember, s1 has outbound gateway to s2, and s2 does not
 	// have a local subscription and has previously sent a no-interest on "foo".
@@ -1352,6 +1362,81 @@ func TestGatewayDoesntSendBackToItself(t *testing.T) {
 	}
 }
 
+func TestGatewayOrderedOutbounds(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	o3 := testGatewayOptionsFromToWithServers(t, "C", "B", s2)
+	s3 := runGatewayServer(o3)
+	defer s3.Shutdown()
+
+	waitForOutboundGateways(t, s1, 2, time.Second)
+	waitForOutboundGateways(t, s2, 2, time.Second)
+	waitForOutboundGateways(t, s3, 2, time.Second)
+
+	gws := make([]*client, 0, 2)
+	s2.getOutboundGatewayConnections(&gws)
+
+	// RTTs are expected to be initially 0. So update RTT of first
+	// in the array so that its value is no longer 0, this should
+	// cause order to be flipped.
+	c := gws[0]
+	c.mu.Lock()
+	c.sendPing()
+	c.mu.Unlock()
+
+	// Wait a tiny but
+	time.Sleep(15 * time.Millisecond)
+	// Get the ordering again.
+	gws = gws[:0]
+	s2.getOutboundGatewayConnections(&gws)
+	// Verify order is correct.
+	fRTT := gws[0].getRTTValue()
+	sRTT := gws[1].getRTTValue()
+	if fRTT > sRTT {
+		t.Fatalf("Wrong ordering: %v, %v", fRTT, sRTT)
+	}
+
+	// What is the first in the array?
+	gws[0].mu.Lock()
+	gwName := gws[0].gw.name
+	gws[0].mu.Unlock()
+	if gwName == "A" {
+		s1.Shutdown()
+	} else {
+		s3.Shutdown()
+	}
+	waitForOutboundGateways(t, s2, 1, time.Second)
+	gws = gws[:0]
+	s2.getOutboundGatewayConnections(&gws)
+	if len(gws) != 1 {
+		t.Fatalf("Expected size of outo to be 1, got %v", len(gws))
+	}
+	gws[0].mu.Lock()
+	name := gws[0].gw.name
+	gws[0].mu.Unlock()
+	if gwName == name {
+		t.Fatalf("Gateway %q should have been removed", gwName)
+	}
+	// Stop the remaining gateway
+	if gwName == "A" {
+		s3.Shutdown()
+	} else {
+		s1.Shutdown()
+	}
+	waitForOutboundGateways(t, s2, 0, time.Second)
+	gws = gws[:0]
+	s2.getOutboundGatewayConnections(&gws)
+	if len(gws) != 0 {
+		t.Fatalf("Expected size of outo to be 0, got %v", len(gws))
+	}
+}
+
 func TestGatewayQueueSub(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
 	s2 := runGatewayServer(o2)
@@ -1364,27 +1449,27 @@ func TestGatewayQueueSub(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
 
-	s2Url := fmt.Sprintf("nats://127.0.0.1:%d", o2.Port)
-	nc2 := natsConnect(t, s2Url)
-	defer nc2.Close()
+	sBUrl := fmt.Sprintf("nats://127.0.0.1:%d", o2.Port)
+	ncB := natsConnect(t, sBUrl)
+	defer ncB.Close()
 
 	count2 := int32(0)
 	cb2 := func(_ *nats.Msg) {
 		atomic.AddInt32(&count2, 1)
 	}
-	qsubOnB := natsQueueSub(t, nc2, "foo", "bar", cb2)
-	natsFlush(t, nc2)
+	qsubOnB := natsQueueSub(t, ncB, "foo", "bar", cb2)
+	natsFlush(t, ncB)
 
-	s1Url := fmt.Sprintf("nats://127.0.0.1:%d", o1.Port)
-	nc1 := natsConnect(t, s1Url)
-	defer nc1.Close()
+	sAUrl := fmt.Sprintf("nats://127.0.0.1:%d", o1.Port)
+	ncA := natsConnect(t, sAUrl)
+	defer ncA.Close()
 
 	count1 := int32(0)
 	cb1 := func(_ *nats.Msg) {
 		atomic.AddInt32(&count1, 1)
 	}
-	qsubOnA := natsQueueSub(t, nc1, "foo", "bar", cb1)
-	natsFlush(t, nc1)
+	qsubOnA := natsQueueSub(t, ncA, "foo", "bar", cb1)
+	natsFlush(t, ncA)
 
 	// Make sure subs are registered on each server
 	checkExpectedSubs(t, 1, s1, s2)
@@ -1402,7 +1487,8 @@ func TestGatewayQueueSub(t *testing.T) {
 		}
 		natsFlush(t, nc)
 	}
-	send(t, nc1)
+	// Send from client connecting to S1 (cluster A)
+	send(t, ncA)
 
 	check := func(t *testing.T, count *int32, expected int) {
 		t.Helper()
@@ -1413,11 +1499,12 @@ func TestGatewayQueueSub(t *testing.T) {
 			return nil
 		})
 	}
+	// Check that all messages stay on S1 (cluster A)
 	check(t, &count1, total)
 	check(t, &count2, 0)
 
 	// Now send from the other side
-	send(t, nc2)
+	send(t, ncB)
 	check(t, &count1, total)
 	check(t, &count2, total)
 
@@ -1425,11 +1512,33 @@ func TestGatewayQueueSub(t *testing.T) {
 	atomic.StoreInt32(&count1, 0)
 	atomic.StoreInt32(&count2, 0)
 
+	// Add different queue group and make sure that messages are received
+	count3 := int32(0)
+	cb3 := func(_ *nats.Msg) {
+		atomic.AddInt32(&count3, 1)
+	}
+	batQSub := natsQueueSub(t, ncB, "foo", "bat", cb3)
+	natsFlush(t, ncB)
+	checkExpectedSubs(t, 2, s2)
+	send(t, ncA)
+	check(t, &count1, total)
+	check(t, &count2, 0)
+	check(t, &count3, total)
+
+	// Reset counters
+	atomic.StoreInt32(&count1, 0)
+	atomic.StoreInt32(&count2, 0)
+	atomic.StoreInt32(&count3, 0)
+
+	natsUnsub(t, batQSub)
+	natsFlush(t, ncB)
+	checkExpectedSubs(t, 1, s2)
+
 	// Stop qsub on A, and send messages to A, they should
 	// be routed to B.
 	qsubOnA.Unsubscribe()
 	checkExpectedSubs(t, 0, s1)
-	send(t, nc1)
+	send(t, ncA)
 	check(t, &count1, 0)
 	check(t, &count2, total)
 
@@ -1451,32 +1560,29 @@ func TestGatewayQueueSub(t *testing.T) {
 	waitForInboundGateways(t, s3, 2, time.Second)
 
 	// Create another qsub "bar"
-	s3Url := fmt.Sprintf("nats://127.0.0.1:%d", o3.Port)
-	nc3 := natsConnect(t, s3Url)
-	defer nc3.Close()
+	sCUrl := fmt.Sprintf("nats://127.0.0.1:%d", o3.Port)
+	ncC := natsConnect(t, sCUrl)
+	defer ncC.Close()
 	// Associate this with count1 (since A qsub is no longer running)
-	natsQueueSub(t, nc3, "foo", "bar", cb1)
-	natsFlush(t, nc3)
+	natsQueueSub(t, ncC, "foo", "bar", cb1)
+	natsFlush(t, ncC)
 	checkExpectedSubs(t, 1, s3)
 
 	// Artificially bump the RTT from A to C so that
 	// the code should favor sending to B.
-	gwcC := s1.getOutboundGateway("C")
+	gwcC := s1.getOutboundGatewayConnection("C")
 	gwcC.mu.Lock()
 	gwcC.rtt = 10 * time.Second
 	gwcC.mu.Unlock()
+	s1.gateway.orderOutboundConnections()
 
-	send(t, nc1)
+	send(t, ncA)
 	check(t, &count1, 0)
 	check(t, &count2, total)
 
 	// Add a new group on s3 that should receive all messages
-	count3 := int32(0)
-	cb3 := func(_ *nats.Msg) {
-		atomic.AddInt32(&count3, 1)
-	}
-	natsQueueSub(t, nc3, "foo", "baz", cb3)
-	natsFlush(t, nc3)
+	natsQueueSub(t, ncC, "foo", "baz", cb3)
+	natsFlush(t, ncC)
 	checkExpectedSubs(t, 2, s3)
 
 	// Reset counters
@@ -1488,35 +1594,28 @@ func TestGatewayQueueSub(t *testing.T) {
 	gwcC.rtt = time.Second
 	gwcC.mu.Unlock()
 
-	gwcB := s1.getOutboundGateway("B")
+	gwcB := s1.getOutboundGatewayConnection("B")
 	gwcB.mu.Lock()
 	gwcB.rtt = time.Second
 	gwcB.mu.Unlock()
 
-	send(t, nc1)
+	s1.gateway.Lock()
+	s1.gateway.orderOutboundConnectionsLocked()
+	destName := s1.gateway.outo[0].gw.name
+	s1.gateway.Unlock()
+
+	send(t, ncA)
 	// Group baz should receive all messages
 	check(t, &count3, total)
 
-	// Since RTT are equal, messages should be distributed
-	c1 := 0
-	c2 := 0
-	tc := 0
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		c1 = int(atomic.LoadInt32(&count1))
-		c2 = int(atomic.LoadInt32(&count2))
-		tc = c1 + c2
-		if tc == total {
-			break
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	if tc != total {
-		t.Fatalf("Expected %v messages, got %v", total, tc)
-	}
-	// Messages should not have gone to only one GW.
-	if c1 == 0 || c2 == 0 {
-		t.Fatalf("Messages went to only one GW, c1=%v c2=%v", c1, c2)
+	// Ordering is normally re-evaluated when processing PONGs,
+	// but rest of the time order will remain the same.
+	// Since RTT are equal, messages will go to the first
+	// GW in the array.
+	if destName == "B" {
+		check(t, &count2, total)
+	} else if destName == "C" && int(atomic.LoadInt32(&count2)) != total {
+		check(t, &count1, total)
 	}
 
 	// Unsubscribe qsub on B and C should receive
@@ -1540,7 +1639,7 @@ func TestGatewayQueueSub(t *testing.T) {
 	atomic.StoreInt32(&count2, 0)
 	atomic.StoreInt32(&count3, 0)
 
-	send(t, nc1)
+	send(t, ncA)
 	check(t, &count1, total)
 	check(t, &count3, total)
 }
@@ -1668,7 +1767,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 
 	// Let's wait for A to receive the unsubscribe
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		gw := sa.getOutboundGateway("B").gw
+		gw := sa.getOutboundGatewayConnection("B").gw
 		if sli, _ := gw.qsubsInterest.Load(globalAccountName); sli != nil {
 			return fmt.Errorf("Interest still present")
 		}
@@ -1681,7 +1780,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	natsFlush(t, pubnc)
 
 	// Get the gateway connection from A (sa) to B (sb1)
-	gw := sa.getOutboundGateway("B")
+	gw := sa.getOutboundGatewayConnection("B")
 	gw.mu.Lock()
 	out := gw.outMsgs
 	gw.mu.Unlock()
@@ -1691,7 +1790,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 
 	// Wait for the no interest to be received by A
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		gw := sa.getOutboundGateway("B").gw
+		gw := sa.getOutboundGatewayConnection("B").gw
 		if ni, _ := gw.noInterest.Load(globalAccountName); ni == nil {
 			return fmt.Errorf("No-interest still not registered")
 		}
@@ -1720,7 +1819,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 
 	// Check qsubs interest should be empty
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		gw := sa.getOutboundGateway("B").gw
+		gw := sa.getOutboundGatewayConnection("B").gw
 		if sli, _ := gw.qsubsInterest.Load(globalAccountName); sli != nil {
 			return fmt.Errorf("Interest still present")
 		}
@@ -1994,7 +2093,7 @@ func TestGatewayMsgSentOnlyOnce(t *testing.T) {
 	}
 	// Check s2 outbound connection stats. It should say that it
 	// sent only 1 message.
-	c := s2.getOutboundGateway("A")
+	c := s2.getOutboundGatewayConnection("A")
 	if c == nil {
 		t.Fatalf("S2 outbound gateway not found")
 	}

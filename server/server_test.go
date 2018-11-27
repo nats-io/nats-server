@@ -1010,9 +1010,13 @@ func TestGetRandomIP(t *testing.T) {
 		v := int(ip[0]-'0') - 1
 		dist[v]++
 	}
+	low := 20
+	high := 47
 	for i, d := range dist {
-		if d < 23 || d > 43 {
+		if d == 0 || d == 100 {
 			t.Fatalf("Unexpected distribution for ip %v, got %v", i, d)
+		} else if d < low || d > high {
+			t.Logf("Warning: out of expected range [%v,%v] for ip %v, got %v", low, high, i, d)
 		}
 	}
 }
