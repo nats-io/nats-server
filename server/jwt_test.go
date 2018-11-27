@@ -64,6 +64,47 @@ func addAccountToMemResolver(s *Server, pub, jwt string) {
 	s.mu.Unlock()
 }
 
+func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.Reader, string) {
+	t.Helper()
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.StdEncoding.EncodeToString(sigraw)
+
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
+	return c, cr, cs
+}
+
+// Helper function to generate an async parser and a quit chan. This allows us to
+// parse multiple control statements in same go routine since by default these are
+// not protected in the server.
+func genAsyncParser(c *client) (func(string), chan bool) {
+	pab := make(chan []byte, 16)
+	pas := func(cs string) { pab <- []byte(cs) }
+	quit := make(chan bool)
+	go func() {
+		for {
+			select {
+			case cs := <-pab:
+				c.parse(cs)
+			case <-quit:
+				return
+			}
+		}
+	}()
+	return pas, quit
+}
+
 func TestJWTUser(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
@@ -218,6 +259,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail too since no account resolver is defined.
 	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt, sig)
+
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
@@ -321,27 +363,9 @@ func TestJWTAccountExpired(t *testing.T) {
 	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	jwt, err := nuc.Encode(akp)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
-
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail since the account is expired.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt, sig)
+	c, cr, cs := createClient(t, s, akp)
 	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -368,55 +392,31 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	jwt, err := nuc.Encode(akp)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
+	c, cr, cs := createClient(t, s, akp)
+
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
 	}
-
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt, sig)
 	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
-	}
+	expectPong(cr)
 
 	// Now we should expire after 1 second or so.
 	time.Sleep(1250 * time.Millisecond)
 
-	l, _ = cr.ReadString('\n')
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
-		t.Fatalf("Expected an error")
+		t.Fatalf("Expected an error, got %q", l)
 	}
 	if !strings.Contains(l, "Expired") {
 		t.Fatalf("Expected 'Expired' to be in the error")
 	}
 
 	// Now make sure that accounts that have expired return an error.
-	c, cr, l = newClientForServer(s)
-
-	// Sign Nonce
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ = nkp.Sign([]byte(info.Nonce))
-	sig = base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	cs = fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt, sig)
+	c, cr, cs = createClient(t, s, akp)
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
@@ -445,27 +445,9 @@ func TestJWTAccountRenew(t *testing.T) {
 	addAccountToMemResolver(s, apub, ajwt)
 
 	// Create a new user
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(akp)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
-
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail since the account is expired.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
+	c, cr, cs := createClient(t, s, akp)
 	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -487,20 +469,11 @@ func TestJWTAccountRenew(t *testing.T) {
 	s.updateAccountClaims(acc, nac)
 
 	// Now make sure we can connect.
-	c, cr, l = newClientForServer(s)
-
-	// Sign Nonce
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ = nkp.Sign([]byte(info.Nonce))
-	sig = base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
-	cs = fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
+	c, cr, cs = createClient(t, s, akp)
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG, got: %q", l)
 	}
 }
 
@@ -530,30 +503,12 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	}
 
 	// Create a new user
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(akp)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
-
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
+	c, cr, cs := createClient(t, s, akp)
 	// Wait for expiration.
 	time.Sleep(1250 * time.Millisecond)
 
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail since the account is expired.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
 	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -575,20 +530,11 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	// happen automatically.
 
 	// Now make sure we can connect.
-	c, cr, l = newClientForServer(s)
-
-	// Sign Nonce
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ = nkp.Sign([]byte(info.Nonce))
-	sig = base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
-	cs = fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
+	c, cr, cs = createClient(t, s, akp)
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG, got: %q", l)
 	}
 }
 
@@ -811,39 +757,24 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
 
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
 	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(barKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
+	c, cr, cs := createClient(t, s, barKP)
+	parseAsync, quit := genAsyncParser(c)
+	defer func() { quit <- true }()
 
-	c, cr, l := newClientForServer(s)
+	parseAsync(cs)
+	expectPong(cr)
 
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nSUB import.foo 1\r\nPING\r\n", ujwt, sig)
-	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG\r\n") {
-		t.Fatalf("PONG response incorrect: %q\n", l)
-	}
+	parseAsync("SUB import.foo 1\r\nPING\r\n")
+	expectPong(cr)
 
 	checkShadow := func(expected int) {
 		t.Helper()
@@ -860,10 +791,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 
 	// Now update bar and remove the import which should make the shadow go away.
 	barAC = jwt.NewAccountClaims(barPub)
-	barJWT, err = barAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	barJWT, _ = barAC.Encode(okp)
 	addAccountToMemResolver(s, barPub, barJWT)
 	acc := s.LookupAccount(barPub)
 	s.updateAccountClaims(acc, barAC)
@@ -873,10 +801,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	// Now add it back and make sure the shadow comes back.
 	streamImport = &jwt.Import{Account: string(fooPub), Subject: "foo", To: "import", Type: jwt.Stream}
 	barAC.Imports.Add(streamImport)
-	barJWT, err = barAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	barJWT, _ = barAC.Encode(okp)
 	addAccountToMemResolver(s, barPub, barJWT)
 	s.updateAccountClaims(acc, barAC)
 
@@ -884,10 +809,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 
 	// Now change export and make sure it goes away as well. So no exports anymore.
 	fooAC = jwt.NewAccountClaims(fooPub)
-	fooJWT, err = fooAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
 	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
@@ -896,10 +818,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	// Now add it in but with permission required.
 	streamExport = &jwt.Export{Subject: "foo", Type: jwt.Stream, TokenReq: true}
 	fooAC.Exports.Add(streamExport)
-	fooJWT, err = fooAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
 	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
@@ -909,10 +828,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC = jwt.NewAccountClaims(fooPub)
 	streamExport = &jwt.Export{Subject: "foo", Type: jwt.Stream}
 	fooAC.Exports.Add(streamExport)
-	fooJWT, err = fooAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
 	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
 
@@ -967,38 +883,24 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
 
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
 	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(barKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
+	c, cr, cs := createClient(t, s, barKP)
+	parseAsync, quit := genAsyncParser(c)
+	defer func() { quit <- true }()
 
-	c, cr, l := newClientForServer(s)
+	parseAsync(cs)
+	expectPong(cr)
 
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nSUB import.foo 1\r\nPING\r\n", ujwt, sig)
-	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG\r\n") {
-		t.Fatalf("PONG response incorrect: %q\n", l)
-	}
+	parseAsync("SUB import.foo 1\r\nPING\r\n")
+	expectPong(cr)
 
 	checkShadow := func(expected int) {
 		t.Helper()
@@ -1019,26 +921,6 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	checkShadow(0)
 }
 
-// Helper function to generate an async parser and a quit chan. This allows us to
-// parse multiple control statements in same go routine since by default these are
-// not protected in the server.
-func genAsyncParser(c *client) (func(string), chan bool) {
-	pab := make(chan []byte, 16)
-	pas := func(cs string) { pab <- []byte(cs) }
-	quit := make(chan bool)
-	go func() {
-		for {
-			select {
-			case cs := <-pab:
-				c.parse(cs)
-			case <-quit:
-				return
-			}
-		}
-	}()
-	return pas, quit
-}
-
 func TestJWTAccountLimitsSubs(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
@@ -1057,37 +939,21 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(fooKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
 	}
 
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
+	// Create a client.
+	c, cr, cs := createClient(t, s, fooKP)
 	parseAsync, quit := genAsyncParser(c)
 	defer func() { quit <- true }()
 
-	// PING needed to flush the +OK/-ERR to us.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", ujwt, sig)
 	parseAsync(cs)
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
-	}
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
-	}
+	expectPong(cr)
 
 	// Check to make sure we have the limit set.
 	// Account first
@@ -1109,22 +975,13 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	// Now make sure its enforced.
 	/// These should all work ok.
 	for i := 0; i < 10; i++ {
-		cs := fmt.Sprintf("SUB foo %d\r\nPING\r\n", i)
-		parseAsync(cs)
-		l, _ = cr.ReadString('\n')
-		if !strings.HasPrefix(l, "+OK") {
-			t.Fatalf("Expected an OK, got: %v", l)
-		}
-		l, _ = cr.ReadString('\n')
-		if !strings.HasPrefix(l, "PONG") {
-			t.Fatalf("Expected a PONG")
-		}
+		parseAsync(fmt.Sprintf("SUB foo %d\r\nPING\r\n", i))
+		expectPong(cr)
 	}
 
 	// This one should fail.
-	cs = fmt.Sprintf("SUB foo 22\r\n")
-	parseAsync(cs)
-	l, _ = cr.ReadString('\n')
+	parseAsync("SUB foo 22\r\n")
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR") {
 		t.Fatalf("Expected an ERR, got: %v", l)
 	}
@@ -1178,32 +1035,33 @@ func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
 	}
 	fooAcc.mu.RUnlock()
 
-	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(fooKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
 	}
 
-	c, cr, l := newClientForServer(s)
+	// Create a client.
+	c, cr, cs := createClient(t, s, fooKP)
+	parseAsync, quit := genAsyncParser(c)
+	defer func() { quit <- true }()
 
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	parseAsync(cs)
+	expectPong(cr)
 
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nSUB foo 1\r\nSUB bar 2\r\nSUB baz 3\r\nPING\r\n", ujwt, sig)
-	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	parseAsync("SUB foo 1\r\nSUB bar 2\r\nSUB baz 3\r\nPING\r\n")
+	l, _ := cr.ReadString('\n')
+
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
 	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
 		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
 	}
+	// Read last PONG so does not hold up test.
+	cr.ReadString('\n')
 }
 
 func TestJWTAccountLimitsMaxPayload(t *testing.T) {
@@ -1224,32 +1082,21 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(fooKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
 	}
 
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
+	// Create a client.
+	c, cr, cs := createClient(t, s, fooKP)
 	parseAsync, quit := genAsyncParser(c)
 	defer func() { quit <- true }()
 
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
 	parseAsync(cs)
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
-	}
+	expectPong(cr)
 
 	// Check to make sure we have the limit set.
 	// Account first
@@ -1268,16 +1115,11 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	cs = fmt.Sprintf("PUB foo 4\r\nXXXX\r\nPING\r\n")
-	parseAsync(cs)
-	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
-	}
+	parseAsync("PUB foo 4\r\nXXXX\r\nPING\r\n")
+	expectPong(cr)
 
-	cs = fmt.Sprintf("PUB foo 10\r\nXXXXXXXXXX\r\nPING\r\n")
-	parseAsync(cs)
-	l, _ = cr.ReadString('\n')
+	parseAsync("PUB foo 10\r\nXXXXXXXXXX\r\nPING\r\n")
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -1308,26 +1150,24 @@ func TestJWTAccountLimitsMaxPayloadButServerOverrides(t *testing.T) {
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	// Create a client.
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(fooKP)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
 	}
 
-	c, cr, l := newClientForServer(s)
+	// Create a client.
+	c, cr, cs := createClient(t, s, fooKP)
+	parseAsync, quit := genAsyncParser(c)
+	defer func() { quit <- true }()
 
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	parseAsync(cs)
+	expectPong(cr)
 
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPUB foo 6\r\nXXXXXX\r\nPING\r\n", ujwt, sig)
-	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	parseAsync("PUB foo 6\r\nXXXXXX\r\nPING\r\n")
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -1359,53 +1199,19 @@ func TestJWTAccountLimitsMaxConns(t *testing.T) {
 	newClient := func(expPre string) {
 		t.Helper()
 		// Create a client.
-		nkp, _ := nkeys.CreateUser()
-		pub, _ := nkp.PublicKey()
-		nuc := jwt.NewUserClaims(pub)
-		ujwt, err := nuc.Encode(fooKP)
-		if err != nil {
-			t.Fatalf("Error generating user JWT: %v", err)
-		}
-		c, cr, l := newClientForServer(s)
-
-		// Sign Nonce
-		var info nonceInfo
-		json.Unmarshal([]byte(l[5:]), &info)
-		sigraw, _ := nkp.Sign([]byte(info.Nonce))
-		sig := base64.StdEncoding.EncodeToString(sigraw)
-		cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\", \"verbose\":true}\r\nPING\r\n", ujwt, sig)
+		c, cr, cs := createClient(t, s, fooKP)
 		go c.parse([]byte(cs))
-		l, _ = cr.ReadString('\n')
+		l, _ := cr.ReadString('\n')
 		if !strings.HasPrefix(l, expPre) {
 			t.Fatalf("Expected a response starting with %q", expPre)
 		}
 	}
 
 	for i := 0; i < 8; i++ {
-		newClient("+OK")
+		newClient("PONG")
 	}
 	// Now this one should fail.
 	newClient("-ERR ")
-}
-
-func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.Reader, string) {
-	nkp, _ := nkeys.CreateUser()
-	pub, _ := nkp.PublicKey()
-	nuc := jwt.NewUserClaims(pub)
-	ujwt, err := nuc.Encode(akp)
-	if err != nil {
-		t.Fatalf("Error generating user JWT: %v", err)
-	}
-	c, cr, l := newClientForServer(s)
-
-	// Sign Nonce
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
-	return c, cr, cs
 }
 
 func TestJWTAccountServiceImportExpires(t *testing.T) {
@@ -1464,8 +1270,6 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 
 	// Create a client that will send the request
 	ca, cra, csa := createClient(t, s, barKP)
-	ca.trace = true
-
 	parseAsyncA, quitA := genAsyncParser(ca)
 	defer func() { quitA <- true }()
 	parseAsyncA(csa)
@@ -1473,8 +1277,6 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 
 	// Create the client that will respond to the requests.
 	cb, crb, csb := createClient(t, s, fooKP)
-	cb.trace = true
-
 	parseAsyncB, quitB := genAsyncParser(cb)
 	defer func() { quitB <- true }()
 	parseAsyncB(csb)
