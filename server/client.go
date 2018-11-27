@@ -2050,9 +2050,11 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 	}
 	acc.mu.RLock()
 	rm := acc.imports.services[string(c.pa.subject)]
+	invalid := rm != nil && rm.invalid
 	acc.mu.RUnlock()
 	// Get the results from the other account for the mapped "to" subject.
-	if rm != nil && rm.acc != nil && rm.acc.sl != nil {
+	// If we have been marked invalid simply return here.
+	if rm != nil && !invalid && rm.acc != nil && rm.acc.sl != nil {
 		var nrr []byte
 		if rm.ae {
 			acc.removeServiceImport(rm.from)
