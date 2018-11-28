@@ -83,6 +83,15 @@ var (
 
 	// ErrServiceImportAuthorization is returned when a service import is not authorized.
 	ErrServiceImportAuthorization = errors.New("Service Import Not Authorized")
+
+	// ErrClientOrRouteConnectedToGatewayPort represents an error condition when
+	// a client or route attempted to connect to the Gateway port.
+	ErrClientOrRouteConnectedToGatewayPort = errors.New("Attempted To Connect To Gateway Port")
+
+	// ErrWrongGateway represents an error condition when a server receives a connect
+	// request from a remote Gateway with a destination name that does not match the server's
+	// Gateway's name.
+	ErrWrongGateway = errors.New("Wrong Gateway")
 )
 
 // configErr is a configuration error.

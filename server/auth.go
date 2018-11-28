@@ -100,6 +100,24 @@ type RoutePermissions struct {
 	Export *SubjectPermission `json:"export"`
 }
 
+// GatewayPermissions are similar to RoutePermissions
+type GatewayPermissions = RoutePermissions
+
+// clone will clone a RoutePermissions object
+func (rp *RoutePermissions) clone() *RoutePermissions {
+	if rp == nil {
+		return nil
+	}
+	clone := &RoutePermissions{}
+	if rp.Import != nil {
+		clone.Import = rp.Import.clone()
+	}
+	if rp.Export != nil {
+		clone.Export = rp.Export.clone()
+	}
+	return clone
+}
+
 // clone will clone an individual subject permission.
 func (p *SubjectPermission) clone() *SubjectPermission {
 	if p == nil {
@@ -216,6 +234,8 @@ func (s *Server) checkAuthentication(c *client) bool {
 		return s.isClientAuthorized(c)
 	case ROUTER:
 		return s.isRouterAuthorized(c)
+	case GATEWAY:
+		return s.isGatewayAuthorized(c)
 	default:
 		return false
 	}
@@ -399,6 +419,19 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return false
 	}
 	return true
+}
+
+// isGatewayAuthorized checks optional gateway authorization which can be nil or username/password.
+func (s *Server) isGatewayAuthorized(c *client) bool {
+	// Snapshot server options.
+	opts := s.getOpts()
+	if opts.Gateway.Username == "" {
+		return true
+	}
+	if opts.Gateway.Username != c.opts.Username {
+		return false
+	}
+	return comparePasswords(opts.Gateway.Password, c.opts.Password)
 }
 
 // Support for bcrypt stored passwords and tokens.

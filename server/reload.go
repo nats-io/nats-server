@@ -304,7 +304,7 @@ func (r *routesOption) Apply(server *Server) {
 			client.mu.Unlock()
 			if url != nil && urlsAreEqual(url, remove) {
 				// Do not attempt to reconnect when route is removed.
-				client.setRouteNoReconnectOnClose()
+				client.setNoReconnect()
 				client.closeConnection(RouteRemoved)
 				server.Noticef("Removed route %v", remove)
 			}
@@ -552,8 +552,13 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	)
 
 	for i := 0; i < oldConfig.NumField(); i++ {
+		field := oldConfig.Type().Field(i)
+		// field.PkgPath is empty for exported fields, and is not for unexported ones.
+		// We skip the unexported fields.
+		if field.PkgPath != "" {
+			continue
+		}
 		var (
-			field    = oldConfig.Type().Field(i)
 			oldValue = oldConfig.Field(i).Interface()
 			newValue = newConfig.Field(i).Interface()
 			changed  = !reflect.DeepEqual(oldValue, newValue)
@@ -758,7 +763,7 @@ func (s *Server) reloadAuthorization() {
 		// because in the later case, we don't have the user name/password
 		// of the remote server.
 		if !route.isSolicitedRoute() && !s.isRouterAuthorized(route) {
-			route.setRouteNoReconnectOnClose()
+			route.setNoReconnect()
 			route.authViolation()
 		}
 	}

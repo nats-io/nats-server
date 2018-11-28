@@ -973,6 +973,13 @@ func TestOptionsClone(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		Gateway: GatewayOpts{
+			Name: "A",
+			Gateways: []*RemoteGatewayOpts{
+				{Name: "B", URLs: []*url.URL{&url.URL{Scheme: "nats", Host: "host:5222"}}},
+				{Name: "C"},
+			},
+		},
 		WriteDeadline: 3 * time.Second,
 		Routes:        []*url.URL{&url.URL{}},
 		Users:         []*User{&User{Username: "foo", Password: "bar"}},
@@ -988,6 +995,14 @@ func TestOptionsClone(t *testing.T) {
 	clone.Users[0].Password = "baz"
 	if reflect.DeepEqual(opts, clone) {
 		t.Fatal("Expected Options to be different")
+	}
+
+	opts.Gateway.Gateways[0].URLs[0] = nil
+	if reflect.DeepEqual(opts.Gateway.Gateways[0], clone.Gateway.Gateways[0]) {
+		t.Fatal("Expected Options to be different")
+	}
+	if clone.Gateway.Gateways[0].URLs[0].Host != "host:5222" {
+		t.Fatalf("Unexpected URL: %v", clone.Gateway.Gateways[0].URLs[0])
 	}
 }
 
@@ -1447,5 +1462,480 @@ func TestAccountUsersLoadedProperly(t *testing.T) {
 	// of authorization vs accounts that depends on range of a map (after actual parsing)
 	for i := 0; i < 20; i++ {
 		check(t)
+	}
+}
+
+func TestParsingGateways(t *testing.T) {
+	content := `
+	gateway {
+		name: "A"
+		listen: "127.0.0.1:4444"
+		host: "127.0.0.1"
+		port: 4444
+		authorization {
+			user: "ivan"
+			password: "pwd"
+			timeout: 2.0
+		}
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			timeout: 3.0
+		}
+		advertise: "me:1"
+		connect_retries: 10
+		gateways: [
+			{
+				name: "B"
+				urls: ["nats://user1:pwd1@host2:5222", "nats://user1:pwd1@host3:6222"]
+			}
+			{
+				name: "C"
+				url: "nats://host4:7222"
+			}
+		]
+	}
+	`
+	file := "server_config_gateways.conf"
+	defer os.Remove(file)
+	if err := ioutil.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	opts, err := ProcessConfigFile(file)
+	if err != nil {
+		t.Fatalf("Error processing file: %v", err)
+	}
+
+	expected := &GatewayOpts{
+		Name:           "A",
+		Host:           "127.0.0.1",
+		Port:           4444,
+		Username:       "ivan",
+		Password:       "pwd",
+		AuthTimeout:    2.0,
+		Advertise:      "me:1",
+		ConnectRetries: 10,
+		TLSTimeout:     3.0,
+	}
+	u1, _ := url.Parse("nats://user1:pwd1@host2:5222")
+	u2, _ := url.Parse("nats://user1:pwd1@host3:6222")
+	urls := []*url.URL{u1, u2}
+	gw := &RemoteGatewayOpts{
+		Name: "B",
+		URLs: urls,
+	}
+	expected.Gateways = append(expected.Gateways, gw)
+
+	u1, _ = url.Parse("nats://host4:7222")
+	urls = []*url.URL{u1}
+	gw = &RemoteGatewayOpts{
+		Name: "C",
+		URLs: urls,
+	}
+	expected.Gateways = append(expected.Gateways, gw)
+
+	// Just make sure that TLSConfig is set.. we have aother test
+	// to check proper generating TLSConfig from config file...
+	if opts.Gateway.TLSConfig == nil {
+		t.Fatalf("Expected TLSConfig, got none")
+	}
+	opts.Gateway.TLSConfig = nil
+	if !reflect.DeepEqual(&opts.Gateway, expected) {
+		t.Fatalf("Expected %v, got %v", expected, opts.Gateway)
+	}
+}
+
+func TestParsingGatewaysErrors(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		content     string
+		expectedErr string
+	}{
+		{
+			"bad_type",
+			`gateway: "bad_type"`,
+			"Expected gateway to be a map",
+		},
+		{
+			"bad_listen",
+			`gateway {
+				name: "A"
+				port: -1
+				listen: "bad::address"
+			}`,
+			"parse address",
+		},
+		{
+			"bad_auth",
+			`gateway {
+				name: "A"
+				port: -1
+				authorization {
+					users {
+					}
+				}
+			}`,
+			"be an array",
+		},
+		{
+			"unknown_field",
+			`gateway {
+				name: "A"
+				port: -1
+				reject_unknown: true
+				unknown_field: 1
+			}`,
+			"unknown field",
+		},
+		{
+			"users_not_supported",
+			`gateway {
+				name: "A"
+				port: -1
+				authorization {
+					users [
+						{user: alice, password: foo}
+						{user: bob,   password: bar}
+					]
+				}
+			}`,
+			"does not allow multiple users",
+		},
+		{
+			"tls_error",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					cert_file: 123
+				}
+			}`,
+			"to be filename",
+		},
+		{
+			"tls_gen_error",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					cert_file: "./configs/certs/server.pem"
+				}
+			}`,
+			"certificate/key pair",
+		},
+		{
+			"gateways_needs_to_be_an_array",
+			`gateway {
+				name: "A"
+				gateways {
+					name: "B"
+				}
+			}`,
+			"Expected gateways field to be an array",
+		},
+		{
+			"gateways_entry_needs_to_be_a_map",
+			`gateway {
+				name: "A"
+				gateways [
+					"g1", "g2"
+				]
+			}`,
+			"Expected gateway entry to be a map",
+		},
+		{
+			"bad_url",
+			`gateway {
+				name: "A"
+				gateways [
+					{
+						name: "B"
+						url: "nats://wrong url"
+					}
+				]
+			}`,
+			"error parsing gateway url",
+		},
+		{
+			"bad_urls",
+			`gateway {
+				name: "A"
+				gateways [
+					{
+						name: "B"
+						urls: ["nats://wrong url", "nats://host:5222"]
+					}
+				]
+			}`,
+			"error parsing gateway url",
+		},
+		{
+			"gateway_tls_error",
+			`gateway {
+				name: "A"
+				port: -1
+				gateways [
+					{
+						name: "B"
+						tls {
+							cert_file: 123
+						}
+					}
+				]
+			}`,
+			"to be filename",
+		},
+		{
+			"gateway_unknon_field",
+			`gateway {
+				name: "A"
+				port: -1
+				gateways [
+					{
+						name: "B"
+						unknown_field: 1
+					}
+				]
+			}`,
+			"unknown field",
+		},
+		{
+			"default_permissions_bad_type",
+			`gateway {
+				name: "A"
+				default_permissions: shoul_be_a_map
+			}`,
+			"Expected permissions to be a map/struct",
+		},
+		{
+			"default_permissions_unknown_field",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: "foo"
+					export: ["bar", "baz"]
+					unknown_field: 1
+				}
+			}`,
+			"unknown field",
+		},
+		{
+			"default_permissions_bad_import_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						"foo"
+						"bar"
+					}
+				}
+			}`,
+			"only 'allow' or 'deny' are permitted",
+		},
+		{
+			"default_permissions_bad_import_allow_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						allow: {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"default_permissions_bad_import_deny_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						deny: {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"default_permissions_bad_export_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					export: {
+						"foo"
+						"bar"
+					}
+				}
+			}`,
+			"only 'allow' or 'deny' are permitted",
+		},
+		{
+			"default_permissions_bad_export_allow_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					export: {
+						allow {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"default_permissions_bad_export_deny_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					export: {
+						deny {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"gateways_permissions_bad_type",
+			`gateway {
+				name: "A"
+				gateways [
+					{
+						name: "B"
+						url: "nats://localhost:4222"
+						permissions: should_be_a_map
+					}
+				]
+			}`,
+			"Expected permissions to be a map/struct",
+		},
+		{
+			"gateways_permissions_unknown_field",
+			`gateway {
+				name: "A"
+				gateways [
+					{
+						name: "B"
+						url: "nats://localhost:4222"
+						permissions {
+							import: "foo"
+							export: ["bar", "baz"]
+							unknown_field: 1
+						}
+					}
+				]
+			}`,
+			"unknown field",
+		},
+		{
+			"gateways_permissions_bad_import_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						"foo"
+						"bar"
+					}
+				}
+			}`,
+			"only 'allow' or 'deny' are permitted",
+		},
+		{
+			"gateways_permissions_bad_import_allow_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						allow {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"gateways_permissions_bad_import_deny_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						deny {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"gateways_permissions_bad_export_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					export: {
+						"foo"
+						"bar"
+					}
+				}
+			}`,
+			"only 'allow' or 'deny' are permitted",
+		},
+		{
+			"gateways_permissions_bad_export_allow_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						allow {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+		{
+			"gateways_permissions_bad_export_deny_subjects",
+			`gateway {
+				name: "A"
+				default_permissions {
+					import: {
+						deny {
+							"foo"
+							"bar"
+						}
+					}
+				}
+			}`,
+			"Expected subject permissions to be a subject, or array of subjects",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := fmt.Sprintf("server_config_gateways_%s.conf", test.name)
+			defer os.Remove(file)
+			if err := ioutil.WriteFile(file, []byte(test.content), 0600); err != nil {
+				t.Fatalf("Error writing config file: %v", err)
+			}
+			_, err := ProcessConfigFile(file)
+			if err == nil {
+				t.Fatalf("Expected to fail, did not. Content:\n%s\n", test.content)
+			} else if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Fatalf("Expected error containing %q, got %q, for content:\n%s\n", test.expectedErr, err, test.content)
+			}
+		})
 	}
 }

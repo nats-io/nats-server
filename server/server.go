@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -68,6 +69,12 @@ type Info struct {
 	// Route Specific
 	Import *SubjectPermission `json:"import,omitempty"`
 	Export *SubjectPermission `json:"export,omitempty"`
+
+	// Gateways Specific
+	Gateway     string   `json:"gateway,omitempty"`      // Name of the origin Gateway (sent by gateway's INFO)
+	GatewayURLs []string `json:"gateway_urls,omitempty"` // Gateway URLs in the originating cluster (sent by gateway's INFO)
+	GatewayURL  string   `json:"gateway_url,omitempty"`  // Gateway URL on that server (sent by route's INFO)
+	GatewayCmd  byte     `json:"gateway_cmd,omitempty"`  // Command code for the receiving server to know what to do
 }
 
 // Server is our main struct.
@@ -128,11 +135,16 @@ type Server struct {
 
 	lastCURLsUpdate int64
 
+	// For Gateways
+	gatewayListener net.Listener // Accept listener
+	gateway         *srvGateway
+
 	// These store the real client/cluster listen ports. They are
 	// required during config reload to reset the Options (after
 	// reload) to the actual listen port values.
 	clientActualPort  int
 	clusterActualPort int
+	gatewayActualPort int
 
 	// Use during reload
 	oldClusterPerms *RoutePermissions
@@ -166,6 +178,16 @@ func New(opts *Options) *Server {
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
+
+	// Validate some options. This is here because we cannot assume that
+	// server will always be started with configuration parsing (that could
+	// report issues). Its options can be (incorrectly) set by hand when
+	// server is embedded. If there is an error, return nil.
+	// TODO(ik): Should probably have a new NewServer() API that returns (*Server, error)
+	// so user can know what's wrong.
+	if err := validateOptions(opts); err != nil {
+		return nil
+	}
 
 	info := Info{
 		ID:           genID(),
@@ -208,6 +230,17 @@ func New(opts *Options) *Server {
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(map[string]struct{})
 
+	// Call this even if there is no gateway defined. It will
+	// initialize the structure so we don't have to check for
+	// it to be nil or not in various places in the code.
+	// Do this before calling registerAccount() since registerAccount
+	// may try to send things to gateways.
+	gws, err := newGateway(opts)
+	if err != nil {
+		return nil
+	}
+	s.gateway = gws
+
 	// For tracking accounts
 	s.accounts = make(map[string]*Account)
 
@@ -243,6 +276,12 @@ func New(opts *Options) *Server {
 	s.handleSignals()
 
 	return s
+}
+
+func validateOptions(o *Options) error {
+	// Check that gateway is properly configured. Returns no error
+	// if there is no gateway defined.
+	return validateGatewayOptions(o)
 }
 
 func (s *Server) getOpts() *Options {
@@ -463,11 +502,16 @@ func (s *Server) registerAccount(acc *Account) {
 	// already created (global account), so use locking and
 	// make sure we create only if needed.
 	acc.mu.Lock()
-	if acc.rm == nil && s.opts != nil && s.opts.Cluster.Port != 0 {
+	if acc.rm == nil && s.opts != nil && (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0) {
 		acc.rm = make(map[string]*rme, 256)
 	}
 	acc.mu.Unlock()
 	s.accounts[acc.Name] = acc
+	if s.gateway.enabled {
+		// Check and possibly send an A+ to gateways for which
+		// we had sent an A- because account did not exist at that time.
+		s.endAccountNoInterestForGateways(acc.Name)
+	}
 }
 
 // LookupAccount is a public function to return the account structure
@@ -605,6 +649,13 @@ func (s *Server) Start() {
 		return
 	}
 
+	// Start up gateway if needed. Do this before starting the routes, because
+	// we want to resolve the gateway host:port so that this information can
+	// be sent to other routes.
+	if opts.Gateway.Port != 0 {
+		s.startGateways()
+	}
+
 	// The Routing routine needs to wait for the client listen
 	// port to be opened and potential ephemeral port selected.
 	clientListenReady := make(chan struct{})
@@ -663,9 +714,10 @@ func (s *Server) Shutdown() {
 	s.grMu.Unlock()
 	// Copy off the routes
 	for i, r := range s.routes {
-		r.setRouteNoReconnectOnClose()
 		conns[i] = r
 	}
+	// Copy off the gateways
+	s.getAllGatewayConnections(conns)
 
 	// Number of done channel responses we expect.
 	doneExpected := 0
@@ -682,6 +734,13 @@ func (s *Server) Shutdown() {
 		doneExpected++
 		s.routeListener.Close()
 		s.routeListener = nil
+	}
+
+	// Kick Gateway AcceptLoop()
+	if s.gatewayListener != nil {
+		doneExpected++
+		s.gatewayListener.Close()
+		s.gatewayListener = nil
 	}
 
 	// Kick HTTP monitoring if its running
@@ -704,6 +763,7 @@ func (s *Server) Shutdown() {
 
 	// Close client and route connections
 	for _, c := range conns {
+		c.setNoReconnect()
 		c.closeConnection(ServerShutdown)
 	}
 
@@ -759,7 +819,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		s.Noticef("TLS required for client connections")
 	}
 
-	s.Debugf("Server id is %s", s.info.ID)
+	s.Noticef("Server id is %s", s.info.ID)
 	s.Noticef("Server is ready")
 
 	// Setup state that can enable shutdown
@@ -804,17 +864,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 				<-s.quitCh
 				return
 			}
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				s.Errorf("Temporary Client Accept Error (%v), sleeping %dms",
-					ne, tmpDelay/time.Millisecond)
-				time.Sleep(tmpDelay)
-				tmpDelay *= 2
-				if tmpDelay > ACCEPT_MAX_SLEEP {
-					tmpDelay = ACCEPT_MAX_SLEEP
-				}
-			} else if s.isRunning() {
-				s.Errorf("Client Accept Error: %v", err)
-			}
+			tmpDelay = s.acceptError("Client", err, tmpDelay)
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
@@ -1306,42 +1356,45 @@ func tlsCipher(cs uint16) string {
 
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
-	var rID string
-	c.mu.Lock()
-	cid := c.cid
-	typ := c.typ
-	r := c.route
-	if r != nil {
-		rID = r.remoteID
-	}
-	updateProtoInfoCount := false
-	if typ == CLIENT && c.opts.Protocol >= ClientProtoInfo {
-		updateProtoInfoCount = true
-	}
-	c.mu.Unlock()
-
-	s.mu.Lock()
-	switch typ {
+	// type is immutable, so can check without lock
+	switch c.typ {
 	case CLIENT:
+		c.mu.Lock()
+		cid := c.cid
+		updateProtoInfoCount := false
+		if c.typ == CLIENT && c.opts.Protocol >= ClientProtoInfo {
+			updateProtoInfoCount = true
+		}
+		c.mu.Unlock()
+
+		s.mu.Lock()
 		delete(s.clients, cid)
 		if updateProtoInfoCount {
 			s.cproto--
 		}
+		s.mu.Unlock()
 	case ROUTER:
-		delete(s.routes, cid)
-		if r != nil {
-			rc, ok := s.remotes[rID]
-			// Only delete it if it is us..
-			if ok && c == rc {
-				delete(s.remotes, rID)
-			}
-		}
-		// Remove from temporary map in case it is there.
-		s.grMu.Lock()
-		delete(s.grTmpClients, cid)
-		s.grMu.Unlock()
+		s.removeRoute(c)
+	case GATEWAY:
+		s.removeRemoteGatewayConnection(c)
 	}
-	s.mu.Unlock()
+}
+
+func (s *Server) removeFromTempClients(cid uint64) {
+	s.grMu.Lock()
+	delete(s.grTmpClients, cid)
+	s.grMu.Unlock()
+}
+
+func (s *Server) addToTempClients(cid uint64, c *client) bool {
+	added := false
+	s.grMu.Lock()
+	if s.grRunning {
+		s.grTmpClients[cid] = c
+		added = true
+	}
+	s.grMu.Unlock()
+	return added
 }
 
 /////////////////////////////////////////////////////////////////
@@ -1452,7 +1505,7 @@ func (s *Server) ReadyForConnections(dur time.Duration) bool {
 	end := time.Now().Add(dur)
 	for time.Now().Before(end) {
 		s.mu.Lock()
-		ok := s.listener != nil && (opts.Cluster.Port == 0 || s.routeListener != nil)
+		ok := s.listener != nil && (opts.Cluster.Port == 0 || s.routeListener != nil) && (opts.Gateway.Name == "" || s.gatewayListener != nil)
 		s.mu.Unlock()
 		if ok {
 			return true
@@ -1837,4 +1890,53 @@ func (s *Server) lameDuckMode() {
 		}
 	}
 	s.Shutdown()
+}
+
+// If given error is a net.Error and is temporary, sleeps for the given
+// delay and double it, but cap it to ACCEPT_MAX_SLEEP. The sleep is
+// interrupted if the server is shutdown.
+// An error message is displayed depending on the type of error.
+// Returns the new (or unchanged) delay.
+func (s *Server) acceptError(acceptName string, err error, tmpDelay time.Duration) time.Duration {
+	if ne, ok := err.(net.Error); ok && ne.Temporary() {
+		s.Errorf("Temporary %s Accept Error(%v), sleeping %dms", acceptName, ne, tmpDelay/time.Millisecond)
+		select {
+		case <-time.After(tmpDelay):
+		case <-s.quitCh:
+			return tmpDelay
+		}
+		tmpDelay *= 2
+		if tmpDelay > ACCEPT_MAX_SLEEP {
+			tmpDelay = ACCEPT_MAX_SLEEP
+		}
+	} else if s.isRunning() {
+		s.Errorf("%s Accept error: %v", acceptName, err)
+	}
+	return tmpDelay
+}
+
+func (s *Server) getRandomIP(resolver netResolver, url string) (string, error) {
+	host, port, err := net.SplitHostPort(url)
+	if err != nil {
+		return "", err
+	}
+	ips, err := resolver.LookupHost(context.Background(), host)
+	if err != nil {
+		return "", fmt.Errorf("lookup for host %q: %v", host, err)
+	}
+	var address string
+	if len(ips) == 0 {
+		s.Warnf("Unable to get IP for %s, will try with %s: %v", host, url, err)
+		address = url
+	} else {
+		var ip string
+		if len(ips) == 1 {
+			ip = ips[0]
+		} else {
+			ip = ips[rand.Int31n(int32(len(ips)))]
+		}
+		// add the port
+		address = net.JoinHostPort(ip, port)
+	}
+	return address, nil
 }

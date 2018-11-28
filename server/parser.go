@@ -19,7 +19,7 @@ import (
 
 type pubArg struct {
 	arg     []byte
-	rcache  []byte
+	pacache []byte
 	account []byte
 	subject []byte
 	reply   []byte
@@ -259,7 +259,7 @@ func (c *client) parse(buf []byte) error {
 				c.argBuf, c.msgBuf = nil, nil
 				c.drop, c.as, c.state = 0, i+1, OP_START
 				// Drop all pub args
-				c.pa.arg, c.pa.rcache, c.pa.account, c.pa.subject = nil, nil, nil, nil
+				c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
 				c.pa.reply, c.pa.szb, c.pa.queues = nil, nil, nil
 			default:
 				if c.msgBuf != nil {
@@ -388,10 +388,13 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				if c.typ == CLIENT {
+				switch c.typ {
+				case CLIENT:
 					err = c.processSub(arg)
-				} else {
+				case ROUTER:
 					err = c.processRemoteSub(arg)
+				case GATEWAY:
+					err = c.processGatewaySubjectSub(arg)
 				}
 				if err != nil {
 					return err
@@ -476,10 +479,13 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				if c.typ == CLIENT {
+				switch c.typ {
+				case CLIENT:
 					err = c.processUnsub(arg)
-				} else {
+				case ROUTER:
 					err = c.processRemoteUnsub(arg)
+				case GATEWAY:
+					err = c.processGatewaySubjectUnsub(arg)
 				}
 				if err != nil {
 					return err

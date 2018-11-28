@@ -24,7 +24,11 @@ func TestSplitBufferSubOp(t *testing.T) {
 	defer cli.Close()
 	defer trash.Close()
 
-	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account)}
+	gws, err := newGateway(DefaultOptions())
+	if err != nil {
+		t.Fatalf("Error creating gateways: %v", err)
+	}
+	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account), gateway: gws}
 	s.registerAccount(s.gacc)
 	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription), nc: cli}
 
@@ -61,7 +65,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 }
 
 func TestSplitBufferUnsubOp(t *testing.T) {
-	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account)}
+	s := &Server{gacc: &Account{Name: globalAccountName}, accounts: make(map[string]*Account), gateway: &srvGateway{}}
 	s.registerAccount(s.gacc)
 	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription)}
 

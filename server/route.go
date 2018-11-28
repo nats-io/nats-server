@@ -50,6 +50,14 @@ const (
 	RouteProtoV2
 )
 
+// Include the space for the proto
+var (
+	aSubBytes   = []byte{'A', '+', ' '}
+	aUnsubBytes = []byte{'A', '-', ' '}
+	rSubBytes   = []byte{'R', 'S', '+', ' '}
+	rUnsubBytes = []byte{'R', 'S', '-', ' '}
+)
+
 // Used by tests
 var testRouteProto = RouteProtoV2
 
@@ -61,9 +69,9 @@ type route struct {
 	url          *url.URL
 	authRequired bool
 	tlsRequired  bool
-	closed       bool
 	connectURLs  []string
 	replySubs    map[*subscription]*time.Timer
+	gatewayURL   string
 }
 
 type connectInfo struct {
@@ -74,6 +82,7 @@ type connectInfo struct {
 	Pass     string `json:"pass,omitempty"`
 	TLS      bool   `json:"tls_required"`
 	Name     string `json:"name"`
+	Gateway  string `json:"gateway,omitempty"`
 }
 
 // Route protocol constants
@@ -130,16 +139,20 @@ func (c *client) removeReplySubTimeout(sub *subscription) {
 }
 
 func (c *client) processAccountSub(arg []byte) error {
-	// Placeholder in case we add in to the protocol active senders of
-	// informtation. For now we do not do account interest propagation.
 	c.traceInOp("A+", arg)
+	accName := string(arg)
+	if c.typ == GATEWAY {
+		return c.processGatewayAccountSub(accName)
+	}
 	return nil
 }
 
 func (c *client) processAccountUnsub(arg []byte) {
-	// Placeholder in case we add in to the protocol active senders of
-	// informtation. For now we do not do account interest propagation.
 	c.traceInOp("A-", arg)
+	accName := string(arg)
+	if c.typ == GATEWAY {
+		c.processGatewayAccountUnsub(accName)
+	}
 }
 
 // Process an inbound RMSG specification from the remote route.
@@ -214,31 +227,8 @@ func (c *client) processRoutedMsgArgs(trace bool, arg []byte) error {
 	// Common ones processed after check for arg length
 	c.pa.account = args[0]
 	c.pa.subject = args[1]
-	c.pa.rcache = arg[:len(args[0])+len(args[1])+1]
+	c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
 	return nil
-}
-
-const (
-	maxRouteCacheSize   = 32768
-	pruneRouteCacheSize = 512
-)
-
-// routeCache is for L1 semantics for inbound messages from a route to mimic the performance of clients.
-type routeCache struct {
-	acc     *Account
-	results *SublistResult
-	genid   uint64
-}
-
-// pruneRouteCache will prune off a random number of cache entries.
-func (c *client) pruneRouteCache() {
-	n := 0
-	for cacheKey := range c.in.rcache {
-		delete(c.in.rcache, cacheKey)
-		if n++; n > pruneRouteCacheSize {
-			break
-		}
-	}
 }
 
 // processInboundRouteMsg is called to process an inbound msg from a route.
@@ -261,43 +251,10 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
-	var (
-		acc *Account
-		rc  *routeCache
-		r   *SublistResult
-		ok  bool
-	)
-
-	// Check our cache first.
-	if rc, ok = c.in.rcache[string(c.pa.rcache)]; ok {
-		// Check the genid to see if it's still valid.
-		if genid := atomic.LoadUint64(&rc.acc.sl.genid); genid != rc.genid {
-			ok = false
-			delete(c.in.rcache, string(c.pa.rcache))
-		} else {
-			acc = rc.acc
-			r = rc.results
-		}
-	}
-
-	if !ok {
-		// Match correct account and sublist.
-		acc = c.srv.LookupAccount(string(c.pa.account))
-		if acc == nil {
-			c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
-			return
-		}
-
-		// Match against the account sublist.
-		r = acc.sl.Match(string(c.pa.subject))
-
-		// Store in our cache
-		c.in.rcache[string(c.pa.rcache)] = &routeCache{acc, r, atomic.LoadUint64(&acc.sl.genid)}
-
-		// Check if we need to prune.
-		if len(c.in.rcache) > maxRouteCacheSize {
-			c.pruneRouteCache()
-		}
+	acc, r := c.getAccAndResultFromCache()
+	if acc == nil {
+		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
+		return
 	}
 
 	// Check to see if we need to map/route to another account.
@@ -334,7 +291,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		}
 	}
 
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply)
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, nil)
 }
 
 // Lock should be held entering here.
@@ -376,6 +333,20 @@ func (c *client) processRouteInfo(info *Info) {
 	s := c.srv
 	remoteID := c.route.remoteID
 
+	// Check if this is an INFO for gateways...
+	if info.Gateway != "" {
+		c.mu.Unlock()
+		// If this server has no gateway configured, report error and return.
+		if !s.gateway.enabled {
+			// FIXME: Should this be a Fatalf()?
+			s.Errorf("Received information about gateway %q from %s, but gateway is not configured",
+				info.Gateway, remoteID)
+			return
+		}
+		s.processGatewayInfoFromRoute(info, remoteID, c)
+		return
+	}
+
 	// We receive an INFO from a server that informs us about another server,
 	// so the info.ID in the INFO protocol does not match the ID of this route.
 	if remoteID != "" && remoteID != info.ID {
@@ -404,6 +375,7 @@ func (c *client) processRouteInfo(info *Info) {
 	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
+	c.route.gatewayURL = info.GatewayURL
 
 	// If this is an update due to config reload on the remote server,
 	// need to possibly send local subs to the remote server.
@@ -445,6 +417,9 @@ func (c *client) processRouteInfo(info *Info) {
 
 		// Send our subs to the other side.
 		s.sendSubsToRoute(c)
+
+		// Send info about the known gateways to this route.
+		s.sendGatewayConfigsToRoute(c)
 
 		// sendInfo will be false if the route that we just accepted
 		// is the only route there is.
@@ -691,36 +666,44 @@ func (c *client) removeRemoteSubs() {
 	}
 }
 
-// Indicates no more interest in the given account/subject for the remote side.
-func (c *client) processRemoteUnsub(arg []byte) (err error) {
+func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	c.traceInOp("RS-", arg)
 
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
+	args := splitArg(arg)
+	var (
+		accountName string
+		subject     []byte
+		queue       []byte
+	)
+	switch len(args) {
+	case 2:
+	case 3:
+		queue = args[2]
+	default:
+		return "", nil, nil, fmt.Errorf("Parse Error: '%s'", arg)
+	}
+	subject = args[1]
+	accountName = string(args[0])
+	return accountName, subject, queue, nil
+}
+
+// Indicates no more interest in the given account/subject for the remote side.
+func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	srv := c.srv
 	if srv == nil {
 		return nil
 	}
-
-	args := splitArg(arg)
-	sub := &subscription{client: c}
-
-	switch len(args) {
-	case 2:
-		sub.queue = nil
-	case 3:
-		sub.queue = args[2]
-	default:
-		return fmt.Errorf("processRemoteUnSub Parse Error: '%s'", arg)
+	accountName, subject, _, err := c.parseUnsubProto(arg)
+	if err != nil {
+		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
-	sub.subject = args[1]
-
 	// Lookup the account
-	accountName := string(args[0])
 	acc := c.srv.LookupAccount(accountName)
 	if acc == nil {
-		c.Debugf("Unknown account %q for subject %q", accountName, sub.subject)
+		c.Debugf("Unknown account %q for subject %q", accountName, subject)
 		// Mark this account as not interested since we received a RS- and we
 		// do not have any record of it.
 		return nil
@@ -732,15 +715,23 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		return nil
 	}
 
+	sendToGWs := false
 	// We store local subs by account and subject and optionally queue name.
 	// RS- will have the arg exactly as the key.
 	key := string(arg)
-	if sub, ok := c.subs[key]; ok {
+	sub, ok := c.subs[key]
+	if ok {
 		delete(c.subs, key)
 		acc.sl.Remove(sub)
 		c.removeReplySubTimeout(sub)
+		// Send only for queue subs
+		sendToGWs = srv.gateway.enabled && sub.queue != nil
 	}
 	c.mu.Unlock()
+
+	if sendToGWs {
+		srv.sendQueueUnsubToGateways(accountName, sub, true)
+	}
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -818,6 +809,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 	key := string(sub.sid)
 	osub := c.subs[key]
+	sendToGWs := false
 	if osub == nil {
 		c.subs[string(key)] = sub
 		// Now place into the account sl.
@@ -828,6 +820,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 			c.sendErr("Invalid Subscription")
 			return nil
 		}
+		sendToGWs = srv.gateway.enabled
 	} else if sub.queue != nil {
 		// For a queue we need to update the weight.
 		atomic.StoreInt32(&osub.qw, sub.qw)
@@ -837,6 +830,19 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 
 	if c.opts.Verbose {
 		c.sendOK()
+	}
+	if sendToGWs {
+		// For a plain sub, this will send an RS+ to gateways only if
+		// we had previously sent an RS-. In other words, we don't send
+		// an RS+ per plain sub.
+		if sub.queue == nil {
+			srv.endSubjectNoInterestForGateways(acc.Name, sub)
+		} else {
+			// For queue subs, we will send an RS+, but if we are here, we
+			// know there is a single qsub per account/subject/queue:
+			// sendToGWs is true only if we did not find that key before.
+			srv.sendQueueSubToGateways(acc.Name, sub, true)
+		}
 	}
 	return nil
 }
@@ -972,11 +978,11 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		}
 		as := len(buf)
 		if isSubProto {
-			buf = append(buf, []byte("RS+ ")...)
+			buf = append(buf, rSubBytes...)
 		} else {
-			buf = append(buf, []byte("RS- ")...)
+			buf = append(buf, rUnsubBytes...)
 		}
-		buf = append(buf, []byte(accName)...)
+		buf = append(buf, accName...)
 		buf = append(buf, ' ')
 		buf = append(buf, sub.subject...)
 		if len(sub.queue) > 0 {
@@ -997,7 +1003,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		if trace {
 			c.traceOutOp("", buf[as:])
 		}
-		buf = append(buf, []byte(CR_LF)...)
+		buf = append(buf, CR_LF...)
 	}
 	if !closed && len(buf) > 0 {
 		c.queueOutbound(buf)
@@ -1035,8 +1041,8 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Initialize
 	c.initClient()
 
-	// Initialize the route cache.
-	c.in.rcache = make(map[string]*routeCache, maxRouteCacheSize)
+	// Initialize the per-account cache.
+	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
 
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure
@@ -1103,15 +1109,9 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// to the client (connection) to be closed, leaving this readLoop
 	// uinterrupted, causing the Shutdown() to wait indefinitively.
 	// We need to store the client in a special map, under a special lock.
-	s.grMu.Lock()
-	running := s.grRunning
-	if running {
-		s.grTmpClients[c.cid] = c
-	}
-	s.grMu.Unlock()
-	if !running {
+	if !s.addToTempClients(c.cid, c) {
 		c.mu.Unlock()
-		c.setRouteNoReconnectOnClose()
+		c.setNoReconnect()
 		c.closeConnection(ServerShutdown)
 		return nil
 	}
@@ -1124,7 +1124,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Spin up the read loop.
-	s.startGoRoutine(func() { c.readLoop() })
+	s.startGoRoutine(c.readLoop)
 
 	// Spin up the write loop.
 	s.startGoRoutine(c.writeLoop)
@@ -1173,13 +1173,16 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		cid := c.cid
 		c.mu.Unlock()
 
-		// Remove from the temporary map
-		s.grMu.Lock()
-		delete(s.grTmpClients, cid)
-		s.grMu.Unlock()
+		// Now that we have registered the route, we can remove from the temp map.
+		s.removeFromTempClients(cid)
 
 		// we don't need to send if the only route is the one we just accepted.
 		sendInfo = len(s.routes) > 1
+
+		// If the INFO contains a Gateway URL, add it to the list for our cluster.
+		if info.GatewayURL != "" {
+			s.addGatewayURL(info.GatewayURL)
+		}
 	}
 	s.mu.Unlock()
 
@@ -1251,8 +1254,11 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We always update for a queue subscriber since we need to send our relative weight.
-	var entry *rme
-	var ok bool
+	var (
+		entry *rme
+		ok    bool
+		added bool
+	)
 
 	// Always update if a queue subscriber.
 	update := qi > 0
@@ -1271,6 +1277,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		entry = &rme{qi, delta}
 		rm[string(key)] = entry
 		update = true // Adding for normal sub means update.
+		added = true
 	}
 	if entry != nil {
 		entryN = entry.n
@@ -1295,8 +1302,23 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	// subscribes with a smaller weight.
 	if entryN > 0 {
 		s.broadcastSubscribe(sub)
+		// Here we want to send RS+ only when going from 0 to 1
+		if s.gateway.enabled && added && entryN == 1 {
+			// If plain sub, send an RS+ only if we had previously
+			// sent an RS-
+			if sub.queue == nil {
+				s.endSubjectNoInterestForGateways(acc.Name, sub)
+			} else {
+				s.sendQueueSubToGateways(acc.Name, sub, false)
+			}
+		}
 	} else {
 		s.broadcastUnSubscribe(sub)
+		// Last of the queue member of this group, so send to
+		// gateways.
+		if s.gateway.enabled && sub.queue != nil {
+			s.sendQueueUnsubToGateways(acc.Name, sub, false)
+		}
 	}
 }
 
@@ -1373,6 +1395,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
 		Proto:        proto,
+		GatewayURL:   s.getGatewayURL(),
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
@@ -1416,17 +1439,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	for s.isRunning() {
 		conn, err := l.Accept()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				s.Debugf("Temporary Route Accept Errorf(%v), sleeping %dms",
-					ne, tmpDelay/time.Millisecond)
-				time.Sleep(tmpDelay)
-				tmpDelay *= 2
-				if tmpDelay > ACCEPT_MAX_SLEEP {
-					tmpDelay = ACCEPT_MAX_SLEEP
-				}
-			} else if s.isRunning() {
-				s.Noticef("Accept error: %v", err)
-			}
+			tmpDelay = s.acceptError("Route", err, tmpDelay)
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
@@ -1562,4 +1575,63 @@ func (s *Server) solicitRoutes(routes []*url.URL) {
 		route := r
 		s.startGoRoutine(func() { s.connectToRoute(route, true) })
 	}
+}
+
+func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error {
+	// Way to detect clients that incorrectly connect to the route listen
+	// port. Client provide Lang in the CONNECT protocol while ROUTEs don't.
+	if lang != "" {
+		errTxt := ErrClientConnectedToRoutePort.Error()
+		c.Errorf(errTxt)
+		c.sendErr(errTxt)
+		c.closeConnection(WrongPort)
+		return ErrClientConnectedToRoutePort
+	}
+	// Unmarshal as a route connect protocol
+	proto := &connectInfo{}
+	if err := json.Unmarshal(arg, proto); err != nil {
+		return err
+	}
+	// Reject if this has Gateway which means that it would be from a gateway
+	// connection that incorrectly connects to the Route port.
+	if proto.Gateway != "" {
+		errTxt := fmt.Sprintf("Rejecting connection from gateway %q on the Route port", proto.Gateway)
+		c.Errorf(errTxt)
+		c.sendErr(errTxt)
+		c.closeConnection(WrongGateway)
+		return ErrWrongGateway
+	}
+	var perms *RoutePermissions
+	if srv != nil {
+		perms = srv.getOpts().Cluster.Permissions
+	}
+	// Grab connection name of remote route.
+	c.mu.Lock()
+	c.route.remoteID = c.opts.Name
+	c.setRoutePermissions(perms)
+	c.mu.Unlock()
+	return nil
+}
+
+func (s *Server) removeRoute(c *client) {
+	var rID string
+	c.mu.Lock()
+	cid := c.cid
+	r := c.route
+	if r != nil {
+		rID = r.remoteID
+	}
+	c.mu.Unlock()
+	s.mu.Lock()
+	delete(s.routes, cid)
+	if r != nil {
+		rc, ok := s.remotes[rID]
+		// Only delete it if it is us..
+		if ok && c == rc {
+			delete(s.remotes, rID)
+		}
+		s.removeGatewayURL(r.gatewayURL)
+	}
+	s.removeFromTempClients(cid)
+	s.mu.Unlock()
 }
