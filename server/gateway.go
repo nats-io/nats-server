@@ -476,7 +476,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	c.mu.Lock()
 	c.initClient()
 	c.gw = &gateway{}
-	c.in.pacache = createPerAccountCache()
+	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
 	if solicit {
 		// This is an outbound gateway connection
 		c.gw.outbound = true

@@ -1042,7 +1042,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	c.initClient()
 
 	// Initialize the per-account cache.
-	c.in.pacache = createPerAccountCache()
+	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
 
 	if didSolicit {
 		// Do this before the TLS code, otherwise, in case of failure

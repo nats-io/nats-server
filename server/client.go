@@ -2058,8 +2058,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		c.checkForImportServices(c.acc, msg)
 	}
 
-	var queuesa [16][]byte
-	queues := queuesa[:0]
+	var qa [16][]byte
+	queues := qa[:0]
 
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
@@ -2142,10 +2142,6 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 		rt.qs = append(rt.qs, sub.queue...)
 		rt.qs = append(rt.qs, ' ')
 	}
-}
-
-func collectQueueName(queues *[][]byte, queue []byte) {
-	*queues = append(*queues, queue)
 }
 
 // This processes the sublist results for a given message.
@@ -2256,7 +2252,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				} else {
 					c.addSubToRouteTargets(sub)
 					if queues != nil {
-						collectQueueName(queues, sub.queue)
+						*queues = append(*queues, sub.queue)
 					}
 				}
 				break
@@ -2276,7 +2272,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				// Clear rsub
 				rsub = nil
 				if queues != nil {
-					collectQueueName(queues, sub.queue)
+					*queues = append(*queues, sub.queue)
 				}
 				break
 			}
@@ -2287,7 +2283,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// but failed. So we will send it to a remote.
 			c.addSubToRouteTargets(rsub)
 			if queues != nil {
-				collectQueueName(queues, rsub.queue)
+				*queues = append(*queues, rsub.queue)
 			}
 		}
 	}
@@ -2714,12 +2710,6 @@ func (c *client) getRTTValue() time.Duration {
 	rtt := c.rtt
 	c.mu.Unlock()
 	return rtt
-}
-
-// Creates a cache suitable for ROUTER and GATEWAY connections to
-// retrieve subject interest on a given account.
-func createPerAccountCache() map[string]*perAccountCache {
-	return make(map[string]*perAccountCache, maxPerAccountCacheSize)
 }
 
 // This function is used by ROUTER and GATEWAY connections to
