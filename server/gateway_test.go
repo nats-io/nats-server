@@ -321,6 +321,59 @@ func TestGatewayBasic(t *testing.T) {
 	})
 }
 
+func TestGatewayIgnoreSelfReference(t *testing.T) {
+	o := testDefaultOptionsForGateway("A")
+	// To create a reference to itself before running the server
+	// it means that we have to assign an explicit port
+	o.Gateway.Port = 5222
+	o.gatewaysSolicitDelay = 0
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", o.Gateway.Host, o.Gateway.Port))
+	cfg := &RemoteGatewayOpts{
+		Name: "A",
+		URLs: []*url.URL{u},
+	}
+	o.Gateway.Gateways = append(o.Gateway.Gateways, cfg)
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	// Wait a bit to make sure that there is no attempt to connect.
+	time.Sleep(20 * time.Millisecond)
+
+	// No outbound connection expected, and no attempt to connect.
+	if s.getRemoteGateway("A") != nil {
+		t.Fatalf("Should not have a remote gateway config for A")
+	}
+	if s.getOutboundGatewayConnection("A") != nil {
+		t.Fatalf("Should not have a gateway connection to A")
+	}
+	s.Shutdown()
+
+	// Now try with config files and include
+	s1, _ := RunServerWithConfig("configs/gwa.conf")
+	defer s1.Shutdown()
+
+	s2, _ := RunServerWithConfig("configs/gwb.conf")
+	defer s2.Shutdown()
+
+	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+	waitForOutboundGateways(t, s2, 1, 2*time.Second)
+	waitForInboundGateways(t, s1, 1, 2*time.Second)
+	waitForInboundGateways(t, s2, 1, 2*time.Second)
+
+	if s1.getRemoteGateway("A") != nil {
+		t.Fatalf("Should not have a remote gateway config for A")
+	}
+	if s1.getOutboundGatewayConnection("A") != nil {
+		t.Fatalf("Should not have a gateway connection to A")
+	}
+	if s2.getRemoteGateway("B") != nil {
+		t.Fatalf("Should not have a remote gateway config for B")
+	}
+	if s2.getOutboundGatewayConnection("B") != nil {
+		t.Fatalf("Should not have a gateway connection to B")
+	}
+}
+
 func TestGatewaySolicitDelay(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
 	s2 := runGatewayServer(o2)

@@ -830,9 +830,7 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 			case "urls":
 				urls, errs := parseURLs(v.([]interface{}), "gateway")
 				if errs != nil {
-					for _, e := range errs {
-						*errors = append(*errors, e)
-					}
+					*errors = append(*errors, errs...)
 					continue
 				}
 				gateway.URLs = urls
