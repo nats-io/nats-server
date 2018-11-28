@@ -832,16 +832,16 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 		c.sendOK()
 	}
 	if sendToGWs {
-		// For a plain sub, this will send an RS+ to gateways only if
-		// we had previously sent an RS-. In other words, we don't send
-		// an RS+ per plain sub.
-		if sub.queue == nil {
-			srv.endSubjectNoInterestForGateways(acc.Name, sub)
-		} else {
-			// For queue subs, we will send an RS+, but if we are here, we
-			// know there is a single qsub per account/subject/queue:
-			// sendToGWs is true only if we did not find that key before.
+		// For queue subs, we will send an RS+, but if we are here, we
+		// know there is a single qsub per account/subject/queue:
+		// sendToGWs is true only if we did not find that key before.
+		if sub.queue != nil {
 			srv.sendQueueSubToGateways(acc.Name, sub, true)
+		} else {
+			// For a plain sub, this will send an RS+ to gateways only if
+			// we had previously sent an RS-. In other words, we don't send
+			// an RS+ per plain sub.
+			srv.endSubjectNoInterestForGateways(acc.Name, sub)
 		}
 	}
 	return nil
@@ -1304,12 +1304,13 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		s.broadcastSubscribe(sub)
 		// Here we want to send RS+ only when going from 0 to 1
 		if s.gateway.enabled && added && entryN == 1 {
-			// If plain sub, send an RS+ only if we had previously
-			// sent an RS-
-			if sub.queue == nil {
-				s.endSubjectNoInterestForGateways(acc.Name, sub)
-			} else {
+			// Always send for queues
+			if sub.queue != nil {
 				s.sendQueueSubToGateways(acc.Name, sub, false)
+			} else {
+				// If plain sub, send an RS+ only if we had previously
+				// sent an RS-
+				s.endSubjectNoInterestForGateways(acc.Name, sub)
 			}
 		}
 	} else {

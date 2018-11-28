@@ -2069,7 +2069,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		// mode and the remote gateways have queue subs, then we need to
 		// collect the queue groups this message was sent to so that we
 		// exclude them when sending to gateways.
-		if len(r.qsubs) > 0 && c.srv.gateway.enabled && c.srv.gatewaysHaveQSubs() {
+		if len(r.qsubs) > 0 && c.srv.gateway.enabled && atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			qnames = &queues
 		}
 		c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, qnames)
