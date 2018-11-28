@@ -160,6 +160,10 @@ func newGateway(opts *Options) (*srvGateway, error) {
 
 	// Create remote gateways
 	for _, rgo := range opts.Gateway.Gateways {
+		// Ignore if there is a remote gateway with our name.
+		if rgo.Name == gateway.name {
+			continue
+		}
 		cfg := &gatewayCfg{
 			RemoteGatewayOpts: rgo.clone(),
 			urls:              make(map[string]*url.URL, len(rgo.URLs)),
@@ -993,6 +997,10 @@ func (s *Server) processImplicitGateway(info *Info) {
 	defer s.gateway.Unlock()
 	// Name of the gateway to connect to is the Info.Gateway field.
 	gwName := info.Gateway
+	// If this is our name, bail.
+	if gwName == s.gateway.name {
+		return
+	}
 	// Check if we already have this config, and if so, we are done
 	cfg := s.gateway.remotes[gwName]
 	if cfg != nil {
