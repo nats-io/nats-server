@@ -75,6 +75,23 @@ func waitForGatewayFailedConnect(t *testing.T, s *Server, gwName string, expectF
 	})
 }
 
+func checkForRegisteredQSubInterest(t *testing.T, s *Server, gwName, acc, subj string, expected int, timeout time.Duration) {
+	t.Helper()
+	checkFor(t, timeout, 15*time.Millisecond, func() error {
+		count := 0
+		c := s.getOutboundGatewayConnection(gwName)
+		qsi, _ := c.gw.qsubsInterest.Load(acc)
+		if qsi != nil {
+			qs := qsi.(*gwAccQSublist)
+			count = int(qs.sl.Count())
+		}
+		if count == expected {
+			return nil
+		}
+		return fmt.Errorf("Expected %v qsubs in sublist, got %v", expected, count)
+	})
+}
+
 func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	t.Helper()
 	select {
@@ -1473,6 +1490,8 @@ func TestGatewayQueueSub(t *testing.T) {
 
 	// Make sure subs are registered on each server
 	checkExpectedSubs(t, 1, s1, s2)
+	checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 1, time.Second)
+	checkForRegisteredQSubInterest(t, s2, "A", globalAccountName, "foo", 1, time.Second)
 
 	total := 100
 	send := func(t *testing.T, nc *nats.Conn) {
@@ -1520,6 +1539,9 @@ func TestGatewayQueueSub(t *testing.T) {
 	batQSub := natsQueueSub(t, ncB, "foo", "bat", cb3)
 	natsFlush(t, ncB)
 	checkExpectedSubs(t, 2, s2)
+
+	checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 2, time.Second)
+
 	send(t, ncA)
 	check(t, &count1, total)
 	check(t, &count2, 0)
@@ -1533,6 +1555,8 @@ func TestGatewayQueueSub(t *testing.T) {
 	natsUnsub(t, batQSub)
 	natsFlush(t, ncB)
 	checkExpectedSubs(t, 1, s2)
+
+	checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 1, time.Second)
 
 	// Stop qsub on A, and send messages to A, they should
 	// be routed to B.
@@ -1567,6 +1591,8 @@ func TestGatewayQueueSub(t *testing.T) {
 	natsQueueSub(t, ncC, "foo", "bar", cb1)
 	natsFlush(t, ncC)
 	checkExpectedSubs(t, 1, s3)
+	checkForRegisteredQSubInterest(t, s1, "C", globalAccountName, "foo", 1, time.Second)
+	checkForRegisteredQSubInterest(t, s2, "C", globalAccountName, "foo", 1, time.Second)
 
 	// Artificially bump the RTT from A to C so that
 	// the code should favor sending to B.
@@ -1584,6 +1610,8 @@ func TestGatewayQueueSub(t *testing.T) {
 	natsQueueSub(t, ncC, "foo", "baz", cb3)
 	natsFlush(t, ncC)
 	checkExpectedSubs(t, 2, s3)
+	checkForRegisteredQSubInterest(t, s1, "C", globalAccountName, "foo", 2, time.Second)
+	checkForRegisteredQSubInterest(t, s2, "C", globalAccountName, "foo", 2, time.Second)
 
 	// Reset counters
 	atomic.StoreInt32(&count1, 0)
@@ -1644,6 +1672,43 @@ func TestGatewayQueueSub(t *testing.T) {
 	check(t, &count3, total)
 }
 
+func TestGatewayTotalQSubs(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	s2Url := fmt.Sprintf("nats://127.0.0.1:%d", o2.Port)
+	subnc := natsConnect(t, s2Url)
+	defer subnc.Close()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	checkTotalQSubs := func(t *testing.T, s *Server, expected int) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := int(atomic.LoadInt64(&s.gateway.totalQSubs)); n != expected {
+				return fmt.Errorf("Expected TotalQSubs to be %v, got %v", expected, n)
+			}
+			return nil
+		})
+	}
+
+	qsub1 := natsQueueSub(t, subnc, "foo", "bar", func(_ *nats.Msg) {})
+	checkTotalQSubs(t, s1, 1)
+	qsub2 := natsQueueSub(t, subnc, "foo", "baz", func(_ *nats.Msg) {})
+	checkTotalQSubs(t, s1, 2)
+	qsub3 := natsQueueSub(t, subnc, "bar", "bar", func(_ *nats.Msg) {})
+	checkTotalQSubs(t, s1, 3)
+	natsUnsub(t, qsub1)
+	checkTotalQSubs(t, s1, 2)
+	natsUnsub(t, qsub3)
+	checkTotalQSubs(t, s1, 1)
+	natsUnsub(t, qsub2)
+	checkTotalQSubs(t, s1, 0)
+}
+
 func TestGatewaySendQSubsOnGatewayConnect(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
 	s2 := runGatewayServer(o2)
@@ -1668,6 +1733,8 @@ func TestGatewaySendQSubsOnGatewayConnect(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
 
+	checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 1, time.Second)
+
 	// Publish from s1, message should be received on s2.
 	pubnc := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", o1.Port))
 	defer pubnc.Close()
@@ -1682,6 +1749,8 @@ func TestGatewaySendQSubsOnGatewayConnect(t *testing.T) {
 
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 1, time.Second)
 
 	pubnc = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", o1.Port))
 	defer pubnc.Close()
@@ -1727,6 +1796,8 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	waitForOutboundGateways(t, sb1, 1, time.Second)
 	waitForOutboundGateways(t, sb2, 1, time.Second)
 
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "foo", 1, time.Second)
+
 	// Publish from s1, message should be received on s2.
 	saURL := fmt.Sprintf("nats://127.0.0.1:%d", oa.Port)
 	pubnc := natsConnect(t, saURL)
@@ -1735,6 +1806,16 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	natsPub(t, pubnc, "foo", []byte("hello"))
 	natsFlush(t, pubnc)
 	waitCh(t, ch, "Did not get out message")
+
+	// Note that since cluster B has no plain sub, an "RS- $G foo" will have been sent.
+	// Wait for the no interest to be received by A
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		gw := sa.getOutboundGatewayConnection("B").gw
+		if ni, _ := gw.noInterest.Load(globalAccountName); ni == nil {
+			return fmt.Errorf("No-interest still not registered")
+		}
+		return nil
+	})
 
 	// Unsubscribe 1 qsub
 	natsUnsub(t, qsub1)
@@ -1774,8 +1855,8 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 		return nil
 	})
 
-	// Now send a message, and it should not be sent because of qsubs,
-	// but will be sent as optimistic psub send.
+	// Now send a message, it won't be sent because A received an RS-
+	// on the first published message since there was no plain sub interest.
 	natsPub(t, pubnc, "foo", []byte("hello"))
 	natsFlush(t, pubnc)
 
@@ -1784,28 +1865,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	gw.mu.Lock()
 	out := gw.outMsgs
 	gw.mu.Unlock()
-	if out != 3 {
-		t.Fatalf("Expected 2 out messages, got %v", out)
-	}
-
-	// Wait for the no interest to be received by A
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		gw := sa.getOutboundGatewayConnection("B").gw
-		if ni, _ := gw.noInterest.Load(globalAccountName); ni == nil {
-			return fmt.Errorf("No-interest still not registered")
-		}
-		return nil
-	})
-
-	// Send another message, now it should not get out.
-	natsPub(t, pubnc, "foo", []byte("hello"))
-	natsFlush(t, pubnc)
-
-	// Get the gateway connection from A (sa) to B (sb1)
-	gw.mu.Lock()
-	out = gw.outMsgs
-	gw.mu.Unlock()
-	if out != 3 {
+	if out != 2 {
 		t.Fatalf("Expected 2 out messages, got %v", out)
 	}
 
@@ -1976,6 +2036,13 @@ func TestGatewayComplexSetup(t *testing.T) {
 	natsFlush(t, ncsb2)
 	checkExpectedSubs(t, 1, sb2)
 
+	// TODO(ik): When server sa1 that has inbound from sb1 gets a local qsub on foo - bar,
+	// it sends it, but when sa1 gets a remote qsub on foo - bar, it send it too.
+	// We lack the optimization to suppress the remote sending RS+ since we already have
+	// sent for local. So expected count here is 2. If we later optimize, use "1" here
+	// instead.
+	checkForRegisteredQSubInterest(t, sb1, "A", globalAccountName, "foo", 2, time.Second)
+
 	// Publish all messages. The queue sub on cluster B should receive all
 	// messages.
 	for i := 0; i < total; i++ {
@@ -2080,6 +2147,9 @@ func TestGatewayMsgSentOnlyOnce(t *testing.T) {
 
 	// Ensure subs registered in S1
 	checkExpectedSubs(t, 5, s1)
+
+	// Also need to wait for qsubs to be registered on s2.
+	checkForRegisteredQSubInterest(t, s2, "A", globalAccountName, "foo", 2, time.Second)
 
 	// From s2, send 1 message, s1 should receive 1 only,
 	// and total we should get the callback notified 4 times.
@@ -2234,6 +2304,10 @@ func TestGatewaySendsToNonLocalSubs(t *testing.T) {
 	sb2 := runGatewayServer(ob2)
 	defer sb2.Shutdown()
 
+	checkClusterFormed(t, sb1, sb2)
+	waitForOutboundGateways(t, sb2, 1, time.Second)
+	waitForInboundGateways(t, sa2, 1, time.Second)
+
 	ncSub = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", oa1.Port))
 	defer ncSub.Close()
 	natsSub(t, ncSub, "foo", func(_ *nats.Msg) { ch <- true })
@@ -2309,6 +2383,92 @@ func TestGatewayRandomIP(t *testing.T) {
 
 	waitForOutboundGateways(t, sa, 1, 2*time.Second)
 	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+}
+
+func TestGatewaySendQSubsBufSize(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		bufSize int
+	}{
+		{
+			name:    "Bufsize 45, more than one at a time",
+			bufSize: 45,
+		},
+		{
+			name:    "Bufsize 15, one at a time",
+			bufSize: 15,
+		},
+		{
+			name:    "Bufsize 0, default to maxBufSize, all at once",
+			bufSize: 0,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+
+			o2 := testDefaultOptionsForGateway("B")
+			o2.Gateway.sendQSubsBufSize = test.bufSize
+			s2 := runGatewayServer(o2)
+			defer s2.Shutdown()
+
+			s2Url := fmt.Sprintf("nats://%s:%d", o2.Host, o2.Port)
+			nc := natsConnect(t, s2Url)
+			defer nc.Close()
+			natsQueueSub(t, nc, "foo", "bar", func(_ *nats.Msg) {})
+			natsQueueSub(t, nc, "foo", "baz", func(_ *nats.Msg) {})
+			natsQueueSub(t, nc, "foo", "bat", func(_ *nats.Msg) {})
+			natsQueueSub(t, nc, "foo", "bax", func(_ *nats.Msg) {})
+
+			checkExpectedSubs(t, 4, s2)
+
+			o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+			s1 := runGatewayServer(o1)
+			defer s1.Shutdown()
+
+			waitForOutboundGateways(t, s1, 1, time.Second)
+			waitForOutboundGateways(t, s2, 1, time.Second)
+
+			checkForRegisteredQSubInterest(t, s1, "B", globalAccountName, "foo", 4, time.Second)
+
+			// Make sure we have the 4 we expected
+			c := s1.getOutboundGatewayConnection("B")
+			qsi, _ := c.gw.qsubsInterest.Load(globalAccountName)
+			sl := qsi.(*gwAccQSublist).sl
+			r := sl.Match("foo")
+			if len(r.qsubs) != 4 {
+				t.Fatalf("Expected 4 groups, got %v", len(r.qsubs))
+			}
+			var gotBar, gotBaz, gotBat, gotBax bool
+			for _, qs := range r.qsubs {
+				if len(qs) != 1 {
+					t.Fatalf("Unexpected number of subs for group %s: %v", qs[0].queue, len(qs))
+				}
+				q := qs[0].queue
+				switch string(q) {
+				case "bar":
+					gotBar = true
+				case "baz":
+					gotBaz = true
+				case "bat":
+					gotBat = true
+				case "bax":
+					gotBax = true
+				default:
+					t.Fatalf("Unexpected group name: %s", q)
+				}
+			}
+			if !gotBar || !gotBaz || !gotBat || !gotBax {
+				t.Fatalf("Did not get all we wanted: bar=%v baz=%v bat=%v bax=%v",
+					gotBar, gotBaz, gotBat, gotBax)
+			}
+
+			nc.Close()
+			s1.Shutdown()
+			s2.Shutdown()
+
+			waitForOutboundGateways(t, s1, 0, time.Second)
+			waitForOutboundGateways(t, s2, 0, time.Second)
+		})
+	}
 }
 
 /*

@@ -60,6 +60,7 @@ type srvGateway struct {
 	rqs      map[string]*subscription // Map of remote queue subscriptions (key is account+subject+queue)
 	runknown bool                     // Rejects unknown (not configured) gateway connections
 	resolver netResolver              // Used to resolve host name before calling net.Dial()
+	sqbsz    int                      // Max buffer size to send queue subs protocol. Used for testing.
 }
 
 type gatewayCfg struct {
@@ -175,6 +176,11 @@ func newGateway(opts *Options) (*srvGateway, error) {
 			cfg.urls[u.Host] = u
 		}
 		gateway.remotes[cfg.Name] = cfg
+	}
+
+	gateway.sqbsz = opts.Gateway.sendQSubsBufSize
+	if gateway.sqbsz == 0 {
+		gateway.sqbsz = maxBufSize
 	}
 
 	gateway.enabled = opts.Gateway.Name != "" && opts.Gateway.Port != 0
@@ -828,6 +834,8 @@ func (s *Server) sendQueueSubsToGateway(c *client) {
 		rqs   = rqsa[:0]
 		bufa  = [32 * 1024]byte{}
 		buf   = bufa[:0]
+		epa   = [1024]int{}
+		ep    = epa[:0]
 	)
 	// Collect accounts
 	s.mu.Lock()
@@ -859,6 +867,7 @@ func (s *Server) sendQueueSubsToGateway(c *client) {
 				buf = append(buf, subAndQueue...)
 				buf = append(buf, ' ', '1')
 				buf = append(buf, CR_LF...)
+				ep = append(ep, len(buf))
 			}
 		}
 		acc.mu.RUnlock()
@@ -870,41 +879,51 @@ func (s *Server) sendQueueSubsToGateway(c *client) {
 		buf = append(buf, qsub.sid...)
 		buf = append(buf, ' ', '1')
 		buf = append(buf, CR_LF...)
+		ep = append(ep, len(buf))
 	}
 
 	// Send
 	if len(buf) > 0 {
+		mbs := s.gateway.sqbsz
+		mp := int(c.out.mp / 2)
+		if mbs > mp {
+			mbs = mp
+		}
+		le := 0
+		li := 0
+		for i := 0; i < len(ep); i++ {
+			if ep[i]-le > mbs {
+				var end int
+				// If single proto is bigger than our max buffer size,
+				// send anyway. If it reaches a max in queueOutbound,
+				// that function will close the connection.
+				if i-li <= 1 {
+					end = ep[i]
+				} else {
+					end = ep[i-1]
+					i--
+				}
+				c.mu.Lock()
+				c.queueOutbound(buf[le:end])
+				c.flushOutbound()
+				closed := c.flags.isSet(clearConnection)
+				c.mu.Unlock()
+				if closed {
+					return
+				}
+				le = ep[i]
+				li = i
+			}
+		}
 		c.mu.Lock()
-		closed := c.sendInChunksIfNeeded(buf)
+		c.queueOutbound(buf[le:])
+		c.flushOutbound()
+		closed := c.flags.isSet(clearConnection)
 		if !closed {
 			c.Debugf("Sent queue subscriptions to gateway")
 		}
 		c.mu.Unlock()
 	}
-}
-
-// Sends the given buffer, splitting it into smaller chunks
-// if needed (making sure we stay below connection's max payload).
-// Lock is held on entry, but since this calls queueOutbound(),
-// lock is released and reacquired. A boolean is returned
-// indicating if the connection has been closed in the process.
-func (c *client) sendInChunksIfNeeded(buf []byte) bool {
-	chunkSize := maxBufSize
-	mpMax := int(c.out.mp / 2)
-	if chunkSize > mpMax {
-		chunkSize = mpMax
-	}
-	var closed bool
-	for start := 0; !closed && (start < len(buf)); start += chunkSize {
-		end := start + chunkSize
-		if end > len(buf) {
-			end = len(buf)
-		}
-		c.queueOutbound(buf[start:end])
-		c.flushOutbound()
-		closed = c.flags.isSet(clearConnection)
-	}
-	return closed
 }
 
 // This is invoked when getting an INFO protocol for gateway on the ROUTER port.
@@ -1332,9 +1351,9 @@ func (c *client) processGatewaySubjectUnsub(arg []byte) error {
 					qsubs := r.qsubs[i]
 					if bytes.Equal(qsubs[0].queue, queue) {
 						sl.Remove(qsubs[0])
+						atomic.AddInt64(&c.srv.gateway.totalQSubs, -1)
 						if sl.Count() == 0 {
 							c.gw.qsubsInterest.Delete(accName)
-							atomic.AddInt64(&c.srv.gateway.totalQSubs, -1)
 						}
 					}
 				}
@@ -1660,12 +1679,6 @@ func (s *Server) sendQueueUnsubToGateways(accName string, qsub *subscription, is
 	}
 }
 
-// Returns if there is any queue subscription in any
-// of the remote gateways.
-func (s *Server) gatewaysHaveQSubs() bool {
-	return atomic.LoadInt64(&s.gateway.totalQSubs) > 0
-}
-
 // May send a message to all outbound gateways. It is possible
 // that message is not sent to a given gateway if for instance
 // it is known that this gateway has no interest in account or
@@ -1797,9 +1810,8 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		c.checkForImportServices(acc, msg)
 	}
 
-	// Check for no interest, short circuit if so.
-	// This is the fanout scale.
-	if len(r.psubs)+len(r.qsubs) == 0 {
+	// If there is no interest on plain subs, possibly send an RS-.
+	if len(r.psubs) == 0 {
 		sendProto := false
 		// Send an RS- protocol, but keep track that we have said "no interest"
 		// for that account/subject, so that if later there is a subscription on
@@ -1834,7 +1846,11 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			c.sendProto(proto, true)
 			c.mu.Unlock()
 		}
-		return
+		// If we have no qsubs interest, or we have but queue filter is empty,
+		// then we are done.
+		if len(r.qsubs) == 0 || len(c.pa.queues) == 0 {
+			return
+		}
 	}
 
 	// Check to see if we have a routed message with a service reply.

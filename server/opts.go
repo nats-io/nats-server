@@ -65,7 +65,8 @@ type GatewayOpts struct {
 	RejectUnknown      bool                 `json:"reject_unknown,omitempty"`
 
 	// Not exported, for tests.
-	resolver netResolver
+	resolver         netResolver
+	sendQSubsBufSize int
 }
 
 // RemoteGatewayOpts are options for connecting to a remote gateway
