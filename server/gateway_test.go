@@ -82,8 +82,8 @@ func checkForRegisteredQSubInterest(t *testing.T, s *Server, gwName, acc, subj s
 		c := s.getOutboundGatewayConnection(gwName)
 		qsi, _ := c.gw.qsubsInterest.Load(acc)
 		if qsi != nil {
-			qs := qsi.(*gwAccQSublist)
-			count = int(qs.sl.Count())
+			qsl := qsi.(*Sublist)
+			count = int(qsl.Count())
 		}
 		if count == expected {
 			return nil
@@ -1165,8 +1165,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 
 	// S2 should have sent a protocol indicating no interest.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		_, noInterest := gwcb.gw.noInterest.Load("$foo")
-		if !noInterest {
+		if _, inMap := gwcb.gw.noInterest.Load("$foo"); !inMap {
 			return fmt.Errorf("Did not receive account no interest")
 		}
 		return nil
@@ -1182,8 +1181,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// Add account to S2, this should clear the no interest for that account.
 	s2.RegisterAccount("$foo")
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		_, noInterest := gwcb.gw.noInterest.Load("$foo")
-		if noInterest {
+		if _, inMap := gwcb.gw.noInterest.Load("$foo"); inMap {
 			return fmt.Errorf("NoInterest has not been cleared")
 		}
 		return nil
@@ -2490,7 +2488,7 @@ func TestGatewaySendQSubsBufSize(t *testing.T) {
 			// Make sure we have the 4 we expected
 			c := s1.getOutboundGatewayConnection("B")
 			qsi, _ := c.gw.qsubsInterest.Load(globalAccountName)
-			sl := qsi.(*gwAccQSublist).sl
+			sl := qsi.(*Sublist)
 			r := sl.Match("foo")
 			if len(r.qsubs) != 4 {
 				t.Fatalf("Expected 4 groups, got %v", len(r.qsubs))
@@ -2527,6 +2525,56 @@ func TestGatewaySendQSubsBufSize(t *testing.T) {
 			waitForOutboundGateways(t, s2, 0, time.Second)
 		})
 	}
+}
+
+func TestGatewayRaceBetweenPubAndSub(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	s2Url := fmt.Sprintf("nats://127.0.0.1:%d", o2.Port)
+	nc2 := natsConnect(t, s2Url)
+	defer nc2.Close()
+
+	s1Url := fmt.Sprintf("nats://127.0.0.1:%d", o1.Port)
+	var ncaa [5]*nats.Conn
+	var nca = ncaa[:0]
+	for i := 0; i < 5; i++ {
+		nc := natsConnect(t, s1Url)
+		defer nc.Close()
+		nca = append(nca, nc)
+	}
+
+	ch := make(chan bool, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(5)
+	for _, nc := range nca {
+		nc := nc
+		go func(n *nats.Conn) {
+			defer wg.Done()
+			for {
+				n.Publish("foo", []byte("hello"))
+				select {
+				case <-ch:
+					return
+				default:
+				}
+			}
+		}(nc)
+	}
+	time.Sleep(100 * time.Millisecond)
+	natsQueueSub(t, nc2, "foo", "bar", func(m *nats.Msg) {
+		natsUnsub(t, m.Sub)
+		close(ch)
+	})
+	wg.Wait()
 }
 
 /*
