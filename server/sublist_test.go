@@ -87,7 +87,7 @@ func verifyMember(r []*subscription, val *subscription, t *testing.T) {
 
 // Helpers to generate test subscriptions.
 func newSub(subject string) *subscription {
-	c := &client{typ: CLIENT}
+	c := &client{kind: CLIENT}
 	return &subscription{client: c, subject: []byte(subject)}
 }
 
@@ -100,7 +100,7 @@ func newQSub(subject, queue string) *subscription {
 
 func newRemoteQSub(subject, queue string, num int32) *subscription {
 	if queue != "" {
-		c := &client{typ: ROUTER}
+		c := &client{kind: ROUTER}
 		return &subscription{client: c, subject: []byte(subject), queue: []byte(queue), qw: num}
 	}
 	return newSub(subject)

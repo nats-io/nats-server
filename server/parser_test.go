@@ -23,7 +23,7 @@ func dummyClient() *client {
 }
 
 func dummyRouteClient() *client {
-	return &client{srv: New(&defaultServerOptions), typ: ROUTER}
+	return &client{srv: New(&defaultServerOptions), kind: ROUTER}
 }
 
 func TestParsePing(t *testing.T) {
@@ -456,7 +456,7 @@ func TestShouldFail(t *testing.T) {
 	wrongProtos = []string{"Mx", "MSx", "MSGx", "MSG  \r\n"}
 	for _, proto := range wrongProtos {
 		c := dummyClient()
-		c.typ = ROUTER
+		c.kind = ROUTER
 		if err := c.parse([]byte(proto)); err == nil {
 			t.Fatalf("Should have received a parse error for: %v", proto)
 		}

@@ -92,6 +92,10 @@ var (
 	// request from a remote Gateway with a destination name that does not match the server's
 	// Gateway's name.
 	ErrWrongGateway = errors.New("Wrong Gateway")
+
+	// ErrNoSysAccount	is returned when an attempt to publish or subscribe is made
+	// when there is no internal system account defined.
+	ErrNoSysAccount = errors.New("System Account Not Setup")
 )
 
 // configErr is a configuration error.

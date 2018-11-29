@@ -22,16 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/nats-io/nkeys"
 )
-
-// Use nkeys and the public key.
-func genID() string {
-	kp, _ := nkeys.CreateServer()
-	pub, _ := kp.PublicKey()
-	return string(pub)
-}
 
 // Ascii numbers 0-9
 const (
