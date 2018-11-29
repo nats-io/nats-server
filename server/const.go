@@ -135,5 +135,5 @@ const (
 
 	// DEFAULT_LAME_DUCK_DURATION is the time in which the server spreads
 	// the closing of clients when signaled to go in lame duck mode.
-	DEFAULT_LAME_DUCK_DURATION = 30 * time.Second
+	DEFAULT_LAME_DUCK_DURATION = 2 * time.Minute
 )

@@ -42,7 +42,7 @@ import (
 )
 
 // Time to wait before starting closing clients when in LD mode.
-const lameDuckModeDefaultInitialDelay = int64(time.Second)
+const lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
 
 // Make this a variable so that we can change during tests
 var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
@@ -1843,6 +1843,10 @@ func (s *Server) lameDuckMode() {
 		return
 	}
 	dur := int64(s.getOpts().LameDuckDuration)
+	dur -= atomic.LoadInt64(&lameDuckModeInitialDelay)
+	if dur <= 0 {
+		dur = int64(time.Second)
+	}
 	numClients := int64(len(s.clients))
 	batch := 1
 	// Sleep interval between each client connection close.
@@ -1853,7 +1857,13 @@ func (s *Server) lameDuckMode() {
 		// use a tiny sleep interval that will result in yield likely.
 		si = 1
 		batch = int(numClients / dur)
+	} else if si > int64(time.Second) {
+		// Conversely, there is no need to sleep too long between clients
+		// and spread say 10 clients for the 2min duration. Sleeping no
+		// more than 1sec.
+		si = int64(time.Second)
 	}
+
 	// Now capture all clients
 	clients := make([]*client, 0, len(s.clients))
 	for _, client := range s.clients {
@@ -1873,6 +1883,9 @@ func (s *Server) lameDuckMode() {
 	}
 	for i, client := range clients {
 		client.closeConnection(ServerShutdown)
+		if i == len(clients)-1 {
+			break
+		}
 		if batch == 1 || i%batch == 0 {
 			// We pick a random interval which will be at least si/2
 			v := rand.Int63n(si)

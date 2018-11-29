@@ -479,6 +479,11 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				errors = append(errors, err)
 				continue
 			}
+			if dur < 30*time.Second {
+				err := &configErr{tk, fmt.Sprintf("invalid lame_duck_duration of %v, minimum is 30 seconds", dur)}
+				errors = append(errors, err)
+				continue
+			}
 			o.LameDuckDuration = dur
 		case "trusted":
 			switch v.(type) {
