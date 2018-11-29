@@ -136,13 +136,13 @@ func (c *client) parse(buf []byte) error {
 			case 'U', 'u':
 				c.state = OP_U
 			case 'R', 'r':
-				if c.typ == CLIENT {
+				if c.kind == CLIENT {
 					goto parseErr
 				} else {
 					c.state = OP_R
 				}
 			case 'A', 'a':
-				if c.typ == CLIENT {
+				if c.kind == CLIENT {
 					goto parseErr
 				} else {
 					c.state = OP_A
@@ -388,7 +388,8 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				switch c.typ {
+
+				switch c.kind {
 				case CLIENT:
 					err = c.processSub(arg)
 				case ROUTER:
@@ -479,7 +480,8 @@ func (c *client) parse(buf []byte) error {
 					arg = buf[c.as : i-c.drop]
 				}
 				var err error
-				switch c.typ {
+
+				switch c.kind {
 				case CLIENT:
 					err = c.processUnsub(arg)
 				case ROUTER:

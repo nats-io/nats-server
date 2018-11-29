@@ -229,7 +229,7 @@ func (s *Server) configureAuthorization() {
 // checkAuthentication will check based on client type and
 // return boolean indicating if client is authorized.
 func (s *Server) checkAuthentication(c *client) bool {
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		return s.isClientAuthorized(c)
 	case ROUTER:
@@ -353,6 +353,9 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		nkey = buildInternalNkeyUser(juc, acc)
 		c.RegisterNkeyUser(nkey)
 
+		// Generate an event if we have a system account.
+		s.accountConnectEvent(c)
+
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())
 		return true
@@ -360,17 +363,21 @@ func (s *Server) isClientAuthorized(c *client) bool {
 
 	if nkey != nil {
 		if c.opts.Sig == "" {
+			c.Debugf("Signature missing")
 			return false
 		}
 		sig, err := base64.StdEncoding.DecodeString(c.opts.Sig)
 		if err != nil {
+			c.Debugf("Signature not valid base64")
 			return false
 		}
 		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
 		if err != nil {
+			c.Debugf("User nkey not valid: %v", err)
 			return false
 		}
 		if err := pub.Verify(c.nonce, sig); err != nil {
+			c.Debugf("Signature not verified")
 			return false
 		}
 		c.RegisterNkeyUser(nkey)

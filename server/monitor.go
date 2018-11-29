@@ -383,11 +383,9 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 		ci.TLSCipher = tlsCipher(cs.CipherSuite)
 	}
 
-	switch conn := nc.(type) {
-	case *net.TCPConn, *tls.Conn:
-		addr := conn.RemoteAddr().(*net.TCPAddr)
-		ci.Port = addr.Port
-		ci.IP = addr.IP.String()
+	if client.port != 0 {
+		ci.Port = client.port
+		ci.IP = client.host
 	}
 }
 
@@ -1002,7 +1000,7 @@ func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 func (reason ClosedState) String() string {
 	switch reason {
 	case ClientClosed:
-		return "Client"
+		return "Client Closed"
 	case AuthenticationTimeout:
 		return "Authentication Timeout"
 	case AuthenticationViolation:

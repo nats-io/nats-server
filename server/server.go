@@ -77,11 +77,22 @@ type Info struct {
 	GatewayCmd  byte     `json:"gateway_cmd,omitempty"`  // Command code for the receiving server to know what to do
 }
 
+// Used to send and receive messages from inside the server.
+type internal struct {
+	account *Account
+	client  *client
+	seq     uint64
+	sid     uint64
+	subs    map[string]msgHandler
+	sendq   chan *pubMsg
+}
+
 // Server is our main struct.
 type Server struct {
 	gcid uint64
 	stats
 	mu             sync.Mutex
+	kp             nkeys.KeyPair
 	prand          *rand.Rand
 	info           Info
 	configFile     string
@@ -91,6 +102,7 @@ type Server struct {
 	shutdown       bool
 	listener       net.Listener
 	gacc           *Account
+	sys            *internal
 	accounts       map[string]*Account
 	activeAccounts int
 	accResolver    AccountResolver
@@ -178,6 +190,8 @@ func New(opts *Options) *Server {
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
+	kp, _ := nkeys.CreateServer()
+	pub, _ := kp.PublicKey()
 
 	// Validate some options. This is here because we cannot assume that
 	// server will always be started with configuration parsing (that could
@@ -190,7 +204,7 @@ func New(opts *Options) *Server {
 	}
 
 	info := Info{
-		ID:           genID(),
+		ID:           pub,
 		Version:      VERSION,
 		Proto:        PROTO,
 		GitCommit:    gitCommit,
@@ -205,6 +219,7 @@ func New(opts *Options) *Server {
 
 	now := time.Now()
 	s := &Server{
+		kp:         kp,
 		configFile: opts.ConfigFile,
 		info:       info,
 		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -480,6 +495,40 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 	acc := &Account{Name: name}
 	s.registerAccount(acc)
 	return acc, nil
+}
+
+// Assign an system account. Should only be called once.
+// This sets up a server to send and receive messages from inside
+// the server itself.
+func (s *Server) setSystemAccount(acc *Account) error {
+	if !s.isTrustedIssuer(acc.Issuer) {
+		return fmt.Errorf("system account not a trusted account")
+	}
+	s.mu.Lock()
+	if s.sys != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("system account already exists")
+	}
+	s.sys = &internal{
+		account: acc,
+		client:  &client{srv: s, kind: SYSTEM, opts: defaultOpts, start: time.Now(), last: time.Now()},
+		seq:     1,
+		sid:     1,
+		subs:    make(map[string]msgHandler, 8),
+		sendq:   make(chan *pubMsg, 128),
+	}
+	s.sys.client.initClient()
+	s.sys.client.echo = false
+	s.mu.Unlock()
+	// Register with the account.
+	s.sys.client.registerWithAccount(acc)
+
+	// Start our internal loop to serialize outbound messages.
+	s.startGoRoutine(func() {
+		s.internalSendLoop()
+	})
+
+	return nil
 }
 
 // Place common account setup here.
@@ -1235,6 +1284,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 	now := time.Now()
 
+	s.accountDisconnectEvent(c, now, reason.String())
+
 	c.mu.Lock()
 
 	cc := &closedClient{}
@@ -1357,12 +1408,12 @@ func tlsCipher(cs uint16) string {
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
 	// type is immutable, so can check without lock
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		c.mu.Lock()
 		cid := c.cid
 		updateProtoInfoCount := false
-		if c.typ == CLIENT && c.opts.Protocol >= ClientProtoInfo {
+		if c.kind == CLIENT && c.opts.Protocol >= ClientProtoInfo {
 			updateProtoInfoCount = true
 		}
 		c.mu.Unlock()

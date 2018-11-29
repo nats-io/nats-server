@@ -38,6 +38,8 @@ const (
 	ROUTER
 	// GATEWAY is a link between 2 clusters.
 	GATEWAY
+	// SYSTEM is an internal system client.
+	SYSTEM
 )
 
 const (
@@ -145,7 +147,7 @@ type client struct {
 	mpay   int32
 	msubs  int
 	mu     sync.Mutex
-	typ    int
+	kind   int
 	cid    uint64
 	opts   clientOpts
 	start  time.Time
@@ -155,6 +157,9 @@ type client struct {
 	out    outbound
 	srv    *Server
 	acc    *Account
+	user   *NkeyUser
+	host   string
+	port   int
 	subs   map[string]*subscription
 	perms  *permissions
 	mperms *msgDeny
@@ -365,19 +370,23 @@ func (c *client) initClient() {
 	c.pcd = make(map[*client]struct{})
 
 	// snapshot the string version of the connection
-	conn := "-"
+	var conn string
 	if ip, ok := c.nc.(*net.TCPConn); ok {
 		addr := ip.RemoteAddr().(*net.TCPAddr)
+		c.host = addr.IP.String()
+		c.port = addr.Port
 		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
 	}
 
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		c.ncs = fmt.Sprintf("%s - cid:%d", conn, c.cid)
 	case ROUTER:
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
 	case GATEWAY:
 		c.ncs = fmt.Sprintf("%s - gid:%d", conn, c.cid)
+	case SYSTEM:
+		c.ncs = "SYSTEM"
 	}
 }
 
@@ -499,6 +508,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.user = user
 
 	// Assign permissions.
 	if user.Permissions == nil {
@@ -673,7 +683,7 @@ func (c *client) readLoop() {
 		// Client will be checked on several fronts to see
 		// if applicable. Routes will never wait in place.
 		budget := 500 * time.Microsecond
-		if c.typ == ROUTER {
+		if c.kind == ROUTER {
 			budget = 0
 		}
 
@@ -862,8 +872,8 @@ func (c *client) traceMsg(msg []byte) {
 	if !c.trace {
 		return
 	}
-	// FIXME(dlc), allow limits to printable payload
-	c.Tracef("<<- MSG_PAYLOAD: [%s]", string(msg[:len(msg)-LEN_CR_LF]))
+	// FIXME(dlc), allow limits to printable payload.
+	c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:len(msg)-LEN_CR_LF])
 }
 
 func (c *client) traceInOp(op string, arg []byte) {
@@ -895,7 +905,7 @@ func (c *client) processInfo(arg []byte) error {
 	if err := json.Unmarshal(arg, &info); err != nil {
 		return err
 	}
-	switch c.typ {
+	switch c.kind {
 	case ROUTER:
 		c.processRouteInfo(&info)
 	case GATEWAY:
@@ -905,7 +915,7 @@ func (c *client) processInfo(arg []byte) error {
 }
 
 func (c *client) processErr(errStr string) {
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		c.Errorf("Client Error %s", errStr)
 	case ROUTER:
@@ -968,8 +978,10 @@ func (c *client) processConnect(arg []byte) error {
 		return nil
 	}
 	c.last = time.Now()
-	typ := c.typ
+
+	kind := c.kind
 	srv := c.srv
+
 	// Moved unmarshalling of clients' Options under the lock.
 	// The client has already been added to the server map, so it is possible
 	// that other routines lookup the client, and access its options under
@@ -997,7 +1009,7 @@ func (c *client) processConnect(arg []byte) error {
 		// least ClientProtoInfo, we need to increment the following counter.
 		// This is decremented when client is removed from the server's
 		// clients map.
-		if typ == CLIENT && proto >= ClientProtoInfo {
+		if kind == CLIENT && proto >= ClientProtoInfo {
 			srv.mu.Lock()
 			srv.cproto++
 			srv.mu.Unlock()
@@ -1045,7 +1057,7 @@ func (c *client) processConnect(arg []byte) error {
 
 	}
 
-	switch typ {
+	switch kind {
 	case CLIENT:
 		// Check client protocol request if it exists.
 		if proto < ClientProtoZero || proto > ClientProtoInfo {
@@ -1281,7 +1293,7 @@ func (c *client) processPing() {
 	c.sendPong()
 
 	// If not a CLIENT, we are done
-	if c.typ != CLIENT {
+	if c.kind != CLIENT {
 		c.mu.Unlock()
 		return
 	}
@@ -1333,7 +1345,7 @@ func (c *client) processPong() {
 	c.ping.out = 0
 	c.rtt = time.Since(c.rttStart)
 	srv := c.srv
-	reorderGWs := c.typ == GATEWAY && c.gw.outbound
+	reorderGWs := c.kind == GATEWAY && c.gw.outbound
 	c.mu.Unlock()
 	if reorderGWs {
 		srv.gateway.orderOutboundConnections()
@@ -1445,21 +1457,22 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	c.mu.Lock()
-	if c.nc == nil {
+
+	// Grab connection type.
+	kind := c.kind
+
+	if c.nc == nil && kind != SYSTEM {
 		c.mu.Unlock()
 		return nil
 	}
 
-	// Grab connection type.
-	ctype := c.typ
-
 	// Check permissions if applicable.
-	if ctype == ROUTER {
+	if kind == ROUTER {
 		if !c.canExport(string(sub.subject)) {
 			c.mu.Unlock()
 			return nil
 		}
-	} else if !c.canSubscribe(string(sub.subject)) {
+	} else if kind == CLIENT && !c.canSubscribe(string(sub.subject)) {
 		c.mu.Unlock()
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
@@ -1492,7 +1505,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	if err != nil {
 		c.sendErr("Invalid Subject")
 		return nil
-	} else if c.opts.Verbose {
+	} else if c.opts.Verbose && kind != SYSTEM {
 		c.sendOK()
 	}
 
@@ -1501,7 +1514,7 @@ func (c *client) processSub(argo []byte) (err error) {
 			c.Errorf(err.Error())
 		}
 		// If we are routing and this is a local sub, add to the route map for the associated account.
-		if ctype == CLIENT {
+		if kind == CLIENT {
 			c.srv.updateRouteSubscriptionMap(acc, sub, 1)
 		}
 	}
@@ -1679,7 +1692,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
 
 	delete(c.subs, string(sub.sid))
-	if c.typ != CLIENT {
+	if c.kind != CLIENT && c.kind != SYSTEM {
 		c.removeReplySubTimeout(sub)
 	}
 
@@ -1691,7 +1704,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	for _, nsub := range sub.shadow {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
-		} else if c.typ == CLIENT && c.srv != nil {
+		} else if c.kind == CLIENT && c.srv != nil {
 			c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
 		}
 	}
@@ -1724,7 +1737,7 @@ func (c *client) processUnsub(arg []byte) error {
 	c.mu.Lock()
 
 	// Grab connection type.
-	ctype := c.typ
+	kind := c.kind
 	var acc *Account
 
 	if sub, ok = c.subs[string(sid)]; ok {
@@ -1745,7 +1758,7 @@ func (c *client) processUnsub(arg []byte) error {
 
 	if unsub {
 		c.unsubscribe(acc, sub, false)
-		if acc != nil && ctype == CLIENT {
+		if acc != nil && kind == CLIENT {
 			c.srv.updateRouteSubscriptionMap(acc, sub, -1)
 		}
 	}
@@ -1814,13 +1827,13 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	sub.nm++
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
-		if client.typ == ROUTER && sub.nm >= sub.max {
+		if client.kind == ROUTER && sub.nm >= sub.max {
 			// The only router based messages that we will see here are remoteReplies.
 			// We handle these slightly differently.
 			defer client.removeReplySub(sub)
 		} else {
 			// For routing..
-			shouldForward := client.typ == CLIENT && client.srv != nil
+			shouldForward := client.kind == CLIENT && client.srv != nil
 			// If we are at the exact number, unsubscribe but
 			// still process the message in hand, otherwise
 			// unsubscribe and drop message on the floor.
@@ -1844,12 +1857,6 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 		}
 	}
 
-	// Check for closed connection
-	if client.nc == nil {
-		client.mu.Unlock()
-		return false
-	}
-
 	// Update statistics
 
 	// The msg includes the CR_LF, so pull back out for accounting.
@@ -1862,6 +1869,20 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	atomic.AddInt64(&srv.outMsgs, 1)
 	atomic.AddInt64(&srv.outBytes, msgSize)
+
+	// Check for internal subscription.
+	if client.kind == SYSTEM {
+		s := client.srv
+		client.mu.Unlock()
+		s.deliverInternalMsg(sub, c.pa.subject, c.pa.reply, msg[:msgSize])
+		return true
+	}
+
+	// Check for closed connection
+	if client.nc == nil {
+		client.mu.Unlock()
+		return false
+	}
 
 	// Queue to outbound buffer
 	client.queueOutbound(mh)
@@ -1981,7 +2002,7 @@ func isServiceReply(reply []byte) bool {
 
 // This will decide to call the client code or router code.
 func (c *client) processInboundMsg(msg []byte) {
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		c.processInboundClientMsg(msg)
 	case ROUTER:
@@ -2162,13 +2183,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	for _, sub := range r.psubs {
 		// Check if this is a send to a ROUTER. We now process
 		// these after everything else.
-		if sub.client.typ == ROUTER {
-			if c.typ == ROUTER {
+		if sub.client.kind == ROUTER {
+			if c.kind == ROUTER {
 				continue
 			}
 			c.addSubToRouteTargets(sub)
 			continue
-		} else if sub.client.typ == GATEWAY {
+		} else if sub.client.kind == GATEWAY {
 			// Never send to gateway from here.
 			continue
 		}
@@ -2177,7 +2198,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// Redo the subject here on the fly.
 			msgh = c.msgb[1:msgHeadProtoLen]
 			msgh = append(msgh, sub.im.prefix...)
-			msgh = append(msgh, c.pa.subject...)
+			msgh = append(msgh, subject...)
 			msgh = append(msgh, ' ')
 			si = len(msgh)
 		}
@@ -2187,7 +2208,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	}
 
 	// If we are sourced from a route we need to have direct filtered queues.
-	if c.typ == ROUTER && c.pa.queues == nil {
+	if c.kind == ROUTER && c.pa.queues == nil {
 		return
 	}
 
@@ -2198,7 +2219,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 
 	// For gateway connections, we still want to send messages to routes
 	// even if there is no queue filters.
-	if c.typ == GATEWAY && qf == nil {
+	if c.kind == GATEWAY && qf == nil {
 		goto sendToRoutes
 	}
 
@@ -2241,8 +2262,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				continue
 			}
 			// Potentially sending to a remote sub across a route.
-			if sub.client.typ == ROUTER {
-				if c.typ == ROUTER {
+			if sub.client.kind == ROUTER {
+				if c.kind == ROUTER {
 					// We just came from a route, so skip and prefer local subs.
 					// Keep our first rsub in case all else fails.
 					if rsub == nil {
@@ -2262,7 +2283,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				// Redo the subject here on the fly.
 				msgh = c.msgb[1:msgHeadProtoLen]
 				msgh = append(msgh, sub.im.prefix...)
-				msgh = append(msgh, c.pa.subject...)
+				msgh = append(msgh, subject...)
 				msgh = append(msgh, ' ')
 				si = len(msgh)
 			}
@@ -2295,8 +2316,8 @@ sendToRoutes:
 		return
 	}
 
-	// We address by index to avoid struct copy. We have inline structs for memory
-	// layout and cache coherency.
+	// We address by index to avoid struct copy.
+	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
 
@@ -2444,13 +2465,13 @@ func (c *client) clearConnection(reason ClosedState) {
 	nc.SetWriteDeadline(time.Time{})
 
 	// Save off the connection if its a client.
-	if c.typ == CLIENT && c.srv != nil {
+	if c.kind == CLIENT && c.srv != nil {
 		go c.srv.saveClosedClient(c, nc, reason)
 	}
 }
 
 func (c *client) typeString() string {
-	switch c.typ {
+	switch c.kind {
 	case CLIENT:
 		return "Client"
 	case ROUTER:
@@ -2546,7 +2567,7 @@ func (c *client) closeConnection(reason ClosedState) {
 
 	// Be consistent with the creation: for routes and gateways,
 	// we use Noticef on create, so use that too for delete.
-	if c.typ == ROUTER || c.typ == GATEWAY {
+	if c.kind == ROUTER || c.kind == GATEWAY {
 		c.Noticef("%s connection closed", c.typeString())
 	} else {
 		c.Debugf("%s connection closed", c.typeString())
@@ -2563,7 +2584,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		gwName        string
 		gwIsOutbound  bool
 		gwCfg         *gatewayCfg
-		ctype         = c.typ
+		kind          = c.kind
 		srv           = c.srv
 		noReconnect   = c.flags.isSet(noReconnect)
 		acc           = c.acc
@@ -2573,7 +2594,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	// FIXME(dlc) - we can just stub in a new one for client
 	// and reference existing one.
 	var subs []*subscription
-	if ctype == CLIENT {
+	if kind == CLIENT {
 		subs = make([]*subscription, 0, len(c.subs))
 		for _, sub := range c.subs {
 			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
@@ -2588,7 +2609,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		}
 		connectURLs = c.route.connectURLs
 	}
-	if ctype == GATEWAY {
+	if kind == GATEWAY {
 		gwName = c.gw.name
 		gwIsOutbound = c.gw.outbound
 		gwCfg = c.gw.cfg
@@ -2597,7 +2618,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.mu.Unlock()
 
 	// Remove clients subscriptions.
-	if ctype == CLIENT {
+	if kind == CLIENT {
 		acc.sl.RemoveBatch(subs)
 	} else {
 		go c.removeRemoteSubs()
@@ -2617,7 +2638,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		srv.removeClient(c)
 
 		// Update remote subscriptions.
-		if acc != nil && ctype == CLIENT {
+		if acc != nil && kind == CLIENT {
 			qsubs := map[string]*qsub{}
 			for _, sub := range subs {
 				if sub.queue == nil {
@@ -2683,7 +2704,7 @@ func (c *client) closeConnection(reason ClosedState) {
 			// server shutdown.
 			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
 		}
-	} else if srv != nil && ctype == GATEWAY && gwIsOutbound {
+	} else if srv != nil && kind == GATEWAY && gwIsOutbound {
 		if gwCfg != nil {
 			srv.Debugf("Attempting reconnect for gateway %q", gwName)
 			// Run this as a go routine since we may be called within

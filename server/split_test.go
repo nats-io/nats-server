@@ -365,7 +365,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 
 	// MSG (the client has to be a ROUTE)
-	c = &client{subs: make(map[string]*subscription), typ: ROUTER}
+	c = &client{subs: make(map[string]*subscription), kind: ROUTER}
 	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
 	c.parse(msgop[:5])
 	c.parse(msgop[5:10])
@@ -419,7 +419,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 func TestSplitRoutedMsgArg(t *testing.T) {
 	_, c, _ := setupClient()
 	// Allow parser to process RMSG
-	c.typ = ROUTER
+	c.kind = ROUTER
 
 	b := make([]byte, 1024)
 
@@ -445,7 +445,7 @@ func TestSplitRoutedMsgArg(t *testing.T) {
 }
 
 func TestSplitBufferMsgOp(t *testing.T) {
-	c := &client{subs: make(map[string]*subscription), typ: ROUTER}
+	c := &client{subs: make(map[string]*subscription), kind: ROUTER}
 	msg := []byte("RMSG $G foo.bar _INBOX.22 11\r\nhello world\r")
 	msg1 := msg[:2]
 	msg2 := msg[2:9]

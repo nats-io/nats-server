@@ -141,7 +141,7 @@ func (c *client) removeReplySubTimeout(sub *subscription) {
 func (c *client) processAccountSub(arg []byte) error {
 	c.traceInOp("A+", arg)
 	accName := string(arg)
-	if c.typ == GATEWAY {
+	if c.kind == GATEWAY {
 		return c.processGatewayAccountSub(accName)
 	}
 	return nil
@@ -150,7 +150,7 @@ func (c *client) processAccountSub(arg []byte) error {
 func (c *client) processAccountUnsub(arg []byte) {
 	c.traceInOp("A-", arg)
 	accName := string(arg)
-	if c.typ == GATEWAY {
+	if c.kind == GATEWAY {
 		c.processGatewayAccountUnsub(accName)
 	}
 }
@@ -1025,7 +1025,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 	}
 
-	c := &client{srv: s, nc: conn, opts: clientOpts{}, typ: ROUTER, route: r}
+	c := &client{srv: s, nc: conn, opts: clientOpts{}, kind: ROUTER, route: r}
 
 	// Grab server variables
 	s.mu.Lock()
@@ -1232,7 +1232,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We only store state on local subs for transmission across routes.
-	if sub.client == nil || sub.client.typ != CLIENT {
+	if sub.client == nil || sub.client.kind != CLIENT {
 		return
 	}
 
@@ -1568,7 +1568,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 func (c *client) isSolicitedRoute() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.typ == ROUTER && c.route != nil && c.route.didSolicit
+	return c.kind == ROUTER && c.route != nil && c.route.didSolicit
 }
 
 func (s *Server) solicitRoutes(routes []*url.URL) {
