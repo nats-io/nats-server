@@ -251,7 +251,7 @@ func TestMergeOverrides(t *testing.T) {
 			ConnectRetries: 2,
 		},
 		WriteDeadline:    3 * time.Second,
-		LameDuckDuration: 4 * time.Second,
+		LameDuckDuration: 4 * time.Minute,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

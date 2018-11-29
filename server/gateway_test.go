@@ -2359,7 +2359,6 @@ func TestGatewaySendsToNonLocalSubs(t *testing.T) {
 
 	checkClusterFormed(t, sb1, sb2)
 	waitForOutboundGateways(t, sb2, 1, time.Second)
-	waitForInboundGateways(t, sa2, 1, time.Second)
 
 	ncSub = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", oa1.Port))
 	defer ncSub.Close()

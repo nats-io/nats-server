@@ -1843,6 +1843,10 @@ func (s *Server) lameDuckMode() {
 		return
 	}
 	dur := int64(s.getOpts().LameDuckDuration)
+	dur -= atomic.LoadInt64(&lameDuckModeInitialDelay)
+	if dur <= 0 {
+		dur = int64(time.Second)
+	}
 	numClients := int64(len(s.clients))
 	batch := 1
 	// Sleep interval between each client connection close.
