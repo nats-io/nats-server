@@ -237,7 +237,7 @@ func (s *Server) noOutSideInterest(r *SublistResult) bool {
 			return false
 		}
 	}
-	return false
+	return true
 }
 
 func (s *Server) stampServerInfo(si *ServerInfo) {

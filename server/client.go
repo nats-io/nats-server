@@ -2198,7 +2198,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// Redo the subject here on the fly.
 			msgh = c.msgb[1:msgHeadProtoLen]
 			msgh = append(msgh, sub.im.prefix...)
-			//msgh = append(msgh, c.pa.subject...)
 			msgh = append(msgh, subject...)
 			msgh = append(msgh, ' ')
 			si = len(msgh)

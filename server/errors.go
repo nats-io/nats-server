@@ -93,7 +93,7 @@ var (
 	// Gateway's name.
 	ErrWrongGateway = errors.New("Wrong Gateway")
 
-	// ErrNoSysAccount	is returned when an attempt to publish or subscribe is made
+	// ErrNoSysAccount is returned when an attempt to publish or subscribe is made
 	// when there is no internal system account defined.
 	ErrNoSysAccount = errors.New("System Account Not Setup")
 )
