@@ -66,28 +66,51 @@ type DataStats struct {
 	Bytes int64 `json:"bytes"`
 }
 
-// This will send a message.
-// TODO(dlc) - Note we want the sequence numbers to be serialized but right now they may not be.
-func (s *Server) sendInternalMsg(r *SublistResult, subj string, msg []byte) {
+// Used for internally queueing up messages that the server wants to send.
+type pubMsg struct {
+	r   *SublistResult
+	sub string
+	msg []byte
+}
+
+func (s *Server) internalSendLoop() {
+	defer s.grWG.Done()
+	s.mu.Lock()
 	if s.sys == nil {
 		return
 	}
 	c := s.sys.client
 	acc := s.sys.account
+	sendq := s.sys.sendq
+	s.mu.Unlock()
 
-	// Prep internl structures needed to send message.
-	c.pa.subject = []byte(subj)
-	c.pa.size = len(msg)
-	c.pa.szb = []byte(strconv.FormatInt(int64(len(msg)), 10))
-	// Add in NL
-	msg = append(msg, _CRLF_...)
-
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
-		c.checkForImportServices(acc, msg)
+	for s.isRunning() {
+		select {
+		case pm := <-sendq:
+			// Prep internal structures needed to send message.
+			c.pa.subject = []byte(pm.sub)
+			c.pa.size = len(pm.msg)
+			c.pa.szb = []byte(strconv.FormatInt(int64(len(pm.msg)), 10))
+			// Add in NL
+			pm.msg = append(pm.msg, _CRLF_...)
+			// Check to see if we need to map/route to another account.
+			if acc.imports.services != nil {
+				c.checkForImportServices(acc, pm.msg)
+			}
+			c.processMsgResults(acc, pm.r, pm.msg, []byte(pm.sub), nil, nil)
+			c.flushClients()
+		case <-s.quitCh:
+			return
+		}
 	}
-	c.processMsgResults(acc, r, msg, []byte(subj), nil, nil)
-	c.flushClients()
+}
+
+// This will queue up a message to be sent.
+func (s *Server) sendInternalMsg(r *SublistResult, sub string, msg []byte) {
+	if s.sys == nil {
+		return
+	}
+	s.sys.sendq <- &pubMsg{r, sub, msg}
 }
 
 // accountConnectEvent will send an account client connect event if there is interest.

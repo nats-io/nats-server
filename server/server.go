@@ -84,6 +84,7 @@ type internal struct {
 	seq     uint64
 	sid     uint64
 	subs    map[string]msgHandler
+	sendq   chan *pubMsg
 }
 
 // Server is our main struct.
@@ -514,12 +515,19 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		seq:     1,
 		sid:     1,
 		subs:    make(map[string]msgHandler, 8),
+		sendq:   make(chan *pubMsg, 128),
 	}
 	s.sys.client.initClient()
 	s.sys.client.echo = false
 	s.mu.Unlock()
 	// Register with the account.
 	s.sys.client.registerWithAccount(acc)
+
+	// Start our internal loop to serialize outbound messages.
+	s.startGoRoutine(func() {
+		s.internalSendLoop()
+	})
+
 	return nil
 }
 
