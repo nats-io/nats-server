@@ -70,13 +70,15 @@ type DataStats struct {
 type pubMsg struct {
 	r   *SublistResult
 	sub string
-	msg []byte
+	si  *ServerInfo
+	msg interface{}
 }
 
 func (s *Server) internalSendLoop() {
 	defer s.grWG.Done()
 	s.mu.Lock()
 	if s.sys == nil {
+		s.mu.Unlock()
 		return
 	}
 	c := s.sys.client
@@ -87,17 +89,20 @@ func (s *Server) internalSendLoop() {
 	for s.isRunning() {
 		select {
 		case pm := <-sendq:
+			s.stampServerInfo(pm.si)
+			b, _ := json.MarshalIndent(pm.msg, "", "  ")
+
 			// Prep internal structures needed to send message.
 			c.pa.subject = []byte(pm.sub)
-			c.pa.size = len(pm.msg)
-			c.pa.szb = []byte(strconv.FormatInt(int64(len(pm.msg)), 10))
+			c.pa.size = len(b)
+			c.pa.szb = []byte(strconv.FormatInt(int64(len(b)), 10))
 			// Add in NL
-			pm.msg = append(pm.msg, _CRLF_...)
+			b = append(b, _CRLF_...)
 			// Check to see if we need to map/route to another account.
 			if acc.imports.services != nil {
-				c.checkForImportServices(acc, pm.msg)
+				c.checkForImportServices(acc, b)
 			}
-			c.processMsgResults(acc, pm.r, pm.msg, []byte(pm.sub), nil, nil)
+			c.processMsgResults(acc, pm.r, b, []byte(pm.sub), nil, nil)
 			c.flushClients()
 		case <-s.quitCh:
 			return
@@ -106,11 +111,11 @@ func (s *Server) internalSendLoop() {
 }
 
 // This will queue up a message to be sent.
-func (s *Server) sendInternalMsg(r *SublistResult, sub string, msg []byte) {
+func (s *Server) sendInternalMsg(r *SublistResult, sub string, si *ServerInfo, msg interface{}) {
 	if s.sys == nil {
 		return
 	}
-	s.sys.sendq <- &pubMsg{r, sub, msg}
+	s.sys.sendq <- &pubMsg{r, sub, si, msg}
 }
 
 // accountConnectEvent will send an account client connect event if there is interest.
@@ -141,9 +146,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 	c.mu.Unlock()
 
-	s.stampServerInfo(&m.Server)
-	msg, _ := json.MarshalIndent(m, "", "  ")
-	s.sendInternalMsg(r, subj, msg)
+	s.sendInternalMsg(r, subj, &m.Server, &m)
 }
 
 // accountDisconnectEvent will send an account client disconnect event if there is interest.
@@ -184,9 +187,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 	c.mu.Unlock()
 
-	s.stampServerInfo(&m.Server)
-	msg, _ := json.MarshalIndent(m, "", "  ")
-	s.sendInternalMsg(r, subj, msg)
+	s.sendInternalMsg(r, subj, &m.Server, &m)
 }
 
 // Internal message callback. If the msg is needed past the callback it is
@@ -264,6 +265,9 @@ func (s *Server) noOutSideInterest(r *SublistResult) bool {
 }
 
 func (s *Server) stampServerInfo(si *ServerInfo) {
+	if si == nil {
+		return
+	}
 	s.mu.Lock()
 	si.ID = s.info.ID
 	si.Seq = s.sys.seq

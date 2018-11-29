@@ -289,7 +289,7 @@ func TestSystemInternalSubscriptions(t *testing.T) {
 	// Now make sure we do not hear ourselves. We optimize this for internally
 	// generated messages.
 	r := SublistResult{psubs: []*subscription{sub}}
-	s.sendInternalMsg(&r, "foo", msg.Data)
+	s.sendInternalMsg(&r, "foo", nil, msg.Data)
 
 	select {
 	case <-received:
