@@ -1281,7 +1281,10 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	s2Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o2.Port)
 	ncb := natsConnect(t, s2Url)
 	defer ncb.Close()
-	sub := natsSub(t, ncb, "foo", func(_ *nats.Msg) {})
+	ch := make(chan bool, 1)
+	sub := natsSub(t, ncb, "foo", func(_ *nats.Msg) {
+		ch <- true
+	})
 	natsFlush(t, ncb)
 	checkExpectedSubs(t, 1, s2)
 	checkExpectedSubs(t, 0, s1)
@@ -1293,6 +1296,8 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 2)
 
+	// Make sure message is received
+	waitCh(t, ch, "Did not get our message")
 	// Now unsubscribe, there won't be an UNSUB sent to the gateway.
 	natsUnsub(t, sub)
 	natsFlush(t, ncb)
@@ -1334,6 +1339,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	checkCount(t, gwcb, 6)
 
 	// Restart B and that should clear everything on A
+	ncb.Close()
 	s2.Shutdown()
 	s2 = runGatewayServer(o2)
 	defer s2.Shutdown()
