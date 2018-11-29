@@ -74,20 +74,14 @@ type gatewayCfg struct {
 
 // Struct for client's gateway related fields
 type gateway struct {
-	name     string
-	outbound bool
-	cfg      *gatewayCfg
-	// Saved in createGateway() since we delay send of CONNECT and INFO
-	// for outbound connections
-	connectURL *url.URL
-	infoJSON   []byte
-	// As an outbound connection, this indicates if there is no interest
-	// for an account/subject.
-	// As an inbound connection, this indicates if we have sent a no-interest
-	// protocol to the remote gateway.
-	noInterest sync.Map
-	// Queue subscriptions interest for this gateway.
-	qsubsInterest sync.Map
+	name           string
+	outbound       bool
+	cfg            *gatewayCfg
+	connectURL     *url.URL                       // Needed when sending CONNECT after receiving INFO from remote
+	infoJSON       []byte                         // Needed when sending INFO after receiving INFO from remote
+	noInterest     sync.Map                       // For outbound connection, record no-interest for account/subject
+	sentNoInterest map[string]map[string]struct{} // For inbound connection, record that no-interest was sent for account/subject
+	qsubsInterest  sync.Map                       // Queue subscriptions interest for this gateway.
 }
 
 // clone returns a deep copy of the RemoteGatewayOpts object
@@ -499,6 +493,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		c.gw.infoJSON = infoJSON
 		c.Noticef("Creating outbound gateway connection to %q", cfg.Name)
 	} else {
+		c.gw.sentNoInterest = make(map[string]map[string]struct{})
 		// Inbound gateway connection
 		c.Noticef("Processing inbound gateway connection")
 	}
@@ -1352,7 +1347,7 @@ func (c *client) processGatewaySubjectUnsub(arg []byte) error {
 	if queue != nil {
 		sli, _ := c.gw.qsubsInterest.Load(accName)
 		if sli != nil {
-			sl := sli.(*gwAccQSublist).sl
+			sl := sli.(*Sublist)
 			r := sl.Match(string(subject))
 			if len(r.qsubs) > 0 {
 				for i := 0; i < len(r.qsubs); i++ {
@@ -1397,7 +1392,7 @@ func (c *client) processGatewaySubjectUnsub(arg []byte) error {
 	return nil
 }
 
-// For plain subs, RS+ protocol received by remote gateway if it
+// For plain subs, RS+ protocol received from remote gateway if it
 // had previously sent a RS-. Clear the "no interest" marker for
 // this subject (under this account).
 // For queue subs, register interest from remote gateway.
@@ -1426,14 +1421,14 @@ func (c *client) processGatewaySubjectSub(arg []byte) error {
 
 	if queue != nil {
 		var (
-			accQSubs *gwAccQSublist
-			store    bool
+			sl    *Sublist
+			store bool
 		)
 		sli, _ := c.gw.qsubsInterest.Load(string(accName))
 		if sli != nil {
-			accQSubs = sli.(*gwAccQSublist)
+			sl = sli.(*Sublist)
 		} else {
-			accQSubs = &gwAccQSublist{sl: NewSublist()}
+			sl = NewSublist()
 			store = true
 		}
 		// Copy subject and queue to avoid referencing a possibly
@@ -1442,9 +1437,9 @@ func (c *client) processGatewaySubjectSub(arg []byte) error {
 		copy(cbuf, subject)
 		copy(cbuf[len(subject):], queue)
 		sub := &subscription{client: c, subject: cbuf[:len(subject)], queue: cbuf[len(subject):], qw: qw}
-		accQSubs.sl.Insert(sub)
+		sl.Insert(sub)
 		if store {
-			c.gw.qsubsInterest.Store(string(accName), accQSubs)
+			c.gw.qsubsInterest.Store(string(accName), sl)
 		}
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, 1)
 	} else {
@@ -1458,12 +1453,6 @@ func (c *client) processGatewaySubjectSub(arg []byte) error {
 		}
 	}
 	return nil
-}
-
-type gwAccQSublist struct {
-	genid   uint64
-	results map[string]*SublistResult
-	sl      *Sublist
 }
 
 // Returns true if this gateway has possible interest in the
@@ -1482,32 +1471,8 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 	// Get the matches for queue subs.
 	sli, _ := c.gw.qsubsInterest.Load(acc)
 	if sli != nil {
-		var ok bool
-
-		acc := sli.(*gwAccQSublist)
-		genid := atomic.LoadUint64(&acc.sl.genid)
-		if genid == acc.genid && acc.results != nil {
-			r, ok = acc.results[subj]
-		} else {
-			// Reset our L1 completely.
-			acc.results = make(map[string]*SublistResult)
-			acc.genid = genid
-		}
-		// Go back to the sublist data structure.
-		if !ok {
-			r = acc.sl.Match(subj)
-			acc.results[subj] = r
-			// Prune the results cache. Keeps us from unbounded growth. Random delete.
-			if len(acc.results) > maxResultCacheSize {
-				n := 0
-				for subject := range acc.results {
-					delete(acc.results, subject)
-					if n++; n > pruneSize {
-						break
-					}
-				}
-			}
-		}
+		sl := sli.(*Sublist)
+		r = sl.Match(subj)
 	}
 	// Represents plain sub interest
 	psi := true
@@ -1515,7 +1480,9 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 		// If there is a value, sni is itself a sync.Map for subject
 		// no-interest (in that account).
 		subjectNoInterest := sni.(*sync.Map)
-		if _, noInterestSet := subjectNoInterest.Load(subj); noInterestSet {
+		if _, subjInMap := subjectNoInterest.Load(subj); subjInMap {
+			// If subject is present in map, it means a no-interest
+			// for this subject.
 			psi = false
 		}
 	}
@@ -1539,15 +1506,15 @@ func (s *Server) endAccountNoInterestForGateways(accName string) {
 	proto = append(proto, accName...)
 	proto = append(proto, CR_LF...)
 	for _, c := range gws {
-		if _, noInterest := c.gw.noInterest.Load(accName); noInterest {
-			c.gw.noInterest.Delete(accName)
-			c.mu.Lock()
+		c.mu.Lock()
+		if _, noInterest := c.gw.sentNoInterest[accName]; noInterest {
+			delete(c.gw.sentNoInterest, accName)
 			if c.trace {
 				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 			}
 			c.sendProto(proto, true)
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 	}
 }
 
@@ -1575,22 +1542,20 @@ func (s *Server) endSubjectNoInterestForGateways(accName string, sub *subscripti
 	for _, c := range gws {
 		subjects := subjectsa[:0]
 		// Check that we had sent a no-interest on this account/subject.
-		if sni, _ := c.gw.noInterest.Load(accName); sni != nil {
-			sn := sni.(*sync.Map)
+		c.mu.Lock()
+		if sni, _ := c.gw.sentNoInterest[accName]; sni != nil {
 			// For wildcard subjects, we look for the subjects
 			// this subscription is matching.
 			if hasWc {
-				sn.Range(func(k, _ interface{}) bool {
-					// Existing no-interest subject
-					enis := k.(string)
+				// Existing no-interest subject
+				for enis := range sni {
 					if subjectIsSubsetMatch(enis, subject) {
-						sn.Delete(enis)
+						delete(sni, enis)
 						subjects = append(subjects, enis)
 					}
-					return true
-				})
-			} else if _, noInterest := sn.Load(string(sub.subject)); noInterest {
-				sn.Delete(subject)
+				}
+			} else if _, noInterest := sni[string(sub.subject)]; noInterest {
+				delete(sni, subject)
 				subjects = append(subjects, subject)
 			}
 		}
@@ -1601,13 +1566,12 @@ func (s *Server) endSubjectNoInterestForGateways(accName string, sub *subscripti
 			proto = append(proto, ' ')
 			proto = append(proto, subj...)
 			proto = append(proto, CR_LF...)
-			c.mu.Lock()
 			if c.trace {
 				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 			}
 			c.sendProto(proto, true)
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 	}
 }
 
@@ -1791,11 +1755,12 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	if acc == nil {
 		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
 		// Send A- only once...
-		if _, sent := c.gw.noInterest.Load(string(c.pa.account)); !sent {
+		c.mu.Lock()
+		if _, sent := c.gw.sentNoInterest[string(c.pa.account)]; !sent {
 			// Send an A- protocol, but keep track that we have sent a "no interest"
 			// for that account, so that if later this account gets registered,
 			// we need to send an A+ to this remote gateway.
-			c.gw.noInterest.Store(string(c.pa.account), nil)
+			c.gw.sentNoInterest[string(c.pa.account)] = nil
 			var (
 				protoa = [256]byte{}
 				proto  = protoa[:0]
@@ -1806,10 +1771,9 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 				c.traceOutOp("", proto)
 			}
 			proto = append(proto, CR_LF...)
-			c.mu.Lock()
 			c.sendProto(proto, true)
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 		return
 	}
 
@@ -1824,16 +1788,16 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		// Send an RS- protocol, but keep track that we have said "no interest"
 		// for that account/subject, so that if later there is a subscription on
 		// this subject, we need to send an R+ to remote gateways.
-		si, _ := c.gw.noInterest.Load(string(c.pa.account))
-		if si == nil {
-			m := &sync.Map{}
-			m.Store(string(c.pa.subject), struct{}{})
-			c.gw.noInterest.Store(string(c.pa.account), m)
+		c.mu.Lock()
+		sni, _ := c.gw.sentNoInterest[string(c.pa.account)]
+		if sni == nil {
+			sni = make(map[string]struct{})
+			sni[string(c.pa.subject)] = struct{}{}
+			c.gw.sentNoInterest[string(c.pa.account)] = sni
 			sendProto = true
 		} else {
-			m := si.(*sync.Map)
-			if _, alreadySent := m.Load(string(c.pa.subject)); !alreadySent {
-				m.Store(string(c.pa.subject), struct{}{})
+			if _, alreadySent := sni[string(c.pa.subject)]; !alreadySent {
+				sni[string(c.pa.subject)] = struct{}{}
 				sendProto = true
 			}
 		}
@@ -1846,14 +1810,13 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			proto = append(proto, c.pa.account...)
 			proto = append(proto, ' ')
 			proto = append(proto, c.pa.subject...)
-			c.mu.Lock()
 			if c.trace {
 				c.traceOutOp("", proto)
 			}
 			proto = append(proto, CR_LF...)
 			c.sendProto(proto, true)
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 		// If we have no qsubs interest, or we have but queue filter is empty,
 		// then we are done.
 		if len(r.qsubs) == 0 || len(c.pa.queues) == 0 {
