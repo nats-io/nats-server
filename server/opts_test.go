@@ -89,7 +89,7 @@ func TestConfigFile(t *testing.T) {
 		PingInterval:     60 * time.Second,
 		MaxPingsOut:      3,
 		WriteDeadline:    3 * time.Second,
-		LameDuckDuration: 4 * time.Second,
+		LameDuckDuration: 4 * time.Minute,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
