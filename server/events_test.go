@@ -104,6 +104,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 
 	sub, _ := ncs.SubscribeSync(">")
 	defer sub.Unsubscribe()
+	ncs.Flush()
 
 	// We can't hear ourselves, so we need to create a second client to
 	// trigger the connect/disconnect events.
