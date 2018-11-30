@@ -68,7 +68,7 @@ func serialize(v interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base64.RawStdEncoding.EncodeToString(j), nil
+	return base64.RawURLEncoding.EncodeToString(j), nil
 }
 
 func (c *ClaimsData) doEncode(header *Header, kp nkeys.KeyPair, claim Claims) (string, error) {
@@ -143,7 +143,7 @@ func (c *ClaimsData) doEncode(header *Header, kp nkeys.KeyPair, claim Claims) (s
 	if err != nil {
 		return "", err
 	}
-	eSig := base64.RawStdEncoding.EncodeToString(sig)
+	eSig := base64.RawURLEncoding.EncodeToString(sig)
 	return fmt.Sprintf("%s.%s.%s", h, payload, eSig), nil
 }
 
@@ -173,7 +173,7 @@ func (c *ClaimsData) String(claim interface{}) string {
 }
 
 func parseClaims(s string, target Claims) error {
-	h, err := base64.RawStdEncoding.DecodeString(s)
+	h, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func Decode(token string, target Claims) error {
 		return err
 	}
 
-	sig, err := base64.RawStdEncoding.DecodeString(chunks[2])
+	sig, err := base64.RawURLEncoding.DecodeString(chunks[2])
 	if err != nil {
 		return err
 	}

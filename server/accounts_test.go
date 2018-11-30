@@ -1228,7 +1228,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
@@ -1258,7 +1258,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig = base64.StdEncoding.EncodeToString(sigraw)
+	sig = base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
