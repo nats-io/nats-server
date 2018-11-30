@@ -1543,7 +1543,7 @@ func (s *Server) endSubjectNoInterestForGateways(accName string, sub *subscripti
 		subjects := subjectsa[:0]
 		// Check that we had sent a no-interest on this account/subject.
 		c.mu.Lock()
-		if sni, _ := c.gw.sentNoInterest[accName]; sni != nil {
+		if sni := c.gw.sentNoInterest[accName]; sni != nil {
 			// For wildcard subjects, we look for the subjects
 			// this subscription is matching.
 			if hasWc {
@@ -1789,7 +1789,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		// for that account/subject, so that if later there is a subscription on
 		// this subject, we need to send an R+ to remote gateways.
 		c.mu.Lock()
-		sni, _ := c.gw.sentNoInterest[string(c.pa.account)]
+		sni := c.gw.sentNoInterest[string(c.pa.account)]
 		if sni == nil {
 			sni = make(map[string]struct{})
 			sni[string(c.pa.subject)] = struct{}{}

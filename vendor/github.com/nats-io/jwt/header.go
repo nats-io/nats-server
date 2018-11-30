@@ -9,7 +9,7 @@ import (
 
 const (
 	// Version
-	Version = "0.0.2"
+	Version = "0.0.3"
 
 	// TokenTypeJwt is the JWT token type supported JWT tokens
 	// encoded and decoded by this library
@@ -28,7 +28,7 @@ type Header struct {
 
 // Parses a header JWT token
 func parseHeaders(s string) (*Header, error) {
-	h, err := base64.RawStdEncoding.DecodeString(s)
+	h, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
 		return nil, err
 	}

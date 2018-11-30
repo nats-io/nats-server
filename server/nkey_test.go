@@ -149,7 +149,7 @@ func TestNkeyClientConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
@@ -187,7 +187,7 @@ func TestMixedClientConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed signing nonce: %v", err)
 	}
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK to us.
 	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
@@ -240,7 +240,7 @@ func BenchmarkNonceGeneration(b *testing.B) {
 	prand := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < b.N; i++ {
 		prand.Read(data)
-		base64.StdEncoding.Encode(b64, data)
+		base64.RawURLEncoding.Encode(b64, data)
 	}
 }
 
@@ -248,7 +248,7 @@ func BenchmarkPublicVerify(b *testing.B) {
 	data := make([]byte, nonceRawLen)
 	nonce := make([]byte, nonceLen)
 	mrand.Read(data)
-	base64.StdEncoding.Encode(nonce, data)
+	base64.RawURLEncoding.Encode(nonce, data)
 
 	user, err := nkeys.CreateUser()
 	if err != nil {

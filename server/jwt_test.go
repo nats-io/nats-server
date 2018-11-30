@@ -28,13 +28,7 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-const (
-	uJWT = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJRVzRWWktISEJCUkFaSkFWREg3UjVDSk1RQ1pHWDZJM1FJWEJSMkdWSjRHSVRMRlJRMlpBIiwiaWF0IjoxNTQyMzg1NjMxLCJpc3MiOiJBQ1E1VkpLS1dEM0s1QzdSVkFFMjJNT1hESkFNTEdFTUZJM1NDR1JWUlpKSlFUTU9QTjMzQlhVSyIsIm5hbWUiOiJkZXJlayIsInN1YiI6IlVEMkZMTEdGRVJRVlFRM1NCS09OTkcyUU1JTVRaUUtLTFRVM0FWRzVJM0VRRUZIQlBHUEUyWFFTIiwidHlwZSI6InVzZXIiLCJuYXRzIjp7InB1YiI6e30sInN1YiI6e319fQ.6PmFNn3x0AH3V05oemO28riP63+QTvk9g/Qtt6wBcXJqgW6YSVxk6An1MjvTn1tH7S9tJ0zOIGp7/OLjP1tbBQ"
-	aJWT = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJJSTdKSU5JUENVWTZEU1JDSUpZT1daR0k0UlRGNUdCNjVZUUtSNE9RVlBCQlpBNFhCQlhRIiwiaWF0IjoxNTQyMzMxNzgwLCJpc3MiOiJPRDJXMkk0TVZSQTVUR1pMWjJBRzZaSEdWTDNPVEtGV1FKRklYNFROQkVSMjNFNlA0NlMzNDVZWSIsIm5hbWUiOiJmb28iLCJzdWIiOiJBQ1E1VkpLS1dEM0s1QzdSVkFFMjJNT1hESkFNTEdFTUZJM1NDR1JWUlpKSlFUTU9QTjMzQlhVSyIsInR5cGUiOiJhY2NvdW50IiwibmF0cyI6e319.Dg2A1NCJWvXhBQZN9QNHAq1KqsFIKxzLhYvD5yH0DYZPC0gXtdhLkwJ5uiooki6YvzR8UNQZ9XuWgDpNpwryDg"
-)
-
 var (
-	uSeed = []byte("SUAIO3FHUX5PNV2LQIIP7TZ3N4L7TX3W53MQGEIVYFIGA635OZCKEYHFLM")
 	oSeed = []byte("SOAL7GTNI66CTVVNXBNQMG6V2HTDRWC3HGEP7D2OUTWNWSNYZDXWFOX4SU")
 	aSeed = []byte("SAANRM6JVDEYZTR6DXCWUSDDJHGOHAFITXEQBSEZSY5JENTDVRZ6WNKTTY")
 )
@@ -49,10 +43,7 @@ func opTrustBasicSetup() *Server {
 }
 
 func buildMemAccResolver(s *Server) {
-	kp, _ := nkeys.FromSeed(aSeed)
-	pub, _ := kp.PublicKey()
 	mr := &MemAccResolver{}
-	mr.Store(pub, aJWT)
 	s.mu.Lock()
 	s.accResolver = mr
 	s.mu.Unlock()
@@ -79,7 +70,7 @@ func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.R
 	var info nonceInfo
 	json.Unmarshal([]byte(l[5:]), &info)
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", ujwt, sig)
 	return c, cr, cs
@@ -123,11 +114,21 @@ func TestJWTUser(t *testing.T) {
 		t.Fatalf("Expected an error")
 	}
 
-	c, cr, _ = newClientForServer(s)
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create an account that will be expired.
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	c, cr, cs := createClient(t, s, akp)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail too since no account resolver is defined.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", uJWT, "xxx")
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
@@ -137,24 +138,14 @@ func TestJWTUser(t *testing.T) {
 	// Ok now let's walk through and make sure all is good.
 	// We will set the account resolver by hand to a memory resolver.
 	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
 
-	c, cr, l = newClientForServer(s)
+	c, cr, cs = createClient(t, s, akp)
 
-	// Sign Nonce
-	kp, _ := nkeys.FromSeed(uSeed)
-
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := kp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
-	cs = fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", uJWT, sig)
 	go c.parse([]byte(cs))
 	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "+OK") {
-		t.Fatalf("Expected an OK, got: %v", l)
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG, got %q", l)
 	}
 }
 
@@ -173,21 +164,21 @@ func TestJWTUserBadTrusted(t *testing.T) {
 
 	buildMemAccResolver(s)
 
-	c, cr, l := newClientForServer(s)
+	okp, _ := nkeys.FromSeed(oSeed)
 
-	// Sign Nonce
-	kp, _ := nkeys.FromSeed(uSeed)
+	// Create an account that will be expired.
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, apub, ajwt)
 
-	var info nonceInfo
-	json.Unmarshal([]byte(l[5:]), &info)
-	sigraw, _ := kp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
-
-	// PING needed to flush the +OK/-ERR to us.
-	// This should fail too since no account resolver is defined.
-	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", uJWT, sig)
+	c, cr, cs := createClient(t, s, akp)
 	go c.parse([]byte(cs))
-	l, _ = cr.ReadString('\n')
+	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -195,14 +186,22 @@ func TestJWTUserBadTrusted(t *testing.T) {
 
 // Test that if a user tries to connect with an expired user JWT we do the right thing.
 func TestJWTUserExpired(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
 	// Create a new user that we will make sure has expired.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
 	nuc := jwt.NewUserClaims(pub)
 	nuc.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
 	nuc.Expires = time.Now().Add(-2 * time.Second).Unix()
-
-	akp, _ := nkeys.FromSeed(aSeed)
 	jwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -211,6 +210,7 @@ func TestJWTUserExpired(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
 	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	c, cr, l := newClientForServer(s)
 
@@ -218,7 +218,7 @@ func TestJWTUserExpired(t *testing.T) {
 	var info nonceInfo
 	json.Unmarshal([]byte(l[5:]), &info)
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail too since no account resolver is defined.
@@ -231,14 +231,22 @@ func TestJWTUserExpired(t *testing.T) {
 }
 
 func TestJWTUserExpiresAfterConnect(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
 	// Create a new user that we will make sure has expired.
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
 	nuc := jwt.NewUserClaims(pub)
 	nuc.IssuedAt = time.Now().Unix()
 	nuc.Expires = time.Now().Add(time.Second).Unix()
-
-	akp, _ := nkeys.FromSeed(aSeed)
 	jwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -247,6 +255,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
 	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	c, cr, l := newClientForServer(s)
 
@@ -254,7 +263,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	var info nonceInfo
 	json.Unmarshal([]byte(l[5:]), &info)
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail too since no account resolver is defined.
@@ -283,6 +292,8 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 }
 
 func TestJWTUserPermissionClaims(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
 	nuc := jwt.NewUserClaims(pub)
@@ -295,6 +306,13 @@ func TestJWTUserPermissionClaims(t *testing.T) {
 	nuc.Permissions.Sub.Deny.Add("baz")
 
 	akp, _ := nkeys.FromSeed(aSeed)
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
 	jwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -303,6 +321,7 @@ func TestJWTUserPermissionClaims(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
 	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
 
 	c, cr, l := newClientForServer(s)
 
@@ -310,7 +329,7 @@ func TestJWTUserPermissionClaims(t *testing.T) {
 	var info nonceInfo
 	json.Unmarshal([]byte(l[5:]), &info)
 	sigraw, _ := nkp.Sign([]byte(info.Nonce))
-	sig := base64.StdEncoding.EncodeToString(sigraw)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
 
 	// PING needed to flush the +OK/-ERR to us.
 	// This should fail too since no account resolver is defined.
