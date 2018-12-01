@@ -14,6 +14,7 @@
 package server
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"runtime"
@@ -761,20 +762,29 @@ func TestSublistRaceOnMatch(t *testing.T) {
 
 // -- Benchmarks Setup --
 
-var subs []*subscription
-var toks = []string{"synadia", "nats", "jetstream", "nkeys", "jwt", "deny", "auth", "drain"}
-var sl = NewSublist()
+var benchSublistSubs []*subscription
+var benchSublistSl = NewSublist()
 
 func init() {
-	subs = make([]*subscription, 0, 256*1024)
-	subsInit("")
-	for i := 0; i < len(subs); i++ {
-		sl.Insert(subs[i])
+	initSublist := false
+	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "test.bench" {
+			initSublist = true
+		}
+	})
+	if initSublist {
+		benchSublistSubs = make([]*subscription, 0, 256*1024)
+		toks := []string{"synadia", "nats", "jetstream", "nkeys", "jwt", "deny", "auth", "drain"}
+		subsInit("", toks)
+		for i := 0; i < len(benchSublistSubs); i++ {
+			benchSublistSl.Insert(benchSublistSubs[i])
+		}
+		addWildcards()
 	}
-	addWildcards()
 }
 
-func subsInit(pre string) {
+func subsInit(pre string, toks []string) {
 	var sub string
 	for _, t := range toks {
 		if len(pre) > 0 {
@@ -782,69 +792,61 @@ func subsInit(pre string) {
 		} else {
 			sub = t
 		}
-		subs = append(subs, newSub(sub))
+		benchSublistSubs = append(benchSublistSubs, newSub(sub))
 		if len(strings.Split(sub, tsep)) < 5 {
-			subsInit(sub)
+			subsInit(sub, toks)
 		}
 	}
 }
 
 func addWildcards() {
-	sl.Insert(newSub("cloud.>"))
-	sl.Insert(newSub("cloud.nats.component.>"))
-	sl.Insert(newSub("cloud.*.*.nkeys.*"))
+	benchSublistSl.Insert(newSub("cloud.>"))
+	benchSublistSl.Insert(newSub("cloud.nats.component.>"))
+	benchSublistSl.Insert(newSub("cloud.*.*.nkeys.*"))
 }
 
 // -- Benchmarks Setup End --
 
 func Benchmark______________________SublistInsert(b *testing.B) {
 	s := NewSublist()
-	for i, l := 0, len(subs); i < b.N; i++ {
+	for i, l := 0, len(benchSublistSubs); i < b.N; i++ {
 		index := i % l
-		s.Insert(subs[index])
+		s.Insert(benchSublistSubs[index])
+	}
+}
+
+func benchSublistTokens(b *testing.B, tokens string) {
+	for i := 0; i < b.N; i++ {
+		benchSublistSl.Match(tokens)
 	}
 }
 
 func Benchmark____________SublistMatchSingleToken(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia")
-	}
+	benchSublistTokens(b, "synadia")
 }
 
 func Benchmark______________SublistMatchTwoTokens(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia.nats")
-	}
+	benchSublistTokens(b, "synadia.nats")
 }
 
 func Benchmark____________SublistMatchThreeTokens(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia.nats.jetstream")
-	}
+	benchSublistTokens(b, "synadia.nats.jetstream")
 }
 
 func Benchmark_____________SublistMatchFourTokens(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia.nats.jetstream.nkeys")
-	}
+	benchSublistTokens(b, "synadia.nats.jetstream.nkeys")
 }
 
 func Benchmark_SublistMatchFourTokensSingleResult(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia.nats.jetstream.nkeys")
-	}
+	benchSublistTokens(b, "synadia.nats.jetstream.nkeys")
 }
 
 func Benchmark_SublistMatchFourTokensMultiResults(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("cloud.nats.component.router")
-	}
+	benchSublistTokens(b, "cloud.nats.component.router")
 }
 
 func Benchmark_______SublistMissOnLastTokenOfFive(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		sl.Match("synadia.nats.jetstream.nkeys.ZZZZ")
-	}
+	benchSublistTokens(b, "synadia.nats.jetstream.nkeys.ZZZZ")
 }
 
 func multiRead(b *testing.B, num int) {
@@ -858,7 +860,7 @@ func multiRead(b *testing.B, num int) {
 			swg.Wait()
 			n := b.N / num
 			for i := 0; i < n; i++ {
-				sl.Match(s)
+				benchSublistSl.Match(s)
 			}
 			fwg.Done()
 		}()
