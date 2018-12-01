@@ -657,6 +657,9 @@ func (c *client) removeRemoteSubs() {
 		} else {
 			ase.subs = append(ase.subs, sub)
 		}
+		if srv.gateway.enabled {
+			srv.gatewayUpdateSubInterest(accountName, sub, -1)
+		}
 	}
 
 	// Now remove the subs by batch for each account sublist.
@@ -715,7 +718,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		return nil
 	}
 
-	sendToGWs := false
+	updateGWs := false
 	// We store local subs by account and subject and optionally queue name.
 	// RS- will have the arg exactly as the key.
 	key := string(arg)
@@ -724,13 +727,12 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		delete(c.subs, key)
 		acc.sl.Remove(sub)
 		c.removeReplySubTimeout(sub)
-		// Send only for queue subs
-		sendToGWs = srv.gateway.enabled && sub.queue != nil
+		updateGWs = srv.gateway.enabled
 	}
 	c.mu.Unlock()
 
-	if sendToGWs {
-		srv.sendQueueUnsubToGateways(accountName, sub, true)
+	if updateGWs {
+		srv.gatewayUpdateSubInterest(accountName, sub, -1)
 	}
 
 	if c.opts.Verbose {
@@ -809,7 +811,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 	key := string(sub.sid)
 	osub := c.subs[key]
-	sendToGWs := false
+	updateGWs := false
 	if osub == nil {
 		c.subs[string(key)] = sub
 		// Now place into the account sl.
@@ -820,7 +822,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 			c.sendErr("Invalid Subscription")
 			return nil
 		}
-		sendToGWs = srv.gateway.enabled
+		updateGWs = srv.gateway.enabled
 	} else if sub.queue != nil {
 		// For a queue we need to update the weight.
 		atomic.StoreInt32(&osub.qw, sub.qw)
@@ -831,18 +833,8 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	if c.opts.Verbose {
 		c.sendOK()
 	}
-	if sendToGWs {
-		// For queue subs, we will send an RS+, but if we are here, we
-		// know there is a single qsub per account/subject/queue:
-		// sendToGWs is true only if we did not find that key before.
-		if sub.queue != nil {
-			srv.sendQueueSubToGateways(acc.Name, sub, true)
-		} else {
-			// For a plain sub, this will send an RS+ to gateways only if
-			// we had previously sent an RS-. In other words, we don't send
-			// an RS+ per plain sub.
-			srv.endSubjectNoInterestForGateways(acc.Name, sub)
-		}
+	if updateGWs {
+		srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
 	}
 	return nil
 }
@@ -1260,11 +1252,8 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We always update for a queue subscriber since we need to send our relative weight.
-	var (
-		entry *rme
-		ok    bool
-		added bool
-	)
+	var entry *rme
+	var ok bool
 
 	// Always update if a queue subscriber.
 	update := qi > 0
@@ -1283,7 +1272,6 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		entry = &rme{qi, delta}
 		rm[string(key)] = entry
 		update = true // Adding for normal sub means update.
-		added = true
 	}
 	if entry != nil {
 		entryN = entry.n
@@ -1308,24 +1296,8 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	// subscribes with a smaller weight.
 	if entryN > 0 {
 		s.broadcastSubscribe(sub)
-		// Here we want to send RS+ only when going from 0 to 1
-		if s.gateway.enabled && added && entryN == 1 {
-			// Always send for queues
-			if sub.queue != nil {
-				s.sendQueueSubToGateways(acc.Name, sub, false)
-			} else {
-				// If plain sub, send an RS+ only if we had previously
-				// sent an RS-
-				s.endSubjectNoInterestForGateways(acc.Name, sub)
-			}
-		}
 	} else {
 		s.broadcastUnSubscribe(sub)
-		// Last of the queue member of this group, so send to
-		// gateways.
-		if s.gateway.enabled && sub.queue != nil {
-			s.sendQueueUnsubToGateways(acc.Name, sub, false)
-		}
 	}
 }
 
