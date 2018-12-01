@@ -149,7 +149,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		},
 		NoSigs: true,
 	}
-	processOptions(golden)
+	setBaselineOptions(golden)
 
 	if !reflect.DeepEqual(golden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -228,7 +228,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		},
 		NoSigs: true,
 	}
-	processOptions(golden)
+	setBaselineOptions(golden)
 
 	if !reflect.DeepEqual(golden, server.getOpts()) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -299,7 +299,7 @@ func TestConfigReload(t *testing.T) {
 		},
 		NoSigs: true,
 	}
-	processOptions(golden)
+	setBaselineOptions(golden)
 
 	if !reflect.DeepEqual(golden, opts) {
 		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",

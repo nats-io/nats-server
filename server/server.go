@@ -77,16 +77,6 @@ type Info struct {
 	GatewayCmd  byte     `json:"gateway_cmd,omitempty"`  // Command code for the receiving server to know what to do
 }
 
-// Used to send and receive messages from inside the server.
-type internal struct {
-	account *Account
-	client  *client
-	seq     uint64
-	sid     uint64
-	subs    map[string]msgHandler
-	sendq   chan *pubMsg
-}
-
 // Server is our main struct.
 type Server struct {
 	gcid uint64
@@ -185,11 +175,13 @@ type stats struct {
 
 // New will setup a new server struct after parsing the options.
 func New(opts *Options) *Server {
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
+
+	// Created server nkey identity.
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
 
@@ -229,6 +221,7 @@ func New(opts *Options) *Server {
 		configTime: now,
 	}
 
+	// Trusted root keys.
 	if !s.processTrustedNkeys() {
 		return nil
 	}
@@ -256,13 +249,6 @@ func New(opts *Options) *Server {
 	}
 	s.gateway = gws
 
-	// For tracking accounts
-	s.accounts = make(map[string]*Account)
-
-	// Create global account.
-	s.gacc = &Account{Name: globalAccountName}
-	s.registerAccount(s.gacc)
-
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
 
@@ -281,8 +267,10 @@ func New(opts *Options) *Server {
 	// to shutdown.
 	s.quitCh = make(chan struct{})
 
-	// Used to setup Accounts.
-	s.configureAccounts()
+	// For tracking accounts
+	if err := s.configureAccounts(); err != nil {
+		return nil
+	}
 
 	// Used to setup Authorization.
 	s.configureAuthorization()
@@ -312,11 +300,35 @@ func (s *Server) setOpts(opts *Options) {
 	s.optsMu.Unlock()
 }
 
-func (s *Server) configureAccounts() {
+func (s *Server) configureAccounts() error {
+	// Used to setup Accounts.
+	if s.accounts == nil {
+		s.accounts = make(map[string]*Account)
+	}
+	// Create global account.
+	if s.gacc == nil {
+		s.gacc = &Account{Name: globalAccountName}
+		s.registerAccount(s.gacc)
+	}
+
+	opts := s.opts
+
 	// Check opts and walk through them. Making sure to create SLs.
 	for _, acc := range s.opts.Accounts {
 		s.registerAccount(acc)
 	}
+	// Check for configured account resolvers.
+	if opts.accResolver != nil {
+		s.accResolver = opts.accResolver
+	}
+	// Check that if we have a SystemAccount it can
+	// be properly resolved.
+	if opts.SystemAccount != _EMPTY_ {
+		if acc := s.lookupAccount(opts.SystemAccount); acc == nil {
+			return ErrMissingAccount
+		}
+	}
+	return nil
 }
 
 func (s *Server) generateRouteInfoJSON() {
@@ -501,6 +513,9 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 // This sets up a server to send and receive messages from inside
 // the server itself.
 func (s *Server) setSystemAccount(acc *Account) error {
+	if acc == nil {
+		return fmt.Errorf("system account is nil")
+	}
 	if !s.isTrustedIssuer(acc.Issuer) {
 		return fmt.Errorf("system account not a trusted account")
 	}
@@ -509,29 +524,48 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		s.mu.Unlock()
 		return fmt.Errorf("system account already exists")
 	}
+
 	s.sys = &internal{
 		account: acc,
 		client:  &client{srv: s, kind: SYSTEM, opts: defaultOpts, start: time.Now(), last: time.Now()},
 		seq:     1,
 		sid:     1,
-		subs:    make(map[string]msgHandler, 8),
+		servers: make(map[string]*serverUpdate),
+		subs:    make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, 128),
 	}
 	s.sys.client.initClient()
 	s.sys.client.echo = false
+	s.sys.wg.Add(1)
 	s.mu.Unlock()
+
+	// Start our internal loop to serialize outbound messages.
+	// We do our own wg here since we will stop first during shutdown.
+	go s.internalSendLoop(&s.sys.wg)
+
 	// Register with the account.
 	s.sys.client.registerWithAccount(acc)
 
-	// Start our internal loop to serialize outbound messages.
-	s.startGoRoutine(func() {
-		s.internalSendLoop()
-	})
+	// Start up our general subscriptions
+	s.initEventTracking()
+
+	// Track for dead remote servers.
+	s.startRemoteServerSweepTimer()
 
 	return nil
 }
 
+func (s *Server) systemAccount() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sys == nil {
+		return nil
+	}
+	return s.sys.account
+}
+
 // Place common account setup here.
+// Lock should be held on entry.
 func (s *Server) registerAccount(acc *Account) {
 	if acc.sl == nil {
 		acc.sl = NewSublist()
@@ -561,14 +595,13 @@ func (s *Server) registerAccount(acc *Account) {
 		// we had sent an A- because account did not exist at that time.
 		s.endAccountNoInterestForGateways(acc.Name)
 	}
+	s.enableAccountTracking(acc)
 }
 
-// LookupAccount is a public function to return the account structure
-// associated with name.
-func (s *Server) LookupAccount(name string) *Account {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// lookupAccount is a function to return the account structure
+// associated with an account name.
+// Lock shiould be held on entry.
+func (s *Server) lookupAccount(name string) *Account {
 	acc := s.accounts[name]
 	if acc != nil {
 		// If we are expired and we have a resolver, then
@@ -580,6 +613,14 @@ func (s *Server) LookupAccount(name string) *Account {
 	}
 	// If we have a resolver see if it can fetch the account.
 	return s.fetchAccount(name)
+}
+
+// LookupAccount is a public function to return the account structure
+// associated with name.
+func (s *Server) LookupAccount(name string) *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupAccount(name)
 }
 
 // This will fetch new claims and if found update the account with new claims.
@@ -599,8 +640,9 @@ func (s *Server) updateAccount(acc *Account) bool {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
 		return false
 	}
-	accClaims, err := s.verifyAccountClaims(claimJWT)
+	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
+		acc.claimJWT = claimJWT
 		s.updateAccountClaims(acc, accClaims)
 		return true
 	}
@@ -625,33 +667,34 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 }
 
 // fetchAccountClaims will attempt to fetch new claims if a resolver is present.
-func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, error) {
+func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, error) {
 	claimJWT, err := s.fetchRawAccountClaims(name)
 	if err != nil {
-		return nil, err
+		return nil, _EMPTY_, err
 	}
 	return s.verifyAccountClaims(claimJWT)
 }
 
 // verifyAccountClaims will decode and validate any account claims.
-func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, error) {
+func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, string, error) {
 	if accClaims, err := jwt.DecodeAccountClaims(claimJWT); err != nil {
-		return nil, err
+		return nil, _EMPTY_, err
 	} else {
 		vr := jwt.CreateValidationResults()
 		accClaims.Validate(vr)
 		if vr.IsBlocking(true) {
-			return nil, ErrAccountValidation
+			return nil, _EMPTY_, ErrAccountValidation
 		}
-		return accClaims, nil
+		return accClaims, claimJWT, nil
 	}
 }
 
 // This will fetch an account from a resolver if defined.
 // Lock should be held upon entry.
 func (s *Server) fetchAccount(name string) *Account {
-	if accClaims, _ := s.fetchAccountClaims(name); accClaims != nil {
+	if accClaims, claimJWT, _ := s.fetchAccountClaims(name); accClaims != nil {
 		if acc := s.buildInternalAccount(accClaims); acc != nil {
+			acc.claimJWT = claimJWT
 			s.registerAccount(acc)
 			return acc
 		}
@@ -698,6 +741,11 @@ func (s *Server) Start() {
 		return
 	}
 
+	// Setup system account which will start eventing stack.
+	if sa := opts.SystemAccount; sa != _EMPTY_ {
+		s.setSystemAccount(s.lookupAccount(sa))
+	}
+
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
 	// be sent to other routes.
@@ -732,6 +780,12 @@ func (s *Server) Start() {
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
+	// Shutdown the eventing system as needed.
+	// This is done first to send out any messages for
+	// account status. We will also clean up any
+	// eventing items associated with accounts.
+	s.shutdownEventing()
+
 	s.mu.Lock()
 	// Prevent issues with multiple calls.
 	if s.shutdown {

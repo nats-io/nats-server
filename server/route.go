@@ -871,14 +871,19 @@ func (s *Server) sendSubsToRoute(route *client) {
 		a.mu.RLock()
 		for key, rme := range a.rm {
 			// FIXME(dlc) - Just pass rme around.
-			// Construct a sub on the fly
+			// Construct a sub on the fly. We need to place
+			// a client (or im) to properly set the account.
 			var qn []byte
 			subEnd := len(key)
 			if qi := rme.qi; qi > 0 {
 				subEnd = int(qi) - 1
 				qn = []byte(key[qi:])
 			}
-			sub := &subscription{subject: []byte(key[:subEnd]), queue: qn, qw: rme.n}
+			c := a.randomClient()
+			if c == nil {
+				continue
+			}
+			sub := &subscription{client: c, subject: []byte(key[:subEnd]), queue: qn, qw: rme.n}
 			subs = append(subs, sub)
 
 		}
@@ -917,7 +922,7 @@ func (c *client) sendRouteUnSubProtos(subs []*subscription, trace bool, filter f
 	return c.sendRouteSubOrUnSubProtos(subs, false, trace, filter)
 }
 
-// Low-level function that sends SUBs or UNSUBs protcols for the given subscriptions.
+// Low-level function that sends RS+ or RS- protocols for the given subscriptions.
 // Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
 // Lock is held on entry.
 func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, trace bool, filter func(sub *subscription) bool) bool {
@@ -945,6 +950,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		} else if sub.client != nil && sub.client.acc != nil {
 			accName = sub.client.acc.Name
 		} else {
+			c.Debugf("Falling back to default account for sending subs")
 			accName = globalAccountName
 		}
 
@@ -1232,7 +1238,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We only store state on local subs for transmission across routes.
-	if sub.client == nil || sub.client.kind != CLIENT {
+	if sub.client == nil || (sub.client.kind != CLIENT && sub.client.kind != SYSTEM) {
 		return
 	}
 

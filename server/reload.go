@@ -503,7 +503,7 @@ func (s *Server) Reload() error {
 
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
-	processOptions(newOpts)
+	setBaselineOptions(newOpts)
 
 	// processOptions sets Port to 0 if set to -1 (RANDOM port)
 	// If that's the case, set it to the saved value when the accept loop was

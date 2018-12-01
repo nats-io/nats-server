@@ -406,14 +406,14 @@ func (c *client) registerWithAccount(acc *Account) error {
 	if acc == nil || acc.sl == nil {
 		return ErrBadAccount
 	}
-	// If we were previously register, usually to $G, do accounting here to remove.
+	// If we were previously registered, usually to $G, do accounting here to remove.
 	if c.acc != nil {
 		if prev := c.acc.removeClient(c); prev == 1 && c.srv != nil {
 			c.srv.decActiveAccounts()
 		}
 	}
 	// Check if we have a max connections violation
-	if acc.MaxClientsReached() {
+	if acc.MaxTotalClientsReached() {
 		return ErrTooManyAccountConnections
 	}
 
@@ -490,7 +490,6 @@ func (c *client) RegisterUser(user *User) {
 		c.mperms = nil
 		return
 	}
-
 	c.setPermissions(user.Permissions)
 }
 
@@ -1514,7 +1513,7 @@ func (c *client) processSub(argo []byte) (err error) {
 			c.Errorf(err.Error())
 		}
 		// If we are routing and this is a local sub, add to the route map for the associated account.
-		if kind == CLIENT {
+		if kind == CLIENT || kind == SYSTEM {
 			c.srv.updateRouteSubscriptionMap(acc, sub, 1)
 		}
 	}
@@ -1704,7 +1703,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	for _, nsub := range sub.shadow {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
-		} else if c.kind == CLIENT && c.srv != nil {
+		} else if c.kind == CLIENT || c.kind == SYSTEM && c.srv != nil {
 			c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
 		}
 	}
@@ -1758,7 +1757,7 @@ func (c *client) processUnsub(arg []byte) error {
 
 	if unsub {
 		c.unsubscribe(acc, sub, false)
-		if acc != nil && kind == CLIENT {
+		if acc != nil && kind == CLIENT || kind == SYSTEM {
 			c.srv.updateRouteSubscriptionMap(acc, sub, -1)
 		}
 	}
@@ -1833,7 +1832,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 			defer client.removeReplySub(sub)
 		} else {
 			// For routing..
-			shouldForward := client.kind == CLIENT && client.srv != nil
+			shouldForward := client.kind == CLIENT || client.kind == SYSTEM && client.srv != nil
 			// If we are at the exact number, unsubscribe but
 			// still process the message in hand, otherwise
 			// unsubscribe and drop message on the floor.

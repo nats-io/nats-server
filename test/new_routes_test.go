@@ -78,8 +78,6 @@ func TestNewRouteConnectSubs(t *testing.T) {
 
 	info := checkInfoMsg(t, rc)
 
-	// Send our info back with a larger number of accounts, should trigger to send the
-	// subscriptions for their accounts.
 	info.ID = routeID
 	b, err := json.Marshal(info)
 	if err != nil {
@@ -96,6 +94,80 @@ func TestNewRouteConnectSubs(t *testing.T) {
 	for _, m := range matches {
 		if string(m[1]) != "$G" {
 			t.Fatalf("Expected global account name of '$G', got %q", m[1])
+		}
+		if string(m[2]) != "foo" {
+			t.Fatalf("Expected subject of 'foo', got %q", m[2])
+		}
+		if m[3] != nil {
+			if string(m[3]) != "bar" {
+				t.Fatalf("Expected group of 'bar', got %q", m[3])
+			}
+			// Expect the SID to be the total weighted count for the queue group
+			if len(m) != 5 {
+				t.Fatalf("Expected a SID for the queue group")
+			}
+			if m[4] == nil || string(m[4]) != "10" {
+				t.Fatalf("Expected SID of '10', got %q", m[4])
+			}
+		}
+	}
+
+	// Close the client connection, check the results.
+	c.Close()
+
+	// Expect 2
+	for numUnSubs := 0; numUnSubs != 2; {
+		buf := routeExpect(runsubRe)
+		numUnSubs += len(runsubRe.FindAllSubmatch(buf, -1))
+	}
+}
+
+func TestNewRouteConnectSubsWithAccount(t *testing.T) {
+	s, opts := runNewRouteServer(t)
+	defer s.Shutdown()
+
+	accName := "$FOO"
+	s.RegisterAccount(accName)
+
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	send, expect := setupConnWithAccount(t, c, accName)
+
+	// Create 10 normal subs and 10 queue subscribers.
+	for i := 0; i < 10; i++ {
+		send(fmt.Sprintf("SUB foo %d\r\n", i))
+		send(fmt.Sprintf("SUB foo bar %d\r\n", 100+i))
+	}
+	send("PING\r\n")
+	expect(pongRe)
+
+	// This client should not be considered active since no subscriptions or
+	// messages have been published.
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+
+	routeID := "RTEST_NEW:22"
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
+
+	info := checkInfoMsg(t, rc)
+
+	info.ID = routeID
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+
+	buf := routeExpect(rsubRe)
+
+	matches := rsubRe.FindAllSubmatch(buf, -1)
+	if len(matches) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(matches))
+	}
+	for _, m := range matches {
+		if string(m[1]) != accName {
+			t.Fatalf("Expected global account name of %q, got %q", accName, m[1])
 		}
 		if string(m[2]) != "foo" {
 			t.Fatalf("Expected subject of 'foo', got %q", m[2])

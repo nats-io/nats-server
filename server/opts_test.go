@@ -47,7 +47,7 @@ func TestDefaultOptions(t *testing.T) {
 	}
 
 	opts := &Options{}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	if !reflect.DeepEqual(golden, opts) {
 		t.Fatalf("Default Options are incorrect.\nexpected: %+v\ngot: %+v",
@@ -57,7 +57,7 @@ func TestDefaultOptions(t *testing.T) {
 
 func TestOptions_RandomPort(t *testing.T) {
 	opts := &Options{Port: RANDOM_PORT}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	if opts.Port != 0 {
 		t.Fatalf("Process of options should have resolved random port to "+
@@ -450,7 +450,7 @@ func TestListenConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	// Normal clients
 	host := "10.0.1.22"
@@ -500,7 +500,7 @@ func TestListenPortOnlyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	port := 8922
 
@@ -520,7 +520,7 @@ func TestListenPortWithColonConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	port := 8922
 
@@ -539,7 +539,7 @@ func TestListenMonitoringDefault(t *testing.T) {
 	opts := &Options{
 		Host: "10.0.1.22",
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	host := "10.0.1.22"
 	if opts.Host != host {
@@ -558,7 +558,7 @@ func TestMultipleUsersConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 }
 
 // Test highly depends on contents of the config file listed below. Any changes to that file
@@ -568,7 +568,7 @@ func TestAuthorizationConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 	lu := len(opts.Users)
 	if lu != 3 {
 		t.Fatalf("Expected 3 users, got %d\n", lu)
@@ -655,7 +655,7 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
-	processOptions(opts)
+	setBaselineOptions(opts)
 
 	lu := len(opts.Users)
 	if lu != 2 {

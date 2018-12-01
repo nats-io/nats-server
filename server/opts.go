@@ -94,6 +94,7 @@ type Options struct {
 	Nkeys            []*NkeyUser   `json:"-"`
 	Users            []*User       `json:"-"`
 	Accounts         []*Account    `json:"-"`
+	SystemAccount    string        `json:"-"`
 	AllowNewAccounts bool          `json:"-"`
 	Username         string        `json:"-"`
 	Password         string        `json:"-"`
@@ -138,6 +139,9 @@ type Options struct {
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
+
+	// Used to spin up a memory account resolver for testing.
+	accResolver AccountResolver
 }
 
 type netResolver interface {
@@ -2058,7 +2062,7 @@ func getInterfaceIPs() ([]net.IP, error) {
 	return localIPs, nil
 }
 
-func processOptions(opts *Options) {
+func setBaselineOptions(opts *Options) {
 	// Setup non-standard Go defaults
 	if opts.Host == "" {
 		opts.Host = DEFAULT_HOST
