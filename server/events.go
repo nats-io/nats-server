@@ -304,6 +304,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, subject, reply string, 
 	toks := strings.Split(subject, tsep)
 	if len(toks) < shutdownEventTokens {
 		s.Debugf("Received remote server shutdown on bad subject %q", subject)
+		return
 	}
 	sid := toks[serverSubjectIndex]
 	su := s.sys.servers[sid]
