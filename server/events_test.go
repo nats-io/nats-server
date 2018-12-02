@@ -339,6 +339,8 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 
 func TestSystemAccountConnectionLimits(t *testing.T) {
 	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
 
 	// We want to test that we are limited to a certain number of active connections
 	// across multiple servers.
