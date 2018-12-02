@@ -45,6 +45,8 @@ type internal struct {
 	subs    map[string]msgHandler
 	sendq   chan *pubMsg
 	wg      sync.WaitGroup
+	orphMax time.Duration
+	chkOrph time.Duration
 }
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
@@ -177,8 +179,8 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 // Will send a shutdown message.
 func (s *Server) sendShutdownEvent() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.sys == nil || s.sys.sendq == nil {
+		s.mu.Unlock()
 		return
 	}
 	subj := fmt.Sprintf(shutdownEventSubj, s.info.ID)
@@ -188,16 +190,22 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.sendq = nil
 	// Unhook all msgHandlers. Normal client cleanup will deal with subs, etc.
 	s.sys.subs = nil
+	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
 	sendq <- &pubMsg{r, subj, _EMPTY_, nil, nil, true}
 }
 
 // This will queue up a message to be sent.
+// Assumes lock is held on entry.
 func (s *Server) sendInternalMsg(r *SublistResult, sub, rply string, si *ServerInfo, msg interface{}) {
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
-	s.sys.sendq <- &pubMsg{r, sub, rply, si, msg, false}
+	sendq := s.sys.sendq
+	// Don't hold lock while placing on the channel.
+	s.mu.Unlock()
+	sendq <- &pubMsg{r, sub, rply, si, msg, false}
+	s.mu.Lock()
 }
 
 // Locked version of checking if events system running. Also checks server.
@@ -211,11 +219,6 @@ func (s *Server) eventsEnabled() bool {
 	return s.sys != nil && s.sys.client != nil && s.sys.account != nil
 }
 
-// orphanServerDuration is how long we have to not hear from a remote server
-// top consider it orphaned. We will remove any accounting associated with it.
-var orphanServerDuration = 5 * connHBInterval
-var checkRemoteServerInterval = 3 * connHBInterval
-
 // Check for orphan servers who may have gone away without notification.
 func (s *Server) checkRemoteServers() {
 	s.mu.Lock()
@@ -225,14 +228,16 @@ func (s *Server) checkRemoteServers() {
 	}
 	now := time.Now()
 	for sid, su := range s.sys.servers {
-		if now.Sub(su.ltime) > orphanServerDuration {
+		if now.Sub(su.ltime) > s.sys.orphMax {
 			s.Debugf("Detected orphan remote server: %q", sid)
 			// Simulate it going away.
 			s.processRemoteServerShutdown(sid)
 			delete(s.sys.servers, sid)
 		}
 	}
-	s.sys.sweeper.Reset(checkRemoteServerInterval)
+	if s.sys.sweeper != nil {
+		s.sys.sweeper.Reset(s.sys.chkOrph)
+	}
 }
 
 // Start a ticker that will fire periodically and check for orphaned servers.
@@ -242,7 +247,7 @@ func (s *Server) startRemoteServerSweepTimer() {
 	if !s.eventsEnabled() {
 		return
 	}
-	s.sys.sweeper = time.AfterFunc(checkRemoteServerInterval, s.checkRemoteServers)
+	s.sys.sweeper = time.AfterFunc(s.sys.chkOrph, s.checkRemoteServers)
 }
 
 // This will setup our system wide tracking subs.
@@ -297,7 +302,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, subject, reply string, 
 		return
 	}
 	toks := strings.Split(subject, tsep)
-	if len(toks) != shutdownEventTokens {
+	if len(toks) < shutdownEventTokens {
 		s.Debugf("Received remote server shutdown on bad subject %q", subject)
 	}
 	sid := toks[serverSubjectIndex]
@@ -329,16 +334,17 @@ func (s *Server) updateRemoteServer(ms *ServerInfo) {
 }
 
 // shutdownEventing will clean up all eventing state.
-// Lock is held upon entry.
 func (s *Server) shutdownEventing() {
 	if !s.eventsRunning() {
 		return
 	}
 
+	s.mu.Lock()
 	if s.sys.sweeper != nil {
 		s.sys.sweeper.Stop()
 		s.sys.sweeper = nil
 	}
+	s.mu.Unlock()
 
 	// We will queue up a shutdown event and wait for the
 	// internal send loop to exit.
@@ -370,7 +376,10 @@ func (s *Server) shutdownEventing() {
 }
 
 func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []byte) {
-	if !s.eventsRunning() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.eventsEnabled() {
 		return
 	}
 
@@ -379,7 +388,7 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
 		return
 	}
-	acc := s.LookupAccount(m.Account)
+	acc := s.lookupAccount(m.Account)
 	if acc == nil {
 		return
 	}
@@ -429,6 +438,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 
 // Setup tracking for this account. This allows us to track globally
 // account activity.
+// Lock should be held on entry.
 func (s *Server) enableAccountTracking(a *Account) {
 	if a == nil || !s.eventsEnabled() || a == s.sys.account {
 		return
@@ -447,10 +457,11 @@ func (s *Server) enableAccountTracking(a *Account) {
 }
 
 // FIXME(dlc) - make configurable.
-const connHBInterval = 30 * time.Second
+const AccountConnHBInterval = 30 * time.Second
 
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
+// Lock should be held on entry.
 func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	if !s.eventsEnabled() || a == nil || a == s.sys.account || a == s.gacc {
 		return
@@ -476,9 +487,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	}
 	// Check to see if we have an HB running and update.
 	if a.ctmr == nil {
-		a.etmr = time.AfterFunc(connHBInterval, func() { s.accConnsUpdate(a) })
+		a.etmr = time.AfterFunc(AccountConnHBInterval, func() { s.accConnsUpdate(a) })
 	} else {
-		a.etmr.Reset(connHBInterval)
+		a.etmr.Reset(AccountConnHBInterval)
 	}
 	a.mu.Unlock()
 
@@ -529,7 +540,10 @@ func (s *Server) accountConnectEvent(c *client) {
 		},
 	}
 	c.mu.Unlock()
+
+	s.mu.Lock()
 	s.sendInternalMsg(r, subj, "", &m.Server, &m)
+	s.mu.Unlock()
 }
 
 // accountDisconnectEvent will send an account client disconnect event if there is interest.
@@ -574,7 +588,10 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 		Reason: reason,
 	}
 	c.mu.Unlock()
+
+	s.mu.Lock()
 	s.sendInternalMsg(r, subj, "", &m.Server, &m)
+	s.mu.Unlock()
 }
 
 // Internal message callback. If the msg is needed past the callback it is
@@ -582,10 +599,11 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 type msgHandler func(sub *subscription, subject, reply string, msg []byte)
 
 func (s *Server) deliverInternalMsg(sub *subscription, subject, reply, msg []byte) {
+	s.mu.Lock()
 	if !s.eventsEnabled() || s.sys.subs == nil {
+		s.mu.Unlock()
 		return
 	}
-	s.mu.Lock()
 	cb := s.sys.subs[string(sub.sid)]
 	s.mu.Unlock()
 	if cb != nil {

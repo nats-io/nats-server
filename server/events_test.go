@@ -325,7 +325,9 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 	// Now make sure we do not hear ourselves. We optimize this for internally
 	// generated messages.
 	r := SublistResult{psubs: []*subscription{sub}}
+	s.mu.Lock()
 	s.sendInternalMsg(&r, "foo", "", nil, msg.Data)
+	s.mu.Unlock()
 
 	select {
 	case <-received:
@@ -473,6 +475,7 @@ func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
 // Test that the remote accounting works when a server goes away.
 func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
 
 	// Let's create a user account.
 	okp, _ := nkeys.FromSeed(oSeed)
@@ -489,25 +492,19 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
 
 	for i := 0; i < 10; i++ {
-		_, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
+		c, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
 		if err != nil {
 			t.Fatalf("Expected to connect, got %v", err)
 		}
-		_, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
+		defer c.Close()
+		c, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
 		if err != nil {
 			t.Fatalf("Expected to connect, got %v", err)
 		}
+		defer c.Close()
 	}
 
-	// We are at capacity so both of these should fail.
-	if _, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err == nil {
-		t.Fatalf("Expected connection to fail due to max limit")
-	}
-	if _, err := nats.Connect(urlB, createUserCreds(t, sb, akp)); err == nil {
-		t.Fatalf("Expected connection to fail due to max limit")
-	}
-
-	// Now shutdown Server B. Do so such that now communications goo out.
+	// Now shutdown Server B. Do so such that now communications go out.
 	sb.mu.Lock()
 	sb.sys = nil
 	sb.mu.Unlock()
@@ -518,16 +515,18 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 	}
 
 	// Let's speed up the checking process.
-	checkRemoteServerInterval = 10 * time.Millisecond
-	orphanServerDuration = 30 * time.Millisecond
 	sa.mu.Lock()
-	sa.sys.sweeper.Reset(checkRemoteServerInterval)
+	sa.sys.chkOrph = 10 * time.Millisecond
+	sa.sys.orphMax = 30 * time.Millisecond
+	sa.sys.sweeper.Reset(sa.sys.chkOrph)
 	sa.mu.Unlock()
 
 	// We should eventually be able to connect.
 	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
-		if _, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err != nil {
+		if c, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err != nil {
 			return err
+		} else {
+			c.Close()
 		}
 		return nil
 	})

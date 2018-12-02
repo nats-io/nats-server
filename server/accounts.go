@@ -155,7 +155,9 @@ func (a *Account) TotalSubs() int {
 func (a *Account) addClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
-	a.clients[c] = c
+	if a.clients != nil {
+		a.clients[c] = c
+	}
 	a.mu.Unlock()
 	if c != nil && c.srv != nil && a != c.srv.gacc {
 		c.srv.accConnsUpdate(a)

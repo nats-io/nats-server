@@ -533,6 +533,8 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		servers: make(map[string]*serverUpdate),
 		subs:    make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, 128),
+		orphMax: 5 * AccountConnHBInterval,
+		chkOrph: 3 * AccountConnHBInterval,
 	}
 	s.sys.client.initClient()
 	s.sys.client.echo = false
