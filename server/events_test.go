@@ -36,27 +36,6 @@ func createAccount(s *Server) (*Account, nkeys.KeyPair) {
 	return s.LookupAccount(pub), akp
 }
 
-func TestSystemAccount(t *testing.T) {
-	s := opTrustBasicSetup()
-	defer s.Shutdown()
-	buildMemAccResolver(s)
-
-	acc, _ := createAccount(s)
-	s.setSystemAccount(acc)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sys == nil || s.sys.account == nil {
-		t.Fatalf("Expected sys.account to be non-nil")
-	}
-	if s.sys.client == nil {
-		t.Fatalf("Expected sys.client to be non-nil")
-	}
-	if s.sys.client.echo {
-		t.Fatalf("Internal clients should always have echo false")
-	}
-}
-
 func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
 	t.Helper()
 	kp, _ := nkeys.CreateUser()
@@ -82,9 +61,66 @@ func runTrustedServer(t *testing.T) (*Server, *Options) {
 	kp, _ := nkeys.FromSeed(oSeed)
 	pub, _ := kp.PublicKey()
 	opts.TrustedNkeys = []string{pub}
+	opts.accResolver = &MemAccResolver{}
 	s := RunServer(opts)
-	buildMemAccResolver(s)
 	return s, opts
+}
+
+func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
+	t.Helper()
+
+	kp, _ := nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+
+	mr := &MemAccResolver{}
+
+	// Now create a system account.
+	// NOTE: This can NOT be shared directly between servers.
+	// Set via server options.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	jwt, _ := nac.Encode(okp)
+
+	mr.Store(apub, jwt)
+
+	optsA := DefaultOptions()
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.TrustedNkeys = []string{pub}
+	optsA.accResolver = mr
+	optsA.SystemAccount = apub
+
+	sa := RunServer(optsA)
+
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	sb := RunServer(optsB)
+
+	checkClusterFormed(t, sa, sb)
+
+	return sa, optsA, sb, optsB
+}
+
+func TestSystemAccount(t *testing.T) {
+	s, _ := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, _ := createAccount(s)
+	s.setSystemAccount(acc)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sys == nil || s.sys.account == nil {
+		t.Fatalf("Expected sys.account to be non-nil")
+	}
+	if s.sys.client == nil {
+		t.Fatalf("Expected sys.client to be non-nil")
+	}
+	if s.sys.client.echo {
+		t.Fatalf("Internal clients should always have echo false")
+	}
 }
 
 func TestSystemAccountNewConnection(t *testing.T) {
@@ -102,7 +138,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 	defer ncs.Close()
 
-	sub, _ := ncs.SubscribeSync(">")
+	sub, _ := ncs.SubscribeSync("$SYS.ACCOUNT.>")
 	defer sub.Unsubscribe()
 	ncs.Flush()
 
@@ -121,14 +157,14 @@ func TestSystemAccountNewConnection(t *testing.T) {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
 
-	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.%s.CLIENT.CONNECT", acc2.Name)) {
-		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.<ACCOUNT>.CLIENT.CONNECT", msg.Subject)
+	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", acc2.Name)) {
+		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
 	}
 	tokens := strings.Split(msg.Subject, ".")
 	if len(tokens) < 4 {
 		t.Fatalf("Expected 4 tokens, got %d", len(tokens))
 	}
-	account := tokens[1]
+	account := tokens[2]
 	if account != acc2.Name {
 		t.Fatalf("Expected %q for account, got %q", acc2.Name, account)
 	}
@@ -168,14 +204,14 @@ func TestSystemAccountNewConnection(t *testing.T) {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
 
-	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.%s.CLIENT.DISCONNECT", acc2.Name)) {
-		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.<ACCOUNT>.CLIENT.DISCONNECT", msg.Subject)
+	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.DISCONNECT", acc2.Name)) {
+		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.DISCONNECT", msg.Subject)
 	}
 	tokens = strings.Split(msg.Subject, ".")
 	if len(tokens) < 4 {
 		t.Fatalf("Expected 4 tokens, got %d", len(tokens))
 	}
-	account = tokens[1]
+	account = tokens[2]
 	if account != acc2.Name {
 		t.Fatalf("Expected %q for account, got %q", acc2.Name, account)
 	}
@@ -216,7 +252,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 }
 
-func TestSystemInternalSubscriptions(t *testing.T) {
+func TestSystemAccountInternalSubscriptions(t *testing.T) {
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()
 
@@ -289,7 +325,9 @@ func TestSystemInternalSubscriptions(t *testing.T) {
 	// Now make sure we do not hear ourselves. We optimize this for internally
 	// generated messages.
 	r := SublistResult{psubs: []*subscription{sub}}
-	s.sendInternalMsg(&r, "foo", nil, msg.Data)
+	s.mu.Lock()
+	s.sendInternalMsg(&r, "foo", "", nil, msg.Data)
+	s.mu.Unlock()
 
 	select {
 	case <-received:
@@ -297,4 +335,201 @@ func TestSystemInternalSubscriptions(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		break
 	}
+}
+
+func TestSystemAccountConnectionLimits(t *testing.T) {
+	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// We want to test that we are limited to a certain number of active connections
+	// across multiple servers.
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 4 // Limit to 4 connections.
+	jwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, jwt)
+
+	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+
+	// Create a user on each server. Break on first failure.
+	for {
+		nca1, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+		if err != nil {
+			break
+		}
+		defer nca1.Close()
+		ncb1, err := nats.Connect(urlB, createUserCreds(t, sb, akp))
+		if err != nil {
+			break
+		}
+		defer ncb1.Close()
+	}
+
+	total := sa.NumClients() + sb.NumClients()
+	if total > int(nac.Limits.Conn) {
+		t.Fatalf("Expected only %d connections, was allowed to connect %d", nac.Limits.Conn, total)
+	}
+}
+
+// Test that the remote accounting works when a server is started some time later.
+func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
+	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
+	sb.Shutdown()
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 4 // Limit to 4 connections.
+	jwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, jwt)
+
+	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	// Create max connections on sa.
+	for i := 0; i < int(nac.Limits.Conn); i++ {
+		nc, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+		if err != nil {
+			t.Fatalf("Unexpected error on #%d try: %v", i+1, err)
+		}
+		defer nc.Close()
+	}
+
+	// Restart server B.
+	optsB.accResolver = sa.accResolver
+	optsB.SystemAccount = sa.systemAccount().Name
+	sb = RunServer(optsB)
+	defer sb.Shutdown()
+	checkClusterFormed(t, sa, sb)
+
+	// Trigger a load of the user account on the new server
+	// NOTE: If we do not load the user can be the first to request this
+	// account, hence the connection will succeed.
+	sb.LookupAccount(pub)
+
+	// Expect this to fail.
+	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	if _, err := nats.Connect(urlB, createUserCreds(t, sb, akp)); err == nil {
+		t.Fatalf("Expected connection to fail due to max limit")
+	}
+}
+
+// Test that the remote accounting works when a server is shutdown.
+func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
+	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 10 // Limit to 10 connections.
+	jwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, jwt)
+	addAccountToMemResolver(sb, pub, jwt)
+
+	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+
+	for i := 0; i < 5; i++ {
+		_, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
+		if err != nil {
+			t.Fatalf("Expected to connect, got %v", err)
+		}
+		_, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
+		if err != nil {
+			t.Fatalf("Expected to connect, got %v", err)
+		}
+	}
+
+	// We are at capacity so both of these should fail.
+	if _, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err == nil {
+		t.Fatalf("Expected connection to fail due to max limit")
+	}
+	if _, err := nats.Connect(urlB, createUserCreds(t, sb, akp)); err == nil {
+		t.Fatalf("Expected connection to fail due to max limit")
+	}
+
+	// Now shutdown Server B.
+	sb.Shutdown()
+
+	// Now we should be able to create more on A now.
+	for i := 0; i < 5; i++ {
+		_, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+		if err != nil {
+			t.Fatalf("Expected to connect on %d, got %v", i, err)
+		}
+	}
+}
+
+// Test that the remote accounting works when a server goes away.
+func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
+	sa, optsA, sb, optsB := runTrustedCluster(t)
+	defer sa.Shutdown()
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 20 // Limit to 20 connections.
+	jwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, jwt)
+	addAccountToMemResolver(sb, pub, jwt)
+
+	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+
+	for i := 0; i < 10; i++ {
+		c, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
+		if err != nil {
+			t.Fatalf("Expected to connect, got %v", err)
+		}
+		defer c.Close()
+		c, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
+		if err != nil {
+			t.Fatalf("Expected to connect, got %v", err)
+		}
+		defer c.Close()
+	}
+
+	// Now shutdown Server B. Do so such that now communications go out.
+	sb.mu.Lock()
+	sb.sys = nil
+	sb.mu.Unlock()
+	sb.Shutdown()
+
+	if _, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err == nil {
+		t.Fatalf("Expected connection to fail due to max limit")
+	}
+
+	// Let's speed up the checking process.
+	sa.mu.Lock()
+	sa.sys.chkOrph = 10 * time.Millisecond
+	sa.sys.orphMax = 30 * time.Millisecond
+	sa.sys.sweeper.Reset(sa.sys.chkOrph)
+	sa.mu.Unlock()
+
+	// We should eventually be able to connect.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if c, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err != nil {
+			return err
+		} else {
+			c.Close()
+		}
+		return nil
+	})
 }
