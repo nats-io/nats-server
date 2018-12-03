@@ -216,10 +216,10 @@ func TestNewRouteRSubs(t *testing.T) {
 	sendA("PING\r\n")
 	expectA(pongRe)
 
-	if foonc := foo.NumClients(); foonc != 1 {
+	if foonc := foo.NumConnections(); foonc != 1 {
 		t.Fatalf("Expected foo account to have 1 client, got %d", foonc)
 	}
-	if barnc := bar.NumClients(); barnc != 0 {
+	if barnc := bar.NumConnections(); barnc != 0 {
 		t.Fatalf("Expected bar account to have 0 clients, got %d", barnc)
 	}
 
@@ -251,10 +251,10 @@ func TestNewRouteRSubs(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
-	if foonc := foo.NumClients(); foonc != 1 {
+	if foonc := foo.NumConnections(); foonc != 1 {
 		t.Fatalf("Expected foo account to have 1 client, got %d", foonc)
 	}
-	if barnc := bar.NumClients(); barnc != 1 {
+	if barnc := bar.NumConnections(); barnc != 1 {
 		t.Fatalf("Expected bar account to have 1 client, got %d", barnc)
 	}
 

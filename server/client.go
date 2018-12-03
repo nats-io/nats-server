@@ -413,7 +413,7 @@ func (c *client) registerWithAccount(acc *Account) error {
 		}
 	}
 	// Check if we have a max connections violation
-	if acc.MaxTotalClientsReached() {
+	if acc.MaxTotalConnectionsReached() {
 		return ErrTooManyAccountConnections
 	}
 

@@ -112,7 +112,7 @@ type exportMap struct {
 
 // NumClients returns active number of clients for this account for
 // all known servers.
-func (a *Account) NumClients() int {
+func (a *Account) NumConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.clients) + a.nrclients
@@ -120,23 +120,27 @@ func (a *Account) NumClients() int {
 
 // NumLocalClients returns active number of clients for this account
 // on this server.
-func (a *Account) NumLocalClients() int {
+func (a *Account) NumLocalConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.clients)
 }
 
 // MaxClientsReached returns if we have reached our limit for number of connections.
-func (a *Account) MaxTotalClientsReached() bool {
+func (a *Account) MaxTotalConnectionsReached() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.maxTotalConnectionsReached()
+}
+
+func (a *Account) maxTotalConnectionsReached() bool {
 	if a.mconns != 0 {
 		return len(a.clients)+a.nrclients >= a.mconns
 	}
 	return false
 }
 
-func (a *Account) MaxActiveClients() int {
+func (a *Account) MaxActiveConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.mconns
@@ -892,7 +896,15 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.msubs = int(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int(ac.Limits.Conn)
-	for i, c := range gatherClients() {
+
+	clients := gatherClients()
+	// Sort if we are over the limit.
+	if a.maxTotalConnectionsReached() {
+		sort.Slice(clients, func(i, j int) bool {
+			return clients[i].start.After(clients[j].start)
+		})
+	}
+	for i, c := range clients {
 		if a.mconns > 0 && i >= a.mconns {
 			c.maxAccountConnExceeded()
 			continue

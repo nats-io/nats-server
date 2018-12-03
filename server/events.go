@@ -418,7 +418,7 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	if acc == nil {
 		return
 	}
-	if nlc := acc.NumLocalClients(); nlc > 0 {
+	if nlc := acc.NumLocalConnections(); nlc > 0 {
 		s.sendAccConnsUpdate(acc, reply)
 	}
 }
