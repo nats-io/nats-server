@@ -1414,3 +1414,44 @@ func TestAccountURLResolver(t *testing.T) {
 		t.Fatalf("Account name did not match claim key")
 	}
 }
+
+func TestAccountURLResolverTimeout(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	basePath := "/ngs/v1/accounts/jwt/"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == basePath {
+			w.Write([]byte("ok"))
+			return
+		}
+		// Purposely be slow on account lookup.
+		time.Sleep(2*time.Second + 200*time.Millisecond)
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	confTemplate := `
+		listen: -1
+		resolver: URL("%s%s")
+    `
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL, basePath)))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	pub, _ := kp.PublicKey()
+	opts.TrustedKeys = []string{pub}
+	defer s.Shutdown()
+
+	acc := s.LookupAccount(apub)
+	if acc != nil {
+		t.Fatalf("Expected to not receive an account due to timeout")
+	}
+}

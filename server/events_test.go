@@ -556,7 +556,7 @@ func TestSystemAccountFromConfig(t *testing.T) {
 		listen: -1
 		trusted: %s
 		system_account: %s
-		resolver: URL("%s/ngs/v1/accounts/jwt/")
+		resolver: URL("%s/jwt/v1/accounts/")
     `
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, opub, apub, ts.URL)))
