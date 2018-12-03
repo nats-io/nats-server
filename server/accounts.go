@@ -140,6 +140,8 @@ func (a *Account) maxTotalConnectionsReached() bool {
 	return false
 }
 
+// MaxActiveConnections return the set limit for the account system
+// wide for total number of active connections.
 func (a *Account) MaxActiveConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -960,6 +962,7 @@ type MemAccResolver struct {
 	sm sync.Map
 }
 
+// Fetch will fetch the account jwt claims from the internal sync.Map.
 func (m *MemAccResolver) Fetch(name string) (string, error) {
 	if j, ok := m.sm.Load(name); ok {
 		return j.(string), nil
@@ -967,12 +970,13 @@ func (m *MemAccResolver) Fetch(name string) (string, error) {
 	return _EMPTY_, ErrMissingAccount
 }
 
+// Store will store the account jwt claims in the internal sync.Map.
 func (m *MemAccResolver) Store(name, jwt string) error {
 	m.sm.Store(name, jwt)
 	return nil
 }
 
-//
+// URLAccResolver implements an http fetcher.
 type URLAccResolver struct {
 	url string
 	c   *http.Client

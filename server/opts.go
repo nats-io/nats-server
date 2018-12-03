@@ -499,6 +499,9 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				opFiles = append(opFiles, v.(string))
 			case []string:
 				opFiles = append(opFiles, v.([]string)...)
+			default:
+				err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
+				errors = append(errors, err)
 			}
 			// Assume for now these are file names.
 			// TODO(dlc) - If we try to read the file and it fails we could treat the string
@@ -531,6 +534,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 					if ur, err := NewURLAccResolver(url); err != nil {
 						err := &configErr{tk, fmt.Sprintf("URL account resolver error: %v", err)}
 						errors = append(errors, err)
+						continue
 					} else {
 						o.AccountResolver = ur
 					}
