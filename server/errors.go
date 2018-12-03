@@ -22,7 +22,7 @@ var (
 	// ErrConnectionClosed represents an error condition on a closed connection.
 	ErrConnectionClosed = errors.New("Connection Closed")
 
-	// ErrAuthorization represents an error condition on failed authentication.
+	// ErrAuthentication represents an error condition on failed authentication.
 	ErrAuthentication = errors.New("Authentication Error")
 
 	// ErrAuthTimeout represents an error condition on failed authorization due to timeout.
