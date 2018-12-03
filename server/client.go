@@ -1106,7 +1106,7 @@ func (c *client) authViolation() {
 	var hasTrustedNkeys, hasNkeys, hasUsers bool
 	if s := c.srv; s != nil {
 		s.mu.Lock()
-		hasTrustedNkeys = len(s.trustedNkeys) > 0
+		hasTrustedNkeys = len(s.trustedKeys) > 0
 		hasNkeys = s.nkeys != nil
 		hasUsers = s.users != nil
 		s.mu.Unlock()

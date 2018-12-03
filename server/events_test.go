@@ -17,6 +17,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -60,8 +63,8 @@ func runTrustedServer(t *testing.T) (*Server, *Options) {
 	opts := DefaultOptions()
 	kp, _ := nkeys.FromSeed(oSeed)
 	pub, _ := kp.PublicKey()
-	opts.TrustedNkeys = []string{pub}
-	opts.accResolver = &MemAccResolver{}
+	opts.TrustedKeys = []string{pub}
+	opts.AccountResolver = &MemAccResolver{}
 	s := RunServer(opts)
 	return s, opts
 }
@@ -87,8 +90,8 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
 
 	optsA := DefaultOptions()
 	optsA.Cluster.Host = "127.0.0.1"
-	optsA.TrustedNkeys = []string{pub}
-	optsA.accResolver = mr
+	optsA.TrustedKeys = []string{pub}
+	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
 
 	sa := RunServer(optsA)
@@ -405,7 +408,7 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	}
 
 	// Restart server B.
-	optsB.accResolver = sa.accResolver
+	optsB.AccountResolver = sa.accResolver
 	optsB.SystemAccount = sa.systemAccount().Name
 	sb = RunServer(optsB)
 	defer sb.Shutdown()
@@ -532,4 +535,87 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestSystemAccountFromConfig(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	opub, _ := kp.PublicKey()
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	confTemplate := `
+		listen: -1
+		trusted: %s
+		system_account: %s
+		resolver: URL("%s/ngs/v1/accounts/jwt/")
+    `
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, opub, apub, ts.URL)))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if acc := s.SystemAccount(); acc == nil || acc.Name != apub {
+		t.Fatalf("System Account not properly set")
+	}
+}
+
+func TestAccountClaimsUpdates(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sacc, sakp := createAccount(s)
+	s.setSystemAccount(sacc)
+
+	// Let's create an account account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 4
+	ajwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(s, pub, ajwt)
+
+	acc := s.LookupAccount(pub)
+	if acc.MaxActiveClients() != 4 {
+		t.Fatalf("Expected to see a limit of 4 connections")
+	}
+
+	// Simulate a systems publisher so we can do an account claims update.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, sakp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Update the account
+	nac = jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 8
+	issAt := time.Now().Add(-30 * time.Second).Unix()
+	nac.IssuedAt = issAt
+	expires := time.Now().Add(2 * time.Second).Unix()
+	nac.Expires = expires
+	ajwt, _ = nac.Encode(okp)
+
+	// Publish to the system update subject.
+	claimUpdateSubj := fmt.Sprintf(accUpdateEventSubj, pub)
+	nc.Publish(claimUpdateSubj, []byte(ajwt))
+	nc.Flush()
+
+	acc = s.LookupAccount(pub)
+	if acc.MaxActiveClients() != 8 {
+		t.Fatalf("Account was not updated")
+	}
 }

@@ -200,7 +200,7 @@ func (s *Server) configureAuthorization() {
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
 		s.info.AuthRequired = true
-	} else if len(s.trustedNkeys) > 0 {
+	} else if len(s.trustedKeys) > 0 {
 		s.info.AuthRequired = true
 	} else if opts.Nkeys != nil || opts.Users != nil {
 		// Support both at the same time.
@@ -275,8 +275,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		return true
 	}
 
-	// Check if we have trustedNkeys defined in the server. If so we require a user jwt.
-	if s.trustedNkeys != nil {
+	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
+	if s.trustedKeys != nil {
 		if c.opts.JWT == "" {
 			s.mu.Unlock()
 			c.Debugf("Authentication requires a user JWT")

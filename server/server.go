@@ -161,7 +161,7 @@ type Server struct {
 	ldmCh chan bool
 
 	// Trusted public operator keys.
-	trustedNkeys []string
+	trustedKeys []string
 }
 
 // Make sure all are 64bits for atomic use
@@ -173,8 +173,16 @@ type stats struct {
 	slowConsumers int64
 }
 
+// DEPRECATED: Use NewServer(opts)
 // New will setup a new server struct after parsing the options.
 func New(opts *Options) *Server {
+	s, _ := NewServer(opts)
+	return s
+}
+
+// NewServer will setup a new server struct after parsing the options.
+// Could return an error if options can not be validated.
+func NewServer(opts *Options) (*Server, error) {
 	setBaselineOptions(opts)
 
 	// Process TLS options, including whether we require client certificates.
@@ -189,10 +197,8 @@ func New(opts *Options) *Server {
 	// server will always be started with configuration parsing (that could
 	// report issues). Its options can be (incorrectly) set by hand when
 	// server is embedded. If there is an error, return nil.
-	// TODO(ik): Should probably have a new NewServer() API that returns (*Server, error)
-	// so user can know what's wrong.
 	if err := validateOptions(opts); err != nil {
-		return nil
+		return nil, err
 	}
 
 	info := Info{
@@ -221,9 +227,9 @@ func New(opts *Options) *Server {
 		configTime: now,
 	}
 
-	// Trusted root keys.
-	if !s.processTrustedNkeys() {
-		return nil
+	// Trusted root operator keys.
+	if !s.processTrustedKeys() {
+		return nil, fmt.Errorf("Error processing trusted operator keys")
 	}
 
 	s.mu.Lock()
@@ -245,7 +251,7 @@ func New(opts *Options) *Server {
 	// may try to send things to gateways.
 	gws, err := newGateway(opts)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	s.gateway = gws
 
@@ -269,7 +275,7 @@ func New(opts *Options) *Server {
 
 	// For tracking accounts
 	if err := s.configureAccounts(); err != nil {
-		return nil
+		return nil, err
 	}
 
 	// Used to setup Authorization.
@@ -278,10 +284,14 @@ func New(opts *Options) *Server {
 	// Start signal handler
 	s.handleSignals()
 
-	return s
+	return s, nil
 }
 
 func validateOptions(o *Options) error {
+	// Check that the trust configuration is correct.
+	if err := validateTrustedOperators(o); err != nil {
+		return err
+	}
 	// Check that gateway is properly configured. Returns no error
 	// if there is no gateway defined.
 	return validateGatewayOptions(o)
@@ -318,11 +328,11 @@ func (s *Server) configureAccounts() error {
 		s.registerAccount(acc)
 	}
 	// Check for configured account resolvers.
-	if opts.accResolver != nil {
-		s.accResolver = opts.accResolver
+	if opts.AccountResolver != nil {
+		s.accResolver = opts.AccountResolver
 	}
-	// Check that if we have a SystemAccount it can
-	// be properly resolved.
+
+	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
 		if acc := s.lookupAccount(opts.SystemAccount); acc == nil {
 			return ErrMissingAccount
@@ -347,7 +357,7 @@ func (s *Server) generateRouteInfoJSON() {
 func (s *Server) isTrustedIssuer(issuer string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, tk := range s.trustedNkeys {
+	for _, tk := range s.trustedKeys {
 		if tk == issuer {
 			return true
 		}
@@ -355,25 +365,25 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 	return false
 }
 
-// processTrustedNkeys will process stamped and option based
+// processTrustedKeys will process stamped and option based
 // trusted nkeys. Returns success.
-func (s *Server) processTrustedNkeys() bool {
-	if trustedNkeys != "" && !s.initStampedTrustedNkeys() {
+func (s *Server) processTrustedKeys() bool {
+	if trustedKeys != "" && !s.initStampedTrustedKeys() {
 		return false
-	} else if s.opts.TrustedNkeys != nil {
-		for _, key := range s.opts.TrustedNkeys {
+	} else if s.opts.TrustedKeys != nil {
+		for _, key := range s.opts.TrustedKeys {
 			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
 		}
-		s.trustedNkeys = s.opts.TrustedNkeys
+		s.trustedKeys = s.opts.TrustedKeys
 	}
 	return true
 }
 
-// checkTrustedNkeyString will check that the string is a valid array
+// checkTrustedKeyString will check that the string is a valid array
 // of public operator nkeys.
-func checkTrustedNkeyString(keys string) []string {
+func checkTrustedKeyString(keys string) []string {
 	tks := strings.Fields(keys)
 	if len(tks) == 0 {
 		return nil
@@ -387,19 +397,19 @@ func checkTrustedNkeyString(keys string) []string {
 	return tks
 }
 
-// initStampedTrustedNkeys will check the stamped trusted keys
-// and will set the server field 'trustedNkeys'. Returns whether
+// initStampedTrustedKeys will check the stamped trusted keys
+// and will set the server field 'trustedKeys'. Returns whether
 // it succeeded or not.
-func (s *Server) initStampedTrustedNkeys() bool {
+func (s *Server) initStampedTrustedKeys() bool {
 	// Check to see if we have an override in options, which will cause us to fail.
-	if len(s.opts.TrustedNkeys) > 0 {
+	if len(s.opts.TrustedKeys) > 0 {
 		return false
 	}
-	tks := checkTrustedNkeyString(trustedNkeys)
+	tks := checkTrustedKeyString(trustedKeys)
 	if len(tks) == 0 {
 		return false
 	}
-	s.trustedNkeys = tks
+	s.trustedKeys = tks
 	return true
 }
 
@@ -509,20 +519,56 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
+// SetSystemAccount will set the internal system account.
+// If root operators are present it will also check validity.
+func (s *Server) SetSystemAccount(accName string) error {
+	s.mu.Lock()
+	if acc := s.accounts[accName]; acc != nil {
+		s.mu.Unlock()
+		return s.setSystemAccount(acc)
+	}
+	// If we are here we do not have local knowledge of this account.
+	// Do this one by hand to return more useful error.
+	ac, jwt, err := s.fetchAccountClaims(accName)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	acc := s.buildInternalAccount(ac)
+	acc.claimJWT = jwt
+	s.registerAccount(acc)
+	s.mu.Unlock()
+	return s.setSystemAccount(acc)
+}
+
+// SystemAccount returns the system account if set.
+func (s *Server) SystemAccount() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sys != nil {
+		return s.sys.account
+	}
+	return nil
+}
+
 // Assign an system account. Should only be called once.
 // This sets up a server to send and receive messages from inside
 // the server itself.
 func (s *Server) setSystemAccount(acc *Account) error {
 	if acc == nil {
-		return fmt.Errorf("system account is nil")
+		return ErrMissingAccount
+	}
+	// Don't try to fix this here.
+	if acc.IsExpired() {
+		return ErrAccountExpired
 	}
 	if !s.isTrustedIssuer(acc.Issuer) {
-		return fmt.Errorf("system account not a trusted account")
+		return ErrAccountValidation
 	}
 	s.mu.Lock()
 	if s.sys != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("system account already exists")
+		return ErrAccountExists
 	}
 
 	s.sys = &internal{
@@ -602,7 +648,7 @@ func (s *Server) registerAccount(acc *Account) {
 
 // lookupAccount is a function to return the account structure
 // associated with an account name.
-// Lock shiould be held on entry.
+// Lock should be held on entry.
 func (s *Server) lookupAccount(name string) *Account {
 	acc := s.accounts[name]
 	if acc != nil {
@@ -651,6 +697,26 @@ func (s *Server) updateAccount(acc *Account) bool {
 	return false
 }
 
+// updateAccountWithClaimJWT will chack and apply the claim update.
+func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) bool {
+	if acc == nil {
+		return false
+	}
+	acc.updated = time.Now()
+	if acc.claimJWT != "" && acc.claimJWT == claimJWT {
+		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
+		return false
+	}
+	accClaims, _, err := s.verifyAccountClaims(claimJWT)
+	if err == nil && accClaims != nil {
+		acc.claimJWT = claimJWT
+		s.updateAccountClaims(acc, accClaims)
+		return true
+	}
+	return false
+
+}
+
 // fetchRawAccountClaims will grab raw account claims iff we have a resolver.
 // Lock is held upon entry.
 func (s *Server) fetchRawAccountClaims(name string) (string, error) {
@@ -660,8 +726,14 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	}
 	// Need to do actual Fetch without the lock.
 	s.mu.Unlock()
+	start := time.Now()
 	claimJWT, err := accResolver.Fetch(name)
+	fetchTime := time.Since(start)
 	s.mu.Lock()
+	s.Debugf("Account resolver fetch time was %v\n", fetchTime)
+	if fetchTime > time.Second {
+		s.Warnf("Account resolver took %v to fetch account", fetchTime)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -669,6 +741,7 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 }
 
 // fetchAccountClaims will attempt to fetch new claims if a resolver is present.
+// Lock is held upon entry.
 func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, error) {
 	claimJWT, err := s.fetchRawAccountClaims(name)
 	if err != nil {
@@ -695,11 +768,10 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 // Lock should be held upon entry.
 func (s *Server) fetchAccount(name string) *Account {
 	if accClaims, claimJWT, _ := s.fetchAccountClaims(name); accClaims != nil {
-		if acc := s.buildInternalAccount(accClaims); acc != nil {
-			acc.claimJWT = claimJWT
-			s.registerAccount(acc)
-			return acc
-		}
+		acc := s.buildInternalAccount(accClaims)
+		acc.claimJWT = claimJWT
+		s.registerAccount(acc)
+		return acc
 	}
 	return nil
 }
@@ -730,6 +802,20 @@ func (s *Server) Start() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	hasOperators := len(opts.TrustedOperators) > 0
+	if hasOperators {
+		s.Noticef("Trusted Operators")
+	}
+	for _, opc := range opts.TrustedOperators {
+		s.Noticef("  System  : %q", opc.Audience)
+		s.Noticef("  Operator: %q", opc.Name)
+		s.Noticef("  Issued  : %v", time.Unix(opc.IssuedAt, 0))
+		s.Noticef("  Expires : %v", time.Unix(opc.Expires, 0))
+	}
+	if hasOperators && opts.SystemAccount == _EMPTY_ {
+		s.Warnf("Trusted Operators should utilize a System Account")
+	}
+
 	// Log the pid to a file
 	if opts.PidFile != _EMPTY_ {
 		if err := s.logPid(); err != nil {
@@ -745,7 +831,10 @@ func (s *Server) Start() {
 
 	// Setup system account which will start eventing stack.
 	if sa := opts.SystemAccount; sa != _EMPTY_ {
-		s.setSystemAccount(s.lookupAccount(sa))
+		if err := s.SetSystemAccount(sa); err != nil {
+			s.Fatalf("Can't set system account: %v", err)
+			return
+		}
 	}
 
 	// Start up gateway if needed. Do this before starting the routes, because

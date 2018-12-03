@@ -26,14 +26,6 @@
 			"notests": true
 		},
 		{
-			"importpath": "github.com/pkg/errors",
-			"repository": "https://github.com/pkg/errors",
-			"vcs": "git",
-			"revision": "059132a15dd08d6704c67711dae0cf35ab991756",
-			"branch": "master",
-			"notests": true
-		},
-		{
 			"importpath": "golang.org/x/crypto/bcrypt",
 			"repository": "https://go.googlesource.com/crypto",
 			"vcs": "git",

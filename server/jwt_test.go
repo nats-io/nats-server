@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,8 @@ import (
 )
 
 var (
-	oSeed = []byte("SOAL7GTNI66CTVVNXBNQMG6V2HTDRWC3HGEP7D2OUTWNWSNYZDXWFOX4SU")
+	// This matches ./configs/nkeys_jwts/test.seed
+	oSeed = []byte("SOAFYNORQLQFJYBYNUGC5D7SH2MXMUX5BFEWWGHN3EK4VGG5TPT5DZP7QU")
 	aSeed = []byte("SAANRM6JVDEYZTR6DXCWUSDDJHGOHAFITXEQBSEZSY5JENTDVRZ6WNKTTY")
 )
 
@@ -37,7 +39,7 @@ func opTrustBasicSetup() *Server {
 	kp, _ := nkeys.FromSeed(oSeed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.TrustedNkeys = []string{pub}
+	opts.TrustedKeys = []string{pub}
 	s, _, _, _ := rawSetup(opts)
 	return s
 }
@@ -49,9 +51,9 @@ func buildMemAccResolver(s *Server) {
 	s.mu.Unlock()
 }
 
-func addAccountToMemResolver(s *Server, pub, jwt string) {
+func addAccountToMemResolver(s *Server, pub, jwtclaim string) {
 	s.mu.Lock()
-	s.accResolver.(*MemAccResolver).Store(pub, jwt)
+	s.accResolver.Store(pub, jwtclaim)
 	s.mu.Unlock()
 }
 
@@ -159,7 +161,7 @@ func TestJWTUserBadTrusted(t *testing.T) {
 	}
 	// Now place bad trusted key
 	s.mu.Lock()
-	s.trustedNkeys = []string{"bad"}
+	s.trustedKeys = []string{"bad"}
 	s.mu.Unlock()
 
 	buildMemAccResolver(s)
@@ -1375,4 +1377,40 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	// We should receive the request. PING needed to flush.
 	parseAsyncB("PING\r\n")
 	expectPong(crb)
+}
+
+func TestAccountURLResolver(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	confTemplate := `
+		listen: -1
+		resolver: URL("%s/ngs/v1/accounts/jwt/")
+    `
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	pub, _ := kp.PublicKey()
+	opts.TrustedKeys = []string{pub}
+	defer s.Shutdown()
+
+	acc := s.LookupAccount(apub)
+	if acc == nil {
+		t.Fatalf("Expected to receive an account")
+	}
+	if acc.Name != apub {
+		t.Fatalf("Account name did not match claim key")
+	}
 }
