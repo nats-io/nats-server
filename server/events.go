@@ -28,10 +28,13 @@ const (
 	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
 	accConnsEventSubj   = "$SYS.SERVER.ACCOUNT.%s.CONNS"
 	accConnsReqSubj     = "$SYS.REQ.ACCOUNT.%s.CONNS"
+	accUpdateEventSubj  = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
 	connsRespSubj       = "$SYS._INBOX_.%s"
 	shutdownEventSubj   = "$SYS.SERVER.%s.SHUTDOWN"
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
+	accUpdateTokens     = 5
+	accUpdateAccIndex   = 2
 )
 
 // Used to send and receive messages from inside the server.
@@ -279,6 +282,28 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(subject, s.remoteServerShutdown); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
+	// Listen for account claims updates.
+	subject = fmt.Sprintf(accUpdateEventSubj, "*")
+	if _, err := s.sysSubscribe(subject, s.accountClaimUpdate); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+
+}
+
+// accountClaimUpdate will receive claim updates for accounts.
+func (s *Server) accountClaimUpdate(sub *subscription, subject, reply string, msg []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.eventsEnabled() {
+		return
+	}
+	toks := strings.Split(subject, tsep)
+	if len(toks) < accUpdateTokens {
+		s.Debugf("Received account claims update on bad subject %q", subject)
+		return
+	}
+	accName := toks[accUpdateAccIndex]
+	s.updateAccountWithClaimJWT(s.accounts[accName], string(msg))
 }
 
 // processRemoteServerShutdown will update any affected accounts.
@@ -393,7 +418,7 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	if acc == nil {
 		return
 	}
-	if nlc := acc.NumLocalClients(); nlc > 0 {
+	if nlc := acc.NumLocalConnections(); nlc > 0 {
 		s.sendAccConnsUpdate(acc, reply)
 	}
 }

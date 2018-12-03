@@ -14,6 +14,7 @@
 package server
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -111,7 +112,7 @@ type exportMap struct {
 
 // NumClients returns active number of clients for this account for
 // all known servers.
-func (a *Account) NumClients() int {
+func (a *Account) NumConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.clients) + a.nrclients
@@ -119,20 +120,32 @@ func (a *Account) NumClients() int {
 
 // NumLocalClients returns active number of clients for this account
 // on this server.
-func (a *Account) NumLocalClients() int {
+func (a *Account) NumLocalConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.clients)
 }
 
 // MaxClientsReached returns if we have reached our limit for number of connections.
-func (a *Account) MaxTotalClientsReached() bool {
+func (a *Account) MaxTotalConnectionsReached() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.maxTotalConnectionsReached()
+}
+
+func (a *Account) maxTotalConnectionsReached() bool {
 	if a.mconns != 0 {
 		return len(a.clients)+a.nrclients >= a.mconns
 	}
 	return false
+}
+
+// MaxActiveConnections return the set limit for the account system
+// wide for total number of active connections.
+func (a *Account) MaxActiveConnections() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mconns
 }
 
 // RoutedSubs returns how many subjects we would send across a route when first
@@ -777,6 +790,13 @@ func (s *Server) SetAccountResolver(ar AccountResolver) {
 	s.mu.Unlock()
 }
 
+// AccountResolver returns the registered account resolver.
+func (s *Server) AccountResolver() AccountResolver {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accResolver
+}
+
 // updateAccountClaims will update and existing account with new claims.
 // This will replace any exports or imports previously defined.
 func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
@@ -878,7 +898,15 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.msubs = int(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int(ac.Limits.Conn)
-	for i, c := range gatherClients() {
+
+	clients := gatherClients()
+	// Sort if we are over the limit.
+	if a.maxTotalConnectionsReached() {
+		sort.Slice(clients, func(i, j int) bool {
+			return clients[i].start.After(clients[j].start)
+		})
+	}
+	for i, c := range clients {
 		if a.mconns > 0 && i >= a.mconns {
 			c.maxAccountConnExceeded()
 			continue
@@ -925,17 +953,69 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 
 // AccountResolver interface. This is to fetch Account JWTs by public nkeys
 type AccountResolver interface {
-	Fetch(pub string) (string, error)
+	Fetch(name string) (string, error)
+	Store(name, jwt string) error
 }
 
 // Mostly for testing.
 type MemAccResolver struct {
-	sync.Map
+	sm sync.Map
 }
 
-func (m *MemAccResolver) Fetch(pub string) (string, error) {
-	if j, ok := m.Load(pub); ok {
+// Fetch will fetch the account jwt claims from the internal sync.Map.
+func (m *MemAccResolver) Fetch(name string) (string, error) {
+	if j, ok := m.sm.Load(name); ok {
 		return j.(string), nil
 	}
-	return "", ErrMissingAccount
+	return _EMPTY_, ErrMissingAccount
+}
+
+// Store will store the account jwt claims in the internal sync.Map.
+func (m *MemAccResolver) Store(name, jwt string) error {
+	m.sm.Store(name, jwt)
+	return nil
+}
+
+// URLAccResolver implements an http fetcher.
+type URLAccResolver struct {
+	url string
+	c   *http.Client
+}
+
+// NewURLAccResolver returns a new resolver for the given base URL.
+func NewURLAccResolver(url string) (*URLAccResolver, error) {
+	if !strings.HasSuffix(url, "/") {
+		url += "/"
+	}
+	// Do basic test to see if anyone is home.
+	// FIXME(dlc) - Make timeout configurable post MVP.
+	ur := &URLAccResolver{
+		url: url,
+		c:   &http.Client{Timeout: 2 * time.Second},
+	}
+	if _, err := ur.Fetch(""); err != nil {
+		return nil, err
+	}
+	return ur, nil
+}
+
+// Fetch will fetch the account jwt claims from the base url, appending the
+// account name onto the end.
+func (ur *URLAccResolver) Fetch(name string) (string, error) {
+	url := ur.url + name
+	resp, err := ur.c.Get(url)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		return _EMPTY_, fmt.Errorf("URL(%q) returned error", url)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return _EMPTY_, err
+	}
+	return string(body), nil
+}
+
+// Store is not implemented for URL Resolver.
+func (ur *URLAccResolver) Store(name, jwt string) error {
+	return fmt.Errorf("Store operation not supported on URL Resolver")
 }

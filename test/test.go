@@ -53,9 +53,9 @@ func RunServer(opts *server.Options) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
 	}
-	s := server.New(opts)
-	if s == nil {
-		panic("No NATS Server object returned.")
+	s, err := server.NewServer(opts)
+	if err != nil || s == nil {
+		panic(fmt.Sprintf("No NATS Server object returned: %v", err))
 	}
 
 	// Run server in Go routine.

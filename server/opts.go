@@ -24,11 +24,13 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nats-io/gnatsd/conf"
+	"github.com/nats-io/jwt"
 	"github.com/nats-io/nkeys"
 )
 
@@ -129,7 +131,11 @@ type Options struct {
 	RQSubsSweep      time.Duration `json:"-"` // Deprecated
 	MaxClosedClients int           `json:"-"`
 	LameDuckDuration time.Duration `json:"-"`
-	TrustedNkeys     []string      `json:"-"`
+
+	// Operating a trusted NATS server
+	TrustedKeys      []string              `json:"-"`
+	TrustedOperators []*jwt.OperatorClaims `json:"-"`
+	AccountResolver  AccountResolver       `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -139,9 +145,6 @@ type Options struct {
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
-
-	// Used to spin up a memory account resolver for testing.
-	accResolver AccountResolver
 }
 
 type netResolver interface {
@@ -489,12 +492,71 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				continue
 			}
 			o.LameDuckDuration = dur
-		case "trusted":
+		case "operator", "operators", "roots", "root", "root_operators", "root_operator":
+			opFiles := []string{}
 			switch v.(type) {
 			case string:
-				o.TrustedNkeys = []string{v.(string)}
+				opFiles = append(opFiles, v.(string))
 			case []string:
-				o.TrustedNkeys = v.([]string)
+				opFiles = append(opFiles, v.([]string)...)
+			default:
+				err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
+				errors = append(errors, err)
+			}
+			// Assume for now these are file names.
+			// TODO(dlc) - If we try to read the file and it fails we could treat the string
+			// as the JWT itself.
+			o.TrustedOperators = make([]*jwt.OperatorClaims, 0, len(opFiles))
+			for _, fname := range opFiles {
+				opc, err := readOperatorJWT(fname)
+				if err != nil {
+					err := &configErr{tk, fmt.Sprintf("error parsing operator JWT: %v", err)}
+					errors = append(errors, err)
+					continue
+				}
+				o.TrustedOperators = append(o.TrustedOperators, opc)
+			}
+		case "resolver", "account_resolver", "accounts_resolver":
+			var memResolverRe = regexp.MustCompile(`(MEM|MEMORY|mem|memory)\s*`)
+			var resolverRe = regexp.MustCompile(`(?:URL|url){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
+			str, ok := v.(string)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
+				errors = append(errors, err)
+				continue
+			}
+			if memResolverRe.MatchString(str) {
+				o.AccountResolver = &MemAccResolver{}
+			} else {
+				items := resolverRe.FindStringSubmatch(str)
+				if len(items) == 2 {
+					url := items[1]
+					if ur, err := NewURLAccResolver(url); err != nil {
+						err := &configErr{tk, fmt.Sprintf("URL account resolver error: %v", err)}
+						errors = append(errors, err)
+						continue
+					} else {
+						o.AccountResolver = ur
+					}
+				}
+			}
+			if o.AccountResolver == nil {
+				err := &configErr{tk, fmt.Sprintf("error parsing account resolver, should be MEM or URL(\"url\")")}
+				errors = append(errors, err)
+			}
+		case "system_account", "system":
+			if sa, ok := v.(string); !ok {
+				err := &configErr{tk, fmt.Sprintf("system account name must be a string")}
+				errors = append(errors, err)
+			} else {
+				o.SystemAccount = sa
+			}
+		case "trusted", "trusted_keys":
+			switch v.(type) {
+			case string:
+				o.TrustedKeys = []string{v.(string)}
+			case []string:
+				o.TrustedKeys = v.([]string)
 			case []interface{}:
 				keys := make([]string, 0, len(v.([]interface{})))
 				for _, mv := range v.([]interface{}) {
@@ -507,13 +569,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 						continue
 					}
 				}
-				o.TrustedNkeys = keys
+				o.TrustedKeys = keys
 			default:
 				err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
 				errors = append(errors, err)
 			}
 			// Do a quick sanity check on keys
-			for _, key := range o.TrustedNkeys {
+			for _, key := range o.TrustedKeys {
 				if !nkeys.IsValidPublicOperatorKey(key) {
 					err := &configErr{tk, fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
 					errors = append(errors, err)

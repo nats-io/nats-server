@@ -87,14 +87,17 @@ func main() {
 		fs.Usage,
 		server.PrintTLSHelpAndDie)
 	if err != nil {
-		server.PrintAndDie(err.Error())
+		server.PrintAndDie(fmt.Sprintf("ERR: %s", err))
 	} else if opts.CheckConfig {
-		fmt.Fprintf(os.Stderr, "configuration file %s test is successful\n", opts.ConfigFile)
+		fmt.Fprintf(os.Stderr, "configuration file %s is valid\n", opts.ConfigFile)
 		os.Exit(0)
 	}
 
 	// Create the server with appropriate options.
-	s := server.New(opts)
+	s, err := server.NewServer(opts)
+	if err != nil {
+		server.PrintAndDie(fmt.Sprintf("ERR: %s", err))
+	}
 
 	// Configure the logger based on the flags
 	s.ConfigureLogger()

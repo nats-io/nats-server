@@ -197,10 +197,10 @@ func TestActiveAccounts(t *testing.T) {
 	if foo == nil || bar == nil {
 		t.Fatalf("Error looking up accounts")
 	}
-	if nc := foo.NumClients(); nc != 2 {
+	if nc := foo.NumConnections(); nc != 2 {
 		t.Fatalf("Expected account foo to have 2 clients, got %d", nc)
 	}
-	if nc := bar.NumClients(); nc != 1 {
+	if nc := bar.NumConnections(); nc != 1 {
 		t.Fatalf("Expected account bar to have 1 client, got %d", nc)
 	}
 
@@ -218,7 +218,7 @@ func TestActiveAccounts(t *testing.T) {
 	cb1.closeConnection(ClientClosed)
 	waitTilActiveCount(1)
 
-	if nc := bar.NumClients(); nc != 0 {
+	if nc := bar.NumConnections(); nc != 0 {
 		t.Fatalf("Expected account bar to have 0 clients, got %d", nc)
 	}
 
@@ -226,14 +226,14 @@ func TestActiveAccounts(t *testing.T) {
 	cf1.closeConnection(ClientClosed)
 	waitTilActiveCount(1)
 
-	if nc := foo.NumClients(); nc != 1 {
+	if nc := foo.NumConnections(); nc != 1 {
 		t.Fatalf("Expected account foo to have 1 client, got %d", nc)
 	}
 
 	cf2.closeConnection(ClientClosed)
 	waitTilActiveCount(0)
 
-	if nc := foo.NumClients(); nc != 0 {
+	if nc := foo.NumConnections(); nc != 0 {
 		t.Fatalf("Expected account bar to have 0 clients, got %d", nc)
 	}
 }

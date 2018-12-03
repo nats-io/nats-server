@@ -17,6 +17,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -60,8 +63,8 @@ func runTrustedServer(t *testing.T) (*Server, *Options) {
 	opts := DefaultOptions()
 	kp, _ := nkeys.FromSeed(oSeed)
 	pub, _ := kp.PublicKey()
-	opts.TrustedNkeys = []string{pub}
-	opts.accResolver = &MemAccResolver{}
+	opts.TrustedKeys = []string{pub}
+	opts.AccountResolver = &MemAccResolver{}
 	s := RunServer(opts)
 	return s, opts
 }
@@ -87,8 +90,8 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
 
 	optsA := DefaultOptions()
 	optsA.Cluster.Host = "127.0.0.1"
-	optsA.TrustedNkeys = []string{pub}
-	optsA.accResolver = mr
+	optsA.TrustedKeys = []string{pub}
+	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
 
 	sa := RunServer(optsA)
@@ -405,7 +408,7 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	}
 
 	// Restart server B.
-	optsB.accResolver = sa.accResolver
+	optsB.AccountResolver = sa.accResolver
 	optsB.SystemAccount = sa.systemAccount().Name
 	sb = RunServer(optsB)
 	defer sb.Shutdown()
@@ -506,7 +509,7 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 		defer c.Close()
 	}
 
-	// Now shutdown Server B. Do so such that now communications go out.
+	// Now shutdown Server B. Do so such that no communications go out.
 	sb.mu.Lock()
 	sb.sys = nil
 	sb.mu.Unlock()
@@ -532,4 +535,198 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestSystemAccountFromConfig(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	opub, _ := kp.PublicKey()
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	confTemplate := `
+		listen: -1
+		trusted: %s
+		system_account: %s
+		resolver: URL("%s/jwt/v1/accounts/")
+    `
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, opub, apub, ts.URL)))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if acc := s.SystemAccount(); acc == nil || acc.Name != apub {
+		t.Fatalf("System Account not properly set")
+	}
+}
+
+func TestAccountClaimsUpdates(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sacc, sakp := createAccount(s)
+	s.setSystemAccount(sacc)
+
+	// Let's create a normal  account with limits we can update.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 4
+	ajwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(s, pub, ajwt)
+
+	acc := s.LookupAccount(pub)
+	if acc.MaxActiveConnections() != 4 {
+		t.Fatalf("Expected to see a limit of 4 connections")
+	}
+
+	// Simulate a systems publisher so we can do an account claims update.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, sakp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Update the account
+	nac = jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 8
+	issAt := time.Now().Add(-30 * time.Second).Unix()
+	nac.IssuedAt = issAt
+	expires := time.Now().Add(2 * time.Second).Unix()
+	nac.Expires = expires
+	ajwt, _ = nac.Encode(okp)
+
+	// Publish to the system update subject.
+	claimUpdateSubj := fmt.Sprintf(accUpdateEventSubj, pub)
+	nc.Publish(claimUpdateSubj, []byte(ajwt))
+	nc.Flush()
+
+	acc = s.LookupAccount(pub)
+	if acc.MaxActiveConnections() != 8 {
+		t.Fatalf("Account was not updated")
+	}
+}
+
+func TestAccountConnsLimitExceededAfterUpdate(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sacc, _ := createAccount(s)
+	s.setSystemAccount(sacc)
+
+	// Let's create a normal  account with limits we can update.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 10
+	ajwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(s, pub, ajwt)
+	acc := s.LookupAccount(pub)
+
+	// Now create the max connections.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	for {
+		nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+		if err != nil {
+			break
+		}
+		defer nc.Close()
+	}
+
+	// We should have max here.
+	if total := s.NumClients(); total != acc.MaxActiveConnections() {
+		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
+	}
+
+	// Now change limits to make current connections over the limit.
+	nac = jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 2
+	ajwt, _ = nac.Encode(okp)
+
+	s.updateAccountWithClaimJWT(acc, ajwt)
+	if acc.MaxActiveConnections() != 2 {
+		t.Fatalf("Expected max connections to be set to 2, got %d", acc.MaxActiveConnections())
+	}
+	// We should have closed the excess connections.
+	if total := s.NumClients(); total != acc.MaxActiveConnections() {
+		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
+	}
+}
+
+func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sacc, _ := createAccount(s)
+	s.setSystemAccount(sacc)
+
+	// Let's create a normal  account with limits we can update.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 10
+	ajwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(s, pub, ajwt)
+	acc := s.LookupAccount(pub)
+
+	// Now create the max connections.
+	// We create half then we will wait and then create the rest.
+	// Will test that we disconnect the newest ones.
+	newConns := make([]*nats.Conn, 0, 5)
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	for i := 0; i < 5; i++ {
+		nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+	}
+	time.Sleep(500 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		nc, _ := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		newConns = append(newConns, nc)
+	}
+
+	// We should have max here.
+	if total := s.NumClients(); total != acc.MaxActiveConnections() {
+		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
+	}
+
+	// Now change limits to make current connections over the limit.
+	nac = jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 5
+	ajwt, _ = nac.Encode(okp)
+
+	s.updateAccountWithClaimJWT(acc, ajwt)
+	if acc.MaxActiveConnections() != 5 {
+		t.Fatalf("Expected max connections to be set to 2, got %d", acc.MaxActiveConnections())
+	}
+	// We should have closed the excess connections.
+	if total := s.NumClients(); total != acc.MaxActiveConnections() {
+		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
+	}
+
+	// Now make sure that only the new ones were closed.
+	var closed int
+	for _, nc := range newConns {
+		if !nc.IsClosed() {
+			closed++
+		}
+	}
+	if closed != 5 {
+		t.Fatalf("Expected all new clients to be closed, only got %d of 5", closed)
+	}
 }

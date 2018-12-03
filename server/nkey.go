@@ -29,7 +29,7 @@ func (s *Server) nonceRequired() bool {
 	s.optsMu.RLock()
 	defer s.optsMu.RUnlock()
 
-	return len(s.opts.Nkeys) > 0 || len(s.opts.TrustedNkeys) > 0
+	return len(s.opts.Nkeys) > 0 || len(s.opts.TrustedKeys) > 0
 }
 
 // Generate a nonce for INFO challenge.

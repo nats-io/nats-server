@@ -75,6 +75,9 @@ var (
 	// ErrAccountValidation is returned when an account has failed validation.
 	ErrAccountValidation = errors.New("Account Validation Failed")
 
+	// ErrAccountExpired is returned when an account has expired.
+	ErrAccountExpired = errors.New("Account Expired")
+
 	// ErrNoAccountResolver is returned when we attempt an update but do not have an account resolver.
 	ErrNoAccountResolver = errors.New("Account Resolver Missing")
 
