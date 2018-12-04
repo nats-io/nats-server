@@ -21,16 +21,21 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/gnatsd/server/pse"
 )
 
 const (
 	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accConnsEventSubj   = "$SYS.SERVER.ACCOUNT.%s.CONNS"
 	accConnsReqSubj     = "$SYS.REQ.ACCOUNT.%s.CONNS"
 	accUpdateEventSubj  = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
 	connsRespSubj       = "$SYS._INBOX_.%s"
+	accConnsEventSubj   = "$SYS.SERVER.ACCOUNT.%s.CONNS"
 	shutdownEventSubj   = "$SYS.SERVER.%s.SHUTDOWN"
+	serverStatsSubj     = "$SYS.SERVER.%s.STATSZ"
+	serverStatsReqSubj  = "$SYS.REQ.SERVER.%s.STATSZ"
+
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
 	accUpdateTokens     = 5
@@ -45,11 +50,19 @@ type internal struct {
 	sid     uint64
 	servers map[string]*serverUpdate
 	sweeper *time.Timer
+	stmr    *time.Timer
 	subs    map[string]msgHandler
 	sendq   chan *pubMsg
 	wg      sync.WaitGroup
 	orphMax time.Duration
 	chkOrph time.Duration
+	statsz  time.Duration
+}
+
+// ServerStatsMsg is sent periodically with stats updates.
+type ServerStatsMsg struct {
+	Server ServerInfo  `json:"server"`
+	Stats  ServerStats `json:"statsz"`
 }
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
@@ -101,6 +114,37 @@ type ClientInfo struct {
 	Lang    string     `json:"lang,omitempty"`
 	Version string     `json:"ver,omitempty"`
 	Stop    *time.Time `json:"stop,omitempty"`
+}
+
+// Various statistics we will periodically send out.
+type ServerStats struct {
+	Mem              int64          `json:"mem"`
+	Cores            int            `json:"cores"`
+	CPU              float64        `json:"cpu"`
+	Connections      int            `json:"connections"`
+	TotalConnections uint64         `json:"total_connections"`
+	ActiveAccounts   int            `json:"active_accounts"`
+	NumSubs          uint32         `json:"subscriptions"`
+	Sent             DataStats      `json:"sent"`
+	Received         DataStats      `json:"received"`
+	SlowConsumers    int64          `json:"slow_consumers"`
+	Routes           []*RouteStat   `json:"routes,omitempty"`
+	Gateways         []*GatewayStat `json:"gateways,omitempty"`
+}
+
+type RouteStat struct {
+	ID       uint64    `json:"rid"`
+	Sent     DataStats `json:"sent"`
+	Received DataStats `json:"received"`
+	Pending  int       `json:"pending"`
+}
+
+type GatewayStat struct {
+	ID         uint64    `json:"gwid"`
+	Name       string    `json:"name"`
+	Sent       DataStats `json:"sent"`
+	Received   DataStats `json:"received"`
+	NumInbound int       `json:"inbound_connections"`
 }
 
 // DataStats reports how may msg and bytes. Applicable for both sent and received.
@@ -217,12 +261,8 @@ func (s *Server) eventsEnabled() bool {
 }
 
 // Check for orphan servers who may have gone away without notification.
+// This should be wrapChk() to setup common locking.
 func (s *Server) checkRemoteServers() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
-		return
-	}
 	now := time.Now()
 	for sid, su := range s.sys.servers {
 		if now.Sub(su.ltime) > s.sys.orphMax {
@@ -237,14 +277,111 @@ func (s *Server) checkRemoteServers() {
 	}
 }
 
-// Start a ticker that will fire periodically and check for orphaned servers.
-func (s *Server) startRemoteServerSweepTimer() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+// Grab RSS and PCPU
+func updateServerUsage(v *ServerStats) {
+	var rss, vss int64
+	var pcpu float64
+	pse.ProcUsage(&pcpu, &rss, &vss)
+	v.Mem = rss
+	v.CPU = pcpu
+	v.Cores = numCores
+}
+
+// Generate a route stat for our statz update.
+func routeStat(r *client) *RouteStat {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	rs := &RouteStat{
+		ID: r.cid,
+		Sent: DataStats{
+			Msgs:  r.outMsgs,
+			Bytes: r.outBytes,
+		},
+		Received: DataStats{
+			Msgs:  r.inMsgs,
+			Bytes: r.inBytes,
+		},
+		Pending: int(r.out.pb),
+	}
+	r.mu.Unlock()
+	return rs
+}
+
+// Actual send method for statz updates.
+// Lock should be held.
+func (s *Server) sendStatsz(subj string) {
+	acc := s.sys.account
+	sc := s.sys.client
+
+	r := acc.sl.Match(subj)
+	if noOutSideInterest(sc, r) {
 		return
 	}
-	s.sys.sweeper = time.AfterFunc(s.sys.chkOrph, s.checkRemoteServers)
+
+	m := ServerStatsMsg{}
+	updateServerUsage(&m.Stats)
+	m.Stats.Connections = len(s.clients)
+	m.Stats.TotalConnections = s.totalClients
+	m.Stats.ActiveAccounts = s.activeAccounts
+	m.Stats.Received.Msgs = atomic.LoadInt64(&s.inMsgs)
+	m.Stats.Received.Bytes = atomic.LoadInt64(&s.inBytes)
+	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
+	m.Stats.Sent.Bytes = atomic.LoadInt64(&s.outBytes)
+	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
+	m.Stats.NumSubs = s.gacc.sl.Count()
+	for _, r := range s.routes {
+		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
+	}
+	if s.gateway.enabled {
+		gw := s.gateway
+		gw.RLock()
+		for name, c := range gw.out {
+			gs := &GatewayStat{Name: name}
+			c.mu.Lock()
+			gs.ID = c.cid
+			gs.Sent = DataStats{
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
+			}
+			c.mu.Unlock()
+			// Gather matching inbound connections
+			gs.Received = DataStats{}
+			for _, c := range gw.in {
+				c.mu.Lock()
+				if c.gw.name == name {
+					gs.Received.Msgs += c.inMsgs
+					gs.Received.Bytes += c.inBytes
+					gs.NumInbound++
+				}
+				c.mu.Unlock()
+			}
+			m.Stats.Gateways = append(m.Stats.Gateways, gs)
+		}
+		gw.RUnlock()
+	}
+	s.sendInternalMsg(r, subj, _EMPTY_, &m.Server, &m)
+}
+
+// Send out our statz update.
+// This should be wrapChk() to setup common locking.
+func (s *Server) heartbeatStatsz() {
+	if s.sys.stmr != nil {
+		s.sys.stmr.Reset(s.sys.statsz)
+	}
+	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
+}
+
+// This should be wrapChk() to setup common locking.
+func (s *Server) startStatszTimer() {
+	s.sys.stmr = time.AfterFunc(s.sys.statsz, s.wrapChk(s.heartbeatStatsz))
+}
+
+// Start a ticker that will fire periodically and check for orphaned servers.
+// This should be wrapChk() to setup common locking.
+func (s *Server) startRemoteServerSweepTimer() {
+	s.sys.sweeper = time.AfterFunc(s.sys.chkOrph, s.wrapChk(s.checkRemoteServers))
 }
 
 // This will setup our system wide tracking subs.
@@ -282,6 +419,11 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 
+	// Listen for requests for our statz
+	subject = fmt.Sprintf(serverStatsReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.statszReq); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
 }
 
 // accountClaimUpdate will receive claim updates for accounts.
@@ -313,7 +455,7 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 	}
 }
 
-// serverShutdownEvent is called when we get an event from another server shutting down.
+// remoteServerShutdownEvent is called when we get an event from another server shutting down.
 func (s *Server) remoteServerShutdown(sub *subscription, subject, reply string, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -360,10 +502,8 @@ func (s *Server) shutdownEventing() {
 	}
 
 	s.mu.Lock()
-	if s.sys.sweeper != nil {
-		s.sys.sweeper.Stop()
-		s.sys.sweeper = nil
-	}
+	clearTimer(&s.sys.sweeper)
+	clearTimer(&s.sys.stmr)
 	s.mu.Unlock()
 
 	// We will queue up a shutdown event and wait for the
@@ -395,14 +535,13 @@ func (s *Server) shutdownEventing() {
 	s.sys = nil
 }
 
+// Request for our local connection count.
 func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if !s.eventsEnabled() {
 		return
 	}
-
 	m := accNumConnsReq{}
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
@@ -417,15 +556,23 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	}
 }
 
+// statszReq is a request for us to respond with current statz.
+func (s *Server) statszReq(sub *subscription, subject, reply string, msg []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.eventsEnabled() || reply == _EMPTY_ {
+		return
+	}
+	s.sendStatsz(reply)
+}
+
 // remoteConnsUpdate gets called when we receive a remote update from another server.
 func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if !s.eventsEnabled() {
 		return
 	}
-
 	m := accNumConns{}
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
@@ -475,7 +622,7 @@ func (s *Server) enableAccountTracking(a *Account) {
 }
 
 // FIXME(dlc) - make configurable.
-const AccountConnHBInterval = 30 * time.Second
+const eventsHBInterval = 30 * time.Second
 
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
@@ -484,8 +631,15 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	if !s.eventsEnabled() || a == nil || a == s.sys.account || a == s.gacc {
 		return
 	}
-
+	// Update timer first
 	a.mu.Lock()
+	// Check to see if we have an HB running and update.
+	if a.ctmr == nil {
+		a.etmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
+	} else {
+		a.etmr.Reset(eventsHBInterval)
+	}
+
 	// If no limits set, don't update, no need to.
 	if a.mconns == 0 {
 		a.mu.Unlock()
@@ -495,12 +649,6 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	m := accNumConns{
 		Account: a.Name,
 		Conns:   len(a.clients),
-	}
-	// Check to see if we have an HB running and update.
-	if a.ctmr == nil {
-		a.etmr = time.AfterFunc(AccountConnHBInterval, func() { s.accConnsUpdate(a) })
-	} else {
-		a.etmr.Reset(AccountConnHBInterval)
 	}
 	a.mu.Unlock()
 
@@ -647,6 +795,8 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	c.unsubscribe(acc, sub, true)
 }
 
+// flushClients will make sure toi flush any clients we may have
+// sent to during sendInternalMsg.
 func (c *client) flushClients() {
 	last := time.Now()
 	for cp := range c.pcd {
@@ -661,9 +811,31 @@ func (c *client) flushClients() {
 	}
 }
 
+// Helper to grab name for a client.
 func nameForClient(c *client) string {
 	if c.user != nil {
 		return c.user.Nkey
 	}
 	return "N/A"
+}
+
+// Helper to clear timers.
+func clearTimer(tp **time.Timer) {
+	if t := *tp; t != nil {
+		t.Stop()
+		*tp = nil
+	}
+}
+
+// Helper function to wrap functions with common test
+// to lock server and return if events not enabled.
+func (s *Server) wrapChk(f func()) func() {
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.eventsEnabled() {
+			return
+		}
+		f()
+	}
 }

@@ -69,7 +69,7 @@ func runTrustedServer(t *testing.T) (*Server, *Options) {
 	return s, opts
 }
 
-func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
+func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
 	t.Helper()
 
 	kp, _ := nkeys.FromSeed(oSeed)
@@ -102,7 +102,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
 
 	checkClusterFormed(t, sa, sb)
 
-	return sa, optsA, sb, optsB
+	return sa, optsA, sb, optsB, akp
 }
 
 func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
@@ -382,7 +382,7 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 }
 
 func TestSystemAccountConnectionLimits(t *testing.T) {
-	sa, optsA, sb, optsB := runTrustedCluster(t)
+	sa, optsA, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
 
@@ -427,7 +427,7 @@ func TestSystemAccountConnectionLimits(t *testing.T) {
 
 // Test that the remote accounting works when a server is started some time later.
 func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
-	sa, optsA, sb, optsB := runTrustedCluster(t)
+	sa, optsA, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
 	sb.Shutdown()
 
@@ -459,8 +459,8 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	checkClusterFormed(t, sa, sb)
 
 	// Trigger a load of the user account on the new server
-	// NOTE: If we do not load the user can be the first to request this
-	// account, hence the connection will succeed.
+	// NOTE: If we do not load the user, the user can be the first
+	// to request this account, hence the connection will succeed.
 	sb.LookupAccount(pub)
 
 	// Expect this to fail.
@@ -472,7 +472,7 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 
 // Test that the remote accounting works when a server is shutdown.
 func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
-	sa, optsA, sb, optsB := runTrustedCluster(t)
+	sa, optsA, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
 
@@ -523,7 +523,7 @@ func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
 
 // Test that the remote accounting works when a server goes away.
 func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
-	sa, optsA, sb, optsB := runTrustedCluster(t)
+	sa, optsA, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
 
 	// Let's create a user account.
@@ -814,5 +814,117 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	account := tokens[2]
 	if account != accName {
 		t.Fatalf("Expected %q for account, got %q", accName, account)
+	}
+}
+func TestServerEventStatusZ(t *testing.T) {
+	sa, optsA, sb, _, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, sa, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncs.Close()
+
+	subj := fmt.Sprintf(serverStatsSubj, sa.ID())
+	sub, _ := ncs.SubscribeSync(subj)
+	defer sub.Unsubscribe()
+	ncs.Publish("foo", []byte("HELLO WORLD"))
+	ncs.Flush()
+
+	// Let's speed up the checking process.
+	sa.mu.Lock()
+	sa.sys.statsz = 10 * time.Millisecond
+	sa.sys.stmr.Reset(sa.sys.statsz)
+	sa.mu.Unlock()
+
+	_, err = sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	// Get it the second time so we can check some stats
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	m := ServerStatsMsg{}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if m.Server.ID != sa.ID() {
+		t.Fatalf("Did not match IDs")
+	}
+	if m.Stats.Connections != 1 {
+		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
+	}
+	if m.Stats.ActiveAccounts != 2 {
+		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
+	}
+	if m.Stats.Sent.Msgs != 1 {
+		t.Fatalf("Did not match sent msgs of 1, got %d", m.Stats.Sent.Msgs)
+	}
+	if m.Stats.Received.Msgs != 1 {
+		t.Fatalf("Did not match received msgs of 1, got %d", m.Stats.Received.Msgs)
+	}
+	if lr := len(m.Stats.Routes); lr != 1 {
+		t.Fatalf("Expected a route, but got %d", lr)
+	}
+
+	// Now let's prompt this server to send us the statsz
+	subj = fmt.Sprintf(serverStatsReqSubj, sa.ID())
+	msg, err = ncs.Request(subj, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to request statsz: %v", err)
+	}
+	m2 := ServerStatsMsg{}
+	if err := json.Unmarshal(msg.Data, &m2); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if m2.Server.ID != sa.ID() {
+		t.Fatalf("Did not match IDs")
+	}
+	if m2.Stats.Connections != 1 {
+		t.Fatalf("Did not match connections of 1, got %d", m2.Stats.Connections)
+	}
+	if m2.Stats.ActiveAccounts != 2 {
+		t.Fatalf("Did not match active accounts of 2, got %d", m2.Stats.ActiveAccounts)
+	}
+	if m2.Stats.Sent.Msgs != 3 {
+		t.Fatalf("Did not match sent msgs of 3, got %d", m2.Stats.Sent.Msgs)
+	}
+	if m2.Stats.Received.Msgs != 1 {
+		t.Fatalf("Did not match received msgs of 1, got %d", m2.Stats.Received.Msgs)
+	}
+	if lr := len(m2.Stats.Routes); lr != 1 {
+		t.Fatalf("Expected a route, but got %d", lr)
+	}
+
+	msg, err = ncs.Request(subj, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to request statsz: %v", err)
+	}
+	m3 := ServerStatsMsg{}
+	if err := json.Unmarshal(msg.Data, &m3); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if m3.Server.ID != sa.ID() {
+		t.Fatalf("Did not match IDs")
+	}
+	if m3.Stats.Connections != 1 {
+		t.Fatalf("Did not match connections of 1, got %d", m3.Stats.Connections)
+	}
+	if m3.Stats.ActiveAccounts != 2 {
+		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
+	}
+	if m3.Stats.Sent.Msgs != 5 {
+		t.Fatalf("Did not match sent msgs of 5, got %d", m3.Stats.Sent.Msgs)
+	}
+	if m3.Stats.Received.Msgs != 2 {
+		t.Fatalf("Did not match received msgs of 2, got %d", m3.Stats.Received.Msgs)
+	}
+	if lr := len(m3.Stats.Routes); lr != 1 {
+		t.Fatalf("Expected a route, but got %d", lr)
 	}
 }
