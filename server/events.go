@@ -296,12 +296,12 @@ func routeStat(r *client) *RouteStat {
 	rs := &RouteStat{
 		ID: r.cid,
 		Sent: DataStats{
-			Msgs:  r.outMsgs,
-			Bytes: r.outBytes,
+			Msgs:  atomic.LoadInt64(&r.outMsgs),
+			Bytes: atomic.LoadInt64(&r.outBytes),
 		},
 		Received: DataStats{
-			Msgs:  r.inMsgs,
-			Bytes: r.inBytes,
+			Msgs:  atomic.LoadInt64(&r.inMsgs),
+			Bytes: atomic.LoadInt64(&r.inBytes),
 		},
 		Pending: int(r.out.pb),
 	}
@@ -334,8 +334,8 @@ func (s *Server) sendStatsz(subj string) {
 			c.mu.Lock()
 			gs.ID = c.cid
 			gs.Sent = DataStats{
-				Msgs:  c.outMsgs,
-				Bytes: c.outBytes,
+				Msgs:  atomic.LoadInt64(&c.outMsgs),
+				Bytes: atomic.LoadInt64(&c.outBytes),
 			}
 			c.mu.Unlock()
 			// Gather matching inbound connections
@@ -343,8 +343,8 @@ func (s *Server) sendStatsz(subj string) {
 			for _, c := range gw.in {
 				c.mu.Lock()
 				if c.gw.name == name {
-					gs.Received.Msgs += c.inMsgs
-					gs.Received.Bytes += c.inBytes
+					gs.Received.Msgs += atomic.LoadInt64(&c.inMsgs)
+					gs.Received.Bytes += atomic.LoadInt64(&c.inBytes)
 					gs.NumInbound++
 				}
 				c.mu.Unlock()

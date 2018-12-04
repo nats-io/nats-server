@@ -818,7 +818,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 		t.Fatalf("Expected %q for account, got %q", accName, account)
 	}
 }
-func TestServerEventStatusZ(t *testing.T) {
+func TestServerEventStatsZ(t *testing.T) {
 	sa, optsA, sb, _, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
