@@ -105,6 +105,46 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options) {
 	return sa, optsA, sb, optsB
 }
 
+func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
+	t.Helper()
+
+	kp, _ := nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+
+	mr := &MemAccResolver{}
+
+	// Now create a system account.
+	// NOTE: This can NOT be shared directly between servers.
+	// Set via server options.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	jwt, _ := nac.Encode(okp)
+
+	mr.Store(apub, jwt)
+
+	optsA := testDefaultOptionsForGateway("A")
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.TrustedKeys = []string{pub}
+	optsA.AccountResolver = mr
+	optsA.SystemAccount = apub
+
+	sa := RunServer(optsA)
+
+	optsB := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	optsB.TrustedKeys = []string{pub}
+	optsB.AccountResolver = mr
+	optsB.SystemAccount = apub
+
+	sb := RunServer(optsB)
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+
+	return sa, optsA, sb, optsB, akp
+}
+
 func TestSystemAccount(t *testing.T) {
 	s, _ := runTrustedServer(t)
 	defer s.Shutdown()
@@ -141,13 +181,15 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 	defer ncs.Close()
 
-	sub, _ := ncs.SubscribeSync("$SYS.ACCOUNT.>")
-	defer sub.Unsubscribe()
-	ncs.Flush()
-
-	// We can't hear ourselves, so we need to create a second client to
+	// We may not be able to hear ourselves (if the event is processed
+	// before we create the sub), so we need to create a second client to
 	// trigger the connect/disconnect events.
 	acc2, akp2 := createAccount(s)
+
+	// Be explicit to only receive the event for acc2.
+	sub, _ := ncs.SubscribeSync(fmt.Sprintf("$SYS.ACCOUNT.%s.>", acc2.Name))
+	defer sub.Unsubscribe()
+	ncs.Flush()
 
 	nc, err := nats.Connect(url, createUserCreds(t, s, akp2), nats.Name("TEST EVENTS"))
 	if err != nil {
@@ -327,9 +369,8 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 
 	// Now make sure we do not hear ourselves. We optimize this for internally
 	// generated messages.
-	r := SublistResult{psubs: []*subscription{sub}}
 	s.mu.Lock()
-	s.sendInternalMsg(&r, "foo", "", nil, msg.Data)
+	s.sendInternalMsg("foo", "", nil, msg.Data)
 	s.mu.Unlock()
 
 	select {
@@ -734,5 +775,44 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	}
 	if closed != 5 {
 		t.Fatalf("Expected all new clients to be closed, only got %d of 5", closed)
+	}
+}
+
+func TestSystemAccountWithGateways(t *testing.T) {
+	sa, oa, sb, ob, akp := runTrustedGateways(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// Create a client on A that will subscribe on $SYS.ACCOUNT.>
+	urla := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
+	nca := natsConnect(t, urla, createUserCreds(t, sa, akp))
+	defer nca.Close()
+
+	sub, _ := nca.SubscribeSync("$SYS.ACCOUNT.>")
+	defer sub.Unsubscribe()
+	nca.Flush()
+	checkExpectedSubs(t, 6, sa)
+
+	// Create a client on B and see if we receive the event
+	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+	ncb := natsConnect(t, urlb, createUserCreds(t, sb, akp), nats.Name("TEST EVENTS"))
+	defer ncb.Close()
+
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	// Basic checks, could expand on that...
+	accName := sa.SystemAccount().Name
+	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", accName)) {
+		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
+	}
+	tokens := strings.Split(msg.Subject, ".")
+	if len(tokens) < 4 {
+		t.Fatalf("Expected 4 tokens, got %d", len(tokens))
+	}
+	account := tokens[2]
+	if account != accName {
+		t.Fatalf("Expected %q for account, got %q", accName, account)
 	}
 }
