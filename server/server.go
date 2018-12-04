@@ -580,8 +580,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		servers: make(map[string]*serverUpdate),
 		subs:    make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, 128),
-		orphMax: 5 * AccountConnHBInterval,
-		chkOrph: 3 * AccountConnHBInterval,
+		statsz:  eventsHBInterval,
+		orphMax: 5 * eventsHBInterval,
+		chkOrph: 3 * eventsHBInterval,
 	}
 	s.sys.client.initClient()
 	s.sys.client.echo = false
@@ -599,7 +600,10 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.initEventTracking()
 
 	// Track for dead remote servers.
-	s.startRemoteServerSweepTimer()
+	s.wrapChk(s.startRemoteServerSweepTimer)()
+
+	// Send out statsz updates periodically.
+	s.wrapChk(s.startStatszTimer)()
 
 	return nil
 }
