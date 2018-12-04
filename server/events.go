@@ -111,7 +111,6 @@ type DataStats struct {
 
 // Used for internally queueing up messages that the server wants to send.
 type pubMsg struct {
-	r    *SublistResult
 	sub  string
 	rply string
 	si   *ServerInfo
@@ -136,7 +135,6 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 		return
 	}
 	c := s.sys.client
-	acc := s.sys.account
 	sendq := s.sys.sendq
 	id := s.info.ID
 	host := s.info.Host
@@ -161,13 +159,10 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			c.pa.subject = []byte(pm.sub)
 			c.pa.size = len(b)
 			c.pa.szb = []byte(strconv.FormatInt(int64(len(b)), 10))
+			c.pa.reply = []byte(pm.rply)
 			// Add in NL
 			b = append(b, _CRLF_...)
-			// Check to see if we need to map/route to another account.
-			if acc.imports.services != nil {
-				c.checkForImportServices(acc, b)
-			}
-			c.processMsgResults(acc, pm.r, b, c.pa.subject, []byte(pm.rply), nil)
+			c.processInboundClientMsg(b)
 			c.flushClients()
 			// See if we are doing graceful shutdown.
 			if pm.last {
@@ -187,7 +182,6 @@ func (s *Server) sendShutdownEvent() {
 		return
 	}
 	subj := fmt.Sprintf(shutdownEventSubj, s.info.ID)
-	r := s.sys.account.sl.Match(subj)
 	sendq := s.sys.sendq
 	// Stop any more messages from queueing up.
 	s.sys.sendq = nil
@@ -195,19 +189,19 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.subs = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
-	sendq <- &pubMsg{r, subj, _EMPTY_, nil, nil, true}
+	sendq <- &pubMsg{subj, _EMPTY_, nil, nil, true}
 }
 
 // This will queue up a message to be sent.
 // Assumes lock is held on entry.
-func (s *Server) sendInternalMsg(r *SublistResult, sub, rply string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface{}) {
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
 	sendq := s.sys.sendq
 	// Don't hold lock while placing on the channel.
 	s.mu.Unlock()
-	sendq <- &pubMsg{r, sub, rply, si, msg, false}
+	sendq <- &pubMsg{sub, rply, si, msg, false}
 	s.mu.Lock()
 }
 
@@ -469,17 +463,15 @@ func (s *Server) enableAccountTracking(a *Account) {
 	if a == nil || !s.eventsEnabled() || a == s.sys.account {
 		return
 	}
-	acc := s.sys.account
-	sc := s.sys.client
+
+	// TODO(ik): Generate payload although message may not be sent.
+	// May need to ensure we do so only if there is a known interest.
+	// This can get complicated with gateways.
 
 	subj := fmt.Sprintf(accConnsReqSubj, a.Name)
-	r := acc.sl.Match(subj)
-	if noOutSideInterest(sc, r) {
-		return
-	}
 	reply := fmt.Sprintf(connsRespSubj, s.info.ID)
 	m := accNumConnsReq{Account: a.Name}
-	s.sendInternalMsg(r, subj, reply, &m.Server, &m)
+	s.sendInternalMsg(subj, reply, &m.Server, &m)
 }
 
 // FIXME(dlc) - make configurable.
@@ -490,13 +482,6 @@ const AccountConnHBInterval = 30 * time.Second
 // Lock should be held on entry.
 func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	if !s.eventsEnabled() || a == nil || a == s.sys.account || a == s.gacc {
-		return
-	}
-	acc := s.sys.account
-	sc := s.sys.client
-
-	r := acc.sl.Match(subj)
-	if noOutSideInterest(sc, r) {
 		return
 	}
 
@@ -519,7 +504,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	}
 	a.mu.Unlock()
 
-	s.sendInternalMsg(r, subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, "", &m.Server, &m)
 }
 
 // accConnsUpdate is called whenever there is a change to the account's
@@ -542,15 +527,9 @@ func (s *Server) accountConnectEvent(c *client) {
 		s.mu.Unlock()
 		return
 	}
-	acc := s.sys.account
-	sc := s.sys.client
 	s.mu.Unlock()
 
 	subj := fmt.Sprintf(connectEventSubj, c.acc.Name)
-	r := acc.sl.Match(subj)
-	if noOutSideInterest(sc, r) {
-		return
-	}
 
 	c.mu.Lock()
 	m := ConnectEventMsg{
@@ -568,7 +547,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	c.mu.Unlock()
 
 	s.mu.Lock()
-	s.sendInternalMsg(r, subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, "", &m.Server, &m)
 	s.mu.Unlock()
 }
 
@@ -580,15 +559,9 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 		s.mu.Unlock()
 		return
 	}
-	acc := s.sys.account
-	sc := s.sys.client
 	s.mu.Unlock()
 
 	subj := fmt.Sprintf(disconnectEventSubj, c.acc.Name)
-	r := acc.sl.Match(subj)
-	if noOutSideInterest(sc, r) {
-		return
-	}
 
 	c.mu.Lock()
 	m := DisconnectEventMsg{
@@ -616,7 +589,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	c.mu.Unlock()
 
 	s.mu.Lock()
-	s.sendInternalMsg(r, subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, "", &m.Server, &m)
 	s.mu.Unlock()
 }
 
@@ -672,26 +645,6 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	delete(s.sys.subs, string(sub.sid))
 	s.mu.Unlock()
 	c.unsubscribe(acc, sub, true)
-}
-
-func noOutSideInterest(sc *client, r *SublistResult) bool {
-	if sc == nil || r == nil {
-		return true
-	}
-	nsubs := len(r.psubs) + len(r.qsubs)
-	if nsubs == 0 {
-		return true
-	}
-	// We will always be no-echo but will determine that on delivery.
-	// Here we try to avoid generating the payload if there is only us.
-	// We only check normal subs. If we introduce queue subs into the
-	// internal subscribers we should add in the check.
-	for _, sub := range r.psubs {
-		if sub.client != sc {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *client) flushClients() {
