@@ -791,7 +791,9 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	sub, _ := nca.SubscribeSync("$SYS.ACCOUNT.>")
 	defer sub.Unsubscribe()
 	nca.Flush()
-	checkExpectedSubs(t, 6, sa)
+	// If this tests fails with wrong number after 10 seconds we may have
+	// added a new inititial subscription for the eventing system.
+	checkExpectedSubs(t, 7, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)

@@ -312,14 +312,6 @@ func routeStat(r *client) *RouteStat {
 // Actual send method for statz updates.
 // Lock should be held.
 func (s *Server) sendStatsz(subj string) {
-	acc := s.sys.account
-	sc := s.sys.client
-
-	r := acc.sl.Match(subj)
-	if noOutSideInterest(sc, r) {
-		return
-	}
-
 	m := ServerStatsMsg{}
 	updateServerUsage(&m.Stats)
 	m.Stats.Connections = len(s.clients)
@@ -361,7 +353,7 @@ func (s *Server) sendStatsz(subj string) {
 		}
 		gw.RUnlock()
 	}
-	s.sendInternalMsg(r, subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
 // Send out our statz update.
