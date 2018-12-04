@@ -3182,3 +3182,30 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 	req(t, ivan, "ivan.sub", "private")
 	req(t, derek, "derek.sub", "private")
 }
+
+// As of now, config reload does not support changes for gateways.
+// However, ensure that if a gateway is defined, one can still
+// do reload as long as we don't change the gateway spec.
+// There was an issue with the initialization of default TLS timeout
+// that caused the reload to fail.
+func TestConfigReloadNotPreventedByGateways(t *testing.T) {
+	confTemplate := `
+		listen: "127.0.0.1:-1"
+		%s
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "configs/certs/server.pem"
+				key_file: "configs/certs/key.pem"
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, "")))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Cause reload with adding a param that is supported
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(confTemplate, "max_payload: 100000"))
+}

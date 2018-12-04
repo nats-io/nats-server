@@ -220,10 +220,6 @@ func newGateway(opts *Options) (*srvGateway, error) {
 		gateway.resolver = netResolver(net.DefaultResolver)
 	}
 
-	if opts.Gateway.TLSConfig != nil && opts.Gateway.TLSTimeout == 0 {
-		opts.Gateway.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
-	}
-
 	// Copy default permissions (works if DefaultPermissions is nil)
 	gateway.defPerms = opts.Gateway.DefaultPermissions.clone()
 
