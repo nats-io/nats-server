@@ -629,6 +629,9 @@ func (c *client) readLoop() {
 	s := c.srv
 	c.in.rsz = startBufSize
 	defer s.grWG.Done()
+	if c.gw != nil && c.gw.outbound {
+		defer c.gatewayOutboundConnectionReadLoopExited()
+	}
 	c.mu.Unlock()
 
 	if nc == nil {
@@ -1489,6 +1492,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	sid := string(sub.sid)
 	acc := c.acc
 
+	updateGWs := false
 	// Subscribe here.
 	if c.subs[sid] == nil {
 		c.subs[sid] = sub
@@ -1496,6 +1500,8 @@ func (c *client) processSub(argo []byte) (err error) {
 			err = acc.sl.Insert(sub)
 			if err != nil {
 				delete(c.subs, sid)
+			} else {
+				updateGWs = c.srv.gateway.enabled
 			}
 		}
 	}
@@ -1515,6 +1521,9 @@ func (c *client) processSub(argo []byte) (err error) {
 		// If we are routing and this is a local sub, add to the route map for the associated account.
 		if kind == CLIENT || kind == SYSTEM {
 			c.srv.updateRouteSubscriptionMap(acc, sub, 1)
+			if updateGWs {
+				c.srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
+			}
 		}
 	}
 
@@ -1739,6 +1748,7 @@ func (c *client) processUnsub(arg []byte) error {
 	kind := c.kind
 	var acc *Account
 
+	updateGWs := false
 	if sub, ok = c.subs[string(sid)]; ok {
 		acc = c.acc
 		if max > 0 {
@@ -1748,6 +1758,7 @@ func (c *client) processUnsub(arg []byte) error {
 			sub.max = 0
 			unsub = true
 		}
+		updateGWs = c.srv.gateway.enabled
 	}
 	c.mu.Unlock()
 
@@ -1759,6 +1770,9 @@ func (c *client) processUnsub(arg []byte) error {
 		c.unsubscribe(acc, sub, false)
 		if acc != nil && kind == CLIENT || kind == SYSTEM {
 			c.srv.updateRouteSubscriptionMap(acc, sub, -1)
+			if updateGWs {
+				c.srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+			}
 		}
 	}
 
@@ -2089,7 +2103,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		// mode and the remote gateways have queue subs, then we need to
 		// collect the queue groups this message was sent to so that we
 		// exclude them when sending to gateways.
-		if len(r.qsubs) > 0 && c.srv.gateway.enabled && atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
+		if len(r.qsubs) > 0 && c.srv.gateway.enabled &&
+			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			qnames = &queues
 		}
 		c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, qnames)
@@ -2619,7 +2634,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	// Remove clients subscriptions.
 	if kind == CLIENT {
 		acc.sl.RemoveBatch(subs)
-	} else {
+	} else if kind == ROUTER {
 		go c.removeRemoteSubs()
 	}
 
@@ -2652,6 +2667,9 @@ func (c *client) closeConnection(reason ClosedState) {
 					} else {
 						qsubs[key] = &qsub{sub, 1}
 					}
+				}
+				if srv.gateway.enabled {
+					srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 				}
 			}
 			// Process any qsubs here.

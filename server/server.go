@@ -71,10 +71,11 @@ type Info struct {
 	Export *SubjectPermission `json:"export,omitempty"`
 
 	// Gateways Specific
-	Gateway     string   `json:"gateway,omitempty"`      // Name of the origin Gateway (sent by gateway's INFO)
-	GatewayURLs []string `json:"gateway_urls,omitempty"` // Gateway URLs in the originating cluster (sent by gateway's INFO)
-	GatewayURL  string   `json:"gateway_url,omitempty"`  // Gateway URL on that server (sent by route's INFO)
-	GatewayCmd  byte     `json:"gateway_cmd,omitempty"`  // Command code for the receiving server to know what to do
+	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
+	GatewayURLs       []string `json:"gateway_urls,omitempty"`        // Gateway URLs in the originating cluster (sent by gateway's INFO)
+	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
+	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
+	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
 }
 
 // Server is our main struct.

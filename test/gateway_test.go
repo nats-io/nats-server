@@ -249,14 +249,27 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	gAExpect(runsubRe)
 	gASend("RMSG $foo bar 2\r\nok\r\n")
 	gAExpect(runsubRe)
-	// Now have client create sub on "*", this should cause RS+ on foo
-	// and RS+ on bar.
+	// Now have client create sub on "*", this should cause RS+ on *
+	// The remote will have cleared its no-interest on foo and bar
+	// and this receiving side is supposed to be doing the same.
 	clientSend("SUB * 5\r\nPING\r\n")
 	clientExpect(pongRe)
-	expectNumberOfProtos(t, gAExpect, rsubRe, 2)
+	buf := gAExpect(rsubRe)
+	if !bytes.Contains(buf, []byte("$foo *")) {
+		t.Fatalf("Expected RS+ on %q, got %q", "*", buf)
+	}
+	// Check that the remote has cleared by sending from the client
+	// on foo and bar
+	clientSend("PUB foo 2\r\nok\r\n")
+	clientExpect(msgRe)
+	clientSend("PUB bar 2\r\nok\r\n")
+	clientExpect(msgRe)
+	// Check that A can send too and does not receive an RS-
 	gASend("RMSG $foo foo 2\r\nok\r\n")
+	expectNothing(t, gA)
 	clientExpect(msgRe)
 	gASend("RMSG $foo bar 2\r\nok\r\n")
+	expectNothing(t, gA)
 	clientExpect(msgRe)
 }
 
@@ -360,4 +373,30 @@ func TestGatewayQueue(t *testing.T) {
 		t.Fatalf("Should have receives RS- for new.* for queue, did not: %v", buf)
 	}
 	expectNothing(t, gA)
+}
+
+func TestGatewaySendAllSubs(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
+	defer gA.Close()
+
+	gASend, gAExpect := setupGatewayConn(t, gA, "A", "B")
+	gASend("PING\r\n")
+	gAExpect(pongRe)
+
+	// Bombard B with messages on different subjects.
+	// TODO(ik): Adapt if/when we change the conditions for the
+	// switch.
+	for i := 0; i < 10001; i++ {
+		gASend(fmt.Sprintf("RMSG $G foo.%d 2\r\nok\r\n", i))
+		if i < 1000 {
+			gAExpect(runsubRe)
+		}
+	}
+	// Since B has no sub, we should get 2 INFOs with start/end
+	// commands.
+	expectNumberOfProtos(t, gAExpect, infoRe, 2)
 }
