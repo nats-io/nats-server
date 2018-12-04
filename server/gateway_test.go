@@ -2771,7 +2771,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		var switchedMode bool
 		e := c.gw.insim[globalAccountName]
 		if e != nil {
-			switchedMode = e.ni == nil && e.sas
+			switchedMode = e.ni == nil && e.mode == modeInterestOnly
 		}
 		c.mu.Unlock()
 		if !switchedMode {
@@ -2784,7 +2784,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		if ei != nil {
 			e := ei.(*outsie)
 			e.RLock()
-			switchedMode = e.ni == nil && e.sas
+			switchedMode = e.ni == nil && e.mode == modeInterestOnly
 			e.RUnlock()
 		}
 		if !switchedMode {

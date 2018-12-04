@@ -47,6 +47,23 @@ const (
 	gatewayCmdAllSubsComplete byte = 3
 )
 
+// Gateway modes
+const (
+	// modeOptimistic is the default mode where a cluster will send
+	// to a gateway unless it is been told that there is no interest
+	// (this is for plain subscribers only).
+	modeOptimistic = byte(iota)
+	// modeTransitioning is when a gateway has to send too many
+	// no interest on subjects to the remote and decides that it is
+	// now time to move to modeInterestOnly (this is on a per account
+	// basis).
+	modeTransitioning
+	// modeInterestOnly means that a cluster sends all it subscriptions
+	// interest to the gateway, which in return does not send a message
+	// unless it knows that there is explicit interest.
+	modeInterestOnly
+)
+
 type srvGateway struct {
 	totalQSubs int64 //total number of queue subs in all remote gateways (used with atomic operations)
 	sync.RWMutex
@@ -116,7 +133,7 @@ type outsie struct {
 	// Indicate that all subs should be stored. This is
 	// set to true when receiving the command from the
 	// remote that we are about to receive all its subs.
-	sas bool
+	mode byte
 	// If not nil, used for no-interest for plain subs.
 	// If a subject is present in this map, it means that
 	// the remote is not interested in that subject.
@@ -133,12 +150,12 @@ type outsie struct {
 // RS- was sent to the remote gateway. When a subscription
 // is created, this is used to know if we need to send
 // an RS+ to clear the no-interest in the remote.
-// When an account is switched to perfect knowledge (we send
+// When an account is switched to modeInterestOnly (we send
 // all subs of an account to the remote), then `ni` is nil and
 // when all subs have been sent, `sap` is set to true.
 type insie struct {
-	ni  map[string]struct{} // Record if RS- was sent for given subject
-	sas bool                // Send-all-subs mode (always send RS+/-)
+	ni   map[string]struct{} // Record if RS- was sent for given subject
+	mode byte                // modeOptimistic or modeInterestOnly
 }
 
 // clone returns a deep copy of the RemoteGatewayOpts object
@@ -966,7 +983,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName []byte) {
 		c.mu.Lock()
 		e := c.gw.insim[string(accountName)]
 		if e != nil {
-			e.sas = true
+			e.mode = modeInterestOnly
 		}
 		c.mu.Unlock()
 	} else {
@@ -1018,8 +1035,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName []byte) {
 	c.mu.Lock()
 	c.queueOutbound(buf[le:])
 	c.flushOutbound()
-	closed := c.flags.isSet(clearConnection)
-	if !closed {
+	if !c.flags.isSet(clearConnection) {
 		c.Debugf("Sent queue subscriptions to gateway")
 	}
 	c.mu.Unlock()
@@ -1377,6 +1393,7 @@ func (s *Server) getInboundGatewayConnections(a *[]*client) {
 func (s *Server) getInboundGatewayConnection(name string) *client {
 	var c *client
 	s.gateway.RLock()
+	defer s.gateway.RUnlock()
 	for _, gwc := range s.gateway.in {
 		gwc.mu.Lock()
 		if gwc.gw.name == name {
@@ -1387,7 +1404,6 @@ func (s *Server) getInboundGatewayConnection(name string) *client {
 			break
 		}
 	}
-	s.gateway.RUnlock()
 	return c
 }
 
@@ -1472,10 +1488,10 @@ func (c *client) processGatewayAccountSub(accName string) error {
 }
 
 // RS- protocol received from the remote after sending messages
-// on an subject that it has no interest in (but knows about the
+// on a subject that it has no interest in (but knows about the
 // account). Mark this subject with a "no interest" marker to
-// prevent further messages send.
-// If in perfect knowledge mode or for a queue sub, remove from
+// prevent further messages being sent.
+// If in modeInterestOnly or for a queue sub, remove from
 // the sublist if present.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRUnsub(arg []byte) error {
@@ -1494,8 +1510,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		defer e.Unlock()
 		// If there is an entry, for plain sub we need
 		// to know if we should store the sub
-		useSl = queue != nil || e.sas
-	} else if queue != nil { // should not even happen...
+		useSl = queue != nil || e.mode != modeOptimistic
+	} else if queue != nil {
+		// should not even happen...
+		c.Debugf("Received RS- without prior RS+ for subject %q, queue %q", subject, queue)
 		return nil
 	} else {
 		// Plain sub, assume optimistic sends, create entry.
@@ -1508,8 +1526,7 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		key := arg
 		// m[string()] does not cause mem allocation
 		sub, ok := c.subs[string(key)]
-		// if RS- for a sub that we don't have, either a queue
-		// or in perfect knowledge mode, just ignore.
+		// if RS- for a sub that we don't have, just ignore.
 		if !ok {
 			return nil
 		}
@@ -1518,10 +1535,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 			if queue != nil {
 				atomic.AddInt64(&c.srv.gateway.totalQSubs, -1)
 			}
-			// If last, we can remove the whole entry
-			// only when not asked to store all subs, and if there
-			// is no element in the `ni` map.
-			if e.sl.Count() == 0 && !e.sas && len(e.ni) == 0 {
+			// If last, we can remove the whole entry only
+			// when in optimistic mode and there is no element
+			// in the `ni` map.
+			if e.sl.Count() == 0 && e.mode == modeOptimistic && len(e.ni) == 0 {
 				c.gw.outsim.Delete(accName)
 			}
 		}
@@ -1537,7 +1554,7 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 // For plain subs, RS+ protocol received from remote gateway if it
 // had previously sent a RS-. Clear the "no interest" marker for
 // this subject (under this account).
-// For queue subs, or if in perfect knowledge mode, register interest
+// For queue subs, or if in modeInterestOnly, register interest
 // from remote gateway.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRSub(arg []byte) error {
@@ -1575,7 +1592,7 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		e = ei.(*outsie)
 		e.Lock()
 		defer e.Unlock()
-		useSl = queue != nil || e.sas
+		useSl = queue != nil || e.mode != modeOptimistic
 	} else if queue == nil {
 		return nil
 	} else {
@@ -1664,16 +1681,16 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 		r = e.sl.Match(subj)
 		// If there is plain subs returned, we don't have to
 		// check if we should use the no-interest map because
-		// it means that we are in perfect knowledge mode.
+		// it means that we are in modeInterestOnly.
 		// Only if there is nothing returned for r.psubs that
 		// we need to check.
 		if len(r.psubs) > 0 {
 			psi = true
 		} else {
 			e.RLock()
-			// We may be in transition to perfect knowledge mode
-			// (e.sas is true), but until e.ni is nil, use it to
-			// know if we should suppress interest or not.
+			// We may be in transition to modeInterestOnly
+			// but until e.ni is nil, use it to know if we
+			// should suppress interest or not.
 			if e.ni != nil {
 				if _, inMap := e.ni[subj]; !inMap {
 					psi = true
@@ -1764,7 +1781,7 @@ func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription
 					delete(e.ni, subject)
 					sendProto = true
 				}
-			} else if e.sas {
+			} else if e.mode == modeInterestOnly {
 				// We are in the mode where we always send RS+/- protocols.
 				sendProto = true
 			}
@@ -2130,7 +2147,7 @@ func (c *client) gatewayAllSubsReceiveStart(info *Info) {
 		// checked only from this go routine, but it's a
 		// one-time event, so...
 		e.Lock()
-		e.sas = true
+		e.mode = modeTransitioning
 		e.Unlock()
 	}
 }
@@ -2154,6 +2171,7 @@ func (c *client) gatewayAllSubsReceiveComplete(info *Info) {
 		// many go-routines calling gatewayInterest()
 		e.Lock()
 		e.ni = nil
+		e.mode = modeInterestOnly
 		e.Unlock()
 	}
 }
