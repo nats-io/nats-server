@@ -375,10 +375,13 @@ func TestSystemAccountConnectionLimits(t *testing.T) {
 		defer ncb1.Close()
 	}
 
-	total := sa.NumClients() + sb.NumClients()
-	if total > int(nac.Limits.Conn) {
-		t.Fatalf("Expected only %d connections, was allowed to connect %d", nac.Limits.Conn, total)
-	}
+	checkFor(t, 1*time.Second, 50*time.Millisecond, func() error {
+		total := sa.NumClients() + sb.NumClients()
+		if total > int(nac.Limits.Conn) {
+			return fmt.Errorf("Expected only %d connections, was allowed to connect %d", nac.Limits.Conn, total)
+		}
+		return nil
+	})
 }
 
 // Test that the remote accounting works when a server is started some time later.
@@ -527,7 +530,7 @@ func TestSystemAccountConnectionLimitsServerShutdownForced(t *testing.T) {
 	sa.mu.Unlock()
 
 	// We should eventually be able to connect.
-	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 		if c, err := nats.Connect(urlA, createUserCreds(t, sa, akp)); err != nil {
 			return err
 		} else {
@@ -649,9 +652,12 @@ func TestAccountConnsLimitExceededAfterUpdate(t *testing.T) {
 	}
 
 	// We should have max here.
-	if total := s.NumClients(); total != acc.MaxActiveConnections() {
-		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
-	}
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if total := s.NumClients(); total != acc.MaxActiveConnections() {
+			return fmt.Errorf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
+		}
+		return nil
+	})
 
 	// Now change limits to make current connections over the limit.
 	nac = jwt.NewAccountClaims(pub)
