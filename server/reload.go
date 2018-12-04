@@ -499,6 +499,7 @@ func (s *Server) Reload() error {
 	}
 	clientOrgPort := s.clientActualPort
 	clusterOrgPort := s.clusterActualPort
+	gatewayOrgPort := s.gatewayActualPort
 	s.mu.Unlock()
 
 	// Apply flags over config file settings.
@@ -514,6 +515,9 @@ func (s *Server) Reload() error {
 	// We don't do that for cluster, so check against -1.
 	if newOpts.Cluster.Port == -1 {
 		newOpts.Cluster.Port = clusterOrgPort
+	}
+	if newOpts.Gateway.Port == -1 {
+		newOpts.Gateway.Port = gatewayOrgPort
 	}
 
 	if err := s.reloadOptions(newOpts); err != nil {

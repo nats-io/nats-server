@@ -2190,6 +2190,12 @@ func setBaselineOptions(opts *Options) {
 		if opts.Gateway.Host == "" {
 			opts.Gateway.Host = DEFAULT_HOST
 		}
+		if opts.Gateway.TLSTimeout == 0 {
+			opts.Gateway.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
+		}
+		if opts.Gateway.AuthTimeout == 0 {
+			opts.Gateway.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+		}
 	}
 }
 

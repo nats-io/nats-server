@@ -63,10 +63,9 @@ func RunServer(opts *Options) *Server {
 	if opts == nil {
 		opts = DefaultOptions()
 	}
-	s := New(opts)
-
-	if s == nil {
-		panic("No NATS Server object returned.")
+	s, err := NewServer(opts)
+	if err != nil || s == nil {
+		panic(fmt.Sprintf("No NATS Server object returned: %v", err))
 	}
 
 	if !opts.NoLog {
