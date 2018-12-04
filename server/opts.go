@@ -136,6 +136,7 @@ type Options struct {
 	TrustedKeys      []string              `json:"-"`
 	TrustedOperators []*jwt.OperatorClaims `json:"-"`
 	AccountResolver  AccountResolver       `json:"-"`
+	resolverPreloads map[string]string
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -543,6 +544,24 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			if o.AccountResolver == nil {
 				err := &configErr{tk, fmt.Sprintf("error parsing account resolver, should be MEM or URL(\"url\")")}
 				errors = append(errors, err)
+			}
+		case "resolver_preload":
+			mp, ok := v.(map[string]interface{})
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("preload should be a map of key:jwt")}
+				errors = append(errors, err)
+				continue
+			}
+			o.resolverPreloads = make(map[string]string)
+			for key, val := range mp {
+				tk, val = unwrapValue(val)
+				if jwt, ok := val.(string); !ok {
+					err := &configErr{tk, fmt.Sprintf("preload map value should be a string jwt")}
+					errors = append(errors, err)
+					continue
+				} else {
+					o.resolverPreloads[key] = jwt
+				}
 			}
 		case "system_account", "system":
 			if sa, ok := v.(string); !ok {

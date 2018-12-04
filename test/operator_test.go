@@ -233,3 +233,20 @@ func TestOperatorSigningKeys(t *testing.T) {
 	}
 	nc.Close()
 }
+
+func TestOperatorMemResolverPreload(t *testing.T) {
+	s, opts := RunServerWithConfig("./configs/resolver_preload.conf")
+
+	// Make sure we can look up the account.
+	acc := s.LookupAccount("ADM2CIIL3RWXBA6T2HW3FODNCQQOUJEHHQD6FKCPVAMHDNTTSMO73ROX")
+	if acc == nil {
+		t.Fatalf("Expected to properly lookup account")
+	}
+	sacc := s.SystemAccount()
+	if sacc == nil {
+		t.Fatalf("Expected to have system account registered")
+	}
+	if sacc.Name != opts.SystemAccount {
+		t.Fatalf("System account does not match, wanted %q, got %q", opts.SystemAccount, sacc.Name)
+	}
+}

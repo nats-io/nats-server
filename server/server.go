@@ -328,9 +328,18 @@ func (s *Server) configureAccounts() error {
 	for _, acc := range s.opts.Accounts {
 		s.registerAccount(acc)
 	}
+
 	// Check for configured account resolvers.
 	if opts.AccountResolver != nil {
 		s.accResolver = opts.AccountResolver
+		if len(opts.resolverPreloads) > 0 {
+			if _, ok := s.accResolver.(*MemAccResolver); !ok {
+				return fmt.Errorf("Resolver preloads only available for MemAccResolver")
+			}
+			for k, v := range opts.resolverPreloads {
+				s.accResolver.Store(k, v)
+			}
+		}
 	}
 
 	// Set the system account if it was configured.
