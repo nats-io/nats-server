@@ -637,6 +637,22 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
 		case "accounts":
 			diffOpts = append(diffOpts, &accountsOption{})
+		case "gateway":
+			// Not supported for now, but report warning if configuration of gateway
+			// is actually changed so that user knows that it won't take effect.
+
+			// Any deep-equal is likely to fail for when there is a TLSConfig. so
+			// remove for the test.
+			tmpOld := oldValue.(GatewayOpts)
+			tmpNew := newValue.(GatewayOpts)
+			tmpOld.TLSConfig = nil
+			tmpNew.TLSConfig = nil
+			// If there is really a change prevents reload.
+			if !reflect.DeepEqual(tmpOld, tmpNew) {
+				// See TODO(ik) note below about printing old/new values.
+				return nil, fmt.Errorf("Config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
 		case "nolog", "nosigs":
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.
@@ -649,6 +665,11 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 			fallthrough
 		default:
+			// TODO(ik): Implement String() on those options to have a nice print.
+			// %v is difficult to figure what's what, %+v print private fields and
+			// would print passwords. Tried json.Marshal but it is too verbose for
+			// the URL array.
+
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("Config reload not supported for %s: old=%v, new=%v",
 				field.Name, oldValue, newValue)
