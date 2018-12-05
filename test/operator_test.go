@@ -136,7 +136,11 @@ func createAccountForOperatorKey(t *testing.T, s *server.Server, seed []byte) (*
 	if err := s.AccountResolver().Store(pub, jwt); err != nil {
 		t.Fatalf("Account Resolver returned an error: %v", err)
 	}
-	return s.LookupAccount(pub), akp
+	acc, err := s.LookupAccount(pub)
+	if err != nil {
+		t.Fatalf("Error looking up account: %v", err)
+	}
+	return acc, akp
 }
 
 func createAccount(t *testing.T, s *server.Server) (*server.Account, nkeys.KeyPair) {
@@ -238,7 +242,7 @@ func TestOperatorMemResolverPreload(t *testing.T) {
 	s, opts := RunServerWithConfig("./configs/resolver_preload.conf")
 
 	// Make sure we can look up the account.
-	acc := s.LookupAccount("ADM2CIIL3RWXBA6T2HW3FODNCQQOUJEHHQD6FKCPVAMHDNTTSMO73ROX")
+	acc, _ := s.LookupAccount("ADM2CIIL3RWXBA6T2HW3FODNCQQOUJEHHQD6FKCPVAMHDNTTSMO73ROX")
 	if acc == nil {
 		t.Fatalf("Expected to properly lookup account")
 	}

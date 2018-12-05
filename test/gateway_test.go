@@ -139,7 +139,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 
 func TestGatewaySubjectInterest(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
-	fooAcc := &server.Account{Name: "$foo"}
+	fooAcc := server.NewAccount("$foo")
 	ob.Accounts = []*server.Account{fooAcc}
 	ob.Users = []*server.User{&server.User{Username: "ivan", Password: "password", Account: fooAcc}}
 	sb := runGatewayServer(ob)
@@ -275,7 +275,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 
 func TestGatewayQueue(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
-	fooAcc := &server.Account{Name: "$foo"}
+	fooAcc := server.NewAccount("$foo")
 	ob.Accounts = []*server.Account{fooAcc}
 	ob.Users = []*server.User{&server.User{Username: "ivan", Password: "password", Account: fooAcc}}
 	sb := runGatewayServer(ob)

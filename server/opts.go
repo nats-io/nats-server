@@ -532,8 +532,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				items := resolverRe.FindStringSubmatch(str)
 				if len(items) == 2 {
 					url := items[1]
+					_, err := parseURL(url, "account resolver")
+					if err != nil {
+						errors = append(errors, &configErr{tk, err.Error()})
+						continue
+					}
 					if ur, err := NewURLAccResolver(url); err != nil {
-						err := &configErr{tk, fmt.Sprintf("URL account resolver error: %v", err)}
+						err := &configErr{tk, err.Error()}
 						errors = append(errors, err)
 						continue
 					} else {
@@ -1017,7 +1022,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				*errors = append(*errors, err)
 				continue
 			}
-			opts.Accounts = append(opts.Accounts, &Account{Name: ns})
+			opts.Accounts = append(opts.Accounts, NewAccount(ns))
 			m[ns] = struct{}{}
 		}
 	// More common map entry
@@ -1045,7 +1050,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				*errors = append(*errors, err)
 				continue
 			}
-			acc := &Account{Name: aname}
+			acc := NewAccount(aname)
 			opts.Accounts = append(opts.Accounts, acc)
 
 			for k, v := range mv {
@@ -1958,7 +1963,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		pool := x509.NewCertPool()
 		ok := pool.AppendCertsFromPEM(rootPEM)
 		if !ok {
-			return nil, fmt.Errorf("failed to parse root ca certificate")
+			return nil, fmt.Errorf("Failed to parse root ca certificate")
 		}
 		config.ClientCAs = pool
 	}
@@ -2362,7 +2367,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		// flags).
 		fs.Parse(args)
 	} else if opts.CheckConfig {
-		return nil, fmt.Errorf("must specify [-c, --config] option to check configuration file syntax")
+		return nil, fmt.Errorf("Must specify [-c, --config] option to check configuration file syntax")
 	}
 
 	// Special handling of some flags
@@ -2502,7 +2507,7 @@ func processSignal(signal string) error {
 	if l := len(commandAndPid); l == 2 {
 		pid = maybeReadPidFile(commandAndPid[1])
 	} else if l > 2 {
-		return fmt.Errorf("invalid signal parameters: %v", commandAndPid[2:])
+		return fmt.Errorf("Invalid signal parameters: %v", commandAndPid[2:])
 	}
 	if err := ProcessSignal(Command(commandAndPid[0]), pid); err != nil {
 		return err

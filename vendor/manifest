@@ -5,7 +5,7 @@
 			"importpath": "github.com/nats-io/jwt",
 			"repository": "https://github.com/nats-io/jwt",
 			"vcs": "git",
-			"revision": "1f8635961c5122b7410998050fd9616afeb28d92",
+			"revision": "f26fb76c5f45b9fe3e657a1135d795079cecffac",
 			"branch": "master",
 			"notests": true
 		},
@@ -13,7 +13,7 @@
 			"importpath": "github.com/nats-io/nkeys",
 			"repository": "https://github.com/nats-io/nkeys",
 			"vcs": "git",
-			"revision": "cdc461ca8f466aeeea6eca667cde553efe40bc31",
+			"revision": "1546a3320a8f195a5b5c84aef8309377c2e411d5",
 			"branch": "master",
 			"notests": true
 		},

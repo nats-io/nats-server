@@ -117,8 +117,9 @@ func (c *client) removeReplySub(sub *subscription) {
 	// Lookup the account based on sub.sid.
 	if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
 		// First part of SID for route is account name.
-		acc := c.srv.LookupAccount(string(sub.sid[:i]))
-		acc.sl.Remove(sub)
+		if acc, _ := c.srv.LookupAccount(string(sub.sid[:i])); acc != nil {
+			acc.sl.Remove(sub)
+		}
 		c.mu.Lock()
 		c.removeReplySubTimeout(sub)
 		c.mu.Unlock()
@@ -649,7 +650,7 @@ func (c *client) removeRemoteSubs() {
 		accountName := strings.Fields(key)[0]
 		ase := as[accountName]
 		if ase == nil {
-			acc := srv.LookupAccount(accountName)
+			acc, _ := srv.LookupAccount(accountName)
 			if acc == nil {
 				continue
 			}
@@ -704,7 +705,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
 	// Lookup the account
-	acc := c.srv.LookupAccount(accountName)
+	acc, _ := c.srv.LookupAccount(accountName)
 	if acc == nil {
 		c.Debugf("Unknown account %q for subject %q", accountName, subject)
 		// Mark this account as not interested since we received a RS- and we
@@ -773,7 +774,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	// Lookup the account
 	// FIXME(dlc) - This may start having lots of contention?
 	accountName := string(args[0])
-	acc := c.srv.LookupAccount(accountName)
+	acc, _ := c.srv.LookupAccount(accountName)
 	if acc == nil {
 		if !srv.NewAccountsAllowed() {
 			c.Debugf("Unknown account %q for subject %q", accountName, sub.subject)
@@ -796,7 +797,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
-	if c.msubs > 0 && len(c.subs) >= c.msubs {
+	if c.subsExceeded() {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
 		return nil
@@ -1023,7 +1024,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 	}
 
-	c := &client{srv: s, nc: conn, opts: clientOpts{}, kind: ROUTER, route: r}
+	c := &client{srv: s, nc: conn, opts: clientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r}
 
 	// Grab server variables
 	s.mu.Lock()

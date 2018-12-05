@@ -483,7 +483,7 @@ func TestJWTAccountRenew(t *testing.T) {
 
 	// Update the account
 	addAccountToMemResolver(s, apub, ajwt)
-	acc := s.LookupAccount(apub)
+	acc, _ := s.LookupAccount(apub)
 	if acc == nil {
 		t.Fatalf("Expected to retrive the account")
 	}
@@ -518,7 +518,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 
 	addAccountToMemResolver(s, apub, ajwt)
 	// Force it to be loaded by the server and start the expiration timer.
-	acc := s.LookupAccount(apub)
+	acc, _ := s.LookupAccount(apub)
 	if acc == nil {
 		t.Fatalf("Could not retrieve account for %q", apub)
 	}
@@ -585,7 +585,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 
 	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	acc := s.LookupAccount(fooPub)
+	acc, _ := s.LookupAccount(fooPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
@@ -622,7 +622,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
 
-	acc = s.LookupAccount(barPub)
+	acc, _ = s.LookupAccount(barPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
@@ -814,7 +814,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	barAC = jwt.NewAccountClaims(barPub)
 	barJWT, _ = barAC.Encode(okp)
 	addAccountToMemResolver(s, barPub, barJWT)
-	acc := s.LookupAccount(barPub)
+	acc, _ := s.LookupAccount(barPub)
 	s.updateAccountClaims(acc, barAC)
 
 	checkShadow(0)
@@ -832,8 +832,8 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC = jwt.NewAccountClaims(fooPub)
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
-
+	acc, _ = s.LookupAccount(fooPub)
+	s.updateAccountClaims(acc, fooAC)
 	checkShadow(0)
 
 	// Now add it in but with permission required.
@@ -841,7 +841,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC.Exports.Add(streamExport)
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
+	s.updateAccountClaims(acc, fooAC)
 
 	checkShadow(0)
 
@@ -851,7 +851,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC.Exports.Add(streamExport)
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
+	s.updateAccountClaims(acc, fooAC)
 
 	checkShadow(1)
 }
@@ -877,7 +877,7 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 
 	addAccountToMemResolver(s, fooPub, fooJWT)
 
-	acc := s.LookupAccount(fooPub)
+	acc, _ := s.LookupAccount(fooPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
@@ -978,7 +978,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 
 	// Check to make sure we have the limit set.
 	// Account first
-	fooAcc := s.LookupAccount(fooPub)
+	fooAcc, _ := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.msubs != 10 {
 		fooAcc.mu.RUnlock()
@@ -1048,7 +1048,7 @@ func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	fooAcc := s.LookupAccount(fooPub)
+	fooAcc, _ := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.msubs != 10 {
 		fooAcc.mu.RUnlock()
@@ -1121,7 +1121,7 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 
 	// Check to make sure we have the limit set.
 	// Account first
-	fooAcc := s.LookupAccount(fooPub)
+	fooAcc, _ := s.LookupAccount(fooPub)
 	fooAcc.mu.RLock()
 	if fooAcc.mpay != 8 {
 		fooAcc.mu.RUnlock()
@@ -1325,7 +1325,8 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(s.LookupAccount(fooPub), fooAC)
+	acc, _ := s.LookupAccount(fooPub)
+	s.updateAccountClaims(acc, fooAC)
 
 	// Send Another Request
 	parseAsyncA("PUB foo 2\r\nhi\r\nPING\r\n")
@@ -1356,7 +1357,8 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(s.LookupAccount(barPub), barAC)
+	acc, _ = s.LookupAccount(barPub)
+	s.updateAccountClaims(acc, barAC)
 
 	// Now it should work again.
 	// Send Another Request
@@ -1406,7 +1408,7 @@ func TestAccountURLResolver(t *testing.T) {
 	opts.TrustedKeys = []string{pub}
 	defer s.Shutdown()
 
-	acc := s.LookupAccount(apub)
+	acc, _ := s.LookupAccount(apub)
 	if acc == nil {
 		t.Fatalf("Expected to receive an account")
 	}
@@ -1450,7 +1452,7 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 	opts.TrustedKeys = []string{pub}
 	defer s.Shutdown()
 
-	acc := s.LookupAccount(apub)
+	acc, _ := s.LookupAccount(apub)
 	if acc != nil {
 		t.Fatalf("Expected to not receive an account due to timeout")
 	}

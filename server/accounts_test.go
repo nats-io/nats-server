@@ -102,10 +102,7 @@ func TestAccountIsolation(t *testing.T) {
 
 func TestAccountFromOptions(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Accounts = []*Account{
-		&Account{Name: "foo"},
-		&Account{Name: "bar"},
-	}
+	opts.Accounts = []*Account{NewAccount("foo"), NewAccount("bar")}
 	s := New(&opts)
 
 	ta := s.numReservedAccounts() + 2
@@ -113,8 +110,8 @@ func TestAccountFromOptions(t *testing.T) {
 		t.Fatalf("Expected to have a server with %d total accounts, got %v", ta, la)
 	}
 	// Check that sl is filled in.
-	fooAcc := s.LookupAccount("foo")
-	barAcc := s.LookupAccount("bar")
+	fooAcc, _ := s.LookupAccount("foo")
+	barAcc, _ := s.LookupAccount("bar")
 	if fooAcc == nil || barAcc == nil {
 		t.Fatalf("Error retrieving accounts for 'foo' and 'bar'")
 	}
@@ -192,8 +189,8 @@ func TestActiveAccounts(t *testing.T) {
 	}
 
 	// Make sure the Accounts track clients.
-	foo := s.LookupAccount("foo")
-	bar := s.LookupAccount("bar")
+	foo, _ := s.LookupAccount("foo")
+	bar, _ := s.LookupAccount("bar")
 	if foo == nil || bar == nil {
 		t.Fatalf("Error looking up accounts")
 	}
@@ -1188,8 +1185,8 @@ func TestAccountMapsUsers(t *testing.T) {
 		t.Fatalf("Unexpected error parsing config file: %v", err)
 	}
 	s := New(opts)
-	synadia := s.LookupAccount("synadia")
-	nats := s.LookupAccount("nats")
+	synadia, _ := s.LookupAccount("synadia")
+	nats, _ := s.LookupAccount("nats")
 
 	if synadia == nil || nats == nil {
 		t.Fatalf("Expected non nil accounts during lookup")
@@ -1276,7 +1273,7 @@ func TestAccountGlobalDefault(t *testing.T) {
 	opts := defaultServerOptions
 	s := New(&opts)
 
-	if acc := s.LookupAccount(globalAccountName); acc == nil {
+	if acc, _ := s.LookupAccount(globalAccountName); acc == nil {
 		t.Fatalf("Expected a global default account on a new server, got none.")
 	}
 	// Make sure we can not create one with same name..
@@ -1295,16 +1292,16 @@ func TestAccountGlobalDefault(t *testing.T) {
 
 func TestAccountCheckStreamImportsEqual(t *testing.T) {
 	// Create bare accounts for this test
-	fooAcc := &Account{Name: "foo"}
+	fooAcc := NewAccount("foo")
 	if err := fooAcc.AddStreamExport(">", nil); err != nil {
 		t.Fatalf("Error adding stream export: %v", err)
 	}
 
-	barAcc := &Account{Name: "bar"}
+	barAcc := NewAccount("bar")
 	if err := barAcc.AddStreamImport(fooAcc, "foo", "myPrefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
-	bazAcc := &Account{Name: "baz"}
+	bazAcc := NewAccount("baz")
 	if err := bazAcc.AddStreamImport(fooAcc, "foo", "myPrefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
@@ -1327,11 +1324,11 @@ func TestAccountCheckStreamImportsEqual(t *testing.T) {
 
 	// Create another account that is named "foo". We want to make sure
 	// that the comparison still works (based on account name, not pointer)
-	newFooAcc := &Account{Name: "foo"}
+	newFooAcc := NewAccount("foo")
 	if err := newFooAcc.AddStreamExport(">", nil); err != nil {
 		t.Fatalf("Error adding stream export: %v", err)
 	}
-	batAcc := &Account{Name: "bat"}
+	batAcc := NewAccount("bat")
 	if err := batAcc.AddStreamImport(newFooAcc, "foo", "myPrefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
@@ -1346,15 +1343,15 @@ func TestAccountCheckStreamImportsEqual(t *testing.T) {
 	}
 
 	// Test with account with different "from"
-	expAcc := &Account{Name: "new_acc"}
+	expAcc := NewAccount("new_acc")
 	if err := expAcc.AddStreamExport(">", nil); err != nil {
 		t.Fatalf("Error adding stream export: %v", err)
 	}
-	aAcc := &Account{Name: "a"}
+	aAcc := NewAccount("a")
 	if err := aAcc.AddStreamImport(expAcc, "bar", ""); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
-	bAcc := &Account{Name: "b"}
+	bAcc := NewAccount("b")
 	if err := bAcc.AddStreamImport(expAcc, "baz", ""); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
@@ -1363,11 +1360,11 @@ func TestAccountCheckStreamImportsEqual(t *testing.T) {
 	}
 
 	// Test with account with different "prefix"
-	aAcc = &Account{Name: "a"}
+	aAcc = NewAccount("a")
 	if err := aAcc.AddStreamImport(expAcc, "bar", "prefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
-	bAcc = &Account{Name: "b"}
+	bAcc = NewAccount("b")
 	if err := bAcc.AddStreamImport(expAcc, "bar", "diff_prefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}
@@ -1376,11 +1373,11 @@ func TestAccountCheckStreamImportsEqual(t *testing.T) {
 	}
 
 	// Test with account with different "name"
-	expAcc = &Account{Name: "diff_name"}
+	expAcc = NewAccount("diff_name")
 	if err := expAcc.AddStreamExport(">", nil); err != nil {
 		t.Fatalf("Error adding stream export: %v", err)
 	}
-	bAcc = &Account{Name: "b"}
+	bAcc = NewAccount("b")
 	if err := bAcc.AddStreamImport(expAcc, "bar", "prefix"); err != nil {
 		t.Fatalf("Error adding stream import: %v", err)
 	}

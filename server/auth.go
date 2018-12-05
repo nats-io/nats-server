@@ -207,13 +207,21 @@ func (s *Server) configureAuthorization() {
 		if opts.Nkeys != nil {
 			s.nkeys = make(map[string]*NkeyUser)
 			for _, u := range opts.Nkeys {
-				s.nkeys[u.Nkey] = u
+				copy := u.clone()
+				if u.Account != nil {
+					copy.Account = s.accounts[u.Account.Name]
+				}
+				s.nkeys[u.Nkey] = copy
 			}
 		}
 		if opts.Users != nil {
 			s.users = make(map[string]*User)
 			for _, u := range opts.Users {
-				s.users[u.Username] = u
+				copy := u.clone()
+				if u.Account != nil {
+					copy.Account = s.accounts[u.Account.Name]
+				}
+				s.users[u.Username] = copy
 			}
 		}
 		s.assignGlobalAccountToOrphanUsers()
@@ -319,7 +327,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	// If we have a jwt and a userClaim, make sure we have the Account, etc associated.
 	// We need to look up the account. This will use an account resolver if one is present.
 	if juc != nil {
-		if acc = s.LookupAccount(juc.Issuer); acc == nil {
+		if acc, _ = s.LookupAccount(juc.Issuer); acc == nil {
 			c.Debugf("Account JWT can not be found")
 			return false
 		}

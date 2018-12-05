@@ -249,7 +249,7 @@ func createVanityKey(keyType, vanity, entropy string, max int) nkeys.KeyPair {
 		fmt.Fprintf(os.Stderr, "\r\033[mcomputing\033[m %s ", string(spin))
 		kp := genKeyPair(pre, entropy)
 		pub, _ := kp.PublicKey()
-		if bytes.HasPrefix([]byte(pub)[1:], []byte(vanity)) {
+		if strings.HasPrefix(pub[1:], vanity) {
 			fmt.Fprintf(os.Stderr, "\r")
 			return kp
 		}
@@ -279,15 +279,6 @@ func readKeyFile(filename string) []byte {
 		log.Fatalf("Could not find a valid key")
 	}
 	return key
-}
-
-func isValidLeadingByte(c byte) bool {
-	switch c {
-	case 'S', 'P', 'N', 'C', 'O', 'A', 'U':
-		return true
-	default:
-		return false
-	}
 }
 
 func wipeSlice(buf []byte) {
