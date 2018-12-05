@@ -310,6 +310,19 @@ func (c *client) initClient() {
 	}
 }
 
+// RemoteAddress expose the Address of the client connection,
+// nil when not connected or unknown
+func (c *client) RemoteAddress() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.nc == nil {
+		return nil
+	}
+
+	return c.nc.RemoteAddr()
+}
+
 // RegisterUser allows auth to call back into a new client
 // with the authenticated user. This is used to map any permissions
 // into the client.

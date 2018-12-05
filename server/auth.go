@@ -16,6 +16,7 @@ package server
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -35,6 +36,8 @@ type ClientAuthentication interface {
 	GetTLSConnectionState() *tls.ConnectionState
 	// Optionally map a user after auth.
 	RegisterUser(*User)
+	// RemoteAddress expose the connection information of the client
+	RemoteAddress() net.Addr
 }
 
 // User is for multiple accounts/users.
