@@ -332,3 +332,54 @@ func TestTLSConnectionCurvePref(t *testing.T) {
 		t.Fatalf("Expected to receive a message over the TLS connection")
 	}
 }
+
+type captureSlowConsumerLogger struct {
+	dummyLogger
+	ch    chan string
+	gotIt bool
+}
+
+func (l *captureSlowConsumerLogger) Noticef(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "Slow Consumer") {
+		l.Lock()
+		if !l.gotIt {
+			l.gotIt = true
+			l.ch <- msg
+		}
+		l.Unlock()
+	}
+}
+
+func TestTLSTimeoutNotReportSlowConsumer(t *testing.T) {
+	oa, err := server.ProcessConfigFile("./configs/srv_a_tls.conf")
+	if err != nil {
+		t.Fatalf("Unable to load config file: %v", err)
+	}
+
+	// Override TLSTimeout to very small value so that handshake fails
+	oa.Cluster.TLSTimeout = 0.0000001
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	ch := make(chan string, 1)
+	cscl := &captureSlowConsumerLogger{ch: ch}
+	sa.SetLogger(cscl, false, false)
+
+	ob, err := server.ProcessConfigFile("./configs/srv_b_tls.conf")
+	if err != nil {
+		t.Fatalf("Unable to load config file: %v", err)
+	}
+
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	// Watch the logger for a bit and make sure we don't get any
+	// Slow Consumer error.
+	select {
+	case e := <-ch:
+		t.Fatalf("Unexpected slow consumer error: %s", e)
+	case <-time.After(500 * time.Millisecond):
+		// ok
+	}
+}
