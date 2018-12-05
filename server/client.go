@@ -603,9 +603,23 @@ func (c *client) flushOutbound() bool {
 			c.out.pb -= attempted
 		}
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			atomic.AddInt64(&srv.slowConsumers, 1)
-			c.clearConnection(SlowConsumerWriteDeadline)
-			c.Noticef("Slow Consumer Detected: WriteDeadline of %v Exceeded", c.out.wdl)
+			// report slow consumer error
+			sce := true
+			if tlsConn, ok := c.nc.(*tls.Conn); ok {
+				if !tlsConn.ConnectionState().HandshakeComplete {
+					// Likely a TLSTimeout error instead...
+					c.clearConnection(TLSHandshakeError)
+					// Would need to coordinate with tlstimeout()
+					// to avoid double logging, so skip logging
+					// here, and don't report a slow consumer error.
+					sce = false
+				}
+			}
+			if sce {
+				atomic.AddInt64(&srv.slowConsumers, 1)
+				c.clearConnection(SlowConsumerWriteDeadline)
+				c.Noticef("Slow Consumer Detected: WriteDeadline of %v Exceeded", c.out.wdl)
+			}
 		} else {
 			c.clearConnection(WriteError)
 			c.Debugf("Error flushing: %v", err)
