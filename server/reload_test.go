@@ -3186,8 +3186,6 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 // As of now, config reload does not support changes for gateways.
 // However, ensure that if a gateway is defined, one can still
 // do reload as long as we don't change the gateway spec.
-// There was an issue with the initialization of default TLS timeout
-// that caused the reload to fail.
 func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 	confTemplate := `
 		listen: "127.0.0.1:-1"
@@ -3198,14 +3196,27 @@ func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 			tls {
 				cert_file: "configs/certs/server.pem"
 				key_file: "configs/certs/key.pem"
+				timeout: %s
 			}
+			gateways [
+				{
+					name: "B"
+					url: "nats://localhost:8888"
+				}
+			]
 		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, "")))
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, "", "5")))
 	defer os.Remove(conf)
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	// Cause reload with adding a param that is supported
-	reloadUpdateConfig(t, s, conf, fmt.Sprintf(confTemplate, "max_payload: 100000"))
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(confTemplate, "max_payload: 100000", "5"))
+
+	// Now update gateway, should fail to reload.
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, "max_payload: 100000", "3")))
+	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), "not supported for Gateway") {
+		t.Fatalf("Expected Reload to return a not supported error, got %v", err)
+	}
 }
