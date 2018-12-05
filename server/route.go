@@ -478,7 +478,8 @@ func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
 		localSubs  = _localSubs[:0]
 	)
 	// FIXME(dlc) - Add account scoping.
-	s.gacc.sl.localSubs(&localSubs)
+	gacc := s.globalAccount()
+	gacc.sl.localSubs(&localSubs)
 
 	route.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
 		subj := string(sub.subject)
