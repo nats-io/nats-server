@@ -390,6 +390,19 @@ func (c *client) initClient() {
 	}
 }
 
+// RemoteAddress expose the Address of the client connection,
+// nil when not connected or unknown
+func (c *client) RemoteAddress() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.nc == nil {
+		return nil
+	}
+
+	return c.nc.RemoteAddr()
+}
+
 // Helper function to report errors.
 func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	if err == ErrTooManyAccountConnections {
