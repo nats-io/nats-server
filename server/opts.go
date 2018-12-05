@@ -2500,7 +2500,7 @@ func processSignal(signal string) error {
 		commandAndPid = strings.Split(signal, "=")
 	)
 	if l := len(commandAndPid); l == 2 {
-		pid = commandAndPid[1]
+		pid = maybeReadPidFile(commandAndPid[1])
 	} else if l > 2 {
 		return fmt.Errorf("invalid signal parameters: %v", commandAndPid[2:])
 	}
@@ -2509,4 +2509,15 @@ func processSignal(signal string) error {
 	}
 	os.Exit(0)
 	return nil
+}
+
+// maybeReadPidFile returns a PID or Windows service name obtained via the following method:
+// 1. Try to open a file with path "pidStr" (absolute or relative).
+// 2. If such a file exists and can be read, return its contents.
+// 3. Otherwise, return the original "pidStr" string.
+func maybeReadPidFile(pidStr string) string {
+	if b, err := ioutil.ReadFile(pidStr); err == nil {
+		return string(b)
+	}
+	return pidStr
 }
