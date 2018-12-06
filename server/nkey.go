@@ -23,13 +23,17 @@ const (
 	nonceLen    = 15 // base64.RawURLEncoding.EncodedLen(nonceRawLen)
 )
 
-// nonceRequired tells us if we should send a nonce.
-// Assumes server lock is held
-func (s *Server) nonceRequired() bool {
-	s.optsMu.RLock()
-	defer s.optsMu.RUnlock()
+// NonceRequired tells us if we should send a nonce.
+func (s *Server) NonceRequired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nonceRequired()
+}
 
-	return len(s.opts.Nkeys) > 0 || len(s.opts.TrustedKeys) > 0
+// nonceRequired tells us if we should send a nonce.
+// Lock should be held on entry.
+func (s *Server) nonceRequired() bool {
+	return len(s.nkeys) > 0 || len(s.trustedKeys) > 0
 }
 
 // Generate a nonce for INFO challenge.

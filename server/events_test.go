@@ -1041,7 +1041,7 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
 	}
-	if m.Stats.Sent.Msgs != 2 {
+	if m.Stats.Sent.Msgs != 1 {
 		t.Fatalf("Did not match sent msgs of 1, got %d", m.Stats.Sent.Msgs)
 	}
 	if m.Stats.Received.Msgs != 1 {
