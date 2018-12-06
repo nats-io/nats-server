@@ -298,6 +298,9 @@ func nextServerOpts(opts *Options) *Options {
 	nopts.Port = -1
 	nopts.Cluster.Port = -1
 	nopts.HTTPPort = -1
+	if nopts.Gateway.Name != "" {
+		nopts.Gateway.Port = -1
+	}
 	return &nopts
 }
 

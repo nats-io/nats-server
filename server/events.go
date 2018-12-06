@@ -98,9 +98,11 @@ type accNumConnsReq struct {
 }
 
 type ServerInfo struct {
-	Host string `json:"host"`
-	ID   string `json:"id"`
-	Seq  uint64 `json:"seq"`
+	Host    string `json:"host"`
+	ID      string `json:"id"`
+	Cluster string `json:"cluster,omitempty"`
+	Version string `json:"ver"`
+	Seq     uint64 `json:"seq"`
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -113,6 +115,7 @@ type ClientInfo struct {
 	Name    string     `json:"name,omitempty"`
 	Lang    string     `json:"lang,omitempty"`
 	Version string     `json:"ver,omitempty"`
+	RTT     string     `json:"rtt,omitempty"`
 	Stop    *time.Time `json:"stop,omitempty"`
 }
 
@@ -183,6 +186,10 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	id := s.info.ID
 	host := s.info.Host
 	seqp := &s.sys.seq
+	var cluster string
+	if s.gateway.enabled {
+		cluster = s.getGatewayName()
+	}
 	s.mu.Unlock()
 
 	for s.eventsRunning() {
@@ -192,8 +199,10 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 		case pm := <-sendq:
 			if pm.si != nil {
 				pm.si.Host = host
+				pm.si.Cluster = cluster
 				pm.si.ID = id
 				pm.si.Seq = seq
+				pm.si.Version = VERSION
 			}
 			var b []byte
 			if pm.msg != nil {
@@ -511,14 +520,8 @@ func (s *Server) shutdownEventing() {
 		a.mu.Lock()
 		a.nrclients = 0
 		// Now clear state
-		if a.etmr != nil {
-			a.etmr.Stop()
-			a.etmr = nil
-		}
-		if a.ctmr != nil {
-			a.ctmr.Stop()
-			a.ctmr = nil
-		}
+		clearTimer(&a.etmr)
+		clearTimer(&a.ctmr)
 		a.clients = nil
 		a.strack = nil
 		a.mu.Unlock()
@@ -623,20 +626,14 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
-	// Update timer first
 	a.mu.Lock()
-	// Check to see if we have an HB running and update.
-	if a.ctmr == nil {
-		a.etmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
-	} else {
-		a.etmr.Reset(eventsHBInterval)
-	}
 
 	// If no limits set, don't update, no need to.
 	if a.mconns == 0 {
 		a.mu.Unlock()
 		return
 	}
+
 	// Build event with account name and number of local clients.
 	m := accNumConns{
 		Account: a.Name,
@@ -644,7 +641,21 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	}
 	a.mu.Unlock()
 
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+
+	// Set timer to fire again unless we are at zero.
+	a.mu.Lock()
+	if len(a.clients) == 0 {
+		clearTimer(&a.etmr)
+	} else {
+		// Check to see if we have an HB running and update.
+		if a.ctmr == nil {
+			a.etmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
+		} else {
+			a.etmr.Reset(eventsHBInterval)
+		}
+	}
+	a.mu.Unlock()
 }
 
 // accConnsUpdate is called whenever there is a change to the account's
@@ -715,6 +726,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
+			RTT:     c.getRTT(),
 		},
 		Sent: DataStats{
 			Msgs:  c.inMsgs,
