@@ -1420,27 +1420,32 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 	s.removeFromTempClients(cid)
 
 	if isOutbound {
-		var subsa [1024]*subscription
-		var subs = subsa[:0]
-
 		// Update number of totalQSubs for this gateway
 		qSubsRemoved := int64(0)
 		c.mu.Lock()
 		for _, sub := range c.subs {
 			if sub.queue != nil {
 				qSubsRemoved++
-			} else if sub.qw > 0 {
-				// Hack to track _R_ reply subs that need
-				// removal.
-				subs = append(subs, sub)
 			}
+		}
+		c.mu.Unlock()
+		// Update total count of qsubs in remote gateways.
+		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
+
+	} else {
+		var subsa [1024]*subscription
+		var subs = subsa[:0]
+
+		// For inbound GW connection, if we have subs, those are
+		// local subs on "_R_." subjects.
+		c.mu.Lock()
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
 		}
 		c.mu.Unlock()
 		for _, sub := range subs {
 			c.removeReplySub(sub)
 		}
-		// Update total count of qsubs in remote gateways.
-		atomic.AddInt64(&c.srv.gateway.totalQSubs, qSubsRemoved*-1)
 	}
 }
 
@@ -1909,8 +1914,14 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 }
 
 // Invoked by a PUB's connection to send a reply message on _R_ directly
-// to the outbound gateway connection (that is referenced in sub.client)
+// to the gateway connection.
 func (c *client) sendReplyMsgDirectToGateway(acc *Account, sub *subscription, msg []byte) {
+	// The sub.client references the inbound connection, so we need to
+	// swap to the outbound connection here.
+	inbound := sub.client
+	outbound := c.srv.getOutboundGatewayConnection(inbound.gw.name)
+	sub.client = outbound
+
 	mh := c.msgb[:msgHeadProtoLen]
 	mh = append(mh, acc.Name...)
 	mh = append(mh, ' ')
@@ -1919,9 +1930,9 @@ func (c *client) sendReplyMsgDirectToGateway(acc *Account, sub *subscription, ms
 	mh = append(mh, c.pa.szb...)
 	mh = append(mh, CR_LF...)
 	c.deliverMsg(sub, mh, msg)
-	// cleanup, use sub.client here, not `c` which is not the
-	// gateway connection but instead a PUB's connection.
-	sub.client.removeReplySub(sub)
+	// Cleanup. Since the sub is stored in the inbound, use that to
+	// call this function.
+	inbound.removeReplySub(sub)
 }
 
 // May send a message to all outbound gateways. It is possible
@@ -2118,30 +2129,15 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		// Copy off the reply since otherwise we are referencing a buffer that will be reused.
 		reply := make([]byte, len(c.pa.reply))
 		copy(reply, c.pa.reply)
-		// If the connection is a GW connection, it is necessarily an
-		// inbound connection. We will switch the the outbound GW connectiom
-		// instead.
-		conn := c
-		sub := &subscription{client: conn, subject: reply, sid: sid, max: 1}
-		if c.srv.gateway.enabled && c.gw != nil {
-			conn = c.srv.getOutboundGatewayConnection(c.gw.name)
-			if conn == nil {
-				c.Errorf("Did not find outbound connection for %q", c.gw.name)
-			} else {
-				sub.client = conn
-				// TODO(ik): Biggest hack ever, since this is not a queue
-				// use `qw` to mark this sub for cleanup on connection close.
-				sub.qw = 1
-			}
-		}
+		sub := &subscription{client: c, subject: reply, sid: sid, max: 1}
 		if err := acc.sl.Insert(sub); err != nil {
 			c.Errorf("Could not insert subscription: %v", err)
 		} else {
 			ttl := acc.AutoExpireTTL()
-			conn.mu.Lock()
-			conn.subs[string(sid)] = sub
-			conn.addReplySubTimeout(acc, sub, ttl)
-			conn.mu.Unlock()
+			c.mu.Lock()
+			c.subs[string(sid)] = sub
+			c.addReplySubTimeout(acc, sub, ttl)
+			c.mu.Unlock()
 		}
 	}
 

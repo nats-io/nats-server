@@ -2118,8 +2118,6 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	var qa [16][]byte
 	queues := qa[:0]
 
-	var replySub *subscription
-
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
@@ -2132,17 +2130,18 @@ func (c *client) processInboundClientMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			qnames = &queues
 		}
-		replySub = c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, qnames)
+		c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, qnames)
 	}
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
 		// TODO(ik): Need to revisit all that.
-		// If replySub is not nil it means that this is
-		// a reply sent on the _R_ subject and associated with
-		// an outbound connection. Send direct here.
-		if replySub != nil {
-			c.sendReplyMsgDirectToGateway(c.acc, replySub, msg)
+		// If we have a single match and the sub's client connection
+		// is a gateway, we know it is a message sent to a "_R_." subject
+		// (since this is the only time we add a sub with a GW client
+		// into an account sublist). In that case, do a direct send.
+		if len(r.psubs) == 1 && r.psubs[0].client.gw != nil {
+			c.sendReplyMsgDirectToGateway(c.acc, r.psubs[0], msg)
 		} else {
 			c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, queues)
 		}
@@ -2218,10 +2217,7 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 }
 
 // This processes the sublist results for a given message.
-// If the incoming message was for a service reply (subject starts with `_R_.`)
-// and the sub's bound client is a gateway (will only be 1), then return
-// this subscription so that it can be sent direct to GW.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte, queues *[][]byte) (replySub *subscription) {
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte, queues *[][]byte) {
 	// msg header for clients.
 	msgh := c.msgb[1:msgHeadProtoLen]
 	msgh = append(msgh, subject...)
@@ -2246,14 +2242,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			continue
 		} else if sub.client.kind == GATEWAY {
 			// Never send to gateway from here.
-			if c.kind == GATEWAY {
-				continue
-			}
-			// The only case we can be here is if this message
-			// is a reply sent on the _R_.xxx subject. We don't
-			// send here, return this sub so that processInboundClientMsg
-			// can send direct to GW.
-			replySub = sub
 			continue
 		}
 		// Check for stream import mapped subs. These apply to local subs only.
@@ -2407,7 +2395,6 @@ sendToRoutes:
 		mh = append(mh, _CRLF_...)
 		c.deliverMsg(rt.sub, mh, msg)
 	}
-	return
 }
 
 func (c *client) pubPermissionViolation(subject []byte) {
