@@ -653,9 +653,6 @@ func (c *client) readLoop() {
 	s := c.srv
 	c.in.rsz = startBufSize
 	defer s.grWG.Done()
-	if c.gw != nil && c.gw.outbound {
-		defer c.gatewayOutboundConnectionReadLoopExited()
-	}
 	c.mu.Unlock()
 
 	if nc == nil {
@@ -2151,7 +2148,16 @@ func (c *client) processInboundClientMsg(msg []byte) {
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
-		c.sendMsgToGateways(msg, queues)
+		// TODO(ik): Need to revisit all that.
+		// If we have a single match and the sub's client connection
+		// is a gateway, we know it is a message sent to a "_R_." subject
+		// (since this is the only time we add a sub with a GW client
+		// into an account sublist). In that case, do a direct send.
+		if len(r.psubs) == 1 && r.psubs[0].client.gw != nil {
+			c.sendReplyMsgDirectToGateway(c.acc, r.psubs[0], msg)
+		} else {
+			c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, queues)
+		}
 	}
 }
 
@@ -2180,6 +2186,11 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := rm.acc.sl.Match(rm.to)
 		c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, nil)
+		// If this is not a gateway connection but gateway is enabled,
+		// try to send this converted message to all gateways.
+		if c.kind != GATEWAY && c.srv.gateway.enabled {
+			c.sendMsgToGateways(rm.acc, msg, []byte(rm.to), nrr, nil)
+		}
 	}
 }
 

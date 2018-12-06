@@ -25,6 +25,7 @@ import (
 
 func testDefaultOptionsForGateway(name string) *server.Options {
 	o := DefaultTestOptions
+	o.Port = -1
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1

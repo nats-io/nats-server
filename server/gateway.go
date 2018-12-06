@@ -121,10 +121,11 @@ type gateway struct {
 	name       string
 	outbound   bool
 	cfg        *gatewayCfg
-	connectURL *url.URL          // Needed when sending CONNECT after receiving INFO from remote
-	infoJSON   []byte            // Needed when sending INFO after receiving INFO from remote
-	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
-	insim      map[string]*insie // Per-account subject no-interest sent or send-all-subs mode (inbound conn)
+	connectURL *url.URL                      // Needed when sending CONNECT after receiving INFO from remote
+	infoJSON   []byte                        // Needed when sending INFO after receiving INFO from remote
+	outsim     *sync.Map                     // Per-account subject interest (or no-interest) (outbound conn)
+	insim      map[string]*insie             // Per-account subject no-interest sent or send-all-subs mode (inbound conn)
+	replySubs  map[*subscription]*time.Timer // Same than replySubs in client.route
 }
 
 // Outbound subject interest entry.
@@ -1320,7 +1321,7 @@ func (s *Server) getAllGatewayConnections(conns map[uint64]*client) {
 }
 
 // Register the given gateway connection (*client) in the inbound gateways
-// map with the given name as the key.
+// map. The key is the connection ID (like for clients and routes).
 func (s *Server) registerInboundGatewayConnection(cid uint64, gwc *client) {
 	s.gateway.Lock()
 	s.gateway.in[cid] = gwc
@@ -1384,25 +1385,6 @@ func (s *Server) getInboundGatewayConnections(a *[]*client) {
 	s.gateway.RUnlock()
 }
 
-// Returns the inbound gateway connection for the given gateway name,
-// or nil if it does not exist.
-func (s *Server) getInboundGatewayConnection(name string) *client {
-	var c *client
-	s.gateway.RLock()
-	defer s.gateway.RUnlock()
-	for _, gwc := range s.gateway.in {
-		gwc.mu.Lock()
-		if gwc.gw.name == name {
-			c = gwc
-		}
-		gwc.mu.Unlock()
-		if c != nil {
-			break
-		}
-	}
-	return c
-}
-
 // This is invoked when a gateway connection is closed and the server
 // is removing this connection from its state.
 func (s *Server) removeRemoteGatewayConnection(c *client) {
@@ -1436,21 +1418,35 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 	}
 	gw.Unlock()
 	s.removeFromTempClients(cid)
-}
 
-// This allows some cleanup with guarantee that readloop has
-// exited and so no protocol message is being processed.
-func (c *client) gatewayOutboundConnectionReadLoopExited() {
-	qSubsRemoved := int64(0)
-	c.mu.Lock()
-	for _, sub := range c.subs {
-		if sub.queue != nil {
-			qSubsRemoved++
+	if isOutbound {
+		// Update number of totalQSubs for this gateway
+		qSubsRemoved := int64(0)
+		c.mu.Lock()
+		for _, sub := range c.subs {
+			if sub.queue != nil {
+				qSubsRemoved++
+			}
+		}
+		c.mu.Unlock()
+		// Update total count of qsubs in remote gateways.
+		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
+
+	} else {
+		var subsa [1024]*subscription
+		var subs = subsa[:0]
+
+		// For inbound GW connection, if we have subs, those are
+		// local subs on "_R_." subjects.
+		c.mu.Lock()
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
+		}
+		c.mu.Unlock()
+		for _, sub := range subs {
+			c.removeReplySub(sub)
 		}
 	}
-	c.mu.Unlock()
-	// Update total count of qsubs in remote gateways.
-	atomic.AddInt64(&c.srv.gateway.totalQSubs, qSubsRemoved*-1)
 }
 
 // GatewayAddr returns the net.Addr object for the gateway listener.
@@ -1520,6 +1516,8 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	// the sublist. Look for it and remove.
 	if useSl {
 		key := arg
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		// m[string()] does not cause mem allocation
 		sub, ok := c.subs[string(key)]
 		// if RS- for a sub that we don't have, just ignore.
@@ -1605,6 +1603,8 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		} else {
 			key = arg
 		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		// If RS+ for a sub that we already have, ignore.
 		// (m[string()] does not allocate memory)
 		if _, ok := c.subs[string(key)]; ok {
@@ -1913,12 +1913,34 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 	}
 }
 
+// Invoked by a PUB's connection to send a reply message on _R_ directly
+// to the gateway connection.
+func (c *client) sendReplyMsgDirectToGateway(acc *Account, sub *subscription, msg []byte) {
+	// The sub.client references the inbound connection, so we need to
+	// swap to the outbound connection here.
+	inbound := sub.client
+	outbound := c.srv.getOutboundGatewayConnection(inbound.gw.name)
+	sub.client = outbound
+
+	mh := c.msgb[:msgHeadProtoLen]
+	mh = append(mh, acc.Name...)
+	mh = append(mh, ' ')
+	mh = append(mh, sub.subject...)
+	mh = append(mh, ' ')
+	mh = append(mh, c.pa.szb...)
+	mh = append(mh, CR_LF...)
+	c.deliverMsg(sub, mh, msg)
+	// Cleanup. Since the sub is stored in the inbound, use that to
+	// call this function.
+	inbound.removeReplySub(sub)
+}
+
 // May send a message to all outbound gateways. It is possible
 // that message is not sent to a given gateway if for instance
 // it is known that this gateway has no interest in account or
 // subject, etc..
 // <Invoked from any client connection's readLoop>
-func (c *client) sendMsgToGateways(msg []byte, qgroups [][]byte) {
+func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) {
 	gwsa := [4]*client{}
 	gws := gwsa[:0]
 	// This is in fast path, so avoid calling function when possible.
@@ -1934,10 +1956,10 @@ func (c *client) sendMsgToGateways(msg []byte, qgroups [][]byte) {
 		return
 	}
 	var (
-		subj    = string(c.pa.subject)
+		subj    = string(subject)
 		queuesa = [512]byte{}
 		queues  = queuesa[:0]
-		accName = c.acc.Name
+		accName = acc.Name
 	)
 	for i := 0; i < len(gws); i++ {
 		gwc := gws[i]
@@ -1973,24 +1995,24 @@ func (c *client) sendMsgToGateways(msg []byte, qgroups [][]byte) {
 		mh := c.msgb[:msgHeadProtoLen]
 		mh = append(mh, accName...)
 		mh = append(mh, ' ')
-		mh = append(mh, c.pa.subject...)
+		mh = append(mh, subject...)
 		mh = append(mh, ' ')
 		if len(queues) > 0 {
-			if c.pa.reply != nil {
+			if reply != nil {
 				mh = append(mh, "+ "...) // Signal that there is a reply.
-				mh = append(mh, c.pa.reply...)
+				mh = append(mh, reply...)
 				mh = append(mh, ' ')
 			} else {
 				mh = append(mh, "| "...) // Only queues
 			}
 			mh = append(mh, queues...)
-		} else if c.pa.reply != nil {
-			mh = append(mh, c.pa.reply...)
+		} else if reply != nil {
+			mh = append(mh, reply...)
 			mh = append(mh, ' ')
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, CR_LF...)
-		sub := subscription{client: gwc}
+		sub := subscription{client: gwc, subject: c.pa.subject}
 		c.deliverMsg(&sub, mh, msg)
 	}
 }

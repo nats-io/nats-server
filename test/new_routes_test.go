@@ -1169,19 +1169,18 @@ func TestNewRouteServiceImport(t *testing.T) {
 	defer srvB.Shutdown()
 
 	// Do Accounts for the servers.
-	fooA, _ := registerAccounts(t, srvA)
+	fooA, barA := registerAccounts(t, srvA)
 	fooB, barB := registerAccounts(t, srvB)
-
-	// Add in the service export for the requests. Make it public.
-	if err := fooA.AddServiceExport("test.request", nil); err != nil {
-		t.Fatalf("Error adding account service export to client foo: %v", err)
-	}
 
 	// Add export to both.
 	addServiceExport("test.request", isPublic, fooA, fooB)
 
 	// Add import abilities to server B's bar account from foo.
 	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	// Do same on A.
+	if err := barA.AddServiceImport(fooA, "foo.request", "test.request"); err != nil {
 		t.Fatalf("Error adding service import: %v", err)
 	}
 
@@ -1225,6 +1224,15 @@ func TestNewRouteServiceImport(t *testing.T) {
 
 	if ts := fooA.TotalSubs(); ts != 1 {
 		t.Fatalf("Expected one sub to be left on fooA, but got %d", ts)
+	}
+
+	routez, _ := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
+	r := routez.Routes[0]
+	if r == nil {
+		t.Fatalf("Expected 1 route, got none")
+	}
+	if r.NumSubs != 1 {
+		t.Fatalf("Expected 1 sub in the route connection, got %v", r.NumSubs)
 	}
 }
 

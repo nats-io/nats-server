@@ -147,6 +147,15 @@ func natsSub(t *testing.T, nc *nats.Conn, subj string, cb nats.MsgHandler) *nats
 	return sub
 }
 
+func natsSubSync(t *testing.T, nc *nats.Conn, subj string) *nats.Subscription {
+	t.Helper()
+	sub, err := nc.SubscribeSync(subj)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	return sub
+}
+
 func natsQueueSub(t *testing.T, nc *nats.Conn, subj, queue string, cb nats.MsgHandler) *nats.Subscription {
 	t.Helper()
 	sub, err := nc.QueueSubscribe(subj, queue, cb)
@@ -2661,6 +2670,17 @@ func TestGatewayRaceBetweenPubAndSub(t *testing.T) {
 	wg.Wait()
 }
 
+// Returns the first (if any) of the inbound connections for this name.
+func getInboundGatewayConnection(s *Server, name string) *client {
+	var gwsa [4]*client
+	var gws = gwsa[:0]
+	s.getInboundGatewayConnections(&gws)
+	if len(gws) > 0 {
+		return gws[0]
+	}
+	return nil
+}
+
 func TestGatewaySendAllSubs(t *testing.T) {
 	gatewayMaxRUnsubBeforeSwitch = 100
 	defer func() { gatewayMaxRUnsubBeforeSwitch = defaultGatewayMaxRUnsubBeforeSwitch }()
@@ -2766,7 +2786,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	// instruct B to send only if there is explicit interest.
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 		// Check C inbound connection from B
-		c := sc.getInboundGatewayConnection("B")
+		c := getInboundGatewayConnection(sc, "B")
 		c.mu.Lock()
 		var switchedMode bool
 		e := c.gw.insim[globalAccountName]
@@ -2879,10 +2899,13 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	waitForInboundGateways(t, sa, 1, time.Second)
 	waitForInboundGateways(t, sb, 1, time.Second)
 
-	c := sa.getInboundGatewayConnection("B")
+	// For this test, make sure to use inbound from A so
+	// A will reconnect when we send bad proto that
+	// causes connection to be closed.
+	c := getInboundGatewayConnection(sa, "A")
 	// Mock an invalid protocol (account name missing)
 	info := &Info{
-		Gateway:    "A",
+		Gateway:    "B",
 		GatewayCmd: gatewayCmdAllSubsStart,
 	}
 	b, _ := json.Marshal(info)
@@ -2892,7 +2915,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn := c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := sa.getInboundGatewayConnection("B")
+		curConn := getInboundGatewayConnection(sa, "A")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
 		}
@@ -2903,7 +2926,14 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	waitForOutboundGateways(t, sb, 1, 2*time.Second)
 
 	// Refresh
-	c = sa.getInboundGatewayConnection("B")
+	c = nil
+	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+		c = getInboundGatewayConnection(sa, "A")
+		if c == nil {
+			t.Fatalf("Did not reconnect")
+		}
+		return nil
+	})
 	// Do correct start
 	info.GatewayCmdPayload = []byte(globalAccountName)
 	b, _ = json.Marshal(info)
@@ -2920,9 +2950,223 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn = c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := sa.getInboundGatewayConnection("B")
+		curConn := getInboundGatewayConnection(sa, "A")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
+		}
+		return nil
+	})
+}
+
+func TestGatewayRaceOnClose(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+	ncB := natsConnect(t, bURL, nats.NoReconnect())
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cb := func(_ *nats.Msg) {}
+		for {
+			// Expect failure at one point and just return.
+			qsub, err := ncB.QueueSubscribe("foo", "bar", cb)
+			if err != nil {
+				return
+			}
+			if err := qsub.Unsubscribe(); err != nil {
+				return
+			}
+		}
+	}()
+	// Wait a bit and kill B
+	time.Sleep(200 * time.Millisecond)
+	sb.Shutdown()
+	wg.Wait()
+}
+
+// Similar to TestNewRoutesServiceImport but with 2 GW servers instead
+// of a cluster of 2 servers.
+func TestGatewayServiceImport(t *testing.T) {
+	oa := testDefaultOptionsForGateway("A")
+	setAccountUserPassInOptions(oa, "$foo", "clientA", "password")
+	setAccountUserPassInOptions(oa, "$bar", "yyyyyyy", "password")
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	ob := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	setAccountUserPassInOptions(ob, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob, "$bar", "clientB", "password")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Get accounts
+	fooA, _ := sa.LookupAccount("$foo")
+	barA, _ := sa.LookupAccount("$bar")
+	fooB, _ := sb.LookupAccount("$foo")
+	barB, _ := sb.LookupAccount("$bar")
+
+	// Add in the service export for the requests. Make it public.
+	fooA.AddServiceExport("test.request", nil)
+	fooB.AddServiceExport("test.request", nil)
+
+	// Add import abilities to server B's bar account from foo.
+	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	// Same on A.
+	if err := barA.AddServiceImport(fooA, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// clientA will be connected to srvA and be the service endpoint and responder.
+	aURL := fmt.Sprintf("nats://clientA:password@127.0.0.1:%d", oa.Port)
+	clientA := natsConnect(t, aURL)
+	defer clientA.Close()
+
+	subA := natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	// Now setup client B on srvB who will do a sub from account $bar
+	// that should map account $foo's foo subject.
+	bURL := fmt.Sprintf("nats://clientB:password@127.0.0.1:%d", ob.Port)
+	clientB := natsConnect(t, bURL)
+	defer clientB.Close()
+
+	subB := natsSubSync(t, clientB, "reply")
+	natsFlush(t, clientB)
+
+	for i := 0; i < 1; i++ {
+		// Send the request from clientB on foo.request,
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+		natsFlush(t, clientB)
+
+		// Expect the request on A
+		msg, err := subA.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("subA failed to get request: %v", err)
+		}
+		if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+			t.Fatalf("Unexpected message: %v", msg)
+		}
+		if msg.Reply == "reply" {
+			t.Fatalf("Expected randomized reply, but got original")
+		}
+
+		// Send reply
+		natsPub(t, clientA, msg.Reply, []byte("ok"))
+		natsFlush(t, clientA)
+
+		msg, err = subB.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("subB failed to get reply: %v", err)
+		}
+		if msg.Subject != "reply" || string(msg.Data) != "ok" {
+			t.Fatalf("Unexpected message: %v", msg)
+		}
+
+		expected := int64((i + 1) * 3)
+		vz, _ := sa.Varz(nil)
+		if vz.OutMsgs != expected {
+			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
+		}
+
+		if i == 0 {
+			expected = 3
+		} else {
+			expected = 5
+		}
+		vz, _ = sb.Varz(nil)
+		if vz.OutMsgs != expected {
+			t.Fatalf("Expected %d outMsgs for B, got %v", expected, vz.OutMsgs)
+		}
+	}
+
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if ts := fooA.TotalSubs(); ts != 1 {
+			return fmt.Errorf("Expected one sub to be left on fooA, but got %d", ts)
+		}
+		return nil
+	})
+
+	// Speed up exiration
+	fooA.SetAutoExpireTTL(10 * time.Millisecond)
+
+	// Send 100 requests from clientB on foo.request,
+	for i := 0; i < 100; i++ {
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	}
+	natsFlush(t, clientB)
+
+	// Consume the requests, but don't reply to them...
+	for i := 0; i < 100; i++ {
+		if _, err := subA.NextMsg(time.Second); err != nil {
+			t.Fatalf("subA did not receive request: %v", err)
+		}
+	}
+
+	// These reply subjects will be dangling off of $foo account on serverA.
+	// Remove our service endpoint and wait for the dangling replies to go to zero.
+	natsUnsub(t, subA)
+	natsFlush(t, clientA)
+
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if ts := fooA.TotalSubs(); ts != 0 {
+			return fmt.Errorf("Number of subs is %d, should be zero", ts)
+		}
+		return nil
+	})
+
+	// Repeat similar test but without the small TTL and verify
+	// that if B is shutdown, the dangling subs for replies are
+	// cleared from the account sublist.
+	fooA.SetAutoExpireTTL(10 * time.Second)
+
+	subA = natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	// Send 100 requests from clientB on foo.request,
+	for i := 0; i < 100; i++ {
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	}
+	natsFlush(t, clientB)
+
+	// Consume the requests, but don't reply to them...
+	for i := 0; i < 100; i++ {
+		if _, err := subA.NextMsg(time.Second); err != nil {
+			t.Fatalf("subA did not receive request: %v", err)
+		}
+	}
+
+	// Shutdown B
+	clientB.Close()
+	sb.Shutdown()
+
+	// Close our last sub
+	natsUnsub(t, subA)
+	natsFlush(t, clientA)
+
+	// Verify that they are gone before the 10 sec TTL
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if ts := fooA.TotalSubs(); ts != 0 {
+			return fmt.Errorf("Number of subs is %d, should be zero", ts)
 		}
 		return nil
 	})
