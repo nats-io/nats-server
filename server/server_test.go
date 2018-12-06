@@ -845,9 +845,12 @@ func TestLameDuckMode(t *testing.T) {
 	srvA.grWG.Wait()
 	srvB.grWG.Wait()
 	checkClientsCount(t, srvC, 1)
-	if n := atomic.LoadInt32(&rt); n != 1 {
-		t.Fatalf("Expected client to reconnect only once, got %v", n)
-	}
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if n := atomic.LoadInt32(&rt); n != 1 {
+			return fmt.Errorf("Expected client to reconnect only once, got %v", n)
+		}
+		return nil
+	})
 }
 
 func TestServerValidateGatewaysOptions(t *testing.T) {
