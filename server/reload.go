@@ -651,8 +651,6 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "accounts":
 			diffOpts = append(diffOpts, &accountsOption{})
 		case "trustedkeys":
-			fmt.Printf("newVal is %+v\n", newValue)
-			fmt.Printf("oldVal is %+v\n", oldValue)
 			diffOpts = append(diffOpts, &trustKeysOption{})
 		case "gateway":
 			// Not supported for now, but report warning if configuration of gateway
