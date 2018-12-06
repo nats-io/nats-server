@@ -747,23 +747,20 @@ func (s *Server) reloadAuthorization() {
 			// If account exist in latest config, "transfer" the account's
 			// sublist and client map to the new account.
 			acc.mu.RLock()
-			sl := acc.sl
-			clients := acc.clients
-			acc.mu.RUnlock()
-			newAcc.mu.Lock()
-			newAcc.sl = sl
-			if len(clients) > 0 {
-				newAcc.clients = make(map[*client]*client, len(clients))
-				for _, c := range clients {
+			if len(acc.clients) > 0 {
+				newAcc.clients = make(map[*client]*client, len(acc.clients))
+				for _, c := range acc.clients {
 					newAcc.clients[c] = c
 				}
 			}
+			newAcc.sl = acc.sl
+			acc.mu.RUnlock()
+
 			// Check if current and new config of this account are same
 			// in term of stream imports.
 			if !acc.checkStreamImportsEqual(newAcc) {
 				awcsti[newAcc.Name] = struct{}{}
 			}
-			newAcc.mu.Unlock()
 		}
 	}
 	// Gather clients that changed accounts. We will close them and they
