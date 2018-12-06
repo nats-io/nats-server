@@ -260,6 +260,26 @@ func TestClientConnectProto(t *testing.T) {
 	wg.Wait()
 }
 
+func TestRemoteAddress(t *testing.T) {
+	c := &client{}
+
+	// though in reality this will panic if it does not, adding coverage anyway
+	if c.RemoteAddress() != nil {
+		t.Errorf("RemoteAddress() did not handle nil connection correctly")
+	}
+
+	_, c, _ = setupClient()
+	addr := c.RemoteAddress()
+
+	if addr.Network() != "pipe" {
+		t.Errorf("RemoteAddress() returned invalid network: %s", addr.Network())
+	}
+
+	if addr.String() != "pipe" {
+		t.Errorf("RemoteAddress() returned invalid string: %s", addr.String())
+	}
+}
+
 func TestClientPing(t *testing.T) {
 	_, c, cr := setupClient()
 
@@ -841,6 +861,17 @@ func TestTLSCloseClientConnection(t *testing.T) {
 	if state == nil {
 		t.Error("GetTLSConnectionState() returned nil")
 	}
+
+	// Test RemoteAddress
+	addr := cli.RemoteAddress()
+	if addr == nil {
+		t.Error("RemoteAddress() returned nil")
+	}
+
+	if addr.(*net.TCPAddr).IP.String() != "127.0.0.1" {
+		t.Error("RemoteAddress() returned incorrect ip " + addr.String())
+	}
+
 	// Fill the buffer. Need to send 1 byte at a time so that we timeout here
 	// the nc.Close() would block due to a write that can not complete.
 	done := false

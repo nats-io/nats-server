@@ -16,6 +16,7 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"net"
 	"strings"
 
 	"github.com/nats-io/jwt"
@@ -37,6 +38,8 @@ type ClientAuthentication interface {
 	GetTLSConnectionState() *tls.ConnectionState
 	// Optionally map a user after auth.
 	RegisterUser(*User)
+	// RemoteAddress expose the connection information of the client
+	RemoteAddress() net.Addr
 }
 
 // NkeyUser is for multiple nkey based users
