@@ -599,7 +599,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 // account activity.
 // Lock should be held on entry.
 func (s *Server) enableAccountTracking(a *Account) {
-	if a == nil || !s.eventsEnabled() || a == s.sys.account {
+	if a == nil || !s.eventsEnabled() {
 		return
 	}
 
@@ -620,7 +620,7 @@ const eventsHBInterval = 30 * time.Second
 // account's local connections.
 // Lock should be held on entry.
 func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
-	if !s.eventsEnabled() || a == nil || a == s.sys.account || a == s.gacc {
+	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
 	// Update timer first
@@ -652,7 +652,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 func (s *Server) accConnsUpdate(a *Account) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.eventsEnabled() || a == nil || a == s.sys.account {
+	if !s.eventsEnabled() || a == nil {
 		return
 	}
 	subj := fmt.Sprintf(accConnsEventSubj, a.Name)

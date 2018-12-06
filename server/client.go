@@ -400,7 +400,7 @@ func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	c.sendErr("Failed Account Registration")
 }
 
-// RegisterWithAccount will register the given user with a specific
+// registerWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
 func (c *client) registerWithAccount(acc *Account) error {
 	if acc == nil || acc.sl == nil {
