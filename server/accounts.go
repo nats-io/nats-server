@@ -110,6 +110,26 @@ type exportMap struct {
 	services map[string]*exportAuth
 }
 
+func NewAccount(name string) *Account {
+	a := &Account{
+		Name:   name,
+		sl:     NewSublist(),
+		limits: limits{-1, -1, -1, 0, 0},
+	}
+	return a
+}
+
+// Used to create shallow copies of accounts for transfer
+// from opts to real accounts in server struct.
+func (a *Account) shallowCopy() *Account {
+	na := NewAccount(a.Name)
+	na.Nkey = a.Nkey
+	na.Issuer = a.Issuer
+	na.imports = a.imports
+	na.exports = a.exports
+	return na
+}
+
 // NumClients returns active number of clients for this account for
 // all known servers.
 func (a *Account) NumConnections() int {
@@ -134,7 +154,7 @@ func (a *Account) MaxTotalConnectionsReached() bool {
 }
 
 func (a *Account) maxTotalConnectionsReached() bool {
-	if a.mconns != 0 {
+	if a.mconns != jwt.NoLimit {
 		return len(a.clients)+a.nrclients >= a.mconns
 	}
 	return false
@@ -805,8 +825,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 	a.checkExpiration(ac.Claims())
 
-	// Clone to update
-	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports}
+	// Clone to update, only select certain fields.
+	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports, limits: a.limits}
 
 	// Reset exports and imports here.
 	a.exports = exportMap{}
@@ -837,7 +857,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	for _, i := range ac.Imports {
 		acc := s.accounts[i.Account]
 		if acc == nil {
-			if acc = s.fetchAccount(i.Account); acc == nil {
+			if acc, _ = s.fetchAccount(i.Account); acc == nil {
 				s.Debugf("Can't locate account [%s] for import of [%v] %s", i.Account, i.Subject, i.Type)
 				continue
 			}
@@ -907,7 +927,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		})
 	}
 	for i, c := range clients {
-		if a.mconns > 0 && i >= a.mconns {
+		if a.mconns != jwt.NoLimit && i >= a.mconns {
 			c.maxAccountConnExceeded()
 			continue
 		}
@@ -919,7 +939,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 // Helper to build an internal account structure from a jwt.AccountClaims.
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
-	acc := &Account{Name: ac.Subject, Issuer: ac.Issuer}
+	acc := NewAccount(ac.Subject)
+	acc.Issuer = ac.Issuer
 	s.updateAccountClaims(acc, ac)
 	return acc
 }
@@ -1004,8 +1025,12 @@ func NewURLAccResolver(url string) (*URLAccResolver, error) {
 func (ur *URLAccResolver) Fetch(name string) (string, error) {
 	url := ur.url + name
 	resp, err := ur.c.Get(url)
-	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		return _EMPTY_, fmt.Errorf("URL(%q) returned error", url)
+	if err != nil {
+		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: %v", url, err)
+	} else if resp == nil {
+		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: no response", url)
+	} else if resp.StatusCode != http.StatusOK {
+		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: %v", url, resp.Status)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1017,5 +1042,5 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 
 // Store is not implemented for URL Resolver.
 func (ur *URLAccResolver) Store(name, jwt string) error {
-	return fmt.Errorf("Store operation not supported on URL Resolver")
+	return fmt.Errorf("Store operation not supported for URL Resolver")
 }

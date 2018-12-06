@@ -63,12 +63,20 @@ type Prefix struct {
 	nkeys.PrefixByte
 }
 
+func encodeToString(d []byte) string {
+	return base64.RawURLEncoding.EncodeToString(d)
+}
+
+func decodeString(s string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
 func serialize(v interface{}) (string, error) {
 	j, err := json.Marshal(v)
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(j), nil
+	return encodeToString(j), nil
 }
 
 func (c *ClaimsData) doEncode(header *Header, kp nkeys.KeyPair, claim Claims) (string, error) {
@@ -143,7 +151,7 @@ func (c *ClaimsData) doEncode(header *Header, kp nkeys.KeyPair, claim Claims) (s
 	if err != nil {
 		return "", err
 	}
-	eSig := base64.RawURLEncoding.EncodeToString(sig)
+	eSig := encodeToString(sig)
 	return fmt.Sprintf("%s.%s.%s", h, payload, eSig), nil
 }
 
@@ -173,7 +181,7 @@ func (c *ClaimsData) String(claim interface{}) string {
 }
 
 func parseClaims(s string, target Claims) error {
-	h, err := base64.RawURLEncoding.DecodeString(s)
+	h, err := decodeString(s)
 	if err != nil {
 		return err
 	}
@@ -239,7 +247,7 @@ func Decode(token string, target Claims) error {
 		return err
 	}
 
-	sig, err := base64.RawURLEncoding.DecodeString(chunks[2])
+	sig, err := decodeString(chunks[2])
 	if err != nil {
 		return err
 	}

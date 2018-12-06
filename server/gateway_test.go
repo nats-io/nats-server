@@ -1143,7 +1143,7 @@ func TestGatewayDontSendSubInterest(t *testing.T) {
 }
 
 func setAccountUserPassInOptions(o *Options, accName, username, password string) {
-	acc := &Account{Name: accName}
+	acc := NewAccount(accName)
 	o.Accounts = append(o.Accounts, acc)
 	o.Users = append(o.Users, &User{Username: username, Password: password, Account: acc})
 }

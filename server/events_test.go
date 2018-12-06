@@ -36,7 +36,11 @@ func createAccount(s *Server) (*Account, nkeys.KeyPair) {
 	nac := jwt.NewAccountClaims(pub)
 	jwt, _ := nac.Encode(okp)
 	addAccountToMemResolver(s, pub, jwt)
-	return s.LookupAccount(pub), akp
+	acc, err := s.LookupAccount(pub)
+	if err != nil {
+		panic(err)
+	}
+	return acc, akp
 }
 
 func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
@@ -631,7 +635,7 @@ func TestAccountClaimsUpdates(t *testing.T) {
 
 	addAccountToMemResolver(s, pub, ajwt)
 
-	acc := s.LookupAccount(pub)
+	acc, _ := s.LookupAccount(pub)
 	if acc.MaxActiveConnections() != 4 {
 		t.Fatalf("Expected to see a limit of 4 connections")
 	}
@@ -658,7 +662,7 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	nc.Publish(claimUpdateSubj, []byte(ajwt))
 	nc.Flush()
 
-	acc = s.LookupAccount(pub)
+	acc, _ = s.LookupAccount(pub)
 	if acc.MaxActiveConnections() != 8 {
 		t.Fatalf("Account was not updated")
 	}
@@ -680,7 +684,7 @@ func TestAccountConnsLimitExceededAfterUpdate(t *testing.T) {
 	ajwt, _ := nac.Encode(okp)
 
 	addAccountToMemResolver(s, pub, ajwt)
-	acc := s.LookupAccount(pub)
+	acc, _ := s.LookupAccount(pub)
 
 	// Now create the max connections.
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
@@ -731,7 +735,7 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	ajwt, _ := nac.Encode(okp)
 
 	addAccountToMemResolver(s, pub, ajwt)
-	acc := s.LookupAccount(pub)
+	acc, _ := s.LookupAccount(pub)
 
 	// Now create the max connections.
 	// We create half then we will wait and then create the rest.
@@ -893,11 +897,11 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m2.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m2.Stats.ActiveAccounts)
 	}
-	if m2.Stats.Sent.Msgs != 3 {
-		t.Fatalf("Did not match sent msgs of 3, got %d", m2.Stats.Sent.Msgs)
+	if m2.Stats.Sent.Msgs < 3 {
+		t.Fatalf("Did not match sent msgs of >= 3, got %d", m2.Stats.Sent.Msgs)
 	}
-	if m2.Stats.Received.Msgs != 1 {
-		t.Fatalf("Did not match received msgs of 1, got %d", m2.Stats.Received.Msgs)
+	if m2.Stats.Received.Msgs < 1 {
+		t.Fatalf("Did not match received msgs of >= 1, got %d", m2.Stats.Received.Msgs)
 	}
 	if lr := len(m2.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)
@@ -920,11 +924,11 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m3.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
 	}
-	if m3.Stats.Sent.Msgs != 5 {
-		t.Fatalf("Did not match sent msgs of 5, got %d", m3.Stats.Sent.Msgs)
+	if m3.Stats.Sent.Msgs < 5 {
+		t.Fatalf("Did not match sent msgs of >= 5, got %d", m3.Stats.Sent.Msgs)
 	}
-	if m3.Stats.Received.Msgs != 2 {
-		t.Fatalf("Did not match received msgs of 2, got %d", m3.Stats.Received.Msgs)
+	if m3.Stats.Received.Msgs < 2 {
+		t.Fatalf("Did not match received msgs of >= 2, got %d", m3.Stats.Received.Msgs)
 	}
 	if lr := len(m3.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)

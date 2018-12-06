@@ -2668,7 +2668,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 	}
 
 	// Old account should be gone
-	if s.LookupAccount("acc_deleted_after_reload") != nil {
+	if _, err := s.LookupAccount("acc_deleted_after_reload"); err == nil {
 		t.Fatal("old account should be gone")
 	}
 
@@ -2683,7 +2683,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 	// being reconnected does not mean that resent of subscriptions
 	// has already been processed.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		gAcc := s.LookupAccount(globalAccountName)
+		gAcc, _ := s.LookupAccount(globalAccountName)
 		gAcc.mu.RLock()
 		n := gAcc.sl.Count()
 		fooMatch := gAcc.sl.Match("foo")
@@ -2699,7 +2699,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 			return fmt.Errorf("Global account should have baz sub")
 		}
 
-		sAcc := s.LookupAccount("synadia")
+		sAcc, _ := s.LookupAccount("synadia")
 		sAcc.mu.RLock()
 		n = sAcc.sl.Count()
 		barMatch := sAcc.sl.Match("bar")
@@ -2711,7 +2711,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 			return fmt.Errorf("Synadia account should have bar sub")
 		}
 
-		nAcc := s.LookupAccount("nats.io")
+		nAcc, _ := s.LookupAccount("nats.io")
 		nAcc.mu.RLock()
 		n = nAcc.sl.Count()
 		batMatch := nAcc.sl.Match("bat")
@@ -2748,8 +2748,8 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	synadia := s.LookupAccount("synadia")
-	nats := s.LookupAccount("nats.io")
+	synadia, _ := s.LookupAccount("synadia")
+	nats, _ := s.LookupAccount("nats.io")
 
 	seed1 := []byte("SUAPM67TC4RHQLKBX55NIQXSMATZDOZK6FNEOSS36CAYA7F7TY66LP4BOM")
 	seed2 := []byte("SUAIS5JPX4X4GJ7EIIJEQ56DH2GWPYJRPWN5XJEDENJOZHCBLI7SEPUQDE")
@@ -2854,7 +2854,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	if ivan.Account != globalAcc {
 		t.Fatalf("Invalid account for user Ivan: %#v", ivan.Account)
 	}
-	if s.LookupAccount("synadia") != nil {
+	if _, err := s.LookupAccount("synadia"); err == nil {
 		t.Fatal("Account Synadia should have been removed")
 	}
 }

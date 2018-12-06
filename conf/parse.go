@@ -87,7 +87,7 @@ func ParseFile(fp string) (map[string]interface{}, error) {
 func ParseFileWithChecks(fp string) (map[string]interface{}, error) {
 	data, err := ioutil.ReadFile(fp)
 	if err != nil {
-		return nil, fmt.Errorf("error opening config file: %v", err)
+		return nil, err
 	}
 
 	p, err := parse(string(data), fp, true)

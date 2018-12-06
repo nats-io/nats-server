@@ -430,6 +430,16 @@ func (c *client) registerWithAccount(acc *Account) error {
 	return nil
 }
 
+// Helper to determine if we have exceeded max subs.
+func (c *client) subsExceeded() bool {
+	return c.msubs != jwt.NoLimit && len(c.subs) > c.msubs
+}
+
+// Helper to determine if we have met or exceeded max subs.
+func (c *client) subsAtLimit() bool {
+	return c.msubs != jwt.NoLimit && len(c.subs) >= c.msubs
+}
+
 // Apply account limits
 // Lock is held on entry.
 // FIXME(dlc) - Should server be able to override here?
@@ -437,29 +447,30 @@ func (c *client) applyAccountLimits() {
 	if c.acc == nil {
 		return
 	}
-	// Set here, check for more details below. Only set if non-zero.
-	if c.acc.msubs > 0 {
+
+	// Set here, will need to fo checks for NoLimit.
+	if c.acc.msubs != jwt.NoLimit {
 		c.msubs = c.acc.msubs
 	}
-	if c.acc.mpay > 0 {
+	if c.acc.mpay != jwt.NoLimit {
 		c.mpay = c.acc.mpay
 	}
 
 	opts := c.srv.getOpts()
 
 	// We check here if the server has an option set that is lower than the account limit.
-	if c.mpay != 0 && opts.MaxPayload != 0 && int32(opts.MaxPayload) < c.acc.mpay {
+	if c.mpay != jwt.NoLimit && opts.MaxPayload != 0 && int32(opts.MaxPayload) < c.acc.mpay {
 		c.Errorf("Max Payload set to %d from server config which overrides %d from account claims", opts.MaxPayload, c.acc.mpay)
 		c.mpay = int32(opts.MaxPayload)
 	}
 
 	// We check here if the server has an option set that is lower than the account limit.
-	if c.msubs != 0 && opts.MaxSubs != 0 && opts.MaxSubs < c.acc.msubs {
+	if c.msubs != jwt.NoLimit && opts.MaxSubs != 0 && opts.MaxSubs < c.acc.msubs {
 		c.Errorf("Max Subscriptions set to %d from server config which overrides %d from account claims", opts.MaxSubs, c.acc.msubs)
 		c.msubs = opts.MaxSubs
 	}
 
-	if c.msubs > 0 && len(c.subs) > c.msubs {
+	if c.subsExceeded() {
 		go func() {
 			c.maxSubsExceeded()
 			time.Sleep(20 * time.Millisecond)
@@ -1041,13 +1052,14 @@ func (c *client) processConnect(arg []byte) error {
 		if account != "" {
 			var acc *Account
 			var wasNew bool
+			var err error
 			if !srv.NewAccountsAllowed() {
-				acc = srv.LookupAccount(account)
-				if acc == nil {
-					c.Errorf(ErrMissingAccount.Error())
+				acc, err = srv.LookupAccount(account)
+				if err != nil {
+					c.Errorf(err.Error())
 					c.sendErr("Account Not Found")
-					return ErrMissingAccount
-				} else if accountNew {
+					return err
+				} else if accountNew && acc != nil {
 					c.Errorf(ErrAccountExists.Error())
 					c.sendErr(ErrAccountExists.Error())
 					return ErrAccountExists
@@ -1413,7 +1425,7 @@ func (c *client) processPub(trace bool, arg []byte) error {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
 	maxPayload := atomic.LoadInt32(&c.mpay)
-	if maxPayload > 0 && int32(c.pa.size) > maxPayload {
+	if maxPayload != jwt.NoLimit && int32(c.pa.size) > maxPayload {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
@@ -1497,7 +1509,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
-	if c.msubs > 0 && len(c.subs) >= c.msubs {
+	if c.subsAtLimit() {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
 		return nil
@@ -2480,7 +2492,9 @@ func (c *client) clearConnection(reason ClosedState) {
 	c.flushOutbound()
 
 	// Clear outbound here.
-	c.out.sg.Broadcast()
+	if c.out.sg != nil {
+		c.out.sg.Broadcast()
+	}
 
 	// With TLS, Close() is sending an alert (that is doing a write).
 	// Need to set a deadline otherwise the server could block there
@@ -2791,8 +2805,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 	if !ok {
 		// Match correct account and sublist.
-		acc = c.srv.LookupAccount(string(c.pa.account))
-		if acc == nil {
+		if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
 			return nil, nil
 		}
 

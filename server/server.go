@@ -311,6 +311,13 @@ func (s *Server) setOpts(opts *Options) {
 	s.optsMu.Unlock()
 }
 
+func (s *Server) globalAccount() *Account {
+	s.mu.Lock()
+	gacc := s.gacc
+	s.mu.Unlock()
+	return gacc
+}
+
 func (s *Server) configureAccounts() error {
 	// Used to setup Accounts.
 	if s.accounts == nil {
@@ -318,15 +325,46 @@ func (s *Server) configureAccounts() error {
 	}
 	// Create global account.
 	if s.gacc == nil {
-		s.gacc = &Account{Name: globalAccountName}
+		s.gacc = NewAccount(globalAccountName)
 		s.registerAccount(s.gacc)
 	}
 
 	opts := s.opts
 
-	// Check opts and walk through them. Making sure to create SLs.
+	// Check opts and walk through them. We need to copy them here
+	// so that we do not keep a real one sitting in the options.
 	for _, acc := range s.opts.Accounts {
-		s.registerAccount(acc)
+		a := acc.shallowCopy()
+		acc.sl = nil
+		acc.clients = nil
+		s.registerAccount(a)
+	}
+
+	// Now that we have this we need to remap any referenced accounts in
+	// import or export maps to the new ones.
+	swapApproved := func(ea *exportAuth) {
+		if ea == nil {
+			return
+		}
+		for sub, a := range ea.approved {
+			ea.approved[sub] = s.accounts[a.Name]
+		}
+	}
+	for _, acc := range s.accounts {
+		// Exports
+		for _, ea := range acc.exports.streams {
+			swapApproved(ea)
+		}
+		for _, ea := range acc.exports.services {
+			swapApproved(ea)
+		}
+		// Imports
+		for _, si := range acc.imports.streams {
+			si.acc = s.accounts[si.acc.Name]
+		}
+		for _, si := range acc.imports.services {
+			si.acc = s.accounts[si.acc.Name]
+		}
 	}
 
 	// Check for configured account resolvers.
@@ -337,6 +375,9 @@ func (s *Server) configureAccounts() error {
 				return fmt.Errorf("Resolver preloads only available for MemAccResolver")
 			}
 			for k, v := range opts.resolverPreloads {
+				if _, _, err := s.verifyAccountClaims(v); err != nil {
+					return fmt.Errorf("Preloaded Account: %v", err)
+				}
 				s.accResolver.Store(k, v)
 			}
 		}
@@ -344,8 +385,8 @@ func (s *Server) configureAccounts() error {
 
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
-		if acc := s.lookupAccount(opts.SystemAccount); acc == nil {
-			return ErrMissingAccount
+		if _, err := s.lookupAccount(opts.SystemAccount); err != nil {
+			return fmt.Errorf("Error resolving system account: %v", err)
 		}
 	}
 	return nil
@@ -425,13 +466,13 @@ func (s *Server) initStampedTrustedKeys() bool {
 
 // PrintAndDie is exported for access in other packages.
 func PrintAndDie(msg string) {
-	fmt.Fprintf(os.Stderr, "%s\n", msg)
+	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
 }
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("nats-server version %s\n", VERSION)
+	fmt.Printf("nats-server: v%s\n", VERSION)
 	os.Exit(0)
 }
 
@@ -507,10 +548,7 @@ func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew b
 	if acc, ok := s.accounts[name]; ok {
 		return acc, false
 	}
-	acc := &Account{
-		Name: name,
-		sl:   NewSublist(),
-	}
+	acc := NewAccount(name)
 	s.registerAccount(acc)
 	return acc, true
 }
@@ -524,7 +562,7 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 	if _, ok := s.accounts[name]; ok {
 		return nil, ErrAccountExists
 	}
-	acc := &Account{Name: name}
+	acc := NewAccount(name)
 	s.registerAccount(acc)
 	return acc, nil
 }
@@ -583,7 +621,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: defaultOpts, start: time.Now(), last: time.Now()},
+		client:  &client{srv: s, kind: SYSTEM, opts: defaultOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
@@ -663,23 +701,28 @@ func (s *Server) registerAccount(acc *Account) {
 // lookupAccount is a function to return the account structure
 // associated with an account name.
 // Lock should be held on entry.
-func (s *Server) lookupAccount(name string) *Account {
+func (s *Server) lookupAccount(name string) (*Account, error) {
 	acc := s.accounts[name]
 	if acc != nil {
 		// If we are expired and we have a resolver, then
 		// return the latest information from the resolver.
 		if s.accResolver != nil && acc.IsExpired() {
-			s.updateAccount(acc)
+			if err := s.updateAccount(acc); err != nil {
+				return nil, err
+			}
 		}
-		return acc
+		return acc, nil
 	}
 	// If we have a resolver see if it can fetch the account.
+	if s.accResolver == nil {
+		return nil, ErrMissingAccount
+	}
 	return s.fetchAccount(name)
 }
 
 // LookupAccount is a public function to return the account structure
 // associated with name.
-func (s *Server) LookupAccount(name string) *Account {
+func (s *Server) LookupAccount(name string) (*Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lookupAccount(name)
@@ -687,48 +730,36 @@ func (s *Server) LookupAccount(name string) *Account {
 
 // This will fetch new claims and if found update the account with new claims.
 // Lock should be held upon entry.
-func (s *Server) updateAccount(acc *Account) bool {
+func (s *Server) updateAccount(acc *Account) error {
 	// TODO(dlc) - Make configurable
 	if time.Since(acc.updated) < time.Second {
 		s.Debugf("Requested account update for [%s] ignored, too soon", acc.Name)
-		return false
+		return ErrAccountResolverUpdateTooSoon
 	}
 	claimJWT, err := s.fetchRawAccountClaims(acc.Name)
 	if err != nil {
-		return false
+		return err
 	}
-	acc.updated = time.Now()
-	if acc.claimJWT != "" && acc.claimJWT == claimJWT {
-		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
-		return false
-	}
-	accClaims, _, err := s.verifyAccountClaims(claimJWT)
-	if err == nil && accClaims != nil {
-		acc.claimJWT = claimJWT
-		s.updateAccountClaims(acc, accClaims)
-		return true
-	}
-	return false
+	return s.updateAccountWithClaimJWT(acc, claimJWT)
 }
 
-// updateAccountWithClaimJWT will chack and apply the claim update.
-func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) bool {
+// updateAccountWithClaimJWT will check and apply the claim update.
+func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error {
 	if acc == nil {
-		return false
+		return ErrMissingAccount
 	}
 	acc.updated = time.Now()
 	if acc.claimJWT != "" && acc.claimJWT == claimJWT {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
-		return false
+		return ErrAccountResolverSameClaims
 	}
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.claimJWT = claimJWT
 		s.updateAccountClaims(acc, accClaims)
-		return true
+		return nil
 	}
-	return false
-
+	return err
 }
 
 // fetchRawAccountClaims will grab raw account claims iff we have a resolver.
@@ -780,14 +811,15 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 
 // This will fetch an account from a resolver if defined.
 // Lock should be held upon entry.
-func (s *Server) fetchAccount(name string) *Account {
-	if accClaims, claimJWT, _ := s.fetchAccountClaims(name); accClaims != nil {
+func (s *Server) fetchAccount(name string) (*Account, error) {
+	if accClaims, claimJWT, err := s.fetchAccountClaims(name); accClaims != nil {
 		acc := s.buildInternalAccount(accClaims)
 		acc.claimJWT = claimJWT
 		s.registerAccount(acc)
-		return acc
+		return acc, nil
+	} else {
+		return nil, err
 	}
-	return nil
 }
 
 // Start up the server, this will block.
@@ -1324,11 +1356,15 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	maxPay := int32(opts.MaxPayload)
 	maxSubs := opts.MaxSubs
+	// For system, maxSubs of 0 means unlimited, so re-adjust here.
+	if maxSubs == 0 {
+		maxSubs = -1
+	}
 	now := time.Now()
 
 	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 
-	c.registerWithAccount(s.gacc)
+	c.registerWithAccount(s.globalAccount())
 
 	// Grab JSON info string
 	s.mu.Lock()

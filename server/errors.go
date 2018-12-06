@@ -81,6 +81,12 @@ var (
 	// ErrNoAccountResolver is returned when we attempt an update but do not have an account resolver.
 	ErrNoAccountResolver = errors.New("Account Resolver Missing")
 
+	// ErrAccountResolverUpdateTooSoon is returned when we attempt an update too soon to last request.
+	ErrAccountResolverUpdateTooSoon = errors.New("Account Resolver Update Too Soon")
+
+	// ErrAccountResolverSameClaims is returned when same claims have been fetched.
+	ErrAccountResolverSameClaims = errors.New("Account Resolver No New Claims")
+
 	// ErrStreamImportAuthorization is returned when a stream import is not authorized.
 	ErrStreamImportAuthorization = errors.New("Stream Import Not Authorized")
 

@@ -32,6 +32,7 @@ Server Options:
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
     -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
+                                     <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/gnatsd.pid)
         --client_advertise <string>  Client URL to advertise to other servers
     -t                               Test configuration and exit
 
@@ -77,8 +78,10 @@ func usage() {
 }
 
 func main() {
+	exe := "nats-server"
+
 	// Create a FlagSet and sets the usage
-	fs := flag.NewFlagSet("nats-server", flag.ExitOnError)
+	fs := flag.NewFlagSet(exe, flag.ExitOnError)
 	fs.Usage = usage
 
 	// Configure the options from the flags/config file
@@ -87,16 +90,16 @@ func main() {
 		fs.Usage,
 		server.PrintTLSHelpAndDie)
 	if err != nil {
-		server.PrintAndDie(fmt.Sprintf("ERR: %s", err))
+		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
 	} else if opts.CheckConfig {
-		fmt.Fprintf(os.Stderr, "configuration file %s is valid\n", opts.ConfigFile)
+		fmt.Fprintf(os.Stderr, "%s: configuration file %s is valid\n", exe, opts.ConfigFile)
 		os.Exit(0)
 	}
 
 	// Create the server with appropriate options.
 	s, err := server.NewServer(opts)
 	if err != nil {
-		server.PrintAndDie(fmt.Sprintf("ERR: %s", err))
+		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
 	}
 
 	// Configure the logger based on the flags

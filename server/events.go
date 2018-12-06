@@ -539,7 +539,7 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
 		return
 	}
-	acc := s.lookupAccount(m.Account)
+	acc, _ := s.lookupAccount(m.Account)
 	if acc == nil {
 		return
 	}
@@ -576,7 +576,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 		return
 	}
 	// See if we have the account registered, if not drop it.
-	acc := s.lookupAccount(m.Account)
+	acc, _ := s.lookupAccount(m.Account)
 	if acc == nil {
 		s.sys.client.Debugf("Received account connection event for unknown account: %s", m.Account)
 		return

@@ -245,6 +245,14 @@ func (u *nkeysOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization nkey users")
 }
 
+type trustKeysOption struct {
+	noopOption
+}
+
+func (u *trustKeysOption) Apply(server *Server) {
+	server.Noticef("Reloaded: trusted keys")
+}
+
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
@@ -497,6 +505,12 @@ func (s *Server) Reload() error {
 		// TODO: Dump previous good config to a .bak file?
 		return err
 	}
+
+	// Wipe trusted keys if needed when we have an operator.
+	if len(s.opts.TrustedOperators) > 0 && len(s.opts.TrustedKeys) > 0 {
+		s.opts.TrustedKeys = nil
+	}
+
 	clientOrgPort := s.clientActualPort
 	clusterOrgPort := s.clusterActualPort
 	gatewayOrgPort := s.gatewayActualPort
@@ -536,8 +550,8 @@ func (s *Server) reloadOptions(newOpts *Options) error {
 	if err != nil {
 		return err
 	}
-	// Need to save off previous cluster permissions
 	s.mu.Lock()
+	// Need to save off previous cluster permissions
 	s.oldClusterPerms = s.opts.Cluster.Permissions
 	s.mu.Unlock()
 	s.setOpts(newOpts)
@@ -554,7 +568,6 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		newConfig = reflect.ValueOf(newOpts).Elem()
 		diffOpts  = []option{}
 	)
-
 	for i := 0; i < oldConfig.NumField(); i++ {
 		field := oldConfig.Type().Field(i)
 		// field.PkgPath is empty for exported fields, and is not for unexported ones.
@@ -637,6 +650,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
 		case "accounts":
 			diffOpts = append(diffOpts, &accountsOption{})
+		case "trustedkeys":
+			diffOpts = append(diffOpts, &trustKeysOption{})
 		case "gateway":
 			// Not supported for now, but report warning if configuration of gateway
 			// is actually changed so that user knows that it won't take effect.
@@ -717,33 +732,36 @@ func (s *Server) applyOptions(opts []option) {
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 
+	oldAccounts := s.accounts
+	s.accounts, s.gacc = nil, nil
+	s.configureAccounts()
+
 	s.configureAuthorization()
 
 	// This map will contain the names of accounts that have their streams
 	// import configuration changed.
-	awcsti := make(map[string]struct{}, len(s.opts.Accounts))
+	awcsti := make(map[string]struct{}, len(s.accounts))
 
-	oldAccounts := s.accounts
-	s.accounts = make(map[string]*Account)
-	s.registerAccount(s.gacc)
-	for _, newAcc := range s.opts.Accounts {
+	for _, newAcc := range s.accounts {
 		if acc, ok := oldAccounts[newAcc.Name]; ok {
 			// If account exist in latest config, "transfer" the account's
-			// sublist to the new account object before registering it
-			// in s.accounts.
+			// sublist and client map to the new account.
 			acc.mu.RLock()
-			sl := acc.sl
+			if len(acc.clients) > 0 {
+				newAcc.clients = make(map[*client]*client, len(acc.clients))
+				for _, c := range acc.clients {
+					newAcc.clients[c] = c
+				}
+			}
+			newAcc.sl = acc.sl
 			acc.mu.RUnlock()
-			newAcc.mu.Lock()
-			newAcc.sl = sl
+
 			// Check if current and new config of this account are same
 			// in term of stream imports.
 			if !acc.checkStreamImportsEqual(newAcc) {
 				awcsti[newAcc.Name] = struct{}{}
 			}
-			newAcc.mu.Unlock()
 		}
-		s.registerAccount(newAcc)
 	}
 	// Gather clients that changed accounts. We will close them and they
 	// will reconnect, doing the right thing.
