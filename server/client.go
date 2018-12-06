@@ -426,7 +426,7 @@ func (c *client) registerWithAccount(acc *Account) error {
 		}
 	}
 	// Check if we have a max connections violation
-	if acc.MaxTotalConnectionsReached() {
+	if c.kind == CLIENT && acc.MaxTotalConnectionsReached() {
 		return ErrTooManyAccountConnections
 	}
 
@@ -457,7 +457,7 @@ func (c *client) subsAtLimit() bool {
 // Lock is held on entry.
 // FIXME(dlc) - Should server be able to override here?
 func (c *client) applyAccountLimits() {
-	if c.acc == nil {
+	if c.acc == nil || c.kind != CLIENT {
 		return
 	}
 
