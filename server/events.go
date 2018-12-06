@@ -115,6 +115,7 @@ type ClientInfo struct {
 	Name    string     `json:"name,omitempty"`
 	Lang    string     `json:"lang,omitempty"`
 	Version string     `json:"ver,omitempty"`
+	RTT     string     `json:"rtt,omitempty"`
 	Stop    *time.Time `json:"stop,omitempty"`
 }
 
@@ -187,10 +188,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	seqp := &s.sys.seq
 	var cluster string
 	if s.gateway.enabled {
-		gw := s.gateway
-		gw.RLock()
-		cluster = gw.name
-		gw.RUnlock()
+		cluster = s.getGatewayName()
 	}
 	s.mu.Unlock()
 
@@ -728,6 +726,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
+			RTT:     c.getRTT(),
 		},
 		Sent: DataStats{
 			Msgs:  c.inMsgs,
