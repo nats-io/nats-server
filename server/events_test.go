@@ -97,6 +97,11 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
+	// Add in dummy gateway
+	optsA.Gateway.Name = "TEST CLUSTER 22"
+	optsA.Gateway.Host = "127.0.0.1"
+	optsA.Gateway.Port = -1
+	optsA.gatewaysSolicitDelay = 30 * time.Second
 
 	sa := RunServer(optsA)
 
@@ -178,7 +183,6 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	s.setSystemAccount(acc)
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-
 	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
@@ -382,6 +386,107 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 		t.Fatalf("Received a message when we should not have")
 	case <-time.After(100 * time.Millisecond):
 		break
+	}
+}
+
+func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
+	sa, _, sb, optsB, _ := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// Normal Account
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 4 // Limit to 4 connections.
+	jwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, jwt)
+
+	// Listen for updates to the new account connection activity.
+	received := make(chan *nats.Msg, 10)
+	cb := func(sub *subscription, subject, reply string, msg []byte) {
+		copy := append([]byte(nil), msg...)
+		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
+	}
+	subj := fmt.Sprintf(accConnsEventSubj, pub)
+	sub, err := sa.sysSubscribe(subj, cb)
+	if sub == nil || err != nil {
+		t.Fatalf("Expected to subscribe, got %v", err)
+	}
+	defer sa.sysUnsubscribe(sub)
+
+	// Create a few users on the new account.
+	clients := []*nats.Conn{}
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	for i := 0; i < 4; i++ {
+		nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		clients = append(clients, nc)
+	}
+
+	// Wait for all 4 notifications.
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if len(received) == 4 {
+			return nil
+		}
+		return fmt.Errorf("Not enough messages, %d vs 4", len(received))
+	})
+
+	// Now lookup the account doing the events on sb.
+	acc, _ := sb.LookupAccount(pub)
+	// Make sure we have the timer running.
+	acc.mu.RLock()
+	etmr := acc.etmr
+	acc.mu.RUnlock()
+	if etmr == nil {
+		t.Fatalf("Expected event timer for acc conns to be running")
+	}
+
+	// Now close all of the connections.
+	for _, nc := range clients {
+		nc.Close()
+	}
+
+	// Wait for all 4 notifications.
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if len(received) == 4 {
+			return nil
+		}
+		return fmt.Errorf("Not enough messages, %d vs 4", len(received))
+	})
+	// Drain the messages.
+	for i := 0; i < 7; i++ {
+		<-received
+	}
+	// Check last one.
+	msg := <-received
+	m := accNumConns{}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatalf("Error unmarshalling account connections request message: %v", err)
+	}
+	if m.Conns != 0 {
+		t.Fatalf("Expected Conns to be 0, got %d", m.Conns)
+	}
+
+	// Should not receive any more messages..
+	select {
+	case <-received:
+		t.Fatalf("Did not expect a message here")
+	case <-time.After(50 * time.Millisecond):
+		break
+	}
+
+	// Make sure we have the timer is NOT running.
+	acc.mu.RLock()
+	etmr = acc.etmr
+	acc.mu.RUnlock()
+	if etmr != nil {
+		t.Fatalf("Expected event timer for acc conns to NOT be running after reaching zero local clients")
 	}
 }
 
@@ -912,6 +1017,13 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m.Server.ID != sa.ID() {
 		t.Fatalf("Did not match IDs")
 	}
+	if m.Server.Cluster != "TEST CLUSTER 22" {
+		t.Fatalf("Did not match cluster name")
+	}
+	if m.Server.Version != VERSION {
+		t.Fatalf("Did not match server version")
+	}
+
 	if m.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
 	}
