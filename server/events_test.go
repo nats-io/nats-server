@@ -429,6 +429,56 @@ func TestSystemAccountConnectionLimits(t *testing.T) {
 	})
 }
 
+// Make sure connection limits apply to the system account itself.
+func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
+	sa, optsA, sb, optsB, sakp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	okp, _ := nkeys.FromSeed(oSeed)
+	// Update system account to have 10 connections
+	pub, _ := sakp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Limits.Conn = 10
+	ajwt, _ := nac.Encode(okp)
+
+	addAccountToMemResolver(sa, pub, ajwt)
+	addAccountToMemResolver(sb, pub, ajwt)
+
+	// Update the accounts on each server with new claims to force update.
+	sysAccA := sa.SystemAccount()
+	sa.updateAccountWithClaimJWT(sysAccA, ajwt)
+	sysAccB := sb.SystemAccount()
+	sb.updateAccountWithClaimJWT(sysAccB, ajwt)
+
+	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+
+	// Create a user on each server. Break on first failure.
+	for {
+		nca1, err := nats.Connect(urlA, createUserCreds(t, sa, sakp))
+		if err != nil {
+			break
+		}
+		defer nca1.Close()
+
+		ncb1, err := nats.Connect(urlB, createUserCreds(t, sb, sakp))
+		if err != nil {
+			break
+		}
+		defer ncb1.Close()
+	}
+
+	checkFor(t, 1*time.Second, 50*time.Millisecond, func() error {
+		total := sa.NumClients() + sb.NumClients()
+		if total > int(nac.Limits.Conn) {
+			return fmt.Errorf("Expected only %d connections, was allowed to connect %d", nac.Limits.Conn, total)
+		}
+		return nil
+	})
+
+}
+
 // Test that the remote accounting works when a server is started some time later.
 func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	sa, optsA, sb, optsB, _ := runTrustedCluster(t)
@@ -868,7 +918,7 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
 	}
-	if m.Stats.Sent.Msgs != 1 {
+	if m.Stats.Sent.Msgs != 2 {
 		t.Fatalf("Did not match sent msgs of 1, got %d", m.Stats.Sent.Msgs)
 	}
 	if m.Stats.Received.Msgs != 1 {

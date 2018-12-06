@@ -382,7 +382,6 @@ func (s *Server) configureAccounts() error {
 			}
 		}
 	}
-
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
 		if _, err := s.lookupAccount(opts.SystemAccount); err != nil {
