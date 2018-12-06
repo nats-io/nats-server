@@ -637,7 +637,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	// Build event with account name and number of local clients.
 	m := accNumConns{
 		Account: a.Name,
-		Conns:   len(a.clients),
+		Conns:   a.numLocalConnections(),
 	}
 	a.mu.Unlock()
 
@@ -645,7 +645,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 
 	// Set timer to fire again unless we are at zero.
 	a.mu.Lock()
-	if len(a.clients) == 0 {
+	if a.numLocalConnections() == 0 {
 		clearTimer(&a.etmr)
 	} else {
 		// Check to see if we have an HB running and update.

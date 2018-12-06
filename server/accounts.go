@@ -41,21 +41,22 @@ type rme struct {
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via exports and imports of streams and services.
 type Account struct {
-	Name      string
-	Nkey      string
-	Issuer    string
-	claimJWT  string
-	updated   time.Time
-	mu        sync.RWMutex
-	sl        *Sublist
-	etmr      *time.Timer
-	ctmr      *time.Timer
-	strack    map[string]int
-	nrclients int
-	clients   map[*client]*client
-	rm        map[string]*rme
-	imports   importMap
-	exports   exportMap
+	Name       string
+	Nkey       string
+	Issuer     string
+	claimJWT   string
+	updated    time.Time
+	mu         sync.RWMutex
+	sl         *Sublist
+	etmr       *time.Timer
+	ctmr       *time.Timer
+	strack     map[string]int
+	nrclients  int
+	sysclients int
+	clients    map[*client]*client
+	rm         map[string]*rme
+	imports    importMap
+	exports    exportMap
 	limits
 	nae     int
 	pruning bool
@@ -143,7 +144,12 @@ func (a *Account) NumConnections() int {
 func (a *Account) NumLocalConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return len(a.clients)
+	return a.numLocalConnections()
+}
+
+// Do not account for the system accounts.
+func (a *Account) numLocalConnections() int {
+	return len(a.clients) - a.sysclients
 }
 
 // MaxClientsReached returns if we have reached our limit for number of connections.
@@ -155,7 +161,7 @@ func (a *Account) MaxTotalConnectionsReached() bool {
 
 func (a *Account) maxTotalConnectionsReached() bool {
 	if a.mconns != jwt.NoLimit {
-		return len(a.clients)+a.nrclients >= a.mconns
+		return len(a.clients)-a.sysclients+a.nrclients >= a.mconns
 	}
 	return false
 }
@@ -191,6 +197,9 @@ func (a *Account) addClient(c *client) int {
 	if a.clients != nil {
 		a.clients[c] = c
 	}
+	if c.kind == SYSTEM {
+		a.sysclients++
+	}
 	a.mu.Unlock()
 	if c != nil && c.srv != nil && a != c.srv.gacc {
 		c.srv.accConnsUpdate(a)
@@ -203,6 +212,9 @@ func (a *Account) removeClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
 	delete(a.clients, c)
+	if c.kind == SYSTEM {
+		a.sysclients--
+	}
 	a.mu.Unlock()
 	if c != nil && c.srv != nil && a != c.srv.gacc {
 		c.srv.accConnsUpdate(a)

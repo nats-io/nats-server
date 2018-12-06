@@ -556,22 +556,34 @@ func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
 	sysAccB := sb.SystemAccount()
 	sb.updateAccountWithClaimJWT(sysAccB, ajwt)
 
+	// Check system here first, with no external it should be zero.
+	sacc := sa.SystemAccount()
+	if nlc := sacc.NumLocalConnections(); nlc != 0 {
+		t.Fatalf("Expected no local connections, got %d", nlc)
+	}
+
 	urlA := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
 	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
 
 	// Create a user on each server. Break on first failure.
+	tc := 0
 	for {
 		nca1, err := nats.Connect(urlA, createUserCreds(t, sa, sakp))
 		if err != nil {
 			break
 		}
 		defer nca1.Close()
+		tc++
 
 		ncb1, err := nats.Connect(urlB, createUserCreds(t, sb, sakp))
 		if err != nil {
 			break
 		}
 		defer ncb1.Close()
+		tc++
+	}
+	if tc != 10 {
+		t.Fatalf("Expected to get 10 external connections, got %d", tc)
 	}
 
 	checkFor(t, 1*time.Second, 50*time.Millisecond, func() error {
@@ -581,7 +593,6 @@ func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 // Test that the remote accounting works when a server is started some time later.
@@ -1030,7 +1041,7 @@ func TestServerEventStatsZ(t *testing.T) {
 	if m.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
 	}
-	if m.Stats.Sent.Msgs != 2 {
+	if m.Stats.Sent.Msgs != 1 {
 		t.Fatalf("Did not match sent msgs of 1, got %d", m.Stats.Sent.Msgs)
 	}
 	if m.Stats.Received.Msgs != 1 {

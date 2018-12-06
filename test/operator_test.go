@@ -240,6 +240,7 @@ func TestOperatorSigningKeys(t *testing.T) {
 
 func TestOperatorMemResolverPreload(t *testing.T) {
 	s, opts := RunServerWithConfig("./configs/resolver_preload.conf")
+	defer s.Shutdown()
 
 	// Make sure we can look up the account.
 	acc, _ := s.LookupAccount("ADM2CIIL3RWXBA6T2HW3FODNCQQOUJEHHQD6FKCPVAMHDNTTSMO73ROX")
@@ -252,5 +253,22 @@ func TestOperatorMemResolverPreload(t *testing.T) {
 	}
 	if sacc.Name != opts.SystemAccount {
 		t.Fatalf("System account does not match, wanted %q, got %q", opts.SystemAccount, sacc.Name)
+	}
+}
+
+func TestOperatorConfigReloadDoesntKillNonce(t *testing.T) {
+	s, _ := runOperatorServer(t)
+	defer s.Shutdown()
+
+	if !s.NonceRequired() {
+		t.Fatalf("Error nonce should be required")
+	}
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	if !s.NonceRequired() {
+		t.Fatalf("Error nonce should still be required after reload")
 	}
 }
