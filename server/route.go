@@ -351,6 +351,16 @@ func (c *client) sendConnect(tlsRequired bool) {
 
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
+	// We may need to update route permissions and will need the account
+	// sublist. Since getting the account requires server lock, do the
+	// lookup now.
+
+	// FIXME(dlc) - Add account scoping.
+	gacc := c.srv.globalAccount()
+	gacc.mu.RLock()
+	sl := gacc.sl
+	gacc.mu.RUnlock()
+
 	c.mu.Lock()
 	// Connection can be closed at any time (by auth timeout, etc).
 	// Does not make sense to continue here if connection is gone.
@@ -409,7 +419,7 @@ func (c *client) processRouteInfo(info *Info) {
 	// If this is an update due to config reload on the remote server,
 	// need to possibly send local subs to the remote server.
 	if c.flags.isSet(infoReceived) {
-		s.updateRemoteRoutePerms(c, info)
+		c.updateRemoteRoutePerms(sl, info)
 		c.mu.Unlock()
 		return
 	}
@@ -486,11 +496,11 @@ func (c *client) processRouteInfo(info *Info) {
 // Possibly sends local subscriptions interest to this route
 // based on changes in the remote's Export permissions.
 // Lock assumed held on entry
-func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
+func (c *client) updateRemoteRoutePerms(sl *Sublist, info *Info) {
 	// Interested only on Export permissions for the remote server.
 	// Create "fake" clients that we will use to check permissions
 	// using the old permissions...
-	oldPerms := &RoutePermissions{Export: route.opts.Export}
+	oldPerms := &RoutePermissions{Export: c.opts.Export}
 	oldPermsTester := &client{}
 	oldPermsTester.setRoutePermissions(oldPerms)
 	// and the new ones.
@@ -498,22 +508,20 @@ func (s *Server) updateRemoteRoutePerms(route *client, info *Info) {
 	newPermsTester := &client{}
 	newPermsTester.setRoutePermissions(newPerms)
 
-	route.opts.Import = info.Import
-	route.opts.Export = info.Export
+	c.opts.Import = info.Import
+	c.opts.Export = info.Export
 
 	var (
 		_localSubs [4096]*subscription
 		localSubs  = _localSubs[:0]
 	)
-	// FIXME(dlc) - Add account scoping.
-	gacc := s.globalAccount()
-	gacc.sl.localSubs(&localSubs)
+	sl.localSubs(&localSubs)
 
-	route.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
+	c.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
 		subj := string(sub.subject)
 		// If the remote can now export but could not before, and this server can import this
 		// subject, then send SUB protocol.
-		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && route.canImport(subj) {
+		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && c.canImport(subj) {
 			return true
 		}
 		return false
