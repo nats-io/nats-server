@@ -1236,6 +1236,79 @@ func TestNewRouteServiceImport(t *testing.T) {
 	}
 }
 
+func TestNewRouteServiceImportQueueGroups(t *testing.T) {
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	// Do Accounts for the servers.
+	fooA, barA := registerAccounts(t, srvA)
+	fooB, barB := registerAccounts(t, srvB)
+
+	// Add export to both.
+	addServiceExport("test.request", isPublic, fooA, fooB)
+
+	// Add import abilities to server B's bar account from foo.
+	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	// Do same on A.
+	if err := barA.AddServiceImport(fooA, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// clientA will be connected to srvA and be the service endpoint and responder.
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA("SUB test.request QGROUP 1\r\nPING\r\n")
+	expectA(pongRe)
+
+	// Now setup client B on srvB who will do a sub from account $bar
+	// that should map account $foo's foo subject.
+	clientB := createClientConn(t, optsB.Host, optsB.Port)
+	defer clientB.Close()
+
+	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB("SUB reply QGROUP_TOO 1\r\nPING\r\n")
+	expectB(pongRe)
+
+	// Send the request from clientB on foo.request,
+	sendB("PUB foo.request reply 2\r\nhi\r\nPING\r\n")
+	expectB(pongRe)
+
+	expectMsgsA := expectMsgsCommand(t, expectA)
+	expectMsgsB := expectMsgsCommand(t, expectB)
+
+	// Expect the request on A
+	matches := expectMsgsA(1)
+	reply := string(matches[0][replyIndex])
+	checkMsg(t, matches[0], "test.request", "1", reply, "2", "hi")
+	if reply == "reply" {
+		t.Fatalf("Expected randomized reply, but got original")
+	}
+
+	sendA(fmt.Sprintf("PUB %s 2\r\nok\r\nPING\r\n", reply))
+	expectA(pongRe)
+
+	matches = expectMsgsB(1)
+	checkMsg(t, matches[0], "reply", "1", "", "2", "ok")
+
+	if ts := fooA.TotalSubs(); ts != 1 {
+		t.Fatalf("Expected one sub to be left on fooA, but got %d", ts)
+	}
+
+	routez, _ := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
+	r := routez.Routes[0]
+	if r == nil {
+		t.Fatalf("Expected 1 route, got none")
+	}
+	if r.NumSubs != 1 {
+		t.Fatalf("Expected 1 sub in the route connection, got %v", r.NumSubs)
+	}
+}
+
 func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	srvA, srvB, optsA, optsB := runServers(t)
 	defer srvA.Shutdown()
