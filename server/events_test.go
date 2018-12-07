@@ -963,7 +963,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	nca.Flush()
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 7, sa)
+	checkExpectedSubs(t, 8, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -988,7 +988,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 		t.Fatalf("Expected %q for account, got %q", accName, account)
 	}
 }
-func TestServerEventStatsZ(t *testing.T) {
+func TestServerEventsStatsZ(t *testing.T) {
 	sa, optsA, sb, _, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
@@ -1105,5 +1105,42 @@ func TestServerEventStatsZ(t *testing.T) {
 	}
 	if lr := len(m3.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)
+	}
+}
+
+func TestServerEventsPingStatsZ(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	reply := nc.NewRespInbox()
+	sub, _ := nc.SubscribeSync(reply)
+
+	nc.PublishRequest(serverStatsPingReqSubj, reply, nil)
+
+	// Make sure its a statsz
+	m := ServerStatsMsg{}
+
+	// Receive both manually.
+	msg, err := sub.NextMsg(randomBackoff * 2)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	msg, err = sub.NextMsg(randomBackoff)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
 	}
 }

@@ -16,6 +16,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,15 +27,16 @@ import (
 )
 
 const (
-	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
-	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accConnsReqSubj     = "$SYS.REQ.ACCOUNT.%s.CONNS"
-	accUpdateEventSubj  = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
-	connsRespSubj       = "$SYS._INBOX_.%s"
-	accConnsEventSubj   = "$SYS.SERVER.ACCOUNT.%s.CONNS"
-	shutdownEventSubj   = "$SYS.SERVER.%s.SHUTDOWN"
-	serverStatsSubj     = "$SYS.SERVER.%s.STATSZ"
-	serverStatsReqSubj  = "$SYS.REQ.SERVER.%s.STATSZ"
+	connectEventSubj       = "$SYS.ACCOUNT.%s.CONNECT"
+	disconnectEventSubj    = "$SYS.ACCOUNT.%s.DISCONNECT"
+	accConnsReqSubj        = "$SYS.REQ.ACCOUNT.%s.CONNS"
+	accUpdateEventSubj     = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	connsRespSubj          = "$SYS._INBOX_.%s"
+	accConnsEventSubj      = "$SYS.SERVER.ACCOUNT.%s.CONNS"
+	shutdownEventSubj      = "$SYS.SERVER.%s.SHUTDOWN"
+	serverStatsSubj        = "$SYS.SERVER.%s.STATSZ"
+	serverStatsReqSubj     = "$SYS.REQ.SERVER.%s.STATSZ"
+	serverStatsPingReqSubj = "$SYS.REQ.SERVER.PING"
 
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
@@ -98,11 +100,12 @@ type accNumConnsReq struct {
 }
 
 type ServerInfo struct {
-	Host    string `json:"host"`
-	ID      string `json:"id"`
-	Cluster string `json:"cluster,omitempty"`
-	Version string `json:"ver"`
-	Seq     uint64 `json:"seq"`
+	Host    string    `json:"host"`
+	ID      string    `json:"id"`
+	Cluster string    `json:"cluster,omitempty"`
+	Version string    `json:"ver"`
+	Seq     uint64    `json:"seq"`
+	Time    time.Time `json:"time"`
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -203,6 +206,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 				pm.si.ID = id
 				pm.si.Seq = seq
 				pm.si.Version = VERSION
+				pm.si.Time = time.Now()
 			}
 			var b []byte
 			if pm.msg != nil {
@@ -265,6 +269,16 @@ func (s *Server) eventsRunning() bool {
 	return s.running && s.eventsEnabled()
 }
 
+// EventsEnabled will report if the server has internal events enabled via
+// a defined system account.
+func (s *Server) EventsEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.eventsEnabled()
+}
+
+// eventsEnabled will report if events are enabled.
+// Lock should be held.
 func (s *Server) eventsEnabled() bool {
 	return s.sys != nil && s.sys.client != nil && s.sys.account != nil
 }
@@ -420,9 +434,13 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 
-	// Listen for requests for our statz
+	// Listen for requests for our statsz.
 	subject = fmt.Sprintf(serverStatsReqSubj, s.info.ID)
 	if _, err := s.sysSubscribe(subject, s.statszReq); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+	// Listen for ping messages that will be sent to all servers for statsz.
+	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszPing); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 }
@@ -547,6 +565,30 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	if nlc := acc.NumLocalConnections(); nlc > 0 {
 		s.sendAccConnsUpdate(acc, reply)
 	}
+}
+
+// random back off interval for broadcast statsz ping requests.
+const randomBackoff = 250 * time.Millisecond
+
+// statszPing will handle global requests for our server statsz. This will be a
+// broadcast msg so we want to be mindful of that. We will do a random backoff and
+// process in a separate go routine.
+func (s *Server) statszPing(sub *subscription, subject, reply string, msg []byte) {
+	if !s.EventsEnabled() || reply == _EMPTY_ {
+		return
+	}
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+		delay := time.Duration(rand.Intn(int(randomBackoff)))
+		select {
+		case <-time.After(delay):
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.sendStatsz(reply)
+		case <-s.quitCh:
+			return
+		}
+	})
 }
 
 // statszReq is a request for us to respond with current statz.
