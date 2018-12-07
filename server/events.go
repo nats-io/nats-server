@@ -484,12 +484,10 @@ func (s *Server) updateRemoteServer(ms *ServerInfo) {
 	if su == nil {
 		s.sys.servers[ms.ID] = &serverUpdate{ms.Seq, time.Now()}
 	} else {
+		// Should alwqys be going up.
 		if ms.Seq <= su.seq {
 			s.Errorf("Received out of order remote server update from: %q", ms.ID)
 			return
-		}
-		if ms.Seq != su.seq+1 {
-			s.Errorf("Missed [%d] remote server updates from: %q", ms.Seq-su.seq+1, ms.ID)
 		}
 		su.seq = ms.Seq
 		su.ltime = time.Now()
