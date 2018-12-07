@@ -311,6 +311,18 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, nil)
 }
 
+// Helper function for routes and gateways to create qfilters need for
+// converted subs from imports, etc.
+func (c *client) makeQFilter(qsubs [][]*subscription) {
+	qs := make([][]byte, 0, len(qsubs))
+	for _, qsub := range qsubs {
+		if len(qsub) > 0 {
+			qs = append(qs, qsub[0].queue)
+		}
+	}
+	c.pa.queues = qs
+}
+
 // Lock should be held entering here.
 func (c *client) sendConnect(tlsRequired bool) {
 	var user, pass string

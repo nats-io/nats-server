@@ -2185,6 +2185,11 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := rm.acc.sl.Match(rm.to)
+		// If we are a route or gateway and this message is flipped to a queue subscriber we
+		// need to handle that since the processMsgResults will want a queue filter.
+		if c.kind == ROUTER || c.kind == GATEWAY && c.pa.queues == nil && len(rr.qsubs) > 0 {
+			c.makeQFilter(rr.qsubs)
+		}
 		c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, nil)
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
