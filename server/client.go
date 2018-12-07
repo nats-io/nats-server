@@ -335,6 +335,7 @@ type clientOpts struct {
 }
 
 var defaultOpts = clientOpts{Verbose: true, Pedantic: true, Echo: true}
+var internalOpts = clientOpts{Verbose: false, Pedantic: false, Echo: false}
 
 func init() {
 	rand.Seed(time.Now().UnixNano())

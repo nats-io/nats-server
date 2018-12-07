@@ -620,7 +620,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: defaultOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
+		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
@@ -635,12 +635,12 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
+	// Register with the account.
+	s.sys.client.registerWithAccount(acc)
+
 	// Start our internal loop to serialize outbound messages.
 	// We do our own wg here since we will stop first during shutdown.
 	go s.internalSendLoop(&s.sys.wg)
-
-	// Register with the account.
-	s.sys.client.registerWithAccount(acc)
 
 	// Start up our general subscriptions
 	s.initEventTracking()
