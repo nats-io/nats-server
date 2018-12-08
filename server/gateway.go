@@ -399,6 +399,10 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 
 // Similar to setInfoHostPortAndGenerateJSON, but for gatewayInfo.
 func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
+	gw := s.gateway
+	gw.Lock()
+	defer gw.Unlock()
+	delete(gw.URLs, gw.URL)
 	if o.Gateway.Advertise != "" {
 		advHost, advPort, err := parseHostPort(o.Gateway.Advertise, o.Gateway.Port)
 		if err != nil {
@@ -409,17 +413,22 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 	} else {
 		info.Host = o.Gateway.Host
 		info.Port = o.Gateway.Port
+		// If the host is "0.0.0.0" or "::" we need to resolve to a public IP.
+		// This will return at most 1 IP.
+		ips, err := s.resolveIfHostIsAnyAddress(info.Host, false)
+		if err != nil {
+			return err
+		}
+		if len(ips) > 0 {
+			info.Host = ips[0]
+		}
 	}
-	gw := s.gateway
-	gw.Lock()
-	delete(gw.URLs, gw.URL)
 	gw.URL = net.JoinHostPort(info.Host, strconv.Itoa(info.Port))
 	gw.URLs[gw.URL] = struct{}{}
 	gw.info = info
 	info.GatewayURL = gw.URL
 	// (re)generate the gatewayInfoJSON byte array
 	gw.generateInfoJSON()
-	gw.Unlock()
 	return nil
 }
 

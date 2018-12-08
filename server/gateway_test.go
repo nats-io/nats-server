@@ -535,6 +535,107 @@ func TestGatewayListenError(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGatewayWithListenToAny(t *testing.T) {
+	confB1 := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		cluster {
+			listen: "127.0.0.1:-1"
+		}
+		gateway {
+			name: "B"
+			listen: "0.0.0.0:-1"
+		}
+	`))
+	sb1, ob1 := RunServerWithConfig(confB1)
+	defer sb1.Shutdown()
+
+	confB2 := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		cluster {
+			listen: "127.0.0.1:-1"
+			routes: ["%s"]
+		}
+		gateway {
+			name: "B"
+			listen: "0.0.0.0:-1"
+		}
+	`, fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))))
+	sb2, ob2 := RunServerWithConfig(confB2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		cluster {
+			listen: "127.0.0.1:-1"
+		}
+		gateway {
+			name: "A"
+			listen: "0.0.0.0:-1"
+			gateways [
+				{
+					name: "B"
+					urls: ["%s", "%s"]
+				}
+			]
+		}
+	`, fmt.Sprintf("nats://127.0.0.1:%d", ob1.Gateway.Port), fmt.Sprintf("nats://127.0.0.1:%d", ob2.Gateway.Port))))
+	oa := LoadConfig(confA)
+	oa.gatewaysSolicitDelay = 15 * time.Millisecond
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb1, 1, time.Second)
+	waitForOutboundGateways(t, sb2, 1, time.Second)
+	waitForInboundGateways(t, sa, 2, time.Second)
+
+	checkAll := func(t *testing.T) {
+		t.Helper()
+		checkURL := func(t *testing.T, s *Server) {
+			t.Helper()
+			url := s.getGatewayURL()
+			if strings.HasPrefix(url, "0.0.0.0") {
+				t.Fatalf("URL still references 0.0.0.0")
+			}
+			s.gateway.RLock()
+			for url := range s.gateway.URLs {
+				if strings.HasPrefix(url, "0.0.0.0") {
+					s.gateway.RUnlock()
+					t.Fatalf("URL still references 0.0.0.0")
+				}
+			}
+			s.gateway.RUnlock()
+
+			var cfg *gatewayCfg
+			if s.getGatewayName() == "A" {
+				cfg = s.getRemoteGateway("B")
+			} else {
+				cfg = s.getRemoteGateway("A")
+			}
+			urls := cfg.getURLs()
+			for _, url := range urls {
+				if strings.HasPrefix(url.Host, "0.0.0.0") {
+					t.Fatalf("URL still references 0.0.0.0")
+				}
+			}
+		}
+		checkURL(t, sb1)
+		checkURL(t, sb2)
+		checkURL(t, sa)
+	}
+	checkAll(t)
+	// Perform a reload and ensure that nothing has changed
+	servers := []*Server{sb1, sb2, sa}
+	for _, s := range servers {
+		if err := s.Reload(); err != nil {
+			t.Fatalf("Error on reload: %v", err)
+		}
+		checkAll(t)
+	}
+}
+
 func TestGatewayAdvertise(t *testing.T) {
 	o3 := testDefaultOptionsForGateway("C")
 	s3 := runGatewayServer(o3)
@@ -1212,6 +1313,20 @@ func TestGatewayAccountInterest(t *testing.T) {
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		if _, inMap := gwcb.gw.outsim.Load("$foo"); !inMap {
 			return fmt.Errorf("Did not receive account no interest")
+		}
+		return nil
+	})
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		ei, inMap := gwcc.gw.outsim.Load("$foo")
+		if !inMap {
+			return fmt.Errorf("Did not receive subject no interest")
+		}
+		e := ei.(*outsie)
+		e.RLock()
+		_, inMap = e.ni["foo"]
+		e.RUnlock()
+		if !inMap {
+			return fmt.Errorf("Did not receive subject no interest")
 		}
 		return nil
 	})
