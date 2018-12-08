@@ -349,8 +349,12 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		}
 		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
 		if err != nil {
-			c.Debugf("Signature not valid base64")
-			return false
+			// Allow fallback to normal base64.
+			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				c.Debugf("Signature not valid base64")
+				return false
+			}
 		}
 		pub, err := nkeys.FromPublicKey(juc.Subject)
 		if err != nil {
