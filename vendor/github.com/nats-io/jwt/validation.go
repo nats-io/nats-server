@@ -1,6 +1,9 @@
 package jwt
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ValidationIssue represents an issue during JWT validation, it may or may not be a blocking error
 type ValidationIssue struct {
@@ -75,4 +78,15 @@ func (v *ValidationResults) IsBlocking(includeTimeChecks bool) bool {
 // IsEmpty returns true if the list is empty
 func (v *ValidationResults) IsEmpty() bool {
 	return len(v.Issues) == 0
+}
+
+// Errors returns only blocking issues as errors
+func (v *ValidationResults) Errors() []error {
+	var errs []error
+	for _, v := range v.Issues {
+		if v.Blocking {
+			errs = append(errs, errors.New(v.Description))
+		}
+	}
+	return errs
 }

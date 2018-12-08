@@ -45,14 +45,7 @@ func (e *Exports) Add(i ...*Export) {
 	*e = append(*e, i...)
 }
 
-// Validate calls validate on all of the exports
-func (e *Exports) Validate(vr *ValidationResults) error {
-	var subjects []Subject
-	for _, v := range *e {
-		subjects = append(subjects, v.Subject)
-		v.Validate(vr)
-	}
-	// collect all the subjects, and validate that no subject is a subset
+func isContainedIn(kind ExportType, subjects []Subject, vr *ValidationResults) {
 	m := make(map[string]string)
 	for i, ns := range subjects {
 		for j, s := range subjects {
@@ -73,10 +66,28 @@ func (e *Exports) Validate(vr *ValidationResults) error {
 		for k, v := range m {
 			var vi ValidationIssue
 			vi.Blocking = true
-			vi.Description = fmt.Sprintf("export subject %q already exports %q", k, v)
+			vi.Description = fmt.Sprintf("%s export subject %q already exports %q", kind, k, v)
 			vr.Add(&vi)
 		}
 	}
+}
+
+// Validate calls validate on all of the exports
+func (e *Exports) Validate(vr *ValidationResults) error {
+	var serviceSubjects []Subject
+	var streamSubjects []Subject
+
+	for _, v := range *e {
+		if v.IsService() {
+			serviceSubjects = append(serviceSubjects, v.Subject)
+		} else {
+			streamSubjects = append(streamSubjects, v.Subject)
+		}
+		v.Validate(vr)
+	}
+
+	isContainedIn(Service, serviceSubjects, vr)
+	isContainedIn(Stream, streamSubjects, vr)
 
 	return nil
 }

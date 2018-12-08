@@ -5,7 +5,7 @@
 			"importpath": "github.com/nats-io/jwt",
 			"repository": "https://github.com/nats-io/jwt",
 			"vcs": "git",
-			"revision": "f26fb76c5f45b9fe3e657a1135d795079cecffac",
+			"revision": "cad7522beb57f4823c682c3b63d53bcb3bf1cf3d",
 			"branch": "master",
 			"notests": true
 		},
