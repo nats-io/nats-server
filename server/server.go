@@ -1811,29 +1811,9 @@ func (s *Server) getClientConnectURLs() []string {
 		urls = append(urls, net.JoinHostPort(s.info.Host, strconv.Itoa(s.info.Port)))
 	} else {
 		sPort := strconv.Itoa(opts.Port)
-		ipAddr, err := net.ResolveIPAddr("ip", opts.Host)
-		// If the host is "any" (0.0.0.0 or ::), get specific IPs from available
-		// interfaces.
-		if err == nil && ipAddr.IP.IsUnspecified() {
-			var ip net.IP
-			ifaces, _ := net.Interfaces()
-			for _, i := range ifaces {
-				addrs, _ := i.Addrs()
-				for _, addr := range addrs {
-					switch v := addr.(type) {
-					case *net.IPNet:
-						ip = v.IP
-					case *net.IPAddr:
-						ip = v.IP
-					}
-					// Skip non global unicast addresses
-					if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
-						ip = nil
-						continue
-					}
-					urls = append(urls, net.JoinHostPort(ip.String(), sPort))
-				}
-			}
+		ips, err := s.resolveIfHostIsAnyAddress(opts.Host, true)
+		for _, ip := range ips {
+			urls = append(urls, net.JoinHostPort(ip, sPort))
 		}
 		if err != nil || len(urls) == 0 {
 			// We are here if s.opts.Host is not "0.0.0.0" nor "::", or if for some
@@ -1849,8 +1829,46 @@ func (s *Server) getClientConnectURLs() []string {
 			}
 		}
 	}
-
 	return urls
+}
+
+// Returns an array of non local IPs if the provided host is
+// 0.0.0.0 or ::. It returns the first resolved if `all` is
+// false.
+func (s *Server) resolveIfHostIsAnyAddress(host string, all bool) ([]string, error) {
+	ipAddr, err := net.ResolveIPAddr("ip", host)
+	if err != nil {
+		s.Errorf("Error resolving host %q: %v", host, err)
+		return nil, err
+	}
+	// If this is not 0.0.0.0 or :: we have nothing to do.
+	if !ipAddr.IP.IsUnspecified() {
+		return nil, nil
+	}
+	var ips []string
+	var ip net.IP
+	ifaces, _ := net.Interfaces()
+	for _, i := range ifaces {
+		addrs, _ := i.Addrs()
+		for _, addr := range addrs {
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			// Skip non global unicast addresses
+			if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
+				ip = nil
+				continue
+			}
+			ips = append(ips, ip.String())
+			if !all {
+				break
+			}
+		}
+	}
+	return ips, nil
 }
 
 // if the ip is not specified, attempt to resolve it
