@@ -415,15 +415,33 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 		info.Port = o.Gateway.Port
 		// If the host is "0.0.0.0" or "::" we need to resolve to a public IP.
 		// This will return at most 1 IP.
-		ips, err := s.resolveIfHostIsAnyAddress(info.Host, false)
+		hostIsIPAny, ips, err := s.getNonLocalIPsIfHostIsIPAny(info.Host, false)
 		if err != nil {
 			return err
 		}
-		if len(ips) > 0 {
-			info.Host = ips[0]
+		if hostIsIPAny {
+			if len(ips) == 0 {
+				// TODO(ik): Should we fail here (prevent starting)? If not, we
+				// are going to "advertise" the 0.0.0.0:<port> url, which means
+				// that remote are going to try to connect to 0.0.0.0:<port>,
+				// which means a connect to loopback address, which is going
+				// to fail with either TLS error, conn refused if the remote
+				// is using different gateway port than this one, or error
+				// saying that it tried to connect to itself.
+				s.Errorf("Could not find any non-local IP for gateway %q with listen specification %q",
+					gw.name, info.Host)
+			} else {
+				// Take the first from the list...
+				info.Host = ips[0]
+			}
 		}
 	}
 	gw.URL = net.JoinHostPort(info.Host, strconv.Itoa(info.Port))
+	if o.Gateway.Advertise != "" {
+		s.Noticef("Advertise address for gateway %q is set to %s", gw.name, gw.URL)
+	} else {
+		s.Noticef("Address for gateway %q is %s", gw.name, gw.URL)
+	}
 	gw.URLs[gw.URL] = struct{}{}
 	gw.info = info
 	info.GatewayURL = gw.URL
@@ -490,23 +508,29 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 		isImplicit = cfg.isImplicit()
 		urls       = cfg.getURLs()
 		attempts   int
+		typeStr    string
 	)
+	if isImplicit {
+		typeStr = "implicit"
+	} else {
+		typeStr = "explicit"
+	}
 	for s.isRunning() && len(urls) > 0 {
 		// Iteration is random
 		for _, u := range urls {
 			address, err := s.getRandomIP(s.gateway.resolver, u.Host)
 			if err != nil {
-				s.Errorf("Error getting IP for %s: %v", u.Host, err)
+				s.Errorf("Error getting IP for %s gateway %q (%s): %v", typeStr, cfg.Name, u.Host, err)
 				continue
 			}
-			s.Debugf("Trying to connect to gateway %q at %s", cfg.Name, address)
+			s.Noticef("Connecting to %s gateway %q (%s) at %s", typeStr, cfg.Name, u.Host, address)
 			conn, err := net.DialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
 			if err == nil {
 				// We could connect, create the gateway connection and return.
 				s.createGateway(cfg, u, conn)
 				return
 			}
-			s.Errorf("Error trying to connect to gateway: %v", err)
+			s.Errorf("Error connecting to %s gateway %q (%s) at %s: %v", typeStr, cfg.Name, u.Host, address, err)
 			// Break this loop if server is being shutdown...
 			if !s.isRunning() {
 				break

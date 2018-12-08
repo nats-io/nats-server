@@ -1811,7 +1811,7 @@ func (s *Server) getClientConnectURLs() []string {
 		urls = append(urls, net.JoinHostPort(s.info.Host, strconv.Itoa(s.info.Port)))
 	} else {
 		sPort := strconv.Itoa(opts.Port)
-		ips, err := s.resolveIfHostIsAnyAddress(opts.Host, true)
+		_, ips, err := s.getNonLocalIPsIfHostIsIPAny(opts.Host, true)
 		for _, ip := range ips {
 			urls = append(urls, net.JoinHostPort(ip, sPort))
 		}
@@ -1835,18 +1835,21 @@ func (s *Server) getClientConnectURLs() []string {
 // Returns an array of non local IPs if the provided host is
 // 0.0.0.0 or ::. It returns the first resolved if `all` is
 // false.
-func (s *Server) resolveIfHostIsAnyAddress(host string, all bool) ([]string, error) {
-	ipAddr, err := net.ResolveIPAddr("ip", host)
-	if err != nil {
-		s.Errorf("Error resolving host %q: %v", host, err)
-		return nil, err
+// The boolean indicate if the provided host was 0.0.0.0 (or ::)
+// so that if the returned array is empty caller can decide
+// what to do next.
+func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []string, error) {
+	ip := net.ParseIP(host)
+	// If this is not an IP, we are done
+	if ip == nil {
+		return false, nil, nil
 	}
 	// If this is not 0.0.0.0 or :: we have nothing to do.
-	if !ipAddr.IP.IsUnspecified() {
-		return nil, nil
+	if !ip.IsUnspecified() {
+		return false, nil, nil
 	}
+	s.Debugf("Get non local IPs for %q", host)
 	var ips []string
-	var ip net.IP
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
 		addrs, _ := i.Addrs()
@@ -1857,18 +1860,20 @@ func (s *Server) resolveIfHostIsAnyAddress(host string, all bool) ([]string, err
 			case *net.IPAddr:
 				ip = v.IP
 			}
+			ipStr := ip.String()
 			// Skip non global unicast addresses
 			if !ip.IsGlobalUnicast() || ip.IsUnspecified() {
 				ip = nil
 				continue
 			}
-			ips = append(ips, ip.String())
+			s.Debugf(" ip=%s", ipStr)
+			ips = append(ips, ipStr)
 			if !all {
 				break
 			}
 		}
 	}
-	return ips, nil
+	return true, ips, nil
 }
 
 // if the ip is not specified, attempt to resolve it
@@ -2195,6 +2200,10 @@ func (s *Server) getRandomIP(resolver netResolver, url string) (string, error) {
 	host, port, err := net.SplitHostPort(url)
 	if err != nil {
 		return "", err
+	}
+	// If already an IP, skip.
+	if net.ParseIP(host) != nil {
+		return url, nil
 	}
 	ips, err := resolver.LookupHost(context.Background(), host)
 	if err != nil {
