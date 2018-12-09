@@ -305,6 +305,50 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 }
 
+func TestSystemAccountDisconnectBadLogin(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncs.Close()
+
+	// We should never hear $G account events for bad logins.
+	sub, _ := ncs.SubscribeSync("$SYS.ACCOUNT.$G.*")
+	defer sub.Unsubscribe()
+
+	// Listen for auth error events though.
+	asub, _ := ncs.SubscribeSync("$SYS.SERVER.*.CLIENT.AUTH.ERR")
+	defer asub.Unsubscribe()
+
+	ncs.Flush()
+
+	nats.Connect(url, nats.Name("TEST BAD LOGIN"))
+
+	// Should not hear these.
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Received a disconnect message from bad login, expected none")
+	}
+
+	m, err := asub.NextMsg(100 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("Should have heard an auth error event")
+	}
+	dem := DisconnectEventMsg{}
+	if err := json.Unmarshal(m.Data, &dem); err != nil {
+		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
+	}
+	if dem.Reason != "Authentication Failure" {
+		t.Fatalf("Expected auth error, got %q", dem.Reason)
+	}
+}
+
 func TestSystemAccountInternalSubscriptions(t *testing.T) {
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()
@@ -1142,5 +1186,22 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+}
+
+func TestGatewayNameClientInfo(t *testing.T) {
+	sa, _, sb, _, _ := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	_, _, l := newClientForServer(sa)
+
+	var info Info
+	err := json.Unmarshal([]byte(l[5:]), &info)
+	if err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Cluster != "TEST CLUSTER 22" {
+		t.Fatalf("Expected a cluster name of 'TEST CLUSTER 22', got %q", info.Cluster)
 	}
 }

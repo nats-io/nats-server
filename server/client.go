@@ -1143,8 +1143,9 @@ func (c *client) accountAuthExpired() {
 }
 
 func (c *client) authViolation() {
+	var s *Server
 	var hasTrustedNkeys, hasNkeys, hasUsers bool
-	if s := c.srv; s != nil {
+	if s = c.srv; s != nil {
 		s.mu.Lock()
 		hasTrustedNkeys = len(s.trustedKeys) > 0
 		hasNkeys = s.nkeys != nil
@@ -1166,6 +1167,9 @@ func (c *client) authViolation() {
 	}
 	c.sendErr("Authorization Violation")
 	c.closeConnection(AuthenticationViolation)
+	if s != nil {
+		s.sendAuthErrorEvent(c)
+	}
 }
 
 func (c *client) maxAccountConnExceeded() {
