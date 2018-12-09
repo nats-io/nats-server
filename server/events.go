@@ -88,9 +88,10 @@ type DisconnectEventMsg struct {
 // a given account when the number of connections changes. It will also HB
 // updates in the absence of any changes.
 type AccountNumConns struct {
-	Server  ServerInfo `json:"server"`
-	Account string     `json:"acc"`
-	Conns   int        `json:"conns"`
+	Server     ServerInfo `json:"server"`
+	Account    string     `json:"acc"`
+	Conns      int        `json:"conns"`
+	TotalConns int        `json:"total_conns"`
 }
 
 // accNumConnsReq is sent when we are starting to track an account for the first
@@ -677,8 +678,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 
 	// Build event with account name and number of local clients.
 	m := AccountNumConns{
-		Account: a.Name,
-		Conns:   a.numLocalConnections(),
+		Account:    a.Name,
+		Conns:      a.numLocalConnections(),
+		TotalConns: len(s.clients),
 	}
 	a.mu.Unlock()
 
