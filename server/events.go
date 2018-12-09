@@ -84,10 +84,10 @@ type DisconnectEventMsg struct {
 	Reason   string     `json:"reason"`
 }
 
-// accNumConns is an event that will be sent from a server that is tracking
+// AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
 // updates in the absence of any changes.
-type accNumConns struct {
+type AccountNumConns struct {
 	Server  ServerInfo `json:"server"`
 	Account string     `json:"acc"`
 	Conns   int        `json:"conns"`
@@ -609,7 +609,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 	if !s.eventsEnabled() {
 		return
 	}
-	m := accNumConns{}
+	m := AccountNumConns{}
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
@@ -676,7 +676,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	}
 
 	// Build event with account name and number of local clients.
-	m := accNumConns{
+	m := AccountNumConns{
 		Account: a.Name,
 		Conns:   a.numLocalConnections(),
 	}

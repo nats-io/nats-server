@@ -509,7 +509,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 	}
 	// Check last one.
 	msg := <-received
-	m := accNumConns{}
+	m := AccountNumConns{}
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling account connections request message: %v", err)
 	}
