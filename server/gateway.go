@@ -2174,7 +2174,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		}
 	}
 
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, nil)
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false)
 }
 
 // Indicates that the remote which we are sending messages to
