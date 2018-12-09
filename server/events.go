@@ -34,6 +34,7 @@ const (
 	connsRespSubj          = "$SYS._INBOX_.%s"
 	accConnsEventSubj      = "$SYS.SERVER.ACCOUNT.%s.CONNS"
 	shutdownEventSubj      = "$SYS.SERVER.%s.SHUTDOWN"
+	authErrorEventSubj     = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj        = "$SYS.SERVER.%s.STATSZ"
 	serverStatsReqSubj     = "$SYS.REQ.SERVER.%s.STATSZ"
 	serverStatsPingReqSubj = "$SYS.REQ.SERVER.PING"
@@ -738,7 +739,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	c.mu.Unlock()
 
 	s.mu.Lock()
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 	s.mu.Unlock()
 }
 
@@ -746,15 +747,21 @@ func (s *Server) accountConnectEvent(c *client) {
 // This is a billing event.
 func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string) {
 	s.mu.Lock()
+	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
 	s.mu.Unlock()
 
-	subj := fmt.Sprintf(disconnectEventSubj, c.acc.Name)
-
 	c.mu.Lock()
+
+	// Ignore global account activity
+	if c.acc == nil || c.acc == gacc {
+		c.mu.Unlock()
+		return
+	}
+
 	m := DisconnectEventMsg{
 		Client: ClientInfo{
 			Start:   c.start,
@@ -780,9 +787,52 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 	c.mu.Unlock()
 
+	subj := fmt.Sprintf(disconnectEventSubj, c.acc.Name)
+
 	s.mu.Lock()
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 	s.mu.Unlock()
+}
+
+func (s *Server) sendAuthErrorEvent(c *client) {
+	s.mu.Lock()
+	if !s.eventsEnabled() {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	now := time.Now()
+	c.mu.Lock()
+	m := DisconnectEventMsg{
+		Client: ClientInfo{
+			Start:   c.start,
+			Stop:    &now,
+			Host:    c.host,
+			ID:      c.cid,
+			Account: c.acc.Name,
+			User:    nameForClient(c),
+			Name:    c.opts.Name,
+			Lang:    c.opts.Lang,
+			Version: c.opts.Version,
+			RTT:     c.getRTT(),
+		},
+		Sent: DataStats{
+			Msgs:  c.inMsgs,
+			Bytes: c.inBytes,
+		},
+		Received: DataStats{
+			Msgs:  c.outMsgs,
+			Bytes: c.outBytes,
+		},
+		Reason: AuthenticationViolation.String(),
+	}
+	c.mu.Unlock()
+
+	s.mu.Lock()
+	subj := fmt.Sprintf(authErrorEventSubj, s.info.ID)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	s.mu.Unlock()
+
 }
 
 // Internal message callback. If the msg is needed past the callback it is

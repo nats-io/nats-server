@@ -64,6 +64,7 @@ type Info struct {
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	Nonce             string   `json:"nonce,omitempty"`
+	Cluster           string   `json:"cluster,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
 
 	// Route Specific
@@ -236,12 +237,6 @@ func NewServer(opts *Options) (*Server, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// This is normally done in the AcceptLoop, once the
-	// listener has been created (possibly with random port),
-	// but since some tests may expect the INFO to be properly
-	// set after New(), let's do it now.
-	s.setInfoHostPortAndGenerateJSON()
-
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(map[string]struct{})
 
@@ -255,6 +250,16 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 	s.gateway = gws
+
+	if s.gateway.enabled {
+		s.info.Cluster = s.getGatewayName()
+	}
+
+	// This is normally done in the AcceptLoop, once the
+	// listener has been created (possibly with random port),
+	// but since some tests may expect the INFO to be properly
+	// set after New(), let's do it now.
+	s.setInfoHostPortAndGenerateJSON()
 
 	// For tracking clients
 	s.clients = make(map[uint64]*client)
