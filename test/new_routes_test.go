@@ -20,8 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/server"
-	nats "github.com/nats-io/go-nats"
+	"github.com/nats-io/go-nats"
 )
 
 func runNewRouteServer(t *testing.T) (*server.Server, *server.Options) {
@@ -1164,9 +1165,17 @@ func TestNewRouteReservedReply(t *testing.T) {
 }
 
 func TestNewRouteServiceImport(t *testing.T) {
+	// To quickly enable trace and debug logging
+	// doLog, doTrace, doDebug = true, true, true
 	srvA, srvB, optsA, optsB := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
+
+	// Make so we can tell the two apart since in same PID.
+	if doLog {
+		srvA.SetLogger(logger.NewTestLogger("[SRV-A] - ", false), true, true)
+		srvB.SetLogger(logger.NewTestLogger("[SRV-B] - ", false), true, true)
+	}
 
 	// Do Accounts for the servers.
 	fooA, barA := registerAccounts(t, srvA)
@@ -1176,6 +1185,8 @@ func TestNewRouteServiceImport(t *testing.T) {
 	addServiceExport("test.request", isPublic, fooA, fooB)
 
 	// Add import abilities to server B's bar account from foo.
+	// Meaning that when a user sends a request on foo.request from account bar,
+	// the request will be mapped to be received by the responder on account foo.
 	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
 		t.Fatalf("Error adding service import: %v", err)
 	}
