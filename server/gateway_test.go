@@ -3194,6 +3194,11 @@ func TestGatewayServiceImport(t *testing.T) {
 			t.Fatalf("Expected randomized reply, but got original")
 		}
 
+		// Check for duplicate message
+		if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected msg: %v", msg)
+		}
+
 		// Send reply
 		natsPub(t, clientA, msg.Reply, []byte("ok"))
 		natsFlush(t, clientA)
@@ -3206,7 +3211,12 @@ func TestGatewayServiceImport(t *testing.T) {
 			t.Fatalf("Unexpected message: %v", msg)
 		}
 
-		expected := int64((i + 1) * 3)
+		// Check for duplicate message
+		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected msg: %v", msg)
+		}
+
+		expected := int64((i + 1) * 2)
 		vz, _ := sa.Varz(nil)
 		if vz.OutMsgs != expected {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
@@ -3370,6 +3380,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		if msg.Reply == "reply" {
 			t.Fatalf("Expected randomized reply, but got original")
 		}
+		// Check for duplicate message
+		if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected msg: %v", msg)
+		}
 
 		// Send reply
 		natsPub(t, clientA, msg.Reply, []byte("ok"))
@@ -3382,8 +3396,12 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		if msg.Subject != "reply" || string(msg.Data) != "ok" {
 			t.Fatalf("Unexpected message: %v", msg)
 		}
+		// Check for duplicate message
+		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected msg: %v", msg)
+		}
 
-		expected := int64(i + 3)
+		expected := int64(i + 2)
 		vz, _ := sa.Varz(nil)
 		if vz.OutMsgs != expected {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
@@ -3471,6 +3489,247 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestGatewayServiceImportComplexSetup(t *testing.T) {
+	// This test will have following setup:
+	//
+	//						     |- responder (subs  to "$foo test.request")
+	//                           |            (sends to "$foo _R_.xxxx")
+	//              route        v
+	//   [A1]<----------------->[A2]
+	//   ^  |^                    |
+	//   |gw| \______gw________ gw|
+	//   |  v                  \  v
+	//   [B1]<----------------->[B2]
+	//    ^         route
+	//    |
+	//    |_ requestor (sends "$bar foo.request reply")
+	//
+
+	// Setup first A1 and B1 to ensure that they have GWs
+	// connections as described above.
+
+	oa1 := testDefaultOptionsForGateway("A")
+	setAccountUserPassInOptions(oa1, "$foo", "clientA", "password")
+	setAccountUserPassInOptions(oa1, "$bar", "yyyyyyy", "password")
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	ob1 := testGatewayOptionsFromToWithServers(t, "B", "A", sa1)
+	setAccountUserPassInOptions(ob1, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob1, "$bar", "clientB", "password")
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForOutboundGateways(t, sb1, 1, time.Second)
+
+	waitForInboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sb1, 1, time.Second)
+
+	ob2 := testGatewayOptionsFromToWithServers(t, "B", "A", sa1)
+	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
+	setAccountUserPassInOptions(ob2, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob2, "$bar", "clientB", "password")
+	ob2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
+	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
+
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForOutboundGateways(t, sb1, 1, time.Second)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+
+	waitForInboundGateways(t, sa1, 2, time.Second)
+	waitForInboundGateways(t, sb1, 1, time.Second)
+	waitForInboundGateways(t, sb2, 0, time.Second)
+
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb2)
+	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sa1.ClusterAddr().Port))
+	setAccountUserPassInOptions(oa2, "$foo", "clientA", "password")
+	setAccountUserPassInOptions(oa2, "$bar", "yyyyyyy", "password")
+	oa2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	checkClusterFormed(t, sa1, sa2)
+	checkClusterFormed(t, sb1, sb2)
+
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForOutboundGateways(t, sb1, 1, time.Second)
+	waitForOutboundGateways(t, sb2, 1, time.Second)
+	waitForOutboundGateways(t, sa2, 1, 2*time.Second)
+
+	waitForInboundGateways(t, sa1, 2, time.Second)
+	waitForInboundGateways(t, sb1, 1, time.Second)
+	waitForInboundGateways(t, sb2, 1, 2*time.Second)
+	waitForInboundGateways(t, sa2, 0, time.Second)
+
+	// Verification that we have what we wanted
+	c := sa2.getOutboundGatewayConnection("B")
+	if c == nil || c.opts.Name != sb2.ID() {
+		t.Fatalf("A2 does not have outbound to B2")
+	}
+	c = getInboundGatewayConnection(sa2, "A")
+	if c != nil {
+		t.Fatalf("Bad setup")
+	}
+	c = sb2.getOutboundGatewayConnection("A")
+	if c == nil || c.opts.Name != sa1.ID() {
+		t.Fatalf("B2 does not have outbound to A1")
+	}
+	c = getInboundGatewayConnection(sb2, "B")
+	if c == nil || c.opts.Name != sa2.ID() {
+		t.Fatalf("Bad setup")
+	}
+
+	// Ok, so now that we have proper setup, do actual test!
+
+	// Get accounts
+	fooA1, _ := sa1.LookupAccount("$foo")
+	barA1, _ := sa1.LookupAccount("$bar")
+	fooA2, _ := sa2.LookupAccount("$foo")
+	barA2, _ := sa2.LookupAccount("$bar")
+
+	fooB1, _ := sb1.LookupAccount("$foo")
+	barB1, _ := sb1.LookupAccount("$bar")
+	fooB2, _ := sb2.LookupAccount("$foo")
+	barB2, _ := sb2.LookupAccount("$bar")
+
+	// Add in the service export for the requests. Make it public.
+	fooA1.AddServiceExport("test.request", nil)
+	fooA2.AddServiceExport("test.request", nil)
+	fooB1.AddServiceExport("test.request", nil)
+	fooB2.AddServiceExport("test.request", nil)
+
+	// Add import abilities to server B's bar account from foo.
+	if err := barB1.AddServiceImport(fooB1, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	if err := barB2.AddServiceImport(fooB2, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	// Same on A.
+	if err := barA1.AddServiceImport(fooA1, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	if err := barA2.AddServiceImport(fooA2, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// clientA will be connected to A2 and be the service endpoint and responder.
+	a2URL := fmt.Sprintf("nats://clientA:password@127.0.0.1:%d", oa2.Port)
+	clientA := natsConnect(t, a2URL)
+	defer clientA.Close()
+
+	subA := natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	// Now setup client B on B1 who will do a sub from account $bar
+	// that should map account $foo's foo subject.
+	b1URL := fmt.Sprintf("nats://clientB:password@127.0.0.1:%d", ob1.Port)
+	clientB := natsConnect(t, b1URL)
+	defer clientB.Close()
+
+	subB := natsSubSync(t, clientB, "reply")
+	natsFlush(t, clientB)
+
+	// Send the request from clientB on foo.request,
+	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	natsFlush(t, clientB)
+
+	// Expect the request on A
+	msg, err := subA.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subA failed to get request: %v", err)
+	}
+	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+	if msg.Reply == "reply" {
+		t.Fatalf("Expected randomized reply, but got original")
+	}
+	// Make sure we don't receive a second copy
+	if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Received unexpected message: %v", msg)
+	}
+
+	// Send reply
+	natsPub(t, clientA, msg.Reply, []byte("ok"))
+	natsFlush(t, clientA)
+
+	msg, err = subB.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subB failed to get reply: %v", err)
+	}
+	if msg.Subject != "reply" || string(msg.Data) != "ok" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+	// Make sure we don't receive a second copy
+	if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Received unexpected message: %v", msg)
+	}
+
+	checkSubs := func(t *testing.T, acc *Account, srvName string, expected int) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if ts := acc.TotalSubs(); ts != expected {
+				return fmt.Errorf("Number of subs is %d on acc=%s srv=%s, should be %v", ts, acc.Name, srvName, expected)
+			}
+			return nil
+		})
+	}
+	checkSubs(t, fooA1, "A1", 1)
+	checkSubs(t, barA1, "A1", 0)
+	checkSubs(t, fooA2, "A2", 1)
+	checkSubs(t, barA2, "A2", 0)
+	checkSubs(t, fooB1, "B1", 0)
+	checkSubs(t, barB1, "B1", 1)
+	checkSubs(t, fooB2, "B2", 0)
+	checkSubs(t, barB2, "B2", 1)
+
+	// Speed up exiration
+	fooA2.SetAutoExpireTTL(10 * time.Millisecond)
+	fooB1.SetAutoExpireTTL(10 * time.Millisecond)
+
+	// Send 100 requests from clientB on foo.request,
+	for i := 0; i < 100; i++ {
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	}
+	natsFlush(t, clientB)
+
+	// Consume the requests, but don't reply to them...
+	for i := 0; i < 100; i++ {
+		if _, err := subA.NextMsg(time.Second); err != nil {
+			t.Fatalf("subA did not receive request: %v", err)
+		}
+	}
+
+	// Unsubsribe all and ensure counts go to 0.
+	natsUnsub(t, subA)
+	natsFlush(t, clientA)
+	natsUnsub(t, subB)
+	natsFlush(t, clientB)
+
+	// We should expire because ttl.
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		// Now run prune and make sure we collect the timed-out ones.
+		fooB1.pruneAutoExpireResponseMaps()
+		if nae := fooB1.numAutoExpireResponseMaps(); nae != 0 {
+			return fmt.Errorf("Number of responsemaps is %d", nae)
+		}
+		return nil
+	})
+
+	checkSubs(t, fooA1, "A1", 0)
+	checkSubs(t, fooA2, "A2", 0)
+	checkSubs(t, fooB1, "B1", 0)
+	checkSubs(t, fooB2, "B2", 0)
+
+	checkSubs(t, barA1, "A1", 0)
+	checkSubs(t, barA2, "A2", 0)
+	checkSubs(t, barB1, "B1", 0)
+	checkSubs(t, barB2, "B2", 0)
 }
 
 /*

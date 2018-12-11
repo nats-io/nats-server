@@ -121,11 +121,10 @@ type gateway struct {
 	name       string
 	outbound   bool
 	cfg        *gatewayCfg
-	connectURL *url.URL                      // Needed when sending CONNECT after receiving INFO from remote
-	infoJSON   []byte                        // Needed when sending INFO after receiving INFO from remote
-	outsim     *sync.Map                     // Per-account subject interest (or no-interest) (outbound conn)
-	insim      map[string]*insie             // Per-account subject no-interest sent or send-all-subs mode (inbound conn)
-	replySubs  map[*subscription]*time.Timer // Same than replySubs in client.route
+	connectURL *url.URL          // Needed when sending CONNECT after receiving INFO from remote
+	infoJSON   []byte            // Needed when sending INFO after receiving INFO from remote
+	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
+	insim      map[string]*insie // Per-account subject no-interest sent or send-all-subs mode (inbound conn)
 }
 
 // Outbound subject interest entry.
@@ -1946,28 +1945,6 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 	}
 }
 
-// Invoked by a PUB's connection to send a reply message on _R_ directly
-// to the gateway connection.
-func (c *client) sendReplyMsgDirectToGateway(acc *Account, sub *subscription, msg []byte) {
-	// The sub.client references the inbound connection, so we need to
-	// swap to the outbound connection here.
-	inbound := sub.client
-	outbound := c.srv.getOutboundGatewayConnection(inbound.gw.name)
-	sub.client = outbound
-
-	mh := c.msgb[:msgHeadProtoLen]
-	mh = append(mh, acc.Name...)
-	mh = append(mh, ' ')
-	mh = append(mh, sub.subject...)
-	mh = append(mh, ' ')
-	mh = append(mh, c.pa.szb...)
-	mh = append(mh, CR_LF...)
-	c.deliverMsg(sub, mh, msg)
-	// Cleanup. Since the sub is stored in the inbound, use that to
-	// call this function.
-	inbound.removeReplySub(sub)
-}
-
 // May send a message to all outbound gateways. It is possible
 // that message is not sent to a given gateway if for instance
 // it is known that this gateway has no interest in account or
@@ -2050,6 +2027,38 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	}
 }
 
+func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, change int32) {
+	sid := make([]byte, 0, len(acc.Name)+len(subject)+1)
+	sid = append(sid, acc.Name...)
+	sid = append(sid, ' ')
+	sid = append(sid, subject...)
+	sub := &subscription{subject: subject, sid: sid}
+
+	var rspa [1024]byte
+	rsproto := rspa[:0]
+	if change > 0 {
+		rsproto = append(rsproto, rSubBytes...)
+	} else {
+		rsproto = append(rsproto, rUnsubBytes...)
+	}
+	rsproto = append(rsproto, ' ')
+	rsproto = append(rsproto, sid...)
+	rsproto = append(rsproto, CR_LF...)
+
+	s.mu.Lock()
+	for _, r := range s.routes {
+		r.mu.Lock()
+		if r.trace {
+			r.traceOutOp("", rsproto[:len(rsproto)-2])
+		}
+		r.sendProto(rsproto, true)
+		r.mu.Unlock()
+	}
+	s.mu.Unlock()
+	// Possibly send RS+ to gateways too.
+	s.gatewayUpdateSubInterest(acc.Name, sub, change)
+}
+
 // Process a message coming from a remote gateway. Send to any sub/qsub
 // in our cluster that is matching. When receiving a message for an
 // account or subject for which there is no interest in this cluster
@@ -2098,7 +2107,10 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	}
 
 	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
+	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
+		// We are handling an response to a request that we mapped
+		// via service imports, so if we are here we are the
+		// origin server
 		c.checkForImportServices(acc, msg)
 	}
 
@@ -2148,29 +2160,6 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		c.mu.Unlock()
 		if len(r.qsubs) == 0 || len(c.pa.queues) == 0 {
 			return
-		}
-	}
-
-	// Check to see if we have a routed message with a service reply.
-	if isServiceReply(c.pa.reply) && acc != nil {
-		// Need to add a sub here for local interest to send a response back
-		// to the originating server/requestor where it will be re-mapped.
-		sid := make([]byte, 0, len(acc.Name)+len(c.pa.reply)+1)
-		sid = append(sid, acc.Name...)
-		sid = append(sid, ' ')
-		sid = append(sid, c.pa.reply...)
-		// Copy off the reply since otherwise we are referencing a buffer that will be reused.
-		reply := make([]byte, len(c.pa.reply))
-		copy(reply, c.pa.reply)
-		sub := &subscription{client: c, subject: reply, sid: sid, max: 1}
-		if err := acc.sl.Insert(sub); err != nil {
-			c.Errorf("Could not insert subscription: %v", err)
-		} else {
-			ttl := acc.AutoExpireTTL()
-			c.mu.Lock()
-			c.subs[string(sid)] = sub
-			c.addReplySubTimeout(acc, sub, ttl)
-			c.mu.Unlock()
 		}
 	}
 

@@ -692,6 +692,7 @@ func (s *Server) registerAccount(acc *Account) {
 	if acc.rm == nil && s.opts != nil && (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0) {
 		acc.rm = make(map[string]*rme, 256)
 	}
+	acc.srv = s
 	acc.mu.Unlock()
 	s.accounts[acc.Name] = acc
 	if s.gateway.enabled {
