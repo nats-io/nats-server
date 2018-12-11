@@ -2108,6 +2108,9 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 
 	// Check to see if we need to map/route to another account.
 	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
+		// We are handling an response to a request that we mapped
+		// via service imports, so if we are here we are the
+		// origin server
 		c.checkForImportServices(acc, msg)
 	}
 

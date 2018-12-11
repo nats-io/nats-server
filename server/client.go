@@ -2178,7 +2178,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			nrr = c.newServiceReply()
 			rm.acc.addImplicitServiceImport(acc, string(nrr), string(c.pa.reply), true, nil)
 			// If this is a client connection and we are in
-			// gateway mode, we need to send RS+ to cluster
+			// gateway mode, we need to send RS+ to local cluster
 			// and possibly to inbound GW connections for
 			// which we are in interest-only mode.
 			if c.kind == CLIENT && c.srv.gateway.enabled {
