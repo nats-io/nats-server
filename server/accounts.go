@@ -61,6 +61,7 @@ type Account struct {
 	nae     int
 	pruning bool
 	expired bool
+	srv     *Server // server this account is registered with (possibly nil)
 }
 
 // Account based limits.
@@ -304,6 +305,9 @@ func (a *Account) removeServiceImport(subject string) {
 	}
 	delete(a.imports.services, subject)
 	a.mu.Unlock()
+	if a.srv != nil && a.srv.gateway.enabled {
+		a.srv.gatewayHandleServiceImport(a, []byte(subject), -1)
+	}
 }
 
 // Return the number of AutoExpireResponseMaps for request/reply. These are mapped to the account that

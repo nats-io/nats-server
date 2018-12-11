@@ -2152,16 +2152,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
-		// TODO(ik): Need to revisit all that.
-		// If we have a single match and the sub's client connection
-		// is a gateway, we know it is a message sent to a "_R_." subject
-		// (since this is the only time we add a sub with a GW client
-		// into an account sublist). In that case, do a direct send.
-		if len(r.psubs) == 1 && r.psubs[0].client.gw != nil {
-			c.sendReplyMsgDirectToGateway(c.acc, r.psubs[0], msg)
-		} else {
-			c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
-		}
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
 }
 
@@ -2186,19 +2177,27 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			// We want to remap this to provide anonymity.
 			nrr = c.newServiceReply()
 			rm.acc.addImplicitServiceImport(acc, string(nrr), string(c.pa.reply), true, nil)
+			// If this is a client connection and we are in
+			// gateway mode, we need to send RS+ to cluster
+			// and possibly to inbound GW connections for
+			// which we are in interest-only mode.
+			if c.kind == CLIENT && c.srv.gateway.enabled {
+				c.srv.gatewayHandleServiceImport(rm.acc, nrr, 1)
+			}
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := rm.acc.sl.Match(rm.to)
 		// If we are a route or gateway and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
-		if c.kind == ROUTER || c.kind == GATEWAY && c.pa.queues == nil && len(rr.qsubs) > 0 {
+		if (c.kind == ROUTER || c.kind == GATEWAY) && c.pa.queues == nil && len(rr.qsubs) > 0 {
 			c.makeQFilter(rr.qsubs)
 		}
-		c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, false)
+		sendToGWs := c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM)
+		queues := c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, sendToGWs)
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
-		if c.kind != GATEWAY && c.srv.gateway.enabled {
-			c.sendMsgToGateways(rm.acc, msg, []byte(rm.to), nrr, nil)
+		if sendToGWs {
+			c.sendMsgToGateways(rm.acc, msg, []byte(rm.to), nrr, queues)
 		}
 	}
 }

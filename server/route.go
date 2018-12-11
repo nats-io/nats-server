@@ -96,19 +96,10 @@ const (
 // accounts map timeout to match.
 // Lock should be held upon entering.
 func (c *client) addReplySubTimeout(acc *Account, sub *subscription, d time.Duration) {
-	var prs *map[*subscription]*time.Timer
-	switch c.kind {
-	case ROUTER:
-		prs = &c.route.replySubs
-	case GATEWAY:
-		prs = &c.gw.replySubs
-	default:
-		// TODO(ik): return or panic to show that there is a bug?
+	if c.route.replySubs == nil {
+		c.route.replySubs = make(map[*subscription]*time.Timer)
 	}
-	if *prs == nil {
-		*prs = make(map[*subscription]*time.Timer)
-	}
-	rs := *prs
+	rs := c.route.replySubs
 	rs[sub] = time.AfterFunc(d, func() {
 		c.mu.Lock()
 		delete(rs, sub)
@@ -125,7 +116,7 @@ func (c *client) removeReplySub(sub *subscription) {
 	}
 	// Lookup the account based on sub.sid.
 	if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
-		// First part of SID for route/gateway is account name.
+		// First part of SID for route is account name.
 		if acc, _ := c.srv.LookupAccount(string(sub.sid[:i])); acc != nil {
 			acc.sl.Remove(sub)
 		}
@@ -140,18 +131,12 @@ func (c *client) removeReplySub(sub *subscription) {
 // Lock should be held upon entering.
 func (c *client) removeReplySubTimeout(sub *subscription) {
 	// Remove any reply sub timer if it exists.
-	var rs map[*subscription]*time.Timer
-	switch c.kind {
-	case ROUTER:
-		rs = c.route.replySubs
-	case GATEWAY:
-		rs = c.gw.replySubs
-	default:
+	if c.route.replySubs == nil {
 		return
 	}
-	if t, ok := rs[sub]; ok {
+	if t, ok := c.route.replySubs[sub]; ok {
 		t.Stop()
-		delete(rs, sub)
+		delete(c.route.replySubs, sub)
 	}
 }
 
