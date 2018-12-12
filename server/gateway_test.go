@@ -3131,7 +3131,7 @@ func TestGatewayServiceImport(t *testing.T) {
 	defer sa.Shutdown()
 
 	ob := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
-	setAccountUserPassInOptions(ob, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob, "$foo", "clientBFoo", "password")
 	setAccountUserPassInOptions(ob, "$bar", "clientB", "password")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -3304,6 +3304,119 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Check that this all work in interest-only mode
+	sb = runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	fooB, _ = sb.LookupAccount("$foo")
+	barB, _ = sb.LookupAccount("$bar")
+
+	// Add in the service export for the requests. Make it public.
+	fooB.AddServiceExport("test.request", nil)
+	// Add import abilities to server B's bar account from foo.
+	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// Create a client on B that will use account $foo
+	bURL = fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob.Port)
+	clientB = natsConnect(t, bURL)
+	defer clientB.Close()
+
+	// First flood with subjects that remote gw is not interested
+	// so we switch to interest-only.
+	for i := 0; i < 1100; i++ {
+		natsPub(t, clientB, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
+	}
+	natsFlush(t, clientB)
+
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := sb.getOutboundGatewayConnection("A")
+		outsiei, _ := c.gw.outsim.Load("$foo")
+		if outsiei == nil {
+			return fmt.Errorf("Nothing found for $foo")
+		}
+		outsie := outsiei.(*outsie)
+		outsie.RLock()
+		mode := outsie.mode
+		outsie.RUnlock()
+		if mode != modeInterestOnly {
+			return fmt.Errorf("Should have switched to interest only mode")
+		}
+		return nil
+	})
+
+	// Go back to clientB on $bar.
+	clientB.Close()
+	bURL = fmt.Sprintf("nats://clientB:password@127.0.0.1:%d", ob.Port)
+	clientB = natsConnect(t, bURL)
+	defer clientB.Close()
+
+	subA = natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	subB = natsSubSync(t, clientB, "reply")
+	natsFlush(t, clientB)
+
+	// Sine it is interest-only, B should receive an interest
+	// on $foo test.request
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := sb.getOutboundGatewayConnection("A")
+		outsiei, _ := c.gw.outsim.Load("$foo")
+		if outsiei == nil {
+			return fmt.Errorf("Nothing found for $foo")
+		}
+		outsie := outsiei.(*outsie)
+		r := outsie.sl.Match("test.request")
+		if len(r.psubs) != 1 {
+			return fmt.Errorf("No registered interest on test.request")
+		}
+		return nil
+	})
+
+	// Send the request from clientB on foo.request,
+	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	natsFlush(t, clientB)
+
+	// Expect the request on A
+	msg, err := subA.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subA failed to get request: %v", err)
+	}
+	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+	if msg.Reply == "reply" {
+		t.Fatalf("Expected randomized reply, but got original")
+	}
+
+	// Check for duplicate message
+	if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
+
+	// Send reply
+	natsPub(t, clientA, msg.Reply, []byte("ok"))
+	natsFlush(t, clientA)
+
+	msg, err = subB.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subB failed to get reply: %v", err)
+	}
+	if msg.Subject != "reply" || string(msg.Data) != "ok" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+
+	// Check for duplicate message
+	if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
 }
 
 func TestGatewayServiceImportWithQueue(t *testing.T) {
@@ -3314,7 +3427,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	defer sa.Shutdown()
 
 	ob := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
-	setAccountUserPassInOptions(ob, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob, "$foo", "clientBFoo", "password")
 	setAccountUserPassInOptions(ob, "$bar", "clientB", "password")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -3489,6 +3602,119 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Check that this all work in interest-only mode
+	sb = runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	fooB, _ = sb.LookupAccount("$foo")
+	barB, _ = sb.LookupAccount("$bar")
+
+	// Add in the service export for the requests. Make it public.
+	fooB.AddServiceExport("test.request", nil)
+	// Add import abilities to server B's bar account from foo.
+	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// Create a client on B that will use account $foo
+	bURL = fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob.Port)
+	clientB = natsConnect(t, bURL)
+	defer clientB.Close()
+
+	// First flood with subjects that remote gw is not interested
+	// so we switch to interest-only.
+	for i := 0; i < 1100; i++ {
+		natsPub(t, clientB, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
+	}
+	natsFlush(t, clientB)
+
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := sb.getOutboundGatewayConnection("A")
+		outsiei, _ := c.gw.outsim.Load("$foo")
+		if outsiei == nil {
+			return fmt.Errorf("Nothing found for $foo")
+		}
+		outsie := outsiei.(*outsie)
+		outsie.RLock()
+		mode := outsie.mode
+		outsie.RUnlock()
+		if mode != modeInterestOnly {
+			return fmt.Errorf("Should have switched to interest only mode")
+		}
+		return nil
+	})
+
+	// Go back to clientB on $bar.
+	clientB.Close()
+	bURL = fmt.Sprintf("nats://clientB:password@127.0.0.1:%d", ob.Port)
+	clientB = natsConnect(t, bURL)
+	defer clientB.Close()
+
+	subA = natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	subB = natsSubSync(t, clientB, "reply")
+	natsFlush(t, clientB)
+
+	// Sine it is interest-only, B should receive an interest
+	// on $foo test.request
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := sb.getOutboundGatewayConnection("A")
+		outsiei, _ := c.gw.outsim.Load("$foo")
+		if outsiei == nil {
+			return fmt.Errorf("Nothing found for $foo")
+		}
+		outsie := outsiei.(*outsie)
+		r := outsie.sl.Match("test.request")
+		if len(r.psubs) != 1 {
+			return fmt.Errorf("No registered interest on test.request")
+		}
+		return nil
+	})
+
+	// Send the request from clientB on foo.request,
+	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	natsFlush(t, clientB)
+
+	// Expect the request on A
+	msg, err := subA.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subA failed to get request: %v", err)
+	}
+	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+	if msg.Reply == "reply" {
+		t.Fatalf("Expected randomized reply, but got original")
+	}
+
+	// Check for duplicate message
+	if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
+
+	// Send reply
+	natsPub(t, clientA, msg.Reply, []byte("ok"))
+	natsFlush(t, clientA)
+
+	msg, err = subB.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subB failed to get reply: %v", err)
+	}
+	if msg.Subject != "reply" || string(msg.Data) != "ok" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+
+	// Check for duplicate message
+	if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
 }
 
 func TestGatewayServiceImportComplexSetup(t *testing.T) {
@@ -3530,7 +3756,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 
 	ob2 := testGatewayOptionsFromToWithServers(t, "B", "A", sa1)
 	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
-	setAccountUserPassInOptions(ob2, "$foo", "xxxxxxx", "password")
+	setAccountUserPassInOptions(ob2, "$foo", "clientBFoo", "password")
 	setAccountUserPassInOptions(ob2, "$bar", "clientB", "password")
 	ob2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
 	sb2 := runGatewayServer(ob2)
@@ -3730,6 +3956,76 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, barA2, "A2", 0)
 	checkSubs(t, barB1, "B1", 0)
 	checkSubs(t, barB2, "B2", 0)
+
+	// Check that this all work in interest-only mode.
+	// Make A2 flood B2 with subjects that B2 is not interested in.
+	for i := 0; i < 1100; i++ {
+		natsPub(t, clientA, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
+	}
+	natsFlush(t, clientA)
+	// Wait for B2 to switch to interest-only
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := sa2.getOutboundGatewayConnection("B")
+		if c == nil {
+			return fmt.Errorf("No outbound to B2")
+		}
+		outsiei, _ := c.gw.outsim.Load("$foo")
+		if outsiei == nil {
+			return fmt.Errorf("Nothing for $foo")
+		}
+		outsie := outsiei.(*outsie)
+		outsie.RLock()
+		mode := outsie.mode
+		outsie.RUnlock()
+		if mode != modeInterestOnly {
+			return fmt.Errorf("Not in interest-only mode yet")
+		}
+		return nil
+	})
+
+	subA = natsSubSync(t, clientA, "test.request")
+	natsFlush(t, clientA)
+
+	subB = natsSubSync(t, clientB, "reply")
+	natsFlush(t, clientB)
+
+	// Send the request from clientB on foo.request,
+	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+	natsFlush(t, clientB)
+
+	// Expect the request on A
+	msg, err = subA.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subA failed to get request: %v", err)
+	}
+	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+	if msg.Reply == "reply" {
+		t.Fatalf("Expected randomized reply, but got original")
+	}
+
+	// Check for duplicate message
+	if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
+
+	// Send reply
+	natsPub(t, clientA, msg.Reply, []byte("ok"))
+	natsFlush(t, clientA)
+
+	msg, err = subB.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("subB failed to get reply: %v", err)
+	}
+	if msg.Subject != "reply" || string(msg.Data) != "ok" {
+		t.Fatalf("Unexpected message: %v", msg)
+	}
+
+	// Check for duplicate message
+	if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Unexpected msg: %v", msg)
+	}
 }
 
 /*
