@@ -27,13 +27,6 @@ func (e *Export) Validate(vr *ValidationResults) {
 	if !e.IsService() && !e.IsStream() {
 		vr.AddError("invalid export type: %q", e.Type)
 	}
-
-	if e.IsService() {
-		if e.Subject.HasWildCards() {
-			vr.AddWarning("services cannot have wildcard subject: %q", e.Subject)
-		}
-	}
-
 	e.Subject.Validate(vr)
 }
 
