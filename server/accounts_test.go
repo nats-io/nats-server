@@ -964,6 +964,113 @@ func TestAddServiceExport(t *testing.T) {
 	}
 }
 
+func TestServiceExportWithWildcards(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		public bool
+	}{
+		{
+			name:   "public",
+			public: true,
+		},
+		{
+			name:   "private",
+			public: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, fooAcc, barAcc := simpleAccountServer(t)
+			defer s.Shutdown()
+
+			var accs []*Account
+			if !test.public {
+				accs = []*Account{barAcc}
+			}
+			// Add service export with a wildcard
+			if err := fooAcc.AddServiceExport("ngs.update.*", accs); err != nil {
+				t.Fatalf("Error adding account service export: %v", err)
+			}
+			// Import on bar account
+			if err := barAcc.AddServiceImport(fooAcc, "ngs.update", "ngs.update.$bar"); err != nil {
+				t.Fatalf("Error adding account service import: %v", err)
+			}
+
+			cfoo, crFoo, _ := newClientForServer(s)
+			defer cfoo.nc.Close()
+
+			if err := cfoo.registerWithAccount(fooAcc); err != nil {
+				t.Fatalf("Error registering client with 'foo' account: %v", err)
+			}
+			cbar, crBar, _ := newClientForServer(s)
+			defer cbar.nc.Close()
+
+			if err := cbar.registerWithAccount(barAcc); err != nil {
+				t.Fatalf("Error registering client with 'bar' account: %v", err)
+			}
+
+			// Now setup the resonder under cfoo
+			cfoo.parse([]byte("SUB ngs.update.* 1\r\n"))
+
+			// Now send the request. Remember we expect the request on our local ngs.update.
+			// We added the route with that "from" and will map it to "ngs.update.$bar"
+			go cbar.parseAndFlush([]byte("SUB reply 11\r\nPUB ngs.update reply 4\r\nhelp\r\n"))
+
+			// Now read the request from crFoo
+			l, err := crFoo.ReadString('\n')
+			if err != nil {
+				t.Fatalf("Error reading from client 'bar': %v", err)
+			}
+
+			mraw := msgPat.FindAllStringSubmatch(l, -1)
+			if len(mraw) == 0 {
+				t.Fatalf("No message received")
+			}
+			matches := mraw[0]
+			if matches[SUB_INDEX] != "ngs.update.$bar" {
+				t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+			}
+			if matches[SID_INDEX] != "1" {
+				t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+			}
+			// Make sure this looks like _INBOX
+			if !strings.HasPrefix(matches[REPLY_INDEX], "_R_.") {
+				t.Fatalf("Expected an _R_.* like reply, got '%s'", matches[REPLY_INDEX])
+			}
+			checkPayload(crFoo, []byte("help\r\n"), t)
+
+			replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
+			go cfoo.parseAndFlush([]byte(replyOp))
+
+			// Now read the response from crBar
+			l, err = crBar.ReadString('\n')
+			if err != nil {
+				t.Fatalf("Error reading from client 'bar': %v", err)
+			}
+			mraw = msgPat.FindAllStringSubmatch(l, -1)
+			if len(mraw) == 0 {
+				t.Fatalf("No message received")
+			}
+			matches = mraw[0]
+			if matches[SUB_INDEX] != "reply" {
+				t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+			}
+			if matches[SID_INDEX] != "11" {
+				t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+			}
+			if matches[REPLY_INDEX] != "" {
+				t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+			}
+			checkPayload(crBar, []byte("22\r\n"), t)
+
+			// Make sure we have no service imports on fooAcc. An implicit one was created
+			// for the response but should be removed when the response was processed.
+			if nr := fooAcc.numServiceRoutes(); nr != 0 {
+				t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+			}
+		})
+	}
+}
+
 // Make sure the AddStreamExport function is additive if called multiple times.
 func TestAddStreamExport(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)

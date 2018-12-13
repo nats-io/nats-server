@@ -506,9 +506,12 @@ func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject st
 	if a.exports.streams == nil || !IsValidSubject(subject) {
 		return false
 	}
+	return a.checkExportApproved(account, subject, imClaim, a.exports.streams)
+}
 
+func (a *Account) checkExportApproved(account *Account, subject string, imClaim *jwt.Import, m map[string]*exportAuth) bool {
 	// Check direct match of subject first
-	ea, ok := a.exports.streams[subject]
+	ea, ok := m[subject]
 	if ok {
 		// if ea is nil that denotes a public export
 		if ea == nil {
@@ -527,7 +530,7 @@ func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject st
 	// has to be a true subset of the import claim. We already checked for
 	// exact matches above.
 	tokens := strings.Split(subject, tsep)
-	for subj, ea := range a.exports.streams {
+	for subj, ea := range m {
 		if isSubsetMatch(tokens, subj) {
 			if ea == nil || ea.approved == nil {
 				return true
@@ -733,23 +736,7 @@ func (a *Account) checkServiceImportAuthorizedNoLock(account *Account, subject s
 	if a.exports.services == nil || !IsValidLiteralSubject(subject) {
 		return false
 	}
-	// These are always literal subjects so just lookup.
-	ae, ok := a.exports.services[subject]
-	if !ok {
-		return false
-	}
-
-	if ae != nil && ae.tokenReq {
-		return a.checkActivation(account, imClaim, true)
-	}
-
-	// Check to see if we are public or if we need to search for the account.
-	if ae == nil || ae.approved == nil {
-		return true
-	}
-	// Check that we allow this account.
-	_, ok = ae.approved[account.Name]
-	return ok
+	return a.checkExportApproved(account, subject, imClaim, a.exports.services)
 }
 
 // IsExpired returns expiration status.
