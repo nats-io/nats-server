@@ -1141,7 +1141,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	// the client must receive an -ERR
 	select {
 	case err := <-asyncErr:
-		if !strings.Contains(err.Error(), "permissions violation for subscription to \"_inbox.>\"") {
+		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation for subscription to \"_inbox.>\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -1161,7 +1161,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 
 	select {
 	case err := <-asyncErr:
-		if !strings.Contains(err.Error(), "permissions violation for publish to \"req.foo\"") {
+		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation for publish to \"req.foo\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -2901,7 +2901,7 @@ func TestConfigReloadAccountStreamsImportExport(t *testing.T) {
 	ch := make(chan bool, 1)
 	ivan, err := nats.Connect(fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			if strings.Contains(err.Error(), "permissions violation") {
+			if strings.Contains(strings.ToLower(err.Error()), "permissions violation") {
 				ch <- true
 			}
 		}))
