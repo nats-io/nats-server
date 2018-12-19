@@ -282,7 +282,7 @@ func TestTLSBadAuthError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected error trying to connect to secure server")
 	}
-	if err.Error() != nats.ErrAuthorization.Error() {
+	if strings.ToLower(err.Error()) != nats.ErrAuthorization.Error() {
 		t.Fatalf("Excpected and auth violation, got %v\n", err)
 	}
 }

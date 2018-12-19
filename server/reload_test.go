@@ -14,6 +14,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -392,7 +393,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	// Ensure we can connect as a sanity check.
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
 
-	nc, err := nats.Connect(addr, nats.Secure())
+	nc, err := nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true}))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
@@ -410,7 +411,7 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	}
 
 	// Ensure connecting fails.
-	if _, err := nats.Connect(addr, nats.Secure()); err == nil {
+	if _, err := nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true})); err == nil {
 		t.Fatal("Expected connect to fail")
 	}
 
@@ -458,15 +459,9 @@ func TestConfigReloadEnableTLS(t *testing.T) {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
-	// Ensure connecting is OK even without Secure (the client is now switching automatically).
-	nc, err = nats.Connect(addr)
-	if err != nil {
-		t.Fatalf("Error creating client: %v", err)
-	}
-	nc.Close()
-
-	// Ensure connecting succeeds when using secure.
-	nc, err = nats.Connect(addr, nats.Secure())
+	// Ensure connecting is OK (we need to skip server cert verification since
+	// the library is not doing that by default now).
+	nc, err = nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true}))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
@@ -484,7 +479,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 
 	// Ensure we can connect as a sanity check.
 	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
-	nc, err := nats.Connect(addr, nats.Secure())
+	nc, err := nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true}))
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)
 	}
@@ -497,7 +492,7 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	}
 
 	// Ensure connecting fails.
-	if _, err := nats.Connect(addr, nats.Secure()); err == nil {
+	if _, err := nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true})); err == nil {
 		t.Fatal("Expected connect to fail")
 	}
 
@@ -1080,7 +1075,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	// the client must receive an -ERR
 	select {
 	case err := <-asyncErr:
-		if !strings.Contains(err.Error(), "permissions violation for subscription to \"_inbox.>\"") {
+		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation for subscription to \"_inbox.>\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -1100,7 +1095,7 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 
 	select {
 	case err := <-asyncErr:
-		if !strings.Contains(err.Error(), "permissions violation for publish to \"req.foo\"") {
+		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation for publish to \"req.foo\"") {
 			t.Fatalf("Expected permissions violation error, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
