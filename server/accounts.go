@@ -532,7 +532,7 @@ func (a *Account) checkExportApproved(account *Account, subject string, imClaim 
 	tokens := strings.Split(subject, tsep)
 	for subj, ea := range m {
 		if isSubsetMatch(tokens, subj) {
-			if ea == nil || ea.approved == nil {
+			if ea == nil || ea.approved == nil && !ea.tokenReq {
 				return true
 			}
 			// Check if token required
@@ -919,7 +919,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			for _, im := range acc.imports.services {
 				if im != nil && im.acc.Name == a.Name {
 					// Check for if we are still authorized for an import.
-					im.invalid = !a.checkServiceImportAuthorizedNoLock(im.acc, im.from, im.claim)
+					im.invalid = !a.checkServiceImportAuthorizedNoLock(a, im.to, im.claim)
 				}
 			}
 			acc.mu.Unlock()

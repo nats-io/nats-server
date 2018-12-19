@@ -1235,6 +1235,120 @@ func TestJWTAccountLimitsMaxConns(t *testing.T) {
 	newClient("-ERR ")
 }
 
+// This will test that we can switch from a public export to a private
+// one and back with export claims to make sure the claim update mechanism
+// is working properly.
+func TestJWTAccountServiceImportAuthSwitch(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+	serviceExport := &jwt.Export{Subject: "ngs.usage.*", Type: jwt.Service}
+	fooAC.Exports.Add(serviceExport)
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	barKP, _ := nkeys.CreateAccount()
+	barPub, _ := barKP.PublicKey()
+	barAC := jwt.NewAccountClaims(barPub)
+	serviceImport := &jwt.Import{Account: fooPub, Subject: "ngs.usage", To: "ngs.usage.DEREK", Type: jwt.Service}
+	barAC.Imports.Add(serviceImport)
+	barJWT, err := barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, barPub, barJWT)
+
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
+	expectMsg := func(cr *bufio.Reader, sub, pay string) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		expected := "MSG " + sub
+		if !strings.HasPrefix(l, expected) {
+			t.Fatalf("Expected %q, got %q", expected, l)
+		}
+		l, _ = cr.ReadString('\n')
+		if l != pay+"\r\n" {
+			t.Fatalf("Expected %q, got %q", pay, l)
+		}
+		expectPong(cr)
+	}
+
+	// Create a client that will send the request
+	ca, cra, csa := createClient(t, s, barKP)
+	parseAsyncA, quitA := genAsyncParser(ca)
+	defer func() { quitA <- true }()
+	parseAsyncA(csa)
+	expectPong(cra)
+
+	// Create the client that will respond to the requests.
+	cb, crb, csb := createClient(t, s, fooKP)
+	parseAsyncB, quitB := genAsyncParser(cb)
+	defer func() { quitB <- true }()
+	parseAsyncB(csb)
+	expectPong(crb)
+
+	// Create Subscriber.
+	parseAsyncB("SUB ngs.usage.* 1\r\nPING\r\n")
+	expectPong(crb)
+
+	// Send Request
+	parseAsyncA("PUB ngs.usage 2\r\nhi\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should receive the request mapped into our account. PING needed to flush.
+	parseAsyncB("PING\r\n")
+	expectMsg(crb, "ngs.usage.DEREK", "hi")
+
+	// Now update to make the export private.
+	fooACPrivate := jwt.NewAccountClaims(fooPub)
+	serviceExport = &jwt.Export{Subject: "ngs.usage.*", Type: jwt.Service, TokenReq: true}
+	fooACPrivate.Exports.Add(serviceExport)
+	fooJWTPrivate, err := fooACPrivate.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWTPrivate)
+	acc, _ := s.LookupAccount(fooPub)
+	s.updateAccountClaims(acc, fooACPrivate)
+
+	// Send Another Request
+	parseAsyncA("PUB ngs.usage 2\r\nhi\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should not receive the request this time.
+	parseAsyncB("PING\r\n")
+	expectPong(crb)
+
+	// Now put it back again to public and make sure it works again.
+	addAccountToMemResolver(s, fooPub, fooJWT)
+	s.updateAccountClaims(acc, fooAC)
+
+	// Send Request
+	parseAsyncA("PUB ngs.usage 2\r\nhi\r\nPING\r\n")
+	expectPong(cra)
+
+	// We should receive the request mapped into our account. PING needed to flush.
+	parseAsyncB("PING\r\n")
+	expectMsg(crb, "ngs.usage.DEREK", "hi")
+}
+
 func TestJWTAccountServiceImportExpires(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
