@@ -126,6 +126,7 @@ type ClientInfo struct {
 
 // Various statistics we will periodically send out.
 type ServerStats struct {
+	Start            time.Time      `json:"start"`
 	Mem              int64          `json:"mem"`
 	Cores            int            `json:"cores"`
 	CPU              float64        `json:"cpu"`
@@ -339,6 +340,7 @@ func routeStat(r *client) *RouteStat {
 func (s *Server) sendStatsz(subj string) {
 	m := ServerStatsMsg{}
 	updateServerUsage(&m.Stats)
+	m.Stats.Start = s.start
 	m.Stats.Connections = len(s.clients)
 	m.Stats.TotalConnections = s.totalClients
 	m.Stats.ActiveAccounts = s.activeAccounts
@@ -347,7 +349,8 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
 	m.Stats.Sent.Bytes = atomic.LoadInt64(&s.outBytes)
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
-	m.Stats.NumSubs = s.gacc.sl.Count()
+	m.Stats.NumSubs = s.numSubscriptions()
+
 	for _, r := range s.routes {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
 	}

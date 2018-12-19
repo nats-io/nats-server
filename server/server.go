@@ -780,11 +780,13 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	claimJWT, err := accResolver.Fetch(name)
 	fetchTime := time.Since(start)
 	s.mu.Lock()
-	s.Debugf("Account resolver fetch time was %v\n", fetchTime)
 	if fetchTime > time.Second {
-		s.Warnf("Account resolver took %v to fetch account", fetchTime)
+		s.Warnf("Account Fetch: %s in %v\n", name, fetchTime)
+	} else {
+		s.Debugf("Account Fetch: %s in %v\n", name, fetchTime)
 	}
 	if err != nil {
+		s.Warnf("Account Fetch Failed: %v\n", err)
 		return "", err
 	}
 	return claimJWT, nil
@@ -1684,13 +1686,19 @@ func (s *Server) getClient(cid uint64) *client {
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.numSubscriptions()
+}
+
+// numSubscriptions will report how many subscriptions are active.
+// Lock should be held.
+func (s *Server) numSubscriptions() uint32 {
 	var subs int
 	for _, acc := range s.accounts {
 		if acc.sl != nil {
 			subs += acc.TotalSubs()
 		}
 	}
-	s.mu.Unlock()
 	return uint32(subs)
 }
 

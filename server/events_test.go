@@ -1033,9 +1033,11 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	}
 }
 func TestServerEventsStatsZ(t *testing.T) {
+	preStart := time.Now()
 	sa, optsA, sb, _, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
+	postStart := time.Now()
 
 	url := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
 	ncs, err := nats.Connect(url, createUserCreds(t, sa, akp))
@@ -1078,7 +1080,9 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Server.Version != VERSION {
 		t.Fatalf("Did not match server version")
 	}
-
+	if !m.Stats.Start.After(preStart) && m.Stats.Start.Before(postStart) {
+		t.Fatalf("Got a wrong start time for the server %v", m.Stats.Start)
+	}
 	if m.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
 	}

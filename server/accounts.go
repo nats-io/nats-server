@@ -368,7 +368,7 @@ func (a *Account) autoExpireResponseMaps() []*serviceImport {
 
 // Add a route to connect from an implicit route created for a response to a request.
 // This does no checks and should be only called by the msg processing code. Use
-// addServiceImport from above if responding to user input or config, etc.
+// addServiceImport from above if responding to user input or config changes, etc.
 func (a *Account) addImplicitServiceImport(destination *Account, from, to string, autoexpire bool, claim *jwt.Import) error {
 	a.mu.Lock()
 	if a.imports.services == nil {
@@ -826,6 +826,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	if a == nil {
 		return
 	}
+	s.Debugf("Updating account claims: %s", a.Name)
 	a.checkExpiration(ac.Claims())
 
 	// Clone to update, only select certain fields.
@@ -848,10 +849,12 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	for _, e := range ac.Exports {
 		switch e.Type {
 		case jwt.Stream:
+			s.Debugf("Adding stream export %q for %s", e.Subject, a.Name)
 			if err := a.AddStreamExport(string(e.Subject), authAccounts(e.TokenReq)); err != nil {
 				s.Debugf("Error adding stream export to account [%s]: %v", a.Name, err.Error())
 			}
 		case jwt.Service:
+			s.Debugf("Adding service export %q for %s", e.Subject, a.Name)
 			if err := a.AddServiceExport(string(e.Subject), authAccounts(e.TokenReq)); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err.Error())
 			}
@@ -867,9 +870,15 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 		switch i.Type {
 		case jwt.Stream:
-			a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i)
+			s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
+			if err := a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
+				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+			}
 		case jwt.Service:
-			a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i)
+			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
+			if err := a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
+				s.Debugf("Error adding service import to account [%s]: %v", a.Name, err.Error())
+			}
 		}
 	}
 	// Now let's apply any needed changes from import/export changes.

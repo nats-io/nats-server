@@ -1375,7 +1375,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 // e.g.
 //   {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
 //   {stream: {account: "synadia", subject:"synadia.private.*"}}
-//   {service: {account: "synadia", subject: "pub.special.request"}, subject: "synadia.request"}
+//   {service: {account: "synadia", subject: "pub.special.request"}, to: "synadia.request"}
 func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*importStream, *importService, error) {
 	var (
 		curStream  *importStream
