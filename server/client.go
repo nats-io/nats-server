@@ -856,6 +856,13 @@ func (c *client) flushOutbound() bool {
 					// here, and don't report a slow consumer error.
 					sce = false
 				}
+			} else if !c.flags.isSet(connectReceived) {
+				// Under some conditions, a client may hit a slow consumer write deadline
+				// before the authorization or TLS handshake timeout. If that is the case,
+				// then we handle as slow consumer though we do not increase the counter
+				// as can be misleading.
+				c.clearConnection(SlowConsumerWriteDeadline)
+				sce = false
 			}
 			if sce {
 				atomic.AddInt64(&srv.slowConsumers, 1)
