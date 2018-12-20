@@ -117,6 +117,19 @@ func TestTLSClientCertificate(t *testing.T) {
 	defer nc.Close()
 }
 
+func TestTLSClientCertificateHasUserID(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls_cert_id.conf")
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/client-id-auth-cert.pem", "./configs/certs/client-id-auth-key.pem"),
+		nats.RootCAs("./configs/certs/ca.pem"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc.Close()
+}
+
 func TestTLSVerifyClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
 	defer srv.Shutdown()

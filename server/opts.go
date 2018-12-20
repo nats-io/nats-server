@@ -123,6 +123,7 @@ type Options struct {
 	TLSTimeout       float64       `json:"tls_timeout"`
 	TLS              bool          `json:"-"`
 	TLSVerify        bool          `json:"-"`
+	TLSMap           bool          `json:"-"`
 	TLSCert          string        `json:"-"`
 	TLSKey           string        `json:"-"`
 	TLSCaCert        string        `json:"-"`
@@ -227,6 +228,7 @@ type TLSConfigOpts struct {
 	KeyFile          string
 	CaFile           string
 	Verify           bool
+	Map              bool
 	Timeout          float64
 	Ciphers          []uint16
 	CurvePreferences []tls.CurveID
@@ -238,10 +240,11 @@ TLS configuration is specified in the tls section of a configuration file:
 e.g.
 
     tls {
-        cert_file: "./certs/server-cert.pem"
-        key_file:  "./certs/server-key.pem"
-        ca_file:   "./certs/ca.pem"
-        verify:    true
+        cert_file:      "./certs/server-cert.pem"
+        key_file:       "./certs/server-key.pem"
+        ca_file:        "./certs/ca.pem"
+        verify:         true
+        verify_and_map: true
 
         cipher_suites: [
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
@@ -457,6 +460,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				continue
 			}
 			o.TLSTimeout = tc.Timeout
+			o.TLSMap = tc.Map
 		case "write_deadline":
 			wd, ok := v.(string)
 			if ok {
@@ -1610,9 +1614,9 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 			}
 		}
 
-		// Check to make sure we have at least username and password if defined.
-		if nkey.Nkey == "" && (user.Username == "" || user.Password == "") {
-			return nil, nil, &configErr{tk, fmt.Sprintf("User entry requires a user and a password")}
+		// Check to make sure we have at least an nkey or username <password> defined.
+		if nkey.Nkey == "" && user.Username == "" {
+			return nil, nil, &configErr{tk, fmt.Sprintf("User entry requires a user")}
 		} else if nkey.Nkey != "" {
 			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
@@ -1871,6 +1875,13 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'verify' to be a boolean")}
 			}
 			tc.Verify = verify
+		case "verify_and_map":
+			verify, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'verify_and_map' to be a boolean")}
+			}
+			tc.Verify = verify
+			tc.Map = verify
 		case "cipher_suites":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {

@@ -261,6 +261,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	authorization := s.opts.Authorization
 	username := s.opts.Username
 	password := s.opts.Password
+	tlsMap := s.opts.TLSMap
 	s.optsMu.RUnlock()
 
 	// Check custom auth first, then jwts, then nkeys, then multiple users, then token, then single user/pass.
@@ -318,11 +319,48 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			s.mu.Unlock()
 			return false
 		}
-	} else if hasUsers && c.opts.Username != "" {
-		user, ok = s.users[c.opts.Username]
-		if !ok {
-			s.mu.Unlock()
-			return false
+	} else if hasUsers {
+		// Check if we are tls verify and are mapping users from the client_certificate
+		if tlsMap {
+			tlsState := c.GetTLSConnectionState()
+			if tlsState == nil {
+				c.Debugf("User required in cert, no TLS connection state")
+				s.mu.Unlock()
+				return false
+			}
+			if len(tlsState.PeerCertificates) == 0 {
+				c.Debugf("User required in cert, no peer certificates found")
+				s.mu.Unlock()
+				return false
+			}
+			cert := tlsState.PeerCertificates[0]
+			if len(tlsState.PeerCertificates) > 1 {
+				c.Debugf("Multiple peer certificates found, selecting first")
+			}
+			if len(cert.EmailAddresses) == 0 {
+				c.Debugf("User required in cert, none found")
+				s.mu.Unlock()
+				return false
+			}
+			euser := cert.EmailAddresses[0]
+			user, ok = s.users[euser]
+			if !ok {
+				c.Debugf("User in cert [%q], not found", euser)
+				s.mu.Unlock()
+				return false
+			}
+			if len(cert.EmailAddresses) > 1 {
+				c.Debugf("Multiple users found in cert, selecting first [%q]", euser)
+			}
+			if c.opts.Username != "" {
+				s.Warnf("User found in connect proto, but user required from cert - %v", c)
+			}
+		} else if c.opts.Username != "" {
+			user, ok = s.users[c.opts.Username]
+			if !ok {
+				s.mu.Unlock()
+				return false
+			}
 		}
 	}
 	s.mu.Unlock()
