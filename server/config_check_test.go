@@ -613,33 +613,6 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  11,
 		},
 		{
-			name: "when account user within accounts block has no user, pass",
-			config: `
-		accounts {
-
-		  #
-		  # synadia > nats.io, cncf
-		  #
-		  synadia {
-		    # SAADJL5XAEM6BDYSWDTGVILJVY54CQXZM5ZLG4FRUAKB62HWRTPNSGXOHA
-		    nkey = "AC5GRL36RQV7MJ2GT6WQSCKDKJKYTK4T2LGLWJ2SEJKRDHFOQQWGGFQL"
-
-		    users [
-		      {
-		      }
-		    ]
-
-		    exports = [
-		      { service: "synadia.requests", accounts: [nats, cncf] }
-		    ]
-		  }
-		}
-				`,
-			err:       errors.New(`User entry requires a user and a password`),
-			errorLine: 13,
-			errorPos:  10,
-		},
-		{
 			name: "when accounts block has unknown fields",
 			config: `
 		http_port = 8222
