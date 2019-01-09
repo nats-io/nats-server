@@ -863,7 +863,7 @@ func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, err
 		return nil, ErrNoSysAccount
 	}
 	if cb == nil {
-		return nil, fmt.Errorf("Undefined message handler")
+		return nil, fmt.Errorf("undefined message handler")
 	}
 	s.mu.Lock()
 	sid := strconv.FormatInt(int64(s.sys.sid), 10)

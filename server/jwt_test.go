@@ -1006,7 +1006,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	if !strings.HasPrefix(l, "-ERR") {
 		t.Fatalf("Expected an ERR, got: %v", l)
 	}
-	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+	if !strings.Contains(l, "maximum subscriptions exceeded") {
 		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
 	}
 
@@ -1022,7 +1022,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	if !strings.HasPrefix(l, "-ERR") {
 		t.Fatalf("Expected an ERR, got: %v", l)
 	}
-	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+	if !strings.Contains(l, "maximum subscriptions exceeded") {
 		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
 	}
 }
@@ -1078,7 +1078,7 @@ func TestJWTAccountLimitsSubsButServerOverrides(t *testing.T) {
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
-	if !strings.Contains(l, "Maximum Subscriptions Exceeded") {
+	if !strings.Contains(l, "maximum subscriptions exceeded") {
 		t.Fatalf("Expected an ERR for max subscriptions exceeded, got: %v", l)
 	}
 	// Read last PONG so does not hold up test.

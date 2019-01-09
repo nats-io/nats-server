@@ -709,7 +709,7 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	case 3:
 		queue = args[2]
 	default:
-		return "", nil, nil, fmt.Errorf("Parse Error: '%s'", arg)
+		return "", nil, nil, fmt.Errorf("parse error: '%s'", arg)
 	}
 	subject = args[1]
 	accountName = string(args[0])
@@ -1041,7 +1041,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
 	for _, route := range opts.Routes {
-		if rURL != nil && (strings.ToLower(rURL.Host) == strings.ToLower(route.Host)) {
+		if rURL != nil && (strings.EqualFold(rURL.Host, route.Host)) {
 			r.routeType = Explicit
 		}
 	}
@@ -1583,9 +1583,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	// Way to detect clients that incorrectly connect to the route listen
 	// port. Client provide Lang in the CONNECT protocol while ROUTEs don't.
 	if lang != "" {
-		errTxt := ErrClientConnectedToRoutePort.Error()
-		c.Errorf(errTxt)
-		c.sendErr(errTxt)
+		c.sendErrAndErr(ErrClientConnectedToRoutePort.Error())
 		c.closeConnection(WrongPort)
 		return ErrClientConnectedToRoutePort
 	}

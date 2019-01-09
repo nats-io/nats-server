@@ -1078,16 +1078,14 @@ func (c *client) processConnect(arg []byte) error {
 					c.sendErr("Account Not Found")
 					return err
 				} else if accountNew && acc != nil {
-					c.Errorf(ErrAccountExists.Error())
-					c.sendErr(ErrAccountExists.Error())
+					c.sendErrAndErr(ErrAccountExists.Error())
 					return ErrAccountExists
 				}
 			} else {
 				// We can create this one on the fly.
 				acc, wasNew = srv.LookupOrRegisterAccount(account)
 				if accountNew && !wasNew {
-					c.Errorf(ErrAccountExists.Error())
-					c.sendErr(ErrAccountExists.Error())
+					c.sendErrAndErr(ErrAccountExists.Error())
 					return ErrAccountExists
 				}
 			}

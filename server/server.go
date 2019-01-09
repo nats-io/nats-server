@@ -377,11 +377,11 @@ func (s *Server) configureAccounts() error {
 		s.accResolver = opts.AccountResolver
 		if len(opts.resolverPreloads) > 0 {
 			if _, ok := s.accResolver.(*MemAccResolver); !ok {
-				return fmt.Errorf("Resolver preloads only available for MemAccResolver")
+				return fmt.Errorf("resolver preloads only available for MemAccResolver")
 			}
 			for k, v := range opts.resolverPreloads {
 				if _, _, err := s.verifyAccountClaims(v); err != nil {
-					return fmt.Errorf("Preloaded Account: %v", err)
+					return fmt.Errorf("preloaded Account: %v", err)
 				}
 				s.accResolver.Store(k, v)
 			}
@@ -390,7 +390,7 @@ func (s *Server) configureAccounts() error {
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
 		if _, err := s.lookupAccount(opts.SystemAccount); err != nil {
-			return fmt.Errorf("Error resolving system account: %v", err)
+			return fmt.Errorf("error resolving system account: %v", err)
 		}
 	}
 	return nil

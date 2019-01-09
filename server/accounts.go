@@ -1038,11 +1038,11 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 	url := ur.url + name
 	resp, err := ur.c.Get(url)
 	if err != nil {
-		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: %v", url, err)
+		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", url, err)
 	} else if resp == nil {
-		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: no response", url)
+		return _EMPTY_, fmt.Errorf("could not fetch <%q>: no response", url)
 	} else if resp.StatusCode != http.StatusOK {
-		return _EMPTY_, fmt.Errorf("Could not fetch <%q>: %v", url, resp.Status)
+		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", url, resp.Status)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)

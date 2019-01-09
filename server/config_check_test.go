@@ -356,7 +356,7 @@ func TestConfigCheck(t *testing.T) {
 		    ]
 		}
 		`,
-			err:       errors.New(`Unrecognized curve preference CurveP5210000`),
+			err:       errors.New(`unrecognized curve preference CurveP5210000`),
 			errorLine: 4,
 			errorPos:  5,
 		},
@@ -1032,7 +1032,7 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			err:       errors.New(`Subject "foo..bar" is not a valid subject`),
+			err:       errors.New(`subject "foo..bar" is not a valid subject`),
 			errorLine: 5,
 			errorPos:  9,
 		},
@@ -1043,7 +1043,7 @@ func TestConfigCheck(t *testing.T) {
 		  listen = "0.0.0.0:XXXX"
 		}
 		`,
-			err:       errors.New(`Could not parse port "XXXX"`),
+			err:       errors.New(`could not parse port "XXXX"`),
 			errorLine: 3,
 			errorPos:  5,
 		},
