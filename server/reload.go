@@ -497,7 +497,7 @@ func (s *Server) Reload() error {
 	s.mu.Lock()
 	if s.configFile == "" {
 		s.mu.Unlock()
-		return errors.New("Can only reload config when a file is provided using -c or --config")
+		return errors.New("can only reload config when a file is provided using -c or --config")
 	}
 	newOpts, err := ProcessConfigFile(s.configFile)
 	if err != nil {
@@ -665,7 +665,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// If there is really a change prevents reload.
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
-				return nil, fmt.Errorf("Config reload not supported for %s: old=%v, new=%v",
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
 		case "nolog", "nosigs":
@@ -686,7 +686,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// the URL array.
 
 			// Bail out if attempting to reload any unsupported options.
-			return nil, fmt.Errorf("Config reload not supported for %s: old=%v, new=%v",
+			return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 				field.Name, oldValue, newValue)
 		}
 	}
@@ -973,11 +973,11 @@ func (s *Server) reloadClusterPermissions() {
 // port, which do not support reload.
 func validateClusterOpts(old, new ClusterOpts) error {
 	if old.Host != new.Host {
-		return fmt.Errorf("Config reload not supported for cluster host: old=%s, new=%s",
+		return fmt.Errorf("config reload not supported for cluster host: old=%s, new=%s",
 			old.Host, new.Host)
 	}
 	if old.Port != new.Port {
-		return fmt.Errorf("Config reload not supported for cluster port: old=%d, new=%d",
+		return fmt.Errorf("config reload not supported for cluster port: old=%d, new=%d",
 			old.Port, new.Port)
 	}
 	// Validate Cluster.Advertise syntax

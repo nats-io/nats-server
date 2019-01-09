@@ -136,7 +136,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		} else {
 			sortOpt = opts.Sort
 			if !sortOpt.IsValid() {
-				return nil, fmt.Errorf("Invalid sorting option: %s", sortOpt)
+				return nil, fmt.Errorf("invalid sorting option: %s", sortOpt)
 			}
 		}
 		auth = opts.Username
@@ -154,11 +154,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 		// ByStop only makes sense on closed connections
 		if sortOpt == ByStop && state != ConnClosed {
-			return nil, fmt.Errorf("Sort by stop only valid on closed connections")
+			return nil, fmt.Errorf("sort by stop only valid on closed connections")
 		}
 		// ByReason is the same.
 		if sortOpt == ByReason && state != ConnClosed {
-			return nil, fmt.Errorf("Sort by reason only valid on closed connections")
+			return nil, fmt.Errorf("sort by reason only valid on closed connections")
 		}
 
 		// If searching by CID
@@ -704,7 +704,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 			testSub = opts.Test
 			test = true
 			if !IsValidLiteralSubject(testSub) {
-				return nil, fmt.Errorf("Invalid test subject, must be valid publish subject: %s", testSub)
+				return nil, fmt.Errorf("invalid test subject, must be valid publish subject: %s", testSub)
 			}
 		}
 	}

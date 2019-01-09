@@ -20,91 +20,91 @@ import (
 
 var (
 	// ErrConnectionClosed represents an error condition on a closed connection.
-	ErrConnectionClosed = errors.New("Connection Closed")
+	ErrConnectionClosed = errors.New("connection closed")
 
 	// ErrAuthentication represents an error condition on failed authentication.
-	ErrAuthentication = errors.New("Authentication Error")
+	ErrAuthentication = errors.New("authentication error")
 
 	// ErrAuthTimeout represents an error condition on failed authorization due to timeout.
-	ErrAuthTimeout = errors.New("Authentication Timeout")
+	ErrAuthTimeout = errors.New("authentication timeout")
 
 	// ErrAuthExpired represents an expired authorization due to timeout.
-	ErrAuthExpired = errors.New("Authentication Expired")
+	ErrAuthExpired = errors.New("authentication expired")
 
 	// ErrMaxPayload represents an error condition when the payload is too big.
-	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
+	ErrMaxPayload = errors.New("maximum payload exceeded")
 
 	// ErrMaxControlLine represents an error condition when the control line is too big.
-	ErrMaxControlLine = errors.New("Maximum Control Line Exceeded")
+	ErrMaxControlLine = errors.New("maximum control line exceeded")
 
 	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
-	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
+	ErrReservedPublishSubject = errors.New("reserved internal subject")
 
 	// ErrBadClientProtocol signals a client requested an invalud client protocol.
-	ErrBadClientProtocol = errors.New("Invalid Client Protocol")
+	ErrBadClientProtocol = errors.New("invalid client protocol")
 
 	// ErrTooManyConnections signals a client that the maximum number of connections supported by the
 	// server has been reached.
-	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
+	ErrTooManyConnections = errors.New("maximum connections exceeded")
 
 	// ErrTooManyAccountConnections signals that an acount has reached its maximum number of active
 	// connections.
-	ErrTooManyAccountConnections = errors.New("Maximum Account Active Connections Exceeded")
+	ErrTooManyAccountConnections = errors.New("maximum account active connections exceeded")
 
 	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
 	// has been reached.
-	ErrTooManySubs = errors.New("Maximum Subscriptions Exceeded")
+	ErrTooManySubs = errors.New("maximum subscriptions exceeded")
 
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
-	ErrClientConnectedToRoutePort = errors.New("Attempted To Connect To Route Port")
+	ErrClientConnectedToRoutePort = errors.New("attempted to connect to route port")
 
 	// ErrAccountExists is returned when an account is attempted to be registered
 	// but already exists.
-	ErrAccountExists = errors.New("Account Exists")
+	ErrAccountExists = errors.New("account exists")
 
 	// ErrBadAccount represents a malformed or incorrect account.
-	ErrBadAccount = errors.New("Bad Account")
+	ErrBadAccount = errors.New("bad account")
 
 	// ErrReservedAccount represents a reserved account that can not be created.
-	ErrReservedAccount = errors.New("Reserved Account")
+	ErrReservedAccount = errors.New("reserved account")
 
 	// ErrMissingAccount is returned when an account does not exist.
-	ErrMissingAccount = errors.New("Account Missing")
+	ErrMissingAccount = errors.New("account missing")
 
 	// ErrAccountValidation is returned when an account has failed validation.
-	ErrAccountValidation = errors.New("Account Validation Failed")
+	ErrAccountValidation = errors.New("account validation failed")
 
 	// ErrAccountExpired is returned when an account has expired.
-	ErrAccountExpired = errors.New("Account Expired")
+	ErrAccountExpired = errors.New("account expired")
 
 	// ErrNoAccountResolver is returned when we attempt an update but do not have an account resolver.
-	ErrNoAccountResolver = errors.New("Account Resolver Missing")
+	ErrNoAccountResolver = errors.New("account resolver missing")
 
 	// ErrAccountResolverUpdateTooSoon is returned when we attempt an update too soon to last request.
-	ErrAccountResolverUpdateTooSoon = errors.New("Account Resolver Update Too Soon")
+	ErrAccountResolverUpdateTooSoon = errors.New("account resolver update too soon")
 
 	// ErrAccountResolverSameClaims is returned when same claims have been fetched.
-	ErrAccountResolverSameClaims = errors.New("Account Resolver No New Claims")
+	ErrAccountResolverSameClaims = errors.New("account resolver no new claims")
 
 	// ErrStreamImportAuthorization is returned when a stream import is not authorized.
-	ErrStreamImportAuthorization = errors.New("Stream Import Not Authorized")
+	ErrStreamImportAuthorization = errors.New("stream import not authorized")
 
 	// ErrServiceImportAuthorization is returned when a service import is not authorized.
-	ErrServiceImportAuthorization = errors.New("Service Import Not Authorized")
+	ErrServiceImportAuthorization = errors.New("service import not authorized")
 
 	// ErrClientOrRouteConnectedToGatewayPort represents an error condition when
 	// a client or route attempted to connect to the Gateway port.
-	ErrClientOrRouteConnectedToGatewayPort = errors.New("Attempted To Connect To Gateway Port")
+	ErrClientOrRouteConnectedToGatewayPort = errors.New("attempted to connect to gateway port")
 
 	// ErrWrongGateway represents an error condition when a server receives a connect
 	// request from a remote Gateway with a destination name that does not match the server's
 	// Gateway's name.
-	ErrWrongGateway = errors.New("Wrong Gateway")
+	ErrWrongGateway = errors.New("wrong gateway")
 
 	// ErrNoSysAccount is returned when an attempt to publish or subscribe is made
 	// when there is no internal system account defined.
-	ErrNoSysAccount = errors.New("System Account Not Setup")
+	ErrNoSysAccount = errors.New("system account not setup")
 )
 
 // configErr is a configuration error.

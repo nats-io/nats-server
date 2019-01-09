@@ -499,11 +499,11 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.LameDuckDuration = dur
 		case "operator", "operators", "roots", "root", "root_operators", "root_operator":
 			opFiles := []string{}
-			switch v.(type) {
+			switch v := v.(type) {
 			case string:
-				opFiles = append(opFiles, v.(string))
+				opFiles = append(opFiles, v)
 			case []string:
-				opFiles = append(opFiles, v.([]string)...)
+				opFiles = append(opFiles, v...)
 			default:
 				err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
 				errors = append(errors, err)
@@ -580,14 +580,14 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				o.SystemAccount = sa
 			}
 		case "trusted", "trusted_keys":
-			switch v.(type) {
+			switch v := v.(type) {
 			case string:
-				o.TrustedKeys = []string{v.(string)}
+				o.TrustedKeys = []string{v}
 			case []string:
-				o.TrustedKeys = v.([]string)
+				o.TrustedKeys = v
 			case []interface{}:
-				keys := make([]string, 0, len(v.([]interface{})))
-				for _, mv := range v.([]interface{}) {
+				keys := make([]string, 0, len(v))
+				for _, mv := range v {
 					tk, mv = unwrapValue(mv)
 					if key, ok := mv.(string); ok {
 						keys = append(keys, key)
@@ -648,11 +648,11 @@ func parseListen(v interface{}) (*hostPort, error) {
 	case string:
 		host, port, err := net.SplitHostPort(vv)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse address string %q", vv)
+			return nil, fmt.Errorf("could not parse address string %q", vv)
 		}
 		hp.port, err = strconv.Atoi(port)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse port %q", port)
+			return nil, fmt.Errorf("could not parse port %q", port)
 		}
 		hp.host = host
 	}
@@ -1495,11 +1495,11 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 			auth.token = mv.(string)
 		case "timeout":
 			at := float64(1)
-			switch mv.(type) {
+			switch mv := mv.(type) {
 			case int64:
-				at = float64(mv.(int64))
+				at = float64(mv)
 			case float64:
-				at = mv.(float64)
+				at = mv
 			}
 			auth.timeout = at
 		case "users":
@@ -1804,7 +1804,7 @@ func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectP
 func checkSubjectArray(sa []string) error {
 	for _, s := range sa {
 		if !IsValidSubject(s) {
-			return fmt.Errorf("Subject %q is not a valid subject", s)
+			return fmt.Errorf("subject %q is not a valid subject", s)
 		}
 	}
 	return nil
@@ -1826,7 +1826,7 @@ func PrintTLSHelpAndDie() {
 func parseCipher(cipherName string) (uint16, error) {
 	cipher, exists := cipherMap[cipherName]
 	if !exists {
-		return 0, fmt.Errorf("Unrecognized cipher %s", cipherName)
+		return 0, fmt.Errorf("unrecognized cipher %s", cipherName)
 	}
 
 	return cipher, nil
@@ -1835,7 +1835,7 @@ func parseCipher(cipherName string) (uint16, error) {
 func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 	curve, exists := curvePreferenceMap[curveName]
 	if !exists {
-		return 0, fmt.Errorf("Unrecognized curve preference %s", curveName)
+		return 0, fmt.Errorf("unrecognized curve preference %s", curveName)
 	}
 	return curve, nil
 }
@@ -1912,11 +1912,11 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 			}
 		case "timeout":
 			at := float64(0)
-			switch mv.(type) {
+			switch mv := mv.(type) {
 			case int64:
-				at = float64(mv.(int64))
+				at = float64(mv)
 			case float64:
-				at = mv.(float64)
+				at = mv
 			}
 			tc.Timeout = at
 		default:
@@ -1974,7 +1974,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		pool := x509.NewCertPool()
 		ok := pool.AppendCertsFromPEM(rootPEM)
 		if !ok {
-			return nil, fmt.Errorf("Failed to parse root ca certificate")
+			return nil, fmt.Errorf("failed to parse root ca certificate")
 		}
 		config.ClientCAs = pool
 	}
@@ -2378,7 +2378,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		// flags).
 		fs.Parse(args)
 	} else if opts.CheckConfig {
-		return nil, fmt.Errorf("Must specify [-c, --config] option to check configuration file syntax")
+		return nil, fmt.Errorf("must specify [-c, --config] option to check configuration file syntax")
 	}
 
 	// Special handling of some flags
@@ -2518,7 +2518,7 @@ func processSignal(signal string) error {
 	if l := len(commandAndPid); l == 2 {
 		pid = maybeReadPidFile(commandAndPid[1])
 	} else if l > 2 {
-		return fmt.Errorf("Invalid signal parameters: %v", commandAndPid[2:])
+		return fmt.Errorf("invalid signal parameters: %v", commandAndPid[2:])
 	}
 	if err := ProcessSignal(Command(commandAndPid[0]), pid); err != nil {
 		return err

@@ -86,7 +86,7 @@ func TestMissingVariable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected an error for a missing variable, got none")
 	}
-	if !strings.HasPrefix(err.Error(), "Variable reference") {
+	if !strings.HasPrefix(err.Error(), "variable reference") {
 		t.Fatalf("Wanted a variable reference err, got %q\n", err)
 	}
 }
