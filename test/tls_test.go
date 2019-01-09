@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -409,5 +410,74 @@ func TestNotReportSlowConsumerUnlessConnected(t *testing.T) {
 		t.Fatalf("Unexpected slow consumer error: %s", e)
 	case <-time.After(500 * time.Millisecond):
 		// ok
+	}
+}
+
+func TestTLSHandshakeFailureMemUsage(t *testing.T) {
+	for i, test := range []struct {
+		name   string
+		config string
+	}{
+		{
+			"connect to TLS client port",
+			`
+				port: -1
+				%s
+			`,
+		},
+		{
+			"connect to TLS route port",
+			`
+				port: -1
+				cluster {
+					port: -1
+					%s
+				}
+			`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := fmt.Sprintf(test.config, `
+				tls {
+					cert_file: "configs/certs/server-cert.pem"
+					key_file: "configs/certs/server-key.pem"
+					ca_file: "configs/certs/ca.pem"
+					timeout: 5
+				}
+			`)
+			conf := createConfFile(t, []byte(content))
+			defer os.Remove(conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			var port int
+			switch i {
+			case 0:
+				port = opts.Port
+			case 1:
+				port = s.ClusterAddr().Port
+			}
+
+			varz, _ := s.Varz(nil)
+			base := varz.Mem
+			buf := make([]byte, 1024*1024)
+			for i := 0; i < 100; i++ {
+				conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+				if err != nil {
+					t.Fatalf("Error on dial: %v", err)
+				}
+				conn.Write(buf)
+				conn.Close()
+			}
+
+			varz, _ = s.Varz(nil)
+			newval := (varz.Mem - base) / (1024 * 1024)
+			// May need to adjust that, but right now, with 100 clients
+			// we are at about 20MB for client port, 11MB for route
+			// and 6MB for gateways, so pick 50MB as the threshold
+			if newval >= 50 {
+				t.Fatalf("Consumed too much memory: %v MB", newval)
+			}
+		})
 	}
 }

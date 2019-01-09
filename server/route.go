@@ -635,10 +635,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
 		r.url = rURL
-
-		// Set permissions associated with the route user (if applicable).
-		// No lock needed since we are already under client lock.
-		c.setRoutePermissions(opts.Cluster.Permissions)
 	}
 
 	// Check for TLS
@@ -686,6 +682,13 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Do final client initialization
+
+	// Initialize the per-account cache.
+	if didSolicit {
+		// Set permissions associated with the route user (if applicable).
+		// No lock needed since we are already under client lock.
+		c.setRoutePermissions(opts.Cluster.Permissions)
+	}
 
 	// Set the Ping timer
 	c.setPingTimer()
