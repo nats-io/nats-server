@@ -52,19 +52,18 @@ type ClusterOpts struct {
 
 // GatewayOpts are options for gateways.
 type GatewayOpts struct {
-	Name               string               `json:"name"`
-	Host               string               `json:"addr,omitempty"`
-	Port               int                  `json:"port,omitempty"`
-	Username           string               `json:"-"`
-	Password           string               `json:"-"`
-	AuthTimeout        float64              `json:"auth_timeout,omitempty"`
-	TLSConfig          *tls.Config          `json:"-"`
-	TLSTimeout         float64              `json:"tls_timeout,omitempty"`
-	Advertise          string               `json:"advertise,omitempty"`
-	ConnectRetries     int                  `json:"connect_retries,omitempty"`
-	DefaultPermissions *GatewayPermissions  `json:"default_permissions,omitempty"`
-	Gateways           []*RemoteGatewayOpts `json:"gateways,omitempty"`
-	RejectUnknown      bool                 `json:"reject_unknown,omitempty"`
+	Name           string               `json:"name"`
+	Host           string               `json:"addr,omitempty"`
+	Port           int                  `json:"port,omitempty"`
+	Username       string               `json:"-"`
+	Password       string               `json:"-"`
+	AuthTimeout    float64              `json:"auth_timeout,omitempty"`
+	TLSConfig      *tls.Config          `json:"-"`
+	TLSTimeout     float64              `json:"tls_timeout,omitempty"`
+	Advertise      string               `json:"advertise,omitempty"`
+	ConnectRetries int                  `json:"connect_retries,omitempty"`
+	Gateways       []*RemoteGatewayOpts `json:"gateways,omitempty"`
+	RejectUnknown  bool                 `json:"reject_unknown,omitempty"`
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -73,11 +72,10 @@ type GatewayOpts struct {
 
 // RemoteGatewayOpts are options for connecting to a remote gateway
 type RemoteGatewayOpts struct {
-	Name        string              `json:"name"`
-	TLSConfig   *tls.Config         `json:"-"`
-	TLSTimeout  float64             `json:"tls_timeout,omitempty"`
-	URLs        []*url.URL          `json:"urls,omitempty"`
-	Permissions *GatewayPermissions `json:"permissions,omitempty"`
+	Name       string      `json:"name"`
+	TLSConfig  *tls.Config `json:"-"`
+	TLSTimeout float64     `json:"tls_timeout,omitempty"`
+	URLs       []*url.URL  `json:"urls,omitempty"`
 }
 
 // Options block for gnatsd server.
@@ -838,13 +836,6 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
 			o.Gateway.ConnectRetries = int(mv.(int64))
-		case "default_permissions":
-			perms, err := parseGatewayPermissions(mv, errors, warnings)
-			if err != nil {
-				*errors = append(*errors, err)
-				continue
-			}
-			o.Gateway.DefaultPermissions = perms
 		case "gateways":
 			gateways, err := parseGateways(mv, errors, warnings)
 			if err != nil {
@@ -933,13 +924,6 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 					continue
 				}
 				gateway.URLs = urls
-			case "permissions":
-				perms, err := parseGatewayPermissions(v, errors, warnings)
-				if err != nil {
-					*errors = append(*errors, err)
-					continue
-				}
-				gateway.Permissions = perms
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -1686,46 +1670,6 @@ func parseVariablePermissions(v interface{}, errors, warnings *[]error) (*Subjec
 		// Old style
 		return parseOldPermissionStyle(v, errors, warnings)
 	}
-}
-
-// Helper function to parse gateway permissions
-func parseGatewayPermissions(v interface{}, errors *[]error, warnings *[]error) (*GatewayPermissions, error) {
-	tk, v := unwrapValue(v)
-	pm, ok := v.(map[string]interface{})
-	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected permissions to be a map/struct, got %+v", v)}
-	}
-	perms := &GatewayPermissions{}
-	for k, v := range pm {
-		tk, v := unwrapValue(v)
-		switch strings.ToLower(k) {
-		case "import":
-			sp, err := parseVariablePermissions(v, errors, warnings)
-			if err != nil {
-				*errors = append(*errors, err)
-				continue
-			}
-			perms.Import = sp
-		case "export":
-			sp, err := parseVariablePermissions(v, errors, warnings)
-			if err != nil {
-				*errors = append(*errors, err)
-				continue
-			}
-			perms.Export = sp
-		default:
-			if !tk.IsUsedVariable() {
-				err := &unknownConfigFieldErr{
-					field: k,
-					configErr: configErr{
-						token: tk,
-					},
-				}
-				*errors = append(*errors, err)
-			}
-		}
-	}
-	return perms, nil
 }
 
 // Helper function to parse subject singeltons and/or arrays

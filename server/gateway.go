@@ -77,7 +77,6 @@ type srvGateway struct {
 	URL      string                 // This server gateway URL (after possible random port is resolved)
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
-	defPerms *GatewayPermissions    // Default permissions (when accepting an unknown remote gateway)
 	runknown bool                   // Rejects unknown (not configured) gateway connections
 
 	// We maintain the interest of subjects and queues per account.
@@ -219,9 +218,6 @@ func newGateway(opts *Options) (*srvGateway, error) {
 	if gateway.resolver == nil {
 		gateway.resolver = netResolver(net.DefaultResolver)
 	}
-
-	// Copy default permissions (works if DefaultPermissions is nil)
-	gateway.defPerms = opts.Gateway.DefaultPermissions.clone()
 
 	// Create remote gateways
 	for _, rgo := range opts.Gateway.Gateways {
