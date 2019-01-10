@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -3213,5 +3214,39 @@ func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, "max_payload: 100000", "3")))
 	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), "not supported for Gateway") {
 		t.Fatalf("Expected Reload to return a not supported error, got %v", err)
+	}
+}
+
+func TestConfigReloadLogtime(t *testing.T) {
+	logfile := "logtime.log"
+	defer os.Remove(logfile)
+	content := `
+		listen: "127.0.0.1:-1"
+		logfile: "%s"
+		logtime: false
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(content, logfile)))
+	defer os.Remove(conf)
+
+	// For this test, we need to invoke ConfigureOptions which is what main.go does.
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	opts, err := ConfigureOptions(fs, []string{"-c", conf}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Error processing config: %v", err)
+	}
+	opts.NoSigs = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if s.getOpts().Logtime {
+		t.Fatal("Logtime should be set to false")
+	}
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	if s.getOpts().Logtime {
+		t.Fatal("Logtime should be set to false")
 	}
 }

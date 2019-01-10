@@ -2249,6 +2249,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		err         error
 	)
 
+	// IMPORTANT: If you add boolean flags and use a 'true' as the default,
+	// check what needs to be done for FlagSnapshot down below.
+	// See logtimeIsExplicitlySet for reference.
 	fs.BoolVar(&showHelp, "h", false, "Show this message.")
 	fs.BoolVar(&showHelp, "help", false, "Show this message.")
 	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
@@ -2300,6 +2303,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	// --- See comment on top of flags definition before adding a flag ---
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
@@ -2343,6 +2347,20 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 
 	// Snapshot flag options.
 	FlagSnapshot = opts.Clone()
+
+	// Before parsing the config file, we need to know if boolean
+	// flags are explicitly set or not, and for those which default
+	// to `true`, we need to reset them otherwise config reload would
+	// incorrectly override what is in the config file.
+	logtimeIsExplicitlySet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "logtime" {
+			logtimeIsExplicitlySet = true
+		}
+	})
+	if !logtimeIsExplicitlySet {
+		FlagSnapshot.Logtime = false
+	}
 
 	// Process signal control.
 	if signal != "" {
