@@ -584,7 +584,6 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	c.mu.Lock()
 	c.initClient()
 	c.gw = &gateway{}
-	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
 	if solicit {
 		// This is an outbound gateway connection
 		c.gw.outbound = true
@@ -595,11 +594,10 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		// the remote's INFO protocol, save the URL we need to connect to.
 		c.gw.connectURL = url
 		c.gw.infoJSON = infoJSON
-		c.gw.outsim = &sync.Map{}
+
 		c.Noticef("Creating outbound gateway connection to %q", cfg.Name)
 	} else {
 		// Inbound gateway connection
-		c.gw.insim = make(map[string]*insie)
 		c.Noticef("Processing inbound gateway connection")
 	}
 
@@ -657,6 +655,14 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	}
 
 	// Do final client initialization
+	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
+	if solicit {
+		// This is an outbound gateway connection
+		c.gw.outsim = &sync.Map{}
+	} else {
+		// Inbound gateway connection
+		c.gw.insim = make(map[string]*insie)
+	}
 
 	// Register in temp map for now until gateway properly registered
 	// in out or in gateways.
