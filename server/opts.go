@@ -95,6 +95,11 @@ type Options struct {
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
+
+	// private fields, used to know if bool options are explicitly
+	// defined in config and/or command line params.
+	inConfig  map[string]bool
+	inCmdLine map[string]bool
 }
 
 // Clone performs a deep copy of the Options struct, returning a new clone
@@ -229,10 +234,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.Host = v.(string)
 		case "debug":
 			o.Debug = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
 		case "trace":
 			o.Trace = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
 		case "logtime":
 			o.Logtime = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
 		case "authorization":
 			am := v.(map[string]interface{})
 			auth, err := parseAuthorization(am)
@@ -283,6 +291,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.LogFile = v.(string)
 		case "syslog":
 			o.Syslog = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
 		case "remote_syslog":
 			o.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
@@ -338,6 +347,15 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		}
 	}
 	return nil
+}
+
+func trackExplicitVal(opts *Options, pm *map[string]bool, name string, val bool) {
+	m := *pm
+	if m == nil {
+		m = make(map[string]bool)
+		*pm = m
+	}
+	m[name] = val
 }
 
 // hostPort is simple struct to hold parsed listen/addr strings.
@@ -428,6 +446,7 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
+			trackExplicitVal(opts, &opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":
@@ -1076,6 +1095,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		showTLSHelp bool
 		signal      string
 		configFile  string
+		dbgAndTrace bool
 		err         error
 	)
 
@@ -1091,7 +1111,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
 	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	fs.Bool("DV", false, "Enable Debug and Trace logging.")
+	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -1173,6 +1193,33 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	// Snapshot flag options.
 	FlagSnapshot = opts.Clone()
 
+	// Keep track of the boolean flags that were explicitly set with their value.
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "DV":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
+		case "D":
+			fallthrough
+		case "debug":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
+		case "V":
+			fallthrough
+		case "trace":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", FlagSnapshot.Trace)
+		case "T":
+			fallthrough
+		case "logtime":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Logtime", FlagSnapshot.Logtime)
+		case "s":
+			fallthrough
+		case "syslog":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Syslog", FlagSnapshot.Syslog)
+		case "no_advertise":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Cluster.NoAdvertise", FlagSnapshot.Cluster.NoAdvertise)
+		}
+	})
+
 	// Process signal control.
 	if signal != "" {
 		if err := processSignal(signal); err != nil {
@@ -1221,8 +1268,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			switch f.Name {
 			case "DV":
 				// Check value to support -DV=false
-				boolValue, _ := strconv.ParseBool(f.Value.String())
-				opts.Trace, opts.Debug = boolValue, boolValue
+				opts.Trace, opts.Debug = dbgAndTrace, dbgAndTrace
 			case "cluster", "cluster_listen":
 				// Override cluster config if explicitly set via flags.
 				flagErr = overrideCluster(opts)

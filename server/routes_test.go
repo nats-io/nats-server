@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,10 +68,7 @@ func TestRouteConfig(t *testing.T) {
 
 	golden.Routes = []*url.URL{r1, r2}
 
-	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, opts)
 }
 
 func TestClusterAdvertise(t *testing.T) {

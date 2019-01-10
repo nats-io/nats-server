@@ -27,6 +27,19 @@ import (
 	"time"
 )
 
+func checkOptionsEqual(t *testing.T, golden, opts *Options) {
+	t.Helper()
+	// Clone them so we can remove private fields that we don't
+	// want to be compared.
+	goldenClone := golden.Clone()
+	goldenClone.inConfig, goldenClone.inCmdLine = nil, nil
+	optsClone := opts.Clone()
+	optsClone.inConfig, optsClone.inCmdLine = nil, nil
+	if !reflect.DeepEqual(goldenClone, optsClone) {
+		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v", goldenClone, optsClone)
+	}
+}
+
 func TestDefaultOptions(t *testing.T) {
 	golden := &Options{
 		Host:             DEFAULT_HOST,
@@ -49,10 +62,7 @@ func TestDefaultOptions(t *testing.T) {
 	opts := &Options{}
 	processOptions(opts)
 
-	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Default Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, opts)
 }
 
 func TestOptions_RandomPort(t *testing.T) {
@@ -97,10 +107,7 @@ func TestConfigFile(t *testing.T) {
 		t.Fatalf("Received an error reading config file: %v\n", err)
 	}
 
-	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, opts)
 }
 
 func TestTLSConfigFile(t *testing.T) {
@@ -122,10 +129,8 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatal("Expected opts.TLSConfig to be non-nil")
 	}
 	opts.TLSConfig = nil
-	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, opts)
+
 	// Now check TLSConfig a bit more closely
 	// CipherSuites
 	ciphers := defaultCipherSuites()
@@ -272,10 +277,7 @@ func TestMergeOverrides(t *testing.T) {
 	}
 	merged := MergeOptions(fopts, opts)
 
-	if !reflect.DeepEqual(golden, merged) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, merged)
-	}
+	checkOptionsEqual(t, golden, merged)
 }
 
 func TestRemoveSelfReference(t *testing.T) {
@@ -343,10 +345,7 @@ func TestRouteFlagOverride(t *testing.T) {
 	}
 	merged := MergeOptions(fopts, opts)
 
-	if !reflect.DeepEqual(golden, merged) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, merged)
-	}
+	checkOptionsEqual(t, golden, merged)
 }
 
 func TestClusterFlagsOverride(t *testing.T) {
@@ -387,10 +386,7 @@ func TestClusterFlagsOverride(t *testing.T) {
 	}
 	merged := MergeOptions(fopts, opts)
 
-	if !reflect.DeepEqual(golden, merged) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, merged)
-	}
+	checkOptionsEqual(t, golden, merged)
 }
 
 func TestRouteFlagOverrideWithMultiple(t *testing.T) {
@@ -423,10 +419,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 	}
 	merged := MergeOptions(fopts, opts)
 
-	if !reflect.DeepEqual(golden, merged) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, merged)
-	}
+	checkOptionsEqual(t, golden, merged)
 }
 
 func TestDynamicPortOnListen(t *testing.T) {
