@@ -103,24 +103,6 @@ type RoutePermissions struct {
 	Export *SubjectPermission `json:"export"`
 }
 
-// GatewayPermissions are similar to RoutePermissions
-type GatewayPermissions = RoutePermissions
-
-// clone will clone a RoutePermissions object
-func (rp *RoutePermissions) clone() *RoutePermissions {
-	if rp == nil {
-		return nil
-	}
-	clone := &RoutePermissions{}
-	if rp.Import != nil {
-		clone.Import = rp.Import.clone()
-	}
-	if rp.Export != nil {
-		clone.Export = rp.Export.clone()
-	}
-	return clone
-}
-
 // clone will clone an individual subject permission.
 func (p *SubjectPermission) clone() *SubjectPermission {
 	if p == nil {

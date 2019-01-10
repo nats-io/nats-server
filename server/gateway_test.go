@@ -207,10 +207,6 @@ func testDefaultOptionsForGateway(name string) *Options {
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
-	o.Gateway.DefaultPermissions = &GatewayPermissions{
-		Import: &SubjectPermission{Allow: []string{">"}},
-		Export: &SubjectPermission{Allow: []string{">"}},
-	}
 	o.gatewaysSolicitDelay = 15 * time.Millisecond
 	return o
 }
@@ -224,13 +220,7 @@ func runGatewayServer(o *Options) *Server {
 func testGatewayOptionsFromToWithServers(t *testing.T, org, dst string, servers ...*Server) *Options {
 	t.Helper()
 	o := testDefaultOptionsForGateway(org)
-	gw := &RemoteGatewayOpts{
-		Name: dst,
-		Permissions: &GatewayPermissions{
-			Import: &SubjectPermission{Allow: []string{">"}},
-			Export: &SubjectPermission{Allow: []string{">"}},
-		},
-	}
+	gw := &RemoteGatewayOpts{Name: dst}
 	for _, s := range servers {
 		us := fmt.Sprintf("nats://127.0.0.1:%d", s.GatewayAddr().Port)
 		u, err := url.Parse(us)
@@ -245,13 +235,7 @@ func testGatewayOptionsFromToWithServers(t *testing.T, org, dst string, servers 
 
 func testAddGatewayURLs(t *testing.T, o *Options, dst string, urls []string) {
 	t.Helper()
-	gw := &RemoteGatewayOpts{
-		Name: dst,
-		Permissions: &GatewayPermissions{
-			Import: &SubjectPermission{Allow: []string{">"}},
-			Export: &SubjectPermission{Allow: []string{">"}},
-		},
-	}
+	gw := &RemoteGatewayOpts{Name: dst}
 	for _, us := range urls {
 		u, err := url.Parse(us)
 		if err != nil {
@@ -4368,142 +4352,3 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 		})
 	}
 }
-
-/*
-func TestGatewayPermissions(t *testing.T) {
-	bo := testDefaultOptionsForGateway("B")
-	sb := runGatewayServer(bo)
-	defer sb.Shutdown()
-
-	ao := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
-	// test setup by default sets import and export to ">".
-	// For this test, we override.
-	ao.Gateway.Permissions.Import = &SubjectPermission{Allow: []string{"foo"}}
-	ao.Gateway.Permissions.Export = &SubjectPermission{Allow: []string{"bar"}}
-	sa := runGatewayServer(ao)
-	defer sa.Shutdown()
-
-	waitForOutboundGateways(t, sa, 1, time.Second)
-	waitForOutboundGateways(t, sb, 1, time.Second)
-
-	// Create client connections, one of cluster A, one on B.
-	nca := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", ao.Port))
-	defer nca.Close()
-	ncb := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", bo.Port))
-	defer ncb.Close()
-
-	ch := make(chan bool, 1)
-	cb := func(m *nats.Msg) {
-		ch <- true
-	}
-
-	// Check import permissions...
-
-	// Create a local sub on "foo" on Cluster A.
-	natsSub(t, nca, "foo", cb)
-	natsFlush(t, nca)
-
-	// Message should be received
-
-	natsPub(t, ncb, "foo", []byte("message from B to A on foo"))
-	natsFlush(t, ncb)
-
-	waitCh(t, ch, "Did not get message on foo")
-
-	// Create a sub on "baz" on Cluster A, no message should be received on that one
-	natsSub(t, nca, "baz", cb)
-	natsFlush(t, nca)
-
-	natsPub(t, ncb, "baz", []byte("message from B to A on baz"))
-	natsFlush(t, ncb)
-
-	select {
-	case <-ch:
-		t.Fatalf("Message should not have been received")
-	case <-time.After(250 * time.Millisecond):
-		// still no message, we are ok.
-	}
-
-	// Check export permissions now...
-
-	// Create sub on "bar" on Cluster B
-	natsSub(t, ncb, "bar", cb)
-	natsFlush(t, ncb)
-
-	// Send from A, that should be possible so message should be received.
-	natsPub(t, nca, "bar", []byte("message from A to B on bar"))
-	natsFlush(t, nca)
-
-	waitCh(t, ch, "Did not get message on bar")
-
-	// Create a sub on "bozo" on Cluster B
-	natsSub(t, ncb, "bozo", cb)
-	natsFlush(t, ncb)
-
-	// That message should not be received
-	natsPub(t, nca, "bozo", []byte("message from A to B on bozo"))
-	natsFlush(t, nca)
-
-	select {
-	case <-ch:
-		t.Fatalf("Message should not have been received")
-	case <-time.After(250 * time.Millisecond):
-		// still no message, we are ok.
-	}
-}
-
-func TestGatewayDefaultPermissions(t *testing.T) {
-	bo := testDefaultOptionsForGateway("B")
-	// test setup by default sets import and export to ">".
-	// For this test, we override.
-	bo.Gateway.DefaultPermissions.Import = &SubjectPermission{Allow: []string{"foo"}}
-	bo.Gateway.DefaultPermissions.Export = &SubjectPermission{Allow: []string{"bar", "baz"}}
-	sb := runGatewayServer(bo)
-	defer sb.Shutdown()
-
-	ao := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
-	sa := runGatewayServer(ao)
-	defer sa.Shutdown()
-
-	waitForOutboundGateways(t, sa, 1, time.Second)
-	waitForOutboundGateways(t, sb, 1, time.Second)
-
-	// Check permissions on cluster B. Since there was no
-	// explicit gateway defined to A, when server on B accepted
-	// the gateway connection, it should have "inherited" the
-	// default permissions.
-	gw := sb.getRemoteGateway("A")
-	if gw == nil {
-		t.Fatalf("There should be a remote gateway for A")
-	}
-	gw.RLock()
-	impc := gw.imports.Count()
-	expc := gw.exports.Count()
-	gw.RUnlock()
-
-	if impc != 1 {
-		t.Fatalf("Expected import sublist to be size 1, got %v", impc)
-	}
-	if expc != 2 {
-		t.Fatalf("Expected export sublist to be size 2, got %v", expc)
-	}
-
-	// Check server on Cluster A too. By default, tests create
-	// gateway permissions and remote gateways default permissions
-	// for import/export to be ">".
-	gw = sa.getRemoteGateway("B")
-	if gw == nil {
-		t.Fatalf("There should be a remote gateway for B")
-	}
-	gw.RLock()
-	impc = gw.imports.Count()
-	expc = gw.exports.Count()
-	gw.RUnlock()
-	if impc != 1 {
-		t.Fatalf("Expected import sublist to be size 1, got %v", impc)
-	}
-	if expc != 1 {
-		t.Fatalf("Expected export sublist to be size 1, got %v", expc)
-	}
-}
-*/
