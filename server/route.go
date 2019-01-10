@@ -960,6 +960,9 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		// Determine the account. If sub has an ImportMap entry, use that, otherwise scoped to
 		// client. Default to global if all else fails.
 		var accName string
+		if sub.client != nil && sub.client != c {
+			sub.client.mu.Lock()
+		}
 		if sub.im != nil {
 			accName = sub.im.acc.Name
 		} else if sub.client != nil && sub.client.acc != nil {
@@ -967,6 +970,9 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		} else {
 			c.Debugf("Falling back to default account for sending subs")
 			accName = globalAccountName
+		}
+		if sub.client != nil && sub.client != c {
+			sub.client.mu.Unlock()
 		}
 
 		// Check if proto is going to fit.
