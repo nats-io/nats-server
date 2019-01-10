@@ -1736,11 +1736,11 @@ func (c *client) canSubscribe(subject string) bool {
 // Low level unsubscribe for a given client.
 func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !force && sub.max > 0 && sub.nm < sub.max {
 		c.Debugf(
 			"Deferring actual UNSUB(%s): %d max, %d received",
 			string(sub.subject), sub.max, sub.nm)
+		c.mu.Unlock()
 		return
 	}
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
@@ -1755,14 +1755,21 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	}
 
 	// Check to see if we have shadow subscriptions.
-	for _, nsub := range sub.shadow {
+	var updateRoute bool
+	shadowSubs := sub.shadow
+	sub.shadow = nil
+	if len(shadowSubs) > 0 {
+		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM) && c.srv != nil
+	}
+	c.mu.Unlock()
+
+	for _, nsub := range shadowSubs {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
-		} else if c.kind == CLIENT || c.kind == SYSTEM && c.srv != nil {
+		} else if updateRoute {
 			c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
 		}
 	}
-	sub.shadow = nil
 }
 
 func (c *client) processUnsub(arg []byte) error {
