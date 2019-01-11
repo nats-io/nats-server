@@ -40,7 +40,7 @@ var (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "2.0.0-beta.13"
+	VERSION = "2.0.0-RC1"
 
 	// PROTO is the currently supported protocol.
 	// 0 was the original
@@ -68,7 +68,7 @@ const (
 	MAX_PAYLOAD_SIZE = (1024 * 1024)
 
 	// MAX_PENDING_SIZE is the maximum outbound pending bytes per client.
-	MAX_PENDING_SIZE = (256 * 1024 * 1024)
+	MAX_PENDING_SIZE = (64 * 1024 * 1024)
 
 	// DEFAULT_MAX_CONNECTIONS is the default maximum connections allowed.
 	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
