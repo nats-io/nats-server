@@ -780,7 +780,11 @@ func (a *Account) clearExpirationTimer() bool {
 	return stopped
 }
 
+// Check expiration and set the proper state as needed.
 func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.clearExpirationTimer()
 	if claims.Expires == 0 {
 		a.expired = false
