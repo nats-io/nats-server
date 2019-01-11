@@ -205,7 +205,6 @@ type outbound struct {
 	wdl time.Duration // Snapshot fo write deadline.
 	mp  int64         // snapshot of max pending.
 	fsp int           // Flush signals that are pending from readLoop's pcd.
-	lws int64         // Last write size
 	lft time.Duration // Last flush time.
 }
 
@@ -839,9 +838,8 @@ func (c *client) flushOutbound() bool {
 		c.mu.Lock()
 	}
 
-	// Update flush time and size statistics
+	// Update flush time statistics
 	c.out.lft = lft
-	c.out.lws = n
 
 	// Subtract from pending bytes and messages.
 	c.out.pb -= n
