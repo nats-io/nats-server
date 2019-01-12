@@ -50,10 +50,10 @@ To start the NATS server with default settings (and no authentication or cluster
 
 ```sh
 > ./gnatsd
-[68229] 2018/08/29 11:50:53.789318 [INF] Starting nats-server version 1.3.0
-[68229] 2018/08/29 11:50:53.789381 [INF] Git commit [not set]
-[68229] 2018/08/29 11:50:53.789566 [INF] Listening for client connections on 0.0.0.0:4222
-[68229] 2018/08/29 11:50:53.789572 [INF] Server is ready
+[29469] 2019/01/11 17:39:04.166249 [INF] Starting nats-server version 1.4.0
+[29469] 2019/01/11 17:39:04.166309 [INF] Git commit [not set]
+[29469] 2019/01/11 17:39:04.166493 [INF] Listening for client connections on 0.0.0.0:4222
+[29469] 2019/01/11 17:39:04.166499 [INF] Server is ready
 ```
 
 The server is started and listening for client connections on port 4222 (the default) from all available interfaces. The logs are displayed to stdout as shown above in the server output.
@@ -829,20 +829,22 @@ Examples using the test certificates which are self signed for localhost and 127
 ```bash
 > ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
-[70346] 2018/08/29 12:47:20.958931 [INF] Starting nats-server version 1.3.0
-[70346] 2018/08/29 12:47:20.959010 [INF] Git commit [not set]
-[70346] 2018/08/29 12:47:20.959184 [INF] Listening for client connections on 0.0.0.0:4222
-[70346] 2018/08/29 12:47:20.959189 [INF] TLS required for client connections
-[70346] 2018/08/29 12:47:20.959202 [INF] Server is ready
+[30574] 2019/01/11 17:42:53.805611 [INF] Starting nats-server version 1.4.0
+[30574] 2019/01/11 17:42:53.805679 [DBG] Go build version go1.11.4
+[30574] 2019/01/11 17:42:53.805682 [INF] Git commit [not set]
+[30574] 2019/01/11 17:42:53.805851 [INF] Listening for client connections on 0.0.0.0:4222
+[30574] 2019/01/11 17:42:53.805856 [INF] TLS required for client connections
+[30574] 2019/01/11 17:42:53.805869 [DBG] Server id is Ets3RI7hu19EZHquqwXkSw
+[30574] 2019/01/11 17:42:53.805871 [INF] Server is ready
 ```
 
 Notice that the log  indicates that the client connections will be required to use TLS.  If you run the server in Debug mode with `-D` or `-DV`, the logs will show the cipher suite selection for each connected client.
 
 ```
-[70374] 2018/08/29 12:47:56.080598 [DBG] ::1:59950 - cid:1 - Client connection created
-[70374] 2018/08/29 12:47:56.080799 [DBG] ::1:59950 - cid:1 - Starting TLS client connection handshake
-[70374] 2018/08/29 12:47:56.094915 [DBG] ::1:59950 - cid:1 - TLS handshake complete
-[70374] 2018/08/29 12:47:56.094933 [DBG] ::1:59950 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+[30574] 2019/01/11 17:42:55.766531 [DBG] ::1:55549 - cid:1 - Client connection created
+[30574] 2019/01/11 17:42:55.766794 [DBG] ::1:55549 - cid:1 - Starting TLS client connection handshake
+[30574] 2019/01/11 17:42:55.778937 [DBG] ::1:55549 - cid:1 - TLS handshake complete
+[30574] 2019/01/11 17:42:55.778960 [DBG] ::1:55549 - cid:1 - TLS version 1.2, cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 ```
 
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
@@ -893,11 +895,11 @@ To enable monitoring via the configuration file, use `host:port` (there is no ex
 For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
 ```
-[70450] 2018/08/29 12:48:30.819682 [INF] Starting nats-server version 1.3.0
-[70450] 2018/08/29 12:48:30.819750 [INF] Git commit [not set]
-[70450] 2018/08/29 12:48:30.819918 [INF] Starting http monitor on 0.0.0.0:8222
-[70450] 2018/08/29 12:48:30.819960 [INF] Listening for client connections on 0.0.0.0:4222
-[70450] 2018/08/29 12:48:30.819964 [INF] Server is ready
+[29511] 2019/01/11 17:39:40.499450 [INF] Starting nats-server version 1.4.0
+[29511] 2019/01/11 17:39:40.499520 [INF] Git commit [not set]
+[29511] 2019/01/11 17:39:40.499694 [INF] Starting http monitor on 0.0.0.0:8222
+[29511] 2019/01/11 17:39:40.499733 [INF] Listening for client connections on 0.0.0.0:4222
+[29511] 2019/01/11 17:39:40.499737 [INF] Server is ready
 ```
 
 ## Community and Contributing
@@ -915,8 +917,8 @@ NATS Office Hours will be on hiatus for the US summer season. Please join our [S
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
 [Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.3.0
-[Release-image]: http://img.shields.io/badge/release-v1.3.0-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.4.0
+[Release-image]: http://img.shields.io/badge/release-v1.4.0-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
 [ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd

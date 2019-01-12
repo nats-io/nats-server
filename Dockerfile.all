@@ -1,4 +1,4 @@
-FROM golang:1.11
+FROM golang:1.11.4
 
 MAINTAINER Ivan Kozlovic <ivan@synadia.com>
 
