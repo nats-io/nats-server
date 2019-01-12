@@ -161,9 +161,9 @@ func (p *parser) processItem(it item) error {
 		if err != nil {
 			if e, ok := err.(*strconv.NumError); ok &&
 				e.Err == strconv.ErrRange {
-				return fmt.Errorf("Integer '%s' is out of the range.", it.val)
+				return fmt.Errorf("integer '%s' is out of the range", it.val)
 			}
-			return fmt.Errorf("Expected integer, but got '%s'.", it.val)
+			return fmt.Errorf("expected integer, but got '%s'", it.val)
 		}
 		// Process a suffix
 		suffix := strings.ToLower(strings.TrimSpace(it.val[lastDigit:]))
@@ -188,9 +188,9 @@ func (p *parser) processItem(it item) error {
 		if err != nil {
 			if e, ok := err.(*strconv.NumError); ok &&
 				e.Err == strconv.ErrRange {
-				return fmt.Errorf("Float '%s' is out of the range.", it.val)
+				return fmt.Errorf("float '%s' is out of the range", it.val)
 			}
-			return fmt.Errorf("Expected float, but got '%s'.", it.val)
+			return fmt.Errorf("expected float, but got '%s'", it.val)
 		}
 		p.setValue(num)
 	case itemBool:
@@ -200,13 +200,13 @@ func (p *parser) processItem(it item) error {
 		case "false", "no", "off":
 			p.setValue(false)
 		default:
-			return fmt.Errorf("Expected boolean value, but got '%s'.", it.val)
+			return fmt.Errorf("expected boolean value, but got '%s'", it.val)
 		}
 	case itemDatetime:
 		dt, err := time.Parse("2006-01-02T15:04:05Z", it.val)
 		if err != nil {
 			return fmt.Errorf(
-				"Expected Zulu formatted DateTime, but got '%s'.", it.val)
+				"expected Zulu formatted DateTime, but got '%s'", it.val)
 		}
 		p.setValue(dt)
 	case itemArrayStart:
@@ -220,13 +220,13 @@ func (p *parser) processItem(it item) error {
 		if value, ok := p.lookupVariable(it.val); ok {
 			p.setValue(value)
 		} else {
-			return fmt.Errorf("Variable reference for '%s' on line %d can not be found.",
+			return fmt.Errorf("variable reference for '%s' on line %d can not be found",
 				it.val, it.line)
 		}
 	case itemInclude:
 		m, err := ParseFile(filepath.Join(p.fp, it.val))
 		if err != nil {
-			return fmt.Errorf("Error parsing include file '%s', %v.", it.val, err)
+			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
 		}
 		for k, v := range m {
 			p.pushKey(k)
@@ -255,7 +255,7 @@ func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
 	}
 
 	// Loop through contexts currently on the stack.
-	for i := len(p.ctxs) - 1; i >= 0; i -= 1 {
+	for i := len(p.ctxs) - 1; i >= 0; i-- {
 		ctx := p.ctxs[i]
 		// Process if it is a map context
 		if m, ok := ctx.(map[string]interface{}); ok {

@@ -611,7 +611,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	didSolicit := rURL != nil
 	r := &route{didSolicit: didSolicit}
 	for _, route := range opts.Routes {
-		if rURL != nil && (strings.ToLower(rURL.Host) == strings.ToLower(route.Host)) {
+		if rURL != nil && strings.EqualFold(rURL.Host, route.Host) {
 			r.routeType = Explicit
 		}
 	}

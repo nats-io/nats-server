@@ -251,16 +251,16 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.Password = auth.pass
 			o.Authorization = auth.token
 			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				return fmt.Errorf("Cannot have a user/pass and token")
+				return fmt.Errorf("cannot have a user/pass and token")
 			}
 			o.AuthTimeout = auth.timeout
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
-					return fmt.Errorf("Can not have a single user/pass and a users array")
+					return fmt.Errorf("can not have a single user/pass and a users array")
 				}
 				if auth.token != "" {
-					return fmt.Errorf("Can not have a token and a users array")
+					return fmt.Errorf("can not have a token and a users array")
 				}
 				o.Users = auth.users
 			}
@@ -367,18 +367,18 @@ type hostPort struct {
 // parseListen will parse listen option which is replacing host/net and port
 func parseListen(v interface{}) (*hostPort, error) {
 	hp := &hostPort{}
-	switch v.(type) {
+	switch v := v.(type) {
 	// Only a port
 	case int64:
-		hp.port = int(v.(int64))
+		hp.port = int(v)
 	case string:
-		host, port, err := net.SplitHostPort(v.(string))
+		host, port, err := net.SplitHostPort(v)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse address string %q", v)
+			return nil, fmt.Errorf("could not parse address string %q", v)
 		}
 		hp.port, err = strconv.Atoi(port)
 		if err != nil {
-			return nil, fmt.Errorf("Could not parse port %q", port)
+			return nil, fmt.Errorf("could not parse port %q", port)
 		}
 		hp.host = host
 	}
@@ -407,7 +407,7 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 				return err
 			}
 			if auth.users != nil {
-				return fmt.Errorf("Cluster authorization does not allow multiple users")
+				return fmt.Errorf("cluster authorization does not allow multiple users")
 			}
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
@@ -452,7 +452,7 @@ func parseCluster(cm map[string]interface{}, opts *Options) error {
 		case "permissions":
 			pm, ok := mv.(map[string]interface{})
 			if !ok {
-				return fmt.Errorf("Expected permissions to be a map/struct, got %+v", mv)
+				return fmt.Errorf("expected permissions to be a map/struct, got %+v", mv)
 			}
 			perms, err := parseUserPermissions(pm)
 			if err != nil {
@@ -492,11 +492,11 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 			auth.token = mv.(string)
 		case "timeout":
 			at := float64(1)
-			switch mv.(type) {
+			switch mv := mv.(type) {
 			case int64:
-				at = float64(mv.(int64))
+				at = float64(mv)
 			case float64:
-				at = mv.(float64)
+				at = mv
 			}
 			auth.timeout = at
 		case "users":
@@ -508,7 +508,7 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 		case "default_permission", "default_permissions", "permissions":
 			pm, ok := mv.(map[string]interface{})
 			if !ok {
-				return nil, fmt.Errorf("Expected default permissions to be a map/struct, got %+v", mv)
+				return nil, fmt.Errorf("expected default permissions to be a map/struct, got %+v", mv)
 			}
 			permissions, err := parseUserPermissions(pm)
 			if err != nil {
@@ -535,14 +535,14 @@ func parseUsers(mv interface{}) ([]*User, error) {
 	// Make sure we have an array
 	uv, ok := mv.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("Expected users field to be an array, got %v", mv)
+		return nil, fmt.Errorf("expected users field to be an array, got %v", mv)
 	}
 	users := []*User{}
 	for _, u := range uv {
 		// Check its a map/struct
 		um, ok := u.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("Expected user entry to be a map/struct, got %v", u)
+			return nil, fmt.Errorf("expected user entry to be a map/struct, got %v", u)
 		}
 		user := &User{}
 		for k, v := range um {
@@ -554,7 +554,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 			case "permission", "permissions", "authorization":
 				pm, ok := v.(map[string]interface{})
 				if !ok {
-					return nil, fmt.Errorf("Expected user permissions to be a map/struct, got %+v", v)
+					return nil, fmt.Errorf("expected user permissions to be a map/struct, got %+v", v)
 				}
 				permissions, err := parseUserPermissions(pm)
 				if err != nil {
@@ -565,7 +565,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 		}
 		// Check to make sure we have at least username and password
 		if user.Username == "" || user.Password == "" {
-			return nil, fmt.Errorf("User entry requires a user and a password")
+			return nil, fmt.Errorf("user entry requires a user and a password")
 		}
 		users = append(users, user)
 	}
@@ -593,7 +593,7 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 			}
 			p.Subscribe = perms
 		default:
-			return nil, fmt.Errorf("Unknown field %s parsing permissions", k)
+			return nil, fmt.Errorf("unknown field %s parsing permissions", k)
 		}
 	}
 	return p, nil
@@ -601,10 +601,10 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 
 // Tope level parser for authorization configurations.
 func parseVariablePermissions(v interface{}) (*SubjectPermission, error) {
-	switch v.(type) {
+	switch v := v.(type) {
 	case map[string]interface{}:
 		// New style with allow and/or deny properties.
-		return parseSubjectPermission(v.(map[string]interface{}))
+		return parseSubjectPermission(v)
 	default:
 		// Old style
 		return parseOldPermissionStyle(v)
@@ -614,21 +614,21 @@ func parseVariablePermissions(v interface{}) (*SubjectPermission, error) {
 // Helper function to parse subject singeltons and/or arrays
 func parseSubjects(v interface{}) ([]string, error) {
 	var subjects []string
-	switch v.(type) {
+	switch v := v.(type) {
 	case string:
-		subjects = append(subjects, v.(string))
+		subjects = append(subjects, v)
 	case []string:
-		subjects = v.([]string)
+		subjects = v
 	case []interface{}:
-		for _, i := range v.([]interface{}) {
+		for _, i := range v {
 			subject, ok := i.(string)
 			if !ok {
-				return nil, fmt.Errorf("Subject in permissions array cannot be cast to string")
+				return nil, fmt.Errorf("subject in permissions array cannot be cast to string")
 			}
 			subjects = append(subjects, subject)
 		}
 	default:
-		return nil, fmt.Errorf("Expected subject permissions to be a subject, or array of subjects, got %T", v)
+		return nil, fmt.Errorf("expected subject permissions to be a subject, or array of subjects, got %T", v)
 	}
 	if err := checkSubjectArray(subjects); err != nil {
 		return nil, err
@@ -668,7 +668,7 @@ func parseSubjectPermission(m map[string]interface{}) (*SubjectPermission, error
 			}
 			p.Deny = subjects
 		default:
-			return nil, fmt.Errorf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)
+			return nil, fmt.Errorf("unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)
 		}
 	}
 	return p, nil
@@ -678,7 +678,7 @@ func parseSubjectPermission(m map[string]interface{}) (*SubjectPermission, error
 func checkSubjectArray(sa []string) error {
 	for _, s := range sa {
 		if !IsValidSubject(s) {
-			return fmt.Errorf("Subject %q is not a valid subject", s)
+			return fmt.Errorf("subject %q is not a valid subject", s)
 		}
 	}
 	return nil
@@ -701,7 +701,7 @@ func parseCipher(cipherName string) (uint16, error) {
 
 	cipher, exists := cipherMap[cipherName]
 	if !exists {
-		return 0, fmt.Errorf("Unrecognized cipher %s", cipherName)
+		return 0, fmt.Errorf("unrecognized cipher %s", cipherName)
 	}
 
 	return cipher, nil
@@ -710,7 +710,7 @@ func parseCipher(cipherName string) (uint16, error) {
 func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 	curve, exists := curvePreferenceMap[curveName]
 	if !exists {
-		return 0, fmt.Errorf("Unrecognized curve preference %s", curveName)
+		return 0, fmt.Errorf("unrecognized curve preference %s", curveName)
 	}
 	return curve, nil
 }
@@ -772,11 +772,11 @@ func parseTLS(tlsm map[string]interface{}) (*TLSConfigOpts, error) {
 			}
 		case "timeout":
 			at := float64(0)
-			switch mv.(type) {
+			switch mv := mv.(type) {
 			case int64:
-				at = float64(mv.(int64))
+				at = float64(mv)
 			case float64:
-				at = mv.(float64)
+				at = mv
 			}
 			tc.Timeout = at
 		default:
@@ -989,7 +989,7 @@ func getURLIP(ipStr string) ([]net.IP, error) {
 
 	hostAddr, err := net.LookupHost(ipStr)
 	if err != nil {
-		return nil, fmt.Errorf("Error looking up host with route hostname: %v", err)
+		return nil, fmt.Errorf("error looking up host with route hostname: %v", err)
 	}
 	for _, addr := range hostAddr {
 		ip = net.ParseIP(addr)
@@ -1005,7 +1005,7 @@ func getInterfaceIPs() ([]net.IP, error) {
 
 	interfaceAddr, err := net.InterfaceAddrs()
 	if err != nil {
-		return nil, fmt.Errorf("Error getting self referencing address: %v", err)
+		return nil, fmt.Errorf("error getting self referencing address: %v", err)
 	}
 
 	for i := 0; i < len(interfaceAddr); i++ {
@@ -1013,7 +1013,7 @@ func getInterfaceIPs() ([]net.IP, error) {
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
-			return nil, fmt.Errorf("Error parsing self referencing address: %v", err)
+			return nil, fmt.Errorf("error parsing self referencing address: %v", err)
 		}
 	}
 	return localIPs, nil

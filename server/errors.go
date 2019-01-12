@@ -17,35 +17,35 @@ import "errors"
 
 var (
 	// ErrConnectionClosed represents an error condition on a closed connection.
-	ErrConnectionClosed = errors.New("Connection Closed")
+	ErrConnectionClosed = errors.New("connection closed")
 
 	// ErrAuthorization represents an error condition on failed authorization.
-	ErrAuthorization = errors.New("Authorization Error")
+	ErrAuthorization = errors.New("authorization error")
 
 	// ErrAuthTimeout represents an error condition on failed authorization due to timeout.
-	ErrAuthTimeout = errors.New("Authorization Timeout")
+	ErrAuthTimeout = errors.New("authorization timeout")
 
 	// ErrMaxPayload represents an error condition when the payload is too big.
-	ErrMaxPayload = errors.New("Maximum Payload Exceeded")
+	ErrMaxPayload = errors.New("maximum payload exceeded")
 
 	// ErrMaxControlLine represents an error condition when the control line is too big.
-	ErrMaxControlLine = errors.New("Maximum Control Line Exceeded")
+	ErrMaxControlLine = errors.New("maximum control line exceeded")
 
 	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
-	ErrReservedPublishSubject = errors.New("Reserved Internal Subject")
+	ErrReservedPublishSubject = errors.New("reserved internal subject")
 
 	// ErrBadClientProtocol signals a client requested an invalud client protocol.
-	ErrBadClientProtocol = errors.New("Invalid Client Protocol")
+	ErrBadClientProtocol = errors.New("invalid client protocol")
 
 	// ErrTooManyConnections signals a client that the maximum number of connections supported by the
 	// server has been reached.
-	ErrTooManyConnections = errors.New("Maximum Connections Exceeded")
+	ErrTooManyConnections = errors.New("maximum connections exceeded")
 
 	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
 	// has been reached.
-	ErrTooManySubs = errors.New("Maximum Subscriptions Exceeded")
+	ErrTooManySubs = errors.New("maximum subscriptions exceeded")
 
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
-	ErrClientConnectedToRoutePort = errors.New("Attempted To Connect To Route Port")
+	ErrClientConnectedToRoutePort = errors.New("attempted to connect to route port")
 )
