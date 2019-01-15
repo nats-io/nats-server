@@ -518,6 +518,12 @@ func (s *Server) Reload() error {
 
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
+
+	// Need more processing for boolean flags...
+	if FlagSnapshot != nil {
+		applyBoolFlags(newOpts, FlagSnapshot)
+	}
+
 	setBaselineOptions(newOpts)
 
 	// processOptions sets Port to 0 if set to -1 (RANDOM port)
@@ -541,6 +547,31 @@ func (s *Server) Reload() error {
 	s.configTime = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+func applyBoolFlags(newOpts, flagOpts *Options) {
+	// Reset fields that may have been set to `true` in
+	// MergeOptions() when some of the flags default to `true`
+	// but have not been explicitly set and therefore value
+	// from config file should take precedence.
+	for name, val := range newOpts.inConfig {
+		f := reflect.ValueOf(newOpts).Elem()
+		names := strings.Split(name, ".")
+		for _, name := range names {
+			f = f.FieldByName(name)
+		}
+		f.SetBool(val)
+	}
+	// Now apply value (true or false) from flags that have
+	// been explicitly set in command line
+	for name, val := range flagOpts.inCmdLine {
+		f := reflect.ValueOf(newOpts).Elem()
+		names := strings.Split(name, ".")
+		for _, name := range names {
+			f = f.FieldByName(name)
+		}
+		f.SetBool(val)
+	}
 }
 
 // reloadOptions reloads the server config with the provided options. If an
