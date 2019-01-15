@@ -125,7 +125,7 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 // Ensure Reload returns an error when attempting to change an option which
 // does not support reloading.
 func TestConfigReloadUnsupported(t *testing.T) {
-	server, opts, config := newServerWithConfig(t, "./configs/reload/test.conf")
+	server, _, config := newServerWithConfig(t, "./configs/reload/test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -153,10 +153,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	}
 	setBaselineOptions(golden)
 
-	if !reflect.DeepEqual(golden, server.getOpts()) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, server.getOpts())
 
 	// Change config file to bad config.
 	changeCurrentConfigContent(t, config, "./configs/reload/reload_unsupported.conf")
@@ -167,10 +164,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 	}
 
 	// Ensure config didn't change.
-	if !reflect.DeepEqual(golden, server.getOpts()) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, server.getOpts())
 
 	if reloaded := server.ConfigTime(); reloaded != loaded {
 		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
@@ -204,7 +198,7 @@ func TestConfigReloadUnsupportedHotSwapping(t *testing.T) {
 
 // Ensure Reload returns an error when reloading from a bad config file.
 func TestConfigReloadInvalidConfig(t *testing.T) {
-	server, opts, config := newServerWithConfig(t, "./configs/reload/test.conf")
+	server, _, config := newServerWithConfig(t, "./configs/reload/test.conf")
 	defer os.Remove(config)
 	defer server.Shutdown()
 
@@ -232,10 +226,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	}
 	setBaselineOptions(golden)
 
-	if !reflect.DeepEqual(golden, server.getOpts()) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, server.getOpts())
 
 	// Change config file to bad config.
 	changeCurrentConfigContent(t, config, "./configs/reload/invalid.conf")
@@ -246,10 +237,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 	}
 
 	// Ensure config didn't change.
-	if !reflect.DeepEqual(golden, server.getOpts()) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, server.getOpts())
 
 	if reloaded := server.ConfigTime(); reloaded != loaded {
 		t.Fatalf("ConfigTime is incorrect.\nexpected: %s\ngot: %s", loaded, reloaded)
@@ -303,10 +291,7 @@ func TestConfigReload(t *testing.T) {
 	}
 	setBaselineOptions(golden)
 
-	if !reflect.DeepEqual(golden, opts) {
-		t.Fatalf("Options are incorrect.\nexpected: %+v\ngot: %+v",
-			golden, opts)
-	}
+	checkOptionsEqual(t, golden, opts)
 
 	// Change config file to new config.
 	changeCurrentConfigContent(t, config, "./configs/reload/reload.conf")
@@ -3217,36 +3202,394 @@ func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 	}
 }
 
-func TestConfigReloadLogtime(t *testing.T) {
+func TestConfigReloadBoolFlags(t *testing.T) {
 	logfile := "logtime.log"
 	defer os.Remove(logfile)
-	content := `
+	template := `
 		listen: "127.0.0.1:-1"
-		logfile: "%s"
-		logtime: false
+		logfile: "logtime.log"
+		%s
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(content, logfile)))
-	defer os.Remove(conf)
 
-	// For this test, we need to invoke ConfigureOptions which is what main.go does.
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	opts, err := ConfigureOptions(fs, []string{"-c", conf}, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("Error processing config: %v", err)
-	}
-	opts.NoSigs = true
-	s := RunServer(opts)
-	defer s.Shutdown()
+	var opts *Options
+	var err error
 
-	if s.getOpts().Logtime {
-		t.Fatal("Logtime should be set to false")
-	}
+	for _, test := range []struct {
+		name     string
+		content  string
+		cmdLine  []string
+		expected bool
+		val      func() bool
+	}{
+		// Logtime
+		{
+			"logtime_not_in_config_no_override",
+			"",
+			nil,
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_not_in_config_override_short_true",
+			"",
+			[]string{"-T"},
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_not_in_config_override_true",
+			"",
+			[]string{"-logtime"},
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_false_in_config_no_override",
+			"logtime: false",
+			nil,
+			false,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_false_in_config_override_short_true",
+			"logtime: false",
+			[]string{"-T"},
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_false_in_config_override_true",
+			"logtime: false",
+			[]string{"-logtime"},
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_true_in_config_no_override",
+			"logtime: true",
+			nil,
+			true,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_true_in_config_override_short_false",
+			"logtime: true",
+			[]string{"-T=false"},
+			false,
+			func() bool { return opts.Logtime },
+		},
+		{
+			"logtime_true_in_config_override_false",
+			"logtime: true",
+			[]string{"-logtime=false"},
+			false,
+			func() bool { return opts.Logtime },
+		},
+		// Debug
+		{
+			"debug_not_in_config_no_override",
+			"",
+			nil,
+			false,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_not_in_config_override_short_true",
+			"",
+			[]string{"-D"},
+			true,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_not_in_config_override_true",
+			"",
+			[]string{"-debug"},
+			true,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_false_in_config_no_override",
+			"debug: false",
+			nil,
+			false,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_false_in_config_override_short_true",
+			"debug: false",
+			[]string{"-D"},
+			true,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_false_in_config_override_true",
+			"debug: false",
+			[]string{"-debug"},
+			true,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_true_in_config_no_override",
+			"debug: true",
+			nil,
+			true,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_true_in_config_override_short_false",
+			"debug: true",
+			[]string{"-D=false"},
+			false,
+			func() bool { return opts.Debug },
+		},
+		{
+			"debug_true_in_config_override_false",
+			"debug: true",
+			[]string{"-debug=false"},
+			false,
+			func() bool { return opts.Debug },
+		},
+		// Trace
+		{
+			"trace_not_in_config_no_override",
+			"",
+			nil,
+			false,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_not_in_config_override_short_true",
+			"",
+			[]string{"-V"},
+			true,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_not_in_config_override_true",
+			"",
+			[]string{"-trace"},
+			true,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_false_in_config_no_override",
+			"trace: false",
+			nil,
+			false,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_false_in_config_override_short_true",
+			"trace: false",
+			[]string{"-V"},
+			true,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_false_in_config_override_true",
+			"trace: false",
+			[]string{"-trace"},
+			true,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_true_in_config_no_override",
+			"trace: true",
+			nil,
+			true,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_true_in_config_override_short_false",
+			"trace: true",
+			[]string{"-V=false"},
+			false,
+			func() bool { return opts.Trace },
+		},
+		{
+			"trace_true_in_config_override_false",
+			"trace: true",
+			[]string{"-trace=false"},
+			false,
+			func() bool { return opts.Trace },
+		},
+		// Syslog
+		{
+			"syslog_not_in_config_no_override",
+			"",
+			nil,
+			false,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_not_in_config_override_short_true",
+			"",
+			[]string{"-s"},
+			true,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_not_in_config_override_true",
+			"",
+			[]string{"-syslog"},
+			true,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_false_in_config_no_override",
+			"syslog: false",
+			nil,
+			false,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_false_in_config_override_short_true",
+			"syslog: false",
+			[]string{"-s"},
+			true,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_false_in_config_override_true",
+			"syslog: false",
+			[]string{"-syslog"},
+			true,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_true_in_config_no_override",
+			"syslog: true",
+			nil,
+			true,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_true_in_config_override_short_false",
+			"syslog: true",
+			[]string{"-s=false"},
+			false,
+			func() bool { return opts.Syslog },
+		},
+		{
+			"syslog_true_in_config_override_false",
+			"syslog: true",
+			[]string{"-syslog=false"},
+			false,
+			func() bool { return opts.Syslog },
+		},
+		// Cluster.NoAdvertise
+		{
+			"cluster_no_advertise_not_in_config_no_override",
+			`cluster {
+				port: -1
+			}`,
+			nil,
+			false,
+			func() bool { return opts.Cluster.NoAdvertise },
+		},
+		{
+			"cluster_no_advertise_not_in_config_override_true",
+			`cluster {
+				port: -1
+			}`,
+			[]string{"-no_advertise"},
+			true,
+			func() bool { return opts.Cluster.NoAdvertise },
+		},
+		{
+			"cluster_no_advertise_false_in_config_no_override",
+			`cluster {
+				port: -1
+				no_advertise: false
+			}`,
+			nil,
+			false,
+			func() bool { return opts.Cluster.NoAdvertise },
+		},
+		{
+			"cluster_no_advertise_false_in_config_override_true",
+			`cluster {
+				port: -1
+				no_advertise: false
+			}`,
+			[]string{"-no_advertise"},
+			true,
+			func() bool { return opts.Cluster.NoAdvertise },
+		},
+		{
+			"cluster_no_advertise_true_in_config_no_override",
+			`cluster {
+				port: -1
+				no_advertise: true
+			}`,
+			nil,
+			true,
+			func() bool { return opts.Cluster.NoAdvertise },
+		},
+		{
+			"cluster_no_advertise_true_in_config_override_false",
+			`cluster {
+				port: -1
+				no_advertise: true
+			}`,
+			[]string{"-no_advertise=false"},
+			false,
+			func() bool { return opts.Syslog },
+		},
+		// -DV override
+		{
+			"debug_trace_not_in_config_dv_override_true",
+			"",
+			[]string{"-DV"},
+			true,
+			func() bool { return opts.Debug && opts.Trace },
+		},
+		{
+			"debug_trace_false_in_config_dv_override_true",
+			`debug: false
+		     trace: false
+			`,
+			[]string{"-DV"},
+			true,
+			func() bool { return opts.Debug && opts.Trace },
+		},
+		{
+			"debug_trace_true_in_config_dv_override_false",
+			`debug: true
+		     trace: true
+			`,
+			[]string{"-DV=false"},
+			false,
+			func() bool { return opts.Debug && opts.Trace },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(template, test.content)))
+			defer os.Remove(conf)
 
-	if err := s.Reload(); err != nil {
-		t.Fatalf("Error on reload: %v", err)
-	}
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			var args []string
+			args = append(args, "-c", conf)
+			if test.cmdLine != nil {
+				args = append(args, test.cmdLine...)
+			}
+			opts, err = ConfigureOptions(fs, args, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Error processing config: %v", err)
+			}
+			opts.NoSigs = true
+			s := RunServer(opts)
+			defer s.Shutdown()
 
-	if s.getOpts().Logtime {
-		t.Fatal("Logtime should be set to false")
+			if test.val() != test.expected {
+				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
+			}
+			if err := s.Reload(); err != nil {
+				t.Fatalf("Error on reload: %v", err)
+			}
+			if test.val() != test.expected {
+				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
+			}
+		})
 	}
 }

@@ -143,6 +143,11 @@ type Options struct {
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
 
+	// private fields, used to know if bool options are explicitly
+	// defined in config and/or command line params.
+	inConfig  map[string]bool
+	inCmdLine map[string]bool
+
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
 }
@@ -340,10 +345,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.Host = v.(string)
 		case "debug":
 			o.Debug = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
 		case "trace":
 			o.Trace = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
 		case "logtime":
 			o.Logtime = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
 		case "accounts":
 			err := parseAccounts(tk, o, &errors, &warnings)
 			if err != nil {
@@ -424,6 +432,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.LogFile = v.(string)
 		case "syslog":
 			o.Syslog = v.(bool)
+			trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
 		case "remote_syslog":
 			o.RemoteSyslog = v.(string)
 		case "pidfile", "pid_file":
@@ -630,6 +639,15 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	return nil
 }
 
+func trackExplicitVal(opts *Options, pm *map[string]bool, name string, val bool) {
+	m := *pm
+	if m == nil {
+		m = make(map[string]bool)
+		*pm = m
+	}
+	m[name] = val
+}
+
 // hostPort is simple struct to hold parsed listen/addr strings.
 type hostPort struct {
 	host string
@@ -732,6 +750,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
+			trackExplicitVal(opts, &opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":
@@ -2190,12 +2209,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		showTLSHelp bool
 		signal      string
 		configFile  string
+		dbgAndTrace bool
 		err         error
 	)
 
-	// IMPORTANT: If you add boolean flags and use a 'true' as the default,
-	// check what needs to be done for FlagSnapshot down below.
-	// See logtimeIsExplicitlySet for reference.
 	fs.BoolVar(&showHelp, "h", false, "Show this message.")
 	fs.BoolVar(&showHelp, "help", false, "Show this message.")
 	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
@@ -2208,7 +2225,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
 	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	fs.Bool("DV", false, "Enable Debug and Trace logging.")
+	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -2247,7 +2264,6 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
-	// --- See comment on top of flags definition before adding a flag ---
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
@@ -2292,19 +2308,32 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	// Snapshot flag options.
 	FlagSnapshot = opts.Clone()
 
-	// Before parsing the config file, we need to know if boolean
-	// flags are explicitly set or not, and for those which default
-	// to `true`, we need to reset them otherwise config reload would
-	// incorrectly override what is in the config file.
-	logtimeIsExplicitlySet := false
+	// Keep track of the boolean flags that were explicitly set with their value.
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "logtime" {
-			logtimeIsExplicitlySet = true
+		switch f.Name {
+		case "DV":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
+		case "D":
+			fallthrough
+		case "debug":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
+		case "V":
+			fallthrough
+		case "trace":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", FlagSnapshot.Trace)
+		case "T":
+			fallthrough
+		case "logtime":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Logtime", FlagSnapshot.Logtime)
+		case "s":
+			fallthrough
+		case "syslog":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Syslog", FlagSnapshot.Syslog)
+		case "no_advertise":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Cluster.NoAdvertise", FlagSnapshot.Cluster.NoAdvertise)
 		}
 	})
-	if !logtimeIsExplicitlySet {
-		FlagSnapshot.Logtime = false
-	}
 
 	// Process signal control.
 	if signal != "" {
@@ -2371,8 +2400,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			switch f.Name {
 			case "DV":
 				// Check value to support -DV=false
-				boolValue, _ := strconv.ParseBool(f.Value.String())
-				opts.Trace, opts.Debug = boolValue, boolValue
+				opts.Trace, opts.Debug = dbgAndTrace, dbgAndTrace
 			case "cluster", "cluster_listen":
 				// Override cluster config if explicitly set via flags.
 				flagErr = overrideCluster(opts)
