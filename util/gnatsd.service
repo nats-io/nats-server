@@ -1,6 +1,6 @@
 [Unit]
 Description=NATS messaging server
-After=network.target
+After=network.target ntp.service
 
 [Service]
 PrivateTmp=true
