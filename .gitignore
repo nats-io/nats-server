@@ -37,10 +37,10 @@ _testmain.go
 
 # bin
 gnatsd
+/util/mkpasswd
 
 # coverage
 coverage.out
 
 # Cross compiled binaries
 pkg
-
