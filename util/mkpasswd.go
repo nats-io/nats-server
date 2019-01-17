@@ -28,7 +28,8 @@ import (
 )
 
 func usage() {
-	log.Fatalf("Usage: mkpasswd [-p <stdin password>] [-c COST] \n")
+	fmt.Printf("Usage: mkpasswd [-p <stdin password>] [-c COST] \n")
+	flag.PrintDefaults()
 }
 
 const (
@@ -36,13 +37,13 @@ const (
 	PasswordLength = 22
 	// Common advice from the past couple of years suggests that 10 should be sufficient.
 	// Up that a little, to 11. Feel free to raise this higher if this value from 2015 is
-	// no longer appropriate. Min is 4, Max is 31.
+	// no longer appropriate. Min is bcrypt.MinCost, Max is bcrypt.MaxCost.
 	DefaultCost = 11
 )
 
 func main() {
 	var pw = flag.Bool("p", false, "Input password via stdin")
-	var cost = flag.Int("c", DefaultCost, "The cost weight, range of 4-31 (11)")
+	var cost = flag.Int("c", DefaultCost, fmt.Sprintf("The cost weight, range of %d-%d", bcrypt.MinCost, bcrypt.MaxCost))
 
 	log.SetFlags(0)
 	flag.Usage = usage
