@@ -28,7 +28,12 @@ func TestParseSize(t *testing.T) {
 	}
 	n := []byte("12345678")
 	if pn := parseSize(n); pn != 12345678 {
-		t.Fatalf("Did not parse %q correctly, res=%d\n", n, pn)
+		t.Fatalf("Did not parse %q correctly, res=%d", n, pn)
+	}
+
+	n = []byte("12345invalid678")
+	if pn := parseSize(n); pn != -1 {
+		t.Fatalf("Should error on %q, res=%d", n, pn)
 	}
 }
 
@@ -38,7 +43,12 @@ func TestParseSInt64(t *testing.T) {
 	}
 	n := []byte("12345678")
 	if pn := parseInt64(n); pn != 12345678 {
-		t.Fatalf("Did not parse %q correctly, res=%d\n", n, pn)
+		t.Fatalf("Did not parse %q correctly, res=%d", n, pn)
+	}
+
+	n = []byte("12345invalid678")
+	if pn := parseInt64(n); pn != -1 {
+		t.Fatalf("Should error on %q, res=%d", n, pn)
 	}
 }
 
