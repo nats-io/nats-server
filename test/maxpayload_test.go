@@ -54,7 +54,7 @@ func TestMaxPayload(t *testing.T) {
 		t.Fatalf("Expected an info message to be sent by the server: %s", err)
 	}
 	pub := fmt.Sprintf("PUB bar %d\r\n", size)
-	conn.Write([]byte(pub))
+	_, err = conn.Write([]byte(pub))
 	if err != nil {
 		t.Fatalf("Could not publish event to the server: %s", err)
 	}
