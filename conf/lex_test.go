@@ -1030,6 +1030,49 @@ func TestKeyDanglingSingleQuotedString(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+var mapdanglingbracket = `
+listen = 4222
+
+cluster = {
+
+  foo = bar
+
+`
+
+func TestMapDanglingBracket(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "listen", 2, 1},
+		{itemInteger, "4222", 2, 10},
+		{itemKey, "cluster", 4, 1},
+		{itemMapStart, "", 4, 12},
+		{itemKey, "foo", 6, 3},
+		{itemString, "bar", 6, 9},
+		{itemError, "Unexpected EOF processing map.", 8, 1},
+	}
+	lx := lex(mapdanglingbracket)
+	expect(t, lx, expectedItems)
+}
+
+var blockdanglingparens = `
+listen = 4222
+
+quote = (
+
+  foo = bar
+
+`
+
+func TestBlockDanglingParens(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "listen", 2, 1},
+		{itemInteger, "4222", 2, 10},
+		{itemKey, "quote", 4, 1},
+		{itemError, "Unexpected EOF processing block.", 8, 1},
+	}
+	lx := lex(blockdanglingparens)
+	expect(t, lx, expectedItems)
+}
+
 func TestMapQuotedKeys(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1, 0},
