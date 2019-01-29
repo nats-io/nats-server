@@ -656,6 +656,8 @@ func lexMapKeyStart(lx *lexer) stateFn {
 	case r == dqStringStart:
 		lx.next()
 		return lexSkip(lx, lexMapDubQuotedKey)
+	case r == eof:
+		return lx.errorf("Unexpected EOF processing map.")
 	}
 	lx.ignore()
 	lx.next()
@@ -898,6 +900,8 @@ func lexBlock(lx *lexer) stateFn {
 			return lx.pop()
 		}
 		lx.backup()
+	case r == eof:
+		return lx.errorf("Unexpected EOF processing block.")
 	}
 	return lexBlock
 }
