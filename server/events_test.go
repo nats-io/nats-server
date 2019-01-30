@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1207,5 +1208,94 @@ func TestGatewayNameClientInfo(t *testing.T) {
 	}
 	if info.Cluster != "TEST CLUSTER 22" {
 		t.Fatalf("Expected a cluster name of 'TEST CLUSTER 22', got %q", info.Cluster)
+	}
+}
+
+type slowAccResolver struct {
+	sync.Mutex
+	AccountResolver
+	acc string
+}
+
+func (sr *slowAccResolver) Fetch(name string) (string, error) {
+	sr.Lock()
+	delay := sr.acc == name
+	sr.Unlock()
+	if delay {
+		time.Sleep(200 * time.Millisecond)
+	}
+	return sr.AccountResolver.Fetch(name)
+}
+
+func TestFetchAccountRace(t *testing.T) {
+	sa, oa, sb, ob, _ := runTrustedGateways(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	jwt, _ := nac.Encode(okp)
+	userAcc := pub
+
+	// Replace B's account resolver with one that introduces
+	// delay during the Fetch()
+	sb.mu.Lock()
+	sac := &slowAccResolver{AccountResolver: sb.accResolver}
+	sb.accResolver = sac
+	sb.mu.Unlock()
+
+	// Add the account in sa and sb
+	addAccountToMemResolver(sa, userAcc, jwt)
+	addAccountToMemResolver(sb, userAcc, jwt)
+
+	// Tell the slow account resolver which account to slow down
+	sac.Lock()
+	sac.acc = userAcc
+	sac.Unlock()
+
+	urlA := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+
+	nca, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+	if err != nil {
+		t.Fatalf("Error connecting to A: %v", err)
+	}
+	defer nca.Close()
+
+	// Since there is an optimistic send, this message will go to B
+	// and on processing this message, B will lookup/fetch this
+	// account, which can produce race with the fetch of this
+	// account from A's system account that sent a notification
+	// about this account, or with the client connect just after
+	// that.
+	nca.Publish("foo", []byte("hello"))
+
+	// Now connect and create a subscription on B
+	ncb, err := nats.Connect(urlB, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error connecting to A: %v", err)
+	}
+	defer ncb.Close()
+	sub, err := ncb.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Now send messages from A and B should ultimately start to receive
+	// them (once the subscription has been correctly registered)
+	ok := false
+	for i := 0; i < 10; i++ {
+		nca.Publish("foo", []byte("hello"))
+		if _, err := sub.NextMsg(100 * time.Millisecond); err != nil {
+			continue
+		}
+		ok = true
+		break
+	}
+	if !ok {
+		t.Fatalf("B should be able to receive messages")
 	}
 }
