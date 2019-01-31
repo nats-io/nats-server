@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -180,7 +180,7 @@ func TestParsePub(t *testing.T) {
 
 	pub := []byte("PUB foo 5\r\nhello\r")
 	err := c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -198,7 +198,7 @@ func TestParsePub(t *testing.T) {
 
 	pub = []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
@@ -209,6 +209,19 @@ func TestParsePub(t *testing.T) {
 	}
 	if c.pa.size != 11 {
 		t.Fatalf("Did not parse msg size correctly: 11 vs %d\n", c.pa.size)
+	}
+
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
+
+	// This is the case when data has more bytes than expected by size.
+	pub = []byte("PUB foo.bar 11\r\nhello world hello world\r")
+	err = c.parse(pub)
+	if err == nil {
+		t.Fatalf("Expected an error parsing longer than expected message body")
+	}
+	if c.msgBuf != nil {
+		t.Fatalf("Did not expect a c.msgBuf to be non-nil")
 	}
 }
 
@@ -326,7 +339,7 @@ func TestParseRouteMsg(t *testing.T) {
 	}
 	pub = []byte("RMSG $foo foo 5\r\nhello\r")
 	err = c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.account, []byte("$foo")) {
@@ -347,7 +360,7 @@ func TestParseRouteMsg(t *testing.T) {
 
 	pub = []byte("RMSG $G foo.bar INBOX.22 11\r\nhello world\r")
 	err = c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.account, []byte("$G")) {
@@ -368,7 +381,7 @@ func TestParseRouteMsg(t *testing.T) {
 
 	pub = []byte("RMSG $G foo.bar + reply baz 11\r\nhello world\r")
 	err = c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.account, []byte("$G")) {
@@ -392,7 +405,7 @@ func TestParseRouteMsg(t *testing.T) {
 
 	pub = []byte("RMSG $G foo.bar | baz 11\r\nhello world\r")
 	err = c.parse(pub)
-	if err != nil || c.state != MSG_END {
+	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.account, []byte("$G")) {
@@ -560,5 +573,16 @@ func TestParseOK(t *testing.T) {
 	err = c.parse(okProto[4:5])
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+}
+
+func TestMaxControlLine(t *testing.T) {
+	c := dummyClient()
+	c.srv.opts.MaxControlLine = 8
+
+	pub := []byte("PUB foo.bar 11\r")
+	err := c.parse(pub)
+	if err != ErrMaxControlLine {
+		t.Fatalf("Expected an error parsing longer than expected control line")
 	}
 }

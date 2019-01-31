@@ -160,8 +160,8 @@ func TestSplitBufferPubOp(t *testing.T) {
 	if err := c.parse(pub7); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if c.state != MSG_END {
-		t.Fatalf("Expected MSG_END state vs %d\n", c.state)
+	if c.state != MSG_END_N {
+		t.Fatalf("Expected MSG_END_N state vs %d\n", c.state)
 	}
 }
 
@@ -241,7 +241,7 @@ func TestSplitBufferPubOp5(t *testing.T) {
 	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 
-	// Splits need to be on MSG_END now too, so make sure we check that.
+	// Splits need to be on MSG_END_R now too, so make sure we check that.
 	// Split between \r and \n
 	pub := pubAll[:len(pubAll)-1]
 
@@ -512,7 +512,7 @@ func TestSplitBufferMsgOp(t *testing.T) {
 	if err := c.parse(msg8); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
-	if c.state != MSG_END {
-		t.Fatalf("Expected MSG_END state vs %d\n", c.state)
+	if c.state != MSG_END_N {
+		t.Fatalf("Expected MSG_END_N state vs %d\n", c.state)
 	}
 }
