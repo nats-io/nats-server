@@ -820,6 +820,19 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 // Lock should be held upon entry.
 func (s *Server) fetchAccount(name string) (*Account, error) {
 	if accClaims, claimJWT, err := s.fetchAccountClaims(name); accClaims != nil {
+		// We have released the lock during the low level fetch.
+		// Now that we are back under lock, check again if account
+		// is in the map or not. If it is, simply return it.
+		if acc := s.accounts[name]; acc != nil {
+			// Update with the new claims in case they are new.
+			// Following call will return ErrAccountResolverSameClaims
+			// if claims are the same.
+			err = s.updateAccountWithClaimJWT(acc, claimJWT)
+			if err != nil && err != ErrAccountResolverSameClaims {
+				return nil, err
+			}
+			return acc, nil
+		}
 		acc := s.buildInternalAccount(accClaims)
 		acc.claimJWT = claimJWT
 		s.registerAccount(acc)
