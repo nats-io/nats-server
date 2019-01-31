@@ -2,7 +2,9 @@ package conf
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -327,4 +329,98 @@ func TestIncludeVariablesWithChecks(t *testing.T) {
 	expectKeyVal(t, m, "ALICE_PASS", "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q", 2, 1)
 	expectKeyVal(t, m, "BOB_PASS", "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly", 3, 1)
 	expectKeyVal(t, m, "CAROL_PASS", "foo", 6, 3)
+}
+
+func TestIncludesJSONSyntax(t *testing.T) {
+	tmpdir, err := ioutil.TempDir("", "includes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	content := `
+        {
+          "debug": true,
+          "include": "simple.json",
+          "cluster": {
+            "include": "cluster.json"
+          }
+        }       
+        `
+	configFile := filepath.Join(tmpdir, "multiple.json")
+	if err := ioutil.WriteFile(configFile, []byte(content), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	content = `
+        {
+          "listen": "127.0.0.1:4223"
+        }       
+        `
+	include := filepath.Join(tmpdir, "simple.json")
+	if err := ioutil.WriteFile(include, []byte(content), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	content = `
+        {
+          "routes": [
+            "nats://nats-A:6222",
+            "nats://nats-C:6222",
+            "nats://nats-B:6222"
+          ]
+        }
+        `
+	include = filepath.Join(tmpdir, "cluster.json")
+	if err := ioutil.WriteFile(include, []byte(content), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseFile(configFile)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if m == nil {
+		t.Fatal("Received nil map")
+	}
+
+	ex := map[string]interface{}{
+		"listen": "127.0.0.1:4223",
+		"debug":  true,
+		"cluster": map[string]interface{}{
+			"routes": []interface{}{
+				"nats://nats-A:6222",
+				"nats://nats-C:6222",
+				"nats://nats-B:6222",
+			},
+		},
+	}
+	if !reflect.DeepEqual(m, ex) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
+	}
+
+	content = `
+        'debug': true
+
+        'include': 'simple.json'
+
+        'cluster': {
+          'include': 'cluster.json'
+        }
+        `
+	configFile = filepath.Join(tmpdir, "multiple.json")
+	if err := ioutil.WriteFile(configFile, []byte(content), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	m2, err := ParseFile(configFile)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if m2 == nil {
+		t.Fatal("Received nil map")
+	}
+	if !reflect.DeepEqual(m2, ex) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m2, ex)
+	}
 }
