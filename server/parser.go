@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -70,7 +70,8 @@ const (
 	OP_PON
 	OP_PONG
 	MSG_PAYLOAD
-	MSG_END
+	MSG_END_R
+	MSG_END_N
 	OP_S
 	OP_SU
 	OP_SUB
@@ -108,6 +109,7 @@ func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
 
+	// FIXME(dlc) - This is wasteful, only can change on reload.
 	mcl := MAX_CONTROL_LINE_SIZE
 	if c.srv != nil {
 		if opts := c.srv.getOpts(); opts != nil {
@@ -238,35 +240,34 @@ func (c *client) parse(buf []byte) error {
 					c.msgBuf = append(c.msgBuf, b)
 				}
 				if len(c.msgBuf) >= c.pa.size {
-					c.state = MSG_END
+					c.state = MSG_END_R
 				}
-			} else if i-c.as >= c.pa.size {
-				c.state = MSG_END
+			} else if i-c.as+1 >= c.pa.size {
+				c.state = MSG_END_R
 			}
-		case MSG_END:
-			switch b {
-			case '\n':
-				if c.msgBuf != nil {
-					c.msgBuf = append(c.msgBuf, b)
-				} else {
-					c.msgBuf = buf[c.as : i+1]
-				}
-				// strict check for proto
-				if len(c.msgBuf) != c.pa.size+LEN_CR_LF {
-					goto parseErr
-				}
-				c.processInboundMsg(c.msgBuf)
-				c.argBuf, c.msgBuf = nil, nil
-				c.drop, c.as, c.state = 0, i+1, OP_START
-				// Drop all pub args
-				c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
-				c.pa.reply, c.pa.szb, c.pa.queues = nil, nil, nil
-			default:
-				if c.msgBuf != nil {
-					c.msgBuf = append(c.msgBuf, b)
-				}
-				continue
+		case MSG_END_R:
+			if b != '\r' {
+				goto parseErr
 			}
+			if c.msgBuf != nil {
+				c.msgBuf = append(c.msgBuf, b)
+			}
+			c.state = MSG_END_N
+		case MSG_END_N:
+			if b != '\n' {
+				goto parseErr
+			}
+			if c.msgBuf != nil {
+				c.msgBuf = append(c.msgBuf, b)
+			} else {
+				c.msgBuf = buf[c.as : i+1]
+			}
+			c.processInboundMsg(c.msgBuf)
+			c.argBuf, c.msgBuf = nil, nil
+			c.drop, c.as, c.state = 0, i+1, OP_START
+			// Drop all pub args
+			c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
+			c.pa.reply, c.pa.szb, c.pa.queues = nil, nil, nil
 		case OP_A:
 			switch b {
 			case '+':
@@ -660,7 +661,7 @@ func (c *client) parse(buf []byte) error {
 				// jump ahead with the index. If this overruns
 				// what is left we fall out and process split
 				// buffer.
-				i = c.as + c.pa.size - 1
+				i = c.as + c.pa.size - LEN_CR_LF
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
@@ -816,7 +817,7 @@ func (c *client) parse(buf []byte) error {
 	}
 
 	// Check for split msg
-	if (c.state == MSG_PAYLOAD || c.state == MSG_END) && c.msgBuf == nil {
+	if (c.state == MSG_PAYLOAD || c.state == MSG_END_R || c.state == MSG_END_N) && c.msgBuf == nil {
 		// We need to clone the pubArg if it is still referencing the
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
