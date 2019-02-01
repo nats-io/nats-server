@@ -1192,3 +1192,40 @@ func TestClientTraceRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestClientUserInfo(t *testing.T) {
+	pnkey := "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
+	c := &client{
+		cid: 1024,
+		opts: clientOpts{
+			Nkey: pnkey,
+		},
+	}
+	got := c.getAuthUser()
+	expected := `Nkey "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"`
+	if got != expected {
+		t.Errorf("Expected %q, got %q", expected, got)
+	}
+
+	c = &client{
+		cid: 1024,
+		opts: clientOpts{
+			Username: "foo",
+		},
+	}
+	got = c.getAuthUser()
+	expected = `User "foo"`
+	if got != expected {
+		t.Errorf("Expected %q, got %q", expected, got)
+	}
+
+	c = &client{
+		cid:  1024,
+		opts: clientOpts{},
+	}
+	got = c.getAuthUser()
+	expected = `User "N/A"`
+	if got != expected {
+		t.Errorf("Expected %q, got %q", expected, got)
+	}
+}
