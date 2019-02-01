@@ -547,7 +547,7 @@ func lexValue(lx *lexer) stateFn {
 		return lexBlock
 	case unicode.IsDigit(r):
 		lx.backup() // avoid an extra state and use the same as above
-		return lexNumberOrDateOrIPStart
+		return lexNumberOrDateOrStringOrIPStart
 	case r == '.': // special error case, be kind to users
 		return lx.errorf("Floats must start with a digit")
 	case isNL(r):
@@ -948,9 +948,11 @@ func lexStringBinary(lx *lexer) stateFn {
 	return lx.stringStateFn
 }
 
-// lexNumberOrDateStart consumes either a (positive) integer, a float, a datetime, or IP.
-// It assumes that NO negative sign has been consumed, that is triggered above.
-func lexNumberOrDateOrIPStart(lx *lexer) stateFn {
+// lexNumberOrDateOrStringOrIPStart consumes either a (positive)
+// integer, a float, a datetime, or IP, or String that started with a
+// number.  It assumes that NO negative sign has been consumed, that
+// is triggered above.
+func lexNumberOrDateOrStringOrIPStart(lx *lexer) stateFn {
 	r := lx.next()
 	if !unicode.IsDigit(r) {
 		if r == '.' {
@@ -958,11 +960,13 @@ func lexNumberOrDateOrIPStart(lx *lexer) stateFn {
 		}
 		return lx.errorf("Expected a digit but got '%v'.", r)
 	}
-	return lexNumberOrDateOrIP
+	return lexNumberOrDateOrStringOrIP
 }
 
-// lexNumberOrDateOrIP consumes either a (positive) integer, float, datetime or IP.
-func lexNumberOrDateOrIP(lx *lexer) stateFn {
+// lexNumberOrDateOrStringOrIP consumes either a (positive) integer,
+// float, datetime, IP or string without quotes that starts with a
+// number.
+func lexNumberOrDateOrStringOrIP(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
 	case r == '-':
@@ -971,13 +975,17 @@ func lexNumberOrDateOrIP(lx *lexer) stateFn {
 		}
 		return lexDateAfterYear
 	case unicode.IsDigit(r):
-		return lexNumberOrDateOrIP
+		return lexNumberOrDateOrStringOrIP
 	case r == '.':
-		return lexFloatStart // Assume float at first, but could be IP
+		// Assume float at first, but could be IP
+		return lexFloatStart
 	case isNumberSuffix(r):
 		return lexConvenientNumber
+	case !(isNL(r) || r == eof || r == mapEnd || r == optValTerm || r == mapValTerm || isWhitespace(r) || unicode.IsDigit(r)):
+		// Treat it as a string value once we get a rune that
+		// is not a number.
+		return lexString
 	}
-
 	lx.backup()
 	lx.emit(itemInteger)
 	return lx.pop()
