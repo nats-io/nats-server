@@ -1541,8 +1541,8 @@ func (c *client) processSub(argo []byte) (err error) {
 	} else if kind == CLIENT && !c.canSubscribe(string(sub.subject)) {
 		c.mu.Unlock()
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		c.Errorf("Subscription Violation - User %q, Subject %q, SID %s",
-			c.opts.Username, sub.subject, sub.sid)
+		c.Errorf("Subscription Violation - %s, Subject %q, SID %s",
+			c.getAuthUser(), sub.subject, sub.sid)
 		return nil
 	}
 
@@ -2455,12 +2455,12 @@ sendToRoutes:
 
 func (c *client) pubPermissionViolation(subject []byte) {
 	c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subject))
-	c.Errorf("Publish Violation - User %q, Subject %q", c.opts.Username, subject)
+	c.Errorf("Publish Violation - %s, Subject %q", c.getAuthUser(), subject)
 }
 
 func (c *client) replySubjectViolation(reply []byte) {
 	c.sendErr(fmt.Sprintf("Permissions Violation for Publish with Reply of %q", reply))
-	c.Errorf("Publish Violation - User %q, Reply %q", c.opts.Username, reply)
+	c.Errorf("Publish Violation - %s, Reply %q", c.getAuthUser(), reply)
 }
 
 func (c *client) processPingTimer() {
@@ -2610,14 +2610,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 		_removed [32]*subscription
 		removed  = _removed[:0]
 		srv      = c.srv
-		userInfo = c.opts.Nkey
 	)
-	if userInfo == "" {
-		userInfo = c.opts.Username
-		if userInfo == "" {
-			userInfo = fmt.Sprintf("%v", c.cid)
-		}
-	}
 	if checkAcc {
 		// We actually only want to check if stream imports have changed.
 		if _, ok := awcsti[acc.Name]; !ok {
@@ -2656,8 +2649,8 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 		c.unsubscribe(acc, sub, true)
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
-		srv.Noticef("Removed sub %q (sid %q) for user %q - not authorized",
-			sub.subject, sub.sid, userInfo)
+		srv.Noticef("Removed sub %q (sid %q) for %s - not authorized",
+			sub.subject, sub.sid, c.getAuthUser())
 	}
 }
 
@@ -2898,6 +2891,18 @@ func (c *client) prunePerAccountCache() {
 		if n++; n > prunePerAccountCacheSize {
 			break
 		}
+	}
+}
+
+// getAuthUser returns the auth user for the client.
+func (c *client) getAuthUser() string {
+	switch {
+	case c.opts.Nkey != "":
+		return fmt.Sprintf("Nkey %q", c.opts.Nkey)
+	case c.opts.Username != "":
+		return fmt.Sprintf("User %q", c.opts.Username)
+	default:
+		return `User "N/A"`
 	}
 }
 
