@@ -202,6 +202,7 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	pm  int64         // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
+	sgw bool          // Indicate flusher is waiting on condition wait.
 	wdl time.Duration // Snapshot fo write deadline.
 	mp  int64         // snapshot of max pending.
 	fsp int           // Flush signals that are pending from readLoop's pcd.
@@ -631,7 +632,9 @@ func (c *client) writeLoop() {
 		c.mu.Lock()
 		if waitOk && (c.out.pb == 0 || c.out.fsp > 0) && len(c.out.nb) == 0 && !c.flags.isSet(clearConnection) {
 			// Wait on pending data.
+			c.out.sgw = true
 			c.out.sg.Wait()
+			c.out.sgw = false
 		}
 		// Flush data
 		waitOk = c.flushOutbound()
@@ -917,13 +920,21 @@ func (c *client) flushOutbound() bool {
 		}
 	}
 
+	// Check that if there is still data to send and writeLoop is in wait,
+	// we need to signal
+	if c.out.pb > 0 && c.out.sgw {
+		c.out.sg.Signal()
+	}
+
 	return true
 }
 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
 func (c *client) flushSignal() {
-	c.out.sg.Signal()
+	if c.out.sgw {
+		c.out.sg.Signal()
+	}
 }
 
 func (c *client) traceMsg(msg []byte) {

@@ -1022,3 +1022,66 @@ func TestGetRandomIP(t *testing.T) {
 		}
 	}
 }
+
+type slowWriteConn struct {
+	net.Conn
+}
+
+func (swc *slowWriteConn) Write(b []byte) (int, error) {
+	// Limit the write to 10 bytes at a time.
+	max := len(b)
+	if max > 10 {
+		max = 10
+	}
+	return swc.Conn.Write(b[:max])
+}
+
+func TestClientWriteLoopStall(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	errCh := make(chan error, 1)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url,
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+			select {
+			case errCh <- e:
+			default:
+			}
+		}))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	cid, _ := nc.GetClientID()
+
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	c := s.getClient(cid)
+	c.mu.Lock()
+	c.nc = &slowWriteConn{Conn: c.nc}
+	c.mu.Unlock()
+
+	sender.Publish("foo", make([]byte, 100))
+
+	if _, err := sub.NextMsg(3 * time.Second); err != nil {
+		t.Fatalf("WriteLoop has stalled!")
+	}
+
+	// Make sure that we did not get any async error
+	select {
+	case e := <-errCh:
+		t.Fatalf("Got error: %v", e)
+	case <-time.After(250 * time.Millisecond):
+	}
+}
