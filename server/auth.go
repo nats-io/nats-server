@@ -144,6 +144,12 @@ func (s *Server) checkAuthforWarnings() {
 		warn = true
 	}
 	for _, u := range s.users {
+		// Skip warn if using TLS certs based auth
+		// unless a password has been left in the config.
+		if u.Password == "" && s.opts.TLSMap {
+			continue
+		}
+
 		if !isBcrypt(u.Password) {
 			warn = true
 			break
@@ -319,24 +325,37 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			if len(tlsState.PeerCertificates) > 1 {
 				c.Debugf("Multiple peer certificates found, selecting first")
 			}
-			if len(cert.EmailAddresses) == 0 {
+
+			hasEmailAddresses := len(cert.EmailAddresses) > 0
+			hasSubject := len(cert.Subject.String()) > 0
+			if !hasEmailAddresses && !hasSubject {
 				c.Debugf("User required in cert, none found")
 				s.mu.Unlock()
 				return false
 			}
-			euser := cert.EmailAddresses[0]
+
+			var euser string
+			if hasEmailAddresses {
+				euser = cert.EmailAddresses[0]
+				if len(cert.EmailAddresses) > 1 {
+					c.Debugf("Multiple users found in cert, selecting first [%q]", euser)
+				}
+			} else {
+				euser = cert.Subject.String()
+			}
 			user, ok = s.users[euser]
 			if !ok {
 				c.Debugf("User in cert [%q], not found", euser)
 				s.mu.Unlock()
 				return false
 			}
-			if len(cert.EmailAddresses) > 1 {
-				c.Debugf("Multiple users found in cert, selecting first [%q]", euser)
-			}
+
 			if c.opts.Username != "" {
 				s.Warnf("User found in connect proto, but user required from cert - %v", c)
 			}
+			// Already checked that the client didn't send a user in connect
+			// but we set it here to be able to identify it in the logs.
+			c.opts.Username = euser
 		} else if c.opts.Username != "" {
 			user, ok = s.users[c.opts.Username]
 			if !ok {
