@@ -109,17 +109,14 @@ func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
 
-	// FIXME(dlc) - This is wasteful, only can change on reload.
-	mcl := MAX_CONTROL_LINE_SIZE
-	if c.srv != nil {
-		if opts := c.srv.getOpts(); opts != nil {
-			mcl = opts.MaxControlLine
-		}
-	}
-
-	// Snapshot this, and reset when we receive a
+	// Snapshots
+	c.mu.Lock()
+	// Snapshot and then reset when we receive a
 	// proper CONNECT if needed.
 	authSet := c.awaitingAuth()
+	// Snapshot max control line as well.
+	mcl := c.mcl
+	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
 	for i = 0; i < len(buf); i++ {
@@ -606,7 +603,9 @@ func (c *client) parse(buf []byte) error {
 				}
 				c.drop, c.state = 0, OP_START
 				// Reset notion on authSet
+				c.mu.Lock()
 				authSet = c.awaitingAuth()
+				c.mu.Unlock()
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)

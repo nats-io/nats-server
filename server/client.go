@@ -146,6 +146,7 @@ type client struct {
 	stats
 	mpay   int32
 	msubs  int
+	mcl    int
 	mu     sync.Mutex
 	kind   int
 	cid    uint64
@@ -199,14 +200,14 @@ type outbound struct {
 	nb  net.Buffers   // net.Buffers for writev IO
 	sz  int           // limit size per []byte, uses variable BufSize constants, start, min, max.
 	sws int           // Number of short writes, used for dynamic resizing.
-	pb  int64         // Total pending/queued bytes.
-	pm  int64         // Total pending/queued messages.
+	pb  int           // Total pending/queued bytes.
+	pm  int           // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
-	sgw bool          // Indicate flusher is waiting on condition wait.
 	wdl time.Duration // Snapshot fo write deadline.
-	mp  int64         // snapshot of max pending.
+	mp  int           // snapshot of max pending.
 	fsp int           // Flush signals that are pending from readLoop's pcd.
 	lft time.Duration // Last flush time.
+	sgw bool          // Indicate flusher is waiting on condition wait.
 }
 
 type perm struct {
@@ -353,7 +354,7 @@ func (c *client) initClient() {
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
-	c.out.mp = opts.MaxPending
+	c.out.mp = int(opts.MaxPending)
 
 	c.subs = make(map[string]*subscription)
 	c.echo = true
@@ -656,6 +657,15 @@ func (c *client) readLoop() {
 	nc := c.nc
 	s := c.srv
 	c.in.rsz = startBufSize
+	// Snapshot max control line since currently can not be changed on reload and we
+	// were checking it on each call to parse. If this changes and we allow MaxControlLine
+	// to be reloaded without restart, this code will need to change.
+	c.mcl = MAX_CONTROL_LINE_SIZE
+	if s != nil {
+		if opts := s.getOpts(); opts != nil {
+			c.mcl = opts.MaxControlLine
+		}
+	}
 	defer s.grWG.Done()
 	c.mu.Unlock()
 
@@ -845,11 +855,11 @@ func (c *client) flushOutbound() bool {
 	c.out.lft = lft
 
 	// Subtract from pending bytes and messages.
-	c.out.pb -= n
+	c.out.pb -= int(n)
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate.
 
 	// Check for partial writes
-	if n != attempted && n > 0 {
+	if n != int64(attempted) && n > 0 {
 		c.handlePartialWrite(nb)
 	} else if n >= int64(c.out.sz) {
 		c.out.sws = 0
@@ -892,10 +902,10 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Adjust based on what we wrote plus any pending.
-	pt := int(n + c.out.pb)
+	pt := int(n) + c.out.pb
 
 	// Adjust sz as needed downward, keeping power of 2.
-	// We do this at a slower rate, hence the pt*4.
+	// We do this at a slower rate.
 	if pt < c.out.sz && c.out.sz > minBufSize {
 		c.out.sws++
 		if c.out.sws > shortsToShrink {
@@ -1234,7 +1244,7 @@ func (c *client) queueOutbound(data []byte) bool {
 	// Assume data will not be referenced
 	referenced := false
 	// Add to pending bytes total.
-	c.out.pb += int64(len(data))
+	c.out.pb += len(data)
 
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
@@ -2540,11 +2550,9 @@ func (c *client) clearAuthTimer() bool {
 
 // We may reuse atmr for expiring user jwts,
 // so check connectReceived.
+// Lock assume held on entry.
 func (c *client) awaitingAuth() bool {
-	c.mu.Lock()
-	authSet := !c.flags.isSet(connectReceived) && c.atmr != nil
-	c.mu.Unlock()
-	return authSet
+	return !c.flags.isSet(connectReceived) && c.atmr != nil
 }
 
 // This will set the atmr for the JWT expiration time.
