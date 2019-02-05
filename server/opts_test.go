@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1706,5 +1706,33 @@ func TestParsingGatewaysErrors(t *testing.T) {
 				t.Fatalf("Expected error containing %q, got %q, for content:\n%s\n", test.expectedErr, err, test.content)
 			}
 		})
+	}
+}
+
+func TestLargeMaxControlLine(t *testing.T) {
+	confFileName := "big_mcl.conf"
+	defer os.Remove(confFileName)
+	content := `
+    max_control_line = 3000000000
+    `
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if _, err := ProcessConfigFile(confFileName); err == nil {
+		t.Fatalf("Expected an error from too large of a max_control_line entry")
+	}
+}
+
+func TestLargeMaxPayload(t *testing.T) {
+	confFileName := "big_mp.conf"
+	defer os.Remove(confFileName)
+	content := `
+    max_payload = 3000000000
+    `
+	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config file: %v", err)
+	}
+	if _, err := ProcessConfigFile(confFileName); err == nil {
+		t.Fatalf("Expected an error from too large of a max_payload entry")
 	}
 }

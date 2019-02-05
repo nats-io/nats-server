@@ -30,7 +30,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 	}
 	s := &Server{gacc: NewAccount(globalAccountName), accounts: make(map[string]*Account), gateway: gws}
 	s.registerAccount(s.gacc)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, subs: make(map[string]*subscription), nc: cli}
+	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -67,7 +67,7 @@ func TestSplitBufferSubOp(t *testing.T) {
 func TestSplitBufferUnsubOp(t *testing.T) {
 	s := &Server{gacc: NewAccount(globalAccountName), accounts: make(map[string]*Account), gateway: &srvGateway{}}
 	s.registerAccount(s.gacc)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 
 	subop := []byte("SUB foo 1024\r\n")
 	if err := c.parse(subop); err != nil {
@@ -100,7 +100,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	pub1 := pub[:2]
 	pub2 := pub[2:9]
@@ -166,7 +166,7 @@ func TestSplitBufferPubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp2(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
 	pub1 := pub[:30]
 	pub2 := pub[30:]
@@ -186,7 +186,7 @@ func TestSplitBufferPubOp2(t *testing.T) {
 }
 
 func TestSplitBufferPubOp3(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
 	pub := pubAll[:16]
 
@@ -212,7 +212,7 @@ func TestSplitBufferPubOp3(t *testing.T) {
 }
 
 func TestSplitBufferPubOp4(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 	pub := pubAll[:12]
 
@@ -238,7 +238,7 @@ func TestSplitBufferPubOp4(t *testing.T) {
 }
 
 func TestSplitBufferPubOp5(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 
 	// Splits need to be on MSG_END_R now too, so make sure we check that.
@@ -257,7 +257,7 @@ func TestSplitBufferPubOp5(t *testing.T) {
 }
 
 func TestSplitConnectArg(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 	connectAll := []byte("CONNECT {\"verbose\":false,\"tls_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 
@@ -306,7 +306,7 @@ func TestSplitConnectArg(t *testing.T) {
 
 func TestSplitDanglingArgBuf(t *testing.T) {
 	s := New(&defaultServerOptions)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, subs: make(map[string]*subscription)}
+	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 
 	// We test to make sure we do not dangle any argBufs after processing
 	// since that could lead to performance issues.
@@ -445,7 +445,7 @@ func TestSplitRoutedMsgArg(t *testing.T) {
 }
 
 func TestSplitBufferMsgOp(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER}
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), kind: ROUTER}
 	msg := []byte("RMSG $G foo.bar _INBOX.22 11\r\nhello world\r")
 	msg1 := msg[:2]
 	msg2 := msg[2:9]

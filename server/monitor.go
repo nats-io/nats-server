@@ -1,4 +1,4 @@
-// Copyright 2013-2018 The NATS Authors
+// Copyright 2013-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -384,7 +384,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	}
 
 	if client.port != 0 {
-		ci.Port = client.port
+		ci.Port = int(client.port)
 		ci.IP = client.host
 	}
 }
@@ -920,7 +920,7 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	v := &Varz{Info: &s.info, Options: opts, MaxPayload: opts.MaxPayload, Start: s.start}
+	v := &Varz{Info: &s.info, Options: opts, MaxPayload: int(opts.MaxPayload), Start: s.start}
 	v.Now = time.Now()
 	v.Uptime = myUptime(time.Since(s.start))
 	v.Port = v.Info.Port

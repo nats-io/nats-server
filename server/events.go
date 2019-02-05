@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -632,12 +632,12 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 	// If we are here we have interest in tracking this account. Update our accounting.
 	acc.mu.Lock()
 	if acc.strack == nil {
-		acc.strack = make(map[string]int)
+		acc.strack = make(map[string]int32)
 	}
 	// This does not depend on receiving all updates since each one is idempotent.
 	prev := acc.strack[m.Server.ID]
-	acc.strack[m.Server.ID] = m.Conns
-	acc.nrclients += (m.Conns - prev)
+	acc.strack[m.Server.ID] = int32(m.Conns)
+	acc.nrclients += int32(m.Conns) - prev
 	acc.mu.Unlock()
 
 	s.updateRemoteServer(&m.Server)

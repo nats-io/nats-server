@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -60,7 +60,7 @@ type Info struct {
 	AuthRequired      bool     `json:"auth_required,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
-	MaxPayload        int      `json:"max_payload"`
+	MaxPayload        int32    `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	Nonce             string   `json:"nonce,omitempty"`
@@ -1375,7 +1375,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	opts := s.getOpts()
 
 	maxPay := int32(opts.MaxPayload)
-	maxSubs := opts.MaxSubs
+	maxSubs := int32(opts.MaxSubs)
 	// For system, maxSubs of 0 means unlimited, so re-adjust here.
 	if maxSubs == 0 {
 		maxSubs = -1
