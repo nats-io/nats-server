@@ -808,7 +808,7 @@ func (c *client) parse(buf []byte) error {
 		// Check for violations of control line length here. Note that this is not
 		// exact at all but the performance hit is too great to be precise, and
 		// catching here should prevent memory exhaustion attacks.
-		if len(c.argBuf) > mcl {
+		if len(c.argBuf) > int(mcl) {
 			c.sendErr("Maximum Control Line Exceeded")
 			c.closeConnection(MaxControlLineExceeded)
 			return ErrMaxControlLine

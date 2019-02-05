@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -105,8 +105,8 @@ type Options struct {
 	HTTPPort         int           `json:"http_port"`
 	HTTPSPort        int           `json:"https_port"`
 	AuthTimeout      float64       `json:"auth_timeout"`
-	MaxControlLine   int           `json:"max_control_line"`
-	MaxPayload       int           `json:"max_payload"`
+	MaxControlLine   int32         `json:"max_control_line"`
+	MaxPayload       int32         `json:"max_payload"`
 	MaxPending       int64         `json:"max_pending"`
 	Cluster          ClusterOpts   `json:"cluster,omitempty"`
 	Gateway          GatewayOpts   `json:"gateway,omitempty"`
@@ -442,9 +442,19 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "prof_port":
 			o.ProfPort = int(v.(int64))
 		case "max_control_line":
-			o.MaxControlLine = int(v.(int64))
+			if v.(int64) > 1<<31-1 {
+				err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+				errors = append(errors, err)
+				continue
+			}
+			o.MaxControlLine = int32(v.(int64))
 		case "max_payload":
-			o.MaxPayload = int(v.(int64))
+			if v.(int64) > 1<<31-1 {
+				err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+				errors = append(errors, err)
+				continue
+			}
+			o.MaxPayload = int32(v.(int64))
 		case "max_pending":
 			o.MaxPending = v.(int64)
 		case "max_connections", "max_conn":

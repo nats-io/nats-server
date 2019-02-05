@@ -1,4 +1,4 @@
-// Copyright 2017-2018 The NATS Authors
+// Copyright 2017-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -399,7 +399,7 @@ func (p *portsFileDirOption) Apply(server *Server) {
 // `max_control_line` setting.
 type maxControlLineOption struct {
 	noopOption
-	newValue int
+	newValue int32
 }
 
 // Apply is a no-op because the max control line will be reloaded after options
@@ -412,7 +412,7 @@ func (m *maxControlLineOption) Apply(server *Server) {
 // setting.
 type maxPayloadOption struct {
 	noopOption
-	newValue int
+	newValue int32
 }
 
 // Apply the setting by updating the server info and each client.
@@ -661,9 +661,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "portsfiledir":
 			diffOpts = append(diffOpts, &portsFileDirOption{newValue: newValue.(string), oldValue: oldValue.(string)})
 		case "maxcontrolline":
-			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int)})
+			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int32)})
 		case "maxpayload":
-			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int)})
+			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int32)})
 		case "pinginterval":
 			diffOpts = append(diffOpts, &pingIntervalOption{newValue: newValue.(time.Duration)})
 		case "maxpingsout":

@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -34,7 +34,7 @@ const globalAccountName = "$G"
 // Route Map Entry - used for efficient interest graph propagation.
 // TODO(dlc) - squeeze even more?
 type rme struct {
-	qi int   // used to index into key from map for optional queue name
+	qi int32 // used to index into key from map for optional queue name
 	n  int32 // number of subscriptions directly matching, local subs only.
 }
 
@@ -50,15 +50,15 @@ type Account struct {
 	sl         *Sublist
 	etmr       *time.Timer
 	ctmr       *time.Timer
-	strack     map[string]int
-	nrclients  int
-	sysclients int
+	strack     map[string]int32
+	nrclients  int32
+	sysclients int32
 	clients    map[*client]*client
 	rm         map[string]*rme
 	imports    importMap
 	exports    exportMap
 	limits
-	nae     int
+	nae     int32
 	pruning bool
 	expired bool
 	srv     *Server // server this account is registered with (possibly nil)
@@ -67,9 +67,9 @@ type Account struct {
 // Account based limits.
 type limits struct {
 	mpay     int32
-	msubs    int
-	mconns   int
-	maxnae   int
+	msubs    int32
+	mconns   int32
+	maxnae   int32
 	maxaettl time.Duration
 }
 
@@ -137,7 +137,7 @@ func (a *Account) shallowCopy() *Account {
 func (a *Account) NumConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return len(a.clients) + a.nrclients
+	return len(a.clients) + int(a.nrclients)
 }
 
 // NumLocalClients returns active number of clients for this account
@@ -150,7 +150,7 @@ func (a *Account) NumLocalConnections() int {
 
 // Do not account for the system accounts.
 func (a *Account) numLocalConnections() int {
-	return len(a.clients) - a.sysclients
+	return len(a.clients) - int(a.sysclients)
 }
 
 // MaxClientsReached returns if we have reached our limit for number of connections.
@@ -162,7 +162,7 @@ func (a *Account) MaxTotalConnectionsReached() bool {
 
 func (a *Account) maxTotalConnectionsReached() bool {
 	if a.mconns != jwt.NoLimit {
-		return len(a.clients)-a.sysclients+a.nrclients >= a.mconns
+		return len(a.clients)-int(a.sysclients)+int(a.nrclients) >= int(a.mconns)
 	}
 	return false
 }
@@ -172,7 +172,7 @@ func (a *Account) maxTotalConnectionsReached() bool {
 func (a *Account) MaxActiveConnections() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.mconns
+	return int(a.mconns)
 }
 
 // RoutedSubs returns how many subjects we would send across a route when first
@@ -315,7 +315,7 @@ func (a *Account) removeServiceImport(subject string) {
 func (a *Account) numAutoExpireResponseMaps() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.nae
+	return int(a.nae)
 }
 
 // MaxAutoExpireResponseMaps return the maximum number of
@@ -323,14 +323,14 @@ func (a *Account) numAutoExpireResponseMaps() int {
 func (a *Account) MaxAutoExpireResponseMaps() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.maxnae
+	return int(a.maxnae)
 }
 
 // SetMaxAutoExpireResponseMaps sets the max outstanding auto expire response maps.
 func (a *Account) SetMaxAutoExpireResponseMaps(max int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.maxnae = max
+	a.maxnae = int32(max)
 }
 
 // AutoExpireTTL returns the ttl for response maps.
@@ -415,7 +415,7 @@ func (a *Account) pruneAutoExpireResponseMaps() {
 		}
 
 		a.mu.RLock()
-		numOver := a.nae - a.maxnae
+		numOver := int(a.nae - a.maxnae)
 		a.mu.RUnlock()
 
 		if numOver <= 0 {
@@ -931,9 +931,9 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 
 	// Now do limits if they are present.
-	a.msubs = int(ac.Limits.Subs)
+	a.msubs = int32(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
-	a.mconns = int(ac.Limits.Conn)
+	a.mconns = int32(ac.Limits.Conn)
 
 	clients := gatherClients()
 	// Sort if we are over the limit.
@@ -943,7 +943,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		})
 	}
 	for i, c := range clients {
-		if a.mconns != jwt.NoLimit && i >= a.mconns {
+		if a.mconns != jwt.NoLimit && i >= int(a.mconns) {
 			c.maxAccountConnExceeded()
 			continue
 		}

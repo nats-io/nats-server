@@ -1,4 +1,4 @@
-// Copyright 2013-2018 The NATS Authors
+// Copyright 2013-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -238,7 +238,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += len(msg) - LEN_CR_LF
+	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	if c.trace {
 		c.traceMsg(msg)
@@ -1268,14 +1268,14 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	var (
 		_rkey [1024]byte
 		key   []byte
-		qi    int
+		qi    int32
 	)
 	if sub.queue != nil {
 		// Just make the key subject spc group, e.g. 'foo bar'
 		key = _rkey[:0]
 		key = append(key, sub.subject...)
 		key = append(key, byte(' '))
-		qi = len(key)
+		qi = int32(len(key))
 		key = append(key, sub.queue...)
 	} else {
 		key = sub.subject

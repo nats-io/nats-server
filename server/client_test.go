@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -966,8 +966,8 @@ func TestDynamicBuffers(t *testing.T) {
 	}
 
 	// Create some helper functions and data structures.
-	done := make(chan bool)          // Used to stop recording.
-	type maxv struct{ rsz, wsz int } // Used to hold max values.
+	done := make(chan bool)            // Used to stop recording.
+	type maxv struct{ rsz, wsz int32 } // Used to hold max values.
 	results := make(chan maxv)
 
 	// stopRecording stops the recording ticker and releases go routine.
@@ -976,14 +976,14 @@ func TestDynamicBuffers(t *testing.T) {
 		return <-results
 	}
 	// max just grabs max values.
-	max := func(a, b int) int {
+	max := func(a, b int32) int32 {
 		if a > b {
 			return a
 		}
 		return b
 	}
 	// Returns current value of the buffer sizes.
-	getBufferSizes := func() (int, int) {
+	getBufferSizes := func() (int32, int32) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return c.in.rsz, c.out.sz
@@ -1013,7 +1013,7 @@ func TestDynamicBuffers(t *testing.T) {
 		}
 	}
 	// Check that the current value is what we expected.
-	checkBuffers := func(ers, ews int) {
+	checkBuffers := func(ers, ews int32) {
 		t.Helper()
 		rsz, wsz := getBufferSizes()
 		if rsz != ers {
@@ -1025,7 +1025,7 @@ func TestDynamicBuffers(t *testing.T) {
 	}
 
 	// Check that the max was as expected.
-	checkResults := func(m maxv, rsz, wsz int) {
+	checkResults := func(m maxv, rsz, wsz int32) {
 		t.Helper()
 		if rsz != m.rsz {
 			t.Fatalf("Expected read buffer of %d, but got %d\n", rsz, m.rsz)

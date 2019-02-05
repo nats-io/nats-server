@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -145,8 +145,8 @@ type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
 	mpay   int32
-	msubs  int
-	mcl    int
+	msubs  int32
+	mcl    int32
 	mu     sync.Mutex
 	kind   int
 	cid    uint64
@@ -160,7 +160,7 @@ type client struct {
 	acc    *Account
 	user   *NkeyUser
 	host   string
-	port   int
+	port   uint16
 	subs   map[string]*subscription
 	perms  *permissions
 	mperms *msgDeny
@@ -198,14 +198,14 @@ type outbound struct {
 	p   []byte        // Primary write buffer
 	s   []byte        // Secondary for use post flush
 	nb  net.Buffers   // net.Buffers for writev IO
-	sz  int           // limit size per []byte, uses variable BufSize constants, start, min, max.
-	sws int           // Number of short writes, used for dynamic resizing.
-	pb  int           // Total pending/queued bytes.
-	pm  int           // Total pending/queued messages.
+	sz  int32         // limit size per []byte, uses variable BufSize constants, start, min, max.
+	sws int32         // Number of short writes, used for dynamic resizing.
+	pb  int32         // Total pending/queued bytes.
+	pm  int32         // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
 	wdl time.Duration // Snapshot fo write deadline.
-	mp  int           // snapshot of max pending.
-	fsp int           // Flush signals that are pending from readLoop's pcd.
+	mp  int32         // snapshot of max pending.
+	fsp int32         // Flush signals that are pending from readLoop's pcd.
 	lft time.Duration // Last flush time.
 	sgw bool          // Indicate flusher is waiting on condition wait.
 }
@@ -259,11 +259,14 @@ type readCache struct {
 	rts []routeTarget
 
 	prand *rand.Rand
-	msgs  int
-	bytes int
-	subs  int
-	rsz   int // Read buffer size
-	srs   int // Short reads, used for dynamic buffer resizing.
+
+	// These are all temporary totals for an invocation of a read in readloop.
+	msgs  int32
+	bytes int32
+	subs  int32
+
+	rsz int32 // Read buffer size
+	srs int32 // Short reads, used for dynamic buffer resizing.
 }
 
 const (
@@ -354,7 +357,7 @@ func (c *client) initClient() {
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
-	c.out.mp = int(opts.MaxPending)
+	c.out.mp = int32(opts.MaxPending)
 
 	c.subs = make(map[string]*subscription)
 	c.echo = true
@@ -377,7 +380,7 @@ func (c *client) initClient() {
 	if ip, ok := c.nc.(*net.TCPConn); ok {
 		addr := ip.RemoteAddr().(*net.TCPAddr)
 		c.host = addr.IP.String()
-		c.port = addr.Port
+		c.port = uint16(addr.Port)
 		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
 	}
 
@@ -448,12 +451,12 @@ func (c *client) registerWithAccount(acc *Account) error {
 
 // Helper to determine if we have exceeded max subs.
 func (c *client) subsExceeded() bool {
-	return c.msubs != jwt.NoLimit && len(c.subs) > c.msubs
+	return c.msubs != jwt.NoLimit && len(c.subs) > int(c.msubs)
 }
 
 // Helper to determine if we have met or exceeded max subs.
 func (c *client) subsAtLimit() bool {
-	return c.msubs != jwt.NoLimit && len(c.subs) >= c.msubs
+	return c.msubs != jwt.NoLimit && len(c.subs) >= int(c.msubs)
 }
 
 // Apply account limits
@@ -481,9 +484,9 @@ func (c *client) applyAccountLimits() {
 	}
 
 	// We check here if the server has an option set that is lower than the account limit.
-	if c.msubs != jwt.NoLimit && opts.MaxSubs != 0 && opts.MaxSubs < c.acc.msubs {
+	if c.msubs != jwt.NoLimit && opts.MaxSubs != 0 && opts.MaxSubs < int(c.acc.msubs) {
 		c.Errorf("Max Subscriptions set to %d from server config which overrides %d from account claims", opts.MaxSubs, c.acc.msubs)
-		c.msubs = opts.MaxSubs
+		c.msubs = int32(opts.MaxSubs)
 	}
 
 	if c.subsExceeded() {
@@ -663,7 +666,7 @@ func (c *client) readLoop() {
 	c.mcl = MAX_CONTROL_LINE_SIZE
 	if s != nil {
 		if opts := s.getOpts(); opts != nil {
-			c.mcl = opts.MaxControlLine
+			c.mcl = int32(opts.MaxControlLine)
 		}
 	}
 	defer s.grWG.Done()
@@ -758,11 +761,11 @@ func (c *client) readLoop() {
 		// Update read buffer size as/if needed.
 		if n >= cap(b) && cap(b) < maxBufSize {
 			// Grow
-			c.in.rsz = cap(b) * 2
+			c.in.rsz = int32(cap(b) * 2)
 			b = make([]byte, c.in.rsz)
 		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
 			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
-			c.in.rsz = cap(b) / 2
+			c.in.rsz = int32(cap(b) / 2)
 			b = make([]byte, c.in.rsz)
 		}
 		c.mu.Unlock()
@@ -855,7 +858,7 @@ func (c *client) flushOutbound() bool {
 	c.out.lft = lft
 
 	// Subtract from pending bytes and messages.
-	c.out.pb -= int(n)
+	c.out.pb -= int32(n)
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate.
 
 	// Check for partial writes
@@ -902,7 +905,7 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Adjust based on what we wrote plus any pending.
-	pt := int(n) + c.out.pb
+	pt := int32(n) + c.out.pb
 
 	// Adjust sz as needed downward, keeping power of 2.
 	// We do this at a slower rate.
@@ -920,11 +923,11 @@ func (c *client) flushOutbound() bool {
 	// Check to see if we can reuse buffers.
 	if len(cnb) > 0 {
 		oldp := cnb[0][:0]
-		if cap(oldp) >= c.out.sz {
+		if cap(oldp) >= int(c.out.sz) {
 			// Replace primary or secondary if they are nil, reusing same buffer.
 			if c.out.p == nil {
 				c.out.p = oldp
-			} else if c.out.s == nil || cap(c.out.s) < c.out.sz {
+			} else if c.out.s == nil || cap(c.out.s) < int(c.out.sz) {
 				c.out.s = oldp
 			}
 		}
@@ -1244,7 +1247,7 @@ func (c *client) queueOutbound(data []byte) bool {
 	// Assume data will not be referenced
 	referenced := false
 	// Add to pending bytes total.
-	c.out.pb += len(data)
+	c.out.pb += int32(len(data))
 
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
@@ -1259,7 +1262,7 @@ func (c *client) queueOutbound(data []byte) bool {
 		if c.out.sz == 0 {
 			c.out.sz = startBufSize
 		}
-		if c.out.s != nil && cap(c.out.s) >= c.out.sz {
+		if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) {
 			c.out.p = c.out.s
 			c.out.s = nil
 		} else {
@@ -1272,7 +1275,7 @@ func (c *client) queueOutbound(data []byte) bool {
 	if len(data) > available {
 		// We can fit into existing primary, but message will fit in next one
 		// we allocate or utilize from the secondary. So copy what we can.
-		if available > 0 && len(data) < c.out.sz {
+		if available > 0 && len(data) < int(c.out.sz) {
 			c.out.p = append(c.out.p, data[:available]...)
 			data = data[available:]
 		}
@@ -1293,10 +1296,10 @@ func (c *client) queueOutbound(data []byte) bool {
 				if (c.out.sz << 1) <= maxBufSize {
 					c.out.sz <<= 1
 				}
-				if len(data) > c.out.sz {
+				if len(data) > int(c.out.sz) {
 					c.out.p = make([]byte, 0, len(data))
 				} else {
-					if c.out.s != nil && cap(c.out.s) >= c.out.sz { // TODO(dlc) - Size mismatch?
+					if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) { // TODO(dlc) - Size mismatch?
 						c.out.p = c.out.s
 						c.out.s = nil
 					} else {
@@ -2125,7 +2128,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
-	c.in.bytes += len(msg) - LEN_CR_LF
+	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	if c.trace {
 		c.traceMsg(msg)
