@@ -402,10 +402,15 @@ type maxControlLineOption struct {
 	newValue int32
 }
 
-// Apply is a no-op because the max control line will be reloaded after options
-// are applied
+// Apply the setting by updating each client.
 func (m *maxControlLineOption) Apply(server *Server) {
-	server.Noticef("Reloaded: max_control_line = %d", m.newValue)
+	mcl := int32(m.newValue)
+	server.mu.Lock()
+	for _, client := range server.clients {
+		atomic.StoreInt32(&client.mcl, mcl)
+	}
+	server.mu.Unlock()
+	server.Noticef("Reloaded: max_control_line = %d", mcl)
 }
 
 // maxPayloadOption implements the option interface for the `max_payload`
