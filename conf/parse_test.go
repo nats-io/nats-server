@@ -101,6 +101,37 @@ func TestEnvVariable(t *testing.T) {
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 
+func TestEnvVariableString(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": "xyz",
+	}
+	evar := "__UNIQ22__"
+	os.Setenv(evar, "xyz")
+	defer os.Unsetenv(evar)
+	test(t, fmt.Sprintf("foo = $%s", evar), ex)
+}
+
+func TestEnvVariableStringStartingWithNumber(t *testing.T) {
+	evar := "__UNIQ22__"
+	os.Setenv(evar, "3xyz")
+	defer os.Unsetenv(evar)
+
+	_, err := Parse("foo = $%s")
+	if err == nil {
+		t.Fatalf("Expected err not being able to process string: %v\n", err)
+	}
+}
+
+func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": "3xyz",
+	}
+	evar := "__UNIQ22__"
+	os.Setenv(evar, "'3xyz'")
+	defer os.Unsetenv(evar)
+	test(t, fmt.Sprintf("foo = $%s", evar), ex)
+}
+
 func TestBcryptVariable(t *testing.T) {
 	ex := map[string]interface{}{
 		"password": "$2a$11$ooo",

@@ -87,6 +87,84 @@ func TestComplexStringValues(t *testing.T) {
 	expect(t, lx, expectedItems)
 }
 
+func TestStringStartingWithNumber(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "3xyz", 1, 6},
+		{itemEOF, "", 2, 0},
+	}
+
+	lx := lex(`foo = 3xyz`)
+	expect(t, lx, expectedItems)
+
+	lx = lex(`foo = 3xyz,`)
+	expect(t, lx, expectedItems)
+
+	lx = lex(`foo = 3xyz;`)
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 2, 9},
+		{itemString, "3xyz", 2, 15},
+		{itemEOF, "", 2, 0},
+	}
+	content := `
+        foo = 3xyz
+        `
+	lx = lex(content)
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "map", 2, 9},
+		{itemMapStart, "", 2, 14},
+		{itemKey, "foo", 3, 11},
+		{itemString, "3xyz", 3, 17},
+		{itemMapEnd, "", 3, 22},
+		{itemEOF, "", 2, 0},
+	}
+	content = `
+        map {
+          foo = 3xyz}
+        `
+	lx = lex(content)
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "map", 2, 9},
+		{itemMapStart, "", 2, 14},
+		{itemKey, "foo", 3, 11},
+		{itemString, "3xyz", 3, 17},
+		{itemMapEnd, "", 4, 10},
+		{itemEOF, "", 2, 0},
+	}
+	content = `
+        map {
+          foo = 3xyz;
+        }
+        `
+	lx = lex(content)
+	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "map", 2, 9},
+		{itemMapStart, "", 2, 14},
+		{itemKey, "foo", 3, 11},
+		{itemString, "3xyz", 3, 17},
+		{itemKey, "bar", 4, 11},
+		{itemString, "4wqs", 4, 17},
+		{itemMapEnd, "", 5, 10},
+		{itemEOF, "", 2, 0},
+	}
+	content = `
+        map {
+          foo = 3xyz,
+          bar = 4wqs
+        }
+        `
+	lx = lex(content)
+	expect(t, lx, expectedItems)
+}
+
 func TestBinaryString(t *testing.T) {
 	expectedItems := []item{
 		{itemKey, "foo", 1, 0},
@@ -380,7 +458,7 @@ func TestRawString(t *testing.T) {
 	}
 	lx := lex("foo = bar")
 	expect(t, lx, expectedItems)
-	lx = lex(`foo = bar' `) //'single-quote for emacs TODO: Remove me
+	lx = lex(`foo = bar' `)
 	expect(t, lx, expectedItems)
 }
 

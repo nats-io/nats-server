@@ -299,24 +299,29 @@ func (p *parser) processItem(it item, fp string) error {
 		p.popContext()
 		setValue(it, array)
 	case itemVariable:
-		if value, ok := p.lookupVariable(it.val); ok {
-			if p.pedantic {
-				switch tk := value.(type) {
-				case *token:
-					// Mark the looked up variable as used, and make
-					// the variable reference become handled as a token.
-					tk.usedVariable = true
-					p.setValue(&token{it, tk.Value(), false, fp})
-				default:
-					// Special case to add position context to bcrypt references.
-					p.setValue(&token{it, value, false, fp})
-				}
-			} else {
-				p.setValue(value)
-			}
-		} else {
+		value, found, err := p.lookupVariable(it.val)
+		if err != nil {
+			return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
+				it.val, it.line, err)
+		}
+		if !found {
 			return fmt.Errorf("variable reference for '%s' on line %d can not be found",
 				it.val, it.line)
+		}
+
+		if p.pedantic {
+			switch tk := value.(type) {
+			case *token:
+				// Mark the looked up variable as used, and make
+				// the variable reference become handled as a token.
+				tk.usedVariable = true
+				p.setValue(&token{it, tk.Value(), false, fp})
+			default:
+				// Special case to add position context to bcrypt references.
+				p.setValue(&token{it, value, false, fp})
+			}
+		} else {
+			p.setValue(value)
 		}
 	case itemInclude:
 		var (
@@ -358,10 +363,10 @@ const bcryptPrefix = "2a$"
 // ignore array contexts and only process the map contexts..
 //
 // Returns true for ok if it finds something, similar to map.
-func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
+func (p *parser) lookupVariable(varReference string) (interface{}, bool, error) {
 	// Do special check to see if it is a raw bcrypt string.
 	if strings.HasPrefix(varReference, bcryptPrefix) {
-		return "$" + varReference, true
+		return "$" + varReference, true, nil
 	}
 
 	// Loop through contexts currently on the stack.
@@ -370,7 +375,7 @@ func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
 		// Process if it is a map context
 		if m, ok := ctx.(map[string]interface{}); ok {
 			if v, ok := m[varReference]; ok {
-				return v, ok
+				return v, ok, nil
 			}
 		}
 	}
@@ -381,10 +386,12 @@ func (p *parser) lookupVariable(varReference string) (interface{}, bool) {
 		// Everything we get here will be a string value, so we need to process as a parser would.
 		if vmap, err := Parse(fmt.Sprintf("%s=%s", pkey, vStr)); err == nil {
 			v, ok := vmap[pkey]
-			return v, ok
+			return v, ok, nil
+		} else {
+			return nil, false, err
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 func (p *parser) setValue(val interface{}) {
