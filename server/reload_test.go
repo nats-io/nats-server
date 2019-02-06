@@ -3593,3 +3593,48 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigReloadMaxControlLineWithClients(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+
+	// Now grab server's internal client that matches.
+	cid, _ := nc.GetClientID()
+	c := server.getClient(cid)
+	if c == nil {
+		t.Fatalf("Could not look up internal client")
+	}
+
+	// Check that we have the correct mcl snapshotted into the connected client.
+	getMcl := func(c *client) int32 {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.mcl
+	}
+	if mcl := getMcl(c); mcl != opts.MaxControlLine {
+		t.Fatalf("Expected snapshot in client for mcl to be same as opts.MaxControlLine, got %d vs %d",
+			mcl, opts.MaxControlLine)
+	}
+
+	changeCurrentConfigContentWithNewContent(t, config, []byte("listen: 127.0.0.1:-1; max_control_line: 222"))
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Expected Reload to succeed, got %v", err)
+	}
+
+	// Refresh properly.
+	opts = server.getOpts()
+
+	if mcl := getMcl(c); mcl != opts.MaxControlLine {
+		t.Fatalf("Expected snapshot in client for mcl to be same as new opts.MaxControlLine, got %d vs %d",
+			mcl, opts.MaxControlLine)
+	}
+}
