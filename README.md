@@ -852,6 +852,50 @@ If you want the server to enforce and require client certificates as well via th
 > ./gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
 ```
 
+#### TLS Authorization
+
+If `verify_and_map` is set as part of the TLS configuration, client certificates will be required and mutual TLS enabled. The certificate provided by a client will also be used to authorize and map it permissions.
+
+```
+tls {
+  cert_file: "./configs/certs/server-cert.pem"
+  key_file:  "./configs/certs/server-key.pem"
+  ca_file:   "./configs/certs/ca.pem"
+
+  # Require a client certificate and map user id from certificate.
+  verify_and_map: true
+}
+```
+
+To map permissions for a user, an email address can be defined as part of the extended syntax for a CN Subject in the certificate, or in the SubjectAltName field from the certificate and then added under `users` in the `authorization` config from the NATS server:
+
+```
+authorization {
+  users = [    
+    {user: "user@example.com", permissions: { publish: "foo" }}
+  ]
+}
+```
+
+Users can be defined by using RFC 2253 Distinguished Names syntax as well:
+
+```
+authorization {
+  users = [
+    { user = "CN=example.com,OU=NATS.io" }
+    { user = "CN=example.com,OU=CNCF", permissions = {
+	publish {
+	  allow = ["public.>"]
+	}
+	subscribe {
+	  allow = ["public.>"]
+	}
+      }
+    }
+  ]
+}
+```
+
 ### Bcrypt
 
 In addition to TLS functionality, the server now also supports bcrypt for passwords and tokens. This is transparent and you can simply replace the plaintext password in the configuration with the bcrypt hash, the server will automatically utilize bcrypt as needed.
