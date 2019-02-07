@@ -131,6 +131,84 @@ func TestTLSClientCertificateHasUserID(t *testing.T) {
 	defer nc.Close()
 }
 
+func TestTLSClientCertificateCNBasedAuth(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls_cert_cn.conf")
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+	errCh1 := make(chan error)
+	errCh2 := make(chan error)
+
+	// Using the default permissions
+	nc1, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/tlsauth/client.pem", "./configs/certs/tlsauth/client-key.pem"),
+		nats.RootCAs("./configs/certs/tlsauth/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			errCh1 <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc1.Close()
+
+	// Admin permissions can publish to '>'
+	nc2, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/tlsauth/client2.pem", "./configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("./configs/certs/tlsauth/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			errCh2 <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc2.Close()
+
+	err = nc1.Publish("foo.bar", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = nc1.SubscribeSync("foo.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc1.Flush()
+
+	sub, err := nc2.SubscribeSync(">")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc2.Flush()
+	err = nc2.Publish("hello", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc2.Flush()
+
+	_, err = sub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// Wait for a couple of errors
+	var count int
+	select {
+	case err := <-errCh1:
+		if err != nil {
+			count++
+		}
+		if count == 2 {
+			break
+		}
+	case err := <-errCh2:
+		if err != nil {
+			t.Fatalf("Received unexpected auth error from client: %s", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out expecting auth errors")
+	}
+}
+
 func TestTLSVerifyClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
 	defer srv.Shutdown()
