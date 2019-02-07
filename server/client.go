@@ -688,6 +688,11 @@ func (c *client) flushOutbound() bool {
 		}
 	}
 
+	// Signal again if there is still data to send
+	if c.out.pb > 0 {
+		c.out.sg.Signal()
+	}
+
 	return true
 }
 
