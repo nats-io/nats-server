@@ -721,10 +721,11 @@ func (c *client) readLoop() {
 
 		// Budget to spend in place flushing outbound data.
 		// Client will be checked on several fronts to see
-		// if applicable. Routes will never wait in place.
-		budget := time.Millisecond
-		if c.kind == ROUTER {
-			budget = 0
+		// if applicable. Routes and Gateways will never
+		// wait in place.
+		var budget time.Duration
+		if c.kind == CLIENT {
+			budget = time.Millisecond
 		}
 
 		// Check pending clients for flush.
