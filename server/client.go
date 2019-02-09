@@ -651,6 +651,31 @@ func (c *client) writeLoop() {
 	}
 }
 
+// flushClients will make sure to flush any clients we may have
+// sent to during processing. We pass in a budget as a time.Duration
+// for how much time to spend in place flushing for this client. This
+// will normally be called in the readLoop of the client who sent the
+// message that now is being delivered.
+func (c *client) flushClients(budget time.Duration) {
+	last := time.Now()
+	// Check pending clients for flush.
+	for cp := range c.pcd {
+		// Queue up a flush for those in the set
+		cp.mu.Lock()
+		// Update last activity for message delivery
+		cp.last = last
+		cp.out.fsp--
+		if budget > 0 && cp.flushOutbound() {
+			budget -= cp.out.lft
+		} else {
+			cp.flushSignal()
+		}
+		cp.mu.Unlock()
+		// TODO(dlc) - Wonder if it makes more sense to create a new map?
+		delete(c.pcd, cp)
+	}
+}
+
 // readLoop is the main socket read functionality.
 // Runs in its own Go routine.
 func (c *client) readLoop() {
@@ -691,9 +716,6 @@ func (c *client) readLoop() {
 			return
 		}
 
-		// Grab for updates for last activity.
-		last := time.Now()
-
 		// Clear inbound stats cache
 		c.in.msgs = 0
 		c.in.bytes = 0
@@ -728,21 +750,8 @@ func (c *client) readLoop() {
 			budget = time.Millisecond
 		}
 
-		// Check pending clients for flush.
-		for cp := range c.pcd {
-			// Queue up a flush for those in the set
-			cp.mu.Lock()
-			// Update last activity for message delivery
-			cp.last = last
-			cp.out.fsp--
-			if budget > 0 && cp.flushOutbound() {
-				budget -= cp.out.lft
-			} else {
-				cp.flushSignal()
-			}
-			cp.mu.Unlock()
-			delete(c.pcd, cp)
-		}
+		// Flush, or signal to writeLoop to flush to socket.
+		c.flushClients(budget)
 
 		// Update activity, check read buffer size.
 		c.mu.Lock()
@@ -750,7 +759,7 @@ func (c *client) readLoop() {
 
 		// Activity based on interest changes or data/msgs.
 		if c.in.msgs > 0 || c.in.subs > 0 {
-			c.last = last
+			c.last = time.Now()
 		}
 
 		if n >= cap(b) {
@@ -798,7 +807,7 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 }
 
 // flushOutbound will flush outbound buffer to a client.
-// Will return if data was attempted to be written.
+// Will return true if data was attempted to be written.
 // Lock must be held
 func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
@@ -935,9 +944,9 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Check that if there is still data to send and writeLoop is in wait,
-	// we need to signal
-	if c.out.pb > 0 && c.out.sgw {
-		c.out.sg.Signal()
+	// we need to signal.
+	if c.out.pb > 0 {
+		c.flushSignal()
 	}
 
 	return true
@@ -2014,11 +2023,10 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	// Increment the flush pending signals if we are setting for the first time.
 	if _, ok := c.pcd[client]; !ok {
 		client.out.fsp++
+		// Remember for when we return to the top of the loop.
+		c.pcd[client] = needFlush
 	}
 	client.mu.Unlock()
-
-	// Remember for when we return to the top of the loop.
-	c.pcd[client] = needFlush
 
 	return true
 }
@@ -2349,7 +2357,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	qf := c.pa.queues
 
 	// For gateway connections, we still want to send messages to routes
-	// even if there is no queue filters.
+	// even if there are no queue filters.
 	if c.kind == GATEWAY && qf == nil {
 		goto sendToRoutes
 	}

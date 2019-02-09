@@ -223,7 +223,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			// Add in NL
 			b = append(b, _CRLF_...)
 			c.processInboundClientMsg(b)
-			c.flushClients()
+			c.flushClients(0) // Never spend time in place.
 			// See if we are doing graceful shutdown.
 			if pm.last {
 				return
@@ -892,22 +892,6 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	delete(s.sys.subs, string(sub.sid))
 	s.mu.Unlock()
 	c.unsubscribe(acc, sub, true)
-}
-
-// flushClients will make sure toi flush any clients we may have
-// sent to during sendInternalMsg.
-func (c *client) flushClients() {
-	last := time.Now()
-	for cp := range c.pcd {
-		// Queue up a flush for those in the set
-		cp.mu.Lock()
-		// Update last activity for message delivery
-		cp.last = last
-		cp.out.fsp--
-		cp.flushSignal()
-		cp.mu.Unlock()
-		delete(c.pcd, cp)
-	}
 }
 
 // Helper to grab name for a client.
