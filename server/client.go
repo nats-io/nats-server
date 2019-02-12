@@ -641,6 +641,7 @@ func (c *client) writeLoop() {
 			c.out.sgw = false
 		}
 		// Flush data
+		// TODO(dlc) - This could spin if another go routine in flushOutbound waiting on a slow IO.
 		waitOk = c.flushOutbound()
 		isClosed := c.flags.isSet(clearConnection)
 		c.mu.Unlock()
@@ -744,7 +745,7 @@ func (c *client) readLoop() {
 		// Budget to spend in place flushing outbound data.
 		// Client will be checked on several fronts to see
 		// if applicable. Routes and Gateways will never
-		// wait in place.
+		// spend time flushing outbound in place.
 		var budget time.Duration
 		if c.kind == CLIENT {
 			budget = time.Millisecond
@@ -854,6 +855,7 @@ func (c *client) flushOutbound() bool {
 	// FIXME(dlc) - writev will do multiple IOs past 1024 on
 	// most platforms, need to account for that with deadline?
 	nc.SetWriteDeadline(now.Add(c.out.wdl))
+
 	// Actual write to the socket.
 	n, err := nb.WriteTo(nc)
 	nc.SetWriteDeadline(time.Time{})
@@ -869,9 +871,10 @@ func (c *client) flushOutbound() bool {
 
 	// Subtract from pending bytes and messages.
 	c.out.pb -= int32(n)
-	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate.
+	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
 
 	// Check for partial writes
+	// TODO(dlc) - zero write with no error will cause lost message and the writeloop to spin.
 	if n != int64(attempted) && n > 0 {
 		c.handlePartialWrite(nb)
 	} else if n >= int64(c.out.sz) {
@@ -1283,8 +1286,9 @@ func (c *client) queueOutbound(data []byte) bool {
 	// Determine if we copy or reference
 	available := cap(c.out.p) - len(c.out.p)
 	if len(data) > available {
-		// We can fit into existing primary, but message will fit in next one
-		// we allocate or utilize from the secondary. So copy what we can.
+		// We can't fit everything into existing primary, but message will
+		// fit in next one we allocate or utilize from the secondary.
+		// So copy what we can.
 		if available > 0 && len(data) < int(c.out.sz) {
 			c.out.p = append(c.out.p, data[:available]...)
 			data = data[available:]
