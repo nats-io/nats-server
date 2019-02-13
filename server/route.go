@@ -369,7 +369,10 @@ func (c *client) processRouteInfo(info *Info) {
 	if added, sendInfo := s.addRoute(c, info); added {
 		c.Debugf("Registering remote route %q", info.ID)
 		// Send our local subscriptions to this route.
-		s.sendLocalSubsToRoute(c)
+		s.startGoRoutine(func() {
+			s.sendLocalSubsToRoute(c)
+			s.grWG.Done()
+		})
 		// sendInfo will be false if the route that we just accepted
 		// is the only route there is.
 		if sendInfo {
@@ -584,9 +587,12 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 	var raw [4096]*subscription
 	subs := raw[:0]
 
-	s.sl.localSubs(&subs)
+	closed := false
+	threshold := int64(1024 * 1024)
 
 	route.mu.Lock()
+	s.sl.localSubs(&subs)
+	route.Noticef("Sending %v local subscriptions to route", len(subs))
 	for _, sub := range subs {
 		// Send SUB interest only if subject has a match in import permissions
 		if !route.canImport(sub.subject) {
@@ -594,14 +600,32 @@ func (s *Server) sendLocalSubsToRoute(route *client) {
 		}
 		proto := fmt.Sprintf(subProto, sub.subject, sub.queue, routeSid(sub))
 		route.queueOutbound([]byte(proto))
-		if route.out.pb > int64(route.out.sz*2) {
-			route.flushSignal()
+		if route.out.pb > threshold {
+			if !route.flushOutbound() {
+				// If we could not flush it means that another go routine
+				// (the writeLoop likely) is in the middle of a flush
+				// and performing socket write without the lock. We can't
+				// simply signal, we need to also release the lock to
+				// prevent this loop running all the way and possibly
+				// enqueueing too much data to the point of hitting the
+				// max pending limit.
+				route.flushSignal()
+				// Give a chance to the other go-routine to reacquire the lock.
+				route.mu.Unlock()
+				route.mu.Lock()
+			}
+			// Since the lock has possibly been released, check the closed status.
+			if closed = route.flags.isSet(clearConnection); closed {
+				break
+			}
 		}
 	}
 	route.flushSignal()
 	route.mu.Unlock()
 
-	route.Debugf("Sent local subscriptions to route")
+	if !closed {
+		route.Noticef("Sent local subscriptions to route")
+	}
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {

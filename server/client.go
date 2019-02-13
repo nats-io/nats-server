@@ -1843,7 +1843,12 @@ func (c *client) closeConnection(reason ClosedState) {
 		return
 	}
 
-	c.Debugf("%s connection closed", c.typeString())
+	// ROUTER print the route created as Noticef, so do same for close.
+	if c.typ == ROUTER {
+		c.Noticef("%s connection closed", c.typeString())
+	} else {
+		c.Debugf("%s connection closed", c.typeString())
+	}
 
 	c.clearAuthTimer()
 	c.clearPingTimer()
