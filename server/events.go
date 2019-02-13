@@ -16,7 +16,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -445,7 +444,7 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 	// Listen for ping messages that will be sent to all servers for statsz.
-	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszPing); err != nil {
+	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 }
@@ -570,30 +569,6 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	if nlc := acc.NumLocalConnections(); nlc > 0 {
 		s.sendAccConnsUpdate(acc, reply)
 	}
-}
-
-// random back off interval for broadcast statsz ping requests.
-const randomBackoff = 250 * time.Millisecond
-
-// statszPing will handle global requests for our server statsz. This will be a
-// broadcast msg so we want to be mindful of that. We will do a random backoff and
-// process in a separate go routine.
-func (s *Server) statszPing(sub *subscription, subject, reply string, msg []byte) {
-	if !s.EventsEnabled() || reply == _EMPTY_ {
-		return
-	}
-	s.startGoRoutine(func() {
-		defer s.grWG.Done()
-		delay := time.Duration(rand.Intn(int(randomBackoff)))
-		select {
-		case <-time.After(delay):
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			s.sendStatsz(reply)
-		case <-s.quitCh:
-			return
-		}
-	})
 }
 
 // statszReq is a request for us to respond with current statz.

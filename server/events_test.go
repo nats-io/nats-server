@@ -1178,14 +1178,14 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	m := ServerStatsMsg{}
 
 	// Receive both manually.
-	msg, err := sub.NextMsg(randomBackoff * 2)
+	msg, err := sub.NextMsg(time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
 	}
-	msg, err = sub.NextMsg(randomBackoff)
+	msg, err = sub.NextMsg(time.Second)
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
