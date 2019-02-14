@@ -181,9 +181,9 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	pm  int64         // Total pending/queued messages.
 	sg  *sync.Cond    // Flusher conditional for signaling.
-	wdl time.Duration // Snapshot fo write deadline.
-	mp  int64         // snapshot of max pending.
 	fsp int           // Flush signals that are pending from readLoop's pcd.
+	mp  int64         // Snapshot of max pending.
+	wdl time.Duration // Snapshot of write deadline.
 	lft time.Duration // Last flush time.
 }
 
@@ -477,7 +477,7 @@ func (c *client) readLoop() {
 		// Budget to spend in place flushing outbound data.
 		// Client will be checked on several fronts to see
 		// if applicable. Routes will never wait in place.
-		budget := time.Millisecond
+		budget := 500 * time.Microsecond
 		if c.typ == ROUTER {
 			budget = 0
 		}
@@ -581,18 +581,9 @@ func (c *client) flushOutbound() bool {
 	attempted := c.out.pb
 	apm := c.out.pm
 
-	// What we are doing here is seeing if we are getting behind. This is
-	// generally not a gradual thing and will spike quickly. Use some basic
-	// logic to try to understand when this is happening through no fault of
-	// our own. How we attempt to get back into a more balanced state under
-	// load will be to hold our lock during IO, forcing others to wait and
-	// applying back pressure to the publishers sending to us.
-	releaseLock := c.out.pb < maxBufSize*4
+	// Do NOT hold lock during actual IO
 
-	// Do NOT hold lock during actual IO unless we are behind
-	if releaseLock {
-		c.mu.Unlock()
-	}
+	c.mu.Unlock()
 
 	// flush here
 	now := time.Now()
@@ -604,10 +595,8 @@ func (c *client) flushOutbound() bool {
 	nc.SetWriteDeadline(time.Time{})
 	lft := time.Since(now)
 
-	// Re-acquire client lock if we let it go during IO
-	if releaseLock {
-		c.mu.Lock()
-	}
+	// Re-acquire client lock
+	c.mu.Lock()
 
 	// Update flush time statistics
 	c.out.lft = lft
