@@ -28,8 +28,9 @@ type pubArg struct {
 	size    int
 }
 
+type parserState int
 type parseState struct {
-	state   int
+	state   parserState
 	as      int
 	drop    int
 	pa      pubArg
@@ -40,7 +41,7 @@ type parseState struct {
 
 // Parser constants
 const (
-	OP_START = iota
+	OP_START parserState = iota
 	OP_PLUS
 	OP_PLUS_O
 	OP_PLUS_OK
@@ -205,7 +206,7 @@ func (c *client) parse(buf []byte) error {
 				if err := c.processPub(c.trace, arg); err != nil {
 					return err
 				}
-				c.drop, c.as, c.state = OP_START, i+1, MSG_PAYLOAD
+				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out
 				// and process split buffer.
