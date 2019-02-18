@@ -252,7 +252,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	tlsMap := s.opts.TLSMap
 	s.optsMu.RUnlock()
 
-	// Check custom auth first, then jwts, then nkeys, then multiple users, then token, then single user/pass.
+	// Check custom auth first, then jwts, then nkeys, then
+	// multiple users, then token, then single user/pass.
 	if customClientAuthentication != nil {
 		return customClientAuthentication.Check(c)
 	}
@@ -469,12 +470,49 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	// Check custom auth first, then TLS map if enabled
+	// then single user/pass.
 	if s.opts.CustomRouterAuthentication != nil {
 		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
 	if opts.Cluster.Username == "" {
 		return true
+	}
+
+	if opts.Cluster.TLSMap {
+		// Verify the cert
+		tlsState := c.GetTLSConnectionState()
+		if tlsState == nil {
+			c.Debugf("User required in cert, no TLS connection state")
+			return false
+		}
+		if len(tlsState.PeerCertificates) == 0 {
+			c.Debugf("User required in cert, no peer certificates found")
+			return false
+		}
+		cert := tlsState.PeerCertificates[0]
+		if len(tlsState.PeerCertificates) > 1 {
+			c.Debugf("Multiple peer certificates found, selecting first")
+		}
+
+		hasEmailAddresses := len(cert.EmailAddresses) > 0
+		hasSubject := len(cert.Subject.String()) > 0
+		if !hasEmailAddresses && !hasSubject {
+			c.Debugf("User required in cert, none found")
+			return false
+		}
+
+		var euser string
+		if hasEmailAddresses {
+			euser = cert.EmailAddresses[0]
+			if len(cert.EmailAddresses) > 1 {
+				c.Debugf("Multiple users found in cert, selecting first [%q]", euser)
+			}
+		} else {
+			euser = cert.Subject.String()
+		}
+		return opts.Cluster.Username == euser
 	}
 
 	if opts.Cluster.Username != c.opts.Username {

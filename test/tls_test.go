@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -206,6 +207,121 @@ func TestTLSClientCertificateCNBasedAuth(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Timed out expecting auth errors")
+	}
+}
+
+func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
+	// Base config for the servers
+	optsA := LoadConfig("./configs/tls_cert_cn_routes.conf")
+	optsB := LoadConfig("./configs/tls_cert_cn_routes.conf")
+	optsC := LoadConfig("./configs/tls_cert_cn_routes_invalid_auth.conf")
+
+	// TLS map should have been enabled
+	if !optsA.Cluster.TLSMap || !optsB.Cluster.TLSMap || !optsC.Cluster.TLSMap {
+		t.Error("Expected Cluster TLS verify and map feature to be activated")
+	}
+
+	routeA, err := url.Parse("nats://localhost:9935")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeB, err := url.Parse("nats://localhost:9936")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeC, err := url.Parse("nats://localhost:9937")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := make([]*url.URL, 3)
+	routes[0] = routeA
+	routes[1] = routeB
+	routes[2] = routeC
+
+	optsA.Host = "127.0.0.1"
+	optsA.Port = 9335
+	optsA.Cluster.Host = optsA.Host
+	optsA.Cluster.Port = 9935
+	optsA.Routes = routes
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB.Host = "127.0.0.1"
+	optsB.Port = 9336
+	optsB.Cluster.Host = optsB.Host
+	optsB.Cluster.Port = 9936
+	optsB.Routes = routes
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	optsC.Host = "127.0.0.1"
+	optsC.Port = 9337
+	optsC.Cluster.Host = optsC.Host
+	optsC.Cluster.Port = 9937
+	optsC.Routes = routes
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	nc1, err := nats.Connect(fmt.Sprintf("%s:%d", optsA.Host, optsA.Port), nats.Name("A"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(fmt.Sprintf("%s:%d", optsB.Host, optsB.Port), nats.Name("B"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc2.Close()
+
+	// This client is partitioned from rest of cluster due to using wrong cert.
+	nc3, err := nats.Connect(fmt.Sprintf("%s:%d", optsC.Host, optsC.Port), nats.Name("C"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc3.Close()
+
+	// Allowed via permissions to broadcast to other members of cluster.
+	publicSub, err := nc1.SubscribeSync("public.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Not part of cluster permissions so message is not forwarded.
+	privateSub, err := nc1.SubscribeSync("private.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc1.Flush()
+
+	// Not forwarded by cluster so won't be received.
+	err = nc2.Publish("private.foo", []byte("private message on server B"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = nc2.Publish("public.foo", []byte("public message from server B to server A"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc2.Flush()
+	err = nc3.Publish("public.foo", []byte("dropped message since unauthorized server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc3.Flush()
+
+	// Message will be received since allowed via permissions
+	_, err = publicSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+	msg, err := privateSub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Errorf("Received unexpected message from private sub: %+v", msg)
+	}
+	msg, err = publicSub.NextMsg(500 * time.Millisecond)
+	if err == nil {
+		t.Errorf("Received unexpected message from private sub: %+v", msg)
 	}
 }
 
