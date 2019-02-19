@@ -44,6 +44,7 @@ type ClusterOpts struct {
 	Permissions    *RoutePermissions `json:"-"`
 	TLSTimeout     float64           `json:"-"`
 	TLSConfig      *tls.Config       `json:"-"`
+	TLSMap         bool              `json:"-"`
 	ListenStr      string            `json:"-"`
 	Advertise      string            `json:"-"`
 	NoAdvertise    bool              `json:"-"`
@@ -60,6 +61,7 @@ type GatewayOpts struct {
 	AuthTimeout    float64              `json:"auth_timeout,omitempty"`
 	TLSConfig      *tls.Config          `json:"-"`
 	TLSTimeout     float64              `json:"tls_timeout,omitempty"`
+	TLSMap         bool                 `json:"-"`
 	Advertise      string               `json:"advertise,omitempty"`
 	ConnectRetries int                  `json:"connect_retries,omitempty"`
 	Gateways       []*RemoteGatewayOpts `json:"gateways,omitempty"`
@@ -749,13 +751,14 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			}
 			opts.Routes = routes
 		case "tls":
-			config, timeout, err := getTLSConfig(tk)
+			config, tlsopts, err := getTLSConfig(tk)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			opts.Cluster.TLSConfig = config
-			opts.Cluster.TLSTimeout = timeout
+			opts.Cluster.TLSTimeout = tlsopts.Timeout
+			opts.Cluster.TLSMap = tlsopts.Map
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
@@ -854,13 +857,14 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			o.Gateway.Password = auth.pass
 			o.Gateway.AuthTimeout = auth.timeout
 		case "tls":
-			config, timeout, err := getTLSConfig(tk)
+			config, tlsopts, err := getTLSConfig(tk)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			o.Gateway.TLSConfig = config
-			o.Gateway.TLSTimeout = timeout
+			o.Gateway.TLSTimeout = tlsopts.Timeout
+			o.Gateway.TLSMap = tlsopts.Map
 		case "advertise":
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
@@ -891,22 +895,22 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 
 // Parse TLS and returns a TLSConfig and TLSTimeout.
 // Used by cluster and gateway parsing.
-func getTLSConfig(tk token) (*tls.Config, float64, error) {
+func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
 	tc, err := parseTLS(tk)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	config, err := GenTLSConfig(tc)
 	if err != nil {
 		err := &configErr{tk, err.Error()}
-		return nil, 0, err
+		return nil, nil, err
 	}
 	// For clusters/gateways, we will force strict verification. We also act
 	// as both client and server, so will mirror the rootCA to the
 	// clientCA pool.
 	config.ClientAuth = tls.RequireAndVerifyClientCert
 	config.RootCAs = config.ClientCAs
-	return config, tc.Timeout, nil
+	return config, tc, nil
 }
 
 func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteGatewayOpts, error) {
@@ -932,13 +936,13 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 			case "name":
 				gateway.Name = v.(string)
 			case "tls":
-				tls, timeout, err := getTLSConfig(tk)
+				tls, tlsopts, err := getTLSConfig(tk)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
 				}
 				gateway.TLSConfig = tls
-				gateway.TLSTimeout = timeout
+				gateway.TLSTimeout = tlsopts.Timeout
 			case "url":
 				url, err := parseURL(v.(string), "gateway")
 				if err != nil {
