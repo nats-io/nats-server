@@ -325,6 +325,128 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	}
 }
 
+func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
+	// Base config for the servers
+	optsA := LoadConfig("./configs/tls_cert_cn_gateways.conf")
+	optsB := LoadConfig("./configs/tls_cert_cn_gateways.conf")
+	optsC := LoadConfig("./configs/tls_cert_cn_gateways_invalid_auth.conf")
+
+	// TLS map should have been enabled
+	if !optsA.Gateway.TLSMap || !optsB.Gateway.TLSMap || !optsC.Gateway.TLSMap {
+		t.Error("Expected Cluster TLS verify and map feature to be activated")
+	}
+
+	gwA, err := url.Parse("nats://localhost:9995")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwB, err := url.Parse("nats://localhost:9996")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwC, err := url.Parse("nats://localhost:9997")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	optsA.Host = "127.0.0.1"
+	optsA.Port = -1
+	optsA.Gateway.Name = "A"
+	optsA.Gateway.Port = 9995
+
+	optsB.Host = "127.0.0.1"
+	optsB.Port = -1
+	optsB.Gateway.Name = "B"
+	optsB.Gateway.Port = 9996
+
+	optsC.Host = "127.0.0.1"
+	optsC.Port = -1
+	optsC.Gateway.Name = "C"
+	optsC.Gateway.Port = 9997
+
+	routes := make([]*url.URL, 3)
+	routes[0] = gwA
+	routes[1] = gwB
+	routes[2] = gwC
+	gateways := make([]*server.RemoteGatewayOpts, 3)
+	gateways[0] = &server.RemoteGatewayOpts{
+		Name: optsA.Gateway.Name,
+		URLs: routes,
+	}
+	gateways[1] = &server.RemoteGatewayOpts{
+		Name: optsB.Gateway.Name,
+		URLs: routes,
+	}
+	gateways[2] = &server.RemoteGatewayOpts{
+		Name: optsC.Gateway.Name,
+		URLs: routes,
+	}
+	optsA.Gateway.Gateways = gateways
+	optsB.Gateway.Gateways = gateways
+	optsC.Gateway.Gateways = gateways
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	nc1, err := nats.Connect(srvA.Addr().String(), nats.Name("A"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(srvB.Addr().String(), nats.Name("B"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc2.Close()
+
+	nc3, err := nats.Connect(srvC.Addr().String(), nats.Name("C"))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc3.Close()
+
+	received := make(chan *nats.Msg)
+	_, err = nc1.Subscribe("foo", func(msg *nats.Msg) {
+		received <- msg
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = nc3.Subscribe("help", func(msg *nats.Msg) {
+		nc3.Publish(msg.Reply, []byte("response"))
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	go func() {
+		for range time.NewTicker(10 * time.Millisecond).C {
+			if nc2.IsClosed() {
+				return
+			}
+			nc2.Publish("foo", []byte("bar"))
+		}
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Error("Timed out waiting for gateway messages")
+	}
+
+	msg, err := nc2.Request("help", []byte("should fail"), 100*time.Millisecond)
+	if err == nil {
+		t.Errorf("Expected to not receive any messages, got: %+v", msg)
+	}
+}
+
 func TestTLSVerifyClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
 	defer srv.Shutdown()

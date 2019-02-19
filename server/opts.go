@@ -61,6 +61,7 @@ type GatewayOpts struct {
 	AuthTimeout    float64              `json:"auth_timeout,omitempty"`
 	TLSConfig      *tls.Config          `json:"-"`
 	TLSTimeout     float64              `json:"tls_timeout,omitempty"`
+	TLSMap         bool                 `json:"-"`
 	Advertise      string               `json:"advertise,omitempty"`
 	ConnectRetries int                  `json:"connect_retries,omitempty"`
 	Gateways       []*RemoteGatewayOpts `json:"gateways,omitempty"`
@@ -863,6 +864,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			}
 			o.Gateway.TLSConfig = config
 			o.Gateway.TLSTimeout = tlsopts.Timeout
+			o.Gateway.TLSMap = tlsopts.Map
 		case "advertise":
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
