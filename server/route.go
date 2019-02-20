@@ -440,7 +440,10 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Registering remote route %q", info.ID)
 
 		// Send our subs to the other side.
-		s.sendSubsToRoute(c)
+		s.startGoRoutine(func() {
+			s.sendSubsToRoute(c)
+			s.grWG.Done()
+		})
 
 		// Send info about the known gateways to this route.
 		s.sendGatewayConfigsToRoute(c)
