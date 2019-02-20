@@ -60,14 +60,13 @@ const (
 	msgScratchSize  = 1024
 	msgHeadProto    = "RMSG "
 	msgHeadProtoLen = len(msgHeadProto)
-)
 
-// For controlling dynamic buffer sizes.
-const (
-	startBufSize   = 512   // For INFO/CONNECT block
-	minBufSize     = 64    // Smallest to shrink to for PING/PONG
-	maxBufSize     = 65536 // 64k
-	shortsToShrink = 2
+	// For controlling dynamic buffer sizes.
+	startBufSize    = 512   // For INFO/CONNECT block
+	minBufSize      = 64    // Smallest to shrink to for PING/PONG
+	maxBufSize      = 65536 // 64k
+	shortsToShrink  = 2     // Trigger to shrink dynamic buffers
+	maxFlushPending = 10    // Max fsps to have in order to wait for writeLoop
 )
 
 // Represent client booleans with a bitmask
@@ -636,7 +635,7 @@ func (c *client) writeLoop() {
 	// buffered outbound structure for efficient writev to the underlying socket.
 	for {
 		c.mu.Lock()
-		owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < 10
+		owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
 		if waitOk && (c.out.pb == 0 || owtf) && !c.flags.isSet(clearConnection) {
 			// Wait on pending data.
 			c.out.sgw = true
