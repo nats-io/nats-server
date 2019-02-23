@@ -45,6 +45,7 @@ type ClusterOpts struct {
 	TLSTimeout     float64           `json:"-"`
 	TLSConfig      *tls.Config       `json:"-"`
 	TLSMap         bool              `json:"-"`
+	TLSInsecure    bool              `json:"tls_insecure"`
 	ListenStr      string            `json:"-"`
 	Advertise      string            `json:"-"`
 	NoAdvertise    bool              `json:"-"`
@@ -233,6 +234,7 @@ type TLSConfigOpts struct {
 	KeyFile          string
 	CaFile           string
 	Verify           bool
+	TLSInsecure      bool
 	Map              bool
 	Timeout          float64
 	Ciphers          []uint16
@@ -1846,6 +1848,13 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'ca_file' to be filename")}
 			}
 			tc.CaFile = caFile
+		case "insecure":
+			insecure, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'tls_insecure' to be a boolean")}
+			}
+			tc.TLSInsecure = insecure
+
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
@@ -1936,6 +1945,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		PreferServerCipherSuites: true,
 		CurvePreferences:         tc.CurvePreferences,
 		Certificates:             []tls.Certificate{cert},
+		InsecureSkipVerify:       tc.TLSInsecure,
 	}
 
 	// Require client certificates as needed
@@ -1995,12 +2005,14 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Debug {
 		opts.Debug = true
 	}
+
 	if flagOpts.Trace {
 		opts.Trace = true
 	}
 	if flagOpts.Logtime {
 		opts.Logtime = true
 	}
+
 	if flagOpts.LogFile != "" {
 		opts.LogFile = flagOpts.LogFile
 	}
@@ -2025,6 +2037,11 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Cluster.Advertise != "" {
 		opts.Cluster.Advertise = flagOpts.Cluster.Advertise
 	}
+
+	if flagOpts.Cluster.TLSInsecure {
+		opts.Cluster.TLSInsecure = true
+	}
+
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
@@ -2270,6 +2287,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
+	fs.BoolVar(&opts.Cluster.TLSInsecure, "cluster_tls_insecure", false, "Skip DNS/IP certificate checks in router interconnections.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
@@ -2418,6 +2436,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			case "cluster", "cluster_listen":
 				// Override cluster config if explicitly set via flags.
 				flagErr = overrideCluster(opts)
+			case "cluster_tls_insecure":
+				opts.Cluster.TLSConfig.InsecureSkipVerify = opts.Cluster.TLSInsecure
 			case "routes":
 				// Keep in mind that the flag has updated opts.RoutesStr at this point.
 				if opts.RoutesStr == "" {
@@ -2472,7 +2492,7 @@ func overrideTLS(opts *Options) error {
 	return err
 }
 
-// overrideCluster updates Options.Cluster if that flag "cluster" (or "cluster_listen")
+// overrideCluster updates Options.Cluster if that flag "cluster" (or "cluster_listen",)
 // has explicitly be set in the command line. If it is set to empty string, it will
 // clear the Cluster options.
 func overrideCluster(opts *Options) error {
