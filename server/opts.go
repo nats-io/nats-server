@@ -2492,7 +2492,7 @@ func overrideTLS(opts *Options) error {
 	return err
 }
 
-// overrideCluster updates Options.Cluster if that flag "cluster" (or "cluster_listen",)
+// overrideCluster updates Options.Cluster if that flag "cluster" (or "cluster_listen")
 // has explicitly be set in the command line. If it is set to empty string, it will
 // clear the Cluster options.
 func overrideCluster(opts *Options) error {
