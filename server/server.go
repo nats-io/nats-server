@@ -292,6 +292,11 @@ func NewServer(opts *Options) (*Server, error) {
 }
 
 func validateOptions(o *Options) error {
+	// For now, InsecureSkipVerify is supported only for Cluster.
+	// So fail if it was set to client and or gateways.
+	if o.TLSConfig != nil && o.TLSConfig.InsecureSkipVerify {
+		return fmt.Errorf("tls InsecureSkipVerify not supported for client connections")
+	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
 		return err

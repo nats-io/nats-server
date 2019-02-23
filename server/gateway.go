@@ -201,12 +201,18 @@ func validateGatewayOptions(o *Options) error {
 	if o.Gateway.Port == 0 {
 		return fmt.Errorf("gateway %q has no port specified (select -1 for random port)", o.Gateway.Name)
 	}
+	if o.Gateway.TLSConfig != nil && o.Gateway.TLSConfig.InsecureSkipVerify {
+		return fmt.Errorf("tls InsecureSkipVerify not supported for gateway")
+	}
 	for i, g := range o.Gateway.Gateways {
 		if g.Name == "" {
 			return fmt.Errorf("gateway in the list %d has no name", i)
 		}
 		if len(g.URLs) == 0 {
 			return fmt.Errorf("gateway %q has no URL", g.Name)
+		}
+		if g.TLSConfig != nil && g.TLSConfig.InsecureSkipVerify {
+			return fmt.Errorf("tls InsecureSkipVerify not supported for remote gateway %q", g.Name)
 		}
 	}
 	return nil
