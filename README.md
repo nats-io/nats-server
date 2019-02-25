@@ -1,7 +1,7 @@
 ## <img src="logos/nats-server.png" width="300">
 [![License][License-Image]][License-Url] [![FOSSA Status][Fossa-Image]][Fossa-Url] [![ReportCard][ReportCard-Image]][ReportCard-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Coverage][Coverage-Image]][Coverage-Url] [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1895/badge)](https://bestpractices.coreinfrastructure.org/projects/1895)
 
-A High Performance [NATS](https://nats.io) Server written in [Go](http://golang.org) and hosted by the Cloud Native Computing Foundation ([CNCF](https://cncf.io)).
+A High Performance [NATS](https://nats.io) Server written in [Go](https://golang.org) and hosted by the Cloud Native Computing Foundation ([CNCF](https://cncf.io)).
 
 
 ## Quickstart
@@ -27,7 +27,7 @@ You can install the NATS server binary or Docker image, connect to a NATS servic
 
 ### Download
 
-The recommended way to install the NATS server is to [download](http://nats.io/download/) one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), Windows, and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
+The recommended way to install the NATS server is to [download](https://nats.io/download/) one of the pre-built release binaries which are available for OSX, Linux (x86-64/ARM), Windows, and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
 
 ### Demo
 
@@ -37,7 +37,7 @@ You can connect to a public NATS server that is running at our demo site: [nats:
 
 You can build the latest version of the server from the `master` branch. The master branch generally should build and pass tests, but may not work correctly in your environment. Note that stable branches of operating system packagers provided by your OS vendor may not be sufficient.
 
-You need [*Go*](http://golang.org/) version 1.9+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies.
+You need [*Go*](https://golang.org/) version 1.9+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies.
 
 - Run `go version` to verify that you are running Go 1.9+. (Run `go help` for more guidance.)
 - Clone the <https://github.com/nats-io/gnatsd> repository.
@@ -64,7 +64,7 @@ The NATS ecosystem provides a large range of supported and community clients, in
 
 ### Protocol
 
-The NATS server uses a [text based protocol](http://nats.io/documentation/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](http://nats.io/documentation/internals/nats-protocol-demo/).
+The NATS server uses a [text based protocol](https://nats.io/documentation/internals/nats-protocol/), so interacting with it can be as simple as using telnet as shown below. See also the [protocol demo](https://nats.io/documentation/internals/nats-protocol-demo/).
 
 ```sh
 > telnet demo.nats.io 4222
@@ -199,7 +199,7 @@ Common Options:
 
 ## Configuration file
 
-Typically you configure the NATS server using a configuration file, an example of which is shown below. See also the [server configuration file](http://nats.io/documentation/managing_the_server/configuration/) documentation for details on the configuration language.
+Typically you configure the NATS server using a configuration file, an example of which is shown below. See also the [server configuration file](https://nats.io/documentation/managing_the_server/configuration/) documentation for details on the configuration language.
 
 ```
 listen: localhost:4242 # host/port to listen for client connections
@@ -278,7 +278,7 @@ Any value in the configuration language can be a variable reference (`key=$VALUE
 
 ## Clustering
 
-Clustering lets you scale NATS messaging by having multiple NATS servers communicate with each other. Clustering lets messages published to one server be routed and received by a subscriber on another server. See also the [clustered NATS](http://nats.io/documentation/managing_the_server/clustering/) documentation.
+Clustering lets you scale NATS messaging by having multiple NATS servers communicate with each other. Clustering lets messages published to one server be routed and received by a subscriber on another server. See also the [clustered NATS](https://nats.io/documentation/managing_the_server/clustering/) documentation.
 
 ### Full mesh required
 
@@ -334,7 +334,7 @@ Note that you don't have to connect all servers to the same *seed* server, any s
 
 The following example demonstrates how to run a cluster of 3 servers on the same host. We will start with the seed server and use the `-D` command line parameter to produce debug information.
 
-See also [clustered NATS](http://nats.io/documentation/managing_the_server/clustering/) for clustered NATS examples using Docker.
+See also [clustered NATS](https://nats.io/documentation/managing_the_server/clustering/) for clustered NATS examples using Docker.
 
 ```
 gnatsd -p 4222 -cluster nats://localhost:4248
@@ -458,7 +458,7 @@ This section describes how to secure the NATS server, including authentication, 
 
 ### Authentication
 
-The NATS server supports single and multi-user/client authentication. See also the [server authentication](http://nats.io/documentation/managing_the_server/authentication/) documentation.
+The NATS server supports single and multi-user/client authentication. See also the [server authentication](https://nats.io/documentation/managing_the_server/authentication/) documentation.
 
 **Single-user Authentication**
 
@@ -569,7 +569,7 @@ authorization {
 
 ### Authorization
 
-The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](http://nats.io/documentation/managing_the_server/authorization/) documentation.
+The NATS server supports authorization using subject-level permissions on a per-user basis. Permission-based authorization is available with [multi-user authentication](#authentication). See also the [Server Authorization](https://nats.io/documentation/managing_the_server/authorization/) documentation.
 
 Before server `1.3.0`, it was only possible to define permissions allowing an authenticated user to publish or subscribe to certain subjects. Starting with `1.3.0`, it is now possible to also define permissions denying the right to publish or subscribe to specific subjects.
 
@@ -918,7 +918,7 @@ Add into the server configuration file's authorization section.
 
 ## Monitoring
 
-If the monitoring port is enabled, the NATS server runs a lightweight HTTP server that has the following endpoints: /varz, /connz, /routez, and /subsz. All endpoints return a JSON object. See [NATS Server monitoring](http://nats.io/documentation/managing_the_server/monitoring/) for endpoint examples.
+If the monitoring port is enabled, the NATS server runs a lightweight HTTP server that has the following endpoints: /varz, /connz, /routez, and /subsz. All endpoints return a JSON object. See [NATS Server monitoring](https://nats.io/documentation/managing_the_server/monitoring/) for endpoint examples.
 
 To see a demonstration of NATS monitoring, run a command similar to the following for each desired endpoint:
 
@@ -947,7 +947,7 @@ For example, running the `gnatsd -m 8222` command, you should see that the NATS 
 
 ## Community and Contributing
 
-NATS has a vibrant and friendly community.  If you are interested in connecting with other NATS users or contributing, read about our [community](http://nats.io/community/) on [NATS.io](http://nats.io/).
+NATS has a vibrant and friendly community.  If you are interested in connecting with other NATS users or contributing, read about our [community](https://nats.io/community/) on [NATS.io](https://nats.io/).
 
 ### NATS Office Hours
 
@@ -958,14 +958,14 @@ NATS Office Hours will be on hiatus for the US summer season. Please join our [S
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [Fossa-Url]: https://app.fossa.io/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd?ref=badge_shield
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
-[Build-Status-Url]: http://travis-ci.org/nats-io/gnatsd
+[Build-Status-Url]: https://travis-ci.org/nats-io/gnatsd
 [Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
 [Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v1.4.1
-[Release-image]: http://img.shields.io/badge/release-v1.4.1-1eb0fc.svg
+[Release-image]: https://img.shields.io/badge/release-v1.4.1-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
-[ReportCard-Url]: http://goreportcard.com/report/nats-io/gnatsd
-[ReportCard-Image]: http://goreportcard.com/badge/github.com/nats-io/gnatsd
+[ReportCard-Url]: https://goreportcard.com/report/nats-io/gnatsd
+[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/gnatsd
 [github-release]: https://github.com/nats-io/gnatsd/releases/
 
 ## License
