@@ -66,7 +66,7 @@ See [Issue #346](https://github.com/nats-io/gnatsd/issues/346)
 #### Make auto-unsubscribe atomic to the SUB protocol
 
 Right now auto-unsubscribe is two operations: `SUB foo 1` followed by `UNSUB foo 1 1` (unsubscribe 
-after 1 message). For the sake of simplicty, efficiency and usability, we'd like to make that an 
+after 1 message). For the sake of simplicity, efficiency and usability, we'd like to make that an 
 atomic protocol operation, optionally specifying the limit as part of the subscription e.g. `SUB foo 1 1`
 
 See [Issue #344](https://github.com/nats-io/gnatsd/issues/344)
