@@ -39,7 +39,22 @@ var (
 	gatewayConnectDelay          = defaultGatewayConnectDelay
 	gatewayReconnectDelay        = defaultGatewayReconnectDelay
 	gatewayMaxRUnsubBeforeSwitch = defaultGatewayMaxRUnsubBeforeSwitch
+	gatewaySolicitDelay          = int64(defaultSolicitGatewaysDelay)
 )
+
+// SetGatewaysSolicitDelay sets the initial delay before gateways
+// connections are initiated.
+// Used by tests.
+func SetGatewaysSolicitDelay(delay time.Duration) {
+	atomic.StoreInt64(&gatewaySolicitDelay, int64(delay))
+}
+
+// ResetGatewaysSolicitDelay resets the initial delay before gateways
+// connections are initiated to its default values.
+// Used by tests.
+func ResetGatewaysSolicitDelay() {
+	atomic.StoreInt64(&gatewaySolicitDelay, int64(defaultSolicitGatewaysDelay))
+}
 
 const (
 	gatewayCmdGossip          byte = 1
@@ -123,7 +138,7 @@ type gateway struct {
 	connectURL *url.URL          // Needed when sending CONNECT after receiving INFO from remote
 	infoJSON   []byte            // Needed when sending INFO after receiving INFO from remote
 	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
-	insim      map[string]*insie // Per-account subject no-interest sent or send-all-subs mode (inbound conn)
+	insim      map[string]*insie // Per-account subject no-interest sent or modeInterestOnly mode (inbound conn)
 }
 
 // Outbound subject interest entry.
@@ -151,7 +166,7 @@ type outsie struct {
 // an RS+ to clear the no-interest in the remote.
 // When an account is switched to modeInterestOnly (we send
 // all subs of an account to the remote), then `ni` is nil and
-// when all subs have been sent, `sap` is set to true.
+// when all subs have been sent, mode is set to modeInterestOnly
 type insie struct {
 	ni   map[string]struct{} // Record if RS- was sent for given subject
 	mode byte                // modeOptimistic or modeInterestOnly
@@ -297,7 +312,7 @@ func (s *Server) startGateways() {
 
 		dur := s.getOpts().gatewaysSolicitDelay
 		if dur == 0 {
-			dur = defaultSolicitGatewaysDelay
+			dur = time.Duration(atomic.LoadInt64(&gatewaySolicitDelay))
 		}
 
 		select {
@@ -1529,6 +1544,9 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	var e *outsie
 	var useSl, newe bool
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	ei, _ := c.gw.outsim.Load(accName)
 	if ei != nil {
 		e = ei.(*outsie)
@@ -1550,8 +1568,6 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	// the sublist. Look for it and remove.
 	if useSl {
 		key := arg
-		c.mu.Lock()
-		defer c.mu.Unlock()
 		// m[string()] does not cause mem allocation
 		sub, ok := c.subs[string(key)]
 		// if RS- for a sub that we don't have, just ignore.
@@ -1611,6 +1627,9 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	var e *outsie
 	var useSl, newe bool
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	ei, _ := c.gw.outsim.Load(string(accName))
 	// We should always have an existing entry for plain subs because
 	// in optimistic mode we would have received RS- first, and
@@ -1637,8 +1656,6 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		} else {
 			key = arg
 		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
 		// If RS+ for a sub that we already have, ignore.
 		// (m[string()] does not allocate memory)
 		if _, ok := c.subs[string(key)]; ok {
@@ -1732,48 +1749,10 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 	return psi, r
 }
 
-// This is invoked when an account is registered. We check if we did send
-// to remote gateways a "no interest" in the past when receiving messages.
-// If we did, we send to the remote gateway an A+ protocol (see
-// processGatewayAccountSub()).
-// <Invoked from outbound connection's readLoop>
-func (s *Server) endAccountNoInterestForGateways(accName string) {
-	gwsa := [4]*client{}
-	gws := gwsa[:0]
-	s.getInboundGatewayConnections(&gws)
-	if len(gws) == 0 {
-		return
-	}
-	var protoa [256]byte
-	var proto []byte
-	for _, c := range gws {
-		c.mu.Lock()
-		// If value in map, it means we sent an A- and need
-		// to clear and send A+ now.
-		if _, inMap := c.gw.insim[accName]; inMap {
-			delete(c.gw.insim, accName)
-			if proto == nil {
-				proto = protoa[:0]
-				proto = append(proto, aSubBytes...)
-				proto = append(proto, accName...)
-				proto = append(proto, CR_LF...)
-			}
-			if c.trace {
-				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
-			}
-			c.sendProto(proto, true)
-		}
-		c.mu.Unlock()
-	}
-}
-
 // This is invoked when registering (or unregistering) the first
 // (or last) subscription on a given account/subject. For each
-// GWs inbound connections, we will check if we need to send
-// the protocol. In optimistic mode we would send an RS+ only
-// if we had previously sent an RS-. If we are in the send-all-subs
-// mode then the protocol is always sent.
-// <Invoked from outbound connection's readLoop>
+// GWs inbound connections, we will check if we need to send an RS+ or A+
+// protocol.
 func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription, added bool) {
 	if sub.queue != nil {
 		return
@@ -1785,18 +1764,24 @@ func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription
 		return
 	}
 	var (
-		protoa  [512]byte
-		proto   []byte
-		subject = string(sub.subject)
-		hasWc   = subjectHasWildcard(subject)
+		rsProtoa  [512]byte
+		rsProto   []byte
+		accProtoa [256]byte
+		accProto  []byte
+		proto     []byte
+		subject   = string(sub.subject)
+		hasWc     = subjectHasWildcard(subject)
 	)
 	for _, c := range gws {
-		sendProto := false
+		proto = nil
 		c.mu.Lock()
-		e := c.gw.insim[accName]
+		e, inMap := c.gw.insim[accName]
+		// If there is a inbound subject interest entry...
 		if e != nil {
-			// If there is a map, need to check if we had sent no-interest.
-			if e.ni != nil {
+			sendProto := false
+			// In optimistic mode, we care only about possibly sending RS+ (or A+)
+			// so if e.ni is not nil we do things only when adding a new subscription.
+			if e.ni != nil && added {
 				// For wildcard subjects, we will remove from our no-interest
 				// map, all subjects that are a subset of this wc subject, but we
 				// still send the wc subject and let the remote do its own cleanup.
@@ -1815,24 +1800,49 @@ func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription
 				// We are in the mode where we always send RS+/- protocols.
 				sendProto = true
 			}
-		}
-		if sendProto {
-			if proto == nil {
-				proto = protoa[:0]
-				if added {
-					proto = append(proto, rSubBytes...)
+			if sendProto {
+				if rsProto == nil {
+					// Construct the RS+/- only once
+					proto = rsProtoa[:0]
+					if added {
+						proto = append(proto, rSubBytes...)
+					} else {
+						proto = append(proto, rUnsubBytes...)
+					}
+					proto = append(proto, accName...)
+					proto = append(proto, ' ')
+					proto = append(proto, sub.subject...)
+					proto = append(proto, CR_LF...)
+					rsProto = proto
 				} else {
-					proto = append(proto, rUnsubBytes...)
+					// Point to the already constructed RS+/-
+					proto = rsProto
 				}
-				proto = append(proto, accName...)
-				proto = append(proto, ' ')
-				proto = append(proto, sub.subject...)
-				proto = append(proto, CR_LF...)
 			}
+		} else if added && inMap {
+			// Here, we have a `nil` entry for this account in
+			// the map, which means that we have previously sent
+			// an A-. We have a new subscription, so we need to
+			// send an A+ and delete the entry from the map so
+			// that we do this only once.
+			delete(c.gw.insim, accName)
+			if accProto == nil {
+				// Construct the A+ only once
+				proto = accProtoa[:0]
+				proto = append(proto, aSubBytes...)
+				proto = append(proto, accName...)
+				proto = append(proto, CR_LF...)
+				accProto = proto
+			} else {
+				// Point to the already constructed A+
+				proto = accProto
+			}
+		}
+		if proto != nil {
+			c.sendProto(proto, true)
 			if c.trace {
 				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 			}
-			c.sendProto(proto, true)
 		}
 		c.mu.Unlock()
 	}
@@ -1875,17 +1885,17 @@ func (s *Server) sendQueueSubOrUnsubToGateways(accName string, qsub *subscriptio
 			proto = append(proto, CR_LF...)
 		}
 		c.mu.Lock()
+		c.sendProto(proto, true)
 		if c.trace {
 			c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 		}
-		c.sendProto(proto, true)
 		c.mu.Unlock()
 	}
 }
 
-// This is invoked when a (queue) subscription is added/removed locally
-// or in our cluster. We use ref counting to know when to update
-// the inbound gateways.
+// This is invoked when a subscription (plain or queue) is
+// added/removed locally or in our cluster. We use ref counting
+// to know when to update the inbound gateways.
 // <Invoked from client or route connection's readLoop or when such
 // connection is closed>
 func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, change int32) {
@@ -1936,6 +1946,9 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 		if entry.n <= 0 {
 			delete(st, string(key))
 			last = true
+			if len(st) == 0 {
+				delete(accMap, accName)
+			}
 		}
 	}
 	if first || last {
@@ -2050,15 +2063,117 @@ func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, change
 	s.mu.Lock()
 	for _, r := range s.routes {
 		r.mu.Lock()
-		if r.trace {
-			r.traceOutOp("", rsproto[:len(rsproto)-2])
-		}
 		r.sendProto(rsproto, true)
+		if r.trace {
+			r.traceOutOp("", rsproto[:len(rsproto)-LEN_CR_LF])
+		}
 		r.mu.Unlock()
 	}
 	s.mu.Unlock()
 	// Possibly send RS+ to gateways too.
 	s.gatewayUpdateSubInterest(acc.Name, sub, change)
+}
+
+// Possibly sends an A- to the remote gateway `c`.
+// Invoked when processing an inbound message and the account is not found.
+// A check under a lock that protects processing of SUBs and UNSUBs is
+// done to make sure that we don't send the A- if a subscription has just
+// been created at the same time, which would otherwise results in the
+// remote never sending messages on this account until a new subscription
+// is created.
+func (s *Server) gatewayHandleAccountNoInterest(c *client, accName []byte) {
+	// Check and possibly send the A- under this lock.
+	s.gateway.pasi.Lock()
+	defer s.gateway.pasi.Unlock()
+
+	si, inMap := s.gateway.pasi.m[string(accName)]
+	if inMap && si != nil && len(si) > 0 {
+		return
+	}
+	c.sendAccountUnsubToGateway(accName)
+}
+
+// Helper that sends an A- to this remote gateway if not already done.
+// This function should not be invoked directly but instead be invoked
+// by functions holding the gateway.pasi's Lock.
+func (c *client) sendAccountUnsubToGateway(accName []byte) {
+	// Check if we have sent the A- or not.
+	c.mu.Lock()
+	if _, sent := c.gw.insim[string(accName)]; !sent {
+		// Add a nil value to indicate that we have sent an A-
+		// so that we know to send A+ when needed.
+		c.gw.insim[string(accName)] = nil
+		var protoa [256]byte
+		proto := protoa[:0]
+		proto = append(proto, aUnsubBytes...)
+		proto = append(proto, accName...)
+		proto = append(proto, CR_LF...)
+		c.sendProto(proto, true)
+		if c.trace {
+			c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
+		}
+	}
+	c.mu.Unlock()
+}
+
+// Possibly sends an A- for this account or RS- for this subject.
+// Invoked when processing an inbound message and the account is found
+// but there is no interest on this subject.
+// A test is done under a lock that protects processing of SUBs and UNSUBs
+// and if there is no subscription at this time, we send an A-. If there
+// is at least a subscription, but no interest on this subject, we send
+// an RS- for this subject (if not already done).
+func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName, subject []byte) {
+	s.gateway.pasi.Lock()
+	defer s.gateway.pasi.Unlock()
+
+	// If there is at least a subscription, possibly send RS-
+	if acc.sl.Count() != 0 {
+		sendProto := false
+		c.mu.Lock()
+		// Send an RS- protocol if not already done and only if
+		// not in the modeInterestOnly.
+		e := c.gw.insim[string(accName)]
+		if e == nil {
+			e = &insie{ni: make(map[string]struct{})}
+			e.ni[string(subject)] = struct{}{}
+			c.gw.insim[string(accName)] = e
+			sendProto = true
+		} else if e.ni != nil {
+			// If we are not in modeInterestOnly, check if we
+			// have already sent an RS-
+			if _, alreadySent := e.ni[string(subject)]; !alreadySent {
+				// TODO(ik): pick some threshold as to when
+				// we need to switch mode
+				if len(e.ni) > gatewayMaxRUnsubBeforeSwitch {
+					// If too many RS-, switch to all-subs-mode.
+					c.gatewaySwitchAccountToSendAllSubs(e, accName)
+				} else {
+					e.ni[string(subject)] = struct{}{}
+					sendProto = true
+				}
+			}
+		}
+		if sendProto {
+			var (
+				protoa = [512]byte{}
+				proto  = protoa[:0]
+			)
+			proto = append(proto, rUnsubBytes...)
+			proto = append(proto, accName...)
+			proto = append(proto, ' ')
+			proto = append(proto, subject...)
+			proto = append(proto, CR_LF...)
+			c.sendProto(proto, true)
+			if c.trace {
+				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
+			}
+		}
+		c.mu.Unlock()
+	} else {
+		// There is not a single subscription, send an A- (if not already done).
+		c.sendAccountUnsubToGateway([]byte(acc.Name))
+	}
 }
 
 // Process a message coming from a remote gateway. Send to any sub/qsub
@@ -2087,30 +2202,14 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 
 	acc, r := c.getAccAndResultFromCache()
 	if acc == nil {
-		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
-		// Send A- only once...
-		c.mu.Lock()
-		if _, sent := c.gw.insim[string(c.pa.account)]; !sent {
-			// Add a nil value to indicate that we have sent an A-
-			// so that we know to send A+ when/if account gets registered.
-			c.gw.insim[string(c.pa.account)] = nil
-			var protoa [256]byte
-			proto := protoa[:0]
-			proto = append(proto, aUnsubBytes...)
-			proto = append(proto, c.pa.account...)
-			if c.trace {
-				c.traceOutOp("", proto)
-			}
-			proto = append(proto, CR_LF...)
-			c.sendProto(proto, true)
-		}
-		c.mu.Unlock()
+		c.Debugf("Unknown account %q for gateway message on subject: %q", c.pa.account, c.pa.subject)
+		c.srv.gatewayHandleAccountNoInterest(c, c.pa.account)
 		return
 	}
 
 	// Check to see if we need to map/route to another account.
 	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-		// We are handling an response to a request that we mapped
+		// We are handling a response to a request that we mapped
 		// via service imports, so if we are here we are the
 		// origin server
 		c.checkForImportServices(acc, msg)
@@ -2119,48 +2218,11 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	// If there is no interest on plain subs, possibly send an RS-,
 	// even if there is qsubs interest.
 	if len(r.psubs) == 0 {
-		sendProto := false
-		c.mu.Lock()
-		// Send an RS- protocol if not already done and only if
-		// not in the send-all-subs mode.
-		e := c.gw.insim[string(c.pa.account)]
-		if e == nil {
-			e = &insie{ni: make(map[string]struct{})}
-			e.ni[string(c.pa.subject)] = struct{}{}
-			c.gw.insim[string(c.pa.account)] = e
-			sendProto = true
-		} else if e.ni != nil {
-			// If we are not in send-all-subs mode, check if we
-			// have already sent an RS-
-			if _, alreadySent := e.ni[string(c.pa.subject)]; !alreadySent {
-				// TODO(ik): pick some threshold as to when
-				// we need to switch mode
-				if len(e.ni) > gatewayMaxRUnsubBeforeSwitch {
-					// If too many RS-, switch to all-subs-mode.
-					c.gatewaySwitchAccountToSendAllSubs(e)
-				} else {
-					e.ni[string(c.pa.subject)] = struct{}{}
-					sendProto = true
-				}
-			}
-		}
-		if sendProto {
-			var (
-				protoa = [512]byte{}
-				proto  = protoa[:0]
-			)
-			proto = append(proto, rUnsubBytes...)
-			proto = append(proto, c.pa.account...)
-			proto = append(proto, ' ')
-			proto = append(proto, c.pa.subject...)
-			if c.trace {
-				c.traceOutOp("", proto)
-			}
-			proto = append(proto, CR_LF...)
-			c.sendProto(proto, true)
-		}
-		c.mu.Unlock()
-		if len(r.qsubs) == 0 || len(c.pa.queues) == 0 {
+		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
+
+		// If there is also no queue filter, then no point in continuing
+		// (even if r.qsubs i > 0).
+		if len(c.pa.queues) == 0 {
 			return
 		}
 	}
@@ -2185,9 +2247,6 @@ func (c *client) gatewayAllSubsReceiveStart(info *Info) {
 	ei, _ := c.gw.outsim.Load(account)
 	if ei != nil {
 		e := ei.(*outsie)
-		// Would not even need locking here since this is
-		// checked only from this go routine, but it's a
-		// one-time event, so...
 		e.Lock()
 		e.mode = modeTransitioning
 		e.Unlock()
@@ -2239,12 +2298,12 @@ func getAccountFromGatewayCommand(c *client, info *Info, cmd string) string {
 // sent.
 // The client's lock is held on entry.
 // <Invoked from inbound connection's readLoop>
-func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie) {
+func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName []byte) {
 	// Set this map to nil so that the no-interest is
 	// no longer checked.
 	e.ni = nil
 	// Capture this since we are passing it to a go-routine.
-	account := string(c.pa.account)
+	account := string(accName)
 	s := c.srv
 
 	// Function that will create an INFO protocol

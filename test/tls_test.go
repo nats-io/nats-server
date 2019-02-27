@@ -364,26 +364,25 @@ func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
 	optsC.Gateway.Name = "C"
 	optsC.Gateway.Port = 9997
 
-	routes := make([]*url.URL, 3)
-	routes[0] = gwA
-	routes[1] = gwB
-	routes[2] = gwC
 	gateways := make([]*server.RemoteGatewayOpts, 3)
 	gateways[0] = &server.RemoteGatewayOpts{
 		Name: optsA.Gateway.Name,
-		URLs: routes,
+		URLs: []*url.URL{gwA},
 	}
 	gateways[1] = &server.RemoteGatewayOpts{
 		Name: optsB.Gateway.Name,
-		URLs: routes,
+		URLs: []*url.URL{gwB},
 	}
 	gateways[2] = &server.RemoteGatewayOpts{
 		Name: optsC.Gateway.Name,
-		URLs: routes,
+		URLs: []*url.URL{gwC},
 	}
 	optsA.Gateway.Gateways = gateways
 	optsB.Gateway.Gateways = gateways
 	optsC.Gateway.Gateways = gateways
+
+	server.SetGatewaysSolicitDelay(100 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
 
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
