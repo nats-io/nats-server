@@ -62,7 +62,7 @@ Cluster Options:
         --cluster <cluster-url>      Cluster URL for solicited routes
         --no_advertise <bool>        Advertise known cluster IPs to clients
         --cluster_advertise <string> Cluster URL to advertise to other servers
-        --cluster_tls_insecure       Skip DNS/IP certificate checks in router interconnections.
+        --cluster_tls_insecure       Skip verification of the route's certificate chain and hostname.
         --connect_retries <number>   For implicit routes, number of connect retries
 
 
