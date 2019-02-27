@@ -95,7 +95,7 @@ func checkForRegisteredQSubInterest(t *testing.T, s *Server, gwName, acc, subj s
 	})
 }
 
-func checkForNoInterest(t *testing.T, c *client, account, subject string, expectNoInterest bool, timeout time.Duration) {
+func checkForSubjectNoInterest(t *testing.T, c *client, account, subject string, expectNoInterest bool, timeout time.Duration) {
 	t.Helper()
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		ei, _ := c.gw.outsim.Load(account)
@@ -1253,6 +1253,9 @@ func setAccountUserPassInOptions(o *Options, accName, username, password string)
 
 func TestGatewayAccountInterest(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
+	// Add users to cause s2 to require auth. Will add an account with user
+	// later.
+	o2.Users = append([]*User(nil), &User{Username: "test", Password: "pwd"})
 	s2 := runGatewayServer(o2)
 	defer s2.Shutdown()
 
@@ -1293,24 +1296,10 @@ func TestGatewayAccountInterest(t *testing.T) {
 	gwcc := s1.getOutboundGatewayConnection("C")
 	checkCount(t, gwcc, 1)
 
-	// S2 should have sent a protocol indicating no interest.
+	// S2 should have sent a protocol indicating no account interest.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		if _, inMap := gwcb.gw.outsim.Load("$foo"); !inMap {
+		if e, inMap := gwcb.gw.outsim.Load("$foo"); !inMap || e != nil {
 			return fmt.Errorf("Did not receive account no interest")
-		}
-		return nil
-	})
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		ei, inMap := gwcc.gw.outsim.Load("$foo")
-		if !inMap {
-			return fmt.Errorf("Did not receive subject no interest")
-		}
-		e := ei.(*outsie)
-		e.RLock()
-		_, inMap = e.ni["foo"]
-		e.RUnlock()
-		if !inMap {
-			return fmt.Errorf("Did not receive subject no interest")
 		}
 		return nil
 	})
@@ -1322,8 +1311,20 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// but because there is no interest on the subject.
 	checkCount(t, gwcc, 1)
 
-	// Add account to S2, this should clear the no interest for that account.
-	s2.RegisterAccount("$foo")
+	// Add account to S2 and a client, this should clear the no-interest
+	// for that account.
+	s2FooAcc, err := s2.RegisterAccount("$foo")
+	if err != nil {
+		t.Fatalf("Error registering account: %v", err)
+	}
+	s2.mu.Lock()
+	s2.users["ivan"] = &User{Account: s2FooAcc, Username: "ivan", Password: "password"}
+	s2.mu.Unlock()
+	s2Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o2.Port)
+	ncS2 := natsConnect(t, s2Url)
+	defer ncS2.Close()
+	// Any subscription should cause s2 to send an A+
+	natsSubSync(t, ncS2, "asub")
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		if _, inMap := gwcb.gw.outsim.Load("$foo"); inMap {
 			return fmt.Errorf("NoInterest has not been cleared")
@@ -1336,6 +1337,17 @@ func TestGatewayAccountInterest(t *testing.T) {
 	checkCount(t, gwcb, 2)
 	// Still won't go to C since there is no sub interest
 	checkCount(t, gwcc, 1)
+
+	// By closing the client from S2, the sole subscription for this
+	// account will disappear and since S2 sent an A+, it will send
+	// an A-.
+	ncS2.Close()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if _, inMap := gwcb.gw.outsim.Load("$foo"); !inMap {
+			return fmt.Errorf("NoInterest should be set")
+		}
+		return nil
+	})
 
 	// Restart C and that should reset the no-interest
 	s3.Shutdown()
@@ -1373,6 +1385,14 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
 
+	// We will create a subscription that we are not testing so
+	// that we don't get an A- in this test.
+	s2Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o2.Port)
+	ncb := natsConnect(t, s2Url)
+	defer ncb.Close()
+	natsSubSync(t, ncb, "not.used")
+	checkExpectedSubs(t, 1, s2)
+
 	s1Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o1.Port)
 	nc := natsConnect(t, s1Url)
 	defer nc.Close()
@@ -1395,7 +1415,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	// S2 should have sent a protocol indicating no subject interest.
 	checkNoInterest := func(t *testing.T, subject string, expectedNoInterest bool) {
 		t.Helper()
-		checkForNoInterest(t, gwcb, "$foo", subject, expectedNoInterest, 2*time.Second)
+		checkForSubjectNoInterest(t, gwcb, "$foo", subject, expectedNoInterest, 2*time.Second)
 	}
 	checkNoInterest(t, "foo", true)
 	// Second send should not go through to B
@@ -1404,15 +1424,12 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	checkCount(t, gwcb, 1)
 
 	// Now create subscription interest on B (s2)
-	s2Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o2.Port)
-	ncb := natsConnect(t, s2Url)
-	defer ncb.Close()
 	ch := make(chan bool, 1)
 	sub := natsSub(t, ncb, "foo", func(_ *nats.Msg) {
 		ch <- true
 	})
 	natsFlush(t, ncb)
-	checkExpectedSubs(t, 1, s2)
+	checkExpectedSubs(t, 2, s2)
 	checkExpectedSubs(t, 0, s1)
 
 	// This should clear the no interest for this subject
@@ -1427,7 +1444,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	// Now unsubscribe, there won't be an UNSUB sent to the gateway.
 	natsUnsub(t, sub)
 	natsFlush(t, ncb)
-	checkExpectedSubs(t, 0, s2)
+	checkExpectedSubs(t, 1, s2)
 	checkExpectedSubs(t, 0, s1)
 
 	// So now sending a message should go over, but then we should get an RS-
@@ -1454,7 +1471,7 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	// This should clear the no-interest on both "foo" and "bar"
 	natsSub(t, ncb, "*", func(_ *nats.Msg) {})
 	natsFlush(t, ncb)
-	checkExpectedSubs(t, 1, s2)
+	checkExpectedSubs(t, 2, s2)
 	checkExpectedSubs(t, 0, s1)
 	checkNoInterest(t, "foo", false)
 	checkNoInterest(t, "bar", false)
@@ -1472,6 +1489,11 @@ func TestGatewaySubjectInterest(t *testing.T) {
 
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	ncb = natsConnect(t, s2Url)
+	defer ncb.Close()
+	natsSubSync(t, ncb, "not.used")
+	checkExpectedSubs(t, 1, s2)
 
 	gwcb = s1.getOutboundGatewayConnection("B")
 	checkCount(t, gwcb, 0)
@@ -1510,8 +1532,8 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	natsSub(t, ncb2bis, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, ncb2bis)
 
-	// Wait for subscription to be registered locally on s2bis and remotely on s2
-	checkExpectedSubs(t, 1, s2, s2bis)
+	// Wait for subscriptions to be registered locally on s2bis and remotely on s2
+	checkExpectedSubs(t, 2, s2, s2bis)
 
 	// Check that subject no-interest on A was cleared.
 	checkNoInterest(t, "foo", false)
@@ -2957,7 +2979,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	natsPub(t, ncA, "newsub", []byte("hello"))
 	natsFlush(t, ncA)
 	aOutboundToC := sa.getOutboundGatewayConnection("C")
-	checkForNoInterest(t, aOutboundToC, globalAccountName, "newsub", true, 2*time.Second)
+	checkForSubjectNoInterest(t, aOutboundToC, globalAccountName, "newsub", true, 2*time.Second)
 
 	newSubSub := natsSub(t, ncC, "newsub", func(_ *nats.Msg) {})
 	natsFlush(t, ncC)
@@ -2974,7 +2996,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		}
 		return fmt.Errorf("Newsub not registered on B")
 	})
-	checkForNoInterest(t, aOutboundToC, globalAccountName, "newsub", false, 2*time.Second)
+	checkForSubjectNoInterest(t, aOutboundToC, globalAccountName, "newsub", false, 2*time.Second)
 
 	natsUnsub(t, newSubSub)
 	natsFlush(t, ncC)
@@ -3308,6 +3330,10 @@ func TestGatewayServiceImport(t *testing.T) {
 	waitForInboundGateways(t, sa, 1, 2*time.Second)
 	waitForInboundGateways(t, sb, 1, 2*time.Second)
 
+	// We need at least a subscription on A otherwise when publishing
+	// to subjects with no interest we would simply get an A-
+	natsSubSync(t, clientA, "not.used")
+
 	// Create a client on B that will use account $foo
 	bURL = fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob.Port)
 	clientB = natsConnect(t, bURL)
@@ -3605,6 +3631,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	waitForOutboundGateways(t, sb, 1, 2*time.Second)
 	waitForInboundGateways(t, sa, 1, 2*time.Second)
 	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// We need at least a subscription on A otherwise when publishing
+	// to subjects with no interest we would simply get an A-
+	natsSubSync(t, clientA, "not.used")
 
 	// Create a client on B that will use account $foo
 	bURL = fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob.Port)
@@ -3942,6 +3972,14 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, barB2, "B2", 0)
 
 	// Check that this all work in interest-only mode.
+
+	// We need at least a subscription on B2 otherwise when publishing
+	// to subjects with no interest we would simply get an A-
+	b2URL := fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob2.Port)
+	clientB2 := natsConnect(t, b2URL)
+	defer clientB2.Close()
+	natsSubSync(t, clientB2, "not.used")
+
 	// Make A2 flood B2 with subjects that B2 is not interested in.
 	for i := 0; i < 1100; i++ {
 		natsPub(t, clientA, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
@@ -4281,6 +4319,14 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, barB2, "B2", 0)
 
 			// Check that this all work in interest-only mode.
+
+			// We need at least a subscription on B2 otherwise when publishing
+			// to subjects with no interest we would simply get an A-
+			b2URL := fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob2.Port)
+			clientB2 := natsConnect(t, b2URL)
+			defer clientB2.Close()
+			natsSubSync(t, clientB2, "not.used")
+
 			// Make A2 flood B2 with subjects that B2 is not interested in.
 			for i := 0; i < 1100; i++ {
 				natsPub(t, clientA, fmt.Sprintf("no.interest.%d", i), []byte("hello"))

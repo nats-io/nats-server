@@ -130,10 +130,16 @@ func TestGatewayAccountInterest(t *testing.T) {
 	gCSend("PING\r\n")
 	gCExpect(pongRe)
 
-	// Now register the $foo account on B, A should receive an A+
-	// because B knows that it previously sent an A-, but since
-	// it did not send one to C, C should not receive the A+.
+	// Now register the $foo account on B and create a subscription,
+	// A should receive an A+ because B knows that it previously sent
+	// an A-, but since it did not send one to C, C should not receive
+	// the A+.
 	sb.RegisterAccount("$foo")
+	client := createClientConn(t, ob.Host, ob.Port)
+	defer client.Close()
+	clientSend, clientExpect := setupConnWithAccount(t, client, "$foo")
+	clientSend("SUB not.used 1234567\r\nPING\r\n")
+	clientExpect(pongRe)
 	gAExpect(asubRe)
 	expectNothing(t, gC)
 }
@@ -145,6 +151,16 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	ob.Users = []*server.User{&server.User{Username: "ivan", Password: "password", Account: fooAcc}}
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
+
+	// Create a client on B
+	client := createClientConn(t, ob.Host, ob.Port)
+	defer client.Close()
+	clientSend, clientExpect := setupConnWithUserPass(t, client, "ivan", "password")
+	// Since we want to test RS+/-, we need to have at
+	// least a subscription on B so that sending from A does
+	// not result in A-
+	clientSend("SUB not.used 1234567\r\nPING\r\n")
+	clientExpect(pongRe)
 
 	gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
 	defer gA.Close()
@@ -207,10 +223,6 @@ func TestGatewaySubjectInterest(t *testing.T) {
 	// A should receive a RS+ because B knows that it previously
 	// sent a RS-, but since it did not send one to C, C should
 	// not receive the RS+.
-	client := createClientConn(t, ob.Host, ob.Port)
-	defer client.Close()
-
-	clientSend, clientExpect := setupConnWithUserPass(t, client, "ivan", "password")
 	clientSend("SUB foo 1\r\nSUB foo 2\r\n")
 	// Also subscribe to subject that was not used before,
 	// so there should be no RS+ for this one.
@@ -380,6 +392,16 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
+
+	// Create a client on B
+	client := createClientConn(t, ob.Host, ob.Port)
+	defer client.Close()
+	clientSend, clientExpect := setupConn(t, client)
+	// Since we want to test RS+/-, we need to have at
+	// least a subscription on B so that sending from A does
+	// not result in A-
+	clientSend("SUB not.used 1234567\r\nPING\r\n")
+	clientExpect(pongRe)
 
 	gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
 	defer gA.Close()

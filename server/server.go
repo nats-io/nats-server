@@ -243,8 +243,6 @@ func NewServer(opts *Options) (*Server, error) {
 	// Call this even if there is no gateway defined. It will
 	// initialize the structure so we don't have to check for
 	// it to be nil or not in various places in the code.
-	// Do this before calling registerAccount() since registerAccount
-	// may try to send things to gateways.
 	gws, err := newGateway(opts)
 	if err != nil {
 		return nil, err
@@ -695,11 +693,6 @@ func (s *Server) registerAccount(acc *Account) {
 	acc.srv = s
 	acc.mu.Unlock()
 	s.accounts[acc.Name] = acc
-	if s.gateway.enabled {
-		// Check and possibly send an A+ to gateways for which
-		// we had sent an A- because account did not exist at that time.
-		s.endAccountNoInterestForGateways(acc.Name)
-	}
 	s.enableAccountTracking(acc)
 }
 
