@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/url"
 	"testing"
 	"time"
 
@@ -915,4 +916,213 @@ func Benchmark____FanIn_64kx100x1(b *testing.B) {
 
 func Benchmark___FanIn_128kx100x1(b *testing.B) {
 	doFanIn(b, 1, 100, 1, sub, sizedString(65536*2))
+}
+
+func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublishers int, subInterest bool) {
+	b.Helper()
+	if b.N < numPublishers {
+		return
+	}
+
+	ob := testDefaultOptionsForGateway("B")
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	gwbURL, err := url.Parse(fmt.Sprintf("nats://%s:%d", ob.Gateway.Host, ob.Gateway.Port))
+	if err != nil {
+		b.Fatalf("Error parsing url: %v", err)
+	}
+	oa := testDefaultOptionsForGateway("A")
+	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
+		&server.RemoteGatewayOpts{
+			Name: "B",
+			URLs: []*url.URL{gwbURL},
+		},
+	}
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	sub := createClientConn(b, ob.Host, ob.Port)
+	defer sub.Close()
+	doDefaultConnect(b, sub)
+	sendProto(b, sub, "SUB end.test 1\r\n")
+	if subInterest {
+		sendProto(b, sub, "SUB foo 2\r\n")
+	}
+	flushConnection(b, sub)
+
+	// If not optimisticMode, make B switch GW connection
+	// to interest mode only
+	if !optimisticMode {
+		pub := createClientConn(b, oa.Host, oa.Port)
+		doDefaultConnect(b, pub)
+		// has to be more that defaultGatewayMaxRUnsubBeforeSwitch
+		for i := 0; i < 2000; i++ {
+			sendProto(b, pub, fmt.Sprintf("PUB reject.me.%d 2\r\nok\r\n", i+1))
+		}
+		flushConnection(b, pub)
+		pub.Close()
+	}
+
+	ch := make(chan bool)
+	var msgOp string
+	var expected int
+	if subInterest {
+		msgOp = fmt.Sprintf("MSG foo 2 %d\r\n%s\r\n", len(payload), payload)
+		expected = len(msgOp) * b.N
+	}
+	// Last message sent to end.test
+	lastMsg := "MSG end.test 1 2\r\nok\r\n"
+	expected += len(lastMsg) * numPublishers
+	go drainConnection(b, sub, ch, expected)
+
+	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", len(payload), payload))
+	startCh := make(chan bool)
+	l := b.N / numPublishers
+
+	pubLoop := func(c net.Conn, ch chan bool) {
+		bw := bufio.NewWriterSize(c, defaultSendBufSize)
+
+		// Signal we are ready
+		close(ch)
+
+		// Wait to start up actual sends.
+		<-startCh
+
+		for i := 0; i < l; i++ {
+			if _, err := bw.Write(sendOp); err != nil {
+				b.Errorf("Received error on PUB write: %v\n", err)
+				return
+			}
+		}
+		if _, err := bw.Write([]byte("PUB end.test 2\r\nok\r\n")); err != nil {
+			b.Errorf("Received error on PUB write: %v\n", err)
+			return
+		}
+		if err := bw.Flush(); err != nil {
+			b.Errorf("Received error on FLUSH write: %v\n", err)
+			return
+		}
+	}
+
+	// Publish Connections SPINUP
+	for i := 0; i < numPublishers; i++ {
+		c := createClientConn(b, oa.Host, oa.Port)
+		doDefaultConnect(b, c)
+		flushConnection(b, c)
+		ch := make(chan bool)
+
+		go pubLoop(c, ch)
+		<-ch
+	}
+
+	b.SetBytes(int64(len(sendOp) + len(msgOp)))
+	b.ResetTimer()
+
+	// Closing this will start all publishers at once (roughly)
+	close(startCh)
+
+	// Wait for end of test
+	<-ch
+
+	b.StopTimer()
+}
+
+func Benchmark_Gateways___Optimistic_1kx01x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(1024), 1, false)
+}
+
+func Benchmark_Gateways___Optimistic_2kx01x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(2048), 1, false)
+}
+
+func Benchmark_Gateways___Optimistic_4kx01x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(4096), 1, false)
+}
+
+func Benchmark_Gateways___Optimistic_1kx10x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(1024), 10, false)
+}
+
+func Benchmark_Gateways___Optimistic_2kx10x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(2048), 10, false)
+}
+
+func Benchmark_Gateways___Optimistic_4kx10x0(b *testing.B) {
+	gatewaysBench(b, true, sizedString(4096), 10, false)
+}
+
+func Benchmark_Gateways___Optimistic_1kx01x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(1024), 1, true)
+}
+
+func Benchmark_Gateways___Optimistic_2kx01x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(2048), 1, true)
+}
+
+func Benchmark_Gateways___Optimistic_4kx01x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(4096), 1, true)
+}
+
+func Benchmark_Gateways___Optimistic_1kx10x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(1024), 10, true)
+}
+
+func Benchmark_Gateways___Optimistic_2kx10x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(2048), 10, true)
+}
+
+func Benchmark_Gateways___Optimistic_4kx10x1(b *testing.B) {
+	gatewaysBench(b, true, sizedString(4096), 10, true)
+}
+
+func Benchmark_Gateways_InterestOnly_1kx01x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(1024), 1, false)
+}
+
+func Benchmark_Gateways_InterestOnly_2kx01x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(2048), 1, false)
+}
+
+func Benchmark_Gateways_InterestOnly_4kx01x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(4096), 1, false)
+}
+
+func Benchmark_Gateways_InterestOnly_1kx10x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(1024), 10, false)
+}
+
+func Benchmark_Gateways_InterestOnly_2kx10x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(2048), 10, false)
+}
+
+func Benchmark_Gateways_InterestOnly_4kx10x0(b *testing.B) {
+	gatewaysBench(b, false, sizedString(4096), 10, false)
+}
+
+func Benchmark_Gateways_InterestOnly_1kx01x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(1024), 1, true)
+}
+
+func Benchmark_Gateways_InterestOnly_2kx01x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(2048), 1, true)
+}
+
+func Benchmark_Gateways_InterestOnly_4kx01x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(4096), 1, true)
+}
+
+func Benchmark_Gateways_InterestOnly_1kx10x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(1024), 10, true)
+}
+
+func Benchmark_Gateways_InterestOnly_2kx10x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(2048), 10, true)
+}
+
+func Benchmark_Gateways_InterestOnly_4kx10x1(b *testing.B) {
+	gatewaysBench(b, false, sizedString(4096), 10, true)
 }

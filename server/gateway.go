@@ -157,6 +157,8 @@ type outsie struct {
 	// Contains queue subscriptions when in optimistic mode,
 	// and all subs when pk is > 0.
 	sl *Sublist
+	// Number of queue subs
+	qsubs int
 }
 
 // Inbound subject interest entry.
@@ -896,14 +898,8 @@ func (c *client) processGatewayInfo(info *Info) {
 		// Now that it is registered, we can remove from temp map.
 		s.removeFromTempClients(cid)
 
-		// Send our QSubs, since this may take some time, execute
-		// in a separate go-routine so that if there is incoming
-		// data from the otherside, we don't cause a slow consumer
-		// error.
-		s.startGoRoutine(func() {
-			s.sendQueueSubsToGateway(c)
-			s.grWG.Done()
-		})
+		// Send our QSubs.
+		s.sendQueueSubsToGateway(c)
 
 		// Initiate outbound connection. This function will behave correctly if
 		// we have already one.
@@ -1112,7 +1108,7 @@ func (s *Server) sendGatewayConfigsToRoute(route *client) {
 		return
 	}
 	// Collect gateway configs for which we have an outbound connection.
-	gwCfgsa := [4]*gatewayCfg{}
+	gwCfgsa := [16]*gatewayCfg{}
 	gwCfgs := gwCfgsa[:0]
 	for _, c := range gw.out {
 		c.mu.Lock()
@@ -1550,8 +1546,6 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	ei, _ := c.gw.outsim.Load(accName)
 	if ei != nil {
 		e = ei.(*outsie)
-		e.Lock()
-		defer e.Unlock()
 		// If there is an entry, for plain sub we need
 		// to know if we should store the sub
 		useSl = queue != nil || e.mode != modeOptimistic
@@ -1564,6 +1558,8 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		e = &outsie{ni: make(map[string]struct{}), sl: NewSublist()}
 		newe = true
 	}
+	e.Lock()
+	defer e.Unlock()
 	// This is when a sub or queue sub is supposed to be in
 	// the sublist. Look for it and remove.
 	if useSl {
@@ -1577,6 +1573,7 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		if e.sl.Remove(sub) == nil {
 			delete(c.subs, string(key))
 			if queue != nil {
+				e.qsubs--
 				atomic.AddInt64(&c.srv.gateway.totalQSubs, -1)
 			}
 			// If last, we can remove the whole entry only
@@ -1637,8 +1634,6 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	// getting many RS- from the remote..
 	if ei != nil {
 		e = ei.(*outsie)
-		e.Lock()
-		defer e.Unlock()
 		useSl = queue != nil || e.mode != modeOptimistic
 	} else if queue == nil {
 		return nil
@@ -1647,6 +1642,8 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		newe = true
 		useSl = true
 	}
+	e.Lock()
+	defer e.Unlock()
 	if useSl {
 		var key []byte
 		// We store remote subs by account/subject[/queue].
@@ -1680,11 +1677,12 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		// If no error inserting in sublist...
 		if e.sl.Insert(sub) == nil {
 			c.subs[string(key)] = sub
+			if queue != nil {
+				e.qsubs++
+				atomic.AddInt64(&c.srv.gateway.totalQSubs, 1)
+			}
 			if newe {
 				c.gw.outsim.Store(string(accName), e)
-			}
-			if queue != nil {
-				atomic.AddInt64(&c.srv.gateway.totalQSubs, 1)
 			}
 		}
 	} else {
@@ -1725,26 +1723,24 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 	if accountInMap {
 		// If in map, check for subs interest with sublist.
 		e := ei.(*outsie)
-		r = e.sl.Match(subj)
-		// If there is plain subs returned, we don't have to
-		// check if we should use the no-interest map because
-		// it means that we are in modeInterestOnly.
-		// Only if there is nothing returned for r.psubs that
-		// we need to check.
-		if len(r.psubs) > 0 {
-			psi = true
-		} else {
-			e.RLock()
-			// We may be in transition to modeInterestOnly
-			// but until e.ni is nil, use it to know if we
-			// should suppress interest or not.
-			if e.ni != nil {
-				if _, inMap := e.ni[subj]; !inMap {
-					psi = true
-				}
+		e.RLock()
+		// We may be in transition to modeInterestOnly
+		// but until e.ni is nil, use it to know if we
+		// should suppress interest or not.
+		if e.ni != nil {
+			if _, inMap := e.ni[subj]; !inMap {
+				psi = true
 			}
-			e.RUnlock()
 		}
+		// If we are in modeInterestOnly (e.ni will be nil)
+		// or if we have queue subs, we also need to check sl.Match.
+		if e.ni == nil || e.qsubs > 0 {
+			r = e.sl.Match(subj)
+			if len(r.psubs) > 0 {
+				psi = true
+			}
+		}
+		e.RUnlock()
 	}
 	return psi, r
 }
@@ -1757,7 +1753,7 @@ func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription
 	if sub.queue != nil {
 		return
 	}
-	gwsa := [4]*client{}
+	gwsa := [16]*client{}
 	gws := gwsa[:0]
 	s.getInboundGatewayConnections(&gws)
 	if len(gws) == 0 {
@@ -1856,7 +1852,7 @@ func (s *Server) sendQueueSubOrUnsubToGateways(accName string, qsub *subscriptio
 		return
 	}
 
-	gwsa := [4]*client{}
+	gwsa := [16]*client{}
 	gws := gwsa[:0]
 	s.getInboundGatewayConnections(&gws)
 	if len(gws) == 0 {
@@ -1966,7 +1962,7 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 // subject, etc..
 // <Invoked from any client connection's readLoop>
 func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) {
-	gwsa := [4]*client{}
+	gwsa := [16]*client{}
 	gws := gwsa[:0]
 	// This is in fast path, so avoid calling function when possible.
 	// Get the outbound connections in place instead of calling
