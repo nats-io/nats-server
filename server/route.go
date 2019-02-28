@@ -440,10 +440,7 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Registering remote route %q", info.ID)
 
 		// Send our subs to the other side.
-		s.startGoRoutine(func() {
-			s.sendSubsToRoute(c)
-			s.grWG.Done()
-		})
+		s.sendSubsToRoute(c)
 
 		// Send info about the known gateways to this route.
 		s.sendGatewayConfigsToRoute(c)
@@ -870,6 +867,8 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 // complete interest for all subjects, both normal as a binary
 // and queue group weights.
 func (s *Server) sendSubsToRoute(route *client) {
+	// Estimate of number of subs
+	subsCount := 0
 	// Send over our account subscriptions.
 	var _accs [4096]*Account
 	accs := _accs[:0]
@@ -877,48 +876,62 @@ func (s *Server) sendSubsToRoute(route *client) {
 	s.mu.Lock()
 	for _, a := range s.accounts {
 		accs = append(accs, a)
+		a.mu.RLock()
+		subsCount += len(a.rm)
+		a.mu.RUnlock()
 	}
 	s.mu.Unlock()
 
 	var raw [4096]*subscription
 	var closed bool
 
-	route.mu.Lock()
-	for _, a := range accs {
-		subs := raw[:0]
-		a.mu.RLock()
-		for key, rme := range a.rm {
-			// FIXME(dlc) - Just pass rme around.
-			// Construct a sub on the fly. We need to place
-			// a client (or im) to properly set the account.
-			var qn []byte
-			subEnd := len(key)
-			if qi := rme.qi; qi > 0 {
-				subEnd = int(qi) - 1
-				qn = []byte(key[qi:])
-			}
-			c := a.randomClient()
-			if c == nil {
-				continue
-			}
-			sub := &subscription{client: c, subject: []byte(key[:subEnd]), queue: qn, qw: rme.n}
-			subs = append(subs, sub)
+	sendSubs := func() {
+		route.mu.Lock()
+		for _, a := range accs {
+			subs := raw[:0]
+			a.mu.RLock()
+			for key, rme := range a.rm {
+				// FIXME(dlc) - Just pass rme around.
+				// Construct a sub on the fly. We need to place
+				// a client (or im) to properly set the account.
+				var qn []byte
+				subEnd := len(key)
+				if qi := rme.qi; qi > 0 {
+					subEnd = int(qi) - 1
+					qn = []byte(key[qi:])
+				}
+				c := a.randomClient()
+				if c == nil {
+					continue
+				}
+				sub := &subscription{client: c, subject: []byte(key[:subEnd]), queue: qn, qw: rme.n}
+				subs = append(subs, sub)
 
+			}
+			a.mu.RUnlock()
+
+			closed = route.sendRouteSubProtos(subs, false, func(sub *subscription) bool {
+				return route.canImport(string(sub.subject))
+			})
+
+			if closed {
+				route.mu.Unlock()
+				return
+			}
 		}
-		a.mu.RUnlock()
-
-		closed = route.sendRouteSubProtos(subs, false, func(sub *subscription) bool {
-			return route.canImport(string(sub.subject))
-		})
-
-		if closed {
-			route.mu.Unlock()
-			return
+		route.mu.Unlock()
+		if !closed {
+			route.Debugf("Sent local subscriptions to route")
 		}
 	}
-	route.mu.Unlock()
-	if !closed {
-		route.Debugf("Sent local subscriptions to route")
+
+	if subsCount > 10000 {
+		s.startGoRoutine(func() {
+			sendSubs()
+			s.grWG.Done()
+		})
+	} else {
+		sendSubs()
 	}
 }
 
