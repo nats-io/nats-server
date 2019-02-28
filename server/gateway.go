@@ -1546,6 +1546,8 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	ei, _ := c.gw.outsim.Load(accName)
 	if ei != nil {
 		e = ei.(*outsie)
+		e.Lock()
+		defer e.Unlock()
 		// If there is an entry, for plain sub we need
 		// to know if we should store the sub
 		useSl = queue != nil || e.mode != modeOptimistic
@@ -1558,8 +1560,6 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		e = &outsie{ni: make(map[string]struct{}), sl: NewSublist()}
 		newe = true
 	}
-	e.Lock()
-	defer e.Unlock()
 	// This is when a sub or queue sub is supposed to be in
 	// the sublist. Look for it and remove.
 	if useSl {
@@ -1634,6 +1634,8 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	// getting many RS- from the remote..
 	if ei != nil {
 		e = ei.(*outsie)
+		e.Lock()
+		defer e.Unlock()
 		useSl = queue != nil || e.mode != modeOptimistic
 	} else if queue == nil {
 		return nil
@@ -1642,8 +1644,6 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		newe = true
 		useSl = true
 	}
-	e.Lock()
-	defer e.Unlock()
 	if useSl {
 		var key []byte
 		// We store remote subs by account/subject[/queue].
