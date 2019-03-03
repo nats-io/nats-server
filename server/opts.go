@@ -1855,7 +1855,7 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 		case "insecure":
 			insecure, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'tls_insecure' to be a boolean")}
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'insecure' to be a boolean")}
 			}
 			tc.TLSInsecure = insecure
 
