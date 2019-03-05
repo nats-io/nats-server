@@ -299,7 +299,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 			c.mu.Unlock()
 		}
 	}
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false)
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false, false)
 }
 
 // Helper function for routes and gateways to create qfilters need for
@@ -1038,7 +1038,12 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 			// the lock, which could cause pingTimer to think that this
 			// connection is stale otherwise.
 			c.last = time.Now()
-			c.flushOutbound()
+			if !c.flushOutbound() {
+				// Another go routine is flushing already and does not
+				// have the lock. Give it a chance to finish...
+				c.mu.Unlock()
+				c.mu.Lock()
+			}
 			if closed = c.flags.isSet(clearConnection); closed {
 				break
 			}

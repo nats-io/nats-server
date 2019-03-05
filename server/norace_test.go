@@ -177,7 +177,6 @@ func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
 		nbar := atomic.LoadInt32(&rbar)
 		nbaz := atomic.LoadInt32(&rbaz)
 		if nbar == expected && nbaz == expected {
-			time.Sleep(500 * time.Millisecond)
 			return nil
 		}
 		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
@@ -328,4 +327,232 @@ func TestNoRaceSlowConsumerPendingBytes(t *testing.T) {
 		}
 	}
 	t.Fatal("Connection should have been closed")
+}
+
+func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
+	// This test will have following setup:
+	//
+	// responder1		         requestor
+	//    |                          |
+	//    v                          v
+	//   [A1]<-------gw------------[B1]
+	//    |  \                      |
+	//    |   \______gw__________   | route
+	//    |                     _\| |
+	//   [  ]--------gw----------->[  ]
+	//   [A2]<-------gw------------[B2]
+	//   [  ]                      [  ]
+	//    ^
+	//    |
+	// responder2
+	//
+	// There is a possible race that when the requestor creates
+	// a subscription on the reply subject, the subject interest
+	// being sent from the inbound gateway, and B1 having none,
+	// the SUB first goes to B2 before being sent to A1 from
+	// B2's inbound GW. But the request can go from B1 to A1
+	// right away and the responder1 connecting to A1 may send
+	// back the reply before the interest on the reply makes it
+	// to A1 (from B2).
+	// This test will also verify that if the responder is instead
+	// connected to A2, the reply is properly received by requestor
+	// on B1.
+
+	// For this test we want to be in interestOnly mode, so
+	// make it happen quickly
+	gatewayMaxRUnsubBeforeSwitch = 1
+	defer func() { gatewayMaxRUnsubBeforeSwitch = defaultGatewayMaxRUnsubBeforeSwitch }()
+
+	// Start with setting up A2 and B2.
+	ob2 := testDefaultOptionsForGateway("B")
+	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
+
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb2)
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	waitForOutboundGateways(t, sa2, 1, time.Second)
+	waitForInboundGateways(t, sa2, 1, time.Second)
+	waitForOutboundGateways(t, sb2, 1, time.Second)
+	waitForInboundGateways(t, sb2, 1, time.Second)
+
+	// Now start A1 which will connect to B2
+	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb2)
+	oa1.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa2.Cluster.Host, oa2.Cluster.Port))
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sb2, 2, time.Second)
+
+	checkClusterFormed(t, sa1, sa2)
+
+	// Finally, start B1 that will connect to A1.
+	ob1 := testGatewayOptionsFromToWithServers(t, "B", "A", sa1)
+	ob1.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob2.Cluster.Host, ob2.Cluster.Port))
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	// Check that we have the outbound gateway from B1 to A1
+	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+		c := sb1.getOutboundGatewayConnection("A")
+		if c == nil {
+			return fmt.Errorf("Outbound connection to A not created yet")
+		}
+		c.mu.Lock()
+		name := c.opts.Name
+		nc := c.nc
+		c.mu.Unlock()
+		if name != sa1.ID() {
+			// Force a disconnect
+			nc.Close()
+			return fmt.Errorf("Was unable to have B1 connect to A1")
+		}
+		return nil
+	})
+
+	waitForInboundGateways(t, sa1, 1, time.Second)
+	checkClusterFormed(t, sb1, sb2)
+
+	// Slow down GWs connections
+	// testSlowDownGatewayConnections(t, sa1, sa2, sb1, sb2)
+
+	// For this test, since we are using qsubs on A and B, and we
+	// want to make sure that it is received only on B, make the
+	// recent sub expiration high (especially when running on
+	// Travis with GOGC=10
+	setRecentSubExpiration := func(s *Server) {
+		s.mu.Lock()
+		s.gateway.pasi.Lock()
+		s.gateway.recSubExp = 10 * time.Second
+		s.gateway.pasi.Unlock()
+		s.mu.Unlock()
+	}
+	setRecentSubExpiration(sb1)
+	setRecentSubExpiration(sb2)
+
+	a1URL := fmt.Sprintf("nats://%s:%d", oa1.Host, oa1.Port)
+	a2URL := fmt.Sprintf("nats://%s:%d", oa2.Host, oa2.Port)
+	b1URL := fmt.Sprintf("nats://%s:%d", ob1.Host, ob1.Port)
+	b2URL := fmt.Sprintf("nats://%s:%d", ob2.Host, ob2.Port)
+
+	ncb1 := natsConnect(t, b1URL)
+	defer ncb1.Close()
+
+	ncb2 := natsConnect(t, b2URL)
+	defer ncb2.Close()
+
+	natsSubSync(t, ncb1, "just.a.sub")
+	natsSubSync(t, ncb2, "just.a.sub")
+	checkExpectedSubs(t, 2, sb1, sb2)
+
+	// For this test, we want A to be checking B's interest in order
+	// to send messages (which would cause replies to be dropped if
+	// there is no interest registered on A). So from A servers,
+	// send to various subjects and cause B's to switch to interestOnly
+	// mode.
+	nca1 := natsConnect(t, a1URL)
+	defer nca1.Close()
+	for i := 0; i < 10; i++ {
+		natsPub(t, nca1, fmt.Sprintf("reject.%d", i), []byte("hello"))
+	}
+	nca2 := natsConnect(t, a2URL)
+	defer nca2.Close()
+	for i := 0; i < 10; i++ {
+		natsPub(t, nca2, fmt.Sprintf("reject.%d", i), []byte("hello"))
+	}
+
+	checkSwitchedMode := func(t *testing.T, s *Server) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			var switchedMode bool
+			c := s.getOutboundGatewayConnection("B")
+			ei, _ := c.gw.outsim.Load(globalAccountName)
+			if ei != nil {
+				e := ei.(*outsie)
+				e.RLock()
+				switchedMode = e.ni == nil && e.mode == modeInterestOnly
+				e.RUnlock()
+			}
+			if !switchedMode {
+				return fmt.Errorf("Still not switched mode")
+			}
+			return nil
+		})
+	}
+	checkSwitchedMode(t, sa1)
+	checkSwitchedMode(t, sa2)
+
+	// Setup a subscriber on _INBOX.> on each of A's servers.
+	total := 1000
+	expected := int32(total)
+	rcvOnA := int32(0)
+	qrcvOnA := int32(0)
+	natsSub(t, nca1, "myreply.>", func(_ *nats.Msg) {
+		atomic.AddInt32(&rcvOnA, 1)
+	})
+	natsQueueSub(t, nca2, "myreply.>", "bar", func(_ *nats.Msg) {
+		atomic.AddInt32(&qrcvOnA, 1)
+	})
+	checkExpectedSubs(t, 2, sa1, sa2)
+
+	// Ok.. so now we will run the actual test where we
+	// create a responder on A1 and make sure that every
+	// single request from B1 gets the reply. Will repeat
+	// test with responder connected to A2.
+	sendReqs := func(t *testing.T, subConn *nats.Conn) {
+		t.Helper()
+		responder := natsSub(t, subConn, "foo", func(m *nats.Msg) {
+			nca1.Publish(m.Reply, []byte("reply"))
+		})
+		natsFlush(t, subConn)
+		checkExpectedSubs(t, 3, sa1, sa2)
+
+		// We are not going to use Request() because this sets
+		// a wildcard subscription on an INBOX and less likely
+		// to produce the race. Instead we will explicitly set
+		// the subscription on the reply subject and create one
+		// per request.
+		for i := 0; i < total/2; i++ {
+			reply := fmt.Sprintf("myreply.%d", i)
+			replySub := natsQueueSubSync(t, ncb1, reply, "bar")
+			natsFlush(t, ncb1)
+
+			// Let's make sure we have interest on B2.
+			if r := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
+				checkFor(t, time.Second, time.Millisecond, func() error {
+					if r := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
+						return fmt.Errorf("B still not registered interest on %s", reply)
+					}
+					return nil
+				})
+			}
+			natsPubReq(t, ncb1, "foo", reply, []byte("request"))
+			if _, err := replySub.NextMsg(time.Second); err != nil {
+				t.Fatalf("Did not receive reply: %v", err)
+			}
+			natsUnsub(t, replySub)
+		}
+
+		responder.Unsubscribe()
+		natsFlush(t, subConn)
+		checkExpectedSubs(t, 2, sa1, sa2)
+	}
+	sendReqs(t, nca1)
+	sendReqs(t, nca2)
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if n := atomic.LoadInt32(&rcvOnA); n != expected {
+			return fmt.Errorf("Subs on A expected to get %v replies, got %v", expected, n)
+		}
+		return nil
+	})
+
+	// We should not have received a single message on the queue sub
+	// on cluster A because messages will have been delivered to
+	// the member on cluster B.
+	if n := atomic.LoadInt32(&qrcvOnA); n != 0 {
+		t.Fatalf("Queue sub on A should not have received message, got %v", n)
+	}
 }

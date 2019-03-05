@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -32,7 +33,10 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
+	defaultGatewayRecentSubExpiration   = time.Second
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
+	gwReplyPrefix                       = "$GR."
+	gwReplyStart                        = len(gwReplyPrefix) + 5 // len of prefix above + len of hash (4) + "."
 )
 
 var (
@@ -93,6 +97,7 @@ type srvGateway struct {
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
 	runknown bool                   // Rejects unknown (not configured) gateway connections
+	replyPfx []byte                 // Will be "$GR.<this cluster name hash>."
 
 	// We maintain the interest of subjects and queues per account.
 	// For a given account, entries in the map could be something like this:
@@ -110,8 +115,9 @@ type srvGateway struct {
 		m map[string]map[string]*sitally
 	}
 
-	resolver netResolver // Used to resolve host name before calling net.Dial()
-	sqbsz    int         // Max buffer size to send queue subs protocol. Used for testing.
+	resolver  netResolver   // Used to resolve host name before calling net.Dial()
+	sqbsz     int           // Max buffer size to send queue subs protocol. Used for testing.
+	recSubExp time.Duration // For how long do we check if there is a subscription match for a message with reply
 }
 
 // Subject interest tally. Also indicates if the key in the map is a
@@ -124,6 +130,7 @@ type sitally struct {
 type gatewayCfg struct {
 	sync.RWMutex
 	*RemoteGatewayOpts
+	replyPfx     []byte
 	urls         map[string]*url.URL
 	connAttempts int
 	implicit     bool
@@ -218,6 +225,19 @@ func validateGatewayOptions(o *Options) error {
 	return nil
 }
 
+// Computes a hash of 4 characters for the given gateway name.
+// This will be used for routing of replies.
+func getReplyPrefixForGateway(name string) []byte {
+	sha := sha256.New()
+	sha.Write([]byte(name))
+	fullHash := []byte(fmt.Sprintf("%x", sha.Sum(nil)))
+	prefix := make([]byte, 0, len(gwReplyPrefix)+5)
+	prefix = append(prefix, gwReplyPrefix...)
+	prefix = append(prefix, fullHash[:4]...)
+	prefix = append(prefix, '.')
+	return prefix
+}
+
 // Initialize the s.gateway structure. We do this even if the server
 // does not have a gateway configured. In some part of the code, the
 // server will check the number of outbound gateways, etc.. and so
@@ -232,6 +252,7 @@ func newGateway(opts *Options) (*srvGateway, error) {
 		URLs:     make(map[string]struct{}),
 		resolver: opts.Gateway.resolver,
 		runknown: opts.Gateway.RejectUnknown,
+		replyPfx: getReplyPrefixForGateway(opts.Gateway.Name),
 	}
 	gateway.Lock()
 	defer gateway.Unlock()
@@ -250,6 +271,7 @@ func newGateway(opts *Options) (*srvGateway, error) {
 		}
 		cfg := &gatewayCfg{
 			RemoteGatewayOpts: rgo.clone(),
+			replyPfx:          getReplyPrefixForGateway(rgo.Name),
 			urls:              make(map[string]*url.URL, len(rgo.URLs)),
 		}
 		if opts.Gateway.TLSConfig != nil && cfg.TLSConfig == nil {
@@ -270,6 +292,7 @@ func newGateway(opts *Options) (*srvGateway, error) {
 	if gateway.sqbsz == 0 {
 		gateway.sqbsz = maxBufSize
 	}
+	gateway.recSubExp = defaultGatewayRecentSubExpiration
 
 	gateway.enabled = opts.Gateway.Name != "" && opts.Gateway.Port != 0
 	return gateway, nil
@@ -1029,9 +1052,11 @@ func (s *Server) sendSubsToGateway(c *client, accountName []byte) {
 		// Instruct to send all subs (RS+/-) for this account from now on.
 		c.mu.Lock()
 		e := c.gw.insim[string(accountName)]
-		if e != nil {
-			e.mode = modeInterestOnly
+		if e == nil {
+			e = &insie{}
+			c.gw.insim[string(accountName)] = e
 		}
+		e.mode = modeInterestOnly
 		c.mu.Unlock()
 	} else {
 		// Send queues for all accounts
@@ -1173,6 +1198,7 @@ func (s *Server) processImplicitGateway(info *Info) {
 	opts := s.getOpts()
 	cfg = &gatewayCfg{
 		RemoteGatewayOpts: &RemoteGatewayOpts{Name: gwName},
+		replyPfx:          getReplyPrefixForGateway(gwName),
 		urls:              make(map[string]*url.URL, len(info.GatewayURLs)),
 		implicit:          true,
 	}
@@ -1901,7 +1927,7 @@ func (s *Server) maybeSendSubOrUnsubToGateways(accName string, sub *subscription
 			}
 		}
 		if proto != nil {
-			c.sendProto(proto, true)
+			c.sendProto(proto, false)
 			if c.trace {
 				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 			}
@@ -1947,7 +1973,7 @@ func (s *Server) sendQueueSubOrUnsubToGateways(accName string, qsub *subscriptio
 			proto = append(proto, CR_LF...)
 		}
 		c.mu.Lock()
-		c.sendProto(proto, true)
+		c.sendProto(proto, false)
 		if c.trace {
 			c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 		}
@@ -2014,12 +2040,44 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 		}
 	}
 	if first || last {
+		if first && sub.client != nil {
+			c := sub.client
+			c.in.lastSub = sub
+			c.in.lastSubExpire = time.Now().Add(s.gateway.recSubExp)
+		}
 		if entry.q {
 			s.sendQueueSubOrUnsubToGateways(accName, sub, first)
 		} else {
 			s.maybeSendSubOrUnsubToGateways(accName, sub, first)
 		}
 	}
+}
+
+// Returns true if the given subject starts with `$GR.`
+func subjectStartsWithGatewayReplyPrefix(subj []byte) bool {
+	return len(subj) > gwReplyStart && string(subj[:len(gwReplyPrefix)]) == gwReplyPrefix
+}
+
+// Evaluates if the given reply should be mapped (adding the origin cluster
+// hash as a prefix) or not.
+func (c *client) shouldMapReplyForGatewaySend(reply []byte) bool {
+	if c.in.lastSub == nil {
+		return false
+	}
+	if time.Now().After(c.in.lastSubExpire) {
+		c.in.lastSub = nil
+		return false
+	}
+	if subjectStartsWithGatewayReplyPrefix(reply) {
+		return false
+	}
+	return matchLiteral(string(reply), string(c.in.lastSub.subject))
+}
+
+var subPool = &sync.Pool{
+	New: func() interface{} {
+		return &subscription{}
+	},
 }
 
 // May send a message to all outbound gateways. It is possible
@@ -2038,46 +2096,84 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	for i := 0; i < len(gw.outo); i++ {
 		gws = append(gws, gw.outo[i])
 	}
+	thisClusterReplyPrefix := gw.replyPfx
 	gw.RUnlock()
 	if len(gws) == 0 {
 		return
 	}
 	var (
-		subj    = string(subject)
-		queuesa = [512]byte{}
-		queues  = queuesa[:0]
-		accName = acc.Name
+		subj       = string(subject)
+		queuesa    = [512]byte{}
+		queues     = queuesa[:0]
+		accName    = acc.Name
+		mreplya    [256]byte
+		mreply     []byte
+		dstPfx     []byte
+		checkReply = reply != nil
 	)
+
+	// Get a subscription from the pool
+	sub := subPool.Get().(*subscription)
+
+	// Check if the subject is on "$GR.<cluster hash>.",
+	// and if so, send to that GW regardless of its
+	// interest on the real subject (that is, skip the
+	// check of subject interest).
+	if subjectStartsWithGatewayReplyPrefix(subject) {
+		dstPfx = subject[:gwReplyStart]
+	}
 	for i := 0; i < len(gws); i++ {
 		gwc := gws[i]
-		// Plain sub interest and queue sub results for this account/subject
-		psi, qr := gwc.gatewayInterest(accName, subj)
-		if !psi && qr == nil {
-			continue
-		}
-		queues = queuesa[:0]
-		if qr != nil {
-			for i := 0; i < len(qr.qsubs); i++ {
-				qsubs := qr.qsubs[i]
-				if len(qsubs) > 0 {
-					queue := qsubs[0].queue
-					add := true
-					for _, qn := range qgroups {
-						if bytes.Equal(queue, qn) {
-							add = false
-							break
+		if dstPfx != nil {
+			gwc.mu.Lock()
+			ok := gwc.gw.cfg != nil && bytes.Equal(dstPfx, gwc.gw.cfg.replyPfx)
+			gwc.mu.Unlock()
+			if !ok {
+				continue
+			}
+		} else {
+			// Plain sub interest and queue sub results for this account/subject
+			psi, qr := gwc.gatewayInterest(accName, subj)
+			if !psi && qr == nil {
+				continue
+			}
+			queues = queuesa[:0]
+			if qr != nil {
+				for i := 0; i < len(qr.qsubs); i++ {
+					qsubs := qr.qsubs[i]
+					if len(qsubs) > 0 {
+						queue := qsubs[0].queue
+						add := true
+						for _, qn := range qgroups {
+							if bytes.Equal(queue, qn) {
+								add = false
+								break
+							}
 						}
-					}
-					if add {
-						qgroups = append(qgroups, queue)
-						queues = append(queues, queue...)
-						queues = append(queues, ' ')
+						if add {
+							qgroups = append(qgroups, queue)
+							queues = append(queues, queue...)
+							queues = append(queues, ' ')
+						}
 					}
 				}
 			}
+			if !psi && len(queues) == 0 {
+				continue
+			}
 		}
-		if !psi && len(queues) == 0 {
-			continue
+		if checkReply {
+			// Check/map only once
+			checkReply = false
+			// Assume we will use original
+			mreply = reply
+			// If there was a recent matching subscription on that connection
+			// and the reply is not already mapped, then map (add prefix).
+			if c.shouldMapReplyForGatewaySend(reply) {
+				mreply = mreplya[:0]
+				mreply = append(mreply, thisClusterReplyPrefix...)
+				mreply = append(mreply, reply...)
+			}
 		}
 		mh := c.msgb[:msgHeadProtoLen]
 		mh = append(mh, accName...)
@@ -2087,29 +2183,35 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		if len(queues) > 0 {
 			if reply != nil {
 				mh = append(mh, "+ "...) // Signal that there is a reply.
-				mh = append(mh, reply...)
+				mh = append(mh, mreply...)
 				mh = append(mh, ' ')
 			} else {
 				mh = append(mh, "| "...) // Only queues
 			}
 			mh = append(mh, queues...)
 		} else if reply != nil {
-			mh = append(mh, reply...)
+			mh = append(mh, mreply...)
 			mh = append(mh, ' ')
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, CR_LF...)
-		sub := subscription{client: gwc, subject: c.pa.subject}
-		c.deliverMsg(&sub, mh, msg)
+
+		// We reuse the subscription object that we pass to deliverMsg.
+		sub.client = gwc
+		sub.subject = c.pa.subject
+		c.deliverMsg(sub, mh, msg)
 	}
+	// Done with subscription, put back to pool. We don't need
+	// to reset content since we explicitly set when using it.
+	subPool.Put(sub)
 }
 
-func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, change int32) {
+func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, c *client, change int32) {
 	sid := make([]byte, 0, len(acc.Name)+len(subject)+1)
 	sid = append(sid, acc.Name...)
 	sid = append(sid, ' ')
 	sid = append(sid, subject...)
-	sub := &subscription{subject: subject, sid: sid}
+	sub := &subscription{client: c, subject: subject, sid: sid}
 
 	var rspa [1024]byte
 	rsproto := rspa[:0]
@@ -2125,7 +2227,7 @@ func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, change
 	s.mu.Lock()
 	for _, r := range s.routes {
 		r.mu.Lock()
-		r.sendProto(rsproto, true)
+		r.sendProto(rsproto, false)
 		if r.trace {
 			r.traceOutOp("", rsproto[:len(rsproto)-LEN_CR_LF])
 		}
@@ -2161,7 +2263,8 @@ func (s *Server) gatewayHandleAccountNoInterest(c *client, accName []byte) {
 func (c *client) sendAccountUnsubToGateway(accName []byte) {
 	// Check if we have sent the A- or not.
 	c.mu.Lock()
-	if _, sent := c.gw.insim[string(accName)]; !sent {
+	e, sent := c.gw.insim[string(accName)]
+	if e != nil || !sent {
 		// Add a nil value to indicate that we have sent an A-
 		// so that we know to send A+ when needed.
 		c.gw.insim[string(accName)] = nil
@@ -2170,7 +2273,7 @@ func (c *client) sendAccountUnsubToGateway(accName []byte) {
 		proto = append(proto, aUnsubBytes...)
 		proto = append(proto, accName...)
 		proto = append(proto, CR_LF...)
-		c.sendProto(proto, true)
+		c.sendProto(proto, false)
 		if c.trace {
 			c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 		}
@@ -2226,7 +2329,7 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 			proto = append(proto, ' ')
 			proto = append(proto, subject...)
 			proto = append(proto, CR_LF...)
-			c.sendProto(proto, true)
+			c.sendProto(proto, false)
 			if c.trace {
 				c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
 			}
@@ -2236,6 +2339,17 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 		// There is not a single subscription, send an A- (if not already done).
 		c.sendAccountUnsubToGateway([]byte(acc.Name))
 	}
+}
+
+func (g *srvGateway) getReplyPrefix() []byte {
+	g.RLock()
+	replyPfx := g.replyPfx
+	g.RUnlock()
+	return replyPfx
+}
+
+func (s *Server) isGatewayReplyForThisCluster(subj []byte) bool {
+	return string(s.gateway.getReplyPrefix()) == string(subj[:gwReplyStart])
 }
 
 // Process a message coming from a remote gateway. Send to any sub/qsub
@@ -2262,6 +2376,34 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		return
 	}
 
+	// If we receive a message on $GR.<cluster>.<subj>
+	// we will drop the prefix before processing interest
+	// in this cluster, but we also need to resend to
+	// other gateways.
+	sendBackToGateways := false
+
+	// First thing to do is to check if the subject starts
+	// with "$GR.<hash>.".
+	if subjectStartsWithGatewayReplyPrefix(c.pa.subject) {
+		// If it does, then is this server/cluster the actual
+		// destination for this message?
+		if !c.srv.isGatewayReplyForThisCluster(c.pa.subject) {
+			// We could report, for now, just drop.
+			return
+		}
+		// Adjust the subject to past the prefix
+		c.pa.subject = c.pa.subject[gwReplyStart:]
+		// Use a stack buffer to rewrite c.pa.cache since we
+		// only need it for getAccAndResultFromCache()
+		var _pacache [256]byte
+		pacache := _pacache[:0]
+		pacache = append(pacache, c.pa.account...)
+		pacache = append(pacache, ' ')
+		pacache = append(pacache, c.pa.subject...)
+		c.pa.pacache = pacache
+		sendBackToGateways = true
+	}
+
 	acc, r := c.getAccAndResultFromCache()
 	if acc == nil {
 		c.Debugf("Unknown account %q for gateway message on subject: %q", c.pa.account, c.pa.subject)
@@ -2277,19 +2419,27 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		c.checkForImportServices(acc, msg)
 	}
 
-	// If there is no interest on plain subs, possibly send an RS-,
-	// even if there is qsubs interest.
-	if len(r.psubs) == 0 {
-		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
+	if !sendBackToGateways {
+		// If there is no interest on plain subs, possibly send an RS-,
+		// even if there is qsubs interest.
+		if len(r.psubs) == 0 {
+			c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
 
-		// If there is also no queue filter, then no point in continuing
-		// (even if r.qsubs i > 0).
-		if len(c.pa.queues) == 0 {
-			return
+			// If there is also no queue filter, then no point in continuing
+			// (even if r.qsubs i > 0).
+			if len(c.pa.queues) == 0 {
+				return
+			}
 		}
+		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false, false)
+	} else {
+		// We normally would not allow sending to a queue unless the
+		// RMSG contains the queue groups, however, if the incoming
+		// message was a "$GR." then we need to act as if this was
+		// a CLIENT connection..
+		qnames := c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, true, true)
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
-
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false)
 }
 
 // Indicates that the remote which we are sending messages to
