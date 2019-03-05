@@ -121,9 +121,6 @@ const (
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
 
-	// DEFAULT_REMOTE_QSUBS_SWEEPER is how often we sweep for orphans. Deprecated
-	DEFAULT_REMOTE_QSUBS_SWEEPER = 30 * time.Second
-
 	// DEFAULT_MAX_CLOSED_CLIENTS is the maximum number of closed connections we hold onto.
 	DEFAULT_MAX_CLOSED_CLIENTS = 10000
 

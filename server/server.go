@@ -47,8 +47,8 @@ const lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
 // Make this a variable so that we can change during tests
 var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
 
-// Info is the information sent to clients to help them understand information
-// about this server.
+// Info is the information sent to clients, routes, gateways, and leaf nodes,
+// to help them understand information about this server.
 type Info struct {
 	ID                string   `json:"server_id"`
 	Version           string   `json:"version"`
@@ -83,38 +83,43 @@ type Info struct {
 type Server struct {
 	gcid uint64
 	stats
-	mu             sync.Mutex
-	kp             nkeys.KeyPair
-	prand          *rand.Rand
-	info           Info
-	configFile     string
-	optsMu         sync.RWMutex
-	opts           *Options
-	running        bool
-	shutdown       bool
-	listener       net.Listener
-	gacc           *Account
-	sys            *internal
-	accounts       map[string]*Account
-	activeAccounts int
-	accResolver    AccountResolver
-	clients        map[uint64]*client
-	routes         map[uint64]*client
-	remotes        map[string]*client
-	users          map[string]*User
-	nkeys          map[string]*NkeyUser
-	totalClients   uint64
-	closed         *closedRingBuffer
-	done           chan bool
-	start          time.Time
-	http           net.Listener
-	httpHandler    http.Handler
-	profiler       net.Listener
-	httpReqStats   map[string]uint64
-	routeListener  net.Listener
-	routeInfo      Info
-	routeInfoJSON  []byte
-	quitCh         chan struct{}
+	mu               sync.Mutex
+	kp               nkeys.KeyPair
+	prand            *rand.Rand
+	info             Info
+	configFile       string
+	optsMu           sync.RWMutex
+	opts             *Options
+	running          bool
+	shutdown         bool
+	listener         net.Listener
+	gacc             *Account
+	sys              *internal
+	accounts         map[string]*Account
+	activeAccounts   int
+	accResolver      AccountResolver
+	clients          map[uint64]*client
+	routes           map[uint64]*client
+	remotes          map[string]*client
+	leafs            map[uint64]*client
+	users            map[string]*User
+	nkeys            map[string]*NkeyUser
+	totalClients     uint64
+	closed           *closedRingBuffer
+	done             chan bool
+	start            time.Time
+	http             net.Listener
+	httpHandler      http.Handler
+	profiler         net.Listener
+	httpReqStats     map[string]uint64
+	routeListener    net.Listener
+	routeInfo        Info
+	routeInfoJSON    []byte
+	leafNodeListener net.Listener
+	leafNodeInfo     Info
+	leafNodeInfoJSON []byte
+
+	quitCh chan struct{}
 
 	// Tracking Go routines
 	grMu         sync.Mutex
@@ -181,7 +186,7 @@ func NewServer(opts *Options) (*Server, error) {
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
-	// Created server nkey identity.
+	// Created server's nkey identity.
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
 
@@ -263,6 +268,9 @@ func NewServer(opts *Options) (*Server, error) {
 	s.routes = make(map[uint64]*client)
 	s.remotes = make(map[string]*client)
 
+	// For tracking leaf nodes.
+	s.leafs = make(map[uint64]*client)
+
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
 	s.quitCh = make(chan struct{})
@@ -289,6 +297,11 @@ func validateOptions(o *Options) error {
 	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
+		return err
+	}
+	// Check on leaf nodes which will require a system
+	// account when gateways are also configured.
+	if err := validateLeafNode(o); err != nil {
 		return err
 	}
 	// Check that gateway is properly configured. Returns no error
@@ -401,10 +414,14 @@ func (s *Server) generateRouteInfoJSON() {
 }
 
 // isTrustedIssuer will check that the issuer is a trusted public key.
-// This is used to make sure and account was signed by a trusted operator.
+// This is used to make sure an account was signed by a trusted operator.
 func (s *Server) isTrustedIssuer(issuer string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// If we are not running in trusted mode and there is no issuer, that is ok.
+	if len(s.trustedKeys) == 0 && issuer == "" {
+		return true
+	}
 	for _, tk := range s.trustedKeys {
 		if tk == issuer {
 			return true
@@ -413,8 +430,8 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 	return false
 }
 
-// processTrustedKeys will process stamped and option based
-// trusted nkeys. Returns success.
+// processTrustedKeys will process binary stamped and
+// options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
 	if trustedKeys != "" && !s.initStampedTrustedKeys() {
 		return false
@@ -596,7 +613,7 @@ func (s *Server) SystemAccount() *Account {
 	return nil
 }
 
-// Assign an system account. Should only be called once.
+// Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from inside
 // the server itself.
 func (s *Server) setSystemAccount(acc *Account) error {
@@ -607,10 +624,14 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	if acc.IsExpired() {
 		return ErrAccountExpired
 	}
+	// If we are running with trusted keys for an operator
+	// make sure we check the account is legit.
 	if !s.isTrustedIssuer(acc.Issuer) {
 		return ErrAccountValidation
 	}
+
 	s.mu.Lock()
+
 	if s.sys != nil {
 		s.mu.Unlock()
 		return ErrAccountExists
@@ -661,6 +682,13 @@ func (s *Server) systemAccount() *Account {
 	return s.sys.account
 }
 
+// Determine if accounts should track subscriptions for
+// efficient propagation.
+// Lock should be held on entry.
+func (s *Server) shouldTrackSubscriptions() bool {
+	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
+}
+
 // Place common account setup here.
 // Lock should be held on entry.
 func (s *Server) registerAccount(acc *Account) {
@@ -682,8 +710,8 @@ func (s *Server) registerAccount(acc *Account) {
 	// already created (global account), so use locking and
 	// make sure we create only if needed.
 	acc.mu.Lock()
-	if acc.rm == nil && s.opts != nil && (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0) {
-		acc.rm = make(map[string]*rme, 256)
+	if acc.rm == nil && s.opts != nil && s.shouldTrackSubscriptions() {
+		acc.rm = make(map[string]int32)
 	}
 	acc.srv = s
 	acc.mu.Unlock()
@@ -898,6 +926,19 @@ func (s *Server) Start() {
 		s.startGateways()
 	}
 
+	// Start up listen if we want to accept leaf node connections.
+	if opts.LeafNode.Port != 0 {
+		// Spin up the accept loop if needed
+		ch := make(chan struct{})
+		go s.leafNodeAcceptLoop(ch)
+		<-ch
+	}
+
+	// Solict remote servers for leaf node connections.
+	if len(opts.LeafNode.Remotes) > 0 {
+		s.solicitLeafNodeRemotes(opts.LeafNode.Remotes)
+	}
+
 	// The Routing routine needs to wait for the client listen
 	// port to be opened and potential ephemeral port selected.
 	clientListenReady := make(chan struct{})
@@ -967,6 +1008,11 @@ func (s *Server) Shutdown() {
 	// Copy off the gateways
 	s.getAllGatewayConnections(conns)
 
+	// Copy off the leaf nodes
+	for i, c := range s.leafs {
+		conns[i] = c
+	}
+
 	// Number of done channel responses we expect.
 	doneExpected := 0
 
@@ -975,6 +1021,13 @@ func (s *Server) Shutdown() {
 		doneExpected++
 		s.listener.Close()
 		s.listener = nil
+	}
+
+	// Kick leafnodes AcceptLoop()
+	if s.leafNodeListener != nil {
+		doneExpected++
+		s.leafNodeListener.Close()
+		s.leafNodeListener = nil
 	}
 
 	// Kick route AcceptLoop()
@@ -1628,6 +1681,8 @@ func (s *Server) removeClient(c *client) {
 		s.removeRoute(c)
 	case GATEWAY:
 		s.removeRemoteGatewayConnection(c)
+	case LEAF:
+		s.removeLeafNodeConnection(c)
 	}
 }
 
@@ -1667,6 +1722,13 @@ func (s *Server) NumRemotes() int {
 	return len(s.remotes)
 }
 
+// NumLeafNodes will report number of leaf node connections.
+func (s *Server) NumLeafNodes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.leafs)
+}
+
 // NumClients will report the number of registered clients.
 func (s *Server) NumClients() int {
 	s.mu.Lock()
@@ -1674,11 +1736,22 @@ func (s *Server) NumClients() int {
 	return len(s.clients)
 }
 
+// GetClient will return the client associated with cid.
+func (s *Server) GetClient(cid uint64) *client {
+	return s.getClient(cid)
+}
+
 // getClient will return the client associated with cid.
 func (s *Server) getClient(cid uint64) *client {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.clients[cid]
+}
+
+func (s *Server) GetLeafNode(cid uint64) *client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leafs[cid]
 }
 
 // NumSubscriptions will report how many subscriptions are active.
@@ -1752,7 +1825,7 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 	return s.profiler.Addr().(*net.TCPAddr)
 }
 
-// ReadyForConnections returns `true` if the server is ready to accept client
+// ReadyForConnections returns `true` if the server is ready to accept clients
 // and, if routing is enabled, route connections. If after the duration
 // `dur` the server is still not ready, returns `false`.
 func (s *Server) ReadyForConnections(dur time.Duration) bool {

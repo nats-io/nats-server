@@ -235,6 +235,8 @@ func (s *Server) checkAuthentication(c *client) bool {
 		return s.isRouterAuthorized(c)
 	case GATEWAY:
 		return s.isGatewayAuthorized(c)
+	case LEAF:
+		return s.isLeafNodeAuthorized(c)
 	default:
 		return false
 	}
@@ -525,6 +527,112 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 		return false
 	}
 	return comparePasswords(opts.Gateway.Password, c.opts.Password)
+}
+
+// isLeafNodeAuthorized will check for auth for an inbound leaf node connection.
+func (s *Server) isLeafNodeAuthorized(c *client) bool {
+	// FIXME(dlc) - This is duplicated from client auth, should be able to combine
+	// and not fail so bad on DRY.
+
+	// Grab under lock but process after.
+	var (
+		opts *Options
+		juc  *jwt.UserClaims
+		acc  *Account
+		err  error
+	)
+
+	s.mu.Lock()
+
+	// Grab options
+	opts = s.opts
+
+	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
+	if s.trustedKeys != nil {
+		if c.opts.JWT == "" {
+			s.mu.Unlock()
+			c.Debugf("Authentication requires a user JWT")
+			return false
+		}
+		// So we have a valid user jwt here.
+		juc, err = jwt.DecodeUserClaims(c.opts.JWT)
+		if err != nil {
+			s.mu.Unlock()
+			c.Debugf("User JWT not valid: %v", err)
+			return false
+		}
+		vr := jwt.CreateValidationResults()
+		juc.Validate(vr)
+		if vr.IsBlocking(true) {
+			s.mu.Unlock()
+			c.Debugf("User JWT no longer valid: %+v", vr)
+			return false
+		}
+	}
+	s.mu.Unlock()
+
+	// If we have a jwt and a userClaim, make sure we have the Account, etc associated.
+	// We need to look up the account. This will use an account resolver if one is present.
+	if juc != nil {
+		if acc, _ = s.LookupAccount(juc.Issuer); acc == nil {
+			c.Debugf("Account JWT can not be found")
+			return false
+		}
+		// FIXME(dlc) - Add in check for account allowed to do leaf nodes?
+		// Bool or active count like client?
+		if !s.isTrustedIssuer(acc.Issuer) {
+			c.Debugf("Account JWT not signed by trusted operator")
+			return false
+		}
+		if acc.IsExpired() {
+			c.Debugf("Account JWT has expired")
+			return false
+		}
+		// Verify the signature against the nonce.
+		if c.opts.Sig == "" {
+			c.Debugf("Signature missing")
+			return false
+		}
+		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+		if err != nil {
+			// Allow fallback to normal base64.
+			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				c.Debugf("Signature not valid base64")
+				return false
+			}
+		}
+		pub, err := nkeys.FromPublicKey(juc.Subject)
+		if err != nil {
+			c.Debugf("User nkey not valid: %v", err)
+			return false
+		}
+		if err := pub.Verify(c.nonce, sig); err != nil {
+			c.Debugf("Signature not verified")
+			return false
+		}
+
+		nkey := buildInternalNkeyUser(juc, acc)
+		c.RegisterNkeyUser(nkey)
+
+		// Generate a connect event if we have a system account.
+		// FIXME(dlc) - Make one for leafnodes if we track active connections.
+		//s.accountConnectEvent(c)
+
+		// Check if we need to set an auth timer if the user jwt expires.
+		c.checkExpiration(juc.Claims())
+		return true
+	}
+
+	// Snapshot server options.
+	if opts.LeafNode.Username == "" {
+		return true
+	}
+
+	if opts.LeafNode.Username != c.opts.Username {
+		return false
+	}
+	return comparePasswords(opts.LeafNode.Password, c.opts.Password)
 }
 
 // Support for bcrypt stored passwords and tokens.

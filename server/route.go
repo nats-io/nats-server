@@ -131,7 +131,7 @@ func (c *client) removeReplySub(sub *subscription) {
 // Lock should be held upon entering.
 func (c *client) removeReplySubTimeout(sub *subscription) {
 	// Remove any reply sub timer if it exists.
-	if c.route.replySubs == nil {
+	if c.route == nil || c.route.replySubs == nil {
 		return
 	}
 	if t, ok := c.route.replySubs[sub]; ok {
@@ -162,7 +162,6 @@ func (c *client) processRoutedMsgArgs(trace bool, arg []byte) error {
 	if trace {
 		c.traceInOp("RMSG", arg)
 	}
-
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
@@ -292,7 +291,6 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 			c.mu.Unlock()
 		}
 	}
-
 	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false)
 }
 
@@ -309,7 +307,7 @@ func (c *client) makeQFilter(qsubs [][]*subscription) {
 }
 
 // Lock should be held entering here.
-func (c *client) sendConnect(tlsRequired bool) {
+func (c *client) sendRouteConnect(tlsRequired bool) {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
 		user = userInfo.Username()
@@ -761,6 +759,9 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		srv.gatewayUpdateSubInterest(accountName, sub, -1)
 	}
 
+	// Now check on leafnode updates.
+	srv.updateLeafNodes(acc, sub, -1)
+
 	if c.opts.Verbose {
 		c.sendOK()
 	}
@@ -822,7 +823,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
-	if c.subsExceeded() {
+	if c.subsAtLimit() {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
 		return nil
@@ -839,7 +840,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	osub := c.subs[key]
 	updateGWs := false
 	if osub == nil {
-		c.subs[string(key)] = sub
+		c.subs[key] = sub
 		// Now place into the account sl.
 		if err = acc.sl.Insert(sub); err != nil {
 			delete(c.subs, key)
@@ -856,12 +857,17 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 	c.mu.Unlock()
 
-	if c.opts.Verbose {
-		c.sendOK()
-	}
 	if updateGWs {
 		srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
 	}
+
+	// Now check on leafnode updates.
+	srv.updateLeafNodes(acc, sub, 1)
+
+	if c.opts.Verbose {
+		c.sendOK()
+	}
+
 	return nil
 }
 
@@ -886,22 +892,26 @@ func (s *Server) sendSubsToRoute(route *client) {
 	route.mu.Lock()
 	for _, a := range accs {
 		subs := raw[:0]
+
 		a.mu.RLock()
-		for key, rme := range a.rm {
+		c := a.randomClient()
+		if c == nil {
+			a.mu.RUnlock()
+			continue
+		}
+		for key, n := range a.rm {
 			// FIXME(dlc) - Just pass rme around.
 			// Construct a sub on the fly. We need to place
 			// a client (or im) to properly set the account.
-			var qn []byte
-			subEnd := len(key)
-			if qi := rme.qi; qi > 0 {
-				subEnd = int(qi) - 1
-				qn = []byte(key[qi:])
+			var subj, qn []byte
+			s := strings.Split(key, " ")
+			subj = []byte(s[0])
+			if len(s) > 1 {
+				qn = []byte(s[1])
 			}
-			c := a.randomClient()
-			if c == nil {
-				continue
-			}
-			sub := &subscription{client: c, subject: []byte(key[:subEnd]), queue: qn, qw: rme.n}
+			// TODO(dlc) - This code needs to change, but even if left alone could be more
+			// efficient with these tmp subs.
+			sub := &subscription{client: c, subject: subj, queue: qn, qw: n}
 			subs = append(subs, sub)
 
 		}
@@ -1079,7 +1089,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Check for TLS
 	if tlsRequired {
-		// Copy off the config to add in ServerName if we
+		// Copy off the config to add in ServerName if we need to.
 		tlsConfig := opts.Cluster.TLSConfig.Clone()
 
 		// If we solicited, we will act like the client, otherwise the server.
@@ -1169,7 +1179,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		c.Debugf("Route connect msg sent")
-		c.sendConnect(tlsRequired)
+		c.sendRouteConnect(tlsRequired)
 	}
 
 	// Send our info to the other side.
@@ -1262,56 +1272,50 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
-	// We only store state on local subs for transmission across routes.
-	if sub.client == nil || (sub.client.kind != CLIENT && sub.client.kind != SYSTEM) {
+	// We only store state on local subs for transmission across all other routes.
+	if sub.client == nil || (sub.client.kind != CLIENT && sub.client.kind != SYSTEM && sub.client.kind != LEAF) {
 		return
 	}
 
 	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
 	var (
-		_rkey [1024]byte
-		key   []byte
-		qi    int32
+		_rkey  [1024]byte
+		key    []byte
+		update bool
 	)
 	if sub.queue != nil {
 		// Just make the key subject spc group, e.g. 'foo bar'
 		key = _rkey[:0]
 		key = append(key, sub.subject...)
 		key = append(key, byte(' '))
-		qi = int32(len(key))
 		key = append(key, sub.queue...)
+		// We always update for a queue subscriber since we need to send our relative weight.
+		update = true
 	} else {
 		key = sub.subject
 	}
 
-	// We always update for a queue subscriber since we need to send our relative weight.
-	var entry *rme
+	// Copy to hold outside acc lock.
+	var n int32
 	var ok bool
 
-	// Always update if a queue subscriber.
-	update := qi > 0
-
-	// Copy to hold outside acc lock.
-	var entryN int32
-
 	acc.mu.Lock()
-	if entry, ok = rm[string(key)]; ok {
-		entry.n += delta
-		if entry.n <= 0 {
+	if n, ok = rm[string(key)]; ok {
+		n += delta
+		if n <= 0 {
 			delete(rm, string(key))
-			update = true // Update for deleting,
+			update = true // Update for deleting (N->0)
+		} else {
+			rm[string(key)] = n
 		}
 	} else if delta > 0 {
-		entry = &rme{qi, delta}
-		rm[string(key)] = entry
-		update = true // Adding for normal sub means update.
-	}
-	if entry != nil {
-		entryN = entry.n
+		n = delta
+		rm[string(key)] = delta
+		update = true // Adding a new entry for normal sub means update (0->1)
 	}
 	acc.mu.Unlock()
 
-	if !update || entry == nil {
+	if !update {
 		return
 	}
 	// We need to send out this update.
@@ -1321,13 +1325,13 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		sub.client.mu.Lock()
 		nsub := *sub
 		sub.client.mu.Unlock()
-		nsub.qw = entryN
+		nsub.qw = n
 		sub = &nsub
 	}
 
 	// Note that queue unsubs where entry.n > 0 are still
 	// subscribes with a smaller weight.
-	if entryN > 0 {
+	if n > 0 {
 		s.broadcastSubscribe(sub)
 	} else {
 		s.broadcastUnSubscribe(sub)

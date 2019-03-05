@@ -27,19 +27,12 @@ import (
 	"github.com/nats-io/jwt"
 )
 
-// For backwards compatibility, users who are not explicitly defined into an
+// For backwards compatibility with NATS < 2.0, users who are not explicitly defined into an
 // account will be grouped in the default global account.
 const globalAccountName = "$G"
 
-// Route Map Entry - used for efficient interest graph propagation.
-// TODO(dlc) - squeeze even more?
-type rme struct {
-	qi int32 // used to index into key from map for optional queue name
-	n  int32 // number of subscriptions directly matching, local subs only.
-}
-
 // Account are subject namespace definitions. By default no messages are shared between accounts.
-// You can share via exports and imports of streams and services.
+// You can share via Exports and Imports of Streams and Services.
 type Account struct {
 	Name       string
 	Nkey       string
@@ -54,7 +47,7 @@ type Account struct {
 	nrclients  int32
 	sysclients int32
 	clients    map[*client]*client
-	rm         map[string]*rme
+	rm         map[string]int32
 	imports    importMap
 	exports    exportMap
 	limits
@@ -459,7 +452,7 @@ func (a *Account) AddStreamImport(account *Account, from, prefix string) error {
 	return a.AddStreamImportWithClaim(account, from, prefix, nil)
 }
 
-// IsPublicExport is a placeholder to denote public export.
+// IsPublicExport is a placeholder to denote a public export.
 var IsPublicExport = []*Account(nil)
 
 // AddStreamExport will add an export to the account. If accounts is nil
@@ -822,6 +815,11 @@ func (s *Server) AccountResolver() AccountResolver {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.accResolver
+}
+
+// UpdateAccountClaims will call updateAccountClaims.
+func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
+	s.updateAccountClaims(a, ac)
 }
 
 // updateAccountClaims will update and existing account with new claims.
