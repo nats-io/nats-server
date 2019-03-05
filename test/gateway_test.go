@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"net"
@@ -415,11 +416,33 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	// switch.
 	for i := 0; i < 10001; i++ {
 		gASend(fmt.Sprintf("RMSG $G foo.%d 2\r\nok\r\n", i))
-		if i < 1000 {
+		if i <= 1000 {
 			gAExpect(runsubRe)
 		}
 	}
-	// Since B has no sub, we should get 2 INFOs with start/end
-	// commands.
-	expectNumberOfProtos(t, gAExpect, infoRe, 2)
+	// Expect an INFO + RS+ $G not.used + INFO
+	buf := bufio.NewReader(gA)
+	for i := 0; i < 3; i++ {
+		line, _, err := buf.ReadLine()
+		if err != nil {
+			t.Fatalf("Error reading: %v", err)
+		}
+		switch i {
+		case 0:
+		case 2:
+			if !bytes.HasPrefix(line, []byte("INFO {")) {
+				t.Fatalf("Expected INFO, got: %s", line)
+			}
+		case 1:
+			if !bytes.HasPrefix(line, []byte("RS+ ")) {
+				t.Fatalf("Expected RS+, got: %s", line)
+			}
+		}
+	}
+	// After this point, any new sub or unsub on B should be
+	// sent to A.
+	clientSend("SUB foo 1\r\n")
+	gAExpect(rsubRe)
+	clientSend("UNSUB 1\r\n")
+	gAExpect(runsubRe)
 }

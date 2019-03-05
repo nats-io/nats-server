@@ -1034,7 +1034,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			collect = true
 		}
-		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, collect)
+		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, collect, false)
 	}
 
 	// Now deal with gateways

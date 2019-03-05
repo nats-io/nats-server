@@ -1371,6 +1371,59 @@ func TestGatewayAccountInterest(t *testing.T) {
 	checkCount(t, gwcc, 1)
 }
 
+func TestGatewayAccountUnsub(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Connect on B
+	ncb := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	// Create subscription
+	natsSub(t, ncb, "foo", func(m *nats.Msg) {
+		ncb.Publish(m.Reply, []byte("reply"))
+	})
+
+	// Connect on A
+	nca := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+	defer nca.Close()
+	// Send a request
+	if _, err := nca.Request("foo", []byte("req"), time.Second); err != nil {
+		t.Fatalf("Error getting reply: %v", err)
+	}
+
+	// Now close connection on B
+	ncb.Close()
+
+	// Publish lots of messages on "foo" from A.
+	// We should receive an A- shortly and the number
+	// of outbound messages from A to B should not be
+	// close to the number of messages sent here.
+	total := 5000
+	for i := 0; i < total; i++ {
+		natsPub(t, nca, "foo", []byte("hello"))
+	}
+	natsFlush(t, nca)
+
+	c := sa.getOutboundGatewayConnection("B")
+	c.mu.Lock()
+	out := c.outMsgs
+	c.mu.Unlock()
+
+	if out >= int64(80*total)/100 {
+		t.Fatalf("Unexpected number of messages sent from A to B: %v", out)
+	}
+}
+
 func TestGatewaySubjectInterest(t *testing.T) {
 	o1 := testDefaultOptionsForGateway("A")
 	setAccountUserPassInOptions(o1, "$foo", "ivan", "password")
@@ -2834,18 +2887,16 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	waitForInboundGateways(t, sb, 2, time.Second)
 	waitForInboundGateways(t, sc, 2, time.Second)
 
-	// On B, create a sub that will reply to requests
-	bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
-	ncB := natsConnect(t, bURL)
-	defer ncB.Close()
-	natsSub(t, ncB, "foo", func(m *nats.Msg) {
-		ncB.Publish(m.Reply, m.Data)
-	})
-	natsFlush(t, ncB)
-	checkExpectedSubs(t, 1, sb)
+	// On A, create a sub to register some interest
+	aURL := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
+	ncA := natsConnect(t, aURL)
+	defer ncA.Close()
+	natsSub(t, ncA, "sub.on.a.*", func(m *nats.Msg) {})
+	natsFlush(t, ncA)
+	checkExpectedSubs(t, 1, sa)
 
-	// On C, have some delayed activity while it receives
-	// unwanted messages and switches to sendAllSubs.
+	// On C, have some sub activity while it receives
+	// unwanted messages and switches to interestOnly mode.
 	cURL := fmt.Sprintf("nats://%s:%d", oc.Host, oc.Port)
 	ncC := natsConnect(t, cURL)
 	defer ncC.Close()
@@ -2875,6 +2926,11 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		}
 	}()
 
+	// From B publish on subjects for which C has an interest
+	bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+	ncB := natsConnect(t, bURL)
+	defer ncB.Close()
+
 	go func() {
 		defer wg.Done()
 		time.Sleep(10 * time.Millisecond)
@@ -2890,21 +2946,14 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		}
 	}()
 
-	// From A, send a lot of requests.
-	aURL := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
-	ncA := natsConnect(t, aURL)
-	defer ncA.Close()
+	// From B, send a lot of messages that A is interested in,
+	// but not C.
 	// TODO(ik): May need to change that if we change the threshold
 	// for when the switch happens.
 	total := 300
 	for i := 0; i < total; i++ {
-		req := fmt.Sprintf("%d", i)
-		reply, err := ncA.Request("foo", []byte(req), time.Second)
-		if err != nil {
+		if err := ncB.Publish(fmt.Sprintf("sub.on.a.%d", i), []byte("hi")); err != nil {
 			t.Fatalf("Error waiting for reply: %v", err)
-		}
-		if string(reply.Data) != req {
-			t.Fatalf("Expected reply %q, got %q", req, reply.Data)
 		}
 	}
 	close(done)
@@ -2960,17 +3009,6 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		}
 		return nil
 	})
-
-	for i := 0; i < total; i++ {
-		req := fmt.Sprintf("%d", i)
-		reply, err := ncA.Request("foo", []byte(req), time.Second)
-		if err != nil {
-			t.Fatalf("Error waiting for reply: %v", err)
-		}
-		if string(reply.Data) != req {
-			t.Fatalf("Expected reply %q, got %q", req, reply.Data)
-		}
-	}
 
 	// Also, after all that, if a sub is created on C, it should
 	// be sent to B (but not A). Check that this is the case.
@@ -3183,7 +3221,7 @@ func TestGatewayServiceImport(t *testing.T) {
 	subB := natsSubSync(t, clientB, "reply")
 	natsFlush(t, clientB)
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 2; i++ {
 		// Send the request from clientB on foo.request,
 		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
 		natsFlush(t, clientB)
@@ -3228,10 +3266,14 @@ func TestGatewayServiceImport(t *testing.T) {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
 		}
 
+		// For B, we expect it to send on the two subjects: test.request and foo.request
+		// then send the reply (MSG + RMSG).
 		if i == 0 {
-			expected = 3
+			expected = 4
 		} else {
-			expected = 5
+			// The second time, one of the account will be suppressed, so we will get
+			// only 2 more messages.
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3487,7 +3529,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	// on server B.
 	checkForRegisteredQSubInterest(t, sb, "A", "$foo", "test.request", 1, time.Second)
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 2; i++ {
 		// Send the request from clientB on foo.request,
 		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
 		natsFlush(t, clientB)
@@ -3524,16 +3566,20 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
-		expected := int64(i + 2)
+		expected := int64((i + 1) * 2)
 		vz, _ := sa.Varz(nil)
 		if vz.OutMsgs != expected {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
 		}
 
+		// For B, we expect it to send on the two subjects: test.request and foo.request
+		// then send the reply (MSG + RMSG).
 		if i == 0 {
-			expected = 3
-		} else {
 			expected = 4
+		} else {
+			// The second time, one of the account will be suppressed, so we will get
+			// only 2 more messages.
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -4396,5 +4442,69 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				t.Fatalf("Unexpected msg: %v", msg)
 			}
 		})
+	}
+}
+
+func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	// Change s1's recent sub expiration default value
+	s1.mu.Lock()
+	s1.gateway.pasi.Lock()
+	s1.gateway.recSubExp = 100 * time.Millisecond
+	s1.gateway.pasi.Unlock()
+	s1.mu.Unlock()
+
+	// Setup a replier on s2
+	nc2 := natsConnect(t, fmt.Sprintf("nats://%s:%d", o2.Host, o2.Port))
+	defer nc2.Close()
+	count := 0
+	errCh := make(chan error, 1)
+	natsSub(t, nc2, "foo", func(m *nats.Msg) {
+		// Send reply regardless..
+		nc2.Publish(m.Reply, []byte("reply"))
+		if count == 0 {
+			if strings.HasPrefix(m.Reply, nats.InboxPrefix) {
+				errCh <- fmt.Errorf("First reply expected to have a special prefix, got %v", m.Reply)
+				return
+			}
+			count++
+		} else {
+			if !strings.HasPrefix(m.Reply, nats.InboxPrefix) {
+				errCh <- fmt.Errorf("Second reply expected to have normal inbox, got %v", m.Reply)
+				return
+			}
+			errCh <- nil
+		}
+	})
+	natsFlush(t, nc2)
+	checkExpectedSubs(t, 1, s2)
+
+	// Create requestor on s1
+	nc1 := natsConnect(t, fmt.Sprintf("nats://%s:%d", o1.Host, o1.Port))
+	defer nc1.Close()
+	// Send first request, reply should be mapped
+	nc1.Request("foo", []byte("msg1"), time.Second)
+	// Wait more than the recent sub expiration (that we have set to 100ms)
+	time.Sleep(200 * time.Millisecond)
+	// Send second request (reply should not be mapped)
+	nc1.Request("foo", []byte("msg2"), time.Second)
+
+	select {
+	case e := <-errCh:
+		if e != nil {
+			t.Fatalf(e.Error())
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Did not get replies")
 	}
 }
