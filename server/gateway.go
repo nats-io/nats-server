@@ -631,14 +631,16 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 			tlsConfig := cfg.TLSConfig
 			timeout = cfg.TLSTimeout
 			cfg.RUnlock()
-			// If the given url is a hostname, use this hostname for the
-			// ServerName. If it is an IP, use the cfg's tlsName. If none
-			// is available, resort to current IP.
-			host := url.Hostname()
-			if tlsName != "" && net.ParseIP(host) != nil {
-				host = tlsName
+			if tlsConfig.ServerName == "" {
+				// If the given url is a hostname, use this hostname for the
+				// ServerName. If it is an IP, use the cfg's tlsName. If none
+				// is available, resort to current IP.
+				host := url.Hostname()
+				if tlsName != "" && net.ParseIP(host) != nil {
+					host = tlsName
+				}
+				tlsConfig.ServerName = host
 			}
-			tlsConfig.ServerName = host
 			c.nc = tls.Client(c.nc, tlsConfig)
 		} else {
 			c.Debugf("Starting TLS gateway server handshake")
