@@ -1085,3 +1085,57 @@ func TestClientWriteLoopStall(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 	}
 }
+
+func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
+	checkServerFails := func(t *testing.T, o *Options) {
+		t.Helper()
+		s, err := NewServer(o)
+		if s != nil {
+			s.Shutdown()
+		}
+		if err == nil || !strings.Contains(err.Error(), "not supported") {
+			t.Fatalf("Expected error about not supported feature, got %v", err)
+		}
+	}
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "../test/configs/certs/server-cert.pem"
+	tc.KeyFile = "../test/configs/certs/server-key.pem"
+	tc.CaFile = "../test/configs/certs/ca.pem"
+	tc.Insecure = true
+
+	o := DefaultOptions()
+	config, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	o.TLSConfig = config
+	checkServerFails(t, o)
+
+	// Get a clone that we will use for the Gateway TLS setting
+	gwConfig := config.Clone()
+
+	// Remove the setting
+	o.TLSConfig.InsecureSkipVerify = false
+	// Configure GW
+	o.Gateway.Name = "A"
+	o.Gateway.Host = "127.0.0.1"
+	o.Gateway.Port = -1
+	o.Gateway.TLSConfig = gwConfig
+	checkServerFails(t, o)
+
+	// Get a config for the remote gateway
+	rgwConfig := gwConfig.Clone()
+	gurl, _ := url.Parse("nats://127.0.0.1:1234")
+
+	// Remove the insecure for the main gateway config
+	o.Gateway.TLSConfig.InsecureSkipVerify = false
+	o.Gateway.Gateways = []*RemoteGatewayOpts{
+		&RemoteGatewayOpts{
+			Name:      "B",
+			URLs:      []*url.URL{gurl},
+			TLSConfig: rgwConfig,
+		},
+	}
+	checkServerFails(t, o)
+}

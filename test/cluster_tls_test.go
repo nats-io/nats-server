@@ -14,7 +14,11 @@
 package test
 
 import (
+	"fmt"
+	"io/ioutil"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/gnatsd/server"
 )
@@ -61,4 +65,79 @@ func TestBasicTLSClusterPubSub(t *testing.T) {
 
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "22", "", "2", "ok")
+}
+
+type captureTLSError struct {
+	dummyLogger
+	ch chan struct{}
+}
+
+func (c *captureTLSError) Errorf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "handshake error") {
+		select {
+		case c.ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestClusterTLSInsecure(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			listen: "127.0.0.1:-1"
+			tls {
+			    cert_file: "./configs/certs/server-noip.pem"
+				key_file:  "./configs/certs/server-key-noip.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	l := &captureTLSError{ch: make(chan struct{}, 1)}
+	srvA.SetLogger(l, false, false)
+
+	bConfigTemplate := `
+		port: -1
+		cluster {
+			listen: "127.0.0.1:-1"
+			tls {
+			    cert_file: "./configs/certs/server-noip.pem"
+				key_file:  "./configs/certs/server-key-noip.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+				%s
+			}
+			routes [
+				"nats://%s:%d"
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate,
+		"", optsA.Cluster.Host, optsA.Cluster.Port)))
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// We should get errors
+	select {
+	case <-l.ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get handshake error")
+	}
+
+	// Need to add "insecure: true" and reload
+	if err := ioutil.WriteFile(confB,
+		[]byte(fmt.Sprintf(bConfigTemplate, "insecure: true", optsA.Cluster.Host, optsA.Cluster.Port)),
+		0666); err != nil {
+		t.Fatalf("Error rewriting file: %v", err)
+	}
+	if err := srvB.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	checkClusterFormed(t, srvA, srvB)
 }
