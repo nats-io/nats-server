@@ -1418,9 +1418,6 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		// Write resolved port back to options.
 		opts.Cluster.Port = l.Addr().(*net.TCPAddr).Port
 	}
-	// Keep track of actual listen port. This will be needed in case of
-	// config reload.
-	s.clusterActualPort = opts.Cluster.Port
 	// Check for Auth items
 	if opts.Cluster.Username != "" {
 		info.AuthRequired = true

@@ -28,6 +28,10 @@ import (
 // startup. This should not be modified once the server has started.
 var FlagSnapshot *Options
 
+type reloadContext struct {
+	oldClusterPerms *RoutePermissions
+}
+
 // option is a hot-swappable configuration setting.
 type option interface {
 	// Apply the server option.
@@ -511,14 +515,17 @@ func (s *Server) Reload() error {
 		return err
 	}
 
+	curOpts := s.getOpts()
+
 	// Wipe trusted keys if needed when we have an operator.
-	if len(s.opts.TrustedOperators) > 0 && len(s.opts.TrustedKeys) > 0 {
-		s.opts.TrustedKeys = nil
+	if len(curOpts.TrustedOperators) > 0 && len(curOpts.TrustedKeys) > 0 {
+		curOpts.TrustedKeys = nil
 	}
 
-	clientOrgPort := s.clientActualPort
-	clusterOrgPort := s.clusterActualPort
-	gatewayOrgPort := s.gatewayActualPort
+	clientOrgPort := curOpts.Port
+	clusterOrgPort := curOpts.Cluster.Port
+	gatewayOrgPort := curOpts.Gateway.Port
+
 	s.mu.Unlock()
 
 	// Apply flags over config file settings.
@@ -531,7 +538,7 @@ func (s *Server) Reload() error {
 
 	setBaselineOptions(newOpts)
 
-	// processOptions sets Port to 0 if set to -1 (RANDOM port)
+	// setBaselineOptions sets Port to 0 if set to -1 (RANDOM port)
 	// If that's the case, set it to the saved value when the accept loop was
 	// created.
 	if newOpts.Port == 0 {
@@ -545,7 +552,7 @@ func (s *Server) Reload() error {
 		newOpts.Gateway.Port = gatewayOrgPort
 	}
 
-	if err := s.reloadOptions(newOpts); err != nil {
+	if err := s.reloadOptions(curOpts, newOpts); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -581,17 +588,22 @@ func applyBoolFlags(newOpts, flagOpts *Options) {
 
 // reloadOptions reloads the server config with the provided options. If an
 // option that doesn't support hot-swapping is changed, this returns an error.
-func (s *Server) reloadOptions(newOpts *Options) error {
+func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
+	// Apply to the new options some of the options that may have been set
+	// that can't be configured in the config file (this can happen in
+	// applications starting NATS Server programmatically).
+	newOpts.CustomClientAuthentication = curOpts.CustomClientAuthentication
+	newOpts.CustomRouterAuthentication = curOpts.CustomRouterAuthentication
+
 	changed, err := s.diffOptions(newOpts)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	// Need to save off previous cluster permissions
-	s.oldClusterPerms = s.opts.Cluster.Permissions
-	s.mu.Unlock()
+	// Create a context that is used to pass special info that we may need
+	// while applying the new options.
+	ctx := reloadContext{oldClusterPerms: curOpts.Cluster.Permissions}
 	s.setOpts(newOpts)
-	s.applyOptions(changed)
+	s.applyOptions(&ctx, changed)
 	return nil
 }
 
@@ -730,7 +742,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	return diffOpts, nil
 }
 
-func (s *Server) applyOptions(opts []option) {
+func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	var (
 		reloadLogging      = false
 		reloadAuth         = false
@@ -756,7 +768,7 @@ func (s *Server) applyOptions(opts []option) {
 		s.reloadAuthorization()
 	}
 	if reloadClusterPerms {
-		s.reloadClusterPermissions()
+		s.reloadClusterPermissions(ctx.oldClusterPerms)
 	}
 
 	s.Noticef("Reloaded server configuration")
@@ -889,17 +901,14 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 // update INFO protocol so that remote can resend their local
 // subs if needed, and sending local subs matching cluster's
 // import subjects.
-func (s *Server) reloadClusterPermissions() {
+func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	s.mu.Lock()
 	var (
 		infoJSON     []byte
-		oldPerms     = s.oldClusterPerms
 		newPerms     = s.opts.Cluster.Permissions
 		routes       = make(map[uint64]*client, len(s.routes))
 		withNewProto int
 	)
-	// We can clear this now that we have captured it with oldPerms.
-	s.oldClusterPerms = nil
 	// Get all connected routes
 	for i, route := range s.routes {
 		// Count the number of routes that can understand receiving INFO updates.
