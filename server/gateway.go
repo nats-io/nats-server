@@ -379,9 +379,6 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 		// Write resolved port back to options.
 		opts.Gateway.Port = l.Addr().(*net.TCPAddr).Port
 	}
-	// Keep track of actual listen port. This will be needed in case of
-	// config reload.
-	s.gatewayActualPort = opts.Gateway.Port
 	// Possibly override Host/Port based on Gateway.Advertise
 	if err := s.setGatewayInfoHostPort(info, opts); err != nil {
 		s.Fatalf("Error setting gateway INFO with Gateway.Advertise value of %s, err=%v", opts.Gateway.Advertise, err)

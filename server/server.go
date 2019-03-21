@@ -143,16 +143,6 @@ type Server struct {
 	gatewayListener net.Listener // Accept listener
 	gateway         *srvGateway
 
-	// These store the real client/cluster listen ports. They are
-	// required during config reload to reset the Options (after
-	// reload) to the actual listen port values.
-	clientActualPort  int
-	clusterActualPort int
-	gatewayActualPort int
-
-	// Use during reload
-	oldClusterPerms *RoutePermissions
-
 	// Used by tests to check that http.Servers do
 	// not set any timeout.
 	monitoringServer *http.Server
@@ -1090,9 +1080,6 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		// Write resolved port back to options.
 		opts.Port = l.Addr().(*net.TCPAddr).Port
 	}
-	// Keep track of actual listen port. This will be needed in case of
-	// config reload.
-	s.clientActualPort = opts.Port
 
 	// Now that port has been set (if it was set to RANDOM), set the
 	// server's info Host/Port with either values from Options or

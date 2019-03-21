@@ -3203,6 +3203,8 @@ func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 }
 
 func TestConfigReloadBoolFlags(t *testing.T) {
+	defer func() { FlagSnapshot = nil }()
+
 	logfile := "logtime.log"
 	defer os.Remove(logfile)
 	template := `
@@ -3636,5 +3638,31 @@ func TestConfigReloadMaxControlLineWithClients(t *testing.T) {
 	if mcl := getMcl(c); mcl != opts.MaxControlLine {
 		t.Fatalf("Expected snapshot in client for mcl to be same as new opts.MaxControlLine, got %d vs %d",
 			mcl, opts.MaxControlLine)
+	}
+}
+
+type testCustomAuth struct{}
+
+func (ca *testCustomAuth) Check(c ClientAuthentication) bool { return true }
+
+func TestConfigReloadIgnoreCustomAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+	`))
+	opts := LoadConfig(conf)
+
+	ca := &testCustomAuth{}
+	opts.CustomClientAuthentication = ca
+	opts.CustomRouterAuthentication = ca
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	if s.getOpts().CustomClientAuthentication != ca || s.getOpts().CustomRouterAuthentication != ca {
+		t.Fatalf("Custom auth missing")
 	}
 }
