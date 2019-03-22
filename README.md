@@ -452,6 +452,166 @@ And the log from the second server shows that it connected to the third.
 
 At this point, there is a full mesh cluster of NATS servers.
 
+## SuperCluster (a.k.a Gateways)
+
+### Concepts
+
+A NATS SuperCluster is a new network topology that allows clusters of smaller clusters.
+
+Gateways are cluster aware, but only connect to a server in the other cluster and do not depend on any information from local neighbors. Gateways are also uni-directional, so there are outbound connections and inbound connections. Normally a mesh or cluster topology would require N connections to another cluster with N members.
+
+The systems can get very large and gateway connections are built to be intelligent between interest graph traffic vs data traffic.
+
+#### Connectivity
+
+Gateways have their own configuration section in the configuration file (which will be discussed in details later). The section includes the name of the cluster the server belongs to and a list of zero or more gateways (or remote clusters) that it should connect to.
+
+In simple terms, a server could define its cluster name to be "A" and define a gateway to a cluster "B".
+
+Each server creates one and only one outbound connection to each cluster in its list. It can have 0 ore more gateway connections from remote cluster(s).
+
+Suppose there are 2 clusters, A and B. Cluster A has one server and B has 2 servers. When the server in cluster A starts, it creates a single outbound connection to cluster B. Its configuration specifies an URL (or array of URLs) to connect to cluster B. Note that if an URL resolves to several IPs, the server will randomly pick one of those IPs to connect to the remote cluster.
+
+On cluster B, each server also creates a single outbound connection to cluster A, but since there is only one server in that cluster, it is easy to understand that the server in cluster A has 2 inbound connections (one from each server in cluster B), and one of the server in cluster B has an inbound gateway connection (from the sole server in cluster A), while the other has zero.
+
+When a server creates an outbound gateway connection to a cluster, it gets in return the information about all gateway URLs on that cluster, that is, all the gateway `host:port` URLs the servers in that cluster are listening to for gateway connections. This allows the connecting server to update its list of URLs (possibly augmenting its configured list) so that if it gets disconnected, it has more URLs to pick from, to randomly connect to any server in that cluster. The connecting server will also gossip this information to its peers in its cluster so they also update their information about the remote cluster.
+
+This goes a step further. A server creating an outbound gateway connection to a remote cluster will also learn about all gateways known by that other server. This is the same idea than auto-discovery within a cluster.
+
+Say a server in cluster A has only one gateway configured to cluster B, but servers in cluster B have a configured gateway to cluster C. When a server in cluster A connects to B, it is made aware of the cluster C and starts initiating outbound connection to that cluster (it will get the list of all URLs to the cluster C and will pick a random one to connect to). It will also gossip information about cluster C to all its routes int its own cluster (so that they can too create their outbound connection to cluster C). In response to an inbound connection from cluster A, cluster C also connects to cluster A. Now all clusters (A, B and C) are inter-connected although A and C did not explicitly configure each other.
+
+If this behavior is not desired, there is a configuration option that instructs a server accepting a gateway connection to reject it, if it is not in its configuration file, or to not try to initiate outbound connections to unknown gateways, which could happen due to auto-discovery as described above. The configuration parameter is `reject_unknown` and described later in the configuration section.
+
+#### Optimistic mode
+
+Note that this only applies to non-queue subscriptions.
+
+By default, a server is not sending local and cluster-wide subscriptions interest to its inbound gateway connections. Instead, the remote gateway checks if it has registered a no-interest on a specific account/subject. If there is no such record, it sends the message. If there is no interest on the other side, a protocol is sent back to indicate that there is no interest, either on the whole account (if there is no subscription at all, on any subject) or on that specific subject. After receiving this protocol, a server stops sending messages to this gateway, on the specified account and/or subject. A change in subscription in the cluster would cause a protocol message to remove the no-interest.
+
+To illustrate, lets define two clusters named A and B, having one server on each, SA and SB respectively. For this illustration, SA and SB have each an outbound gateway connection to each other, and therefore an inbound gateway connection from each other.
+
+Suppose that a client connects to SB under account `MyAccount` and publishes on subject `foo`. SB sends this message to its client subscriptions (if any) and to its routes if there is an interest in its cluster. Then comes the gateways. For gateway `A`, it checks if there is a registered no-interest on account `MyAccount/foo`. Since this is not the case, it sends the message to SA. When SA receives the message from its inbound gateway connection, it first looks-up the account `MyAccount`. If the account is not registered, SA sends a no-interest protocol for this account so that SB stops sending messages on any subject on this account. Same occurs if the account is registered but there is no subscription to any subject on this account. If there is a subscription interest but say on `bar` but not `foo`, then SA sends a protocol to indicate no interest
+on `foo`. If later a subscription on `foo` is created in cluster A (directly on SA or any server in cluster A), SA knows that it has sent a no-interest protocol on `MyAccount` (or `foo` depending on the situation), so it has to send a protocol to cancel the no-interest.
+
+#### Interest-only mode
+
+Using the example above, if SB sends lot of messages on various subjects for which SA has no interest, SA sends to its inbound gateway connection a protocol message indicating that SB should now stop sending optimistically and instead send only if there is a known interest for the subject on SA. SA sends its list of plain subscriptions and will now do so anytime there is a new subscription, or when the last subscription on a given subject is gone.
+
+#### Queue subscriptions
+
+Queue subscriptions behave as if the inbound gateway connection was in interest-only mode, that is, any local or cluster-wide queue subscription is sent to a server's inbound gateway connections. With the example above, if a client connected to SA creates a queue subscription on subject `foo` with queue name `bar`, a subscription interest is sent to SB. Note that there is a single protocol per account, per subject and per queue name. When the last of the queue subscription is gone, an unsubscribe protocol is sent to SB.
+
+Why queue differs from plain subscriptions? Because queue subscriptions interest is global and still honor the fact that a given message must be delivered to one and only one queue subscriber on a given subject for the same queue name.
+
+However, unlike in a simple cluster where a server randomly sends a message to a given queue group based on the total number of queue subscribers, with gateways, if a queue group exists in several clusters, the message is delivered only to the local cluster
+the message originates from. If there are queue groups that are not in the local cluster, but that the origin cluster is aware of, the message will be sent through gateways.
+
+With the example above, say that there is a queue subscription on `foo` for queue `bar` on SB and SA. If a client connects to SB and sends a message on `foo`, SB will deliver all messages to its client, and not send it across the gateway to SA.
+
+If a queue subscription on `foo` for queue `baz` is created on SA, then the message is sent to `foo`/`bar` on SB and `foo`/`baz` to the gateway to SA (since it is a different queue group). Also, if the queue subscription on SB was unsubscribed, SB would then send to `foo`/`bar` and `foo`/`baz` through the gateway to SA.
+
+This can be summarized as favoring local queue subscriptions but with automatic failover to remote clusters.
+
+Note however, that since a given message can be sent only once to a given queue group, if several clusters have the same queue group (and this group does not exist in the cluster the message originates from), the server handling the published message indicates to the remote clusters the message is sent to which of the queue groups they can deliver this message to. So the decision as to which cluster will deliver the message to a given queue group is made by the server in which the server originates from. However, the final decision to send to a particular queue subscriber is left to the destination cluster. It is possible that by the time the message arrives to the destination cluster the queue subscription interest has just disappeared. In that case, the message is not re-routed to other clusters.
+
+Suppose there are 4 clusters A, B, C and D, all connected with gateways. Here is the list of queue subscriptions on subject `foo` for each cluster:
+
+| Cluster | Queue Subscriptions on `foo` |
+|:-------:|------------------------------|
+| A | \<none\> |
+| B | `bar`, `baz`, `bat` |
+| C | `bar`, `bat` |
+| D | `bar` |
+
+If a message on `foo` is published on cluster A, the server on that cluster has to decide which queues will get this message. Again, since for a given queue a message need to be sent to a single subscriber, and since queue `bar` exists in clusters B, C and D, the server in cluster A needs to "pick" one of the clusters that will receive the message on that queue.
+
+Say cluster C is the pick for queue `bar`, then it means that this message must not be delivered to that queue group on B and D. Same applies for other queue groups. Here is a possible delivery sequence to remote clusters:
+```
+send to C, delivers to queue `bar`, `bat`
+send to B, delivers to queue `baz` suppress `bar` and `bat` because already given to C
+send to D (if still in optimistic mode - for plain subscriptions), do not deliver to queue subscription since `bar` is already given to C
+```
+The order the clusters are picked is based on the lowest RTT from the origin server to its outbound gateway connections to other clusters.
+
+### Configuration
+
+Each server in a cluster should have the same `gateway` configuration that represent the cluster they belong too. To avoid repeating the configuration on each node in the cluster and possibly have errors, it is a good idea to have the gateway configuration in a separate file and use `include` to incorporate the gateway configuration in the main configuration file.
+
+Here is what the `gateway` configuration could look like for a cluster named `A`. Note that a lot of the possible configuration is similar to client or route configuration (in term of `port`, `listen`, `authorization`, `tls`, etc..)
+```
+gateway {
+  # Name of this cluster
+  #
+  name: "A"
+
+  # Port this server listens to gateway connections
+  #
+  port: 7222
+
+  # You can also use listen: "host:port" like the client or route configuration
+  #
+  # listen: "host:port"
+
+  # If you want to specify an authorization section for the other clusters connecting to this server
+  #
+  # authorization {
+  #   user: gw_user
+  #   password: gw_password
+  # }
+
+  # It is also possible to define TLS section
+  #
+  # tls {
+  #  ..
+  # }
+
+  # Like for client and routes, you can optionally specify an advertise address
+  #
+  # advertise: "host:port"
+
+  # The connect retries if used when a server creates an implicit outbound connection due to
+  # auto-discovery and that connection is broken. The server will attempt to recreate such
+  # connection up to this retry count
+  #
+  # connect_retries: 5
+
+  # Auto-discovery allows clusters to interconnect even if they are not explicitly configured.
+  # You can disable this server to accepting gateway connections from clusters that are not
+  # configured
+  #
+  # reject_unknown: true
+
+  # Here you define the clusters this server should create outbound gateways to.
+  #
+  gateways [
+    {
+      # Name of the remote cluster to connect to
+      #
+      name: "B"
+
+      # URL to one of the server on that cluster. If the name resolution returns
+      # multiple IPs, one will be picked randomly.
+      #
+      url: "clusterB_host:gatewayB_port"
+
+      # You could also use an array of URLs
+      #
+      # urls: ["url1", "url2", "url3"]
+
+      # If need be, you specify TLS configuration used to connect to that remote cluster.
+      #
+      # tls {
+      #  ...
+      # }
+    }
+    {
+      name: "C"
+      url: "clusterC_host:gatewayC_port"
+    }
+  ]
+}
+```
+
 ## Securing NATS
 
 This section describes how to secure the NATS server, including authentication, authorization, and encryption using TLS and bcrypt.
