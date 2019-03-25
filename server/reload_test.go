@@ -3649,6 +3649,7 @@ func TestConfigReloadIgnoreCustomAuth(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
 	`))
+	defer os.Remove(conf)
 	opts := LoadConfig(conf)
 
 	ca := &testCustomAuth{}
@@ -3664,5 +3665,33 @@ func TestConfigReloadIgnoreCustomAuth(t *testing.T) {
 
 	if s.getOpts().CustomClientAuthentication != ca || s.getOpts().CustomRouterAuthentication != ca {
 		t.Fatalf("Custom auth missing")
+	}
+}
+
+func TestConfigReloadLeafNodeRandomPort(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+		}
+	`))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.mu.Lock()
+	lnPortBefore := s.leafNodeListener.Addr().(*net.TCPAddr).Port
+	s.mu.Unlock()
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	s.mu.Lock()
+	lnPortAfter := s.leafNodeListener.Addr().(*net.TCPAddr).Port
+	s.mu.Unlock()
+
+	if lnPortBefore != lnPortAfter {
+		t.Fatalf("Expected leafnodes listen port to be same, was %v is now %v", lnPortBefore, lnPortAfter)
 	}
 }
