@@ -965,16 +965,6 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			opts.LeafNode.Password = auth.pass
 			opts.LeafNode.AuthTimeout = auth.timeout
 
-			if auth.defaultPermissions != nil {
-				err := &configWarningErr{
-					field: mk,
-					configErr: configErr{
-						token:  tk,
-						reason: `setting "permissions" within leafnode authorization block is deprecated`,
-					},
-				}
-				*warnings = append(*warnings, err)
-			}
 		case "remotes":
 			// Parse the remote options here.
 			remotes, err := parseRemoteLeafNodes(mv, errors, warnings)
