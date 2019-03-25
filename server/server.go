@@ -710,6 +710,7 @@ func (s *Server) registerAccount(acc *Account) {
 	// already created (global account), so use locking and
 	// make sure we create only if needed.
 	acc.mu.Lock()
+	// TODO(dlc)- Double check that we need this for GWs.
 	if acc.rm == nil && s.opts != nil && s.shouldTrackSubscriptions() {
 		acc.rm = make(map[string]int32)
 	}

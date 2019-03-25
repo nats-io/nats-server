@@ -536,16 +536,12 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 
 	// Grab under lock but process after.
 	var (
-		opts *Options
-		juc  *jwt.UserClaims
-		acc  *Account
-		err  error
+		juc *jwt.UserClaims
+		acc *Account
+		err error
 	)
 
 	s.mu.Lock()
-
-	// Grab options
-	opts = s.opts
 
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
@@ -617,7 +613,6 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 
 		// Generate a connect event if we have a system account.
 		// FIXME(dlc) - Make one for leafnodes if we track active connections.
-		//s.accountConnectEvent(c)
 
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())
@@ -625,10 +620,11 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	}
 
 	// Snapshot server options.
+	opts := s.getOpts()
+
 	if opts.LeafNode.Username == "" {
 		return true
 	}
-
 	if opts.LeafNode.Username != c.opts.Username {
 		return false
 	}

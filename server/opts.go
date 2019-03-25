@@ -925,7 +925,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
-// parseCluster will parse the cluster config.
+// parseLeafNodes will parse the leaf node config.
 func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	tk, v := unwrapValue(v)
 	cm, ok := v.(map[string]interface{})
