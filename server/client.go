@@ -40,6 +40,8 @@ const (
 	GATEWAY
 	// SYSTEM is an internal system client.
 	SYSTEM
+	// LEAF is for leaf node connections.
+	LEAF
 )
 
 const (
@@ -176,8 +178,8 @@ type client struct {
 	rttStart time.Time
 
 	route *route
-
-	gw *gateway
+	gw    *gateway
+	leaf  *leaf
 
 	debug bool
 	trace bool
@@ -392,6 +394,8 @@ func (c *client) initClient() {
 		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
 	case GATEWAY:
 		c.ncs = fmt.Sprintf("%s - gid:%d", conn, c.cid)
+	case LEAF:
+		c.ncs = fmt.Sprintf("%s - lid:%d", conn, c.cid)
 	case SYSTEM:
 		c.ncs = "SYSTEM"
 	}
@@ -450,11 +454,6 @@ func (c *client) registerWithAccount(acc *Account) error {
 	return nil
 }
 
-// Helper to determine if we have exceeded max subs.
-func (c *client) subsExceeded() bool {
-	return c.msubs != jwt.NoLimit && len(c.subs) > int(c.msubs)
-}
-
 // Helper to determine if we have met or exceeded max subs.
 func (c *client) subsAtLimit() bool {
 	return c.msubs != jwt.NoLimit && len(c.subs) >= int(c.msubs)
@@ -490,7 +489,7 @@ func (c *client) applyAccountLimits() {
 		c.msubs = int32(opts.MaxSubs)
 	}
 
-	if c.subsExceeded() {
+	if c.subsAtLimit() {
 		go func() {
 			c.maxSubsExceeded()
 			time.Sleep(20 * time.Millisecond)
@@ -1016,6 +1015,8 @@ func (c *client) processInfo(arg []byte) error {
 		c.processRouteInfo(&info)
 	case GATEWAY:
 		c.processGatewayInfo(&info)
+	case LEAF:
+		c.processLeafnodeInfo(&info)
 	}
 	return nil
 }
@@ -1179,6 +1180,9 @@ func (c *client) processConnect(arg []byte) error {
 	case GATEWAY:
 		// Delegate the rest of processing to the gateway
 		return c.processGatewayConnect(arg)
+	case LEAF:
+		// Delegate the rest of processing to the leaf node
+		return c.processLeafNodeConnect(srv, arg, lang)
 	}
 	return nil
 }
@@ -1258,7 +1262,7 @@ func (c *client) maxPayloadViolation(sz int, max int32) {
 	c.closeConnection(MaxPayloadExceeded)
 }
 
-// queueOutbound queues data for client/route connections.
+// queueOutbound queues data for a clientconnection.
 // Return if the data is referenced or not. If referenced, the caller
 // should not reuse the `data` array.
 // Lock should be held.
@@ -1581,8 +1585,12 @@ func (c *client) processSub(argo []byte) (err error) {
 
 	c.mu.Lock()
 
-	// Grab connection type.
+	// Grab connection type, account and server info.
 	kind := c.kind
+	acc := c.acc
+	srv := c.srv
+
+	sid := string(sub.sid)
 
 	if c.nc == nil && kind != SYSTEM {
 		c.mu.Unlock()
@@ -1590,12 +1598,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if kind == ROUTER {
-		if !c.canExport(string(sub.subject)) {
-			c.mu.Unlock()
-			return nil
-		}
-	} else if kind == CLIENT && !c.canSubscribe(string(sub.subject)) {
+	if kind == CLIENT && !c.canSubscribe(string(sub.subject)) {
 		c.mu.Unlock()
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 		c.Errorf("Subscription Violation - %s, Subject %q, SID %s",
@@ -1610,9 +1613,6 @@ func (c *client) processSub(argo []byte) (err error) {
 		return nil
 	}
 
-	sid := string(sub.sid)
-	acc := c.acc
-
 	updateGWs := false
 	// Subscribe here.
 	if c.subs[sid] == nil {
@@ -1626,6 +1626,7 @@ func (c *client) processSub(argo []byte) (err error) {
 			}
 		}
 	}
+	// Unlocked from here onward
 	c.mu.Unlock()
 
 	if err != nil {
@@ -1635,19 +1636,23 @@ func (c *client) processSub(argo []byte) (err error) {
 		c.sendOK()
 	}
 
-	if acc != nil {
-		if err := c.addShadowSubscriptions(acc, sub); err != nil {
-			c.Errorf(err.Error())
-		}
-		// If we are routing and this is a local sub, add to the route map for the associated account.
-		if kind == CLIENT || kind == SYSTEM {
-			c.srv.updateRouteSubscriptionMap(acc, sub, 1)
-			if updateGWs {
-				c.srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
-			}
-		}
+	// No account just return.
+	if acc == nil {
+		return nil
 	}
 
+	if err := c.addShadowSubscriptions(acc, sub); err != nil {
+		c.Errorf(err.Error())
+	}
+	// If we are routing and this is a local sub, add to the route map for the associated account.
+	if kind == CLIENT || kind == SYSTEM {
+		srv.updateRouteSubscriptionMap(acc, sub, 1)
+		if updateGWs {
+			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
+		}
+	}
+	// Now check on leafnode updates.
+	srv.updateLeafNodes(acc, sub, 1)
 	return nil
 }
 
@@ -1834,7 +1839,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	shadowSubs := sub.shadow
 	sub.shadow = nil
 	if len(shadowSubs) > 0 {
-		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM) && c.srv != nil
+		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
 	}
 	c.mu.Unlock()
 
@@ -1844,6 +1849,8 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 		} else if updateRoute {
 			c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
 		}
+		// Now check on leafnode updates.
+		c.srv.updateLeafNodes(nsub.im.acc, nsub, -1)
 	}
 }
 
@@ -1874,6 +1881,7 @@ func (c *client) processUnsub(arg []byte) error {
 
 	// Grab connection type.
 	kind := c.kind
+	srv := c.srv
 	var acc *Account
 
 	updateGWs := false
@@ -1886,7 +1894,7 @@ func (c *client) processUnsub(arg []byte) error {
 			sub.max = 0
 			unsub = true
 		}
-		updateGWs = c.srv.gateway.enabled
+		updateGWs = srv.gateway.enabled
 	}
 	c.mu.Unlock()
 
@@ -1897,11 +1905,13 @@ func (c *client) processUnsub(arg []byte) error {
 	if unsub {
 		c.unsubscribe(acc, sub, false)
 		if acc != nil && kind == CLIENT || kind == SYSTEM {
-			c.srv.updateRouteSubscriptionMap(acc, sub, -1)
+			srv.updateRouteSubscriptionMap(acc, sub, -1)
 			if updateGWs {
-				c.srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+				srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 			}
 		}
+		// Now check on leafnode updates.
+		srv.updateLeafNodes(acc, sub, -1)
 	}
 
 	return nil
@@ -1956,6 +1966,8 @@ func (c *client) stalledWait(producer *client) {
 // Used to treat maps as efficient set
 var needFlush = struct{}{}
 
+// deliverMsg will deliver a message to a matching subscription and its underlying client.
+// We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	if sub.client == nil {
 		return false
@@ -2174,6 +2186,8 @@ func (c *client) processInboundMsg(msg []byte) {
 		c.processInboundRoutedMsg(msg)
 	case GATEWAY:
 		c.processInboundGatewayMsg(msg)
+	case LEAF:
+		c.processInboundLeafMsg(msg)
 	}
 }
 
@@ -2303,6 +2317,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		if (c.kind == ROUTER || c.kind == GATEWAY) && c.pa.queues == nil && len(rr.qsubs) > 0 {
 			c.makeQFilter(rr.qsubs)
 		}
+
 		sendToGWs := c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM)
 		queues := c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, sendToGWs)
 		// If this is not a gateway connection but gateway is enabled,
@@ -2367,14 +2382,20 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	for _, sub := range r.psubs {
 		// Check if this is a send to a ROUTER. We now process
 		// these after everything else.
-		if sub.client.kind == ROUTER {
+		switch sub.client.kind {
+		case ROUTER:
 			if c.kind == ROUTER {
 				continue
 			}
 			c.addSubToRouteTargets(sub)
 			continue
-		} else if sub.client.kind == GATEWAY {
+		case GATEWAY:
 			// Never send to gateway from here.
+			continue
+		case LEAF:
+			// We handle similarly to routes and use the same data structures.
+			// Leaf node delivery audience is different however.
+			c.addSubToRouteTargets(sub)
 			continue
 		}
 		// Check for stream import mapped subs. These apply to local subs only.
@@ -2391,20 +2412,27 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		c.deliverMsg(sub, mh, msg)
 	}
 
-	// If we are sourced from a route we need to have direct filtered queues.
-	if c.kind == ROUTER && c.pa.queues == nil {
-		return queues
-	}
-
 	// Set these up to optionally filter based on the queue lists.
 	// This is for messages received from routes which will have directed
 	// guidance on which queue groups we should deliver to.
 	qf := c.pa.queues
 
+	// For route connections, we still want to send messages to
+	// leaf nodes even if there are no queue filters since we collect
+	// them above and do not process inline like normal clients.
+	if c.kind == ROUTER && qf == nil {
+		goto sendToRoutesOrLeafs
+	}
+
+	// If we are sourced from a route or leaf node we need to have direct filtered queues.
+	if (c.kind == ROUTER || c.kind == LEAF) && qf == nil {
+		return queues
+	}
+
 	// For gateway connections, we still want to send messages to routes
-	// even if there are no queue filters.
+	// and leaf nodes even if there are no queue filters.
 	if c.kind == GATEWAY && qf == nil {
-		goto sendToRoutes
+		goto sendToRoutesOrLeafs
 	}
 
 	// Check to see if we have our own rand yet. Global rand
@@ -2414,7 +2442,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	}
 
 	// Process queue subs
-
 	for i := 0; i < len(r.qsubs); i++ {
 		qsubs := r.qsubs[i]
 		// If we have a filter check that here. We could make this a map or someting more
@@ -2432,8 +2459,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 
 	selectQSub:
 
-		// We will hold onto remote qsubs when we are coming from a route
-		// just in case we can no longer do local delivery.
+		// We will hold onto remote or lead qsubs when we are coming from
+		// a route or a leaf node just in case we can no longer do local delivery.
 		var rsub *subscription
 
 		// Find a subscription that is able to deliver this message
@@ -2445,10 +2472,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			if sub == nil {
 				continue
 			}
-			// Potentially sending to a remote sub across a route.
-			if sub.client.kind == ROUTER {
-				if c.kind == ROUTER {
-					// We just came from a route, so skip and prefer local subs.
+			kind := sub.client.kind
+			// Potentially sending to a remote sub across a route or leaf node.
+			if kind == ROUTER || kind == LEAF {
+				if c.kind == ROUTER || c.kind == LEAF || (c.kind == CLIENT && kind == LEAF) {
+					// We just came from a route/leaf, so skip and prefer local subs.
 					// Keep our first rsub in case all else fails.
 					if rsub == nil {
 						rsub = sub
@@ -2462,6 +2490,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				}
 				break
 			}
+
 			// Check for mapped subs
 			if sub.im != nil && sub.im.prefix != "" {
 				// Redo the subject here on the fly.
@@ -2485,7 +2514,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 
 		if rsub != nil {
 			// If we are here we tried to deliver to a local qsub
-			// but failed. So we will send it to a remote.
+			// but failed. So we will send it to a remote or leaf node.
 			c.addSubToRouteTargets(rsub)
 			if collect {
 				queues = append(queues, rsub.queue)
@@ -2493,7 +2522,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		}
 	}
 
-sendToRoutes:
+sendToRoutesOrLeafs:
 
 	// If no messages for routes return here.
 	if len(c.in.rts) == 0 {
@@ -2504,10 +2533,19 @@ sendToRoutes:
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
-
+		kind := rt.sub.client.kind
 		mh := c.msgb[:msgHeadProtoLen]
-		mh = append(mh, acc.Name...)
-		mh = append(mh, ' ')
+		if kind == ROUTER {
+			mh = append(mh, acc.Name...)
+			mh = append(mh, ' ')
+		} else {
+			// Leaf nodes are LMSG
+			mh[0] = 'L'
+			// Remap subject if its a shadow subscription, treat like a normal client.
+			if rt.sub.im != nil && rt.sub.im.prefix != "" {
+				mh = append(mh, rt.sub.im.prefix...)
+			}
+		}
 		mh = append(mh, subject...)
 		mh = append(mh, ' ')
 
@@ -2671,6 +2709,8 @@ func (c *client) typeString() string {
 		return "Router"
 	case GATEWAY:
 		return "Gateway"
+	case LEAF:
+		return "LeafNode"
 	}
 	return "Unknown Type"
 }
@@ -2755,7 +2795,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	// we use Noticef on create, so use that too for delete.
 	if c.kind == ROUTER || c.kind == GATEWAY {
 		c.Noticef("%s connection closed", c.typeString())
-	} else {
+	} else { // Client and Leaf Node connections.
 		c.Debugf("%s connection closed", c.typeString())
 	}
 
@@ -2780,7 +2820,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	// FIXME(dlc) - we can just stub in a new one for client
 	// and reference existing one.
 	var subs []*subscription
-	if kind == CLIENT {
+	if kind == CLIENT || kind == LEAF {
 		subs = make([]*subscription, 0, len(c.subs))
 		for _, sub := range c.subs {
 			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
@@ -2803,8 +2843,8 @@ func (c *client) closeConnection(reason ClosedState) {
 
 	c.mu.Unlock()
 
-	// Remove clients subscriptions.
-	if kind == CLIENT {
+	// Remove client's or leaf node subscriptions.
+	if kind == CLIENT || kind == LEAF && acc != nil {
 		acc.sl.RemoveBatch(subs)
 	} else if kind == ROUTER {
 		go c.removeRemoteSubs()
@@ -2824,7 +2864,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		srv.removeClient(c)
 
 		// Update remote subscriptions.
-		if acc != nil && kind == CLIENT {
+		if acc != nil && (kind == CLIENT || kind == LEAF) {
 			qsubs := map[string]*qsub{}
 			for _, sub := range subs {
 				if sub.queue == nil {
@@ -2843,15 +2883,18 @@ func (c *client) closeConnection(reason ClosedState) {
 				if srv.gateway.enabled {
 					srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 				}
+				// Now check on leafnode updates.
+				srv.updateLeafNodes(acc, sub, -1)
 			}
 			// Process any qsubs here.
 			for _, esub := range qsubs {
 				srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
 			}
-			if prev := c.acc.removeClient(c); prev == 1 && c.srv != nil {
-				c.srv.mu.Lock()
-				c.srv.activeAccounts--
-				c.srv.mu.Unlock()
+			if prev := acc.removeClient(c); prev == 1 && srv != nil {
+				srv.mu.Lock()
+				srv.activeAccounts--
+				srv.mu.Unlock()
 			}
 		}
 	}
@@ -2882,13 +2925,13 @@ func (c *client) closeConnection(reason ClosedState) {
 		}
 
 		if rid != "" && srv.remotes[rid] != nil {
-			c.srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
+			srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
 		} else if rid == srv.info.ID {
-			c.srv.Debugf("Detected route to self, ignoring \"%s\"", rurl)
+			srv.Debugf("Detected route to self, ignoring \"%s\"", rurl)
 			return
 		} else if rtype != Implicit || retryImplicit {
-			c.srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
+			srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
 			// Keep track of this go-routine so we can wait for it on
 			// server shutdown.
 			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
@@ -2903,6 +2946,10 @@ func (c *client) closeConnection(reason ClosedState) {
 		} else {
 			srv.Debugf("Gateway %q not in configuration, not attempting reconnect", gwName)
 		}
+	} else if c.isSolicitedLeafNode() {
+		// Check if this is a solicited leaf node. Start up a reconnect.
+		// FIXME(dlc) - use the connectedURLs info like a normal client.
+		srv.startGoRoutine(func() { srv.reConnectToRemoteLeafNode(c.leaf.remote) })
 	}
 }
 
@@ -2965,6 +3012,16 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		}
 	}
 	return acc, r
+}
+
+// Account will return the associated account for this client.
+func (c *client) Account() *Account {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.acc
 }
 
 // prunePerAccountCache will prune off a random number of cache entries.

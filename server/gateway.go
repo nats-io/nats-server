@@ -1194,6 +1194,11 @@ func (s *Server) processImplicitGateway(info *Info) {
 	})
 }
 
+// NumOutboundGateways is public here mostly for testing.
+func (s *Server) NumOutboundGateways() int {
+	return s.numOutboundGateways()
+}
+
 // Returns the number of outbound gateway connections
 func (s *Server) numOutboundGateways() int {
 	s.gateway.RLock()
@@ -1540,8 +1545,22 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		return fmt.Errorf("processGatewaySubjectUnsub %s", err.Error())
 	}
 
-	var e *outsie
-	var useSl, newe bool
+	var (
+		e          *outsie
+		useSl      bool
+		newe       bool
+		callUpdate bool
+		srv        *Server
+		sub        *subscription
+	)
+
+	// Possibly execute this on exit after all locks have been released.
+	// If callUpdate is true, srv and sub will be not nil.
+	defer func() {
+		if callUpdate {
+			srv.updateInterestForAccountOnGateway(accName, sub, -1)
+		}
+	}()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1566,9 +1585,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	// This is when a sub or queue sub is supposed to be in
 	// the sublist. Look for it and remove.
 	if useSl {
+		var ok bool
 		key := arg
 		// m[string()] does not cause mem allocation
-		sub, ok := c.subs[string(key)]
+		sub, ok = c.subs[string(key)]
 		// if RS- for a sub that we don't have, just ignore.
 		if !ok {
 			return nil
@@ -1586,6 +1606,9 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 				c.gw.outsim.Delete(accName)
 			}
 		}
+		// We are going to call updateInterestForAccountOnGateway on exit.
+		srv = c.srv
+		callUpdate = true
 	} else {
 		e.ni[string(subject)] = struct{}{}
 		if newe {
@@ -1624,8 +1647,22 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	accName := args[0]
 	subject := args[1]
 
-	var e *outsie
-	var useSl, newe bool
+	var (
+		e          *outsie
+		useSl      bool
+		newe       bool
+		callUpdate bool
+		srv        *Server
+		sub        *subscription
+	)
+
+	// Possibly execute this on exit after all locks have been released.
+	// If callUpdate is true, srv and sub will be not nil.
+	defer func() {
+		if callUpdate {
+			srv.updateInterestForAccountOnGateway(string(accName), sub, 1)
+		}
+	}()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1676,7 +1713,7 @@ func (c *client) processGatewayRSub(arg []byte) error {
 			csubject = make([]byte, len(subject))
 			copy(csubject, subject)
 		}
-		sub := &subscription{client: c, subject: csubject, queue: cqueue, qw: qw}
+		sub = &subscription{client: c, subject: csubject, queue: cqueue, qw: qw}
 		// If no error inserting in sublist...
 		if e.sl.Insert(sub) == nil {
 			c.subs[string(key)] = sub
@@ -1688,6 +1725,9 @@ func (c *client) processGatewayRSub(arg []byte) error {
 				c.gw.outsim.Store(string(accName), e)
 			}
 		}
+		// We are going to call updateInterestForAccountOnGateway on exit.
+		srv = c.srv
+		callUpdate = true
 	} else {
 		subj := string(subject)
 		// If this is an RS+ for a wc subject, then
@@ -1746,6 +1786,27 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 		e.RUnlock()
 	}
 	return psi, r
+}
+
+// switchAccountToInterestMode will switch an account over to interestMode.
+// Lock should NOT be held.
+func (s *Server) switchAccountToInterestMode(accName string) {
+	gwsa := [16]*client{}
+	gws := gwsa[:0]
+	s.getInboundGatewayConnections(&gws)
+
+	for _, gin := range gws {
+		var e *insie
+		var ok bool
+
+		gin.mu.Lock()
+		if e, ok = gin.gw.insim[accName]; !ok {
+			e = &insie{}
+			gin.gw.insim[accName] = e
+		}
+		gin.gatewaySwitchAccountToSendAllSubs(e, []byte(accName))
+		gin.mu.Unlock()
+	}
 }
 
 // This is invoked when registering (or unregistering) the first
@@ -1960,8 +2021,8 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 }
 
 // May send a message to all outbound gateways. It is possible
-// that message is not sent to a given gateway if for instance
-// it is known that this gateway has no interest in account or
+// that the message is not sent to a given gateway if for instance
+// it is known that this gateway has no interest in the account or
 // subject, etc..
 // <Invoked from any client connection's readLoop>
 func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) {
@@ -2249,6 +2310,12 @@ func (c *client) gatewayAllSubsReceiveStart(info *Info) {
 		e.Lock()
 		e.mode = modeTransitioning
 		e.Unlock()
+	} else {
+		e := &outsie{sl: NewSublist()}
+		e.mode = modeTransitioning
+		c.mu.Lock()
+		c.gw.outsim.Store(account, e)
+		c.mu.Unlock()
 	}
 }
 
@@ -2315,6 +2382,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName []byte) {
 			GatewayCmd:        cmd,
 			GatewayCmdPayload: []byte(account),
 		}
+
 		b, _ := json.Marshal(&info)
 		infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 		if useLock {

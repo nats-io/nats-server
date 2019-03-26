@@ -121,9 +121,6 @@ const (
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
 
-	// DEFAULT_REMOTE_QSUBS_SWEEPER is how often we sweep for orphans. Deprecated
-	DEFAULT_REMOTE_QSUBS_SWEEPER = 30 * time.Second
-
 	// DEFAULT_MAX_CLOSED_CLIENTS is the maximum number of closed connections we hold onto.
 	DEFAULT_MAX_CLOSED_CLIENTS = 10000
 
@@ -136,4 +133,7 @@ const (
 	// DEFAULT_LAME_DUCK_DURATION is the time in which the server spreads
 	// the closing of clients when signaled to go in lame duck mode.
 	DEFAULT_LAME_DUCK_DURATION = 2 * time.Minute
+
+	// DEFAULT_LEAFNODE_INFO_WAIT Route dial timeout.
+	DEFAULT_LEAFNODE_INFO_WAIT = 1 * time.Second
 )

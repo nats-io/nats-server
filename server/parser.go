@@ -85,6 +85,8 @@ const (
 	OP_AUSUB
 	OP_AUSUB_SPC
 	AUSUB_ARG
+	OP_L
+	OP_LS
 	OP_R
 	OP_RS
 	OP_U
@@ -140,6 +142,12 @@ func (c *client) parse(buf []byte) error {
 					goto parseErr
 				} else {
 					c.state = OP_R
+				}
+			case 'L', 'l':
+				if c.kind != LEAF {
+					goto parseErr
+				} else {
+					c.state = OP_L
 				}
 			case 'A', 'a':
 				if c.kind == CLIENT {
@@ -395,6 +403,8 @@ func (c *client) parse(buf []byte) error {
 					err = c.processRemoteSub(arg)
 				case GATEWAY:
 					err = c.processGatewayRSub(arg)
+				case LEAF:
+					err = c.processLeafSub(arg)
 				}
 				if err != nil {
 					return err
@@ -404,6 +414,24 @@ func (c *client) parse(buf []byte) error {
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
 				}
+			}
+		case OP_L:
+			switch b {
+			case 'S', 's':
+				c.state = OP_LS
+			case 'M', 'm':
+				c.state = OP_M
+			default:
+				goto parseErr
+			}
+		case OP_LS:
+			switch b {
+			case '+':
+				c.state = OP_SUB
+			case '-':
+				c.state = OP_UNSUB
+			default:
+				goto parseErr
 			}
 		case OP_R:
 			switch b {
@@ -487,6 +515,8 @@ func (c *client) parse(buf []byte) error {
 					err = c.processRemoteUnsub(arg)
 				case GATEWAY:
 					err = c.processGatewayRUnsub(arg)
+				case LEAF:
+					err = c.processLeafUnsub(arg)
 				}
 				if err != nil {
 					return err
@@ -653,7 +683,13 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processRoutedMsgArgs(c.trace, arg); err != nil {
+				var err error
+				if c.kind == ROUTER || c.kind == GATEWAY {
+					err = c.processRoutedMsgArgs(c.trace, arg)
+				} else if c.kind == LEAF {
+					err = c.processLeafMsgArgs(c.trace, arg)
+				}
+				if err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD

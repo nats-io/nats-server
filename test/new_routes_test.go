@@ -103,12 +103,12 @@ func TestNewRouteConnectSubs(t *testing.T) {
 			if string(m[3]) != "bar" {
 				t.Fatalf("Expected group of 'bar', got %q", m[3])
 			}
-			// Expect the SID to be the total weighted count for the queue group
+			// Expect a weighted count for the queue group
 			if len(m) != 5 {
-				t.Fatalf("Expected a SID for the queue group")
+				t.Fatalf("Expected a weight for the queue group")
 			}
 			if m[4] == nil || string(m[4]) != "10" {
-				t.Fatalf("Expected SID of '10', got %q", m[4])
+				t.Fatalf("Expected Weight of '10', got %q", m[4])
 			}
 		}
 	}
@@ -179,10 +179,10 @@ func TestNewRouteConnectSubsWithAccount(t *testing.T) {
 			}
 			// Expect the SID to be the total weighted count for the queue group
 			if len(m) != 5 {
-				t.Fatalf("Expected a SID for the queue group")
+				t.Fatalf("Expected a weight for the queue group")
 			}
 			if m[4] == nil || string(m[4]) != "10" {
-				t.Fatalf("Expected SID of '10', got %q", m[4])
+				t.Fatalf("Expected Weight of '10', got %q", m[4])
 			}
 		}
 	}

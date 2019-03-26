@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/nats-io/gnatsd/server"
@@ -279,6 +280,7 @@ var (
 	pingRe    = regexp.MustCompile(`^PING\r\n`)
 	pongRe    = regexp.MustCompile(`^PONG\r\n`)
 	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	rawMsgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n(.*?)))`)
 	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
 	errRe     = regexp.MustCompile(`\A\-ERR\s+([^\r\n]+)\r\n`)
 	connectRe = regexp.MustCompile(`CONNECT\s+([^\r\n]+)\r\n`)
@@ -287,6 +289,9 @@ var (
 	rmsgRe    = regexp.MustCompile(`(?:(?:RMSG\s+([^\s]+)\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	asubRe    = regexp.MustCompile(`A\+\s+([^\r\n]+)\r\n`)
 	aunsubRe  = regexp.MustCompile(`A\-\s+([^\r\n]+)\r\n`)
+	lsubRe    = regexp.MustCompile(`LS\+\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	lunsubRe  = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)?\r\n`)
+	lmsgRe    = regexp.MustCompile(`(?:(?:LMSG\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 )
 
 const (
@@ -333,6 +338,17 @@ func peek(c net.Conn) []byte {
 	return expBuf
 }
 
+func expectDisconnect(t *testing.T, c net.Conn) {
+	t.Helper()
+	var b [8]byte
+	c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, err := c.Read(b[:])
+	c.SetReadDeadline(time.Time{})
+	if err != io.EOF {
+		t.Fatalf("Expected a disconnect")
+	}
+}
+
 func expectNothing(t tLogger, c net.Conn) {
 	expBuf := make([]byte, 32)
 	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
@@ -374,6 +390,18 @@ func checkRmsg(t tLogger, m [][]byte, account, subject, replyAndQueues, len, msg
 	}
 	if string(m[replyAndQueueIndex]) != replyAndQueues {
 		stackFatalf(t, "Did not get correct reply/queues: expected '%s' got '%s'\n", replyAndQueues, m[replyAndQueueIndex])
+	}
+}
+
+func checkLmsg(t tLogger, m [][]byte, subject, replyAndQueues, len, msg string) {
+	if string(m[rsubIndex-1]) != subject {
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[rsubIndex-1])
+	}
+	if string(m[lenIndex-1]) != len {
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[lenIndex-1])
+	}
+	if string(m[replyAndQueueIndex-1]) != replyAndQueues {
+		stackFatalf(t, "Did not get correct reply/queues: expected '%s' got '%s'\n", replyAndQueues, m[replyAndQueueIndex-1])
 	}
 }
 

@@ -26,17 +26,18 @@ import (
 )
 
 const (
-	connectEventSubj       = "$SYS.ACCOUNT.%s.CONNECT"
-	disconnectEventSubj    = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accConnsReqSubj        = "$SYS.REQ.ACCOUNT.%s.CONNS"
-	accUpdateEventSubj     = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
-	connsRespSubj          = "$SYS._INBOX_.%s"
-	accConnsEventSubj      = "$SYS.SERVER.ACCOUNT.%s.CONNS"
-	shutdownEventSubj      = "$SYS.SERVER.%s.SHUTDOWN"
-	authErrorEventSubj     = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
-	serverStatsSubj        = "$SYS.SERVER.%s.STATSZ"
-	serverStatsReqSubj     = "$SYS.REQ.SERVER.%s.STATSZ"
-	serverStatsPingReqSubj = "$SYS.REQ.SERVER.PING"
+	connectEventSubj         = "$SYS.ACCOUNT.%s.CONNECT"
+	disconnectEventSubj      = "$SYS.ACCOUNT.%s.DISCONNECT"
+	accConnsReqSubj          = "$SYS.REQ.ACCOUNT.%s.CONNS"
+	accUpdateEventSubj       = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	connsRespSubj            = "$SYS._INBOX_.%s"
+	accConnsEventSubj        = "$SYS.SERVER.ACCOUNT.%s.CONNS"
+	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
+	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
+	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
+	serverStatsReqSubj       = "$SYS.REQ.SERVER.%s.STATSZ"
+	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"
+	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT"
 
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
@@ -437,7 +438,6 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(subject, s.accountClaimUpdate); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
-
 	// Listen for requests for our statsz.
 	subject = fmt.Sprintf(serverStatsReqSubj, s.info.ID)
 	if _, err := s.sysSubscribe(subject, s.statszReq); err != nil {
@@ -445,6 +445,12 @@ func (s *Server) initEventTracking() {
 	}
 	// Listen for ping messages that will be sent to all servers for statsz.
 	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszReq); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+	// Listen for updates when leaf nodes connect for a given account. This will
+	// force any gateway connections to move to `modeInterestOnly`
+	subject = fmt.Sprintf(leafNodeConnectEventSubj, "*")
+	if _, err := s.sysSubscribe(subject, s.leafNodeConnected); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 }
@@ -466,7 +472,7 @@ func (s *Server) accountClaimUpdate(sub *subscription, subject, reply string, ms
 }
 
 // processRemoteServerShutdown will update any affected accounts.
-// Will upidate the remote count for clients.
+// Will update the remote count for clients.
 // Lock assume held.
 func (s *Server) processRemoteServerShutdown(sid string) {
 	for _, a := range s.accounts {
@@ -571,6 +577,29 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 	}
 }
 
+// leafNodeConnected is an event we will receive when a leaf node for a given account
+// connects.
+func (s *Server) leafNodeConnected(sub *subscription, subject, reply string, msg []byte) {
+	m := accNumConnsReq{}
+	if err := json.Unmarshal(msg, &m); err != nil {
+		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
+		return
+	}
+
+	s.mu.Lock()
+	gateway := s.gateway
+	if m.Account == "" || !s.eventsEnabled() || !gateway.enabled {
+		s.mu.Unlock()
+		return
+	}
+	acc, _ := s.lookupAccount(m.Account)
+	s.mu.Unlock()
+
+	if acc != nil {
+		s.switchAccountToInterestMode(acc.Name)
+	}
+}
+
 // statszReq is a request for us to respond with current statz.
 func (s *Server) statszReq(sub *subscription, subject, reply string, msg []byte) {
 	s.mu.Lock()
@@ -634,6 +663,24 @@ func (s *Server) enableAccountTracking(a *Account) {
 	reply := fmt.Sprintf(connsRespSubj, s.info.ID)
 	m := accNumConnsReq{Account: a.Name}
 	s.sendInternalMsg(subj, reply, &m.Server, &m)
+}
+
+// Event on leaf node connect.
+// Lock should NOT be held on entry.
+func (s *Server) sendLeafNodeConnect(a *Account) {
+	s.mu.Lock()
+	// If we do not have any gateways defined this should also be a no-op.
+	// FIXME(dlc) - if we do accounting for operator limits might have to send regardless.
+	if a == nil || !s.eventsEnabled() || !s.gateway.enabled {
+		s.mu.Unlock()
+		return
+	}
+	subj := fmt.Sprintf(leafNodeConnectEventSubj, a.Name)
+	m := accNumConnsReq{Account: a.Name}
+	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.mu.Unlock()
+
+	s.switchAccountToInterestMode(a.Name)
 }
 
 // FIXME(dlc) - make configurable.

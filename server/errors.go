@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -58,6 +58,10 @@ var (
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
 	ErrClientConnectedToRoutePort = errors.New("attempted to connect to route port")
+
+	// ErrClientConnectedToLeafNodePort represents an error condition when a client
+	// attempted to connect to the leaf node listen port.
+	ErrClientConnectedToLeafNodePort = errors.New("attempted to connect to leaf node port")
 
 	// ErrAccountExists is returned when an account is attempted to be registered
 	// but already exists.

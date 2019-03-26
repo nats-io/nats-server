@@ -1,4 +1,4 @@
-// Copyright 2016-2018 The NATS Authors
+// Copyright 2016-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -966,4 +966,43 @@ func (s *Sublist) localSubs(subs *[]*subscription) {
 	s.RLock()
 	s.collectLocalSubs(s.root, subs)
 	s.RUnlock()
+}
+
+// Used to collect all subscriptions.
+func (s *Sublist) All(subs *[]*subscription) {
+	s.RLock()
+	s.collectAllSubs(s.root, subs)
+	s.RUnlock()
+}
+
+func (s *Sublist) addAllNodeToSubs(n *node, subs *[]*subscription) {
+	// Normal subscriptions
+	if n.plist != nil {
+		*subs = append(*subs, n.plist...)
+	} else {
+		for _, sub := range n.psubs {
+			*subs = append(*subs, sub)
+		}
+	}
+	// Queue subscriptions
+	for _, qr := range n.qsubs {
+		for _, sub := range qr {
+			*subs = append(*subs, sub)
+		}
+	}
+}
+
+func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
+	for _, n := range l.nodes {
+		s.addAllNodeToSubs(n, subs)
+		s.collectLocalSubs(n.next, subs)
+	}
+	if l.pwc != nil {
+		s.addAllNodeToSubs(l.pwc, subs)
+		s.collectLocalSubs(l.pwc.next, subs)
+	}
+	if l.fwc != nil {
+		s.addAllNodeToSubs(l.fwc, subs)
+		s.collectLocalSubs(l.fwc.next, subs)
+	}
 }
