@@ -468,7 +468,7 @@ Gateways have their own configuration section in the configuration file (which w
 
 In simple terms, a server could define its cluster name to be "A" and define a gateway to a cluster "B".
 
-Each server creates one and only one outbound connection to each cluster in its list. It can have 0 ore more gateway connections from remote cluster(s).
+Each server creates one and only one outbound connection to each cluster in its list. It can have 0 or more gateway connections from remote cluster(s).
 
 Suppose there are 2 clusters, A and B. Cluster A has one server and B has 2 servers. When the server in cluster A starts, it creates a single outbound connection to cluster B. Its configuration specifies an URL (or array of URLs) to connect to cluster B. Note that if an URL resolves to several IPs, the server will randomly pick one of those IPs to connect to the remote cluster.
 
@@ -476,7 +476,7 @@ On cluster B, each server also creates a single outbound connection to cluster A
 
 When a server creates an outbound gateway connection to a cluster, it gets in return the information about all gateway URLs on that cluster, that is, all the gateway `host:port` URLs the servers in that cluster are listening to for gateway connections. This allows the connecting server to update its list of URLs (possibly augmenting its configured list) so that if it gets disconnected, it has more URLs to pick from, to randomly connect to any server in that cluster. The connecting server will also gossip this information to its peers in its cluster so they also update their information about the remote cluster.
 
-This goes a step further. A server creating an outbound gateway connection to a remote cluster will also learn about all gateways known by that other server. This is the same idea than auto-discovery within a cluster.
+This goes a step further. A server creating an outbound gateway connection to a remote cluster will also learn about all gateways known by that other server. This is the same idea as auto-discovery within a cluster, or as client libraries auto-discover servers in the cluster.
 
 Say a server in cluster A has only one gateway configured to cluster B, but servers in cluster B have a configured gateway to cluster C. When a server in cluster A connects to B, it is made aware of the cluster C and starts initiating outbound connection to that cluster (it will get the list of all URLs to the cluster C and will pick a random one to connect to). It will also gossip information about cluster C to all its routes int its own cluster (so that they can too create their outbound connection to cluster C). In response to an inbound connection from cluster A, cluster C also connects to cluster A. Now all clusters (A, B and C) are inter-connected although A and C did not explicitly configure each other.
 
@@ -484,35 +484,32 @@ If this behavior is not desired, there is a configuration option that instructs 
 
 #### Optimistic mode
 
-Note that this only applies to non-queue subscriptions.
-
 By default, a server is not sending local and cluster-wide subscriptions interest to its inbound gateway connections. Instead, the remote gateway checks if it has registered a no-interest on a specific account/subject. If there is no such record, it sends the message. If there is no interest on the other side, a protocol is sent back to indicate that there is no interest, either on the whole account (if there is no subscription at all, on any subject) or on that specific subject. After receiving this protocol, a server stops sending messages to this gateway, on the specified account and/or subject. A change in subscription in the cluster would cause a protocol message to remove the no-interest.
 
-To illustrate, lets define two clusters named A and B, having one server on each, SA and SB respectively. For this illustration, SA and SB have each an outbound gateway connection to each other, and therefore an inbound gateway connection from each other.
+To illustrate, lets define two clusters named A and B, having one server on each, server A and server B respectively. For this illustration, server A and server B have each an outbound gateway connection to each other, and therefore an inbound gateway connection from each other.
 
-Suppose that a client connects to SB under account `MyAccount` and publishes on subject `foo`. SB sends this message to its client subscriptions (if any) and to its routes if there is an interest in its cluster. Then comes the gateways. For gateway `A`, it checks if there is a registered no-interest on account `MyAccount/foo`. Since this is not the case, it sends the message to SA. When SA receives the message from its inbound gateway connection, it first looks-up the account `MyAccount`. If the account is not registered, SA sends a no-interest protocol for this account so that SB stops sending messages on any subject on this account. Same occurs if the account is registered but there is no subscription to any subject on this account. If there is a subscription interest but say on `bar` but not `foo`, then SA sends a protocol to indicate no interest
-on `foo`. If later a subscription on `foo` is created in cluster A (directly on SA or any server in cluster A), SA knows that it has sent a no-interest protocol on `MyAccount` (or `foo` depending on the situation), so it has to send a protocol to cancel the no-interest.
+Suppose that a client connects to server B under account `MyAccount` and publishes on subject `foo`. server B sends this message to its client subscriptions (if any) and to its routes if there is an interest in its cluster. Then comes the gateways. For gateway `A`, it checks if there is a registered no-interest on account `MyAccount/foo`. Since this is not the case, it sends the message to server A. When server A receives the message from its inbound gateway connection, it first looks-up the account `MyAccount`. If the account is not registered, server A sends a no-interest protocol for this account so that server B stops sending messages on any subject on this account. Same occurs if the account is registered but there is no subscription to any subject on this account. If there is a subscription interest but say on `bar` but not `foo`, then server A sends a protocol to indicate no interest
+on `foo`. If later a subscription on `foo` is created in cluster A (directly on server A or any server in cluster A), server A knows that it has sent a no-interest protocol on `MyAccount` (or `foo` depending on the situation), so it has to send a protocol to cancel the no-interest.
+
+Note that this only applies to non-queue subscriptions.
 
 #### Interest-only mode
 
-Using the example above, if SB sends lot of messages on various subjects for which SA has no interest, SA sends to its inbound gateway connection a protocol message indicating that SB should now stop sending optimistically and instead send only if there is a known interest for the subject on SA. SA sends its list of plain subscriptions and will now do so anytime there is a new subscription, or when the last subscription on a given subject is gone.
+Using the example above, if server B sends lot of messages on various subjects for which server A has no interest, server A sends to its inbound gateway connection a protocol message indicating that server B should now stop sending optimistically and instead send only if there is a known interest for the subject on server A. server A sends its list of plain subscriptions and will now do so anytime there is a new subscription, or when the last subscription on a given subject is gone.
 
 #### Queue subscriptions
 
-Queue subscriptions behave as if the inbound gateway connection was in interest-only mode, that is, any local or cluster-wide queue subscription is sent to a server's inbound gateway connections. With the example above, if a client connected to SA creates a queue subscription on subject `foo` with queue name `bar`, a subscription interest is sent to SB. Note that there is a single protocol per account, per subject and per queue name. When the last of the queue subscription is gone, an unsubscribe protocol is sent to SB.
+Queue subscriptions behave as if the inbound gateway connection was in interest-only mode, that is, any local or cluster-wide queue subscription is sent to a server's inbound gateway connections. With the example above, if a client connected to server A creates a queue subscription on subject `foo` with queue name `bar`, a subscription interest is sent to server B. Note that there is a single protocol per account, per subject and per queue name. When the last of the queue subscription is gone, an unsubscribe protocol is sent to server B.
 
 Why queue differs from plain subscriptions? Because queue subscriptions interest is global and still honor the fact that a given message must be delivered to one and only one queue subscriber on a given subject for the same queue name.
 
-However, unlike in a simple cluster where a server randomly sends a message to a given queue group based on the total number of queue subscribers, with gateways, if a queue group exists in several clusters, the message is delivered only to the local cluster
-the message originates from. If there are queue groups that are not in the local cluster, but that the origin cluster is aware of, the message will be sent through gateways.
+Gateways favor delivery to local queue subscriptions but with automatic failover to remote clusters.
 
-With the example above, say that there is a queue subscription on `foo` for queue `bar` on SB and SA. If a client connects to SB and sends a message on `foo`, SB will deliver all messages to its client, and not send it across the gateway to SA.
+With the example above, say that there is a queue subscription on `foo` for queue `bar` on server B and server A. If a client connects to server B and sends a message on `foo`, server B will deliver all messages to its client, and not send it across the gateway to server A.
 
-If a queue subscription on `foo` for queue `baz` is created on SA, then the message is sent to `foo`/`bar` on SB and `foo`/`baz` to the gateway to SA (since it is a different queue group). Also, if the queue subscription on SB was unsubscribed, SB would then send to `foo`/`bar` and `foo`/`baz` through the gateway to SA.
+If a queue subscription on `foo` for queue `baz` is created on server A, then the message is sent to `foo`/`bar` on server B and `foo`/`baz` to the gateway to server A (since it is a different queue group). Also, if the queue subscription on server B was unsubscribed, server B would then send to `foo`/`bar` and `foo`/`baz` through the gateway to server A.
 
-This can be summarized as favoring local queue subscriptions but with automatic failover to remote clusters.
-
-Note however, that since a given message can be sent only once to a given queue group, if several clusters have the same queue group (and this group does not exist in the cluster the message originates from), the server handling the published message indicates to the remote clusters the message is sent to which of the queue groups they can deliver this message to. So the decision as to which cluster will deliver the message to a given queue group is made by the server in which the server originates from. However, the final decision to send to a particular queue subscriber is left to the destination cluster. It is possible that by the time the message arrives to the destination cluster the queue subscription interest has just disappeared. In that case, the message is not re-routed to other clusters.
+Note however, that since a given message can be sent only once to a given queue group, if several clusters have the same queue group (and this group does not exist in the cluster the message originates from), the server handling the published message indicates to the remote clusters the message is sent to which of the queue groups they can deliver this message to. However, the final decision to send to a particular queue subscriber is left to the destination cluster. It is possible that by the time the message arrives to the destination cluster the queue subscription interest has just disappeared. In that case, the message is not re-routed to other clusters.
 
 Suppose there are 4 clusters A, B, C and D, all connected with gateways. Here is the list of queue subscriptions on subject `foo` for each cluster:
 
