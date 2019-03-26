@@ -4507,4 +4507,41 @@ func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("Did not get replies")
 	}
+
+	// Ensure that if server is shutdown while there are still subscriptions
+	// in the rsubs map, that does not cause a crash.
+
+	// Closing this, we don't need it.
+	nc2.Close()
+
+	// Get the client connection (there should be only 1, but can't assume the cid)
+	s1.mu.Lock()
+	var c *client
+	for _, cl := range s1.clients {
+		c = cl
+		break
+	}
+	s1.mu.Unlock()
+
+	// From nc1, create a sub.
+	natsSubSync(t, nc1, "xyz")
+
+	// Wait for this to be registered in rsubs
+	checkFor(t, 50*time.Millisecond, 10*time.Millisecond, func() error {
+		if c.in.rsubs.Count() != 1 {
+			return fmt.Errorf("Recent sub still not registered")
+		}
+		return nil
+	})
+
+	// Shutdown server - should not crash
+	s1.Shutdown()
+
+	// Wait for sub to be removed.
+	checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+		if count := c.in.rsubs.Count(); count != 0 {
+			return fmt.Errorf("%v sub(s) still registered", count)
+		}
+		return nil
+	})
 }
