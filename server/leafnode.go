@@ -870,6 +870,8 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		c.Errorf(err.Error())
 	}
 	// If we are routing add to the route map for the associated account.
+	srv.updateRouteSubscriptionMap(acc, sub, -1)
+	// Gateways
 	if updateGWs {
 		srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 	}
