@@ -144,13 +144,6 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
-	// Routes now send their subs list from a go routine,
-	// so it is possible that if we don't wait we get
-	// the client SUB being forwarded, then for the UNSUB,
-	// we get the go routine kicking-in and send the SUB again
-	// (which is ok since it is idempotent on the receiving side)
-	time.Sleep(100 * time.Millisecond)
-
 	// Send SUB via client connection
 	send("SUB foo 22\r\n")
 
