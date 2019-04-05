@@ -77,6 +77,9 @@ type Info struct {
 	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
 	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
 	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
+
+	// LeafNode Specific
+	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
 }
 
 // Server is our main struct.
@@ -932,6 +935,8 @@ func (s *Server) Start() {
 		// Spin up the accept loop if needed
 		ch := make(chan struct{})
 		go s.leafNodeAcceptLoop(ch)
+		// This ensure that we have resolved or assigned the advertise
+		// address for the leafnode listener. We need that in StartRouting().
 		<-ch
 	}
 

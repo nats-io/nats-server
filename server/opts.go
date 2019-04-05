@@ -82,17 +82,18 @@ type RemoteGatewayOpts struct {
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
 type LeafNodeOpts struct {
-	Host        string            `json:"addr,omitempty"`
-	Port        int               `json:"port,omitempty"`
-	Username    string            `json:"-"`
-	Password    string            `json:"-"`
-	AuthTimeout float64           `json:"auth_timeout,omitempty"`
-	TLSConfig   *tls.Config       `json:"-"`
-	TLSTimeout  float64           `json:"tls_timeout,omitempty"`
-	TLSMap      bool              `json:"-"`
-	Remotes     []*RemoteLeafOpts `json:"remotes,omitempty"`
-	Advertise   string            `json:"-"`
-	NoAdvertise bool              `json:"-"`
+	Host              string            `json:"addr,omitempty"`
+	Port              int               `json:"port,omitempty"`
+	Username          string            `json:"-"`
+	Password          string            `json:"-"`
+	AuthTimeout       float64           `json:"auth_timeout,omitempty"`
+	TLSConfig         *tls.Config       `json:"-"`
+	TLSTimeout        float64           `json:"tls_timeout,omitempty"`
+	TLSMap            bool              `json:"-"`
+	Remotes           []*RemoteLeafOpts `json:"remotes,omitempty"`
+	Advertise         string            `json:"-"`
+	NoAdvertise       bool              `json:"-"`
+	ReconnectInterval time.Duration     `json:"-"`
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.

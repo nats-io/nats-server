@@ -2948,7 +2948,6 @@ func (c *client) closeConnection(reason ClosedState) {
 		}
 	} else if c.isSolicitedLeafNode() {
 		// Check if this is a solicited leaf node. Start up a reconnect.
-		// FIXME(dlc) - use the connectedURLs info like a normal client.
 		srv.startGoRoutine(func() { srv.reConnectToRemoteLeafNode(c.leaf.remote) })
 	}
 }

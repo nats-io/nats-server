@@ -112,6 +112,9 @@ const (
 	// DEFAULT_ROUTE_DIAL Route dial timeout.
 	DEFAULT_ROUTE_DIAL = 1 * time.Second
 
+	// DEFAULT_LEAF_NODE_RECONNECT LeafNode reconnect interval.
+	DEFAULT_LEAF_NODE_RECONNECT = time.Second
+
 	// PROTO_SNIPPET_SIZE is the default size of proto to print on parse errors.
 	PROTO_SNIPPET_SIZE = 32
 
