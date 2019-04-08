@@ -19,7 +19,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +39,7 @@ func testDefaultOptionsForLeafNodes() *server.Options {
 	o := DefaultTestOptions
 	o.Host = "127.0.0.1"
 	o.Port = -1
+	o.LeafNode.Host = o.Host
 	o.LeafNode.Port = -1
 	return &o
 }
@@ -58,6 +61,7 @@ func runSolicitLeafServer(lso *server.Options) (*server.Server, *server.Options)
 	o.Port = -1
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port))
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{&server.RemoteLeafOpts{URL: rurl}}
+	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
 	return RunServer(&o), &o
 }
 
@@ -517,6 +521,7 @@ func testDefaultClusterOptionsForLeafNodes() *server.Options {
 	o.Cluster.Port = -1
 	o.Gateway.Host = o.Host
 	o.Gateway.Port = -1
+	o.LeafNode.Host = o.Host
 	o.LeafNode.Port = -1
 	return &o
 }
@@ -594,7 +599,7 @@ func createClusterWithName(t *testing.T, clusterName string, numServers int, con
 	// Wait on gateway connections if we were asked to connect to other gateways.
 	if numGWs := len(connectTo); numGWs > 0 {
 		for _, s := range c.servers {
-			waitForOutboundGateways(t, s, numGWs, time.Second)
+			waitForOutboundGateways(t, s, numGWs, 2*time.Second)
 		}
 	}
 
@@ -611,6 +616,9 @@ func TestLeafNodeGatewayRequiresSystemAccount(t *testing.T) {
 }
 
 func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
+	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
 	ca := createClusterWithName(t, "A", 1)
 	defer shutdownCluster(ca)
 	cb := createClusterWithName(t, "B", 1, ca)
@@ -646,6 +654,9 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 }
 
 func TestLeafNodeWithRouteAndGateway(t *testing.T) {
+	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
 	ca := createClusterWithName(t, "A", 3)
 	defer shutdownCluster(ca)
 	cb := createClusterWithName(t, "B", 3, ca)
@@ -1140,4 +1151,226 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	if _, err := ncl.Request("import.request", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
 		t.Fatalf("Did not receive response: %v", err)
 	}
+}
+
+func TestLeafNodeInfoURLs(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		useAdvertise bool
+	}{
+		{
+			"without advertise",
+			false,
+		},
+		{
+			"with advertise",
+			true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := testDefaultOptionsForLeafNodes()
+			opts.Cluster.Port = -1
+			opts.LeafNode.Host = "127.0.0.1"
+			if test.useAdvertise {
+				opts.LeafNode.Advertise = "me:1"
+			}
+			s1 := RunServer(opts)
+			defer s1.Shutdown()
+
+			lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+			defer lc.Close()
+			info := checkInfoMsg(t, lc)
+			if sz := len(info.LeafNodeURLs); sz != 1 {
+				t.Fatalf("Expected LeafNodeURLs array to be size 1, got %v", sz)
+			}
+			var s1LNURL string
+			if test.useAdvertise {
+				s1LNURL = "me:1"
+			} else {
+				s1LNURL = net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(opts.LeafNode.Port))
+			}
+			if url := info.LeafNodeURLs[0]; url != s1LNURL {
+				t.Fatalf("Expected URL to be %s, got %s", s1LNURL, url)
+			}
+			lc.Close()
+
+			opts2 := testDefaultOptionsForLeafNodes()
+			opts2.Cluster.Port = -1
+			opts2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port))
+			opts2.LeafNode.Host = "127.0.0.1"
+			if test.useAdvertise {
+				opts2.LeafNode.Advertise = "me:2"
+			}
+			s2 := RunServer(opts2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+			defer lc.Close()
+			info = checkInfoMsg(t, lc)
+			if sz := len(info.LeafNodeURLs); sz != 2 {
+				t.Fatalf("Expected LeafNodeURLs array to be size 2, got %v", sz)
+			}
+			var s2LNURL string
+			if test.useAdvertise {
+				s2LNURL = "me:2"
+			} else {
+				s2LNURL = net.JoinHostPort(opts2.LeafNode.Host, strconv.Itoa(opts2.LeafNode.Port))
+			}
+			var ok [2]int
+			for _, url := range info.LeafNodeURLs {
+				if url == s1LNURL {
+					ok[0]++
+				} else if url == s2LNURL {
+					ok[1]++
+				}
+			}
+			for i, res := range ok {
+				if res != 1 {
+					t.Fatalf("URL from server %v was found %v times", i+1, res)
+				}
+			}
+			lc.Close()
+
+			// Remove s2, and wait for route to be lost on s1.
+			s2.Shutdown()
+			checkNumRoutes(t, s1, 0)
+
+			// Now check that s1 returns only itself in the URLs array.
+			lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+			defer lc.Close()
+			info = checkInfoMsg(t, lc)
+			if sz := len(info.LeafNodeURLs); sz != 1 {
+				t.Fatalf("Expected LeafNodeURLs array to be size 1, got %v", sz)
+			}
+			if url := info.LeafNodeURLs[0]; url != s1LNURL {
+				t.Fatalf("Expected URL to be %s, got %s", s1LNURL, url)
+			}
+			lc.Close()
+		})
+	}
+}
+
+func TestLeafNodeFailover(t *testing.T) {
+	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterWithName(t, "A", 2)
+	defer shutdownCluster(ca)
+
+	cb := createClusterWithName(t, "B", 1, ca)
+	defer shutdownCluster(cb)
+
+	// Start a server that creates LeafNode connection to first
+	// server in cluster A.
+	s, opts := runSolicitLeafServer(ca.opts[0])
+	defer s.Shutdown()
+
+	// Shutdown that server on A.
+	ca.servers[0].Shutdown()
+
+	// Make sure that s reconnects its LN connection
+	checkLNConnected := func(t *testing.T, s *server.Server) {
+		t.Helper()
+		checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+			if s.NumLeafNodes() == 1 {
+				return nil
+			}
+			return fmt.Errorf("Server did not reconnect to second server in cluster A")
+		})
+	}
+	checkLNConnected(t, ca.servers[1])
+
+	// Verify that LeafNode info protocol is sent to the server `s`
+	// with list of new servers. To do that, we will restart
+	// ca[0] but with a different LN listen port.
+	ca.opts[0].Port = -1
+	ca.opts[0].Cluster.Port = -1
+	ca.opts[0].Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", ca.opts[1].Cluster.Host, ca.opts[1].Cluster.Port))
+	ca.opts[0].LeafNode.Port = -1
+	newa0 := RunServer(ca.opts[0])
+	defer newa0.Shutdown()
+
+	checkClusterFormed(t, newa0, ca.servers[1])
+
+	// Shutdown the server the LN is currently connected to. It should
+	// reconnect to newa0.
+	ca.servers[1].Shutdown()
+	checkLNConnected(t, newa0)
+
+	// Now shutdown newa0 and make sure `s` does not reconnect
+	// to server in gateway.
+	newa0.Shutdown()
+
+	// Wait for more than the reconnect attempts.
+	time.Sleep(opts.LeafNode.ReconnectInterval + 50*time.Millisecond)
+
+	if cb.servers[0].NumLeafNodes() != 0 {
+		t.Fatalf("Server reconnected to server in cluster B")
+	}
+}
+
+func TestLeafNodeAdvertise(t *testing.T) {
+	// Create a dummy listener which will we use for the advertise address.
+	// We will then stop the server and the test will be a success if
+	// this listener accepts a connection.
+	ch := make(chan struct{}, 1)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Error starting listener: %v", err)
+	}
+	defer l.Close()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c, _ := l.Accept()
+		if c != nil {
+			c.Close()
+		}
+		l.Close()
+		ch <- struct{}{}
+	}()
+
+	port := l.Addr().(*net.TCPAddr).Port
+
+	o2 := testDefaultOptionsForLeafNodes()
+	o2.LeafNode.Advertise = fmt.Sprintf("127.0.0.1:%d", port)
+	o2.Cluster.Port = -1
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testDefaultOptionsForLeafNodes()
+	o1.Cluster.Port = -1
+	o1.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o2.Cluster.Port))
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Start a server that connects to s1. It should be made aware
+	// of s2 (and its advertise address).
+	s, _ := runSolicitLeafServer(o1)
+	defer s.Shutdown()
+
+	// Wait for leaf node connection to be established on s1.
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if s1.NumLeafNodes() == 1 {
+			return nil
+		}
+		return fmt.Errorf("Leaf node connection still not established")
+	})
+
+	// Shutdown s1. The listener that we created should be the one
+	// receiving the connection from s.
+	s1.Shutdown()
+
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Server did not reconnect to advertised address")
+	}
+	wg.Wait()
 }

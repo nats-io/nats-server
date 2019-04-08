@@ -23,10 +23,12 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +41,14 @@ type leaf struct {
 	// leaf nodes. This represents all the interest we want to send to the other side.
 	smap map[string]int32
 	// We have any auth stuff here for solicited connections.
-	remote *RemoteLeafOpts
+	remote *leafNodeCfg
+}
+
+type leafNodeCfg struct {
+	sync.RWMutex
+	*RemoteLeafOpts
+	urls   []*url.URL
+	curURL *url.URL
 }
 
 func (c *client) isSolicitedLeafNode() bool {
@@ -49,12 +58,12 @@ func (c *client) isSolicitedLeafNode() bool {
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 	for _, r := range remotes {
-		remote := r
+		remote := newLeafNodeCfg(r)
 		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote) })
 	}
 }
 
-func (s *Server) remoteLeafNodeStillValid(remote *RemoteLeafOpts) bool {
+func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
 	for _, ri := range s.getOpts().LeafNode.Remotes {
 		// FIXME(dlc) - What about auth changes?
 		if urlsAreEqual(ri.URL, remote.URL) {
@@ -80,9 +89,11 @@ func validateLeafNode(o *Options) error {
 	return nil
 }
 
-func (s *Server) reConnectToRemoteLeafNode(remote *RemoteLeafOpts) {
-	// TODO(dlc) - We will use route delay semantics for now.
-	delay := DEFAULT_ROUTE_RECONNECT
+func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
+	delay := s.getOpts().LeafNode.ReconnectInterval
+	if delay == 0 {
+		delay = DEFAULT_LEAF_NODE_RECONNECT
+	}
 	select {
 	case <-time.After(delay):
 	case <-s.quitCh:
@@ -92,7 +103,41 @@ func (s *Server) reConnectToRemoteLeafNode(remote *RemoteLeafOpts) {
 	s.connectToRemoteLeafNode(remote)
 }
 
-func (s *Server) connectToRemoteLeafNode(remote *RemoteLeafOpts) {
+// Creates a leafNodeCfg object that wraps the RemoteLeafOpts.
+func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
+	cfg := &leafNodeCfg{
+		RemoteLeafOpts: remote,
+		urls:           make([]*url.URL, 0, 4),
+	}
+	// Start with the one that is configured. We will add to this
+	// array when receiving async leafnode INFOs.
+	cfg.urls = append(cfg.urls, cfg.URL)
+	return cfg
+}
+
+// Will pick an URL from the list of available URLs.
+func (cfg *leafNodeCfg) pickNextURL() *url.URL {
+	cfg.Lock()
+	defer cfg.Unlock()
+	// If the current URL is the first in the list and we have more than
+	// one URL, then move that one to end of the list.
+	if cfg.curURL != nil && len(cfg.urls) > 1 && urlsAreEqual(cfg.curURL, cfg.urls[0]) {
+		first := cfg.urls[0]
+		copy(cfg.urls, cfg.urls[1:])
+		cfg.urls[len(cfg.urls)-1] = first
+	}
+	cfg.curURL = cfg.urls[0]
+	return cfg.curURL
+}
+
+// Returns the current URL
+func (cfg *leafNodeCfg) getCurrentURL() *url.URL {
+	cfg.RLock()
+	defer cfg.RUnlock()
+	return cfg.curURL
+}
+
+func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 	defer s.grWG.Done()
 
 	if remote == nil || remote.URL == nil {
@@ -101,7 +146,7 @@ func (s *Server) connectToRemoteLeafNode(remote *RemoteLeafOpts) {
 	}
 
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
-		rURL := remote.URL
+		rURL := remote.pickNextURL()
 		s.Debugf("Trying to connect as leaf node to remote server on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL) // Use same timeouts as routes for now.
 		if err != nil {
@@ -183,12 +228,9 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 		s.mu.Unlock()
 		return
 	}
-
-	// Generate the INFO JSON.
-	// FIXME(dlc) - If we always generate no need for this.
-	b, _ := json.Marshal(s.leafNodeInfo)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	s.leafNodeInfoJSON = bytes.Join(pcs, []byte(" "))
+	// Add our LeafNode URL to the list that we send to servers connecting
+	// to our LeafNode accept URL. This call also regenerates leafNodeInfoJSON.
+	s.addLeafNodeURL(s.leafNodeInfo.IP)
 
 	// Setup state that can enable shutdown
 	s.leafNodeListener = l
@@ -274,8 +316,81 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
 }
 
+// Makes a deep copy of the LeafNode Info structure.
+// The server lock is held on entry.
+func (s *Server) copyLeafNodeInfo() *Info {
+	clone := s.leafNodeInfo
+	// Copy the array of urls.
+	if len(s.leafNodeInfo.LeafNodeURLs) > 0 {
+		clone.LeafNodeURLs = append([]string(nil), s.leafNodeInfo.LeafNodeURLs...)
+	}
+	return &clone
+}
+
+// Adds a LeafNode URL that we get when a route connects to the Info structure.
+// Regenerates the JSON byte array so that it can be sent to LeafNode connections.
+// Returns a boolean indicating if the URL was added or not.
+// Server lock is held on entry
+func (s *Server) addLeafNodeURL(urlStr string) bool {
+	// Make sure we already don't have it.
+	for _, url := range s.leafNodeInfo.LeafNodeURLs {
+		if url == urlStr {
+			return false
+		}
+	}
+	s.leafNodeInfo.LeafNodeURLs = append(s.leafNodeInfo.LeafNodeURLs, urlStr)
+	s.generateLeafNodeInfoJSON()
+	return true
+}
+
+// Removes a LeafNode URL of the route that is disconnecting from the Info structure.
+// Regenerates the JSON byte array so that it can be sent to LeafNode connections.
+// Returns a boolean indicating if the URL was removed or not.
+// Server lock is held on entry.
+func (s *Server) removeLeafNodeURL(urlStr string) bool {
+	// Don't need to do this if we are removing the route connection because
+	// we are shuting down...
+	if s.shutdown {
+		return false
+	}
+	removed := false
+	urls := s.leafNodeInfo.LeafNodeURLs
+	for i, url := range urls {
+		if url == urlStr {
+			// If not last, move last into the position we remove.
+			last := len(urls) - 1
+			if i != last {
+				urls[i] = urls[last]
+			}
+			s.leafNodeInfo.LeafNodeURLs = urls[0:last]
+			removed = true
+			break
+		}
+	}
+	if removed {
+		s.generateLeafNodeInfoJSON()
+	}
+	return removed
+}
+
+func (s *Server) generateLeafNodeInfoJSON() {
+	b, _ := json.Marshal(s.leafNodeInfo)
+	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+	s.leafNodeInfoJSON = bytes.Join(pcs, []byte(" "))
+}
+
+// Sends an async INFO protocol so that the connected servers can update
+// their list of LeafNode urls.
+func (s *Server) sendAsyncLeafNodeInfo() {
+	for _, c := range s.leafs {
+		c.mu.Lock()
+		c.sendInfo(s.leafNodeInfoJSON)
+		c.mu.Unlock()
+	}
+}
+
 // Called when an inbound leafnode connection is accepted or we create one for a solicited leafnode.
-func (s *Server) createLeafNode(conn net.Conn, remote *RemoteLeafOpts) *client {
+func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -309,7 +424,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *RemoteLeafOpts) *client {
 
 	// Grab server variables
 	s.mu.Lock()
-	info := s.leafNodeInfo
+	info := s.copyLeafNodeInfo()
 	s.mu.Unlock()
 
 	// Grab lock
@@ -359,7 +474,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *RemoteLeafOpts) *client {
 				tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 			}
 
-			host, _, _ := net.SplitHostPort(c.leaf.remote.URL.Host)
+			url := c.leaf.remote.getCurrentURL()
+			host, _, _ := net.SplitHostPort(url.Host)
 			tlsConfig.ServerName = host
 
 			c.nc = tls.Client(c.nc, tlsConfig)
@@ -467,28 +583,83 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	}
 
 	// Mark that the INFO protocol has been received.
-	// Capture a nonce here.
-	c.flags.set(infoReceived)
-	c.nonce = []byte(info.Nonce)
-	if info.TLSRequired && c.leaf.remote != nil {
-		c.leaf.remote.TLS = true
+	// Note: For now, only the initial INFO has a nonce. We
+	// will probably do auto key rotation at some point.
+	if c.flags.setIfNotSet(infoReceived) {
+		// Capture a nonce here.
+		c.nonce = []byte(info.Nonce)
+		if info.TLSRequired && c.leaf.remote != nil {
+			c.leaf.remote.TLS = true
+		}
 	}
+	// For both initial INFO and async INFO protocols, Possibly
+	// update our list of remote leafnode URLs we can connect to.
+	if c.leaf.remote != nil && len(info.LeafNodeURLs) > 0 {
+		// Consider the incoming array as the most up-to-date
+		// representation of the remote cluster's list of URLs.
+		c.updateLeafNodeURLs(info)
+	}
+}
+
+// When getting a leaf node INFO protocol, use the provided
+// array of urls to update the list of possible endpoints.
+func (c *client) updateLeafNodeURLs(info *Info) {
+	cfg := c.leaf.remote
+	cfg.Lock()
+	defer cfg.Unlock()
+
+	cfg.urls = make([]*url.URL, 0, 1+len(info.LeafNodeURLs))
+	// Add the ones we receive in the protocol
+	for _, surl := range info.LeafNodeURLs {
+		url, err := url.Parse("nats-leaf://" + surl)
+		if err != nil {
+			c.Errorf("Error parsing url %q: %v", surl, err)
+			continue
+		}
+		// Do not add if it's the same than the one that
+		// we have configured.
+		if urlsAreEqual(url, cfg.URL) {
+			continue
+		}
+		cfg.urls = append(cfg.urls, url)
+	}
+	// Add the configured one
+	cfg.urls = append(cfg.urls, cfg.URL)
 }
 
 // Similar to setInfoHostPortAndGenerateJSON, but for leafNodeInfo.
 func (s *Server) setLeafNodeInfoHostPortAndIP() error {
-	if s.opts.LeafNode.Advertise != "" {
-		advHost, advPort, err := parseHostPort(s.opts.LeafNode.Advertise, s.opts.LeafNode.Port)
+	opts := s.getOpts()
+	if opts.LeafNode.Advertise != _EMPTY_ {
+		advHost, advPort, err := parseHostPort(opts.LeafNode.Advertise, opts.LeafNode.Port)
 		if err != nil {
 			return err
 		}
 		s.leafNodeInfo.Host = advHost
 		s.leafNodeInfo.Port = advPort
-		s.leafNodeInfo.IP = fmt.Sprintf("nats-leafnode://%s/", net.JoinHostPort(advHost, strconv.Itoa(advPort)))
 	} else {
-		s.leafNodeInfo.Host = s.opts.LeafNode.Host
-		s.leafNodeInfo.Port = s.opts.LeafNode.Port
-		s.leafNodeInfo.IP = ""
+		s.leafNodeInfo.Host = opts.LeafNode.Host
+		s.leafNodeInfo.Port = opts.LeafNode.Port
+		// If the host is "0.0.0.0" or "::" we need to resolve to a public IP.
+		// This will return at most 1 IP.
+		hostIsIPAny, ips, err := s.getNonLocalIPsIfHostIsIPAny(s.leafNodeInfo.Host, false)
+		if err != nil {
+			return err
+		}
+		if hostIsIPAny {
+			if len(ips) == 0 {
+				s.Errorf("Could not find any non-local IP for leafnode's listen specification %q",
+					s.leafNodeInfo.Host)
+			} else {
+				// Take the first from the list...
+				s.leafNodeInfo.Host = ips[0]
+			}
+		}
+	}
+	// Use just host:port for the IP
+	s.leafNodeInfo.IP = net.JoinHostPort(s.leafNodeInfo.Host, strconv.Itoa(s.leafNodeInfo.Port))
+	if opts.LeafNode.Advertise != _EMPTY_ {
+		s.Noticef("Advertise address for leafnode is set to %s", s.leafNodeInfo.IP)
 	}
 	return nil
 }

@@ -72,6 +72,7 @@ type route struct {
 	connectURLs  []string
 	replySubs    map[*subscription]*time.Timer
 	gatewayURL   string
+	leafnodeURL  string
 }
 
 type connectInfo struct {
@@ -398,6 +399,10 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
+	// When sent through route INFO, if the field is set, it should be of size 1.
+	if len(info.LeafNodeURLs) == 1 {
+		c.route.leafnodeURL = info.LeafNodeURLs[0]
+	}
 
 	// If this is an update due to config reload on the remote server,
 	// need to possibly send local subs to the remote server.
@@ -1224,6 +1229,13 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		if info.GatewayURL != "" {
 			s.addGatewayURL(info.GatewayURL)
 		}
+
+		// Add the remote's leafnodeURL to our list of URLs and send the update
+		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
+		// is an array of size 1 max).
+		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
+			s.sendAsyncLeafNodeInfo()
+		}
 	}
 	s.mu.Unlock()
 
@@ -1431,6 +1443,14 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		info.Import = opts.Cluster.Permissions.Import
 		info.Export = opts.Cluster.Permissions.Export
 	}
+	// If this server has a LeafNode accept loop, s.leafNodeInfo.IP is,
+	// at this point, set to the host:port for the leafnode accept URL,
+	// taking into account possible advertise setting. Use the LeafNodeURLs
+	// and set this server's leafnode accept URL. This will be sent to
+	// routed servers.
+	if !opts.LeafNode.NoAdvertise && s.leafNodeInfo.IP != _EMPTY_ {
+		info.LeafNodeURLs = []string{s.leafNodeInfo.IP}
+	}
 	s.routeInfo = info
 	// Possibly override Host/Port and set IP based on Cluster.Advertise
 	if err := s.setRouteInfoHostPortAndIP(); err != nil {
@@ -1626,11 +1646,13 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 
 func (s *Server) removeRoute(c *client) {
 	var rID string
+	var lnURL string
 	c.mu.Lock()
 	cid := c.cid
 	r := c.route
 	if r != nil {
 		rID = r.remoteID
+		lnURL = r.leafnodeURL
 	}
 	c.mu.Unlock()
 	s.mu.Lock()
@@ -1642,6 +1664,11 @@ func (s *Server) removeRoute(c *client) {
 			delete(s.remotes, rID)
 		}
 		s.removeGatewayURL(r.gatewayURL)
+		// Remove the remote's leafNode URL from
+		// our list and send update to LN connections.
+		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
+			s.sendAsyncLeafNodeInfo()
+		}
 	}
 	s.removeFromTempClients(cid)
 	s.mu.Unlock()
