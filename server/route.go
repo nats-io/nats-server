@@ -1032,15 +1032,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 			// the lock, which could cause pingTimer to think that this
 			// connection is stale otherwise.
 			c.last = time.Now()
-			if !c.flushOutbound() {
-				// It means that we could not flush because another go
-				// routine (likely the writeLoop) is doing (or is done with)
-				// the socket write and is waiting for the lock. Give it
-				// a chance to complete its operation by releasing
-				// the lock here.
-				c.mu.Unlock()
-				c.mu.Lock()
-			}
+			c.flushOutbound()
 			if closed = c.flags.isSet(clearConnection); closed {
 				break
 			}
