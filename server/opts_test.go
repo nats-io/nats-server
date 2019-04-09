@@ -56,6 +56,9 @@ func TestDefaultOptions(t *testing.T) {
 		WriteDeadline:    DEFAULT_FLUSH_DEADLINE,
 		MaxClosedClients: DEFAULT_MAX_CLOSED_CLIENTS,
 		LameDuckDuration: DEFAULT_LAME_DUCK_DURATION,
+		LeafNode: LeafNodeOpts{
+			ReconnectInterval: DEFAULT_LEAF_NODE_RECONNECT,
+		},
 	}
 
 	opts := &Options{}

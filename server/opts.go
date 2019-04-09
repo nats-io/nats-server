@@ -94,6 +94,10 @@ type LeafNodeOpts struct {
 	Advertise         string            `json:"-"`
 	NoAdvertise       bool              `json:"-"`
 	ReconnectInterval time.Duration     `json:"-"`
+
+	// Not exported, for tests.
+	resolver    netResolver
+	dialTimeout time.Duration
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
@@ -2366,6 +2370,10 @@ func setBaselineOptions(opts *Options) {
 		if opts.LeafNode.AuthTimeout == 0 {
 			opts.LeafNode.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 		}
+	}
+	// Set this regardless of opts.LeafNode.Port
+	if opts.LeafNode.ReconnectInterval == 0 {
+		opts.LeafNode.ReconnectInterval = DEFAULT_LEAF_NODE_RECONNECT
 	}
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE

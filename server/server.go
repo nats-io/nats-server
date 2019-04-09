@@ -121,6 +121,10 @@ type Server struct {
 	leafNodeListener net.Listener
 	leafNodeInfo     Info
 	leafNodeInfoJSON []byte
+	leafNodeOpts     struct {
+		resolver    netResolver
+		dialTimeout time.Duration
+	}
 
 	quitCh chan struct{}
 
@@ -234,6 +238,9 @@ func NewServer(opts *Options) (*Server, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Ensure that non-exported options (used in tests) are properly set.
+	s.setLeafNodeNonExportedOptions()
 
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(map[string]struct{})
