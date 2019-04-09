@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"syscall"
 
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/ssh/terminal"
@@ -53,9 +54,15 @@ func main() {
 
 	if *pw {
 		fmt.Printf("Enter Password: ")
-		bytePassword, _ := terminal.ReadPassword(0)
+		bytePassword, err := terminal.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatalf("Error reading password: %v\n", err)
+		}
 		fmt.Printf("\nReenter Password: ")
-		bytePassword2, _ := terminal.ReadPassword(0)
+		bytePassword2, err := terminal.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatalf("Error reading password: %v\n", err)
+		}
 		if !bytes.Equal(bytePassword, bytePassword2) {
 			log.Fatalf("Error, passwords do not match\n")
 		}
