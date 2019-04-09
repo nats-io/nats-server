@@ -280,6 +280,9 @@ func (c *clusterOption) Apply(server *Server) {
 	server.setRouteInfoHostPortAndIP()
 	server.mu.Unlock()
 	server.Noticef("Reloaded: cluster")
+	if tlsRequired && c.newValue.TLSConfig.InsecureSkipVerify {
+		server.Warnf(clusterTLSInsecureWarning)
+	}
 }
 
 func (c *clusterOption) IsClusterPermsChange() bool {
