@@ -91,9 +91,6 @@ func validateLeafNode(o *Options) error {
 
 func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
 	delay := s.getOpts().LeafNode.ReconnectInterval
-	if delay == 0 {
-		delay = DEFAULT_LEAF_NODE_RECONNECT
-	}
 	select {
 	case <-time.After(delay):
 	case <-s.quitCh:
@@ -137,6 +134,21 @@ func (cfg *leafNodeCfg) getCurrentURL() *url.URL {
 	return cfg.curURL
 }
 
+// Ensure that non-exported options (used in tests) have
+// been properly set.
+func (s *Server) setLeafNodeNonExportedOptions() {
+	opts := s.getOpts()
+	s.leafNodeOpts.dialTimeout = opts.LeafNode.dialTimeout
+	if s.leafNodeOpts.dialTimeout == 0 {
+		// Use same timeouts as routes for now.
+		s.leafNodeOpts.dialTimeout = DEFAULT_ROUTE_DIAL
+	}
+	s.leafNodeOpts.resolver = opts.LeafNode.resolver
+	if s.leafNodeOpts.resolver == nil {
+		s.leafNodeOpts.resolver = net.DefaultResolver
+	}
+}
+
 func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 	defer s.grWG.Done()
 
@@ -145,16 +157,31 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 		return
 	}
 
+	reconnectDelay := s.getOpts().LeafNode.ReconnectInterval
+	s.mu.Lock()
+	dialTimeout := s.leafNodeOpts.dialTimeout
+	resolver := s.leafNodeOpts.resolver
+	s.mu.Unlock()
+
+	var conn net.Conn
+
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
 		rURL := remote.pickNextURL()
-		s.Debugf("Trying to connect as leaf node to remote server on %s", rURL.Host)
-		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL) // Use same timeouts as routes for now.
+		url, err := s.getRandomIP(resolver, rURL.Host)
+		if err == nil {
+			var ipStr string
+			if url != rURL.Host {
+				ipStr = fmt.Sprintf(" (%s)", url)
+			}
+			s.Debugf("Trying to connect as leaf node to remote server on %s%s", rURL.Host, ipStr)
+			conn, err = net.DialTimeout("tcp", url, dialTimeout)
+		}
 		if err != nil {
 			s.Errorf("Error trying to connect as leaf node to remote server: %v", err)
 			select {
 			case <-s.quitCh:
 				return
-			case <-time.After(DEFAULT_ROUTE_CONNECT):
+			case <-time.After(reconnectDelay):
 				continue
 			}
 		}
