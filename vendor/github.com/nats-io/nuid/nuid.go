@@ -1,4 +1,4 @@
-// Copyright 2016-2018 The NATS Authors
+// Copyright 2016-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -31,7 +31,7 @@ import (
 // Total is 22 bytes of base 62 ascii text :)
 
 // Version of the library
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 const (
 	digits   = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -105,7 +105,7 @@ func (n *NUID) Next() string {
 	bs := b[:preLen]
 	copy(bs, n.pre)
 
-	// copy in the seq in base36.
+	// copy in the seq in base62.
 	for i, l := len(b), seq; i > preLen; l /= base {
 		i -= 1
 		b[i] = digits[l%base]
