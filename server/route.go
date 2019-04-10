@@ -96,6 +96,9 @@ const (
 // done in place or in separate go routine.
 const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
 
+// Warning when user configures cluster TLS insecure
+const clusterTLSInsecureWarning = "TLS Hostname verification disabled, system will not verify identity of the solicited route"
+
 // This will add a timer to watch over remote reply subjects in case
 // they fail to receive a response. The duration will be taken from the
 // accounts map timeout to match.
@@ -1482,6 +1485,10 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	}
 	// Setup state that can enable shutdown
 	s.routeListener = l
+	// Warn if using Cluster.Insecure
+	if tlsReq && opts.Cluster.TLSConfig.InsecureSkipVerify {
+		s.Warnf(clusterTLSInsecureWarning)
+	}
 	s.mu.Unlock()
 
 	// Let them know we are up

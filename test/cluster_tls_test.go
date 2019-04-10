@@ -82,6 +82,21 @@ func (c *captureTLSError) Errorf(format string, v ...interface{}) {
 	}
 }
 
+type captureClusterTLSInsecureLogger struct {
+	dummyLogger
+	ch chan struct{}
+}
+
+func (c *captureClusterTLSInsecureLogger) Warnf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "verification disabled") {
+		select {
+		case c.ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func TestClusterTLSInsecure(t *testing.T) {
 	confA := createConfFile(t, []byte(`
 		port: -1
@@ -129,6 +144,10 @@ func TestClusterTLSInsecure(t *testing.T) {
 		t.Fatalf("Did not get handshake error")
 	}
 
+	// Set a logger that will capture the warning
+	wl := &captureClusterTLSInsecureLogger{ch: make(chan struct{}, 1)}
+	srvB.SetLogger(wl, false, false)
+
 	// Need to add "insecure: true" and reload
 	if err := ioutil.WriteFile(confB,
 		[]byte(fmt.Sprintf(bConfigTemplate, "insecure: true", optsA.Cluster.Host, optsA.Cluster.Port)),
@@ -140,4 +159,11 @@ func TestClusterTLSInsecure(t *testing.T) {
 	}
 
 	checkClusterFormed(t, srvA, srvB)
+
+	// Make sure we have the tracing
+	select {
+	case <-wl.ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get warning about using cluster's insecure setting")
+	}
 }
