@@ -305,7 +305,7 @@ The URL that srvB will use to connect to srvC is the result of the TCP remote ad
 
 It is possible to advertise with `--cluster_advertise` a different address than the one used in `--cluster`.
 
-In the previous example, if srvC uses a `--cluster_adertise` URL, this is what srvA will gossip to srvB in order to connect to srvC.
+In the previous example, if srvC uses a `--cluster_advertise` URL, this is what srvA will gossip to srvB in order to connect to srvC.
 
 NOTE: The advertise address should really result in a connection to srvC. Providing an address that would result in a connection to a different NATS Server would prevent the formation of a full-mesh cluster!
 
