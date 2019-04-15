@@ -821,6 +821,41 @@ func TestGatewayTLSErrors(t *testing.T) {
 	waitForGatewayFailedConnect(t, s1, "B", true, 2*time.Second)
 }
 
+func TestGatewayServerNameInTLSConfig(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	var (
+		tc  = &TLSConfigOpts{}
+		err error
+	)
+	tc.CertFile = "../test/configs/certs/server-noip.pem"
+	tc.KeyFile = "../test/configs/certs/server-key-noip.pem"
+	tc.CaFile = "../test/configs/certs/ca.pem"
+	o2.Gateway.TLSConfig, err = GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating TLS config: %v", err)
+	}
+	o2.Gateway.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	o2.Gateway.TLSConfig.RootCAs = o2.Gateway.TLSConfig.ClientCAs
+	o2.Gateway.TLSTimeout = 2.0
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithTLS(t, "A", "B", []string{fmt.Sprintf("nats://127.0.0.1:%d", s2.GatewayAddr().Port)})
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	// s1 should fail to connect since we don't have proper expected hostname.
+	waitForGatewayFailedConnect(t, s1, "B", true, 2*time.Second)
+
+	// Now set server name, and it should work.
+	s1.Shutdown()
+	o1.Gateway.TLSConfig.ServerName = "localhost"
+	s1 = runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+}
+
 func TestGatewayWrongDestination(t *testing.T) {
 	// Start a server with a gateway named "C"
 	o2 := testDefaultOptionsForGateway("C")
