@@ -60,7 +60,7 @@ TLS Options:
 Cluster Options:
         --routes <rurl-1, rurl-2>    Routes to solicit and connect
         --cluster <cluster-url>      Cluster URL for solicited routes
-        --no_advertise <bool>        Advertise known cluster IPs to clients
+        --no_advertise <bool>        Advertise known cluster IPs to cluster members and clients
         --cluster_advertise <string> Cluster URL to advertise to other servers
         --connect_retries <number>   For implicit routes, number of connect retries
 
