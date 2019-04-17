@@ -784,7 +784,7 @@ func (c *client) initLeafNodeSmap() {
 		return
 	}
 	// Collect all subs here.
-	_subs := [256]*subscription{}
+	_subs := [32]*subscription{}
 	subs := _subs[:0]
 	ims := []string{}
 	acc.mu.RLock()
@@ -871,7 +871,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 	_b := [64]byte{}
 	b := bytes.NewBuffer(_b[:0])
-	writeLeafSub(b, key, n)
+	c.writeLeafSub(b, key, n)
 	c.sendProto(b.Bytes(), false)
 }
 
@@ -902,7 +902,7 @@ func (c *client) sendAllAccountSubs() {
 	var b bytes.Buffer
 
 	for key, n := range c.leaf.smap {
-		writeLeafSub(&b, key, n)
+		c.writeLeafSub(&b, key, n)
 	}
 
 	// We will make sure we don't overflow here due to an max_pending.
@@ -914,7 +914,7 @@ func (c *client) sendAllAccountSubs() {
 	}
 }
 
-func writeLeafSub(w *bytes.Buffer, key string, n int32) {
+func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 	if key == "" {
 		return
 	}
@@ -930,9 +930,18 @@ func writeLeafSub(w *bytes.Buffer, key string, n int32) {
 				b[i] = digits[l%10]
 			}
 			w.Write(b[i:])
+			if c.trace {
+				arg := fmt.Sprintf("%s %d", key, n)
+				c.traceOutOp("LS+", []byte(arg))
+			}
+		} else if c.trace {
+			c.traceOutOp("LS+", []byte(key))
 		}
 	} else {
 		w.WriteString("LS- " + key)
+		if c.trace {
+			c.traceOutOp("LS-", []byte(key))
+		}
 	}
 	w.WriteString(CR_LF)
 }
