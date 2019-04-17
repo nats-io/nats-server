@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/go-nats"
 	"github.com/nats-io/jwt"
@@ -1041,7 +1040,6 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
 	defer os.Remove(conf)
 	defer s.Shutdown()
-	s.SetLogger(logger.NewTestLogger("[S ] ", true), true, true)
 
 	// Setup the two accounts for this server.
 	okp, _ := nkeys.FromSeed(oSeed)
@@ -1096,7 +1094,6 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	sl, lopts, lnconf := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf)
 	defer sl.Shutdown()
-	sl.SetLogger(logger.NewTestLogger("[LN] ", true), true, true)
 
 	checkLeafNodeConnected(t, s)
 
@@ -1145,7 +1142,7 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	}
 
 	// Services
-	// Create listener on nc1
+	// Create listener on nc2
 	nc2.Subscribe("req.echo", func(msg *nats.Msg) {
 		nc2.Publish(msg.Reply, []byte("WORKED"))
 	})
@@ -1173,7 +1170,6 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	defer os.Remove(conf)
 	s1, s1Opts := RunServerWithConfig(conf)
 	defer s1.Shutdown()
-	s1.SetLogger(logger.NewTestLogger("[S1] ", true), true, true)
 
 	content = fmt.Sprintf(`
 	port: -1
@@ -1190,7 +1186,6 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	conf = createConfFile(t, []byte(content))
 	s2, s2Opts := RunServerWithConfig(conf)
 	defer s2.Shutdown()
-	s2.SetLogger(logger.NewTestLogger("[S2] ", true), true, true)
 
 	// Setup the two accounts for this server.
 	okp, _ := nkeys.FromSeed(oSeed)
@@ -1261,7 +1256,6 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	sl, lopts, lnconf := runSolicitWithCredentials(t, s1Opts, mycreds)
 	defer os.Remove(lnconf)
 	defer sl.Shutdown()
-	sl.SetLogger(logger.NewTestLogger("[LN] ", true), true, true)
 
 	checkLeafNodeConnected(t, s1)
 
@@ -1318,7 +1312,7 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	nc2.Flush()
 
 	// Now send the request on the leaf node client.
-	if _, err := ncl.Request("import.request", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
+	if _, err := ncl.Request("import.request", []byte("fingers crossed"), 5500*time.Millisecond); err != nil {
 		if atomic.LoadInt32(&gotIt) == 0 {
 			t.Fatalf("Request was not received")
 		}

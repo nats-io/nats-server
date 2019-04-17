@@ -1740,7 +1740,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		shadow = append(shadow, nsub)
 	}
 	// Now walk through importMaps that we need to subscribe
-	// exactly to the from property.
+	// exactly to the "from" property.
 	for _, im := range froms {
 		// We will create a shadow subscription.
 		nsub, err := c.addShadowSub(sub, im, true)
@@ -2299,6 +2299,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 	rm := acc.imports.services[string(c.pa.subject)]
 	invalid := rm != nil && rm.invalid
 	acc.mu.RUnlock()
+
 	// Get the results from the other account for the mapped "to" subject.
 	// If we have been marked invalid simply return here.
 	if rm != nil && !invalid && rm.acc != nil && rm.acc.sl != nil {
@@ -2320,13 +2321,14 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := rm.acc.sl.Match(rm.to)
+
 		// If we are a route or gateway and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
 		if (c.kind == ROUTER || c.kind == GATEWAY) && c.pa.queues == nil && len(rr.qsubs) > 0 {
 			c.makeQFilter(rr.qsubs)
 		}
 
-		sendToGWs := c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM)
+		sendToGWs := c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF)
 		queues := c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, sendToGWs)
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
@@ -2403,7 +2405,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		case LEAF:
 			// We handle similarly to routes and use the same data structures.
 			// Leaf node delivery audience is different however.
-			c.addSubToRouteTargets(sub)
+			// Also leaf nodes are always no echo, so we make sure we are not
+			// going to send back to ourselves here.
+			if c != sub.client {
+				c.addSubToRouteTargets(sub)
+			}
 			continue
 		}
 		// Check for stream import mapped subs. These apply to local subs only.
@@ -2425,21 +2431,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	// guidance on which queue groups we should deliver to.
 	qf := c.pa.queues
 
-	// For route connections, we still want to send messages to
-	// leaf nodes even if there are no queue filters since we collect
+	// For all non-client connections, we may still want to send messages to
+	// leaf nodes or routes even if there are no queue filters since we collect
 	// them above and do not process inline like normal clients.
-	if c.kind == ROUTER && qf == nil {
-		goto sendToRoutesOrLeafs
-	}
-
-	// If we are sourced from a route or leaf node we need to have direct filtered queues.
-	if (c.kind == ROUTER || c.kind == LEAF) && qf == nil {
-		return queues
-	}
-
-	// For gateway connections, we still want to send messages to routes
-	// and leaf nodes even if there are no queue filters.
-	if c.kind == GATEWAY && qf == nil {
+	if c.kind != CLIENT && qf == nil {
 		goto sendToRoutesOrLeafs
 	}
 
