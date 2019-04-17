@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1597,4 +1599,55 @@ func TestNewRouteLargeDistinctQueueSubscribers(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestLargeClusterMem(t *testing.T) {
+	// Try to clean up.
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	pta := m.TotalAlloc
+
+	opts := func() *server.Options {
+		o := DefaultTestOptions
+		o.Host = "127.0.0.1"
+		o.Port = -1
+		o.Cluster.Host = o.Host
+		o.Cluster.Port = -1
+		return &o
+	}
+
+	var servers []*server.Server
+
+	// Create seed first.
+	o := opts()
+	s := RunServer(o)
+	servers = append(servers, s)
+
+	// For connecting to seed server above.
+	routeAddr := fmt.Sprintf("nats-route://%s:%d", o.Cluster.Host, o.Cluster.Port)
+	rurl, _ := url.Parse(routeAddr)
+	routes := []*url.URL{rurl}
+
+	numServers := 25
+
+	for i := 1; i < numServers; i++ {
+		o := opts()
+		o.Routes = routes
+		s := RunServer(o)
+		servers = append(servers, s)
+	}
+	checkClusterFormed(t, servers...)
+
+	// Calculate in MB what we are using now.
+	const max = 50 * 1024 * 1024 // 50MB
+	runtime.ReadMemStats(&m)
+	used := (m.TotalAlloc - pta) / (1024 * 1024)
+	if used > max {
+		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used)
+	}
+
+	for _, s := range servers {
+		s.Shutdown()
+	}
 }

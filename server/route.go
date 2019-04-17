@@ -885,13 +885,12 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 // complete interest for all subjects, both normal as a binary
 // and queue group weights.
 func (s *Server) sendSubsToRoute(route *client) {
-	// Send over our account subscriptions.
-	var _accs [4096]*Account
-	accs := _accs[:0]
-	// copy accounts into array first
 	s.mu.Lock()
 	// Estimated size of all protocols. It does not have to be accurate at all.
 	eSize := 0
+	// Send over our account subscriptions.
+	// copy accounts into array first
+	accs := make([]*Account, 0, len(s.accounts))
 	for _, a := range s.accounts {
 		accs = append(accs, a)
 		a.mu.RLock()
@@ -905,7 +904,7 @@ func (s *Server) sendSubsToRoute(route *client) {
 	s.mu.Unlock()
 
 	sendSubs := func(accs []*Account) {
-		var raw [4096]*subscription
+		var raw [32]*subscription
 		var closed bool
 
 		route.mu.Lock()
@@ -983,11 +982,10 @@ func (c *client) sendRouteUnSubProtos(subs []*subscription, trace bool, filter f
 // Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
 // Lock is held on entry.
 func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, trace bool, filter func(sub *subscription) bool) bool {
-	const staticBufSize = maxBufSize * 2
 	var (
-		_buf   [staticBufSize]byte // array on stack
+		_buf   [1024]byte          // array on stack
 		buf    = _buf[:0]          // our buffer will initially point to the stack buffer
-		mbs    = staticBufSize     // max size of the buffer
+		mbs    = maxBufSize * 2    // max size of the buffer
 		mpMax  = int(c.out.mp / 2) // 50% of max_pending
 		closed bool
 	)
@@ -1163,7 +1161,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Do final client initialization
 
 	// Initialize the per-account cache.
-	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
+	c.in.pacache = make(map[string]*perAccountCache)
 	if didSolicit {
 		// Set permissions associated with the route user (if applicable).
 		// No lock needed since we are already under client lock.
