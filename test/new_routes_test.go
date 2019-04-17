@@ -1629,7 +1629,7 @@ func TestLargeClusterMem(t *testing.T) {
 	rurl, _ := url.Parse(routeAddr)
 	routes := []*url.URL{rurl}
 
-	numServers := 25
+	numServers := 15
 
 	for i := 1; i < numServers; i++ {
 		o := opts()
@@ -1642,9 +1642,9 @@ func TestLargeClusterMem(t *testing.T) {
 	// Calculate in MB what we are using now.
 	const max = 50 * 1024 * 1024 // 50MB
 	runtime.ReadMemStats(&m)
-	used := (m.TotalAlloc - pta) / (1024 * 1024)
+	used := m.TotalAlloc - pta
 	if used > max {
-		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used)
+		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used/(1024*1024))
 	}
 
 	for _, s := range servers {

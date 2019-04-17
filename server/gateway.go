@@ -673,7 +673,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	}
 
 	// Do final client initialization
-	c.in.pacache = make(map[string]*perAccountCache, maxPerAccountCacheSize)
+	c.in.pacache = make(map[string]*perAccountCache)
 	if solicit {
 		// This is an outbound gateway connection
 		c.gw.outsim = &sync.Map{}

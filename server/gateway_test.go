@@ -4433,3 +4433,47 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayMemUsage(t *testing.T) {
+	// Try to clean up.
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	pta := m.TotalAlloc
+
+	o := testDefaultOptionsForGateway("A")
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	var servers []*Server
+	servers = append(servers, s)
+
+	numServers := 10
+	for i := 0; i < numServers; i++ {
+		rn := fmt.Sprintf("RG_%d", i+1)
+		o := testGatewayOptionsFromToWithServers(t, rn, "A", s)
+		s := runGatewayServer(o)
+		defer s.Shutdown()
+		servers = append(servers, s)
+	}
+
+	// Each server should have an outbound
+	for _, s := range servers {
+		waitForOutboundGateways(t, s, numServers, 2*time.Second)
+	}
+	// The first started server should have numServers inbounds (since
+	// they all connect to it).
+	waitForInboundGateways(t, s, numServers, 2*time.Second)
+
+	// Calculate in MB what we are using now.
+	const max = 50 * 1024 * 1024 // 50MB
+	runtime.ReadMemStats(&m)
+	used := m.TotalAlloc - pta
+	if used > max {
+		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used/(1024*1024))
+	}
+
+	for _, s := range servers {
+		s.Shutdown()
+	}
+}
