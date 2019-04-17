@@ -2352,15 +2352,15 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 		}
 	}
 
+	var rt *routeTarget
+	lrts := len(c.in.rts)
+
 	// If we are here we do not have the sub yet in our list
 	// If we have to grow do so here.
-	if len(c.in.rts) == cap(c.in.rts) {
+	if lrts == cap(c.in.rts) {
 		c.in.rts = append(c.in.rts, routeTarget{})
 	}
 
-	var rt *routeTarget
-
-	lrts := len(c.in.rts)
 	c.in.rts = c.in.rts[:lrts+1]
 	rt = &c.in.rts[lrts]
 	rt.sub = sub
