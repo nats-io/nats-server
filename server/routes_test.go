@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1024,4 +1025,52 @@ func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
 
 	// Check that all subs have been sent ok
 	checkExpectedSubs(t, numSubs, srvA, srvB)
+}
+
+func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	numRoutes := routeTargetInit + 2
+	total := int32(numRoutes)
+	count := int32(0)
+	ch := make(chan bool, 1)
+	cb := func(_ *nats.Msg) {
+		if n := atomic.AddInt32(&count, 1); n == total {
+			ch <- true
+		}
+	}
+
+	var servers []*Server
+	servers = append(servers, s)
+
+	seedURL := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	for i := 0; i < numRoutes; i++ {
+		ropts := DefaultOptions()
+		ropts.Routes = RoutesFromStr(seedURL)
+		rs := RunServer(ropts)
+		defer rs.Shutdown()
+		servers = append(servers, rs)
+
+		// Create a sub on each routed server
+		nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", ropts.Host, ropts.Port))
+		defer nc.Close()
+		natsSub(t, nc, "foo", cb)
+	}
+	checkClusterFormed(t, servers...)
+
+	// Make sure all subs are registered in s.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if s.globalAccount().TotalSubs() != int(numRoutes) {
+			return fmt.Errorf("Not all %v routed subs were registered", numRoutes)
+		}
+		return nil
+	})
+
+	pubNC := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	defer pubNC.Close()
+	natsPub(t, pubNC, "foo", []byte("hello world!"))
+
+	waitCh(t, ch, "Did not get all messages")
 }
