@@ -1192,10 +1192,10 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Spin up the read loop.
-	s.startGoRoutine(c.readLoop)
+	s.startGoRoutine(func() { c.readLoop() })
 
 	// Spin up the write loop.
-	s.startGoRoutine(c.writeLoop)
+	s.startGoRoutine(func() { c.writeLoop() })
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")

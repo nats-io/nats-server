@@ -1529,10 +1529,10 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.setPingTimer()
 
 	// Spin up the read loop.
-	s.startGoRoutine(c.readLoop)
+	s.startGoRoutine(func() { c.readLoop() })
 
 	// Spin up the write loop.
-	s.startGoRoutine(c.writeLoop)
+	s.startGoRoutine(func() { c.writeLoop() })
 
 	if info.TLSRequired {
 		c.Debugf("TLS handshake complete")
