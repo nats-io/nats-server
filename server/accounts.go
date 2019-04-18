@@ -826,8 +826,8 @@ func (a *Account) hasIssuer(issuer string) bool {
 	if a.Issuer == issuer {
 		return true
 	}
-	for _, v := range a.signingKeys {
-		if v == issuer {
+	for i := 0; i < len(a.signingKeys); i++ {
+		if a.signingKeys[i] == issuer {
 			return true
 		}
 	}
@@ -884,15 +884,15 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.signingKeys = nil
 	signersChanged := false
 	if len(ac.SigningKeys) > 0 {
-		// insure sorted and copy
-		sort.Strings(ac.SigningKeys)
+		// insure copy the new keys and sort
 		a.signingKeys = append(a.signingKeys, ac.SigningKeys...)
+		sort.Strings(a.signingKeys)
 	}
 	if len(a.signingKeys) != len(old.signingKeys) {
 		signersChanged = true
 	} else {
-		for i, v := range old.signingKeys {
-			if a.signingKeys[i] != v {
+		for i := 0; i < len(old.signingKeys); i++ {
+			if a.signingKeys[i] != old.signingKeys[i] {
 				signersChanged = true
 				break
 			}
@@ -1015,10 +1015,11 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	// Check if the signing keys changed, might have to evict
 	if signersChanged {
 		for _, c := range clients {
-			if c.user.SigningKey != "" {
-				if !a.hasIssuer(c.user.SigningKey) {
-					c.closeConnection(AuthenticationViolation)
-				}
+			c.mu.Lock()
+			sk := c.user.SigningKey
+			c.mu.Unlock()
+			if sk != "" && !a.hasIssuer(sk) {
+				c.closeConnection(AuthenticationViolation)
 			}
 		}
 	}
