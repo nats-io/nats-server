@@ -37,6 +37,9 @@ func (u *User) Validate(vr *ValidationResults) {
 type UserClaims struct {
 	ClaimsData
 	User `json:"nats,omitempty"`
+	// IssuerAccount stores the public key for the account the issuer represents.
+	// When set, the claim was issued by a signing key.
+	IssuerAccount string `json:"issuer_account,omitempty"`
 }
 
 // NewUserClaims creates a user JWT with the specific subject/public key
@@ -71,6 +74,9 @@ func DecodeUserClaims(token string) (*UserClaims, error) {
 func (u *UserClaims) Validate(vr *ValidationResults) {
 	u.ClaimsData.Validate(vr)
 	u.User.Validate(vr)
+	if u.IssuerAccount != "" && !nkeys.IsValidPublicAccountKey(u.IssuerAccount) {
+		vr.AddError("account_id is not an account public key")
+	}
 }
 
 // ExpectedPrefixes defines the types that can encode a user JWT, account

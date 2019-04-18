@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The NATS Authors
+ * Copyright 2018-2019 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -24,12 +24,21 @@ import (
 
 // Import describes a mapping from another account into this one
 type Import struct {
-	Name    string     `json:"name,omitempty"`
-	Subject Subject    `json:"subject,omitempty"`
-	Account string     `json:"account,omitempty"`
-	Token   string     `json:"token,omitempty"`
-	To      Subject    `json:"to,omitempty"`
-	Type    ExportType `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Subject field in an import is always from the perspective of the
+	// initial publisher - in the case of a stream it is the account owning
+	// the stream (the exporter), and in the case of a service it is the
+	// account making the request (the importer).
+	Subject Subject `json:"subject,omitempty"`
+	Account string  `json:"account,omitempty"`
+	Token   string  `json:"token,omitempty"`
+	// To field in an import is always from the perspective of the subscriber
+	// in the case of a stream it is the client of the stream (the importer),
+	// from the perspective of a service, it is the subscription waiting for
+	// requests (the exporter). If the field is empty, it will default to the
+	// value in the Subject field.
+	To   Subject    `json:"to,omitempty"`
+	Type ExportType `json:"type,omitempty"`
 }
 
 // IsService returns true if the import is of type service
