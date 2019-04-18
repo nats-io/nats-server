@@ -361,7 +361,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			c.Debugf("Account JWT not signed by trusted operator")
 			return false
 		}
-		if juc.IssuerAccount != "" && !acc.hasValidIssuer(juc) {
+		if juc.IssuerAccount != "" && !acc.hasIssuer(juc.Issuer) {
 			c.Debugf("User JWT issuer is not known")
 			return false
 		}

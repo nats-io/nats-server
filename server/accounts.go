@@ -54,8 +54,8 @@ type Account struct {
 	nae         int32
 	pruning     bool
 	expired     bool
+	signingKeys []string
 	srv         *Server // server this account is registered with (possibly nil)
-	signingKeys map[string]bool
 }
 
 // Account based limits.
@@ -681,11 +681,7 @@ func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 		if err != nil {
 			return false
 		}
-		// get the signing key - if it doesn't exist, reject
-		ia.mu.RLock()
-		defer ia.mu.RUnlock()
-		_, ok := ia.signingKeys[claims.Issuer]
-		return ok
+		return ia.hasIssuer(claims.Issuer)
 	}
 	// couldn't verify
 	return false
@@ -739,20 +735,6 @@ func (a *Account) checkServiceExportsEqual(b *Account) bool {
 			return false
 		}
 		if !reflect.DeepEqual(aea, bea) {
-			return false
-		}
-	}
-	return true
-}
-
-func (a *Account) checkSigningKeysEqual(b *Account) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if len(a.signingKeys) != len(b.signingKeys) {
-		return false
-	}
-	for k := range b.signingKeys {
-		if _, ok := a.signingKeys[k]; !ok {
 			return false
 		}
 	}
@@ -835,16 +817,19 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 	a.expired = false
 }
 
-func (a *Account) hasValidIssuer(juc *jwt.UserClaims) bool {
+// hasIssuer returns true if the issuer matches the account
+// issuer or it is a signing key for the account.
+func (a *Account) hasIssuer(issuer string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-
-	if juc.Issuer == a.Issuer {
+	// same issuer
+	if a.Issuer == issuer {
 		return true
 	}
-	if juc.IssuerAccount == a.Name {
-		_, ok := a.signingKeys[juc.Issuer]
-		return ok
+	for _, v := range a.signingKeys {
+		if v == issuer {
+			return true
+		}
 	}
 	return false
 }
@@ -896,9 +881,22 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.imports = importMap{}
 
 	// update account signing keys
-	a.signingKeys = make(map[string]bool)
-	for _, k := range ac.SigningKeys {
-		a.signingKeys[k] = true
+	a.signingKeys = nil
+	signersChanged := false
+	if len(ac.SigningKeys) > 0 {
+		// insure sorted and copy
+		sort.Strings(ac.SigningKeys)
+		a.signingKeys = append(a.signingKeys, ac.SigningKeys...)
+	}
+	if len(a.signingKeys) != len(old.signingKeys) {
+		signersChanged = true
+	} else {
+		for i, v := range old.signingKeys {
+			if a.signingKeys[i] != v {
+				signersChanged = true
+				break
+			}
+		}
 	}
 	a.mu.Unlock()
 
@@ -955,7 +953,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	// Now check if stream exports have changed.
-	if !a.checkStreamExportsEqual(old) || !a.checkSigningKeysEqual(old) {
+	if !a.checkStreamExportsEqual(old) || signersChanged {
 		clients := make([]*client, 0, 16)
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
@@ -979,7 +977,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	// Now check if service exports have changed.
-	if !a.checkServiceExportsEqual(old) || !a.checkSigningKeysEqual(old) {
+	if !a.checkServiceExportsEqual(old) || signersChanged {
 		for _, acc := range s.accounts {
 			acc.mu.Lock()
 			for _, im := range acc.imports.services {
@@ -1015,14 +1013,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 
 	// Check if the signing keys changed, might have to evict
-	if !a.checkSigningKeysEqual(old) {
+	if signersChanged {
 		for _, c := range clients {
-			usk := c.user.SigningKey
-			if usk != "" {
-				a.mu.RLock()
-				_, ok := a.signingKeys[usk]
-				a.mu.RUnlock()
-				if !ok {
+			if c.user.SigningKey != "" {
+				if !a.hasIssuer(c.user.SigningKey) {
 					c.closeConnection(AuthenticationViolation)
 				}
 			}
@@ -1034,7 +1028,6 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	acc := NewAccount(ac.Subject)
 	acc.Issuer = ac.Issuer
-	acc.signingKeys = make(map[string]bool)
 	s.updateAccountClaims(acc, ac)
 	return acc
 }

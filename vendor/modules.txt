@@ -2,7 +2,7 @@
 github.com/nats-io/go-nats
 github.com/nats-io/go-nats/encoders/builtin
 github.com/nats-io/go-nats/util
-# github.com/nats-io/jwt v0.2.3-0.20190415222205-ef45966189e5
+# github.com/nats-io/jwt v0.2.4
 github.com/nats-io/jwt
 # github.com/nats-io/nkeys v0.0.2
 github.com/nats-io/nkeys
