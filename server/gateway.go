@@ -697,10 +697,10 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	}
 
 	// Spin up the read loop.
-	s.startGoRoutine(c.readLoop)
+	s.startGoRoutine(func() { c.readLoop() })
 
 	// Spin up the write loop.
-	s.startGoRoutine(c.writeLoop)
+	s.startGoRoutine(func() { c.writeLoop() })
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
