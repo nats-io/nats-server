@@ -583,10 +583,10 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	}
 
 	// Spin up the read loop.
-	s.startGoRoutine(c.readLoop)
+	s.startGoRoutine(func() { c.readLoop() })
 
 	// Spin up the write loop.
-	s.startGoRoutine(c.writeLoop)
+	s.startGoRoutine(func() { c.writeLoop() })
 
 	// Set the Ping timer
 	c.setPingTimer()
