@@ -682,6 +682,8 @@ func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 			return false
 		}
 		// get the signing key - if it doesn't exist, reject
+		ia.mu.RLock()
+		defer ia.mu.RUnlock()
 		_, ok := ia.signingKeys[claims.Issuer]
 		return ok
 	}
@@ -755,15 +757,6 @@ func (a *Account) checkSigningKeysEqual(b *Account) bool {
 		}
 	}
 	return true
-}
-
-func (a *Account) updateSigningKeys(ac *jwt.AccountClaims) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.signingKeys = make(map[string]bool)
-	for _, k := range ac.SigningKeys {
-		a.signingKeys[k] = true
-	}
 }
 
 func (a *Account) checkServiceImportAuthorized(account *Account, subject string, imClaim *jwt.Import) bool {
@@ -843,8 +836,8 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 }
 
 func (a *Account) hasValidIssuer(juc *jwt.UserClaims) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 
 	if juc.Issuer == a.Issuer {
 		return true
@@ -894,6 +887,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	s.Debugf("Updating account claims: %s", a.Name)
 	a.checkExpiration(ac.Claims())
 
+	a.mu.Lock()
 	// Clone to update, only select certain fields.
 	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports, limits: a.limits, signingKeys: a.signingKeys}
 
@@ -902,7 +896,11 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.imports = importMap{}
 
 	// update account signing keys
-	a.updateSigningKeys(ac)
+	a.signingKeys = make(map[string]bool)
+	for _, k := range ac.SigningKeys {
+		a.signingKeys[k] = true
+	}
+	a.mu.Unlock()
 
 	gatherClients := func() []*client {
 		a.mu.RLock()
