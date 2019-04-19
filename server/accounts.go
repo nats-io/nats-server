@@ -51,10 +51,11 @@ type Account struct {
 	imports    importMap
 	exports    exportMap
 	limits
-	nae     int32
-	pruning bool
-	expired bool
-	srv     *Server // server this account is registered with (possibly nil)
+	nae         int32
+	pruning     bool
+	expired     bool
+	signingKeys []string
+	srv         *Server // server this account is registered with (possibly nil)
 }
 
 // Account based limits.
@@ -648,6 +649,9 @@ func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool
 	if vr.IsBlocking(true) {
 		return false
 	}
+	if !a.isIssuerClaimTrusted(act) {
+		return false
+	}
 	if act.Expires != 0 {
 		tn := time.Now().Unix()
 		if act.Expires <= tn {
@@ -660,7 +664,27 @@ func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool
 			})
 		}
 	}
+
 	return true
+}
+
+// Returns true if the activation claim is trusted. That is the issuer matches
+// the account or is an entry in the signing keys.
+func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
+	// if no issuer account, issuer is the account
+	if claims.IssuerAccount == "" {
+		return true
+	}
+	// get the referenced account
+	if a.srv != nil {
+		ia, err := a.srv.lookupAccount(claims.IssuerAccount)
+		if err != nil {
+			return false
+		}
+		return ia.hasIssuer(claims.Issuer)
+	}
+	// couldn't verify
+	return false
 }
 
 // Returns true if `a` and `b` stream imports are the same. Note that the
@@ -793,6 +817,23 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 	a.expired = false
 }
 
+// hasIssuer returns true if the issuer matches the account
+// issuer or it is a signing key for the account.
+func (a *Account) hasIssuer(issuer string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	// same issuer
+	if a.Issuer == issuer {
+		return true
+	}
+	for i := 0; i < len(a.signingKeys); i++ {
+		if a.signingKeys[i] == issuer {
+			return true
+		}
+	}
+	return false
+}
+
 // Placeholder for signaling token auth required.
 var tokenAuthReq = []*Account{}
 
@@ -831,12 +872,33 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	s.Debugf("Updating account claims: %s", a.Name)
 	a.checkExpiration(ac.Claims())
 
+	a.mu.Lock()
 	// Clone to update, only select certain fields.
-	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports, limits: a.limits}
+	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports, limits: a.limits, signingKeys: a.signingKeys}
 
 	// Reset exports and imports here.
 	a.exports = exportMap{}
 	a.imports = importMap{}
+
+	// update account signing keys
+	a.signingKeys = nil
+	signersChanged := false
+	if len(ac.SigningKeys) > 0 {
+		// insure copy the new keys and sort
+		a.signingKeys = append(a.signingKeys, ac.SigningKeys...)
+		sort.Strings(a.signingKeys)
+	}
+	if len(a.signingKeys) != len(old.signingKeys) {
+		signersChanged = true
+	} else {
+		for i := 0; i < len(old.signingKeys); i++ {
+			if a.signingKeys[i] != old.signingKeys[i] {
+				signersChanged = true
+				break
+			}
+		}
+	}
+	a.mu.Unlock()
 
 	gatherClients := func() []*client {
 		a.mu.RLock()
@@ -891,7 +953,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	// Now check if stream exports have changed.
-	if !a.checkStreamExportsEqual(old) {
+	if !a.checkStreamExportsEqual(old) || signersChanged {
 		clients := make([]*client, 0, 16)
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
@@ -915,7 +977,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	// Now check if service exports have changed.
-	if !a.checkServiceExportsEqual(old) {
+	if !a.checkServiceExportsEqual(old) || signersChanged {
 		for _, acc := range s.accounts {
 			acc.mu.Lock()
 			for _, im := range acc.imports.services {
@@ -949,6 +1011,18 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		c.applyAccountLimits()
 		c.mu.Unlock()
 	}
+
+	// Check if the signing keys changed, might have to evict
+	if signersChanged {
+		for _, c := range clients {
+			c.mu.Lock()
+			sk := c.user.SigningKey
+			c.mu.Unlock()
+			if sk != "" && !a.hasIssuer(sk) {
+				c.closeConnection(AuthenticationViolation)
+			}
+		}
+	}
 }
 
 // Helper to build an internal account structure from a jwt.AccountClaims.
@@ -962,6 +1036,9 @@ func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 // Helper to build internal NKeyUser.
 func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 	nu := &NkeyUser{Nkey: uc.Subject, Account: acc}
+	if uc.IssuerAccount != "" {
+		nu.SigningKey = uc.Issuer
+	}
 
 	// Now check for permissions.
 	var p *Permissions

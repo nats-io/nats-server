@@ -53,10 +53,11 @@ func (o *OperatorLimits) Validate(vr *ValidationResults) {
 
 // Account holds account specific claims data
 type Account struct {
-	Imports    Imports        `json:"imports,omitempty"`
-	Exports    Exports        `json:"exports,omitempty"`
-	Identities []Identity     `json:"identity,omitempty"`
-	Limits     OperatorLimits `json:"limits,omitempty"`
+	Imports     Imports        `json:"imports,omitempty"`
+	Exports     Exports        `json:"exports,omitempty"`
+	Identities  []Identity     `json:"identity,omitempty"`
+	Limits      OperatorLimits `json:"limits,omitempty"`
+	SigningKeys StringList     `json:"signing_keys,omitempty"`
 }
 
 // Validate checks if the account is valid, based on the wrapper
@@ -90,6 +91,12 @@ func (a *Account) Validate(acct *AccountClaims, vr *ValidationResults) {
 					vr.AddError("the account contains wildcard exports that are not allowed by the operator")
 				}
 			}
+		}
+	}
+
+	for _, k := range a.SigningKeys {
+		if !nkeys.IsValidPublicAccountKey(k) {
+			vr.AddError("%s is not an account public key", k)
 		}
 	}
 }
@@ -164,4 +171,16 @@ func (a *AccountClaims) ExpectedPrefixes() []nkeys.PrefixByte {
 // Claims returns the accounts claims data
 func (a *AccountClaims) Claims() *ClaimsData {
 	return &a.ClaimsData
+}
+
+// DidSign checks the claims against the account's public key and its signing keys
+func (a *AccountClaims) DidSign(op Claims) bool {
+	if op != nil {
+		issuer := op.Claims().Issuer
+		if issuer == a.Subject {
+			return true
+		}
+		return a.SigningKeys.Contains(issuer)
+	}
+	return false
 }

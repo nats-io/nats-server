@@ -9,6 +9,7 @@ test:
 	go vet ./...
 	go test -v
 	go test -v --race
+	staticcheck ./...
 
 fmt:
 	gofmt -w -s *.go

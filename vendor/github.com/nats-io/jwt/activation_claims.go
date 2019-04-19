@@ -62,6 +62,9 @@ func (a *Activation) Validate(vr *ValidationResults) {
 type ActivationClaims struct {
 	ClaimsData
 	Activation `json:"nats,omitempty"`
+	// IssuerAccount stores the public key for the account the issuer represents.
+	// When set, the claim was issued by a signing key.
+	IssuerAccount string `json:"issuer_account,omitempty"`
 }
 
 // NewActivationClaims creates a new activation claim with the provided sub
@@ -101,6 +104,9 @@ func (a *ActivationClaims) Payload() interface{} {
 func (a *ActivationClaims) Validate(vr *ValidationResults) {
 	a.ClaimsData.Validate(vr)
 	a.Activation.Validate(vr)
+	if a.IssuerAccount != "" && !nkeys.IsValidPublicAccountKey(a.IssuerAccount) {
+		vr.AddError("account_id is not an account public key")
+	}
 }
 
 // ExpectedPrefixes defines the types that can sign an activation jwt, account and oeprator

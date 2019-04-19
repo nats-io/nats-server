@@ -58,10 +58,17 @@ func addAccountToMemResolver(s *Server, pub, jwtclaim string) {
 }
 
 func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.Reader, string) {
+	return createClientWithIssuer(t, s, akp, "")
+}
+
+func createClientWithIssuer(t *testing.T, s *Server, akp nkeys.KeyPair, optIssuerAccount string) (*client, *bufio.Reader, string) {
 	t.Helper()
 	nkp, _ := nkeys.CreateUser()
 	pub, _ := nkp.PublicKey()
 	nuc := jwt.NewUserClaims(pub)
+	if optIssuerAccount != "" {
+		nuc.IssuerAccount = optIssuerAccount
+	}
 	ujwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1570,4 +1577,247 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 	if acc != nil {
 		t.Fatalf("Expected to not receive an account due to timeout")
 	}
+}
+
+func TestJWTUserSigningKey(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+
+	// Check to make sure we would have an authTimer
+	if !s.info.AuthRequired {
+		t.Fatalf("Expect the server to require auth")
+	}
+
+	c, cr, _ := newClientForServer(s)
+	// Don't send jwt field, should fail.
+	go c.parse([]byte("CONNECT {\"verbose\":true,\"pedantic\":true}\r\nPING\r\n"))
+	l, _ := cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create an account
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+
+	// Create a signing key for the account
+	askp, _ := nkeys.CreateAccount()
+	aspub, _ := askp.PublicKey()
+
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	// Create a client with the account signing key
+	c, cr, cs := createClientWithIssuer(t, s, askp, apub)
+
+	// PING needed to flush the +OK/-ERR to us.
+	// This should fail too since no account resolver is defined.
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+
+	// Ok now let's walk through and make sure all is good.
+	// We will set the account resolver by hand to a memory resolver.
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	// Create a client with a signing key
+	c, cr, cs = createClientWithIssuer(t, s, askp, apub)
+	// should fail because the signing key is not known
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error: %v", l)
+	}
+
+	// add a signing key
+	nac.SigningKeys.Add(aspub)
+	// update the memory resolver
+	acc, _ := s.LookupAccount(apub)
+	s.updateAccountClaims(acc, nac)
+
+	// Create a client with a signing key
+	c, cr, cs = createClientWithIssuer(t, s, askp, apub)
+
+	// expect this to work
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG, got %q", l)
+	}
+
+	if c.nc == nil {
+		t.Fatal("expected client to be alive")
+	}
+	// remove the signing key should bounce client
+	nac.SigningKeys = nil
+	acc, _ = s.LookupAccount(apub)
+	s.updateAccountClaims(acc, nac)
+
+	if c.nc != nil {
+		t.Fatal("expected client to gone")
+	}
+}
+
+func TestJWTAccountImportSignerRemoved(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Exporter keys
+	srvKP, _ := nkeys.CreateAccount()
+	srvPK, _ := srvKP.PublicKey()
+	srvSignerKP, _ := nkeys.CreateAccount()
+	srvSignerPK, _ := srvSignerKP.PublicKey()
+
+	// Importer keys
+	clientKP, _ := nkeys.CreateAccount()
+	clientPK, _ := clientKP.PublicKey()
+
+	createSrvJwt := func(signingKeys ...string) (string, *jwt.AccountClaims) {
+		ac := jwt.NewAccountClaims(srvPK)
+		ac.SigningKeys.Add(signingKeys...)
+		ac.Exports.Add(&jwt.Export{Subject: "foo", Type: jwt.Service, TokenReq: true})
+		ac.Exports.Add(&jwt.Export{Subject: "bar", Type: jwt.Stream, TokenReq: true})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating exporter JWT: %v", err)
+		}
+		return token, ac
+	}
+
+	createImportToken := func(sub string, kind jwt.ExportType) string {
+		actC := jwt.NewActivationClaims(clientPK)
+		actC.IssuerAccount = srvPK
+		actC.ImportType = kind
+		actC.ImportSubject = jwt.Subject(sub)
+		token, err := actC.Encode(srvSignerKP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+
+	createClientJwt := func() string {
+		ac := jwt.NewAccountClaims(clientPK)
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "foo", Type: jwt.Service, Token: createImportToken("foo", jwt.Service)})
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "bar", Type: jwt.Stream, Token: createImportToken("bar", jwt.Stream)})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating importer JWT: %v", err)
+		}
+		return token
+	}
+
+	srvJWT, _ := createSrvJwt(srvSignerPK)
+	addAccountToMemResolver(s, srvPK, srvJWT)
+
+	clientJWT := createClientJwt()
+	addAccountToMemResolver(s, clientPK, clientJWT)
+
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
+	expectMsg := func(cr *bufio.Reader, sub, payload string) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		expected := "MSG " + sub
+		if !strings.HasPrefix(l, expected) {
+			t.Fatalf("Expected %q, got %q", expected, l)
+		}
+		l, _ = cr.ReadString('\n')
+		if l != payload+"\r\n" {
+			t.Fatalf("Expected %q, got %q", payload, l)
+		}
+		expectPong(cr)
+	}
+
+	// Create a client that will send the request
+	client, clientReader, clientCS := createClient(t, s, clientKP)
+	clientParser, clientCh := genAsyncParser(client)
+	defer func() { clientCh <- true }()
+	clientParser(clientCS)
+	expectPong(clientReader)
+
+	checkShadow := func(expected int) {
+		t.Helper()
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		sub := client.subs["1"]
+		count := 0
+		if sub != nil {
+			count = len(sub.shadow)
+		}
+		if count != expected {
+			t.Fatalf("Expected shadows to be %d, got %d", expected, count)
+		}
+	}
+
+	checkShadow(0)
+	// Create the client that will respond to the requests.
+	srv, srvReader, srvCS := createClient(t, s, srvKP)
+	srvParser, srvCh := genAsyncParser(srv)
+	defer func() { srvCh <- true }()
+	srvParser(srvCS)
+	expectPong(srvReader)
+
+	// Create Subscriber.
+	srvParser("SUB foo 1\r\nPING\r\n")
+	expectPong(srvReader)
+
+	// Send Request
+	clientParser("PUB foo 2\r\nhi\r\nPING\r\n")
+	expectPong(clientReader)
+
+	// We should receive the request. PING needed to flush.
+	srvParser("PING\r\n")
+	expectMsg(srvReader, "foo", "hi")
+
+	clientParser("SUB bar 1\r\nPING\r\n")
+	expectPong(clientReader)
+	checkShadow(1)
+
+	srvParser("PUB bar 2\r\nhi\r\nPING\r\n")
+	expectPong(srvReader)
+
+	// We should receive from stream. PING needed to flush.
+	clientParser("PING\r\n")
+	expectMsg(clientReader, "bar", "hi")
+
+	// Now update the exported service no signer
+	srvJWT, srvAC := createSrvJwt()
+	addAccountToMemResolver(s, srvPK, srvJWT)
+	acc, _ := s.LookupAccount(srvPK)
+	s.updateAccountClaims(acc, srvAC)
+
+	// Send Another Request
+	clientParser("PUB foo 2\r\nhi\r\nPING\r\n")
+	expectPong(clientReader)
+
+	// We should not receive the request this time.
+	srvParser("PING\r\n")
+	expectPong(srvReader)
+
+	// Publish on the stream
+	srvParser("PUB bar 2\r\nhi\r\nPING\r\n")
+	expectPong(srvReader)
+
+	// We should not receive from the stream this time
+	clientParser("PING\r\n")
+	expectPong(clientReader)
+	checkShadow(0)
 }
