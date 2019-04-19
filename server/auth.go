@@ -320,7 +320,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 				var ok bool
 				user, ok = s.users[u]
 				if !ok {
-					c.Debugf("User in cert [%q], not found", euser)
+					c.Debugf("User in cert [%q], not found", u)
 					return false
 				}
 				euser = u
@@ -467,6 +467,7 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 		c.Debugf("Multiple peer certificates found, selecting first")
 	}
 
+	hasSANs := len(cert.DNSNames) > 0
 	hasEmailAddresses := len(cert.EmailAddresses) > 0
 	hasSubject := len(cert.Subject.String()) > 0
 	if !hasEmailAddresses && !hasSubject {
@@ -474,17 +475,28 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 		return false
 	}
 
-	var user string
-	if hasEmailAddresses {
-		user = cert.EmailAddresses[0]
-		if len(cert.EmailAddresses) > 1 {
-			c.Debugf("Multiple users found in cert, selecting first [%q]", user)
+	switch {
+	case hasEmailAddresses:
+		for _, u := range cert.EmailAddresses {
+			if fn(u) {
+				c.Debugf("Using email found in cert for auth [%q]", u)
+				return true
+			}
 		}
-	} else {
-		user = cert.Subject.String()
+		fallthrough
+	case hasSANs:
+		for _, u := range cert.DNSNames {
+			if fn(u) {
+				c.Debugf("Using SAN found in cert for auth [%q]", u)
+				return true
+			}
+		}
 	}
 
-	return fn(user)
+	// Use the subject of the certificate.
+	u := cert.Subject.String()
+	c.Debugf("Using certificate subject for auth [%q]", u)
+	return fn(u)
 }
 
 // checkRouterAuth checks optional router authorization which can be nil or username/password.

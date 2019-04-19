@@ -193,20 +193,347 @@ func TestTLSClientCertificateCNBasedAuth(t *testing.T) {
 
 	// Wait for a couple of errors
 	var count int
-	select {
-	case err := <-errCh1:
-		if err != nil {
-			count++
+Loop:
+	for {
+		select {
+		case err := <-errCh1:
+			if err != nil {
+				count++
+			}
+			if count == 2 {
+				break Loop
+			}
+		case err := <-errCh2:
+			if err != nil {
+				t.Fatalf("Received unexpected auth error from client: %s", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Timed out expecting auth errors")
 		}
-		if count == 2 {
-			break
+	}
+}
+
+func TestTLSClientCertificateSANsBasedAuth(t *testing.T) {
+	// In this test we have 3 clients, one with permissions defined
+	// for SAN 'app.nats.dev', other for SAN 'app.nats.prod' and another
+	// one without the default permissions for the CN.
+	srv, opts := RunServerWithConfig("./configs/tls_cert_san_auth.conf")
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+	defaultErrCh := make(chan error)
+	devErrCh := make(chan error)
+	prodErrCh := make(chan error)
+
+	// default: Using the default permissions (no SANs)
+	//
+	//    Subject: CN = www.nats.io
+	//
+	defaultc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/client.pem", "./configs/certs/sans/client-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			defaultErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer defaultc.Close()
+
+	// dev: Using SAN 'app.nats.dev' with permissions to its own sandbox.
+	//
+	//    Subject: CN = www.nats.io
+	//
+	//    X509v3 Subject Alternative Name:
+	//        DNS:app.nats.dev, DNS:*.app.nats.dev
+	//
+	devc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/dev.pem", "./configs/certs/sans/dev-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			devErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer devc.Close()
+
+	// prod: Using SAN 'app.nats.prod' with all permissions.
+	//
+	//    Subject: CN = www.nats.io
+	//
+	//    X509v3 Subject Alternative Name:
+	//        DNS:app.nats.prod, DNS:*.app.nats.prod
+	//
+	prodc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/prod.pem", "./configs/certs/sans/prod-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			prodErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer prodc.Close()
+
+	// No permissions to publish or subscribe on foo.>
+	err = devc.Publish("foo.bar", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = devc.SubscribeSync("foo.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	devc.Flush()
+
+	prodSub, err := prodc.SubscribeSync(">")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodc.Flush()
+	err = prodc.Publish("hello", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodc.Flush()
+
+	// prod: can receive message on wildcard subscription.
+	_, err = prodSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// dev: enough permissions to publish to sandbox subject.
+	devSub, err := devc.SubscribeSync("sandbox.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	devc.Flush()
+	err = devc.Publish("sandbox.foo.bar", []byte("hi!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// both dev and prod clients can receive message
+	_, err = devSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+	_, err = prodSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// default: no enough permissions
+	_, err = defaultc.SubscribeSync("sandbox.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSub, err := defaultc.SubscribeSync("public.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultc.Flush()
+	err = devc.Publish("public.foo.bar", []byte("hi!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = defaultSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// Wait for a couple of errors
+	var count int
+Loop:
+	for {
+		select {
+		case err := <-defaultErrCh:
+			if err != nil {
+				count++
+			}
+			if count == 3 {
+				break Loop
+			}
+		case err := <-devErrCh:
+			if err != nil {
+				count++
+			}
+			if count == 3 {
+				break Loop
+			}
+		case err := <-prodErrCh:
+			if err != nil {
+				t.Fatalf("Received unexpected auth error from client: %s", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Timed out expecting auth errors")
 		}
-	case err := <-errCh2:
-		if err != nil {
-			t.Fatalf("Received unexpected auth error from client: %s", err)
+	}
+}
+
+func TestTLSClientCertificateTLSAuthMultipleOptions(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls_cert_san_emails.conf")
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+	defaultErrCh := make(chan error)
+	devErrCh := make(chan error)
+	prodErrCh := make(chan error)
+
+	// default: Using the default permissions, there are SANs
+	// present in the cert but they are not users in the NATS config
+	// so the subject is used instead.
+	//
+	//    Subject: CN = www.nats.io
+	//
+	//    X509v3 Subject Alternative Name:
+	//        DNS:app.nats.dev, DNS:*.app.nats.dev
+	//
+	defaultc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/dev.pem", "./configs/certs/sans/dev-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			defaultErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer defaultc.Close()
+
+	// dev: Using SAN to validate user, even if emails are present in the config.
+	//
+	//    Subject: CN = www.nats.io
+	//
+	//    X509v3 Subject Alternative Name:
+	//        DNS:app.nats.dev, email:admin@app.nats.dev, email:root@app.nats.dev
+	//
+	devc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/dev-email.pem", "./configs/certs/sans/dev-email-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			devErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer devc.Close()
+
+	// prod: Using SAN '*.app.nats.prod' with all permissions, which is not the first SAN.
+	//
+	//    Subject: CN = www.nats.io
+	//
+	//    X509v3 Subject Alternative Name:
+	//        DNS:app.nats.prod, DNS:*.app.nats.prod
+	//
+	prodc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/sans/prod.pem", "./configs/certs/sans/prod-key.pem"),
+		nats.RootCAs("./configs/certs/sans/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			prodErrCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer prodc.Close()
+
+	// No permissions to publish or subscribe on foo.>
+	err = devc.Publish("foo.bar", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = devc.SubscribeSync("foo.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	devc.Flush()
+
+	prodSub, err := prodc.SubscribeSync(">")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodc.Flush()
+	err = prodc.Publish("hello", []byte("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodc.Flush()
+
+	// prod: can receive message on wildcard subscription.
+	_, err = prodSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// dev: enough permissions to publish to sandbox subject.
+	devSub, err := devc.SubscribeSync("sandbox.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	devc.Flush()
+	err = devc.Publish("sandbox.foo.bar", []byte("hi!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// both dev and prod clients can receive message
+	_, err = devSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+	_, err = prodSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// default: no enough permissions
+	_, err = defaultc.SubscribeSync("sandbox.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSub, err := defaultc.SubscribeSync("public.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultc.Flush()
+	err = devc.Publish("public.foo.bar", []byte("hi!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = defaultSub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// Wait for a couple of errors
+	var count int
+Loop:
+	for {
+		select {
+		case err := <-defaultErrCh:
+			if err != nil {
+				count++
+			}
+			if count == 3 {
+				break Loop
+			}
+		case err := <-devErrCh:
+			if err != nil {
+				count++
+			}
+			if count == 3 {
+				break Loop
+			}
+		case err := <-prodErrCh:
+			if err != nil {
+				t.Fatalf("Received unexpected auth error from client: %s", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Timed out expecting auth errors")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("Timed out expecting auth errors")
 	}
 }
 
