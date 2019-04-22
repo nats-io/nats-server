@@ -36,11 +36,13 @@ const (
 
 // Sublist related errors
 var (
-	ErrInvalidSubject = errors.New("sublist: Invalid Subject")
-	ErrNotFound       = errors.New("sublist: No Matches Found")
+	ErrInvalidSubject = errors.New("sublist: invalid subject")
+	ErrNotFound       = errors.New("sublist: no matches found")
 )
 
 const (
+	// slNoCache for cacheNum means cache is disabled.
+	slNoCache = -22
 	// cacheMax is used to bound limit the frontend cache
 	slCacheMax = 1024
 	// If we run a sweeper we will drain to this count.
@@ -64,7 +66,7 @@ type Sublist struct {
 	inserts   uint64
 	removes   uint64
 	root      *level
-	cache     sync.Map
+	cache     *sync.Map
 	cacheNum  int32
 	ccSweep   int32
 	count     uint32
@@ -97,7 +99,17 @@ func newLevel() *level {
 
 // NewSublist will create a default sublist
 func NewSublist() *Sublist {
-	return &Sublist{root: newLevel()}
+	return &Sublist{root: newLevel(), cache: &sync.Map{}}
+}
+
+// NewSublistNoCache will create a default sublist without caching enabled.
+func NewSublistNoCache() *Sublist {
+	return &Sublist{root: newLevel(), cacheNum: slNoCache}
+}
+
+// CacheEnabled returns whether or not caching is enabled for this sublist.
+func (s *Sublist) CacheEnabled() bool {
+	return atomic.LoadInt32(&s.cacheNum) != slNoCache
 }
 
 // Insert adds a subscription into the sublist
@@ -226,6 +238,9 @@ func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
 // addToCache will add the new entry to the existing cache
 // entries if needed. Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
+	if s.cache == nil {
+		return
+	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
 		if v, ok := s.cache.Load(subject); ok {
@@ -247,6 +262,9 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
 func (s *Sublist) removeFromCache(subject string, sub *subscription) {
+	if s.cache == nil {
+		return
+	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
 		// Load for accounting
@@ -268,15 +286,21 @@ func (s *Sublist) removeFromCache(subject string, sub *subscription) {
 	})
 }
 
+// a place holder for an empty result.
+var emptyResult = &SublistResult{}
+
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
-	if r, ok := s.cache.Load(subject); ok {
-		atomic.AddUint64(&s.cacheHits, 1)
-		return r.(*SublistResult)
+	ce := atomic.LoadInt32(&s.cacheNum)
+	if ce > 0 {
+		if r, ok := s.cache.Load(subject); ok {
+			atomic.AddUint64(&s.cacheHits, 1)
+			return r.(*SublistResult)
+		}
 	}
 
 	tsa := [32]string{}
@@ -295,10 +319,18 @@ func (s *Sublist) Match(subject string) *SublistResult {
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
+	var n int32
+
 	s.RLock()
 	matchLevel(s.root, tokens, result)
-	s.cache.Store(subject, result)
-	n := atomic.AddInt32(&s.cacheNum, 1)
+	// Check for empty result.
+	if len(result.psubs) == 0 && len(result.qsubs) == 0 {
+		result = emptyResult
+	}
+	if ce != slNoCache {
+		s.cache.Store(subject, result)
+		n = atomic.AddInt32(&s.cacheNum, 1)
+	}
 	s.RUnlock()
 
 	// Reduce the cache count if we have exceeded our set maximum.
@@ -314,11 +346,13 @@ func (s *Sublist) Match(subject string) *SublistResult {
 func (s *Sublist) reduceCacheCount() {
 	defer atomic.StoreInt32(&s.ccSweep, 0)
 	// If we are over the cache limit randomly drop until under the limit.
+	s.Lock()
 	s.cache.Range(func(k, v interface{}) bool {
 		s.cache.Delete(k.(string))
 		n := atomic.AddInt32(&s.cacheNum, -1)
 		return n >= slCacheSweep
 	})
+	s.Unlock()
 }
 
 // Helper function for auto-expanding remote qsubs.
