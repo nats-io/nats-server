@@ -2197,6 +2197,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		mh = append(mh, CR_LF...)
 
 		// We reuse the subscription object that we pass to deliverMsg.
+		// So set/reset important fields.
+		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = c.pa.subject
 		c.deliverMsg(sub, mh, msg)
@@ -2431,13 +2433,14 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 				return
 			}
 		}
-		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, false, false)
+		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply)
 	} else {
 		// We normally would not allow sending to a queue unless the
 		// RMSG contains the queue groups, however, if the incoming
 		// message was a "$GR." then we need to act as if this was
 		// a CLIENT connection..
-		qnames := c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, true, true)
+		qnames := c.processMsgResultsEx(acc, r, msg, c.pa.subject, c.pa.reply,
+			collectQueueNames|treatGatewayAsClient)
 		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
 }
