@@ -299,7 +299,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 			c.mu.Unlock()
 		}
 	}
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply)
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
 // Helper function for routes and gateways to create qfilters need for

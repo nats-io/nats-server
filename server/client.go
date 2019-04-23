@@ -144,9 +144,10 @@ const (
 )
 
 // Some flags passed to processMsgResultsEx
+const pmrNoFlag int = 0
 const (
-	collectQueueNames int = 1 << iota
-	treatGatewayAsClient
+	pmrCollectQueueNames int = 1 << iota
+	pmrTreatGatewayAsClient
 )
 
 type client struct {
@@ -277,16 +278,6 @@ type readCache struct {
 
 	rsz int32 // Read buffer size
 	srs int32 // Short reads, used for dynamic buffer resizing.
-
-	// When gateways are enabled, this holds the last subscription created
-	// by this connection and time of creation. When a message needs to
-	// cross a gateway and has a reply, the reply is prefixed with the cluster
-	// name of origin if this last subscription is a match for the "reply"
-	// subject. This is in order to solve req/reply race where the reply may be
-	// processed in a destination cluster before the subscription interest for
-	// that reply makes it there (due to different outbound/inbound connections).
-	lastSub       *subscription
-	lastSubExpire time.Time
 }
 
 const (
@@ -2287,16 +2278,16 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		flag := 0
+		flag := pmrNoFlag
 		// If we have queue subs in this cluster, then if we run in gateway
 		// mode and the remote gateways have queue subs, then we need to
 		// collect the queue groups this message was sent to so that we
 		// exclude them when sending to gateways.
 		if len(r.qsubs) > 0 && c.srv.gateway.enabled &&
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
-			flag = collectQueueNames
+			flag = pmrCollectQueueNames
 		}
-		qnames = c.processMsgResultsEx(c.acc, r, msg, c.pa.subject, c.pa.reply, flag)
+		qnames = c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
@@ -2347,10 +2338,10 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
 		if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) {
-			queues := c.processMsgResultsEx(rm.acc, rr, msg, []byte(rm.to), nrr, collectQueueNames)
+			queues := c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, pmrCollectQueueNames)
 			c.sendMsgToGateways(rm.acc, msg, []byte(rm.to), nrr, queues)
 		} else {
-			c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr)
+			c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, pmrNoFlag)
 		}
 	}
 }
@@ -2391,12 +2382,7 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 }
 
 // This processes the sublist results for a given message.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte) {
-	c.processMsgResultsEx(acc, r, msg, subject, reply, 0)
-}
-
-// This processes the sublist results for a given message.
-func (c *client) processMsgResultsEx(acc *Account, r *SublistResult, msg, subject, reply []byte, flags int) [][]byte {
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte, flags int) [][]byte {
 	var queues [][]byte
 	// msg header for clients.
 	msgh := c.msgb[1:msgHeadProtoLen]
@@ -2460,7 +2446,7 @@ func (c *client) processMsgResultsEx(acc *Account, r *SublistResult, msg, subjec
 		// However, if this is a gateway connection which should be treated
 		// as a client, still go and pick queue subscriptions, otherwise
 		// jump to sendToRoutesOrLeafs.
-		if !(c.kind == GATEWAY && (flags&treatGatewayAsClient != 0)) {
+		if !(c.kind == GATEWAY && (flags&pmrTreatGatewayAsClient != 0)) {
 			goto sendToRoutesOrLeafs
 		}
 	}
@@ -2514,7 +2500,7 @@ func (c *client) processMsgResultsEx(acc *Account, r *SublistResult, msg, subjec
 					continue
 				} else {
 					c.addSubToRouteTargets(sub)
-					if flags&collectQueueNames != 0 {
+					if flags&pmrCollectQueueNames != 0 {
 						queues = append(queues, sub.queue)
 					}
 				}
@@ -2535,7 +2521,7 @@ func (c *client) processMsgResultsEx(acc *Account, r *SublistResult, msg, subjec
 			if c.deliverMsg(sub, mh, msg) {
 				// Clear rsub
 				rsub = nil
-				if flags&collectQueueNames != 0 {
+				if flags&pmrCollectQueueNames != 0 {
 					queues = append(queues, sub.queue)
 				}
 				break
@@ -2546,7 +2532,7 @@ func (c *client) processMsgResultsEx(acc *Account, r *SublistResult, msg, subjec
 			// If we are here we tried to deliver to a local qsub
 			// but failed. So we will send it to a remote or leaf node.
 			c.addSubToRouteTargets(rsub)
-			if flags&collectQueueNames != 0 {
+			if flags&pmrCollectQueueNames != 0 {
 				queues = append(queues, rsub.queue)
 			}
 		}

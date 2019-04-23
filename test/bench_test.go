@@ -1008,6 +1008,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 			b.Errorf("Received error on FLUSH write: %v\n", err)
 			return
 		}
+		flushConnection(b, c)
 	}
 
 	// Publish Connections SPINUP
@@ -1182,24 +1183,15 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	c := createClientConn(b, oa.Host, oa.Port)
 	defer c.Close()
 	doDefaultConnect(b, c)
-	if singleReplySub {
-		sendProto(b, c, "SUB reply.* 1\r\n")
-	}
 	flushConnection(b, c)
-
-	// If a single sub for replies is created, wait for more
-	// than the duration under which we do reply mapping
-	if singleReplySub {
-		time.Sleep(1100 * time.Millisecond)
-	}
-
-	bw := bufio.NewWriterSize(c, defaultSendBufSize)
 
 	// From pub to server in cluster A:
 	numBytes := len("PUB foo reply.0123456789 2\r\nok\r\n")
 	if !singleReplySub {
 		// Add the preceding SUB
 		numBytes += len("SUB reply.0123456789 0123456789\r\n")
+		// And UNSUB...
+		numBytes += len("UNSUB 0123456789\r\n")
 	}
 	// From server in cluster A to cluster B
 	numBytes += len("RMSG $G foo reply.0123456789 2\r\nok\r\n")
@@ -1212,16 +1204,25 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	// From server in cluster B to sub
 	numBytes += lenMsg
 	b.SetBytes(int64(numBytes))
+
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	var subStr string
+
 	b.ResetTimer()
 
-	var subStr string
 	for i := 0; i < b.N; i++ {
 		if !singleReplySub {
 			subStr = fmt.Sprintf("SUB reply.%010d %010d\r\n", i+1, i+1)
 		}
 		bw.Write([]byte(fmt.Sprintf("%sPUB foo reply.%010d 2\r\nok\r\n", subStr, i+1)))
+		// Simulate that we are doing actual request/reply and therefore
+		// unsub'ing the subs on the reply subject.
+		if !singleReplySub && i > 1000 {
+			bw.Write([]byte(fmt.Sprintf("UNSUB %010d\r\n", (i - 1000))))
+		}
 	}
 	bw.Flush()
+	flushConnection(b, c)
 
 	<-ch
 }
@@ -1231,5 +1232,5 @@ func Benchmark_Gateways_Requests_CreateOneSubForAll(b *testing.B) {
 }
 
 func Benchmark_Gateways_Requests_CreateOneSubForEach(b *testing.B) {
-	gatewaySendRequestsBench(b, true)
+	gatewaySendRequestsBench(b, false)
 }

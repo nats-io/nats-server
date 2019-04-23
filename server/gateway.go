@@ -33,7 +33,7 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
-	defaultGatewayRecentSubExpiration   = time.Second
+	defaultGatewayRecentSubExpiration   = 5 * time.Second
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
 	gwReplyPrefix                       = "$GR."
 	gwReplyStart                        = len(gwReplyPrefix) + 5 // len of prefix above + len of hash (4) + "."
@@ -114,6 +114,9 @@ type srvGateway struct {
 		sync.Mutex
 		m map[string]map[string]*sitally
 	}
+
+	// This is to track recent subscriptions for a given connection
+	rsubs sync.Map
 
 	resolver  netResolver   // Used to resolve host name before calling net.Dial()
 	sqbsz     int           // Max buffer size to send queue subs protocol. Used for testing.
@@ -2040,10 +2043,29 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 		}
 	}
 	if first || last {
-		if first && sub.client != nil {
+		if sub.client != nil {
+			rsubs := &s.gateway.rsubs
 			c := sub.client
-			c.in.lastSub = sub
-			c.in.lastSubExpire = time.Now().Add(s.gateway.recSubExp)
+			sli, _ := rsubs.Load(c)
+			if first {
+				var sl *Sublist
+				if sli == nil {
+					sl = NewSublistNoCache()
+					rsubs.Store(c, sl)
+				} else {
+					sl = sli.(*Sublist)
+				}
+				sl.Insert(sub)
+				time.AfterFunc(s.gateway.recSubExp, func() {
+					sl.Remove(sub)
+				})
+			} else if sli != nil {
+				sl := sli.(*Sublist)
+				sl.Remove(sub)
+				if sl.Count() == 0 {
+					rsubs.Delete(c)
+				}
+			}
 		}
 		if entry.q {
 			s.sendQueueSubOrUnsubToGateways(accName, sub, first)
@@ -2060,18 +2082,20 @@ func subjectStartsWithGatewayReplyPrefix(subj []byte) bool {
 
 // Evaluates if the given reply should be mapped (adding the origin cluster
 // hash as a prefix) or not.
-func (c *client) shouldMapReplyForGatewaySend(reply []byte) bool {
-	if c.in.lastSub == nil {
+func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, reply []byte) bool {
+	sli, _ := g.rsubs.Load(c)
+	if sli == nil {
 		return false
 	}
-	if time.Now().After(c.in.lastSubExpire) {
-		c.in.lastSub = nil
+	sl := sli.(*Sublist)
+	if sl.Count() == 0 {
 		return false
 	}
 	if subjectStartsWithGatewayReplyPrefix(reply) {
 		return false
 	}
-	return matchLiteral(string(reply), string(c.in.lastSub.subject))
+	r := sl.Match(string(reply))
+	return len(r.psubs)+len(r.qsubs) > 0
 }
 
 var subPool = &sync.Pool{
@@ -2169,7 +2193,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			mreply = reply
 			// If there was a recent matching subscription on that connection
 			// and the reply is not already mapped, then map (add prefix).
-			if c.shouldMapReplyForGatewaySend(reply) {
+			if gw.shouldMapReplyForGatewaySend(c, reply) {
 				mreply = mreplya[:0]
 				mreply = append(mreply, thisClusterReplyPrefix...)
 				mreply = append(mreply, reply...)
@@ -2433,14 +2457,14 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 				return
 			}
 		}
-		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply)
+		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 	} else {
 		// We normally would not allow sending to a queue unless the
 		// RMSG contains the queue groups, however, if the incoming
 		// message was a "$GR." then we need to act as if this was
 		// a CLIENT connection..
-		qnames := c.processMsgResultsEx(acc, r, msg, c.pa.subject, c.pa.reply,
-			collectQueueNames|treatGatewayAsClient)
+		qnames := c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply,
+			pmrCollectQueueNames|pmrTreatGatewayAsClient)
 		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
 }
