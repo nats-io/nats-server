@@ -983,6 +983,8 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	startCh := make(chan bool)
 	l := b.N / numPublishers
 
+	lastMsgSendOp := []byte("PUB end.test 2\r\nok\r\n")
+
 	pubLoop := func(c net.Conn, ch chan bool) {
 		bw := bufio.NewWriterSize(c, defaultSendBufSize)
 
@@ -998,7 +1000,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 				return
 			}
 		}
-		if _, err := bw.Write([]byte("PUB end.test 2\r\nok\r\n")); err != nil {
+		if _, err := bw.Write(lastMsgSendOp); err != nil {
 			b.Errorf("Received error on PUB write: %v\n", err)
 			return
 		}
@@ -1006,11 +1008,13 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 			b.Errorf("Received error on FLUSH write: %v\n", err)
 			return
 		}
+		flushConnection(b, c)
 	}
 
 	// Publish Connections SPINUP
 	for i := 0; i < numPublishers; i++ {
 		c := createClientConn(b, oa.Host, oa.Port)
+		defer c.Close()
 		doDefaultConnect(b, c)
 		flushConnection(b, c)
 		ch := make(chan bool)
@@ -1019,7 +1023,18 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 		<-ch
 	}
 
-	b.SetBytes(int64(len(sendOp) + len(msgOp)))
+	// To report the number of bytes:
+	// from publisher to server on cluster A:
+	numBytes := len(sendOp)
+	if subInterest {
+		// from server in cluster A to server on cluster B:
+		// RMSG $G foo <payload size> <payload>\r\n
+		numBytes += len("RMSG $G foo xxxx ") + len(payload) + 2
+
+		// From server in cluster B to sub:
+		numBytes += len(msgOp)
+	}
+	b.SetBytes(int64(numBytes))
 	b.ResetTimer()
 
 	// Closing this will start all publishers at once (roughly)
@@ -1031,51 +1046,51 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	b.StopTimer()
 }
 
-func Benchmark_Gateways___Optimistic_1kx01x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_1kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 1, false)
 }
 
-func Benchmark_Gateways___Optimistic_2kx01x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_2kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 1, false)
 }
 
-func Benchmark_Gateways___Optimistic_4kx01x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_4kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 1, false)
 }
 
-func Benchmark_Gateways___Optimistic_1kx10x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_1kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 10, false)
 }
 
-func Benchmark_Gateways___Optimistic_2kx10x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_2kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 10, false)
 }
 
-func Benchmark_Gateways___Optimistic_4kx10x0(b *testing.B) {
+func Benchmark_Gateways_Optimistic_4kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 10, false)
 }
 
-func Benchmark_Gateways___Optimistic_1kx01x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_1kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 1, true)
 }
 
-func Benchmark_Gateways___Optimistic_2kx01x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_2kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 1, true)
 }
 
-func Benchmark_Gateways___Optimistic_4kx01x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_4kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 1, true)
 }
 
-func Benchmark_Gateways___Optimistic_1kx10x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_1kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 10, true)
 }
 
-func Benchmark_Gateways___Optimistic_2kx10x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_2kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 10, true)
 }
 
-func Benchmark_Gateways___Optimistic_4kx10x1(b *testing.B) {
+func Benchmark_Gateways_Optimistic_4kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 10, true)
 }
 
@@ -1125,4 +1140,97 @@ func Benchmark_Gateways_InterestOnly_2kx10x1(b *testing.B) {
 
 func Benchmark_Gateways_InterestOnly_4kx10x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(4096), 10, true)
+}
+
+// This bench only sends the requests to verify impact of reply
+// reply mapping in GW code.
+func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ob := testDefaultOptionsForGateway("B")
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	gwbURL, err := url.Parse(fmt.Sprintf("nats://%s:%d", ob.Gateway.Host, ob.Gateway.Port))
+	if err != nil {
+		b.Fatalf("Error parsing url: %v", err)
+	}
+	oa := testDefaultOptionsForGateway("A")
+	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
+		&server.RemoteGatewayOpts{
+			Name: "B",
+			URLs: []*url.URL{gwbURL},
+		},
+	}
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	sub := createClientConn(b, ob.Host, ob.Port)
+	defer sub.Close()
+	doDefaultConnect(b, sub)
+	sendProto(b, sub, "SUB foo 1\r\n")
+	flushConnection(b, sub)
+
+	lenMsg := len("MSG foo reply.xxxxxxxxxx 1 2\r\nok\r\n")
+	expected := b.N * lenMsg
+	if !singleReplySub {
+		expected += b.N * len("$GR.1234.")
+	}
+	ch := make(chan bool, 1)
+	go drainConnection(b, sub, ch, expected)
+
+	c := createClientConn(b, oa.Host, oa.Port)
+	defer c.Close()
+	doDefaultConnect(b, c)
+	flushConnection(b, c)
+
+	// From pub to server in cluster A:
+	numBytes := len("PUB foo reply.0123456789 2\r\nok\r\n")
+	if !singleReplySub {
+		// Add the preceding SUB
+		numBytes += len("SUB reply.0123456789 0123456789\r\n")
+		// And UNSUB...
+		numBytes += len("UNSUB 0123456789\r\n")
+	}
+	// From server in cluster A to cluster B
+	numBytes += len("RMSG $G foo reply.0123456789 2\r\nok\r\n")
+	// If mapping of reply...
+	if !singleReplySub {
+		// the mapping uses about 10 more bytes. So add them
+		// for RMSG from server to server, and MSG to sub.
+		numBytes += 20
+	}
+	// From server in cluster B to sub
+	numBytes += lenMsg
+	b.SetBytes(int64(numBytes))
+
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	var subStr string
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if !singleReplySub {
+			subStr = fmt.Sprintf("SUB reply.%010d %010d\r\n", i+1, i+1)
+		}
+		bw.Write([]byte(fmt.Sprintf("%sPUB foo reply.%010d 2\r\nok\r\n", subStr, i+1)))
+		// Simulate that we are doing actual request/reply and therefore
+		// unsub'ing the subs on the reply subject.
+		if !singleReplySub && i > 1000 {
+			bw.Write([]byte(fmt.Sprintf("UNSUB %010d\r\n", (i - 1000))))
+		}
+	}
+	bw.Flush()
+	flushConnection(b, c)
+
+	<-ch
+}
+
+func Benchmark_Gateways_Requests_CreateOneSubForAll(b *testing.B) {
+	gatewaySendRequestsBench(b, true)
+}
+
+func Benchmark_Gateways_Requests_CreateOneSubForEach(b *testing.B) {
+	gatewaySendRequestsBench(b, false)
 }
