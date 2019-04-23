@@ -295,8 +295,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
-	ce := atomic.LoadInt32(&s.cacheNum)
-	if ce > 0 {
+	if atomic.LoadInt32(&s.cacheNum) > 0 {
 		if r, ok := s.cache.Load(subject); ok {
 			atomic.AddUint64(&s.cacheHits, 1)
 			return r.(*SublistResult)
@@ -327,7 +326,7 @@ func (s *Sublist) Match(subject string) *SublistResult {
 	if len(result.psubs) == 0 && len(result.qsubs) == 0 {
 		result = emptyResult
 	}
-	if ce != slNoCache {
+	if s.cache != nil {
 		s.cache.Store(subject, result)
 		n = atomic.AddInt32(&s.cacheNum, 1)
 	}
