@@ -787,17 +787,30 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 func (s *Server) reloadAuthorization() {
 	s.mu.Lock()
 
-	oldAccounts := s.accounts
-	s.accounts, s.gacc = nil, nil
+	// We need to drain the old accounts here since we have something
+	// new configured. We do not want s.accounts to change since that would
+	// mean adding a lock to lookupAccount which is what we are tryin to optimize
+	// with the change from a map to a sync.Map.
+	oldAccounts := make(map[string]*Account)
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		oldAccounts[acc.Name] = acc
+		acc.mu.RUnlock()
+		s.accounts.Delete(k)
+		return true
+	})
+	s.gacc = nil
 	s.configureAccounts()
 
 	s.configureAuthorization()
 
 	// This map will contain the names of accounts that have their streams
 	// import configuration changed.
-	awcsti := make(map[string]struct{}, len(s.accounts))
+	awcsti := make(map[string]struct{})
 
-	for _, newAcc := range s.accounts {
+	s.accounts.Range(func(k, v interface{}) bool {
+		newAcc := v.(*Account)
 		if acc, ok := oldAccounts[newAcc.Name]; ok {
 			// If account exist in latest config, "transfer" the account's
 			// sublist and client map to the new account.
@@ -817,7 +830,9 @@ func (s *Server) reloadAuthorization() {
 				awcsti[newAcc.Name] = struct{}{}
 			}
 		}
-	}
+		return true
+	})
+
 	// Gather clients that changed accounts. We will close them and they
 	// will reconnect, doing the right thing.
 	var (

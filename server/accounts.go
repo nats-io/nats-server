@@ -130,16 +130,18 @@ func (a *Account) shallowCopy() *Account {
 // all known servers.
 func (a *Account) NumConnections() int {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return len(a.clients) + int(a.nrclients)
+	nc := len(a.clients) + int(a.nrclients)
+	a.mu.RUnlock()
+	return nc
 }
 
 // NumLocalClients returns active number of clients for this account
 // on this server.
 func (a *Account) NumLocalConnections() int {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.numLocalConnections()
+	nlc := a.numLocalConnections()
+	a.mu.RUnlock()
+	return nlc
 }
 
 // Do not account for the system accounts.
@@ -150,8 +152,9 @@ func (a *Account) numLocalConnections() int {
 // MaxClientsReached returns if we have reached our limit for number of connections.
 func (a *Account) MaxTotalConnectionsReached() bool {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.maxTotalConnectionsReached()
+	mtc := a.maxTotalConnectionsReached()
+	a.mu.RUnlock()
+	return mtc
 }
 
 func (a *Account) maxTotalConnectionsReached() bool {
@@ -759,8 +762,9 @@ func (a *Account) checkServiceImportAuthorizedNoLock(account *Account, subject s
 // IsExpired returns expiration status.
 func (a *Account) IsExpired() bool {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.expired
+	exp := a.expired
+	a.mu.RUnlock()
+	return exp
 }
 
 // Called when an account has expired.
@@ -863,7 +867,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	s.updateAccountClaims(a, ac)
 }
 
-// updateAccountClaims will update and existing account with new claims.
+// updateAccountClaims will update an existing account with new claims.
 // This will replace any exports or imports previously defined.
 func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	if a == nil {
@@ -925,7 +929,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	for _, i := range ac.Imports {
-		acc := s.accounts[i.Account]
+		var acc *Account
+		if v, ok := s.accounts.Load(i.Account); ok {
+			acc = v.(*Account)
+		}
 		if acc == nil {
 			if acc, _ = s.fetchAccount(i.Account); acc == nil {
 				s.Debugf("Can't locate account [%s] for import of [%v] %s", i.Account, i.Subject, i.Type)
@@ -957,7 +964,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		clients := make([]*client, 0, 16)
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
-		for _, acc := range s.accounts {
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
 			acc.mu.Lock()
 			for _, im := range acc.imports.streams {
 				if im != nil && im.acc.Name == a.Name {
@@ -970,7 +978,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 				}
 			}
 			acc.mu.Unlock()
-		}
+			return true
+		})
 		// Now walk clients.
 		for _, c := range clients {
 			c.processSubsOnConfigReload(awcsti)
@@ -978,7 +987,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 	// Now check if service exports have changed.
 	if !a.checkServiceExportsEqual(old) || signersChanged {
-		for _, acc := range s.accounts {
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
 			acc.mu.Lock()
 			for _, im := range acc.imports.services {
 				if im != nil && im.acc.Name == a.Name {
@@ -987,13 +997,16 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 				}
 			}
 			acc.mu.Unlock()
-		}
+			return true
+		})
 	}
 
 	// Now do limits if they are present.
+	a.mu.Lock()
 	a.msubs = int32(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int32(ac.Limits.Conn)
+	a.mu.Unlock()
 
 	clients := gatherClients()
 	// Sort if we are over the limit.

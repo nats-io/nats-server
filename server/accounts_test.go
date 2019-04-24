@@ -106,8 +106,8 @@ func TestAccountFromOptions(t *testing.T) {
 	s := New(&opts)
 
 	ta := s.numReservedAccounts() + 2
-	if la := len(s.accounts); la != ta {
-		t.Fatalf("Expected to have a server with %d total accounts, got %v", ta, la)
+	if la := s.numAccounts(); la != ta {
+		t.Fatalf("Expected to have a server with %d active accounts, got %v", ta, la)
 	}
 	// Check that sl is filled in.
 	fooAcc, _ := s.LookupAccount("foo")
@@ -201,7 +201,7 @@ func TestActiveAccounts(t *testing.T) {
 		t.Fatalf("Expected account bar to have 1 client, got %d", nc)
 	}
 
-	waitTilActiveCount := func(n int) {
+	waitTilActiveCount := func(n int32) {
 		t.Helper()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			if active := s.NumActiveAccounts(); active != n {

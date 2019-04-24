@@ -890,8 +890,9 @@ func (s *Server) sendSubsToRoute(route *client) {
 	eSize := 0
 	// Send over our account subscriptions.
 	// copy accounts into array first
-	accs := make([]*Account, 0, len(s.accounts))
-	for _, a := range s.accounts {
+	accs := make([]*Account, 0, 32)
+	s.accounts.Range(func(k, v interface{}) bool {
+		a := v.(*Account)
 		accs = append(accs, a)
 		a.mu.RLock()
 		// Proto looks like: "RS+ <account name> <subject>[ <queue weight>]\r\n"
@@ -900,7 +901,8 @@ func (s *Server) sendSubsToRoute(route *client) {
 		// later going over each account.
 		eSize += len(a.rm) * (4 + len(a.Name) + 256)
 		a.mu.RUnlock()
-	}
+		return true
+	})
 	s.mu.Unlock()
 
 	sendSubs := func(accs []*Account) {
