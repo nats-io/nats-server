@@ -789,8 +789,8 @@ func (s *Server) reloadAuthorization() {
 
 	// We need to drain the old accounts here since we have something
 	// new configured. We do not want s.accounts to change since that would
-	// mean adding a lock to lookupAccount which is what we are tryin to optimize
-	// with the change from a map to a sync.Map.
+	// mean adding a lock to lookupAccount which is what we are trying to
+	// optimize for with the change from a map to a sync.Map.
 	oldAccounts := make(map[string]*Account)
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
