@@ -201,7 +201,9 @@ func (s *Server) configureAuthorization() {
 			for _, u := range opts.Nkeys {
 				copy := u.clone()
 				if u.Account != nil {
-					copy.Account = s.accounts[u.Account.Name]
+					if v, ok := s.accounts.Load(u.Account.Name); ok {
+						copy.Account = v.(*Account)
+					}
 				}
 				s.nkeys[u.Nkey] = copy
 			}
@@ -211,7 +213,9 @@ func (s *Server) configureAuthorization() {
 			for _, u := range opts.Users {
 				copy := u.clone()
 				if u.Account != nil {
-					copy.Account = s.accounts[u.Account.Name]
+					if v, ok := s.accounts.Load(u.Account.Name); ok {
+						copy.Account = v.(*Account)
+					}
 				}
 				s.users[u.Username] = copy
 			}

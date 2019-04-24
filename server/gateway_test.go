@@ -3036,9 +3036,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		if scount != consCount {
 			return fmt.Errorf("Expected %v consumers for global account, got %v", consCount, scount)
 		}
-		sc.mu.Lock()
-		acount := len(sc.accounts)
-		sc.mu.Unlock()
+		acount := sc.numAccounts()
 		if acount != accsCount+1 {
 			return fmt.Errorf("Expected %v accounts, got %v", accsCount+1, acount)
 		}
@@ -4480,6 +4478,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 	}
 }
 
+// NOTE: if this fails for you and says only has <10 outbound, make sure ulimit for open files > 256.
 func TestGatewayMemUsage(t *testing.T) {
 	// Try to clean up.
 	runtime.GC()

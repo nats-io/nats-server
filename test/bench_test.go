@@ -1234,3 +1234,132 @@ func Benchmark_Gateways_Requests_CreateOneSubForAll(b *testing.B) {
 func Benchmark_Gateways_Requests_CreateOneSubForEach(b *testing.B) {
 	gatewaySendRequestsBench(b, false)
 }
+
+// Run some benchmarks against interest churn across routes.
+// Watching for contention retrieving accounts, etc.
+func Benchmark_________________LookupAccount(b *testing.B) {
+	s := runBenchServer()
+	defer s.Shutdown()
+
+	const acc = "$foo.bar"
+
+	if _, err := s.RegisterAccount(acc); err != nil {
+		b.Fatalf("Error registering '%s' - %v", acc, err)
+	}
+	// Now create Go routines to cycle through Lookups.
+	numRoutines := 100
+	loop := b.N / numRoutines
+
+	startCh := make(chan bool)
+
+	lookupLoop := func(ready, done chan bool) {
+		// Signal we are ready
+		close(ready)
+		// Wait to start up actual unsubs.
+		<-startCh
+
+		for i := 0; i < loop; i++ {
+			if _, err := s.LookupAccount(acc); err != nil {
+				b.Errorf("Error looking up account: %v", err)
+			}
+		}
+		close(done)
+	}
+
+	da := make([]chan bool, 0, numRoutines)
+	for i := 0; i < numRoutines; i++ {
+		ready := make(chan bool)
+		done := make(chan bool)
+		go lookupLoop(ready, done)
+		da = append(da, done)
+		<-ready
+	}
+
+	b.ResetTimer()
+	close(startCh)
+	for _, ch := range da {
+		<-ch
+	}
+	b.StopTimer()
+}
+
+func Benchmark___________RoutedInterestGraph(b *testing.B) {
+	s, o := RunServerWithConfig("./configs/srv_a.conf")
+	o.AllowNewAccounts = true
+	defer s.Shutdown()
+
+	numRoutes := 100
+	loop := b.N / numRoutes
+
+	type rh struct {
+		r      net.Conn
+		send   sendFun
+		expect expectFun
+		done   chan bool
+	}
+
+	routes := make([]*rh, 0, numRoutes)
+	for i := 0; i < numRoutes; i++ {
+		r := createRouteConn(b, o.Cluster.Host, o.Cluster.Port)
+		defer r.Close()
+
+		checkInfoMsg(b, r)
+		send, expect := setupRoute(b, r, o)
+		send("PING\r\n")
+		expect(pongRe)
+
+		bw := bufio.NewWriterSize(r, defaultSendBufSize)
+
+		account := fmt.Sprintf("$foo.account.%d", i)
+		for s := 0; s < loop; s++ {
+			bw.Write([]byte(fmt.Sprintf("RS+ %s foo.bar.%d\r\n", account, s)))
+		}
+		bw.Flush()
+		send("PING\r\n")
+		expect(pongRe)
+		routes = append(routes, &rh{r, send, expect, make(chan bool)})
+	}
+
+	startCh := make(chan bool)
+
+	unsubLoop := func(route *rh, ch chan bool, index int) {
+		bw := bufio.NewWriterSize(route.r, defaultSendBufSize)
+		account := fmt.Sprintf("$foo.account.%d", index)
+
+		// Signal we are ready
+		close(ch)
+
+		// Wait to start up actual unsubs.
+		<-startCh
+
+		for i := 0; i < loop; i++ {
+			_, err := bw.Write([]byte(fmt.Sprintf("RS- %s foo.bar.%d\r\n", account, i)))
+			if err != nil {
+				b.Errorf("Received error on RS- write: %v\n", err)
+				return
+			}
+		}
+		err := bw.Flush()
+		if err != nil {
+			b.Errorf("Received error on FLUSH write: %v\n", err)
+			return
+		}
+		route.send("PING\r\n")
+		route.expect(pongRe)
+		close(route.done)
+	}
+
+	for i, route := range routes {
+		ch := make(chan bool)
+		go unsubLoop(route, ch, i)
+		<-ch
+	}
+
+	// Actual unsub test here.
+	b.ResetTimer()
+	close(startCh)
+	for _, route := range routes {
+		<-route.done
+	}
+	b.StopTimer()
+}

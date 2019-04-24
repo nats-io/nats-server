@@ -98,8 +98,8 @@ type Server struct {
 	listener         net.Listener
 	gacc             *Account
 	sys              *internal
-	accounts         map[string]*Account
-	activeAccounts   int
+	accounts         sync.Map
+	activeAccounts   int32
 	accResolver      AccountResolver
 	clients          map[uint64]*client
 	routes           map[uint64]*client
@@ -339,11 +339,8 @@ func (s *Server) globalAccount() *Account {
 	return gacc
 }
 
+// Used to setup Accounts.
 func (s *Server) configureAccounts() error {
-	// Used to setup Accounts.
-	if s.accounts == nil {
-		s.accounts = make(map[string]*Account)
-	}
 	// Create global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
@@ -368,10 +365,15 @@ func (s *Server) configureAccounts() error {
 			return
 		}
 		for sub, a := range ea.approved {
-			ea.approved[sub] = s.accounts[a.Name]
+			var acc *Account
+			if v, ok := s.accounts.Load(a.Name); ok {
+				acc = v.(*Account)
+			}
+			ea.approved[sub] = acc
 		}
 	}
-	for _, acc := range s.accounts {
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
 		// Exports
 		for _, ea := range acc.exports.streams {
 			swapApproved(ea)
@@ -381,12 +383,17 @@ func (s *Server) configureAccounts() error {
 		}
 		// Imports
 		for _, si := range acc.imports.streams {
-			si.acc = s.accounts[si.acc.Name]
+			if v, ok := s.accounts.Load(si.acc.Name); ok {
+				si.acc = v.(*Account)
+			}
 		}
 		for _, si := range acc.imports.services {
-			si.acc = s.accounts[si.acc.Name]
+			if v, ok := s.accounts.Load(si.acc.Name); ok {
+				si.acc = v.(*Account)
+			}
 		}
-	}
+		return true
+	})
 
 	// Check for configured account resolvers.
 	if opts.AccountResolver != nil {
@@ -405,10 +412,15 @@ func (s *Server) configureAccounts() error {
 	}
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
-		if _, err := s.lookupAccount(opts.SystemAccount); err != nil {
+		// Lock is held entering this function, so release to call lookupAccount.
+		s.mu.Unlock()
+		_, err := s.lookupAccount(opts.SystemAccount)
+		s.mu.Lock()
+		if err != nil {
 			return fmt.Errorf("error resolving system account: %v", err)
 		}
 	}
+
 	return nil
 }
 
@@ -545,60 +557,66 @@ func (s *Server) numReservedAccounts() int {
 }
 
 // NumActiveAccounts reports number of active accounts on this server.
-func (s *Server) NumActiveAccounts() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.activeAccounts
+func (s *Server) NumActiveAccounts() int32 {
+	return atomic.LoadInt32(&s.activeAccounts)
 }
 
 // incActiveAccounts() just adds one under lock.
 func (s *Server) incActiveAccounts() {
-	s.mu.Lock()
-	s.activeAccounts++
-	s.mu.Unlock()
+	atomic.AddInt32(&s.activeAccounts, 1)
 }
 
-// dev=cActiveAccounts() just subtracts one under lock.
+// decActiveAccounts() just subtracts one under lock.
 func (s *Server) decActiveAccounts() {
+	atomic.AddInt32(&s.activeAccounts, -1)
+}
+
+// This should be used for testing only. Will be slow since we have to
+// range over all accounts in the sync.Map to count.
+func (s *Server) numAccounts() int {
+	count := 0
 	s.mu.Lock()
-	s.activeAccounts--
+	s.accounts.Range(func(k, v interface{}) bool {
+		count++
+		return true
+	})
 	s.mu.Unlock()
+	return count
 }
 
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
 func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if acc, ok := s.accounts[name]; ok {
-		return acc, false
+	if v, ok := s.accounts.Load(name); ok {
+		return v.(*Account), false
 	}
+	s.mu.Lock()
 	acc := NewAccount(name)
 	s.registerAccount(acc)
+	s.mu.Unlock()
 	return acc, true
 }
 
 // RegisterAccount will register an account. The account must be new
 // or this call will fail.
 func (s *Server) RegisterAccount(name string) (*Account, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.accounts[name]; ok {
+	if _, ok := s.accounts.Load(name); ok {
 		return nil, ErrAccountExists
 	}
+	s.mu.Lock()
 	acc := NewAccount(name)
 	s.registerAccount(acc)
+	s.mu.Unlock()
 	return acc, nil
 }
 
 // SetSystemAccount will set the internal system account.
 // If root operators are present it will also check validity.
 func (s *Server) SetSystemAccount(accName string) error {
-	s.mu.Lock()
-	if acc := s.accounts[accName]; acc != nil {
-		s.mu.Unlock()
-		return s.setSystemAccount(acc)
+	if v, ok := s.accounts.Load(accName); ok {
+		return s.setSystemAccount(v.(*Account))
 	}
+
+	s.mu.Lock()
 	// If we are here we do not have local knowledge of this account.
 	// Do this one by hand to return more useful error.
 	ac, jwt, err := s.fetchAccountClaims(accName)
@@ -610,6 +628,7 @@ func (s *Server) SetSystemAccount(accName string) error {
 	acc.claimJWT = jwt
 	s.registerAccount(acc)
 	s.mu.Unlock()
+
 	return s.setSystemAccount(acc)
 }
 
@@ -684,12 +703,13 @@ func (s *Server) setSystemAccount(acc *Account) error {
 }
 
 func (s *Server) systemAccount() *Account {
+	var sacc *Account
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sys == nil {
-		return nil
+	if s.sys != nil {
+		sacc = s.sys.account
 	}
-	return s.sys.account
+	s.mu.Unlock()
+	return sacc
 }
 
 // Determine if accounts should track subscriptions for
@@ -726,20 +746,25 @@ func (s *Server) registerAccount(acc *Account) {
 	}
 	acc.srv = s
 	acc.mu.Unlock()
-	s.accounts[acc.Name] = acc
+	s.accounts.Store(acc.Name, acc)
 	s.enableAccountTracking(acc)
 }
 
 // lookupAccount is a function to return the account structure
 // associated with an account name.
-// Lock should be held on entry.
 func (s *Server) lookupAccount(name string) (*Account, error) {
-	acc := s.accounts[name]
-	if acc != nil {
+	if v, ok := s.accounts.Load(name); ok {
+		acc := v.(*Account)
 		// If we are expired and we have a resolver, then
 		// return the latest information from the resolver.
-		if s.accResolver != nil && acc.IsExpired() {
-			if err := s.updateAccount(acc); err != nil {
+		if acc.IsExpired() {
+			var err error
+			s.mu.Lock()
+			if s.accResolver != nil {
+				err = s.updateAccount(acc)
+			}
+			s.mu.Unlock()
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -749,14 +774,15 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	if s.accResolver == nil {
 		return nil, ErrMissingAccount
 	}
-	return s.fetchAccount(name)
+	s.mu.Lock()
+	acc, err := s.fetchAccount(name)
+	s.mu.Unlock()
+	return acc, err
 }
 
 // LookupAccount is a public function to return the account structure
 // associated with name.
 func (s *Server) LookupAccount(name string) (*Account, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.lookupAccount(name)
 }
 
@@ -850,7 +876,8 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		// We have released the lock during the low level fetch.
 		// Now that we are back under lock, check again if account
 		// is in the map or not. If it is, simply return it.
-		if acc := s.accounts[name]; acc != nil {
+		if v, ok := s.accounts.Load(name); ok {
+			acc := v.(*Account)
 			// Update with the new claims in case they are new.
 			// Following call will return ErrAccountResolverSameClaims
 			// if claims are the same.
@@ -1778,11 +1805,13 @@ func (s *Server) NumSubscriptions() uint32 {
 // Lock should be held.
 func (s *Server) numSubscriptions() uint32 {
 	var subs int
-	for _, acc := range s.accounts {
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
 		if acc.sl != nil {
 			subs += acc.TotalSubs()
 		}
-	}
+		return true
+	})
 	return uint32(subs)
 }
 

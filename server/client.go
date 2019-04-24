@@ -2908,9 +2908,7 @@ func (c *client) closeConnection(reason ClosedState) {
 				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
 			}
 			if prev := acc.removeClient(c); prev == 1 && srv != nil {
-				srv.mu.Lock()
-				srv.activeAccounts--
-				srv.mu.Unlock()
+				srv.decActiveAccounts()
 			}
 		}
 	}

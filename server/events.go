@@ -268,8 +268,9 @@ func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface
 // Locked version of checking if events system running. Also checks server.
 func (s *Server) eventsRunning() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running && s.eventsEnabled()
+	er := s.running && s.eventsEnabled()
+	s.mu.Unlock()
+	return er
 }
 
 // EventsEnabled will report if the server has internal events enabled via
@@ -343,7 +344,7 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.Start = s.start
 	m.Stats.Connections = len(s.clients)
 	m.Stats.TotalConnections = s.totalClients
-	m.Stats.ActiveAccounts = s.activeAccounts
+	m.Stats.ActiveAccounts = int(atomic.LoadInt32(&s.activeAccounts))
 	m.Stats.Received.Msgs = atomic.LoadInt64(&s.inMsgs)
 	m.Stats.Received.Bytes = atomic.LoadInt64(&s.inBytes)
 	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
@@ -467,21 +468,24 @@ func (s *Server) accountClaimUpdate(sub *subscription, subject, reply string, ms
 		s.Debugf("Received account claims update on bad subject %q", subject)
 		return
 	}
-	accName := toks[accUpdateAccIndex]
-	s.updateAccountWithClaimJWT(s.accounts[accName], string(msg))
+	if v, ok := s.accounts.Load(toks[accUpdateAccIndex]); ok {
+		s.updateAccountWithClaimJWT(v.(*Account), string(msg))
+	}
 }
 
 // processRemoteServerShutdown will update any affected accounts.
 // Will update the remote count for clients.
 // Lock assume held.
 func (s *Server) processRemoteServerShutdown(sid string) {
-	for _, a := range s.accounts {
+	s.accounts.Range(func(k, v interface{}) bool {
+		a := v.(*Account)
 		a.mu.Lock()
 		prev := a.strack[sid]
 		delete(a.strack, sid)
 		a.nrclients -= prev
 		a.mu.Unlock()
-	}
+		return true
+	})
 }
 
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.
@@ -542,7 +546,8 @@ func (s *Server) shutdownEventing() {
 	defer s.mu.Unlock()
 
 	// Whip through all accounts.
-	for _, a := range s.accounts {
+	s.accounts.Range(func(k, v interface{}) bool {
+		a := v.(*Account)
 		a.mu.Lock()
 		a.nrclients = 0
 		// Now clear state
@@ -551,16 +556,15 @@ func (s *Server) shutdownEventing() {
 		a.clients = nil
 		a.strack = nil
 		a.mu.Unlock()
-	}
+		return true
+	})
 	// Turn everything off here.
 	s.sys = nil
 }
 
 // Request for our local connection count.
 func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+	if !s.eventsRunning() {
 		return
 	}
 	m := accNumConnsReq{}
@@ -573,7 +577,9 @@ func (s *Server) connsRequest(sub *subscription, subject, reply string, msg []by
 		return
 	}
 	if nlc := acc.NumLocalConnections(); nlc > 0 {
+		s.mu.Lock()
 		s.sendAccConnsUpdate(acc, reply)
+		s.mu.Unlock()
 	}
 }
 
@@ -587,15 +593,14 @@ func (s *Server) leafNodeConnected(sub *subscription, subject, reply string, msg
 	}
 
 	s.mu.Lock()
-	gateway := s.gateway
-	if m.Account == "" || !s.eventsEnabled() || !gateway.enabled {
-		s.mu.Unlock()
-		return
-	}
-	acc, _ := s.lookupAccount(m.Account)
+	na := m.Account == "" || !s.eventsEnabled() || !s.gateway.enabled
 	s.mu.Unlock()
 
-	if acc != nil {
+	if na {
+		return
+	}
+
+	if acc, _ := s.lookupAccount(m.Account); acc != nil {
 		s.switchAccountToInterestMode(acc.Name)
 	}
 }
@@ -612,9 +617,7 @@ func (s *Server) statszReq(sub *subscription, subject, reply string, msg []byte)
 
 // remoteConnsUpdate gets called when we receive a remote update from another server.
 func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+	if !s.eventsRunning() {
 		return
 	}
 	m := AccountNumConns{}
@@ -622,13 +625,16 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
 	}
+	// See if we have the account registered, if not drop it.
+	acc, _ := s.lookupAccount(m.Account)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Double check that this is not us, should never happen, so error if it does.
 	if m.Server.ID == s.info.ID {
 		s.sys.client.Errorf("Processing our own account connection event message: ignored")
 		return
 	}
-	// See if we have the account registered, if not drop it.
-	acc, _ := s.lookupAccount(m.Account)
 	if acc == nil {
 		s.sys.client.Debugf("Received account connection event for unknown account: %s", m.Account)
 		return
