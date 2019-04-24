@@ -1232,16 +1232,16 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		var collect bool
+		flag := pmrNoFlag
 		// If we have queue subs in this cluster, then if we run in gateway
 		// mode and the remote gateways have queue subs, then we need to
 		// collect the queue groups this message was sent to so that we
 		// exclude them when sending to gateways.
 		if len(r.qsubs) > 0 && c.srv.gateway.enabled &&
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
-			collect = true
+			flag = pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, collect)
+		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
