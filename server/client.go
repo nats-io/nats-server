@@ -444,20 +444,25 @@ func (c *client) registerWithAccount(acc *Account) error {
 			c.srv.decActiveAccounts()
 		}
 	}
+
+	c.mu.Lock()
+	kind := c.kind
+	srv := c.srv
+	c.acc = acc
+	c.applyAccountLimits()
+	c.mu.Unlock()
+
 	// Check if we have a max connections violation
-	if c.kind == CLIENT && acc.MaxTotalConnectionsReached() {
+	if kind == CLIENT && acc.MaxTotalConnectionsReached() {
+		return ErrTooManyAccountConnections
+	} else if kind == LEAF && acc.MaxTotalLeafNodesReached() {
 		return ErrTooManyAccountConnections
 	}
 
 	// Add in new one.
-	if prev := acc.addClient(c); prev == 0 && c.srv != nil {
-		c.srv.incActiveAccounts()
+	if prev := acc.addClient(c); prev == 0 && srv != nil {
+		srv.incActiveAccounts()
 	}
-
-	c.mu.Lock()
-	c.acc = acc
-	c.applyAccountLimits()
-	c.mu.Unlock()
 
 	return nil
 }
@@ -471,7 +476,7 @@ func (c *client) subsAtLimit() bool {
 // Lock is held on entry.
 // FIXME(dlc) - Should server be able to override here?
 func (c *client) applyAccountLimits() {
-	if c.acc == nil || c.kind != CLIENT {
+	if c.acc == nil || (c.kind != CLIENT && c.kind != LEAF) {
 		return
 	}
 
@@ -534,12 +539,12 @@ func (c *client) RegisterUser(user *User) {
 // RegisterNkey allows auth to call back into a new nkey
 // client with the authenticated user. This is used to map
 // any permissions into the client and setup accounts.
-func (c *client) RegisterNkeyUser(user *NkeyUser) {
+func (c *client) RegisterNkeyUser(user *NkeyUser) error {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
 			c.reportErrRegisterAccount(user.Account, err)
-			return
+			return err
 		}
 	}
 
@@ -552,10 +557,10 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
-		return
+	} else {
+		c.setPermissions(user.Permissions)
 	}
-
-	c.setPermissions(user.Permissions)
+	return nil
 }
 
 // Initializes client.perms structure.
@@ -1123,6 +1128,7 @@ func (c *client) processConnect(arg []byte) error {
 	lang := c.opts.Lang
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
+	ujwt := c.opts.JWT
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -1139,11 +1145,20 @@ func (c *client) processConnect(arg []byte) error {
 
 		// Check for Auth
 		if ok := srv.checkAuthentication(c); !ok {
+			// We may fail here because we reached max limits on an account.
+			if ujwt != "" {
+				c.mu.Lock()
+				acc := c.acc
+				c.mu.Unlock()
+				if acc != nil && acc != srv.gacc {
+					return ErrTooManyAccountConnections
+				}
+			}
 			c.authViolation()
 			return ErrAuthentication
 		}
 
-		// Check for Account designation
+		// Check for Account designation, this section should be only used when there is not a jwt.
 		if account != "" {
 			var acc *Account
 			var wasNew bool
@@ -1152,7 +1167,7 @@ func (c *client) processConnect(arg []byte) error {
 				acc, err = srv.LookupAccount(account)
 				if err != nil {
 					c.Errorf(err.Error())
-					c.sendErr("Account Not Found")
+					c.sendErr(ErrMissingAccount.Error())
 					return err
 				} else if accountNew && acc != nil {
 					c.sendErrAndErr(ErrAccountExists.Error())

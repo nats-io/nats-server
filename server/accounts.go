@@ -43,9 +43,11 @@ type Account struct {
 	sl         *Sublist
 	etmr       *time.Timer
 	ctmr       *time.Timer
-	strack     map[string]int32
+	strack     map[string]sconns
 	nrclients  int32
 	sysclients int32
+	nleafs     int32
+	nrleafs    int32
 	clients    map[*client]*client
 	rm         map[string]int32
 	imports    importMap
@@ -63,8 +65,15 @@ type limits struct {
 	mpay     int32
 	msubs    int32
 	mconns   int32
+	mleafs   int32
 	maxnae   int32
 	maxaettl time.Duration
+}
+
+// Used to track remote clients and leafnodes per remote server.
+type sconns struct {
+	conns int32
+	leafs int32
 }
 
 // Import stream mapping struct
@@ -110,7 +119,7 @@ func NewAccount(name string) *Account {
 	a := &Account{
 		Name:   name,
 		sl:     NewSublist(),
-		limits: limits{-1, -1, -1, 0, 0},
+		limits: limits{-1, -1, -1, -1, 0, 0},
 	}
 	return a
 }
@@ -146,10 +155,14 @@ func (a *Account) NumLocalConnections() int {
 
 // Do not account for the system accounts.
 func (a *Account) numLocalConnections() int {
-	return len(a.clients) - int(a.sysclients)
+	return len(a.clients) - int(a.sysclients) - int(a.nleafs)
 }
 
-// MaxClientsReached returns if we have reached our limit for number of connections.
+func (a *Account) numLocalLeafNodes() int {
+	return int(a.nleafs)
+}
+
+// MaxTotalConnectionsReached returns if we have reached our limit for number of connections.
 func (a *Account) MaxTotalConnectionsReached() bool {
 	a.mu.RLock()
 	mtc := a.maxTotalConnectionsReached()
@@ -168,8 +181,52 @@ func (a *Account) maxTotalConnectionsReached() bool {
 // wide for total number of active connections.
 func (a *Account) MaxActiveConnections() int {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return int(a.mconns)
+	mconns := int(a.mconns)
+	a.mu.RUnlock()
+	return mconns
+}
+
+// MaxTotalLeafNodesReached() returns if we have reached our limit for number of leafnodes.
+func (a *Account) MaxTotalLeafNodesReached() bool {
+	a.mu.RLock()
+	mtc := a.maxTotalLeafNodesReached()
+	a.mu.RUnlock()
+	return mtc
+}
+
+func (a *Account) maxTotalLeafNodesReached() bool {
+	if a.mleafs != jwt.NoLimit {
+		return a.nleafs+a.nrleafs >= a.mleafs
+	}
+	return false
+}
+
+// NumLeafNodes returns the active number of local and remote
+// leaf node connections.
+func (a *Account) NumLeafNodes() int {
+	a.mu.RLock()
+	nln := int(a.nleafs + a.nrleafs)
+	a.mu.RUnlock()
+	return nln
+}
+
+// NumRemoteLeafNodes returns the active number of remote
+// leaf node connections.
+func (a *Account) NumRemoteLeafNodes() int {
+	a.mu.RLock()
+	nrn := int(a.nrleafs)
+	a.mu.RUnlock()
+	return nrn
+}
+
+// MaxActiveLeafnodes return the set limit for the account system
+// wide for total number of leavenode connections.
+// NOTE: these are tracked separately.
+func (a *Account) MaxActiveLeafNodes() int {
+	a.mu.RLock()
+	mleafs := int(a.mleafs)
+	a.mu.RUnlock()
+	return mleafs
 }
 
 // RoutedSubs returns how many subjects we would send across a route when first
@@ -187,7 +244,7 @@ func (a *Account) TotalSubs() int {
 	return int(a.sl.Count())
 }
 
-// addClient keeps our accounting of local active clients updated.
+// addClient keeps our accounting of local active clients or leafnodes updated.
 // Returns previous total.
 func (a *Account) addClient(c *client) int {
 	a.mu.Lock()
@@ -195,11 +252,16 @@ func (a *Account) addClient(c *client) int {
 	if a.clients != nil {
 		a.clients[c] = c
 	}
-	if c.kind == SYSTEM {
-		a.sysclients++
+	added := n != len(a.clients)
+	if added {
+		if c.kind == SYSTEM {
+			a.sysclients++
+		} else if c.kind == LEAF {
+			a.nleafs++
+		}
 	}
 	a.mu.Unlock()
-	if c != nil && c.srv != nil && a != c.srv.gacc {
+	if c != nil && c.srv != nil && a != c.srv.gacc && added {
 		c.srv.accConnsUpdate(a)
 	}
 	return n
@@ -210,11 +272,16 @@ func (a *Account) removeClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
 	delete(a.clients, c)
-	if c.kind == SYSTEM {
-		a.sysclients--
+	removed := n != len(a.clients)
+	if removed {
+		if c.kind == SYSTEM {
+			a.sysclients--
+		} else if c.kind == LEAF {
+			a.nleafs--
+		}
 	}
 	a.mu.Unlock()
-	if c != nil && c.srv != nil && a != c.srv.gacc {
+	if c != nil && c.srv != nil && a != c.srv.gacc && removed {
 		c.srv.accConnsUpdate(a)
 	}
 	return n
@@ -1006,6 +1073,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.msubs = int32(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int32(ac.Limits.Conn)
+	a.mleafs = int32(ac.Limits.LeafNodeConn)
 	a.mu.Unlock()
 
 	clients := gatherClients()

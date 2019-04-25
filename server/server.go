@@ -534,8 +534,9 @@ func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool,
 // Protected check on running state
 func (s *Server) isRunning() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
+	running := s.running
+	s.mu.Unlock()
+	return running
 }
 
 func (s *Server) logPid() error {

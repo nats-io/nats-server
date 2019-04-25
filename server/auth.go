@@ -634,10 +634,9 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		}
 
 		nkey := buildInternalNkeyUser(juc, acc)
-		c.RegisterNkeyUser(nkey)
-
-		// Generate a connect event if we have a system account.
-		// FIXME(dlc) - Make one for leafnodes if we track active connections.
+		if err := c.RegisterNkeyUser(nkey); err != nil {
+			return false
+		}
 
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())

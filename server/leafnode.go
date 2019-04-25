@@ -728,7 +728,6 @@ type leafConnectInfo struct {
 func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) error {
 	// Way to detect clients that incorrectly connect to the route listen
 	// port. Client provided "lang" in the CONNECT protocol while LEAFNODEs don't.
-
 	if lang != "" {
 		c.sendErrAndErr(ErrClientConnectedToLeafNodePort.Error())
 		c.closeConnection(WrongPort)

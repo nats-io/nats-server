@@ -1541,3 +1541,260 @@ func TestLeafNodeAdvertise(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
+	s, opts, conf := runLeafNodeOperatorServer(t)
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	// Setup account and a user that will be used by the remote leaf node server.
+	// createAccount automatically registers with resolver etc..
+	acc, akp := createAccount(t, s)
+
+	// Now update with limits for lead node connections.
+	const maxleafs = 2
+
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	nac.Limits.LeafNodeConn = maxleafs
+	s.UpdateAccountClaims(acc, nac)
+
+	// Make sure we have the limits updated in acc.
+	if mleafs := acc.MaxActiveLeafNodes(); mleafs != maxleafs {
+		t.Fatalf("Expected to have max leafnodes of %d, got %d", maxleafs, mleafs)
+	}
+
+	// Create the user credentials for the leadnode connection.
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	seed, _ := kp.Seed()
+	mycreds := genCredsFile(t, ujwt, seed)
+	defer os.Remove(mycreds)
+
+	checkLFCount := func(n int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if nln := s.NumLeafNodes(); nln != n {
+				return fmt.Errorf("Number of leaf nodes is %d", nln)
+			}
+			return nil
+		})
+	}
+
+	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf)
+	defer sl.Shutdown()
+	checkLFCount(1)
+
+	// Make sure we are accounting properly here.
+	if nln := acc.NumLeafNodes(); nln != 1 {
+		t.Fatalf("Expected 1 leaf node, got %d", nln)
+	}
+	// clients and leafnodes counted together.
+	if nc := acc.NumConnections(); nc != 1 {
+		t.Fatalf("Expected 1 for total connections, got %d", nc)
+	}
+
+	s2, _, lnconf2 := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf2)
+	defer s2.Shutdown()
+	checkLFCount(2)
+
+	// Make sure we are accounting properly here.
+	if nln := acc.NumLeafNodes(); nln != 2 {
+		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
+	}
+	// clients and leafnodes counted together.
+	if nc := acc.NumConnections(); nc != 2 {
+		t.Fatalf("Expected 2 total connections, got %d", nc)
+	}
+	s2.Shutdown()
+	checkLFCount(1)
+
+	// Make sure we are accounting properly here.
+	if nln := acc.NumLeafNodes(); nln != 1 {
+		t.Fatalf("Expected 1 leaf node, got %d", nln)
+	}
+	// clients and leafnodes counted together.
+	if nc := acc.NumConnections(); nc != 1 {
+		t.Fatalf("Expected 1 for total connections, got %d", nc)
+	}
+
+	// Now add back the second one as #3.
+	s3, _, lnconf3 := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf3)
+	defer s3.Shutdown()
+	checkLFCount(2)
+
+	if nln := acc.NumLeafNodes(); nln != 2 {
+		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
+	}
+
+	// Once we are here we should not be able to create anymore. Limit == 2.
+	s4, _, lnconf4 := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf4)
+	defer s4.Shutdown()
+
+	if nln := acc.NumLeafNodes(); nln != 2 {
+		fmt.Printf("Acc is %q\n", acc.Name)
+		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
+	}
+
+	// Make sure s4 has 0 still.
+	if nln := s4.NumLeafNodes(); nln != 0 {
+		t.Fatalf("Expected no leafnodes accounted for in s4, got %d", nln)
+	}
+
+	// Make sure this is still 2.
+	checkLFCount(2)
+}
+
+func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
+	content := `
+	port: -1
+	operator = "./configs/nkeys/op.jwt"
+    system_account = "AD2VB6C25DQPEUUQ7KJBUFX2J4ZNVBPOHSCBISC7VFZXVWXZA7VASQZG"
+	resolver = MEMORY
+	cluster {
+		port: -1
+	}
+	leafnodes {
+		listen: "127.0.0.1:-1"
+	}
+    resolver_preload = {
+        AD2VB6C25DQPEUUQ7KJBUFX2J4ZNVBPOHSCBISC7VFZXVWXZA7VASQZG : "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJDSzU1UERKSUlTWU5QWkhLSUpMVURVVTdJT1dINlM3UkE0RUc2TTVGVUQzUEdGQ1RWWlJRIiwiaWF0IjoxNTQzOTU4NjU4LCJpc3MiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInN1YiI6IkFEMlZCNkMyNURRUEVVVVE3S0pCVUZYMko0Wk5WQlBPSFNDQklTQzdWRlpYVldYWkE3VkFTUVpHIiwidHlwZSI6ImFjY291bnQiLCJuYXRzIjp7ImxpbWl0cyI6e319fQ.7m1fysYUsBw15Lj88YmYoHxOI4HlOzu6qgP8Zg-1q9mQXUURijuDGVZrtb7gFYRlo-nG9xZyd2ZTRpMA-b0xCQ"
+    }
+	`
+	conf := createConfFile(t, []byte(content))
+	defer os.Remove(conf)
+	s1, s1Opts := RunServerWithConfig(conf)
+	defer s1.Shutdown()
+
+	content = fmt.Sprintf(`
+	port: -1
+	operator = "./configs/nkeys/op.jwt"
+    system_account = "AD2VB6C25DQPEUUQ7KJBUFX2J4ZNVBPOHSCBISC7VFZXVWXZA7VASQZG"
+	resolver = MEMORY
+	cluster {
+		port: -1
+		routes: ["nats://%s:%d"]
+	}
+	leafnodes {
+		listen: "127.0.0.1:-1"
+	}
+    resolver_preload = {
+        AD2VB6C25DQPEUUQ7KJBUFX2J4ZNVBPOHSCBISC7VFZXVWXZA7VASQZG : "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJDSzU1UERKSUlTWU5QWkhLSUpMVURVVTdJT1dINlM3UkE0RUc2TTVGVUQzUEdGQ1RWWlJRIiwiaWF0IjoxNTQzOTU4NjU4LCJpc3MiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInN1YiI6IkFEMlZCNkMyNURRUEVVVVE3S0pCVUZYMko0Wk5WQlBPSFNDQklTQzdWRlpYVldYWkE3VkFTUVpHIiwidHlwZSI6ImFjY291bnQiLCJuYXRzIjp7ImxpbWl0cyI6e319fQ.7m1fysYUsBw15Lj88YmYoHxOI4HlOzu6qgP8Zg-1q9mQXUURijuDGVZrtb7gFYRlo-nG9xZyd2ZTRpMA-b0xCQ"
+    }
+	`, s1Opts.Cluster.Host, s1Opts.Cluster.Port)
+	conf = createConfFile(t, []byte(content))
+	s2, s2Opts := RunServerWithConfig(conf)
+	defer s2.Shutdown()
+
+	// Setup the two accounts for this server.
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Setup account and a user that will be used by the remote leaf node server.
+	// createAccount automatically registers with resolver etc..
+	acc, akp := createAccount(t, s1)
+
+	// Now update with limits for lead node connections.
+	const maxleafs = 10
+
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	nac.Limits.LeafNodeConn = maxleafs
+
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	if err := s1.AccountResolver().Store(apub, ajwt); err != nil {
+		t.Fatalf("Account Resolver returned an error: %v", err)
+	}
+	s1.UpdateAccountClaims(acc, nac)
+
+	if err := s2.AccountResolver().Store(apub, ajwt); err != nil {
+		t.Fatalf("Account Resolver returned an error: %v", err)
+	}
+	// Make sure that account object registered in S2 is not acc2
+	acc2, err := s2.LookupAccount(acc.Name)
+	if err != nil || acc == acc2 {
+		t.Fatalf("Lookup account error: %v - accounts are same: %v", err, acc == acc2)
+	}
+
+	// Create the user credentials for the leadnode connection.
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	seed, _ := kp.Seed()
+	mycreds := genCredsFile(t, ujwt, seed)
+	defer os.Remove(mycreds)
+
+	loop := maxleafs / 2
+
+	// Now create maxleafs/2 leaf node servers on each operator server.
+	for i := 0; i < loop; i++ {
+		sl1, _, lnconf1 := runSolicitWithCredentials(t, s1Opts, mycreds)
+		defer os.Remove(lnconf1)
+		defer sl1.Shutdown()
+
+		sl2, _, lnconf2 := runSolicitWithCredentials(t, s2Opts, mycreds)
+		defer os.Remove(lnconf2)
+		defer sl2.Shutdown()
+	}
+
+	checkLFCount := func(s *server.Server, n int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if nln := s.NumLeafNodes(); nln != n {
+				return fmt.Errorf("Number of leaf nodes is %d", nln)
+			}
+			return nil
+		})
+	}
+	checkLFCount(s1, loop)
+	checkLFCount(s2, loop)
+
+	// Now check that we have the remotes registered. This will prove we are sending
+	// and processing the leaf node connect events properly etc.
+	checkAccRemoteLFCount := func(acc *server.Account, n int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if nrln := acc.NumRemoteLeafNodes(); nrln != n {
+				return fmt.Errorf("Number of remote leaf nodes is %d", nrln)
+			}
+			return nil
+		})
+	}
+	checkAccRemoteLFCount(acc, loop)
+	checkAccRemoteLFCount(acc2, loop)
+
+	// Now that we are here we should not be allowed anymore leaf nodes.
+	l, _, lnconf := runSolicitWithCredentials(t, s1Opts, mycreds)
+	defer os.Remove(lnconf)
+	defer l.Shutdown()
+
+	if nln := acc.NumLeafNodes(); nln != maxleafs {
+		t.Fatalf("Expected %d leaf nodes, got %d", maxleafs, nln)
+	}
+	// Should still be at loop size.
+	checkLFCount(s1, loop)
+
+	l, _, lnconf = runSolicitWithCredentials(t, s2Opts, mycreds)
+	defer os.Remove(lnconf)
+	defer l.Shutdown()
+	if nln := acc2.NumLeafNodes(); nln != maxleafs {
+		t.Fatalf("Expected %d leaf nodes, got %d", maxleafs, nln)
+	}
+	// Should still be at loop size.
+	checkLFCount(s2, loop)
+}
