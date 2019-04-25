@@ -1204,8 +1204,6 @@ func TestJWTAccountLimitsMaxPayloadButServerOverrides(t *testing.T) {
 	}
 }
 
-// NOTE: For now this is single server, will change to adapt for network wide.
-// TODO(dlc) - Make cluster/gateway aware.
 func TestJWTAccountLimitsMaxConns(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()

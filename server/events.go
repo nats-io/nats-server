@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/nats-io/gnatsd/server/pse"
+	"github.com/nats-io/jwt"
 )
 
 const (
@@ -91,6 +92,7 @@ type AccountNumConns struct {
 	Server     ServerInfo `json:"server"`
 	Account    string     `json:"acc"`
 	Conns      int        `json:"conns"`
+	LeafNodes  int        `json:"leafnodes"`
 	TotalConns int        `json:"total_conns"`
 }
 
@@ -482,7 +484,8 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 		a.mu.Lock()
 		prev := a.strack[sid]
 		delete(a.strack, sid)
-		a.nrclients -= prev
+		a.nrclients -= prev.conns
+		a.nrleafs -= prev.leafs
 		a.mu.Unlock()
 		return true
 	})
@@ -625,10 +628,17 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
 	}
+
 	// See if we have the account registered, if not drop it.
 	acc, _ := s.lookupAccount(m.Account)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// check again here if we have been shutdown.
+	if !s.running || !s.eventsEnabled() {
+		return
+	}
 
 	// Double check that this is not us, should never happen, so error if it does.
 	if m.Server.ID == s.info.ID {
@@ -642,12 +652,13 @@ func (s *Server) remoteConnsUpdate(sub *subscription, subject, reply string, msg
 	// If we are here we have interest in tracking this account. Update our accounting.
 	acc.mu.Lock()
 	if acc.strack == nil {
-		acc.strack = make(map[string]int32)
+		acc.strack = make(map[string]sconns)
 	}
 	// This does not depend on receiving all updates since each one is idempotent.
 	prev := acc.strack[m.Server.ID]
-	acc.strack[m.Server.ID] = int32(m.Conns)
-	acc.nrclients += int32(m.Conns) - prev
+	acc.strack[m.Server.ID] = sconns{conns: int32(m.Conns), leafs: int32(m.LeafNodes)}
+	acc.nrclients += int32(m.Conns) - prev.conns
+	acc.nrleafs += int32(m.LeafNodes) - prev.leafs
 	acc.mu.Unlock()
 
 	s.updateRemoteServer(&m.Server)
@@ -675,8 +686,7 @@ func (s *Server) enableAccountTracking(a *Account) {
 // Lock should NOT be held on entry.
 func (s *Server) sendLeafNodeConnect(a *Account) {
 	s.mu.Lock()
-	// If we do not have any gateways defined this should also be a no-op.
-	// FIXME(dlc) - if we do accounting for operator limits might have to send regardless.
+	// If we are not in operator mode, or do not have any gateways defined, this should also be a no-op.
 	if a == nil || !s.eventsEnabled() || !s.gateway.enabled {
 		s.mu.Unlock()
 		return
@@ -699,21 +709,22 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
-	a.mu.Lock()
+	a.mu.RLock()
 
 	// If no limits set, don't update, no need to.
-	if a.mconns == 0 {
-		a.mu.Unlock()
+	if a.mconns == jwt.NoLimit && a.mleafs == jwt.NoLimit {
+		a.mu.RUnlock()
 		return
 	}
 
-	// Build event with account name and number of local clients.
+	// Build event with account name and number of local clients and leafnodes.
 	m := AccountNumConns{
 		Account:    a.Name,
 		Conns:      a.numLocalConnections(),
-		TotalConns: len(s.clients),
+		LeafNodes:  a.numLocalLeafNodes(),
+		TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
 	}
-	a.mu.Unlock()
+	a.mu.RUnlock()
 
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 
