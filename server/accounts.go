@@ -256,8 +256,7 @@ func (a *Account) addClient(c *client) int {
 	if added {
 		if c.kind == SYSTEM {
 			a.sysclients++
-		}
-		if c.kind == LEAF {
+		} else if c.kind == LEAF {
 			a.nleafs++
 		}
 	}
@@ -277,8 +276,7 @@ func (a *Account) removeClient(c *client) int {
 	if removed {
 		if c.kind == SYSTEM {
 			a.sysclients--
-		}
-		if c.kind == LEAF {
+		} else if c.kind == LEAF {
 			a.nleafs--
 		}
 	}

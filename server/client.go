@@ -455,8 +455,7 @@ func (c *client) registerWithAccount(acc *Account) error {
 	// Check if we have a max connections violation
 	if kind == CLIENT && acc.MaxTotalConnectionsReached() {
 		return ErrTooManyAccountConnections
-	}
-	if kind == LEAF && acc.MaxTotalLeafNodesReached() {
+	} else if kind == LEAF && acc.MaxTotalLeafNodesReached() {
 		return ErrTooManyAccountConnections
 	}
 
