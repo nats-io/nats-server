@@ -1220,12 +1220,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		c.checkForImportServices(acc, msg)
 	}
 
-	// Check to see if we have a routed message with a service reply.
-	if isServiceReply(c.pa.reply) && acc != nil {
-		// TODO(dlc) - Figure out what this means.
-		panic("Not Implemented")
-	}
-
+	// Collect queue names if needed.
 	var qnames [][]byte
 
 	// Check for no interest, short circuit if so.
