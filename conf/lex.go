@@ -343,10 +343,7 @@ func lexKeyStart(lx *lexer) stateFn {
 func lexDubQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if r == dqStringEnd {
-		include := lx.keyCheckKeyword(nil, nil)
-		if include != nil {
-			return include
-		}
+		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexKeyEnd)
 	} else if r == eof {
@@ -364,10 +361,7 @@ func lexDubQuotedKey(lx *lexer) stateFn {
 func lexQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if r == sqStringEnd {
-		include := lx.keyCheckKeyword(nil, nil)
-		if include != nil {
-			return include
-		}
+		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexKeyEnd)
 	} else if r == eof {
@@ -400,7 +394,7 @@ func (lx *lexer) keyCheckKeyword(fallThrough, push stateFn) stateFn {
 // lexIncludeStart will consume the whitespace til the start of the value.
 func lexIncludeStart(lx *lexer) stateFn {
 	r := lx.next()
-	if isWhitespace(r) || r == dqStringEnd || r == sqStringEnd || isKeySeparator(r) {
+	if isWhitespace(r) {
 		return lexSkip(lx, lexIncludeStart)
 	}
 	lx.backup()
@@ -447,7 +441,7 @@ func lexIncludeString(lx *lexer) stateFn {
 		lx.backup()
 		lx.emit(itemInclude)
 		return lx.pop()
-	case r == sqStringEnd || r == dqStringEnd:
+	case r == sqStringEnd:
 		lx.backup()
 		lx.emit(itemInclude)
 		lx.next()
@@ -674,10 +668,7 @@ func lexMapKeyStart(lx *lexer) stateFn {
 func lexMapQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if r == sqStringEnd {
-		include := lx.keyCheckKeyword(nil, lexMapValueEnd)
-		if include != nil {
-			return include
-		}
+		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexMapKeyEnd)
 	}
@@ -689,10 +680,7 @@ func lexMapQuotedKey(lx *lexer) stateFn {
 func lexMapDubQuotedKey(lx *lexer) stateFn {
 	r := lx.peek()
 	if r == dqStringEnd {
-		include := lx.keyCheckKeyword(nil, lexMapValueEnd)
-		if include != nil {
-			return include
-		}
+		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexMapKeyEnd)
 	}
