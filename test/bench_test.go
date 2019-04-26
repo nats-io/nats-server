@@ -261,6 +261,62 @@ func Benchmark_____PubSubTwoConns(b *testing.B) {
 	s.Shutdown()
 }
 
+func benchDefaultOptionsForAccounts() *server.Options {
+	o := DefaultTestOptions
+	o.Host = "127.0.0.1"
+	o.Port = -1
+	o.Cluster.Host = o.Host
+	o.Cluster.Port = -1
+	fooAcc := server.NewAccount("$foo")
+	fooAcc.AddStreamExport("foo", nil)
+	barAcc := server.NewAccount("$bar")
+	barAcc.AddStreamImport(fooAcc, "foo", "")
+	o.Accounts = []*server.Account{fooAcc, barAcc}
+	return &o
+}
+
+func createClientWithAccount(b *testing.B, account, host string, port int) net.Conn {
+	c := createClientConn(b, host, port)
+	checkInfoMsg(b, c)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+	sendProto(b, c, cs)
+	return c
+}
+
+func Benchmark___PubSubAccsImport(b *testing.B) {
+	o := benchDefaultOptionsForAccounts()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	pub := createClientWithAccount(b, "$foo", o.Host, o.Port)
+	defer pub.Close()
+
+	sub := createClientWithAccount(b, "$bar", o.Host, o.Port)
+	defer sub.Close()
+
+	sendProto(b, sub, "SUB foo 1\r\n")
+	flushConnection(b, sub)
+	ch := make(chan bool)
+	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
+	go drainConnection(b, sub, ch, expected)
+
+	bw := bufio.NewWriterSize(pub, defaultSendBufSize)
+	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bw.Write(sendOp)
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Errorf("Received error on FLUSH write: %v\n", err)
+	}
+
+	// Wait for connection to be drained
+	<-ch
+	b.StopTimer()
+}
+
 func Benchmark_PubSub512kTwoConns(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
