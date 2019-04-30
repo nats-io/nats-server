@@ -142,7 +142,7 @@ type Options struct {
 	MaxPending       int64         `json:"max_pending"`
 	Cluster          ClusterOpts   `json:"cluster,omitempty"`
 	Gateway          GatewayOpts   `json:"gateway,omitempty"`
-	LeafNode         LeafNodeOpts  `json:"leaf_node,omitempty"`
+	LeafNode         LeafNodeOpts  `json:"leaf,omitempty"`
 	ProfPort         int           `json:"-"`
 	PidFile          string        `json:"-"`
 	PortsFileDir     string        `json:"-"`
