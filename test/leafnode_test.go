@@ -1798,3 +1798,36 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	// Should still be at loop size.
 	checkLFCount(s2, loop)
 }
+
+func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
+	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterWithName(t, "A", 3)
+	defer shutdownCluster(ca)
+	cb := createClusterWithName(t, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	// Create client on a server in cluster A
+	opts := ca.opts[0]
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	// Send a message from this client on "foo" so that B
+	// registers a no-interest for account "$G"
+	send("PUB foo 2\r\nok\r\nPING\r\n")
+	expect(pongRe)
+
+	// Create a leaf node connection on a server in cluster B
+	opts = cb.opts[0]
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupConn(t, lc)
+	leafSend("PING\r\n")
+	leafExpect(pongRe)
+}
