@@ -2139,6 +2139,9 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	// Get a subscription from the pool
 	sub := subPool.Get().(*subscription)
 
+	// Make sure we are an 'R' proto
+	c.msgb[0] = 'R'
+
 	// Check if the subject is on "$GR.<cluster hash>.",
 	// and if so, send to that GW regardless of its
 	// interest on the real subject (that is, skip the
