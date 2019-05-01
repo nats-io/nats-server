@@ -2567,6 +2567,8 @@ sendToRoutesOrLeafs:
 		kind := rt.sub.client.kind
 		mh := c.msgb[:msgHeadProtoLen]
 		if kind == ROUTER {
+			// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
+			mh[0] = 'R'
 			mh = append(mh, acc.Name...)
 			mh = append(mh, ' ')
 		} else {
