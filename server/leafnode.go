@@ -503,6 +503,12 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 			url := c.leaf.remote.getCurrentURL()
 			host, _, _ := net.SplitHostPort(url.Host)
+			// We need to check if this host is an IP. If so, we probably
+			// had this advertised to us an should use the configured host
+			// name for the TLS server name.
+			if net.ParseIP(host) != nil {
+				host, _, _ = net.SplitHostPort(c.leaf.remote.RemoteLeafOpts.URL.Host)
+			}
 			tlsConfig.ServerName = host
 
 			c.nc = tls.Client(c.nc, tlsConfig)

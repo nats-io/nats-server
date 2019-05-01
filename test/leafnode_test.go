@@ -1831,3 +1831,71 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
+
+// The MSG proto for routes and gateways is RMSG, and we have an
+// optimization that a scratch buffer has RMSG and when doing a
+// client we just start at scratch[1]. For leaf nodes its LMSG and we
+// rewrite scratch[0], but never reset it which causes protocol
+// errors when used with routes or gateways after use to send
+// to a leafnode.
+// We will create a server with a leafnode connection and a route
+// and a gateway connection.
+
+// route connections to simulate.
+func TestLeafNodeResetsMSGProto(t *testing.T) {
+	opts := testDefaultOptionsForLeafNodes()
+	opts.Cluster.Host = opts.Host
+	opts.Cluster.Port = -1
+	opts.Gateway.Name = "lproto"
+	opts.Gateway.Host = opts.Host
+	opts.Gateway.Port = -1
+	opts.Accounts = []*server.Account{server.NewAccount("$SYS")}
+	opts.SystemAccount = "$SYS"
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupConn(t, lc)
+
+	gw := createGatewayConn(t, opts.Gateway.Host, opts.Gateway.Port)
+	defer gw.Close()
+
+	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "lproto")
+	gwSend("PING\r\n")
+	gwExpect(pongRe)
+
+	// Now setup interest in the leaf node for 'foo'.
+	leafSend("LS+ foo\r\nPING\r\n")
+	leafExpect(pongRe)
+
+	// Send msg from the gateway.
+	gwSend("RMSG $G foo 2\r\nok\r\nPING\r\n")
+	gwExpect(pongRe)
+
+	leafExpect(lmsgRe)
+
+	// At this point the gw inside our main server's scratch buffer is LMSG. When we do
+	// same with a connected route with interest it should fail.
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+	checkInfoMsg(t, rc)
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, "RC")
+
+	routeSend("RS+ $G foo\r\nPING\r\n")
+	routeExpect(pongRe)
+
+	// This is for the route interest we just created.
+	leafExpect(lsubRe)
+
+	// Send msg from the gateway.
+	gwSend("RMSG $G foo 2\r\nok\r\nPING\r\n")
+	gwExpect(pongRe)
+
+	leafExpect(lmsgRe)
+
+	// Now make sure we get it on route. This will fail with the proto bug.
+	routeExpect(rmsgRe)
+}
