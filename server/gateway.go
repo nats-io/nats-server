@@ -1831,7 +1831,7 @@ func (s *Server) switchAccountToInterestMode(accName string) {
 		var ok bool
 
 		gin.mu.Lock()
-		if e, ok = gin.gw.insim[accName]; !ok {
+		if e, ok = gin.gw.insim[accName]; !ok || e == nil {
 			e = &insie{}
 			gin.gw.insim[accName] = e
 		}
