@@ -1050,6 +1050,10 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 					*errors = append(*errors, &configErr{tk, err.Error()})
 					continue
 				}
+				// If ca_file is defined, GenTLSConfig() sets TLSConfig.ClientCAs.
+				// Set RootCAs since this tls.Config is used when soliciting
+				// a connection (therefore behaves as a client).
+				remote.TLSConfig.RootCAs = remote.TLSConfig.ClientCAs
 				remote.TLSTimeout = tc.Timeout
 			default:
 				if !tk.IsUsedVariable() {
