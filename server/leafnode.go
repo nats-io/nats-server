@@ -817,8 +817,15 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	gws := gwsa[:0]
 	s.getOutboundGatewayConnections(&gws)
 	for _, cgw := range gws {
-		if ei, _ := cgw.gw.outsim.Load(accName); ei != nil {
-			ei.(*outsie).sl.All(&subs)
+		cgw.mu.Lock()
+		gw := cgw.gw
+		cgw.mu.Unlock()
+		if gw != nil {
+			if ei, _ := gw.outsim.Load(accName); ei != nil {
+				if e := ei.(*outsie); e != nil && e.sl != nil {
+					e.sl.All(&subs)
+				}
+			}
 		}
 	}
 
