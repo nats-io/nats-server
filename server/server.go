@@ -975,7 +975,7 @@ func (s *Server) Start() {
 		<-ch
 	}
 
-	// Solict remote servers for leaf node connections.
+	// Solicit remote servers for leaf node connections.
 	if len(opts.LeafNode.Remotes) > 0 {
 		s.solicitLeafNodeRemotes(opts.LeafNode.Remotes)
 	}

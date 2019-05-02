@@ -654,6 +654,51 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	}
 }
 
+func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterWithName(t, "A", 3)
+	defer shutdownCluster(ca)
+	cb := createClusterWithName(t, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	sl1, sl1Opts := runSolicitLeafServer(ca.opts[1])
+	defer sl1.Shutdown()
+
+	c := createClientConn(t, sl1Opts.Host, sl1Opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("SUB foo 1\r\n")
+	send("PING\r\n")
+	expect(pongRe)
+
+	// Now we will create a new leaf node on cluster B, expect to get the
+	// interest for "foo".
+	opts := cb.opts[0]
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+	_, leafExpect := setupConn(t, lc)
+	buf := leafExpect(lsubRe)
+	if !strings.Contains(string(buf), "foo") {
+		t.Fatalf("Expected interest for 'foo' as 'LS+ foo\\r\\n', got %q", buf)
+	}
+}
+
+func TestLeafNodeAuthSystemEventNoCrash(t *testing.T) {
+	ca := createClusterWithName(t, "A", 1)
+	defer shutdownCluster(ca)
+
+	opts := ca.opts[0]
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend := sendCommand(t, lc)
+	leafSend("LS+ foo\r\n")
+	checkInfoMsg(t, lc)
+}
+
 func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
 	defer server.ResetGatewaysSolicitDelay()
@@ -702,7 +747,6 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	expect(pongRe)
 	leafExpect(lsubRe)
 
-	//leafSend("LMSG foo + myreply bar 2\r\nOK\r\n")
 	leafSend("LMSG foo 2\r\nOK\r\n")
 	expectNothing(t, lc)
 
@@ -1641,7 +1685,6 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	defer s4.Shutdown()
 
 	if nln := acc.NumLeafNodes(); nln != 2 {
-		fmt.Printf("Acc is %q\n", acc.Name)
 		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
 	}
 
