@@ -723,6 +723,18 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "leafnode":
+			// Similar to gateways
+			tmpOld := oldValue.(LeafNodeOpts)
+			tmpNew := newValue.(LeafNodeOpts)
+			tmpOld.TLSConfig = nil
+			tmpNew.TLSConfig = nil
+			// If there is really a change prevents reload.
+			if !reflect.DeepEqual(tmpOld, tmpNew) {
+				// See TODO(ik) note below about printing old/new values.
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
 		case "nolog", "nosigs":
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.
