@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3693,5 +3694,68 @@ func TestConfigReloadLeafNodeRandomPort(t *testing.T) {
 
 	if lnPortBefore != lnPortAfter {
 		t.Fatalf("Expected leafnodes listen port to be same, was %v is now %v", lnPortBefore, lnPortAfter)
+	}
+}
+
+func TestConfigReloadLeafNodeWithTLS(t *testing.T) {
+	template := `
+		port: -1
+		%s
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls: {
+				ca_file: "../test/configs/certs/tlsauth/ca.pem"
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file: "../test/configs/certs/tlsauth/server-key.pem"
+				timeout: 3
+			}
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(conf1)
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", o1.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error creating url: %v", err)
+	}
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+						cert_file: "../test/configs/certs/tlsauth/client.pem"
+						key_file:  "../test/configs/certs/tlsauth/client-key.pem"
+						timeout: 2
+					}
+				}
+			]
+		}
+	`, u.String())))
+	defer os.Remove(conf2)
+	o2, err := ProcessConfigFile(conf2)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	o2.NoLog, o2.NoSigs = true, true
+	o2.LeafNode.resolver = &testLoopbackResolver{}
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+		if n := s1.NumLeafNodes(); n != 1 {
+			return fmt.Errorf("Expected 1 leaf node, got %v", n)
+		}
+		return nil
+	})
+
+	changeCurrentConfigContentWithNewContent(t, conf1, []byte(fmt.Sprintf(template, "debug: false")))
+
+	if err := s1.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
 	}
 }
