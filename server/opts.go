@@ -227,6 +227,7 @@ func (o *Options) Clone() *Options {
 			clone.Gateway.Gateways[i] = g.clone()
 		}
 	}
+	// FIXME(dlc) - clone leaf node stuff.
 	return clone
 }
 

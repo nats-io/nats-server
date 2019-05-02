@@ -141,6 +141,7 @@ const (
 	ServerShutdown
 	AuthenticationExpired
 	WrongGateway
+	MissingAccount
 )
 
 // Some flags passed to processMsgResultsEx
@@ -549,9 +550,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.user = user
-
 	// Assign permissions.
 	if user.Permissions == nil {
 		// Reset perms to nil in case client previously had them.
@@ -560,6 +559,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) error {
 	} else {
 		c.setPermissions(user.Permissions)
 	}
+	c.mu.Unlock()
 	return nil
 }
 

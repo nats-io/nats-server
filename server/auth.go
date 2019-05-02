@@ -643,6 +643,9 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		return true
 	}
 
+	// For now this means we are binding the leafnode to the global account.
+	c.registerWithAccount(s.globalAccount())
+
 	// Snapshot server options.
 	opts := s.getOpts()
 

@@ -939,6 +939,7 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	v.MaxPending = opts.MaxPending
 	v.WriteDeadline = opts.WriteDeadline
+	// FIXME(dlc) - make this multi-account aware.
 	v.Subscriptions = s.gacc.sl.Count()
 	v.ConfigLoadTime = s.configTime
 	// Need a copy here since s.httpReqStats can change while doing
@@ -1045,6 +1046,8 @@ func (reason ClosedState) String() string {
 		return "Authentication Expired"
 	case WrongGateway:
 		return "Wrong Gateway"
+	case MissingAccount:
+		return "Missing Account"
 	}
 	return "Unknown State"
 }

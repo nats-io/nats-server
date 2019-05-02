@@ -773,7 +773,7 @@ func (s *Server) accountConnectEvent(c *client) {
 			Start:   c.start,
 			Host:    c.host,
 			ID:      c.cid,
-			Account: c.acc.Name,
+			Account: accForClient(c),
 			User:    nameForClient(c),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
@@ -812,7 +812,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Stop:    &now,
 			Host:    c.host,
 			ID:      c.cid,
-			Account: c.acc.Name,
+			Account: accForClient(c),
 			User:    nameForClient(c),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
@@ -853,7 +853,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			Stop:    &now,
 			Host:    c.host,
 			ID:      c.cid,
-			Account: c.acc.Name,
+			Account: accForClient(c),
 			User:    nameForClient(c),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
@@ -937,6 +937,14 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 func nameForClient(c *client) string {
 	if c.user != nil {
 		return c.user.Nkey
+	}
+	return "N/A"
+}
+
+// Helper to grab account name for a client.
+func accForClient(c *client) string {
+	if c.acc != nil {
+		return c.acc.Name
 	}
 	return "N/A"
 }

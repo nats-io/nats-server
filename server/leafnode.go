@@ -73,7 +73,7 @@ func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
 	return false
 }
 
-// Ensure that gateway is properly configured.
+// Ensure that leafnode is properly configured.
 func validateLeafNode(o *Options) error {
 	if o.LeafNode.Port == 0 {
 		return nil
@@ -443,9 +443,13 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			remote.LocalAccount = globalAccountName
 		}
 		// FIXME(dlc) - Make this resolve at startup.
-		c.acc, _ = s.LookupAccount(remote.LocalAccount)
-		// Make sure we register with the account here.
-		c.registerWithAccount(c.acc)
+		acc, err := s.LookupAccount(remote.LocalAccount)
+		if err != nil {
+			c.Debugf("Can not locate local account %q for leafnode", remote.LocalAccount)
+			c.closeConnection(MissingAccount)
+			return nil
+		}
+		c.acc = acc
 		c.leaf.remote = remote
 	}
 
@@ -541,6 +545,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		c.sendLeafConnect(tlsRequired)
 		c.Debugf("Remote leaf node connect msg sent")
+
 	} else {
 		// Send our info to the other side.
 		// Remember the nonce we sent here for signatures, etc.
@@ -600,8 +605,12 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	c.mu.Unlock()
 
 	// Update server's accounting here if we solicited.
+	// Also send our local subs.
 	if solicited {
+		// Make sure we register with the account here.
+		c.registerWithAccount(c.acc)
 		s.addLeafNodeConnection(c)
+		c.sendAllAccountSubs()
 	}
 
 	return c
@@ -762,7 +771,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.opts.Pedantic = false
 
 	// Create and initialize the smap since we know our bound account now.
-	c.initLeafNodeSmap()
+	s.initLeafNodeSmap(c)
 
 	// We are good to go, send over all the bound account subscriptions.
 	s.startGoRoutine(func() {
@@ -782,17 +791,18 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 // Snapshot the current subscriptions from the sublist into our smap which
 // we will keep updated from now on.
-func (c *client) initLeafNodeSmap() {
+func (s *Server) initLeafNodeSmap(c *client) {
 	acc := c.acc
 	if acc == nil {
 		c.Debugf("Leaf node does not have an account bound")
 		return
 	}
-	// Collect all subs here.
+	// Collect all account subs here.
 	_subs := [32]*subscription{}
 	subs := _subs[:0]
 	ims := []string{}
 	acc.mu.RLock()
+	accName := acc.Name
 	acc.sl.All(&subs)
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
@@ -800,6 +810,17 @@ func (c *client) initLeafNodeSmap() {
 		ims = append(ims, isubj)
 	}
 	acc.mu.RUnlock()
+
+	// Now check for gateway interest. Leafnodes will put this into
+	// the proper mode to propagate, but they are not held in the account.
+	gwsa := [16]*client{}
+	gws := gwsa[:0]
+	s.getOutboundGatewayConnections(&gws)
+	for _, cgw := range gws {
+		if ei, _ := cgw.gw.outsim.Load(accName); ei != nil {
+			ei.(*outsie).sl.All(&subs)
+		}
+	}
 
 	// Now walk the results and add them to our smap
 	c.mu.Lock()
@@ -900,23 +921,21 @@ func keyFromSub(sub *subscription) string {
 // Send all subscriptions for this account that include local
 // and all subscriptions besides our own.
 func (c *client) sendAllAccountSubs() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// Hold all at once for now.
 	var b bytes.Buffer
 
+	c.mu.Lock()
 	for key, n := range c.leaf.smap {
 		c.writeLeafSub(&b, key, n)
 	}
 
 	// We will make sure we don't overflow here due to an max_pending.
 	chunks := protoChunks(b.Bytes(), MAX_PAYLOAD_SIZE)
-
 	for _, chunk := range chunks {
 		c.queueOutbound(chunk)
 		c.flushOutbound()
 	}
+	c.mu.Unlock()
 }
 
 func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
@@ -1075,13 +1094,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		updateGWs = srv.gateway.enabled
 	}
 
-	// Treat leaf node subscriptions similar to a client subscription, meaning we
-	// send them to both routes and gateways and other leaf nodes. We also do
-	// the shadow subscriptions.
-	if err := c.addShadowSubscriptions(acc, sub); err != nil {
-		c.Errorf(err.Error())
-	}
-	// If we are routing add to the route map for the associated account.
+	// If we are routing subtract from the route map for the associated account.
 	srv.updateRouteSubscriptionMap(acc, sub, -1)
 	// Gateways
 	if updateGWs {
