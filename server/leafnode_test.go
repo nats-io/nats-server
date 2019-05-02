@@ -14,8 +14,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -72,4 +74,65 @@ func TestLeafNodeRandomIP(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("Does not seem to have used random IPs")
 	}
+}
+
+type testLoopbackResolver struct{}
+
+func (r *testLoopbackResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return []string{"127.0.0.1"}, nil
+}
+
+func TestLeafNodeTLSWithCerts(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls {
+				ca_file: "../test/configs/certs/tlsauth/ca.pem"
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				timeout: 2
+			}
+		}
+	`))
+	defer os.Remove(conf1)
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", o1.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+						cert_file: "../test/configs/certs/tlsauth/client.pem"
+						key_file:  "../test/configs/certs/tlsauth/client-key.pem"
+						timeout: 2
+					}
+				}
+			]
+		}
+	`, u.String())))
+	defer os.Remove(conf2)
+	o2, err := ProcessConfigFile(conf2)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	o2.NoLog, o2.NoSigs = true, true
+	o2.LeafNode.resolver = &testLoopbackResolver{}
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
+		if nln := s1.NumLeafNodes(); nln != 1 {
+			return fmt.Errorf("Number of leaf nodes is %d", nln)
+		}
+		return nil
+	})
 }
