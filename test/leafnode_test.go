@@ -1942,3 +1942,33 @@ func TestLeafNodeResetsMSGProto(t *testing.T) {
 	// Now make sure we get it on route. This will fail with the proto bug.
 	routeExpect(rmsgRe)
 }
+
+// We need to make sure that as a remote server we also send our local subs on connect.
+func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	sl, slOpts := runSolicitLeafServer(opts)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+	s.Shutdown()
+
+	c := createClientConn(t, slOpts.Host, slOpts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("SUB foo 1\r\n")
+	send("PING\r\n")
+	expect(pongRe)
+
+	// Need to restart it on the same port.
+	s, _ = runLeafServerOnPort(opts.LeafNode.Port)
+	checkLeafNodeConnected(t, s)
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	_, leafExpect := setupConn(t, lc)
+	leafExpect(lsubRe)
+}
