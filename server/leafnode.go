@@ -610,6 +610,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// Make sure we register with the account here.
 		c.registerWithAccount(c.acc)
 		s.addLeafNodeConnection(c)
+		s.initLeafNodeSmap(c)
 		c.sendAllAccountSubs()
 	}
 
