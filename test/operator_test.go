@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,9 +17,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/go-nats"
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nats-server/server"
 	"github.com/nats-io/nkeys"
 )
 
@@ -77,17 +77,17 @@ func TestOperatorRestrictions(t *testing.T) {
 	}
 
 	wipeOpts()
-	opts.Accounts = []*server.Account{&server.Account{Name: "TEST"}}
+	opts.Accounts = []*server.Account{{Name: "TEST"}}
 	if _, err := server.NewServer(opts); err == nil {
 		t.Fatalf("Expected an error with Accounts defined")
 	}
 	wipeOpts()
-	opts.Users = []*server.User{&server.User{Username: "TEST"}}
+	opts.Users = []*server.User{{Username: "TEST"}}
 	if _, err := server.NewServer(opts); err == nil {
 		t.Fatalf("Expected an error with Users defined")
 	}
 	wipeOpts()
-	opts.Nkeys = []*server.NkeyUser{&server.NkeyUser{Nkey: "TEST"}}
+	opts.Nkeys = []*server.NkeyUser{{Nkey: "TEST"}}
 	if _, err := server.NewServer(opts); err == nil {
 		t.Fatalf("Expected an error with Nkey Users defined")
 	}

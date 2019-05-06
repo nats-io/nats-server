@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -41,8 +41,8 @@ func (s *Server) handleSignals() {
 	}()
 }
 
-// ProcessSignal sends the given signal command to the running gnatsd service.
-// If service is empty, this signals the "gnatsd" service. This returns an
+// ProcessSignal sends the given signal command to the running nats-server service.
+// If service is empty, this signals the "nats-server" service. This returns an
 // error is the given service is not running or the command is invalid.
 func ProcessSignal(command Command, service string) error {
 	if service == "" {

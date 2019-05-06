@@ -36,6 +36,7 @@ _testmain.go
 .DS_Store
 
 # bin
+nats-server
 gnatsd
 /util/mkpasswd
 

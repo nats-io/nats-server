@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// Command is a signal used to control a running gnatsd process.
+// Command is a signal used to control a running nats-server process.
 type Command string
 
 // Valid Command values.

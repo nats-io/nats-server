@@ -651,7 +651,7 @@ func (a *Account) streamActivationExpired(subject string) {
 	for _, c := range a.clients {
 		clients = append(clients, c)
 	}
-	awcsti := map[string]struct{}{a.Name: struct{}{}}
+	awcsti := map[string]struct{}{a.Name: {}}
 	a.mu.Unlock()
 	for _, c := range clients {
 		c.processSubsOnConfigReload(awcsti)
@@ -1021,7 +1021,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 	// Now let's apply any needed changes from import/export changes.
 	if !a.checkStreamImportsEqual(old) {
-		awcsti := map[string]struct{}{a.Name: struct{}{}}
+		awcsti := map[string]struct{}{a.Name: {}}
 		for _, c := range gatherClients() {
 			c.processSubsOnConfigReload(awcsti)
 		}

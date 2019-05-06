@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/logger"
+	"github.com/nats-io/nats-server/logger"
 )
 
 func TestSignalToReOpenLogFile(t *testing.T) {
@@ -115,7 +115,7 @@ func TestProcessSignalNoProcesses(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "no gnatsd processes running"
+	expectedStr := "no nats-server processes running"
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}
@@ -135,7 +135,7 @@ func TestProcessSignalMultipleProcesses(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "multiple gnatsd processes running:\n123\n456"
+	expectedStr := "multiple nats-server processes running:\n123\n456"
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}

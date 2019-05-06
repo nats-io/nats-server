@@ -11,8 +11,8 @@ If you just want to start using NATS, and you have [installed Go](https://golang
 Install and run the NATS server:
 
 ```
-go get github.com/nats-io/gnatsd
-gnatsd
+go get github.com/nats-io/nats-server
+nats-server
 ```
 
 Install the [Go NATS client](https://github.com/nats-io/go-nats/blob/master/README.md):
@@ -40,16 +40,16 @@ You can build the latest version of the server from the `master` branch. The mas
 You need [*Go*](https://golang.org/) version 1.9+ [installed](https://golang.org/doc/install) to build the NATS server. We support vendored dependencies.
 
 - Run `go version` to verify that you are running Go 1.9+. (Run `go help` for more guidance.)
-- Clone the <https://github.com/nats-io/gnatsd> repository.
-- Run `go build` inside the `/nats-io/gnatsd` directory. A successful build produces no messages and creates the server executable `gnatsd` in the directory.
+- Clone the <https://github.com/nats-io/nats-server> repository.
+- Run `go build` inside the `/nats-io/nats-server` directory. A successful build produces no messages and creates the server executable `nats-server` in the directory.
 - Run `go test ./...` to run the unit regression tests.
 
 ## Running
 
-To start the NATS server with default settings (and no authentication or clustering), you can invoke the `gnatsd` binary with no [command line options](#command-line-arguments) or [configuration file](#configuration-file).
+To start the NATS server with default settings (and no authentication or clustering), you can invoke the `nats-server` binary with no [command line options](#command-line-arguments) or [configuration file](#configuration-file).
 
 ```sh
-> ./gnatsd
+> ./nats-server
 [68229] 2018/08/29 11:50:53.789318 [INF] Starting nats-server version 1.3.0
 [68229] 2018/08/29 11:50:53.789381 [INF] Git commit [not set]
 [68229] 2018/08/29 11:50:53.789566 [INF] Listening for client connections on 0.0.0.0:4222
@@ -92,27 +92,27 @@ On Unix systems, the NATS server responds to the following signals:
 | SIGUSR1 | Reopens the log file for log rotation |
 | SIGHUP  | Reloads server configuration file     |
 
-The `gnatsd` binary can be used to send these signals to running NATS servers using the `-sl` flag:
+The `nats-server` binary can be used to send these signals to running NATS servers using the `-sl` flag:
 
 ```sh
 # Reload server configuration
-gnatsd -sl reload
+nats-server -sl reload
 
 # Reopen log file for log rotation
-gnatsd -sl reopen
+nats-server -sl reopen
 
 # Stop the server
-gnatsd -sl stop
+nats-server -sl stop
 ```
 
-If there are multiple `gnatsd` processes running, or if `pgrep` isn't available, you must either specify a PID or the absolute path to a PID file:
+If there are multiple `nats-server` processes running, or if `pgrep` isn't available, you must either specify a PID or the absolute path to a PID file:
 
 ```sh
-gnatsd -sl stop=<pid>
+nats-server -sl stop=<pid>
 ```
 
 ```sh
-gnatsd -sl stop=/path/to/pidfile
+nats-server -sl stop=/path/to/pidfile
 ```
 
 See the [Windows Service](#windows-service) section for information on signaling the NATS server on Windows.
@@ -122,27 +122,27 @@ See the [Windows Service](#windows-service) section for information on signaling
 The NATS server supports running as a Windows service. In fact, this is the recommended way of running NATS on Windows. There is currently no installer and instead users should use `sc.exe` to install the service:
 
 ```batch
-sc.exe create gnatsd binPath= "%NATS_PATH%\gnatsd.exe [gnatsd flags]"
-sc.exe start gnatsd
+sc.exe create nats-server binPath= "%NATS_PATH%\nats-server.exe [nats-server flags]"
+sc.exe start nats-server
 ```
 
-The above will create and start a `gnatsd` service. Note that the gnatsd flags should be passed in when creating the service. This allows for running multiple NATS server configurations on a single Windows server by using a 1:1 service instance per installed NATS server service. Once the service is running, it can be controlled using `sc.exe` or `gnatsd.exe -sl`:
+The above will create and start a `nats-server` service. Note that the nats-server flags should be passed in when creating the service. This allows for running multiple NATS server configurations on a single Windows server by using a 1:1 service instance per installed NATS server service. Once the service is running, it can be controlled using `sc.exe` or `nats-server.exe -sl`:
 
 ```batch
 REM Reload server configuration
-gnatsd.exe -sl reload
+nats-server.exe -sl reload
 
 REM Reopen log file for log rotation
-gnatsd.exe -sl reopen
+nats-server.exe -sl reopen
 
 REM Stop the server
-gnatsd.exe -sl stop
+nats-server.exe -sl stop
 ```
 
-The above commands will default to controlling the `gnatsd` service. If the service is another name, it can be specified:
+The above commands will default to controlling the `nats-server` service. If the service is another name, it can be specified:
 
 ```batch
-gnatsd.exe -sl stop=<service name>
+nats-server.exe -sl stop=<service name>
 ```
 
 ## Command line arguments
@@ -157,8 +157,8 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
-    -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
-                                     <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/gnatsd.pid)
+    -sl,--signal <signal>[=<pid>]    Send signal to nats-server process (stop, quit, reopen, reload)
+                                     <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/nats-server.pid)
         --client_advertise <string>  Client URL to advertise to other servers
     -t                               Test configuration and exit
 
@@ -323,7 +323,7 @@ NATS makes building the full mesh easy. Simply designate a server to be a *seed*
 When running NATS Servers in different hosts, the command line parameters for all servers could be as simple as:
 
 ```
-gnatsd --cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT --routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
+nats-server --cluster nats://$HOSTNAME:$NATS_CLUSTER_PORT --routes nats://$NATS_SEED_HOST:$NATS_CLUSTER_PORT
 ```
 
 Even on the host where the *seed* is running, the above would work as the server would detect an attempt to connect to itself and ignore that. In other words, the same command line could be deployed in several hosts and the full mesh will properly form.
@@ -337,7 +337,7 @@ The following example demonstrates how to run a cluster of 3 servers on the same
 See also [clustered NATS](https://nats.io/documentation/managing_the_server/clustering/) for clustered NATS examples using Docker.
 
 ```
-gnatsd -p 4222 -cluster nats://localhost:4248
+nats-server -p 4222 -cluster nats://localhost:4248
 ```
 
 Alternatively, you could use a configuration file, let's call it `seed.conf`, with a content similar to this:
@@ -356,7 +356,7 @@ cluster {
 And start the server like this:
 
 ```
-gnatsd -config ./seed.conf -D
+nats-server -config ./seed.conf -D
 ```
 
 This will produce an output similar to:
@@ -380,7 +380,7 @@ cluster {
 Now let's start two more servers, each one connecting to the seed server.
 
 ```
-gnatsd -p 5222 -cluster nats://localhost:5248 -routes nats://localhost:4248 -D
+nats-server -p 5222 -cluster nats://localhost:5248 -routes nats://localhost:4248 -D
 ```
 
 When running on the same host, we need to pick different ports for the client connections `-p`, and for the port used to accept other routes `-cluster`. Note that `-routes` points to the `-cluster` address of the seed server (`localhost:4248`).
@@ -410,7 +410,7 @@ From the seed's server log, we see that the route is indeed accepted:
 Finally, let's start the third server:
 
 ```
-gnatsd -p 6222 -cluster nats://localhost:6248 -routes nats://localhost:4248 -D
+nats-server -p 6222 -cluster nats://localhost:6248 -routes nats://localhost:4248 -D
 ```
 
 Again, notice that we use a different client port and cluster address, but still point to the same seed server at the address `nats://localhost:4248`:
@@ -617,7 +617,7 @@ The NATS server supports single and multi-user/client authentication. See also t
 For single-user authentication, you can start the NATS server with authentication enabled by passing in the required credentials on the command line.
 
 ```
-gnatsd --user derek --pass T0pS3cr3t
+nats-server --user derek --pass T0pS3cr3t
 ```
 You can also enable single-user authentication and set the credentials in the server configuration file as follows:
 
@@ -640,7 +640,7 @@ nats://derek:T0pS3cr3t@localhost:4222
 A token is a unique identifier of an application requesting to connect to NATS. You can start the NATS server with authentication enabled by passing in the required token on the command line.
 
 ```
-gnatsd -auth 'S3Cr3T0k3n!'
+nats-server -auth 'S3Cr3T0k3n!'
 ```
 
 You can also enable token-based authentication and set the credentials in the server configuration file as follows:
@@ -980,7 +980,7 @@ The server can be run using command line arguments to enable TLS functionality.
 Examples using the test certificates which are self signed for localhost and 127.0.0.1.
 
 ```bash
-> ./gnatsd --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
+> ./nats-server --tls --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem
 
 [70346] 2018/08/29 12:47:20.958931 [INF] Starting nats-server version 1.3.0
 [70346] 2018/08/29 12:47:20.959010 [INF] Git commit [not set]
@@ -1001,7 +1001,7 @@ Notice that the log  indicates that the client connections will be required to u
 If you want the server to enforce and require client certificates as well via the command line, utilize this example.
 
 ```
-> ./gnatsd --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
+> ./nats-server --tlsverify --tlscert=./test/configs/certs/server-cert.pem --tlskey=./test/configs/certs/server-key.pem --tlscacert=./test/configs/certs/ca.pem
 ```
 
 #### TLS Authorization
@@ -1023,7 +1023,7 @@ To map permissions for a user, an email address can be defined as part of the ex
 
 ```
 authorization {
-  users = [    
+  users = [
     {user: "user@example.com", permissions: { publish: "foo" }}
   ]
 }
@@ -1055,7 +1055,7 @@ In addition to TLS functionality, the server now also supports bcrypt for passwo
 There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can supply that on stdin with the -p flag.
 
 ```bash
-~/go/src/github.com/nats-io/gnatsd/util> ./mkpasswd
+~/go/src/github.com/nats-io/nats-server/util> ./mkpasswd
 pass: #IclkRPHUpsTmACWzmIGXr
 bcrypt hash: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
 ```
@@ -1087,7 +1087,7 @@ Monitoring options
 
 To enable monitoring via the configuration file, use `host:port` (there is no explicit configuration flag for the monitoring interface).
 
-For example, running the `gnatsd -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
+For example, running the `nats-server -m 8222` command, you should see that the NATS server starts with the HTTP monitoring port enabled. To view the monitoring home page, go to <a href="http://localhost:8222/" target="_blank">http://localhost:8222/</a>.
 
 ```
 [70450] 2018/08/29 12:48:30.819682 [INF] Starting nats-server version 1.3.0
@@ -1110,15 +1110,15 @@ NATS Office Hours will be on hiatus for the US summer season. Please join our [S
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [Fossa-Url]: https://app.fossa.io/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd?ref=badge_shield
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
-[Build-Status-Url]: https://travis-ci.org/nats-io/gnatsd
-[Build-Status-Image]: https://travis-ci.org/nats-io/gnatsd.svg?branch=master
-[Release-Url]: https://github.com/nats-io/gnatsd/releases/tag/v2.0.0-RC8
+[Build-Status-Url]: https://travis-ci.org/nats-io/nats-server
+[Build-Status-Image]: https://travis-ci.org/nats-io/nats-server.svg?branch=master
+[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.0.0-RC8
 [Release-image]: https://img.shields.io/badge/release-v2.0.0--RC8-1eb0fc.svg
-[Coverage-Url]: https://coveralls.io/r/nats-io/gnatsd?branch=master
-[Coverage-image]: https://coveralls.io/repos/github/nats-io/gnatsd/badge.svg?branch=master
-[ReportCard-Url]: https://goreportcard.com/report/nats-io/gnatsd
-[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/gnatsd
-[github-release]: https://github.com/nats-io/gnatsd/releases/
+[Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=master
+[Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=master
+[ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
+[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-server
+[github-release]: https://github.com/nats-io/nats-server/releases/
 
 ## License
 

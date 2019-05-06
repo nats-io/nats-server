@@ -1,4 +1,4 @@
-// Copyright 2017-2018 The NATS Authors
+// Copyright 2017-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -249,8 +249,8 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 func TestConfigReload(t *testing.T) {
 	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/test.conf")
 	defer os.Remove(config)
-	defer os.Remove("gnatsd.pid")
-	defer os.Remove("gnatsd.log")
+	defer os.Remove("nats-server.pid")
+	defer os.Remove("nats-server.log")
 	defer server.Shutdown()
 
 	dir := filepath.Dir(config)
@@ -320,8 +320,8 @@ func TestConfigReload(t *testing.T) {
 			t.Fatalf("RemoteSyslog is incorrect.\nexpected: udp://127.0.0.1:514\ngot: %s", updated.RemoteSyslog)
 		}
 	}
-	if updated.LogFile != "gnatsd.log" {
-		t.Fatalf("LogFile is incorrect.\nexpected: gnatsd.log\ngot: %s", updated.LogFile)
+	if updated.LogFile != "nats-server.log" {
+		t.Fatalf("LogFile is incorrect.\nexpected: nats-server.log\ngot: %s", updated.LogFile)
 	}
 	if updated.TLSConfig == nil {
 		t.Fatal("Expected TLSConfig to be non-nil")
@@ -347,8 +347,8 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Cluster.NoAdvertise {
 		t.Fatal("Expected NoAdvertise to be true")
 	}
-	if updated.PidFile != "gnatsd.pid" {
-		t.Fatalf("PidFile is incorrect.\nexpected: gnatsd.pid\ngot: %s", updated.PidFile)
+	if updated.PidFile != "nats-server.pid" {
+		t.Fatalf("PidFile is incorrect.\nexpected: nats-server.pid\ngot: %s", updated.PidFile)
 	}
 	if updated.MaxControlLine != 512 {
 		t.Fatalf("MaxControlLine is incorrect.\nexpected: 512\ngot: %d", updated.MaxControlLine)
@@ -1939,9 +1939,9 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	defer func() {
 		os.Remove(config)
 		os.Remove("log.txt")
-		os.Remove("gnatsd.pid")
+		os.Remove("nats-server.pid")
 		os.Remove("log1.txt")
-		os.Remove("gnatsd1.pid")
+		os.Remove("nats-server1.pid")
 	}()
 	defer server.Shutdown()
 
@@ -1960,7 +1960,7 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	if _, err := os.Stat("log1.txt"); os.IsNotExist(err) {
 		t.Fatalf("Error reloading config, no new file: %v", err)
 	}
-	if _, err := os.Stat("gnatsd1.pid"); os.IsNotExist(err) {
+	if _, err := os.Stat("nats-server1.pid"); os.IsNotExist(err) {
 		t.Fatalf("Error reloading config, no new file: %v", err)
 	}
 
@@ -1968,7 +1968,7 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	if err := os.Rename("log.txt", "log_old.txt"); err != nil {
 		t.Fatalf("Error reloading config, cannot rename file: %v", err)
 	}
-	if err := os.Rename("gnatsd.pid", "gnatsd_old.pid"); err != nil {
+	if err := os.Rename("nats-server.pid", "nats-server_old.pid"); err != nil {
 		t.Fatalf("Error reloading config, cannot rename file: %v", err)
 	}
 
@@ -1976,7 +1976,7 @@ func TestConfigReloadRotateFiles(t *testing.T) {
 	if err := os.Remove("log_old.txt"); err != nil {
 		t.Fatalf("Error reloading config, cannot delete file: %v", err)
 	}
-	if err := os.Remove("gnatsd_old.pid"); err != nil {
+	if err := os.Remove("nats-server_old.pid"); err != nil {
 		t.Fatalf("Error reloading config, cannot delete file: %v", err)
 	}
 }

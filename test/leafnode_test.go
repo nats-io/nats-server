@@ -26,9 +26,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/go-nats"
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nats-server/server"
 	"github.com/nats-io/nkeys"
 )
 
@@ -61,7 +61,7 @@ func runSolicitLeafServer(lso *server.Options) (*server.Server, *server.Options)
 	o.Host = "127.0.0.1"
 	o.Port = -1
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port))
-	o.LeafNode.Remotes = []*server.RemoteLeafOpts{&server.RemoteLeafOpts{URL: rurl}}
+	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URL: rurl}}
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
 	return RunServer(&o), &o
 }

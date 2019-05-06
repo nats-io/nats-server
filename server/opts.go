@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/gnatsd/conf"
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nats-server/conf"
 	"github.com/nats-io/nkeys"
 )
 
@@ -110,7 +110,7 @@ type RemoteLeafOpts struct {
 	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
 }
 
-// Options block for gnatsd server.
+// Options block for nats-server.
 type Options struct {
 	ConfigFile       string        `json:"-"`
 	Host             string        `json:"addr"`
@@ -2452,8 +2452,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&configFile, "c", "", "Configuration file.")
 	fs.StringVar(&configFile, "config", "", "Configuration file.")
 	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
-	fs.StringVar(&signal, "sl", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
-	fs.StringVar(&signal, "signal", "", "Send signal to gnatsd process (stop, quit, reopen, reload)")
+	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
+	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports)")

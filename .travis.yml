@@ -2,13 +2,16 @@ language: go
 go:
 - 1.11.x
 - 1.12.x
-go_import_path: github.com/nats-io/gnatsd
+env:
+- GO111MODULE=off
+go_import_path: github.com/nats-io/nats-server
 install:
 - go get github.com/nats-io/go-nats
 - go get github.com/nats-io/nkeys
 - go get github.com/nats-io/jwt
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
+- go get github.com/tcnksm/ghr
 - go get -u honnef.co/go/tools/cmd/staticcheck
 - go get -u github.com/client9/misspell/cmd/misspell
 before_script:
@@ -16,7 +19,7 @@ before_script:
 - go build
 - $(exit $(go fmt $EXCLUDE_VENDOR | wc -l))
 - go vet $EXCLUDE_VENDOR
-- misspell -error -locale US .
+- misspell -error -locale US $EXCLUDE_VENDOR
 - staticcheck $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:

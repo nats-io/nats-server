@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/nats-server/server"
 )
 
 var usageStr = `
-Usage: gnatsd [options]
+Usage: nats-server [options]
 
 Server Options:
     -a, --addr <host>                Bind to host address (default: 0.0.0.0)
@@ -31,8 +31,8 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
-    -sl,--signal <signal>[=<pid>]    Send signal to gnatsd process (stop, quit, reopen, reload)
-                                     <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/gnatsd.pid)
+    -sl,--signal <signal>[=<pid>]    Send signal to nats-server process (stop, quit, reopen, reload)
+                                     <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/nats-server.pid)
         --client_advertise <string>  Client URL to advertise to other servers
     -t                               Test configuration and exit
 

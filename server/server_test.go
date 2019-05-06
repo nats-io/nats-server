@@ -419,7 +419,7 @@ func TestMaxSubscriptions(t *testing.T) {
 func TestProcessCommandLineArgs(t *testing.T) {
 	var host string
 	var port int
-	cmd := flag.NewFlagSet("gnatsd", flag.ExitOnError)
+	cmd := flag.NewFlagSet("nats-server", flag.ExitOnError)
 	cmd.StringVar(&host, "a", "0.0.0.0", "Host.")
 	cmd.IntVar(&port, "p", 4222, "Port.")
 
@@ -1131,7 +1131,7 @@ func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
 	// Remove the insecure for the main gateway config
 	o.Gateway.TLSConfig.InsecureSkipVerify = false
 	o.Gateway.Gateways = []*RemoteGatewayOpts{
-		&RemoteGatewayOpts{
+		{
 			Name:      "B",
 			URLs:      []*url.URL{gurl},
 			TLSConfig: rgwConfig,

@@ -22,8 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/gnatsd/server/pse"
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nats-server/server/pse"
 )
 
 const (
