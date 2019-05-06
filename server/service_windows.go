@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -29,7 +29,7 @@ const (
 	acceptReopenLog = svc.Accepted(reopenLogCode)
 )
 
-var serviceName = "gnatsd"
+var serviceName = "nats-server"
 
 // SetServiceName allows setting a different service name
 func SetServiceName(name string) {
@@ -37,7 +37,7 @@ func SetServiceName(name string) {
 }
 
 // winServiceWrapper implements the svc.Handler interface for implementing
-// gnatsd as a Windows service.
+// nats-server as a Windows service.
 type winServiceWrapper struct {
 	server *Server
 }

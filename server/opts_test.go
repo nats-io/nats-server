@@ -89,7 +89,7 @@ func TestConfigFile(t *testing.T) {
 		Trace:            true,
 		Logtime:          false,
 		HTTPPort:         8222,
-		PidFile:          "/tmp/gnatsd.pid",
+		PidFile:          "/tmp/nats-server.pid",
 		ProfPort:         6543,
 		Syslog:           true,
 		RemoteSyslog:     "udp://foo.com:33",
@@ -242,7 +242,7 @@ func TestMergeOverrides(t *testing.T) {
 		Trace:          true,
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
-		PidFile:        "/tmp/gnatsd.pid",
+		PidFile:        "/tmp/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
@@ -955,7 +955,7 @@ func TestOptionsClone(t *testing.T) {
 		Trace:          true,
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
-		PidFile:        "/tmp/gnatsd.pid",
+		PidFile:        "/tmp/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
@@ -971,13 +971,13 @@ func TestOptionsClone(t *testing.T) {
 		Gateway: GatewayOpts{
 			Name: "A",
 			Gateways: []*RemoteGatewayOpts{
-				{Name: "B", URLs: []*url.URL{&url.URL{Scheme: "nats", Host: "host:5222"}}},
+				{Name: "B", URLs: []*url.URL{{Scheme: "nats", Host: "host:5222"}}},
 				{Name: "C"},
 			},
 		},
 		WriteDeadline: 3 * time.Second,
-		Routes:        []*url.URL{&url.URL{}},
-		Users:         []*User{&User{Username: "foo", Password: "bar"}},
+		Routes:        []*url.URL{{}},
+		Users:         []*User{{Username: "foo", Password: "bar"}},
 	}
 
 	clone := opts.Clone()
@@ -1093,11 +1093,11 @@ func TestConfigureOptions(t *testing.T) {
 		version, help, tlsHelp func()
 	}
 	testFuncs := []testPrint{
-		testPrint{[]string{"-v"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
-		testPrint{[]string{"version"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
-		testPrint{[]string{"-h"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
-		testPrint{[]string{"help"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
-		testPrint{[]string{"-help_tls"}, PrintServerAndExit, usage, checkPrintInvoked},
+		{[]string{"-v"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
+		{[]string{"version"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
+		{[]string{"-h"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
+		{[]string{"help"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
+		{[]string{"-help_tls"}, PrintServerAndExit, usage, checkPrintInvoked},
 	}
 	for _, tf := range testFuncs {
 		fs = flag.NewFlagSet("test", flag.ContinueOnError)

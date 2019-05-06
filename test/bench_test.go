@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/gnatsd/server"
+	"github.com/nats-io/nats-server/server"
 )
 
 const PERF_PORT = 8422
@@ -993,7 +993,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	}
 	oa := testDefaultOptionsForGateway("A")
 	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
-		&server.RemoteGatewayOpts{
+		{
 			Name: "B",
 			URLs: []*url.URL{gwbURL},
 		},
@@ -1214,7 +1214,7 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	}
 	oa := testDefaultOptionsForGateway("A")
 	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
-		&server.RemoteGatewayOpts{
+		{
 			Name: "B",
 			URLs: []*url.URL{gwbURL},
 		},

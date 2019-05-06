@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,7 +26,7 @@ import (
 	"syscall"
 )
 
-var processName = "gnatsd"
+var processName = "nats-server"
 
 // SetProcessName allows to change the expected name of the process.
 func SetProcessName(name string) {
@@ -71,7 +71,7 @@ func (s *Server) handleSignals() {
 
 // ProcessSignal sends the given signal command to the given process. If pidStr
 // is empty, this will send the signal to the single running instance of
-// gnatsd. If multiple instances are running, it returns an error. This returns
+// nats-server. If multiple instances are running, it returns an error. This returns
 // an error if the given process is not running or the command is invalid.
 func ProcessSignal(command Command, pidStr string) error {
 	var pid int
@@ -119,7 +119,7 @@ func ProcessSignal(command Command, pidStr string) error {
 	return err
 }
 
-// resolvePids returns the pids for all running gnatsd processes.
+// resolvePids returns the pids for all running nats-server processes.
 func resolvePids() ([]int, error) {
 	// If pgrep isn't available, this will just bail out and the user will be
 	// required to specify a pid.

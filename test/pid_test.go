@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,13 +23,13 @@ import (
 func TestPidFile(t *testing.T) {
 	opts := DefaultTestOptions
 
-	tmpDir, err := ioutil.TempDir("", "_gnatsd")
+	tmpDir, err := ioutil.TempDir("", "_nats-server")
 	if err != nil {
 		t.Fatal("Could not create tmp dir")
 	}
 	defer os.RemoveAll(tmpDir)
 
-	file, err := ioutil.TempFile(tmpDir, "gnatsd:pid_")
+	file, err := ioutil.TempFile(tmpDir, "nats-server:pid_")
 	if err != nil {
 		t.Fatalf("Unable to create temp file: %v", err)
 	}

@@ -36,8 +36,8 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
-	"github.com/nats-io/gnatsd/logger"
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nats-server/logger"
 	"github.com/nats-io/nkeys"
 )
 
@@ -2126,7 +2126,7 @@ func (s *Server) deletePortsFile(hintDir string) {
 }
 
 // Writes a file with a serialized Ports to the specified ports_file_dir.
-// The name of the file is `exename_pid.ports`, typically gnatsd_pid.ports.
+// The name of the file is `exename_pid.ports`, typically nats-server_pid.ports.
 // if ports file is not set, this function has no effect
 func (s *Server) logPorts() {
 	opts := s.getOpts()

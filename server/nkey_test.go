@@ -42,7 +42,7 @@ func nkeyBasicSetup() (*Server, *client, *bufio.Reader, string) {
 	kp, _ := nkeys.FromSeed(seed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: string(pub)}}
+	opts.Nkeys = []*NkeyUser{{Nkey: string(pub)}}
 	return rawSetup(opts)
 }
 
@@ -50,8 +50,8 @@ func mixedSetup() (*Server, *client, *bufio.Reader, string) {
 	kp, _ := nkeys.FromSeed(seed)
 	pub, _ := kp.PublicKey()
 	opts := defaultServerOptions
-	opts.Nkeys = []*NkeyUser{&NkeyUser{Nkey: string(pub)}}
-	opts.Users = []*User{&User{Username: "derek", Password: "foo"}}
+	opts.Nkeys = []*NkeyUser{{Nkey: string(pub)}}
+	opts.Users = []*User{{Username: "derek", Password: "foo"}}
 	return rawSetup(opts)
 }
 

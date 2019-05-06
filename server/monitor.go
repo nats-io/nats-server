@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/gnatsd/server/pse"
+	"github.com/nats-io/nats-server/server/pse"
 )
 
 // Snapshot this
@@ -910,7 +910,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=/routez>routez</a><br/>
 	<a href=/subsz>subsz</a><br/>
     <br/>
-    <a href=http://nats.io/documentation/server/gnatsd-monitoring/>help</a>
+    <a href=http://nats.io/documentation/server/monitoring/>help</a>
   </body>
 </html>`)
 }

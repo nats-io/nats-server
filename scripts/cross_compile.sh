@@ -1,10 +1,14 @@
 #!/bin/bash
 set -e
 
-go get github.com/mitchellh/gox
-go get github.com/tcnksm/ghr
+# For now depend on vendor directory.
+# When we change to modules we need this to force pull in windows.
+# GOOS=windows GOARCH=amd64 go get -u
+export GO111MODULE="off"
 
-export APPNAME="gnatsd"
+go get github.com/mitchellh/gox
+
+export APPNAME="nats-server"
 export OSARCH="linux/386 linux/amd64 linux/arm64 darwin/amd64 windows/386 windows/amd64"
 export DIRS="linux-386 linux-amd64 linux-arm6 linux-arm7 linux-arm64 darwin-amd64 windows-386 windows-amd64"
 export OUTDIR="pkg"
@@ -15,13 +19,13 @@ if [[ -n $1 ]]; then
 fi
 
 # Build all from OSARCH list
-env CGO_ENABLED=0 gox -osarch="$OSARCH" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-{{.OS}}-{{.Arch}}/gnatsd"
+env CGO_ENABLED=0 gox -osarch="$OSARCH" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-{{.OS}}-{{.Arch}}/nats-server"
 
 # Be explicit about the ARM builds
 # ARMv6
-env CGO_ENABLED=0 GOARM=6 gox -osarch="linux/arm" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-linux-arm6/gnatsd"
+env CGO_ENABLED=0 GOARM=6 gox -osarch="linux/arm" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-linux-arm6/nats-server"
 # ARMv7
-env CGO_ENABLED=0 GOARM=7 gox -osarch="linux/arm" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-linux-arm7/gnatsd"
+env CGO_ENABLED=0 GOARM=7 gox -osarch="linux/arm" -ldflags="-s -w" -output "$OUTDIR/$APPNAME-linux-arm7/nats-server"
 
 # Create the zip files
 for dir in $DIRS; do \
