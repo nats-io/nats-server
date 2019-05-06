@@ -86,6 +86,7 @@ func periodic() {
 	time.AfterFunc(1*time.Second, periodic)
 }
 
+// ProcUsage returns CPU usage
 func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	contents, err := ioutil.ReadFile(procStatFile)
 	if err != nil {

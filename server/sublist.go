@@ -1001,7 +1001,7 @@ func (s *Sublist) localSubs(subs *[]*subscription) {
 	s.RUnlock()
 }
 
-// Used to collect all subscriptions.
+// All is used to collect all subscriptions.
 func (s *Sublist) All(subs *[]*subscription) {
 	s.RLock()
 	s.collectAllSubs(s.root, subs)

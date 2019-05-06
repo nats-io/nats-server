@@ -1903,9 +1903,7 @@ func (c *client) processUnsub(arg []byte) error {
 	c.in.subs++
 
 	var sub *subscription
-
-	unsub := false
-	ok := false
+	var ok, unsub bool
 
 	c.mu.Lock()
 

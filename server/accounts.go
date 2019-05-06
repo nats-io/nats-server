@@ -115,6 +115,7 @@ type exportMap struct {
 	services map[string]*exportAuth
 }
 
+// NewAccount creates a new unlimited account with the given name.
 func NewAccount(name string) *Account {
 	a := &Account{
 		Name:   name,
@@ -135,7 +136,7 @@ func (a *Account) shallowCopy() *Account {
 	return na
 }
 
-// NumClients returns active number of clients for this account for
+// NumConnections returns active number of clients for this account for
 // all known servers.
 func (a *Account) NumConnections() int {
 	a.mu.RLock()
@@ -144,7 +145,7 @@ func (a *Account) NumConnections() int {
 	return nc
 }
 
-// NumLocalClients returns active number of clients for this account
+// NumLocalConnections returns active number of clients for this account
 // on this server.
 func (a *Account) NumLocalConnections() int {
 	a.mu.RLock()
@@ -186,7 +187,7 @@ func (a *Account) MaxActiveConnections() int {
 	return mconns
 }
 
-// MaxTotalLeafNodesReached() returns if we have reached our limit for number of leafnodes.
+// MaxTotalLeafNodesReached returns if we have reached our limit for number of leafnodes.
 func (a *Account) MaxTotalLeafNodesReached() bool {
 	a.mu.RLock()
 	mtc := a.maxTotalLeafNodesReached()
@@ -219,7 +220,7 @@ func (a *Account) NumRemoteLeafNodes() int {
 	return nrn
 }
 
-// MaxActiveLeafnodes return the set limit for the account system
+// MaxActiveLeafNodes return the set limit for the account system
 // wide for total number of leavenode connections.
 // NOTE: these are tracked separately.
 func (a *Account) MaxActiveLeafNodes() int {
@@ -333,6 +334,7 @@ func (a *Account) numServiceRoutes() int {
 	return len(a.imports.services)
 }
 
+// AddServiceImportWithClaim will add in the service import via the jwt claim.
 func (a *Account) AddServiceImportWithClaim(destination *Account, from, to string, imClaim *jwt.Import) error {
 	if destination == nil {
 		return ErrMissingAccount
@@ -1150,6 +1152,7 @@ type AccountResolver interface {
 	Store(name, jwt string) error
 }
 
+// MemAccResolver is a memory only resolver.
 // Mostly for testing.
 type MemAccResolver struct {
 	sm sync.Map

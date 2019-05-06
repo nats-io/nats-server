@@ -17,11 +17,14 @@ import (
 	"time"
 )
 
-// Represents a connection info list. We use pointers since it will be sorted.
+// ConnInfos represents a connection info list. We use pointers since it will be sorted.
 type ConnInfos []*ConnInfo
 
 // For sorting
-func (cl ConnInfos) Len() int      { return len(cl) }
+// Len returns length for sorting.
+func (cl ConnInfos) Len() int { return len(cl) }
+
+// Swap will sawap the elements.
 func (cl ConnInfos) Swap(i, j int) { cl[i], cl[j] = cl[j], cl[i] }
 
 // SortOpt is a helper type to sort clients

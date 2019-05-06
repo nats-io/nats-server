@@ -77,8 +77,11 @@ type ConnzOptions struct {
 type ConnState int
 
 const (
+	// ConnOpen filters on open clients.
 	ConnOpen = ConnState(iota)
+	// ConnClosed filters on closed clients.
 	ConnClosed
+	// ConnAll returns all clients.
 	ConnAll
 )
 

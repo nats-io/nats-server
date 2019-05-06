@@ -177,8 +177,8 @@ type stats struct {
 	slowConsumers int64
 }
 
-// DEPRECATED: Use NewServer(opts)
 // New will setup a new server struct after parsing the options.
+// DEPRECATED: Use NewServer(opts)
 func New(opts *Options) *Server {
 	s, _ := NewServer(opts)
 	return s
@@ -858,22 +858,23 @@ func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, er
 
 // verifyAccountClaims will decode and validate any account claims.
 func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, string, error) {
-	if accClaims, err := jwt.DecodeAccountClaims(claimJWT); err != nil {
+	accClaims, err := jwt.DecodeAccountClaims(claimJWT)
+	if err != nil {
 		return nil, _EMPTY_, err
-	} else {
-		vr := jwt.CreateValidationResults()
-		accClaims.Validate(vr)
-		if vr.IsBlocking(true) {
-			return nil, _EMPTY_, ErrAccountValidation
-		}
-		return accClaims, claimJWT, nil
 	}
+	vr := jwt.CreateValidationResults()
+	accClaims.Validate(vr)
+	if vr.IsBlocking(true) {
+		return nil, _EMPTY_, ErrAccountValidation
+	}
+	return accClaims, claimJWT, nil
 }
 
 // This will fetch an account from a resolver if defined.
 // Lock should be held upon entry.
 func (s *Server) fetchAccount(name string) (*Account, error) {
-	if accClaims, claimJWT, err := s.fetchAccountClaims(name); accClaims != nil {
+	accClaims, claimJWT, err := s.fetchAccountClaims(name)
+	if accClaims != nil {
 		// We have released the lock during the low level fetch.
 		// Now that we are back under lock, check again if account
 		// is in the map or not. If it is, simply return it.
@@ -892,9 +893,8 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		acc.claimJWT = claimJWT
 		s.registerAccount(acc)
 		return acc, nil
-	} else {
-		return nil, err
 	}
+	return nil, err
 }
 
 // Start up the server, this will block.
@@ -1789,6 +1789,7 @@ func (s *Server) getClient(cid uint64) *client {
 	return s.clients[cid]
 }
 
+// GetLeafNode returns the leafnode associated with the cid.
 func (s *Server) GetLeafNode(cid uint64) *client {
 	s.mu.Lock()
 	defer s.mu.Unlock()

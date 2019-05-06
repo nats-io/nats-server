@@ -103,6 +103,7 @@ type accNumConnsReq struct {
 	Account string     `json:"acc"`
 }
 
+// ServerInfo identifies remote servers.
 type ServerInfo struct {
 	Host    string    `json:"host"`
 	ID      string    `json:"id"`
@@ -126,7 +127,7 @@ type ClientInfo struct {
 	Stop    *time.Time `json:"stop,omitempty"`
 }
 
-// Various statistics we will periodically send out.
+// ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
 	Start            time.Time      `json:"start"`
 	Mem              int64          `json:"mem"`
@@ -143,6 +144,7 @@ type ServerStats struct {
 	Gateways         []*GatewayStat `json:"gateways,omitempty"`
 }
 
+// RouteStat holds route statistics.
 type RouteStat struct {
 	ID       uint64    `json:"rid"`
 	Sent     DataStats `json:"sent"`
@@ -150,6 +152,7 @@ type RouteStat struct {
 	Pending  int       `json:"pending"`
 }
 
+// GatewayStat holds gateway statistics.
 type GatewayStat struct {
 	ID         uint64    `json:"gwid"`
 	Name       string    `json:"name"`
