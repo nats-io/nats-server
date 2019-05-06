@@ -59,7 +59,7 @@ func TestLeafNodeRandomIP(t *testing.T) {
 	o.Host = "127.0.0.1"
 	o.Port = -1
 	o.LeafNode.Port = 0
-	o.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URL: u}}
+	o.LeafNode.Remotes = []*RemoteLeafOpts{{URL: u}}
 	o.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	o.LeafNode.resolver = resolver
 	o.LeafNode.dialTimeout = 15 * time.Millisecond
