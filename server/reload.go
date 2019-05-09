@@ -564,6 +564,7 @@ func (s *Server) Reload() error {
 	}
 	s.mu.Lock()
 	s.configTime = time.Now()
+	s.updateVarzConfigReloadableFields(s.varz)
 	s.mu.Unlock()
 	return nil
 }

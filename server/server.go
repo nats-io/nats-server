@@ -166,6 +166,11 @@ type Server struct {
 
 	// Trusted public operator keys.
 	trustedKeys []string
+
+	// We use this to minimize mem copies for request to monitoring
+	// endpoint /varz (when it comes from http).
+	varzMu sync.Mutex
+	varz   *Varz
 }
 
 // Make sure all are 64bits for atomic use

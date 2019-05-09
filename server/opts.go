@@ -35,6 +35,8 @@ import (
 )
 
 // ClusterOpts are options for clusters.
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type ClusterOpts struct {
 	Host           string            `json:"addr,omitempty"`
 	Port           int               `json:"cluster_port,omitempty"`
@@ -52,6 +54,8 @@ type ClusterOpts struct {
 }
 
 // GatewayOpts are options for gateways.
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type GatewayOpts struct {
 	Name           string               `json:"name"`
 	Host           string               `json:"addr,omitempty"`
@@ -73,6 +77,8 @@ type GatewayOpts struct {
 }
 
 // RemoteGatewayOpts are options for connecting to a remote gateway
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type RemoteGatewayOpts struct {
 	Name       string      `json:"name"`
 	TLSConfig  *tls.Config `json:"-"`
@@ -81,6 +87,8 @@ type RemoteGatewayOpts struct {
 }
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type LeafNodeOpts struct {
 	Host              string            `json:"addr,omitempty"`
 	Port              int               `json:"port,omitempty"`
@@ -101,6 +109,8 @@ type LeafNodeOpts struct {
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type RemoteLeafOpts struct {
 	LocalAccount string      `json:"local_account,omitempty"`
 	URL          *url.URL    `json:"url,omitempty"`
@@ -111,6 +121,8 @@ type RemoteLeafOpts struct {
 }
 
 // Options block for nats-server.
+// NOTE: This structure is no longer used for monitoring endpoints
+// and json tags are deprecated and may be removed in the future.
 type Options struct {
 	ConfigFile       string        `json:"-"`
 	Host             string        `json:"addr"`

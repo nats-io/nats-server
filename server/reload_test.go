@@ -3759,3 +3759,43 @@ func TestConfigReloadLeafNodeWithTLS(t *testing.T) {
 		t.Fatalf("Error during reload: %v", err)
 	}
 }
+
+func TestConfigReloadAndVarz(t *testing.T) {
+	template := `
+		port: -1
+		%s
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.mu.Lock()
+	initConfigTime := s.configTime
+	s.mu.Unlock()
+
+	v, _ := s.Varz(nil)
+	if !v.ConfigLoadTime.Equal(initConfigTime) {
+		t.Fatalf("ConfigLoadTime should be %v, got %v", initConfigTime, v.ConfigLoadTime)
+	}
+	if v.MaxConn != DEFAULT_MAX_CONNECTIONS {
+		t.Fatalf("MaxConn should be %v, got %v", DEFAULT_MAX_CONNECTIONS, v.MaxConn)
+	}
+
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, "max_connections: 10")))
+
+	// Make sure we wait a bit so config load time has a chance to change.
+	time.Sleep(15 * time.Millisecond)
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	v, _ = s.Varz(nil)
+	if v.ConfigLoadTime.Equal(initConfigTime) {
+		t.Fatalf("ConfigLoadTime should be different from %v", initConfigTime)
+	}
+	if v.MaxConn != 10 {
+		t.Fatalf("MaxConn should be 10, got %v", v.MaxConn)
+	}
+}
