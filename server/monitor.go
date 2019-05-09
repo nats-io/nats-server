@@ -834,30 +834,95 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	*Info
-	*Options
-	Port             int               `json:"port"`
-	MaxPayload       int               `json:"max_payload"`
-	Start            time.Time         `json:"start"`
-	Now              time.Time         `json:"now"`
-	Uptime           string            `json:"uptime"`
-	Mem              int64             `json:"mem"`
-	Cores            int               `json:"cores"`
-	CPU              float64           `json:"cpu"`
-	Connections      int               `json:"connections"`
-	TotalConnections uint64            `json:"total_connections"`
-	Routes           int               `json:"routes"`
-	Remotes          int               `json:"remotes"`
-	InMsgs           int64             `json:"in_msgs"`
-	OutMsgs          int64             `json:"out_msgs"`
-	InBytes          int64             `json:"in_bytes"`
-	OutBytes         int64             `json:"out_bytes"`
-	SlowConsumers    int64             `json:"slow_consumers"`
-	MaxPending       int64             `json:"max_pending"`
-	WriteDeadline    time.Duration     `json:"write_deadline"`
-	Subscriptions    uint32            `json:"subscriptions"`
-	HTTPReqStats     map[string]uint64 `json:"http_req_stats"`
-	ConfigLoadTime   time.Time         `json:"config_load_time"`
+	ID                string            `json:"server_id"`
+	Version           string            `json:"version"`
+	Proto             int               `json:"proto"`
+	GitCommit         string            `json:"git_commit,omitempty"`
+	GoVersion         string            `json:"go"`
+	Host              string            `json:"host"`
+	Port              int               `json:"port"`
+	AuthRequired      bool              `json:"auth_required,omitempty"`
+	TLSRequired       bool              `json:"tls_required,omitempty"`
+	TLSVerify         bool              `json:"tls_verify,omitempty"`
+	IP                string            `json:"ip,omitempty"`
+	ClientConnectURLs []string          `json:"connect_urls,omitempty"`
+	MaxConn           int               `json:"max_connections"`
+	MaxSubs           int               `json:"max_subscriptions,omitempty"`
+	PingInterval      time.Duration     `json:"ping_interval"`
+	MaxPingsOut       int               `json:"ping_max"`
+	HTTPHost          string            `json:"http_host"`
+	HTTPPort          int               `json:"http_port"`
+	HTTPSPort         int               `json:"https_port"`
+	AuthTimeout       float64           `json:"auth_timeout"`
+	MaxControlLine    int32             `json:"max_control_line"`
+	MaxPayload        int               `json:"max_payload"`
+	MaxPending        int64             `json:"max_pending"`
+	Cluster           ClusterOptsVarz   `json:"cluster,omitempty"`
+	Gateway           GatewayOptsVarz   `json:"gateway,omitempty"`
+	LeafNode          LeafNodeOptsVarz  `json:"leaf,omitempty"`
+	TLSTimeout        float64           `json:"tls_timeout"`
+	WriteDeadline     time.Duration     `json:"write_deadline"`
+	Start             time.Time         `json:"start"`
+	Now               time.Time         `json:"now"`
+	Uptime            string            `json:"uptime"`
+	Mem               int64             `json:"mem"`
+	Cores             int               `json:"cores"`
+	CPU               float64           `json:"cpu"`
+	Connections       int               `json:"connections"`
+	TotalConnections  uint64            `json:"total_connections"`
+	Routes            int               `json:"routes"`
+	Remotes           int               `json:"remotes"`
+	InMsgs            int64             `json:"in_msgs"`
+	OutMsgs           int64             `json:"out_msgs"`
+	InBytes           int64             `json:"in_bytes"`
+	OutBytes          int64             `json:"out_bytes"`
+	SlowConsumers     int64             `json:"slow_consumers"`
+	Subscriptions     uint32            `json:"subscriptions"`
+	HTTPReqStats      map[string]uint64 `json:"http_req_stats"`
+	ConfigLoadTime    time.Time         `json:"config_load_time"`
+}
+
+// ClusterOptsVarz contains monitoring cluster information
+type ClusterOptsVarz struct {
+	Host        string  `json:"addr,omitempty"`
+	Port        int     `json:"cluster_port,omitempty"`
+	AuthTimeout float64 `json:"auth_timeout,omitempty"`
+}
+
+// GatewayOptsVarz contains monitoring gateway information
+type GatewayOptsVarz struct {
+	Name           string                  `json:"name,omitempty"`
+	Host           string                  `json:"host,omitempty"`
+	Port           int                     `json:"port,omitempty"`
+	AuthTimeout    float64                 `json:"auth_timeout,omitempty"`
+	TLSTimeout     float64                 `json:"tls_timeout,omitempty"`
+	Advertise      string                  `json:"advertise,omitempty"`
+	ConnectRetries int                     `json:"connect_retries,omitempty"`
+	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`
+	RejectUnknown  bool                    `json:"reject_unknown,omitempty"`
+}
+
+// RemoteGatewayOptsVarz contains monitoring remote gateway information
+type RemoteGatewayOptsVarz struct {
+	Name       string   `json:"name"`
+	TLSTimeout float64  `json:"tls_timeout,omitempty"`
+	URLs       []string `json:"urls,omitempty"`
+}
+
+// LeafNodeOptsVarz contains monitoring leaf node information
+type LeafNodeOptsVarz struct {
+	Host        string               `json:"host,omitempty"`
+	Port        int                  `json:"port,omitempty"`
+	AuthTimeout float64              `json:"auth_timeout,omitempty"`
+	TLSTimeout  float64              `json:"tls_timeout,omitempty"`
+	Remotes     []RemoteLeafOptsVarz `json:"remotes,omitempty"`
+}
+
+// RemoteLeafOptsVarz contains monitoring remote leaf node information
+type RemoteLeafOptsVarz struct {
+	LocalAccount string  `json:"local_account,omitempty"`
+	URL          string  `json:"url,omitempty"`
+	TLSTimeout   float64 `json:"tls_timeout,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -920,17 +985,141 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 // Varz returns a Varz struct containing the server information.
 func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
-	// Snapshot server options.
-	opts := s.getOpts()
+	var rss, vss int64
+	var pcpu float64
 
-	v := &Varz{Info: &s.info, Options: opts, MaxPayload: int(opts.MaxPayload), Start: s.start}
-	v.Now = time.Now()
-	v.Uptime = myUptime(time.Since(s.start))
-	v.Port = v.Info.Port
-
-	updateUsage(v)
+	// We want to do that outside of the lock.
+	pse.ProcUsage(&pcpu, &rss, &vss)
 
 	s.mu.Lock()
+	// We need to create a new instance of Varz (with no reference
+	// whatsoever to anything stored in the server) since the user
+	// has access to the returned value.
+	v := s.createVarz(pcpu, rss)
+	s.mu.Unlock()
+
+	return v, nil
+}
+
+// Returns a Varz instance.
+// Server lock is held on entry.
+func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
+	info := s.info
+	opts := s.getOpts()
+	c := &opts.Cluster
+	gw := &opts.Gateway
+	ln := &opts.LeafNode
+	varz := &Varz{
+		ID:        info.ID,
+		Version:   info.Version,
+		Proto:     info.Proto,
+		GitCommit: info.GitCommit,
+		GoVersion: info.GoVersion,
+		Host:      info.Host,
+		Port:      info.Port,
+		IP:        info.IP,
+		HTTPHost:  opts.HTTPHost,
+		HTTPPort:  opts.HTTPPort,
+		HTTPSPort: opts.HTTPSPort,
+		Cluster: ClusterOptsVarz{
+			Host:        c.Host,
+			Port:        c.Port,
+			AuthTimeout: c.AuthTimeout,
+		},
+		Gateway: GatewayOptsVarz{
+			Name:           gw.Name,
+			Host:           gw.Host,
+			Port:           gw.Port,
+			AuthTimeout:    gw.AuthTimeout,
+			TLSTimeout:     gw.TLSTimeout,
+			Advertise:      gw.Advertise,
+			ConnectRetries: gw.ConnectRetries,
+			Gateways:       []RemoteGatewayOptsVarz{},
+			RejectUnknown:  gw.RejectUnknown,
+		},
+		LeafNode: LeafNodeOptsVarz{
+			Host:        ln.Host,
+			Port:        ln.Port,
+			AuthTimeout: ln.AuthTimeout,
+			TLSTimeout:  ln.TLSTimeout,
+			Remotes:     []RemoteLeafOptsVarz{},
+		},
+		Start:   s.start,
+		MaxSubs: opts.MaxSubs,
+	}
+	if l := len(gw.Gateways); l > 0 {
+		rgwa := make([]RemoteGatewayOptsVarz, l)
+		for i, r := range gw.Gateways {
+			rgwa[i] = RemoteGatewayOptsVarz{
+				Name:       r.Name,
+				TLSTimeout: r.TLSTimeout,
+			}
+			if nu := len(r.URLs); nu > 0 {
+				rgwa[i].URLs = make([]string, nu)
+				for j, u := range r.URLs {
+					rgwa[i].URLs[j] = u.Host
+				}
+			}
+		}
+		varz.Gateway.Gateways = rgwa
+	}
+	if l := len(ln.Remotes); l > 0 {
+		rlna := make([]RemoteLeafOptsVarz, l)
+		for i, r := range ln.Remotes {
+			rlna[i] = RemoteLeafOptsVarz{
+				LocalAccount: r.LocalAccount,
+				URL:          r.URL.Host,
+				TLSTimeout:   r.TLSTimeout,
+			}
+		}
+		varz.LeafNode.Remotes = rlna
+	}
+	// Finish setting it up with fields that can be updated during
+	// configuration reload and runtime.
+	s.updateVarzConfigReloadableFields(varz)
+	s.updateVarzRuntimeFields(varz, pcpu, rss)
+	return varz
+}
+
+// Invoked during configuration reload once options have possibly be changed
+// and config load time has been set. If s.varz has not been initialized yet
+// (because no pooling of /varz has been made), this function does nothing.
+// Server lock is held on entry.
+func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
+	if v == nil {
+		return
+	}
+	opts := s.getOpts()
+	info := &s.info
+	v.AuthRequired = info.AuthRequired
+	v.TLSRequired = info.TLSRequired
+	v.TLSVerify = info.TLSVerify
+	v.MaxConn = opts.MaxConn
+	v.PingInterval = opts.PingInterval
+	v.MaxPingsOut = opts.MaxPingsOut
+	v.AuthTimeout = opts.AuthTimeout
+	v.MaxControlLine = opts.MaxControlLine
+	v.MaxPayload = int(opts.MaxPayload)
+	v.MaxPending = opts.MaxPending
+	v.TLSTimeout = opts.TLSTimeout
+	v.WriteDeadline = opts.WriteDeadline
+	v.ConfigLoadTime = s.configTime
+}
+
+// Updates the runtime Varz fields, that is, fields that change during
+// runtime and that should be updated any time Varz() or polling of /varz
+// is done.
+// Server lock is held on entry.
+func (s *Server) updateVarzRuntimeFields(v *Varz, pcpu float64, rss int64) {
+	v.Now = time.Now()
+	v.Uptime = myUptime(time.Since(s.start))
+	v.Mem = rss
+	v.CPU = pcpu
+	v.Cores = numCores
+	if l := len(s.info.ClientConnectURLs); l > 0 {
+		v.ClientConnectURLs = make([]string, l)
+		copy(v.ClientConnectURLs, s.info.ClientConnectURLs)
+	}
 	v.Connections = len(s.clients)
 	v.TotalConnections = s.totalClients
 	v.Routes = len(s.routes)
@@ -940,49 +1129,51 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
-	v.MaxPending = opts.MaxPending
-	v.WriteDeadline = opts.WriteDeadline
 	// FIXME(dlc) - make this multi-account aware.
 	v.Subscriptions = s.gacc.sl.Count()
-	v.ConfigLoadTime = s.configTime
-	// Need a copy here since s.httpReqStats can change while doing
-	// the marshaling down below.
 	v.HTTPReqStats = make(map[string]uint64, len(s.httpReqStats))
 	for key, val := range s.httpReqStats {
 		v.HTTPReqStats[key] = val
 	}
-	s.mu.Unlock()
-
-	return v, nil
 }
 
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
+	var rss, vss int64
+	var pcpu float64
+
+	// We want to do that outside of the lock.
+	pse.ProcUsage(&pcpu, &rss, &vss)
+
+	// In response to http requests, we want to minimize mem copies
+	// so we use an object stored in the server. Creating/collecting
+	// server metrics is done under server lock, but we don't want
+	// to marshal under that lock. Still, we need to prevent concurrent
+	// http requests to /varz to update s.varz while marshal is
+	// happening, so we need a new lock that serialize those http
+	// requests and include marshaling.
+	s.varzMu.Lock()
+
+	// Use server lock to create/update the server's varz object.
 	s.mu.Lock()
 	s.httpReqStats[VarzPath]++
+	if s.varz == nil {
+		s.varz = s.createVarz(pcpu, rss)
+	} else {
+		s.updateVarzRuntimeFields(s.varz, pcpu, rss)
+	}
 	s.mu.Unlock()
 
-	// As of now, no error is ever returned
-	v, _ := s.Varz(nil)
-	b, err := json.MarshalIndent(v, "", "  ")
+	// Do the marshaling outside of server lock, but under varzMu lock.
+	b, err := json.MarshalIndent(s.varz, "", "  ")
+	s.varzMu.Unlock()
+
 	if err != nil {
 		s.Errorf("Error marshaling response to /varz request: %v", err)
 	}
 
 	// Handle response
 	ResponseHandler(w, r, b)
-}
-
-// Grab RSS and PCPU
-func updateUsage(v *Varz) {
-	var rss, vss int64
-	var pcpu float64
-
-	pse.ProcUsage(&pcpu, &rss, &vss)
-
-	v.Mem = rss
-	v.CPU = pcpu
-	v.Cores = numCores
 }
 
 // ResponseHandler handles responses for monitoring routes

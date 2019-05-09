@@ -14,12 +14,14 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -2017,5 +2019,320 @@ func Benchmark_Connz(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Error on Connz(): %v", err)
 		}
+	}
+}
+
+func Benchmark_Varz(b *testing.B) {
+	runtime.MemProfileRate = 0
+
+	s := runMonitorServerNoHTTPPort()
+	defer s.Shutdown()
+
+	b.ResetTimer()
+	runtime.MemProfileRate = 1
+
+	for i := 0; i < b.N; i++ {
+		_, err := s.Varz(nil)
+		if err != nil {
+			b.Fatalf("Error on Connz(): %v", err)
+		}
+	}
+}
+
+func Benchmark_VarzHttp(b *testing.B) {
+	runtime.MemProfileRate = 0
+
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	murl := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
+	b.ResetTimer()
+	runtime.MemProfileRate = 1
+
+	for i := 0; i < b.N; i++ {
+		v := &Varz{}
+		resp, err := http.Get(murl)
+		if err != nil {
+			b.Fatalf("Expected no error: Got %v\n", err)
+		}
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			b.Fatalf("Got an error reading the body: %v\n", err)
+		}
+		if err := json.Unmarshal(body, v); err != nil {
+			b.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		resp.Body.Close()
+	}
+}
+
+func TestVarzRaces(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	murl := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	done := make(chan struct{})
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			for i := 0; i < 2; i++ {
+				v := pollVarz(t, s, i, murl, nil)
+				// Check the field that we are setting in main thread
+				// to ensure that we have a copy and there is no
+				// race with fields set in s.info and s.opts
+				if v.ID == "abc" || v.MaxConn == -1 {
+					// We will not get there. Need to have something
+					// otherwise staticcheck will report empty branch
+					return
+				}
+
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		// Simulate a change in server's info and options
+		// by changing something.
+		s.mu.Lock()
+		s.info.ID = fmt.Sprintf("serverid_%d", i)
+		s.opts.MaxConn = 100 + i
+		s.mu.Unlock()
+		time.Sleep(time.Nanosecond)
+	}
+	close(done)
+	wg.Wait()
+
+	// Now check that there is no race doing parallel polling
+	wg.Add(3)
+	done = make(chan struct{})
+	poll := func() {
+		defer wg.Done()
+		for {
+			for mode := 0; mode < 2; mode++ {
+				pollVarz(t, s, mode, murl, nil)
+			}
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+	}
+	for i := 0; i < 3; i++ {
+		go poll()
+	}
+	time.Sleep(500 * time.Millisecond)
+	close(done)
+	wg.Wait()
+}
+
+func testMonitorStructPresent(t *testing.T, tag string) {
+	t.Helper()
+
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	body := readBody(t, varzURL)
+	if !bytes.Contains(body, []byte(`"`+tag+`": {}`)) {
+		t.Fatalf("%s should be present and empty, got %s", tag, body)
+	}
+}
+
+func TestMonitorCluster(t *testing.T) {
+	testMonitorStructPresent(t, "cluster")
+
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.Cluster.Port = -1
+	opts.Cluster.AuthTimeout = 1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	expected := ClusterOptsVarz{
+		opts.Cluster.Host,
+		opts.Cluster.Port,
+		opts.Cluster.AuthTimeout,
+	}
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		check := func(t *testing.T, v *Varz) {
+			t.Helper()
+			if !reflect.DeepEqual(v.Cluster, expected) {
+				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.Cluster)
+			}
+		}
+		v := pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
+
+		// Having this here to make sure that if fields are added in ClusterOptsVarz,
+		// we make sure to update this test (compiler will report an error if we don't)
+		_ = ClusterOptsVarz{"", 0, 0}
+
+		// Alter the fields to make sure that we have a proper deep copy
+		// of what may be stored in the server. Anything we change here
+		// should not affect the next returned value.
+		v.Cluster.Host = "wrong"
+		v.Cluster.Port = 0
+		v.Cluster.AuthTimeout = 0
+		v = pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
+	}
+}
+
+func TestMonitorGateway(t *testing.T) {
+	testMonitorStructPresent(t, "gateway")
+
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.Gateway.Name = "A"
+	opts.Gateway.Port = -1
+	opts.Gateway.AuthTimeout = 1
+	opts.Gateway.TLSTimeout = 1
+	opts.Gateway.Advertise = "127.0.0.1"
+	opts.Gateway.ConnectRetries = 1
+	opts.Gateway.RejectUnknown = false
+	u1, _ := url.Parse("nats://ivan:pwd@localhost:1234")
+	u2, _ := url.Parse("nats://localhost:1235")
+	opts.Gateway.Gateways = []*RemoteGatewayOpts{
+		&RemoteGatewayOpts{
+			Name:       "B",
+			TLSTimeout: 1,
+			URLs: []*url.URL{
+				u1,
+				u2,
+			},
+		},
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	expected := GatewayOptsVarz{
+		"A",
+		opts.Gateway.Host,
+		opts.Gateway.Port,
+		opts.Gateway.AuthTimeout,
+		opts.Gateway.TLSTimeout,
+		opts.Gateway.Advertise,
+		opts.Gateway.ConnectRetries,
+		[]RemoteGatewayOptsVarz{
+			{
+				"B",
+				1,
+				[]string{
+					"localhost:1234",
+					"localhost:1235",
+				},
+			},
+		},
+		opts.Gateway.RejectUnknown,
+	}
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		check := func(t *testing.T, v *Varz) {
+			t.Helper()
+			if !reflect.DeepEqual(v.Gateway, expected) {
+				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.Gateway)
+			}
+		}
+		v := pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
+
+		// Having this here to make sure that if fields are added in GatewayOptsVarz,
+		// we make sure to update this test (compiler will report an error if we don't)
+		_ = GatewayOptsVarz{"", "", 0, 0, 0, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false}
+
+		// Alter the fields to make sure that we have a proper deep copy
+		// of what may be stored in the server. Anything we change here
+		// should not affect the next returned value.
+		v.Gateway.Name = "wrong"
+		v.Gateway.Host = "wrong"
+		v.Gateway.Port = 0
+		v.Gateway.AuthTimeout = 1234.5
+		v.Gateway.TLSTimeout = 1234.5
+		v.Gateway.Advertise = "wrong"
+		v.Gateway.ConnectRetries = 1234
+		v.Gateway.Gateways[0].Name = "wrong"
+		v.Gateway.Gateways[0].TLSTimeout = 1234.5
+		v.Gateway.Gateways[0].URLs = []string{"wrong"}
+		v.Gateway.RejectUnknown = true
+		v = pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
+	}
+}
+
+func TestMonitorLeafNode(t *testing.T) {
+	testMonitorStructPresent(t, "leaf")
+
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.LeafNode.Port = -1
+	opts.LeafNode.AuthTimeout = 1
+	opts.LeafNode.TLSTimeout = 1
+	u, _ := url.Parse("nats://ivan:pwd@localhost:1234")
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{
+		&RemoteLeafOpts{
+			LocalAccount: "acc",
+			URL:          u,
+			TLSTimeout:   1,
+		},
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	expected := LeafNodeOptsVarz{
+		opts.LeafNode.Host,
+		opts.LeafNode.Port,
+		opts.LeafNode.AuthTimeout,
+		opts.LeafNode.TLSTimeout,
+		[]RemoteLeafOptsVarz{
+			{
+				"acc",
+				"localhost:1234",
+				1,
+			},
+		},
+	}
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
+	for mode := 0; mode < 2; mode++ {
+		check := func(t *testing.T, v *Varz) {
+			t.Helper()
+			if !reflect.DeepEqual(v.LeafNode, expected) {
+				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.LeafNode)
+			}
+		}
+		v := pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
+
+		// Having this here to make sure that if fields are added in ClusterOptsVarz,
+		// we make sure to update this test (compiler will report an error if we don't)
+		_ = LeafNodeOptsVarz{"", 0, 0, 0, []RemoteLeafOptsVarz{{"", "", 0}}}
+
+		// Alter the fields to make sure that we have a proper deep copy
+		// of what may be stored in the server. Anything we change here
+		// should not affect the next returned value.
+		v.LeafNode.Host = "wrong"
+		v.LeafNode.Port = 0
+		v.LeafNode.AuthTimeout = 1234.5
+		v.LeafNode.TLSTimeout = 1234.5
+		v.LeafNode.Remotes[0].LocalAccount = "wrong"
+		v.LeafNode.Remotes[0].URL = "wrong"
+		v.LeafNode.Remotes[0].TLSTimeout = 1234.5
+		v = pollVarz(t, s, mode, varzURL, nil)
+		check(t, v)
 	}
 }
