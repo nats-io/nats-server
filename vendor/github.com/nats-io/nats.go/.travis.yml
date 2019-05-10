@@ -1,12 +1,12 @@
 language: go
 sudo: false
 go:
+- 1.12.x
 - 1.11.x
-- 1.10.x
-go_import_path: github.com/nats-io/go-nats
+go_import_path: github.com/nats-io/nats.go
 install:
 - go get -t ./...
-- go get github.com/nats-io/gnatsd
+- go get github.com/nats-io/nats-server
 - go get github.com/mattn/goveralls
 - go get github.com/wadey/gocovmerge
 - go get -u honnef.co/go/tools/cmd/staticcheck
@@ -18,4 +18,4 @@ before_script:
 - staticcheck -ignore "$(cat staticcheck.ignore)" ./...
 script:
 - go test -i -race ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]]; then ./scripts/cov.sh TRAVIS; else go test -race ./...; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -race ./...; fi

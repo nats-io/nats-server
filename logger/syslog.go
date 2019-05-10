@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -37,7 +37,7 @@ func SetSyslogName(name string) {}
 
 // GetSysLoggerTag generates the tag name for use in syslog statements. If
 // the executable is linked, the name of the link will be used as the tag,
-// otherwise, the name of the executable is used.  "gnatsd" is the default
+// otherwise, the name of the executable is used.  "nats-server" is the default
 // for the NATS server.
 func GetSysLoggerTag() string {
 	procName := os.Args[0]

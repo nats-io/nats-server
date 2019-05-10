@@ -1,0 +1,4 @@
+github.com/nats-io/nats.go/*_test.go:SA2002
+github.com/nats-io/nats.go/*/*_test.go:SA2002
+github.com/nats-io/nats.go/test/context_test.go:SA1012
+github.com/nats-io/nats.go/nats.go:SA6000

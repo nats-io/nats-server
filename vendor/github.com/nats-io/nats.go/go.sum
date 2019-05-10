@@ -1,10 +1,7 @@
 github.com/golang/protobuf v1.3.1 h1:YF8+flBXS5eO826T4nzqPrxfhQThhXl0YzfuUPu4SBg=
 github.com/golang/protobuf v1.3.1/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
-github.com/nats-io/jwt v0.2.4 h1:SZ27ZMqlP8US5QYFE+GPYtZZQa7PZUVZ6lNV3L7Z7EU=
-github.com/nats-io/jwt v0.2.4/go.mod h1:mQxQ0uHQ9FhEVPIcTSKwx2lqZEpXWWcCgA7R6NrWvvY=
+github.com/nats-io/nats-server v1.4.1 h1:Ul1oSOGNV/L8kjr4v6l2f9Yet6WY+LevH1/7cRZ/qyA=
 github.com/nats-io/nats-server v1.4.1/go.mod h1:c8f/fHd2B6Hgms3LtCaI7y6pC4WD1f4SUxcCud5vhBc=
-github.com/nats-io/nats.go v1.7.3-0.20190510202513-4c154eb68ac6 h1:0Kv7hRrWmjrqFPpW4Sw+b5nC0KGr/QFhInvpwQvtfac=
-github.com/nats-io/nats.go v1.7.3-0.20190510202513-4c154eb68ac6/go.mod h1:lDA0FIyNEl18QqjzdvReBbUZ4AXBJJloRy1lw/blAKk=
 github.com/nats-io/nkeys v0.0.2 h1:+qM7QpgXnvDDixitZtQUBDY9w/s9mu1ghS+JIbsrx6M=
 github.com/nats-io/nkeys v0.0.2/go.mod h1:dab7URMsZm6Z/jp9Z5UGa87Uutgc2mVpXLC4B7TDb/4=
 github.com/nats-io/nuid v1.0.1 h1:5iA8DT8V7q8WK2EScv2padNa/rTESc1KdnPw4TC2paw=
