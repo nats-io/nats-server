@@ -1270,6 +1270,9 @@ func (s *Server) StartProfiler() {
 	s.profilingServer = srv
 	s.mu.Unlock()
 
+	// Enable blocking profile
+	runtime.SetBlockProfileRate(1)
+
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
 		err := srv.Serve(l)
@@ -1701,7 +1704,7 @@ func tlsCipher(cs uint16) string {
 
 // Remove a client or route from our internal accounting.
 func (s *Server) removeClient(c *client) {
-	// type is immutable, so can check without lock
+	// kind is immutable, so can check without lock
 	switch c.kind {
 	case CLIENT:
 		c.mu.Lock()
@@ -1859,7 +1862,7 @@ func (s *Server) ClusterAddr() *net.TCPAddr {
 	return s.routeListener.Addr().(*net.TCPAddr)
 }
 
-// ProfilerAddr returns the net.Addr object for the route listener.
+// ProfilerAddr returns the net.Addr object for the profiler listener.
 func (s *Server) ProfilerAddr() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()

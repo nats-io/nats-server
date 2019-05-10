@@ -862,13 +862,13 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 		return
 	}
 
-	_l := [256]*client{}
+	_l := [32]*client{}
 	leafs := _l[:0]
 
 	// Grab all leaf nodes. Ignore leafnode if sub's client is a leafnode and matches.
 	acc.mu.RLock()
-	for _, ln := range acc.clients {
-		if ln.kind == LEAF && ln != sub.client {
+	for _, ln := range acc.lleafs {
+		if ln != sub.client {
 			leafs = append(leafs, ln)
 		}
 	}
