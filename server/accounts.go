@@ -50,6 +50,7 @@ type Account struct {
 	nrleafs    int32
 	clients    map[*client]*client
 	rm         map[string]int32
+	lleafs     []*client
 	imports    importMap
 	exports    exportMap
 	limits
@@ -259,6 +260,7 @@ func (a *Account) addClient(c *client) int {
 			a.sysclients++
 		} else if c.kind == LEAF {
 			a.nleafs++
+			a.lleafs = append(a.lleafs, c)
 		}
 	}
 	a.mu.Unlock()
@@ -266,6 +268,25 @@ func (a *Account) addClient(c *client) int {
 		c.srv.accConnsUpdate(a)
 	}
 	return n
+}
+
+// Helper function to remove leaf nodes. If number of leafnodes gets large
+// this may need to be optimized out of linear search but believe number
+// of active leafnodes per account scope to be small and therefore cache friendly.
+// Lock should be held on account.
+func (a *Account) removeLeafNode(c *client) {
+	ll := len(a.lleafs)
+	for i, l := range a.lleafs {
+		if l == c {
+			a.lleafs[i] = a.lleafs[ll-1]
+			if ll == 1 {
+				a.lleafs = nil
+			} else {
+				a.lleafs = a.lleafs[:ll-1]
+			}
+			return
+		}
+	}
 }
 
 // removeClient keeps our accounting of local active clients updated.
@@ -279,6 +300,7 @@ func (a *Account) removeClient(c *client) int {
 			a.sysclients--
 		} else if c.kind == LEAF {
 			a.nleafs--
+			a.removeLeafNode(c)
 		}
 	}
 	a.mu.Unlock()
