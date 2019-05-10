@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/go-nats"
 	"github.com/nats-io/nats-server/server"
+	"github.com/nats-io/nats.go"
 )
 
 const clientProtoInfo = 1

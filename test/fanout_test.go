@@ -20,8 +20,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nats-io/go-nats"
 	"github.com/nats-io/nats-server/server"
+	"github.com/nats-io/nats.go"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.

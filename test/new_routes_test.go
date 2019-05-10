@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/go-nats"
 	"github.com/nats-io/nats-server/logger"
 	"github.com/nats-io/nats-server/server"
+	"github.com/nats-io/nats.go"
 )
 
 func runNewRouteServer(t *testing.T) (*server.Server, *server.Options) {

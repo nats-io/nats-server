@@ -30,9 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
-
-	"github.com/nats-io/go-nats"
 )
 
 func newServerWithConfig(t *testing.T, configFile string) (*Server, *Options, string) {

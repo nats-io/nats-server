@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -67,14 +67,14 @@ func TestSysLoggerTagGen(t *testing.T) {
 	origArg := os.Args[0]
 	defer restoreArg(origArg)
 
-	testTag(t, "gnatsd", "gnatsd")
-	testTag(t, filepath.Join(".", "gnatsd"), "gnatsd")
-	testTag(t, filepath.Join("home", "bin", "gnatsd"), "gnatsd")
-	testTag(t, filepath.Join("..", "..", "gnatsd"), "gnatsd")
-	testTag(t, "gnatsd.service1", "gnatsd.service1")
-	testTag(t, "gnatsd_service1", "gnatsd_service1")
-	testTag(t, "gnatsd-service1", "gnatsd-service1")
-	testTag(t, "gnatsd service1", "gnatsd service1")
+	testTag(t, "nats-server", "nats-server")
+	testTag(t, filepath.Join(".", "nats-server"), "nats-server")
+	testTag(t, filepath.Join("home", "bin", "nats-server"), "nats-server")
+	testTag(t, filepath.Join("..", "..", "nats-server"), "nats-server")
+	testTag(t, "nats-server.service1", "nats-server.service1")
+	testTag(t, "nats-server_service1", "nats-server_service1")
+	testTag(t, "nats-server-service1", "nats-server-service1")
+	testTag(t, "nats-server service1", "nats-server service1")
 }
 
 func TestSysLoggerTag(t *testing.T) {
