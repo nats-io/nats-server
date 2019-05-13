@@ -2549,10 +2549,7 @@ func TestGatewayMsgSentOnlyOnce(t *testing.T) {
 	if c == nil {
 		t.Fatalf("S1 inbound gateway not found")
 	}
-	c.mu.Lock()
-	in := c.inMsgs
-	c.mu.Unlock()
-	if in != 1 {
+	if in := atomic.LoadInt64(&c.inMsgs); in != 1 {
 		t.Fatalf("Expected s1's inbound gateway to have received a single message, got %v", in)
 	}
 }
