@@ -17,7 +17,7 @@ RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
 COPY --from=builder /nats-server /nats/bin/nats-server
 
-RUN ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /nats-server
+RUN ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /nats-server
 
 # Expose client, management, cluster and gateway ports
 EXPOSE 4222 8222 6222 5222
