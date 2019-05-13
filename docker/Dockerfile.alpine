@@ -17,7 +17,9 @@ RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
 COPY --from=builder /nats-server /nats/bin/nats-server
 
-RUN ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /nats-server
+# NOTE: For backwards compatibility, we add a symlink to /gnatsd which is
+# where the binary from the scratch container image used to be located.
+RUN ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /nats-server && ln -ns /nats/bin/nats-server /gnatsd
 
 # Expose client, management, cluster and gateway ports
 EXPOSE 4222 8222 6222 5222
