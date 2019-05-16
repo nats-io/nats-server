@@ -209,7 +209,7 @@ http: localhost:8222 # HTTP monitoring port
 # Authorization for client connections
 authorization {
   user:     derek
-  # ./util/mkpasswd -p T0pS3cr3t
+  # ./util/mkpasswd/mkpasswd -p T0pS3cr3t
   password: $2a$11$W2zko751KUvVy59mUTWmpOdWjpEm5qhcCZRd05GjI/sSOT.xtiHyG
   timeout:  1
 }
@@ -647,7 +647,7 @@ You can also enable token-based authentication and set the credentials in the se
 
 ```
 authorization {
-  #cleartext is supported but it is recommended you encrypt tokens with util/mkpasswd.go
+  #cleartext is supported but it is recommended you encrypt tokens with util/mkpasswd/mkpasswd.go
   token:   S3Cr3T0k3n!
   timeout: 1
 }
@@ -668,7 +668,7 @@ To do this, use the mkpasswd utility.  You can pass the -p parameter to the mkpa
 
 
 ```
-$ go run util/mkpasswd.go -p
+$ go run util/mkpasswd/mkpasswd.go -p
 Enter Password: <enter S3Cr3T0k3n!>
 Reenter Password: <enter S3Cr3T0k3n!>
 bcrypt hash: $2a$11$UP3xizk94sWF9SHF/wkklOfBT9jphTGNrhZqz2OHoBdk9yO1kvErG
@@ -678,7 +678,7 @@ For example, after encrypting `S3Cr3T0k3n!`, you would set the authorization ser
 
 ```
 authorization {
-  # You can generate the token using /util/mkpasswd.go
+  # You can generate the token using /util/mkpasswd/mkpasswd.go
   token:    $2a$11$UP3xizk94sWF9SHF/wkklOfBT9jphTGNrhZqz2OHoBdk9yO1kvErG
   timeout: 1
 }
@@ -686,7 +686,7 @@ authorization {
 
 If you want the mkpasswd utility to generate a password or token for you, run it without the -p parameter.
 ```
-$ go run util/mkpasswd.go
+$ go run util/mkpasswd/mkpasswd.go
 pass: D#6)e0ht^@61kU5!^!owrX // Password (or token) encrypted with Bcrypt
 bcrypt hash: $2a$11$bXz1Mi5xM.rRUnYRT0Vb2el6sSzVrqA0DJKdt.5Itj1C1K4HT9FDG // server configuration authorization password (or token)
 ```
@@ -1052,10 +1052,10 @@ authorization {
 
 In addition to TLS functionality, the server now also supports bcrypt for passwords and tokens. This is transparent and you can simply replace the plaintext password in the configuration with the bcrypt hash, the server will automatically utilize bcrypt as needed.
 
-There is a utility bundled under /util/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can supply that on stdin with the -p flag.
+There is a utility bundled under /util/mkpasswd/mkpasswd. By default with no arguments it will generate a secure password and the associated hash. This can be used for a password or a token in the configuration. If you already have a password selected, you can supply that on stdin with the -p flag.
 
 ```bash
-~/go/src/github.com/nats-io/nats-server/util> ./mkpasswd
+~/go/src/github.com/nats-io/nats-server/util/mkpasswd > ./mkpasswd
 pass: #IclkRPHUpsTmACWzmIGXr
 bcrypt hash: $2a$11$3kIDaCxw.Glsl1.u5nKa6eUnNDLV5HV9tIuUp7EHhMt6Nm9myW1aS
 ```
