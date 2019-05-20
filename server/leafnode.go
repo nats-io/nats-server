@@ -157,7 +157,8 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 		return
 	}
 
-	reconnectDelay := s.getOpts().LeafNode.ReconnectInterval
+	opts := s.getOpts()
+	reconnectDelay := opts.LeafNode.ReconnectInterval
 	s.mu.Lock()
 	dialTimeout := s.leafNodeOpts.dialTimeout
 	resolver := s.leafNodeOpts.resolver
@@ -182,7 +183,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 		if err != nil {
 			attempts++
 			s.Debugf(connErrFmt, attempts, err)
-			if shouldReportConnectErr(attempts) {
+			if shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts) {
 				s.Errorf(connErrFmt, attempts, err)
 			}
 			select {

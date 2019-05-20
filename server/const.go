@@ -139,4 +139,9 @@ const (
 
 	// DEFAULT_LEAFNODE_INFO_WAIT Route dial timeout.
 	DEFAULT_LEAFNODE_INFO_WAIT = 1 * time.Second
+
+	// DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS is the number of attempts at which a
+	// repeated failed route, gateway or leaf node connection is reported. The default
+	// corresponds to a report every hour.
+	DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS = 3600
 )

@@ -187,6 +187,15 @@ type Options struct {
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
 
+	// ConnectionErrorReportAttempts is the number of consecutive failed
+	// attempts to connect a route, gateway or leaf node at which point
+	// the server report the failure in the log. This is to prevent
+	// lots of errors when a configured endpoint is offline for a longer
+	// period of time.
+	// Default is DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS (3600) which
+	// means that the server will report the error every hour.
+	ConnectionErrorReportAttempts int
+
 	// private fields, used to know if bool options are explicitly
 	// defined in config and/or command line params.
 	inConfig  map[string]bool
@@ -678,6 +687,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 					errors = append(errors, err)
 				}
 			}
+		case "connection_error_report_attempts":
+			o.ConnectionErrorReportAttempts = int(v.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2420,6 +2431,9 @@ func setBaselineOptions(opts *Options) {
 		if opts.Gateway.AuthTimeout == 0 {
 			opts.Gateway.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 		}
+	}
+	if opts.ConnectionErrorReportAttempts == 0 {
+		opts.ConnectionErrorReportAttempts = DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS
 	}
 }
 
