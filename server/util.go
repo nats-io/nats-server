@@ -110,3 +110,12 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 func urlsAreEqual(u1, u2 *url.URL) bool {
 	return reflect.DeepEqual(u1, u2)
 }
+
+// Returns true for the first attempt, after a minute and then an hour.
+// It is assumed that each failed attempt is done every second.
+func shouldReportConnectErr(attempts int) bool {
+	if attempts == 1 || attempts == 60 || attempts%3600 == 0 {
+		return true
+	}
+	return false
+}

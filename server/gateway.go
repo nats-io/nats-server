@@ -556,7 +556,13 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 	} else {
 		typeStr = "explicit"
 	}
+
+	const connFmt = "Connecting to %s gateway %q (%s) at %s (attempt %v)"
+	const connErrFmt = "Error connecting to %s gateway %q (%s) at %s (attempt %v): %v"
+
 	for s.isRunning() && len(urls) > 0 {
+		attempts++
+		report := shouldReportConnectErr(attempts)
 		// Iteration is random
 		for _, u := range urls {
 			address, err := s.getRandomIP(s.gateway.resolver, u.Host)
@@ -564,21 +570,26 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 				s.Errorf("Error getting IP for %s gateway %q (%s): %v", typeStr, cfg.Name, u.Host, err)
 				continue
 			}
-			s.Noticef("Connecting to %s gateway %q (%s) at %s", typeStr, cfg.Name, u.Host, address)
+			s.Debugf(connFmt, typeStr, cfg.Name, u.Host, address, attempts)
+			if report {
+				s.Noticef(connFmt, typeStr, cfg.Name, u.Host, address, attempts)
+			}
 			conn, err := net.DialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
 			if err == nil {
 				// We could connect, create the gateway connection and return.
 				s.createGateway(cfg, u, conn)
 				return
 			}
-			s.Errorf("Error connecting to %s gateway %q (%s) at %s: %v", typeStr, cfg.Name, u.Host, address, err)
+			s.Debugf(connErrFmt, typeStr, cfg.Name, u.Host, address, attempts, err)
+			if report {
+				s.Errorf(connErrFmt, typeStr, cfg.Name, u.Host, address, attempts, err)
+			}
 			// Break this loop if server is being shutdown...
 			if !s.isRunning() {
 				break
 			}
 		}
 		if isImplicit {
-			attempts++
 			if opts.Gateway.ConnectRetries == 0 || attempts > opts.Gateway.ConnectRetries {
 				s.gateway.Lock()
 				delete(s.gateway.remotes, cfg.Name)
