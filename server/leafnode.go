@@ -165,6 +165,9 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 
 	var conn net.Conn
 
+	const connErrFmt = "Error trying to connect as leaf node to remote server (attempt %v): %v"
+
+	attempts := 0
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
 		rURL := remote.pickNextURL()
 		url, err := s.getRandomIP(resolver, rURL.Host)
@@ -177,7 +180,11 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 			conn, err = net.DialTimeout("tcp", url, dialTimeout)
 		}
 		if err != nil {
-			s.Errorf("Error trying to connect as leaf node to remote server: %v", err)
+			attempts++
+			s.Debugf(connErrFmt, attempts, err)
+			if shouldReportConnectErr(attempts) {
+				s.Errorf(connErrFmt, attempts, err)
+			}
 			select {
 			case <-s.quitCh:
 				return

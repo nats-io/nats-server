@@ -99,6 +99,9 @@ const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
 // Warning when user configures cluster TLS insecure
 const clusterTLSInsecureWarning = "TLS Hostname verification disabled, system will not verify identity of the solicited route"
 
+// Can be changed for tests
+var routeConnectDelay = DEFAULT_ROUTE_CONNECT
+
 // This will add a timer to watch over remote reply subjects in case
 // they fail to receive a response. The duration will be taken from the
 // accounts map timeout to match.
@@ -1587,6 +1590,8 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 
 	defer s.grWG.Done()
 
+	const connErrFmt = "Error trying to connect to route (attempt %v): %v"
+
 	attempts := 0
 	for s.isRunning() && rURL != nil {
 		if tryForEver && !s.routeStillValid(rURL) {
@@ -1595,12 +1600,15 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
-			s.Errorf("Error trying to connect to route: %v", err)
+			attempts++
+			s.Debugf(connErrFmt, attempts, err)
+			if shouldReportConnectErr(attempts) {
+				s.Errorf(connErrFmt, attempts, err)
+			}
 			if !tryForEver {
 				if opts.Cluster.ConnectRetries <= 0 {
 					return
 				}
-				attempts++
 				if attempts > opts.Cluster.ConnectRetries {
 					return
 				}
@@ -1608,7 +1616,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 			select {
 			case <-s.quitCh:
 				return
-			case <-time.After(DEFAULT_ROUTE_CONNECT):
+			case <-time.After(routeConnectDelay):
 				continue
 			}
 		}

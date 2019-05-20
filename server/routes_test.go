@@ -27,6 +27,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func init() {
+	routeConnectDelay = 15 * time.Millisecond
+}
+
 func checkNumRoutes(t *testing.T, s *Server, expected int) {
 	t.Helper()
 	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
