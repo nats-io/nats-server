@@ -4403,12 +4403,14 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			clientB2 := natsConnect(t, b2URL)
 			defer clientB2.Close()
 			natsSubSync(t, clientB2, "not.used")
+			natsFlush(t, clientB2)
 
 			// Make A2 flood B2 with subjects that B2 is not interested in.
 			for i := 0; i < 1100; i++ {
 				natsPub(t, clientA, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
 			}
 			natsFlush(t, clientA)
+
 			// Wait for B2 to switch to interest-only
 			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 				c := sa2.getOutboundGatewayConnection("B")
