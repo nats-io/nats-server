@@ -883,7 +883,6 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	}
 
 	addAccountToMemResolver(s, fooPub, fooJWT)
-
 	acc, _ := s.LookupAccount(fooPub)
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
@@ -897,8 +896,14 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	activation := jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "foo"
 	activation.ImportType = jwt.Stream
-	activation.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
-	activation.Expires = time.Now().Add(time.Second).Unix()
+	now := time.Now()
+	activation.IssuedAt = now.Add(-10 * time.Second).Unix()
+	// These are second resolution. So check that we actually expire in a second and adjust if needed.
+	expires := now.Add(time.Second).Unix()
+	if expires == now.Unix() {
+		expires++
+	}
+	activation.Expires = expires
 	actJWT, err := activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -910,6 +915,9 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
+	if acc, _ := s.LookupAccount(barPub); acc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
 
 	expectPong := func(cr *bufio.Reader) {
 		t.Helper()

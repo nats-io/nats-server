@@ -1644,6 +1644,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 
 	updateGWs := false
+
 	// Subscribe here.
 	if c.subs[sid] == nil {
 		c.subs[sid] = sub

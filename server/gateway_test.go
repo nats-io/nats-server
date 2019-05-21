@@ -3659,6 +3659,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 
 	subA = natsQueueSubSync(t, clientA, "test.request", "queue")
 	natsFlush(t, clientA)
+	checkForRegisteredQSubInterest(t, sb, "A", "$foo", "test.request", 1, time.Second)
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3669,7 +3670,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	// Consume the requests, but don't reply to them...
 	for i := 0; i < 100; i++ {
 		if _, err := subA.NextMsg(time.Second); err != nil {
-			t.Fatalf("subA did not receive request: %v", err)
+			t.Fatalf("subA did not receive request %d: %v", i+1, err)
 		}
 	}
 
