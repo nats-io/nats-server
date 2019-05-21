@@ -562,7 +562,7 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 
 	for s.isRunning() && len(urls) > 0 {
 		attempts++
-		report := shouldReportConnectErr(attempts)
+		report := shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts)
 		// Iteration is random
 		for _, u := range urls {
 			address, err := s.getRandomIP(s.gateway.resolver, u.Host)

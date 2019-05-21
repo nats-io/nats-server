@@ -59,6 +59,7 @@ func TestDefaultOptions(t *testing.T) {
 		LeafNode: LeafNodeOpts{
 			ReconnectInterval: DEFAULT_LEAF_NODE_RECONNECT,
 		},
+		ConnectionErrorReportAttempts: DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS,
 	}
 
 	opts := &Options{}
@@ -79,29 +80,30 @@ func TestOptions_RandomPort(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
-		ConfigFile:       "./configs/test.conf",
-		Host:             "127.0.0.1",
-		Port:             4242,
-		Username:         "derek",
-		Password:         "porkchop",
-		AuthTimeout:      1.0,
-		Debug:            false,
-		Trace:            true,
-		Logtime:          false,
-		HTTPPort:         8222,
-		PidFile:          "/tmp/nats-server.pid",
-		ProfPort:         6543,
-		Syslog:           true,
-		RemoteSyslog:     "udp://foo.com:33",
-		MaxControlLine:   2048,
-		MaxPayload:       65536,
-		MaxConn:          100,
-		MaxSubs:          1000,
-		MaxPending:       10000000,
-		PingInterval:     60 * time.Second,
-		MaxPingsOut:      3,
-		WriteDeadline:    3 * time.Second,
-		LameDuckDuration: 4 * time.Minute,
+		ConfigFile:                    "./configs/test.conf",
+		Host:                          "127.0.0.1",
+		Port:                          4242,
+		Username:                      "derek",
+		Password:                      "porkchop",
+		AuthTimeout:                   1.0,
+		Debug:                         false,
+		Trace:                         true,
+		Logtime:                       false,
+		HTTPPort:                      8222,
+		PidFile:                       "/tmp/nats-server.pid",
+		ProfPort:                      6543,
+		Syslog:                        true,
+		RemoteSyslog:                  "udp://foo.com:33",
+		MaxControlLine:                2048,
+		MaxPayload:                    65536,
+		MaxConn:                       100,
+		MaxSubs:                       1000,
+		MaxPending:                    10000000,
+		PingInterval:                  60 * time.Second,
+		MaxPingsOut:                   3,
+		WriteDeadline:                 3 * time.Second,
+		LameDuckDuration:              4 * time.Minute,
+		ConnectionErrorReportAttempts: 86400,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -257,8 +259,9 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
-		WriteDeadline:    3 * time.Second,
-		LameDuckDuration: 4 * time.Minute,
+		WriteDeadline:                 3 * time.Second,
+		LameDuckDuration:              4 * time.Minute,
+		ConnectionErrorReportAttempts: 86400,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {

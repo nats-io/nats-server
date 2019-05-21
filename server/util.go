@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -111,10 +111,9 @@ func urlsAreEqual(u1, u2 *url.URL) bool {
 	return reflect.DeepEqual(u1, u2)
 }
 
-// Returns true for the first attempt, after a minute and then an hour.
-// It is assumed that each failed attempt is done every second.
-func shouldReportConnectErr(attempts int) bool {
-	if attempts == 1 || attempts == 60 || attempts%3600 == 0 {
+// Returns true for the first attempt and every `reportAttempts`.
+func shouldReportConnectErr(reportAttempts int, attempts int) bool {
+	if attempts == 1 || attempts%reportAttempts == 0 {
 		return true
 	}
 	return false

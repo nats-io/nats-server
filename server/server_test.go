@@ -1143,6 +1143,15 @@ func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
 }
 
 func TestConnErrorReports(t *testing.T) {
+	// Check that default report attempts is as expected
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if ra := s.getOpts().ConnectionErrorReportAttempts; ra != DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS {
+		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS, ra)
+	}
+
 	tmpFile, err := ioutil.TempFile("", "")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
@@ -1153,18 +1162,19 @@ func TestConnErrorReports(t *testing.T) {
 
 	remoteURLs := RoutesFromStr("nats://127.0.0.1:1234")
 
-	opts := DefaultOptions()
+	opts = DefaultOptions()
+	opts.ConnectionErrorReportAttempts = 10
 	opts.Cluster.Port = -1
 	opts.Routes = remoteURLs
 	opts.NoLog = false
 	opts.LogFile = log
 	opts.Logtime = true
 	opts.Debug = true
-	s := RunServer(opts)
+	s = RunServer(opts)
 	defer s.Shutdown()
 
-	// Wait for more than 60 connect attempts. In tests, routeConnectDelay is set to 15ms.
-	time.Sleep(80 * routeConnectDelay)
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(30 * routeConnectDelay)
 	s.Shutdown()
 
 	content, err := ioutil.ReadFile(log)
@@ -1188,12 +1198,18 @@ func TestConnErrorReports(t *testing.T) {
 	// We should find only [DBG] for second attempt...
 	checkContent(t, "[DBG] Error trying to connect to route", 2, true)
 	checkContent(t, "[ERR] Error trying to connect to route", 2, false)
-	// All for 60th
-	checkContent(t, "[DBG] Error trying to connect to route", 60, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 60, true)
-	// Only DBG again for 61
-	checkContent(t, "[DBG] Error trying to connect to route", 61, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 61, false)
+	// Then it should repeat at attempt 10
+	checkContent(t, "[DBG] Error trying to connect to route", 10, true)
+	checkContent(t, "[ERR] Error trying to connect to route", 10, true)
+	// Only DBG again for next
+	checkContent(t, "[DBG] Error trying to connect to route", 11, true)
+	checkContent(t, "[ERR] Error trying to connect to route", 11, false)
+	// Then 20..
+	checkContent(t, "[DBG] Error trying to connect to route", 20, true)
+	checkContent(t, "[ERR] Error trying to connect to route", 20, true)
+	// for 21, only DBG
+	checkContent(t, "[DBG] Error trying to connect to route", 21, true)
+	checkContent(t, "[ERR] Error trying to connect to route", 21, false)
 
 	os.Remove(log)
 
@@ -1205,9 +1221,8 @@ func TestConnErrorReports(t *testing.T) {
 	s = RunServer(opts)
 	defer s.Shutdown()
 
-	// Wait for more than 60 connect attempts. Between each attempt, we will wait
-	// for `opts.LeafNode.ReconnectInterval`.
-	time.Sleep(80 * opts.LeafNode.ReconnectInterval)
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(30 * opts.LeafNode.ReconnectInterval)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
@@ -1221,12 +1236,18 @@ func TestConnErrorReports(t *testing.T) {
 	// For second attempt, only debug
 	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 2, true)
 	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 2, false)
-	// But 60, we should get both again
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 60, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 60, true)
-	// 61, only debug, etc..
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 61, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 61, false)
+	// Then it should repeat at attempt 10
+	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 10, true)
+	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 10, true)
+	// Next, only DBG
+	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 11, true)
+	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 11, false)
+	// Then 20..
+	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 20, true)
+	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 20, true)
+	// Next only DBG...
+	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 21, true)
+	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 21, false)
 
 	os.Remove(log)
 
@@ -1244,8 +1265,8 @@ func TestConnErrorReports(t *testing.T) {
 	s = RunServer(opts)
 	defer s.Shutdown()
 
-	// Wait for more than 60 connect attempts. In tests, gatewayConnectDelay is set to 15ms.
-	time.Sleep(80 * gatewayConnectDelay)
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(30 * gatewayConnectDelay)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
@@ -1266,15 +1287,27 @@ func TestConnErrorReports(t *testing.T) {
 	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, true)
 	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, false)
 
-	// Then all for 60th attempt
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 60, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 60, true)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 60, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 60, true)
+	// All for 10
+	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 10, true)
+	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 10, true)
+	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 10, true)
+	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 10, true)
 
-	// Then again only debug for 61
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 61, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 61, false)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 61, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 61, false)
+	// Next only DBG
+	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 11, true)
+	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 11, false)
+	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 11, true)
+	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 11, false)
+
+	// All for 10
+	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 20, true)
+	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 20, true)
+	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 20, true)
+	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 20, true)
+
+	// Nex, only DBG
+	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 21, true)
+	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 21, false)
+	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 21, true)
+	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 21, false)
 }

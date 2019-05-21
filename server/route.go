@@ -1602,7 +1602,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		if err != nil {
 			attempts++
 			s.Debugf(connErrFmt, attempts, err)
-			if shouldReportConnectErr(attempts) {
+			if shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts) {
 				s.Errorf(connErrFmt, attempts, err)
 			}
 			if !tryForEver {
