@@ -131,7 +131,7 @@ func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
 	// group bar and group baz. So 250 total per queue group.
 	cons := []*nats.Conn{ncA, ncB}
 	for _, c := range cons {
-		for i := 0; i < 125; i++ {
+		for i := 0; i < 100; i++ {
 			qsub, err := c.QueueSubscribe("foo", "bar", barCb)
 			if err != nil {
 				t.Fatalf("Error on subscribe: %v", err)
@@ -150,20 +150,20 @@ func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
 		c.Subscribe("TEST.COMPLETE", func(m *nats.Msg) {})
 	}
 
-	// We coelasce now so for each server we will have all local (250) plus
+	// We coelasce now so for each server we will have all local (200) plus
 	// two from the remote side for each queue group. We also create one more
-	// and will wait til each server has 254 subscriptions, that will make sure
+	// and will wait til each server has 204 subscriptions, that will make sure
 	// that we have everything setup.
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		subsA := srvA.NumSubscriptions()
 		subsB := srvB.NumSubscriptions()
-		if subsA != 254 || subsB != 254 {
+		if subsA != 204 || subsB != 204 {
 			return fmt.Errorf("Not all subs processed yet: %d and %d", subsA, subsB)
 		}
 		return nil
 	})
 
-	expected := int32(250)
+	expected := int32(200)
 	// Now send messages from each server
 	for i := int32(0); i < expected; i++ {
 		c := cons[i%2]

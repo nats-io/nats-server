@@ -599,8 +599,6 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 			c.Debugf("Account JWT can not be found")
 			return false
 		}
-		// FIXME(dlc) - Add in check for account allowed to do leaf nodes?
-		// Bool or active count like client?
 		if !s.isTrustedIssuer(acc.Issuer) {
 			c.Debugf("Account JWT not signed by trusted operator")
 			return false
