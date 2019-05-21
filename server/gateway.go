@@ -1304,6 +1304,10 @@ func (g *gatewayCfg) getURLs() []*url.URL {
 		a = append(a, u)
 	}
 	g.RUnlock()
+	// Map iteration is random, but not that good with small maps.
+	rand.Shuffle(len(a), func(i, j int) {
+		a[i], a[j] = a[j], a[i]
+	})
 	return a
 }
 
