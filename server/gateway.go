@@ -149,6 +149,9 @@ type gateway struct {
 	infoJSON   []byte            // Needed when sending INFO after receiving INFO from remote
 	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
 	insim      map[string]*insie // Per-account subject no-interest sent or modeInterestOnly mode (inbound conn)
+
+	// Set/check in readLoop without lock. This is to know that an inbound has sent the CONNECT protocol first
+	connected bool
 }
 
 // Outbound subject interest entry.
@@ -808,6 +811,15 @@ func (c *client) processGatewayConnect(arg []byte) error {
 		c.closeConnection(WrongGateway)
 		return ErrWrongGateway
 	}
+
+	// For a gateway connection, c.gw is guaranteed not to be nil here
+	// (created in createGateway() and never set to nil).
+	// For inbound connections, it is important to know in the parser
+	// if the CONNECT was received first, so we use this boolean (as
+	// opposed to client.flags that require locking) to indicate that
+	// CONNECT was processed. Again, this boolean is set/read in the
+	// readLoop without locking.
+	c.gw.connected = true
 
 	return nil
 }
