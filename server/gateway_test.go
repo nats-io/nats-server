@@ -3659,6 +3659,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 
 	subA = natsQueueSubSync(t, clientA, "test.request", "queue")
 	natsFlush(t, clientA)
+	checkForRegisteredQSubInterest(t, sb, "A", "$foo", "test.request", 1, time.Second)
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3669,7 +3670,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	// Consume the requests, but don't reply to them...
 	for i := 0; i < 100; i++ {
 		if _, err := subA.NextMsg(time.Second); err != nil {
-			t.Fatalf("subA did not receive request: %v", err)
+			t.Fatalf("subA did not receive request %d: %v", i+1, err)
 		}
 	}
 
@@ -4402,12 +4403,14 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			clientB2 := natsConnect(t, b2URL)
 			defer clientB2.Close()
 			natsSubSync(t, clientB2, "not.used")
+			natsFlush(t, clientB2)
 
 			// Make A2 flood B2 with subjects that B2 is not interested in.
 			for i := 0; i < 1100; i++ {
 				natsPub(t, clientA, fmt.Sprintf("no.interest.%d", i), []byte("hello"))
 			}
 			natsFlush(t, clientA)
+
 			// Wait for B2 to switch to interest-only
 			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 				c := sa2.getOutboundGatewayConnection("B")
