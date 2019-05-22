@@ -15,10 +15,10 @@ go get github.com/nats-io/nats-server
 nats-server
 ```
 
-Install the [Go NATS client](https://github.com/nats-io/go-nats/blob/master/README.md):
+Install the [Go NATS client](https://github.com/nats-io/nats.go/blob/master/README.md):
 
 ```
-go get github.com/nats-io/go-nats
+go get github.com/nats-io/nats.go/
 ```
 
 ## Installation
