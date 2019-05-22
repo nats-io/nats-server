@@ -446,3 +446,36 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	clientSend("UNSUB 1\r\n")
 	gAExpect(runsubRe)
 }
+
+func TestGatewayNoPanicOnBadProtocol(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	for _, test := range []struct {
+		name  string
+		proto string
+	}{
+		{"sub", "SUB > 1\r\n"},
+		{"unsub", "UNSUB 1\r\n"},
+		{"rsub", "RS+ $foo foo 2\r\n"},
+		{"runsub", "RS- $foo foo 2\r\n"},
+		{"pub", "PUB foo 2\r\nok\r\n"},
+		{"anything", "xxxx\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Create raw tcp connection to gateway port
+			client := createClientConn(t, ob.Gateway.Host, ob.Gateway.Port)
+			defer client.Close()
+			clientSend := sendCommand(t, client)
+			clientSend(test.proto)
+		})
+	}
+
+	// Server should not have crashed.
+	client := createClientConn(t, ob.Host, ob.Port)
+	defer client.Close()
+	clientSend, clientExpect := setupConn(t, client)
+	clientSend("PING\r\n")
+	clientExpect(pongRe)
+}

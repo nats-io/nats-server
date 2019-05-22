@@ -127,8 +127,17 @@ func (c *client) parse(buf []byte) error {
 
 		switch c.state {
 		case OP_START:
-			if b != 'C' && b != 'c' && authSet {
-				goto authErr
+			if b != 'C' && b != 'c' {
+				if authSet {
+					goto authErr
+				}
+				// If the connection is a gateway connection, make sure that
+				// if this is an inbound, it starts with a CONNECT.
+				if c.kind == GATEWAY && !c.gw.outbound && !c.gw.connected {
+					// Use auth violation since no CONNECT was sent.
+					// It could be a parseErr too.
+					goto authErr
+				}
 			}
 			switch b {
 			case 'P', 'p':
