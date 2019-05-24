@@ -414,9 +414,9 @@ func TestGatewaySendAllSubs(t *testing.T) {
 	// Bombard B with messages on different subjects.
 	// TODO(ik): Adapt if/when we change the conditions for the
 	// switch.
-	for i := 0; i < 10001; i++ {
+	for i := 0; i < 1010; i++ {
 		gASend(fmt.Sprintf("RMSG $G foo.%d 2\r\nok\r\n", i))
-		if i <= 1000 {
+		if i < 1000 {
 			gAExpect(runsubRe)
 		}
 	}

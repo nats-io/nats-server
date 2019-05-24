@@ -64,7 +64,7 @@ func runMonitorServerNoHTTPPort() *Server {
 }
 
 func resetPreviousHTTPConnections() {
-	http.DefaultTransport = &http.Transport{}
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 }
 
 func TestMyUptime(t *testing.T) {

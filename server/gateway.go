@@ -2366,7 +2366,7 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 			if _, alreadySent := e.ni[string(subject)]; !alreadySent {
 				// TODO(ik): pick some threshold as to when
 				// we need to switch mode
-				if len(e.ni) > gatewayMaxRUnsubBeforeSwitch {
+				if len(e.ni) >= gatewayMaxRUnsubBeforeSwitch {
 					// If too many RS-, switch to all-subs-mode.
 					c.gatewaySwitchAccountToSendAllSubs(e, accName)
 				} else {

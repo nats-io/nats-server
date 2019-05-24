@@ -676,7 +676,12 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	// Trigger a load of the user account on the new server
 	// NOTE: If we do not load the user, the user can be the first
 	// to request this account, hence the connection will succeed.
-	sb.LookupAccount(pub)
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if acc, err := sb.LookupAccount(pub); acc == nil || err != nil {
+			return fmt.Errorf("LookupAccount did not return account or failed, err=%v", err)
+		}
+		return nil
+	})
 
 	// Expect this to fail.
 	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
