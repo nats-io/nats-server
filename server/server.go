@@ -171,6 +171,10 @@ type Server struct {
 	// endpoint /varz (when it comes from http).
 	varzMu sync.Mutex
 	varz   *Varz
+	// This is set during a config reload if we detect that we have
+	// added/removed routes. The monitoring code then check that
+	// to know if it should update the cluster's URLs array.
+	varzUpdateRouteURLs bool
 }
 
 // Make sure all are 64bits for atomic use
