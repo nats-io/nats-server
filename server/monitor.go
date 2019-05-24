@@ -1050,7 +1050,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		MaxSubs: opts.MaxSubs,
 	}
 	if len(opts.Routes) > 0 {
-		varz.Cluster.URLs = convertArrayOfURLsToArrayOfStrings(opts.Routes)
+		varz.Cluster.URLs = urlsToStrings(opts.Routes)
 	}
 	if l := len(gw.Gateways); l > 0 {
 		rgwa := make([]RemoteGatewayOptsVarz, l)
@@ -1080,7 +1080,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	return varz
 }
 
-func convertArrayOfURLsToArrayOfStrings(urls []*url.URL) []string {
+func urlsToStrings(urls []*url.URL) []string {
 	sURLs := make([]string, len(urls))
 	for i, u := range urls {
 		sURLs[i] = u.Host
@@ -1113,7 +1113,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.ConfigLoadTime = s.configTime
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
-		v.Cluster.URLs = convertArrayOfURLsToArrayOfStrings(opts.Routes)
+		v.Cluster.URLs = urlsToStrings(opts.Routes)
 		s.varzUpdateRouteURLs = false
 	}
 }
