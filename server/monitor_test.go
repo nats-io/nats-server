@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"runtime"
 	"sort"
@@ -29,8 +31,6 @@ import (
 	"testing"
 	"time"
 	"unicode"
-
-	"net"
 
 	"github.com/nats-io/nats.go"
 )
@@ -816,6 +816,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 }
 
 func TestConnzSortedByLast(t *testing.T) {
+	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	s := RunServer(opts)
 	defer s.Shutdown()
@@ -1149,7 +1150,7 @@ func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptio
 }
 
 func TestConnzWithRoutes(t *testing.T) {
-
+	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = CLUSTER_PORT
@@ -1909,6 +1910,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 }
 
 func TestRoutezPermissions(t *testing.T) {
+	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
@@ -2156,6 +2158,7 @@ func TestMonitorCluster(t *testing.T) {
 	opts := DefaultMonitorOptions()
 	opts.Cluster.Port = -1
 	opts.Cluster.AuthTimeout = 1
+	opts.Routes = RoutesFromStr("nats://127.0.0.1:1234")
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -2163,6 +2166,7 @@ func TestMonitorCluster(t *testing.T) {
 		opts.Cluster.Host,
 		opts.Cluster.Port,
 		opts.Cluster.AuthTimeout,
+		[]string{"127.0.0.1:1234"},
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2178,7 +2182,7 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", 0, 0}
+		_ = ClusterOptsVarz{"", 0, 0, nil}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2186,9 +2190,108 @@ func TestMonitorCluster(t *testing.T) {
 		v.Cluster.Host = "wrong"
 		v.Cluster.Port = 0
 		v.Cluster.AuthTimeout = 0
+		v.Cluster.URLs = []string{"wrong"}
 		v = pollVarz(t, s, mode, varzURL, nil)
 		check(t, v)
 	}
+}
+
+func TestMonitorClusterURLs(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	o2 := DefaultOptions()
+	o2.Cluster.Host = "127.0.0.1"
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	s2ClusterHostPort := fmt.Sprintf("127.0.0.1:%d", s2.ClusterAddr().Port)
+
+	template := `
+		port: -1
+		http: -1
+		cluster: {
+			port: -1
+			routes [
+				%s
+				%s
+			]
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "nats://"+s2ClusterHostPort, "")))
+	defer os.Remove(conf)
+	s1, _ := RunServerWithConfig(conf)
+	defer s1.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Check /varz cluster{} to see the URLs from s1 to s2
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s1.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s1, mode, varzURL, nil)
+		if n := len(v.Cluster.URLs); n != 1 {
+			t.Fatalf("mode=%v - Expected 1 URL, got %v", mode, n)
+		}
+		if v.Cluster.URLs[0] != s2ClusterHostPort {
+			t.Fatalf("mode=%v - Expected url %q, got %q", mode, s2ClusterHostPort, v.Cluster.URLs[0])
+		}
+	}
+
+	otherClusterHostPort := "127.0.0.1:1234"
+	// Now update the config and add a route
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, "nats://"+s2ClusterHostPort, "nats://"+otherClusterHostPort)))
+
+	if err := s1.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	// Verify cluster still ok
+	checkClusterFormed(t, s1, s2)
+
+	// Now verify that s1 reports in /varz the new URL
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for mode := 0; mode < 2; mode++ {
+			v := pollVarz(t, s1, mode, varzURL, nil)
+			if n := len(v.Cluster.URLs); n != 2 {
+				t.Fatalf("mode=%v - Expected 2 URL, got %v", mode, n)
+			}
+			gotS2 := false
+			gotOther := false
+			for _, u := range v.Cluster.URLs {
+				if u == s2ClusterHostPort {
+					gotS2 = true
+				} else if u == otherClusterHostPort {
+					gotOther = true
+				} else {
+					t.Fatalf("mode=%v - Incorrect url: %q", mode, u)
+				}
+			}
+			if !gotS2 {
+				t.Fatalf("mode=%v - Did not get cluster URL for s2", mode)
+			}
+			if !gotOther {
+				t.Fatalf("mode=%v - Did not get the new cluster URL", mode)
+			}
+		}
+		return nil
+	})
+
+	// Remove all routes from config
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, "", "")))
+
+	if err := s1.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	// Now verify that s1 reports no ULRs in /varz
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for mode := 0; mode < 2; mode++ {
+			v := pollVarz(t, s1, mode, varzURL, nil)
+			if n := len(v.Cluster.URLs); n != 0 {
+				t.Fatalf("mode=%v - Expected 0 URL, got %v", mode, n)
+			}
+		}
+		return nil
+	})
 }
 
 func TestMonitorGateway(t *testing.T) {
@@ -2226,25 +2329,38 @@ func TestMonitorGateway(t *testing.T) {
 		opts.Gateway.TLSTimeout,
 		opts.Gateway.Advertise,
 		opts.Gateway.ConnectRetries,
-		[]RemoteGatewayOptsVarz{
-			{
-				"B",
-				1,
-				[]string{
-					"localhost:1234",
-					"localhost:1235",
-				},
-			},
-		},
+		[]RemoteGatewayOptsVarz{{"B", 1, nil}},
 		opts.Gateway.RejectUnknown,
 	}
+	// Since URLs array is not guaranteed to be always the same order,
+	// we don't add it in the expected GatewayOptsVarz, instead we
+	// maintain here.
+	expectedURLs := []string{"localhost:1234", "localhost:1235"}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
 		check := func(t *testing.T, v *Varz) {
 			t.Helper()
+			var urls []string
+			if len(v.Gateway.Gateways) == 1 {
+				urls = v.Gateway.Gateways[0].URLs
+				v.Gateway.Gateways[0].URLs = nil
+			}
 			if !reflect.DeepEqual(v.Gateway, expected) {
 				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.Gateway)
+			}
+			// Now compare urls
+			for _, u := range expectedURLs {
+				ok := false
+				for _, u2 := range urls {
+					if u == u2 {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					t.Fatalf("mode=%v - expected urls to be %v, got %v", mode, expected.Gateways[0].URLs, urls)
+				}
 			}
 		}
 		v := pollVarz(t, s, mode, varzURL, nil)
@@ -2271,6 +2387,83 @@ func TestMonitorGateway(t *testing.T) {
 		v = pollVarz(t, s, mode, varzURL, nil)
 		check(t, v)
 	}
+}
+
+func TestMonitorGatewayURLsUpdated(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	ob1 := testDefaultOptionsForGateway("B")
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	// Start a1 that has a single URL to sb1.
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb1)
+	oa.HTTPHost = "127.0.0.1"
+	oa.HTTPPort = MONITOR_PORT
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", sa.MonitorAddr().Port)
+	// Check the /varz gateway's URLs
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, sa, mode, varzURL, nil)
+		if n := len(v.Gateway.Gateways); n != 1 {
+			t.Fatalf("mode=%v - Expected 1 remote gateway, got %v", mode, n)
+		}
+		gw := v.Gateway.Gateways[0]
+		if n := len(gw.URLs); n != 1 {
+			t.Fatalf("mode=%v - Expected 1 url, got %v", mode, n)
+		}
+		expected := oa.Gateway.Gateways[0].URLs[0].Host
+		if u := gw.URLs[0]; u != expected {
+			t.Fatalf("mode=%v - Expected URL %q, got %q", mode, expected, u)
+		}
+	}
+
+	// Now start sb2 that clusters with sb1. sa should add to its list of URLs
+	// sb2 gateway's connect URL.
+	ob2 := testDefaultOptionsForGateway("B")
+	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
+	sb2 := runGatewayServer(ob2)
+
+	// Wait for sb1 and sb2 to connect
+	checkClusterFormed(t, sb1, sb2)
+	// sb2 should be made aware of gateway A and connect to sa
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+	// Now check that URLs in /varz get updated
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for mode := 0; mode < 2; mode++ {
+			v := pollVarz(t, sa, mode, varzURL, nil)
+			if n := len(v.Gateway.Gateways); n != 1 {
+				return fmt.Errorf("mode=%v - Expected 1 remote gateway, got %v", mode, n)
+			}
+			gw := v.Gateway.Gateways[0]
+			if n := len(gw.URLs); n != 2 {
+				return fmt.Errorf("mode=%v - Expected 2 urls, got %v", mode, n)
+			}
+
+			gotSB1 := false
+			gotSB2 := false
+			for _, u := range gw.URLs {
+				if u == fmt.Sprintf("127.0.0.1:%d", sb1.GatewayAddr().Port) {
+					gotSB1 = true
+				} else if u == fmt.Sprintf("127.0.0.1:%d", sb2.GatewayAddr().Port) {
+					gotSB2 = true
+				} else {
+					return fmt.Errorf("mode=%v - Incorrect URL to gateway B: %v", mode, u)
+				}
+			}
+			if !gotSB1 {
+				return fmt.Errorf("mode=%v - Did not get URL to sb1", mode)
+			}
+			if !gotSB2 {
+				return fmt.Errorf("mode=%v - Did not get URL to sb2", mode)
+			}
+		}
+		return nil
+	})
 }
 
 func TestMonitorLeafNode(t *testing.T) {

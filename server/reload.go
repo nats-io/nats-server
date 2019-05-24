@@ -306,6 +306,11 @@ func (r *routesOption) Apply(server *Server) {
 		routes[i] = client
 		i++
 	}
+	// If there was a change, notify monitoring code that it should
+	// update the route URLs if /varz endpoint is inspected.
+	if len(r.add)+len(r.remove) > 0 {
+		server.varzUpdateRouteURLs = true
+	}
 	server.mu.Unlock()
 
 	// Remove routes.

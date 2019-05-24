@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"runtime"
 	"sort"
 	"strconv"
@@ -884,9 +885,10 @@ type Varz struct {
 
 // ClusterOptsVarz contains monitoring cluster information
 type ClusterOptsVarz struct {
-	Host        string  `json:"addr,omitempty"`
-	Port        int     `json:"cluster_port,omitempty"`
-	AuthTimeout float64 `json:"auth_timeout,omitempty"`
+	Host        string   `json:"addr,omitempty"`
+	Port        int      `json:"cluster_port,omitempty"`
+	AuthTimeout float64  `json:"auth_timeout,omitempty"`
+	URLs        []string `json:"urls,omitempty"`
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1047,18 +1049,15 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		Start:   s.start,
 		MaxSubs: opts.MaxSubs,
 	}
+	if len(opts.Routes) > 0 {
+		varz.Cluster.URLs = convertArrayOfURLsToArrayOfStrings(opts.Routes)
+	}
 	if l := len(gw.Gateways); l > 0 {
 		rgwa := make([]RemoteGatewayOptsVarz, l)
 		for i, r := range gw.Gateways {
 			rgwa[i] = RemoteGatewayOptsVarz{
 				Name:       r.Name,
 				TLSTimeout: r.TLSTimeout,
-			}
-			if nu := len(r.URLs); nu > 0 {
-				rgwa[i].URLs = make([]string, nu)
-				for j, u := range r.URLs {
-					rgwa[i].URLs[j] = u.Host
-				}
 			}
 		}
 		varz.Gateway.Gateways = rgwa
@@ -1077,8 +1076,16 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	// Finish setting it up with fields that can be updated during
 	// configuration reload and runtime.
 	s.updateVarzConfigReloadableFields(varz)
-	s.updateVarzRuntimeFields(varz, pcpu, rss)
+	s.updateVarzRuntimeFields(varz, true, pcpu, rss)
 	return varz
+}
+
+func convertArrayOfURLsToArrayOfStrings(urls []*url.URL) []string {
+	sURLs := make([]string, len(urls))
+	for i, u := range urls {
+		sURLs[i] = u.Host
+	}
+	return sURLs
 }
 
 // Invoked during configuration reload once options have possibly be changed
@@ -1104,13 +1111,18 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.TLSTimeout = opts.TLSTimeout
 	v.WriteDeadline = opts.WriteDeadline
 	v.ConfigLoadTime = s.configTime
+	// Update route URLs if applicable
+	if s.varzUpdateRouteURLs {
+		v.Cluster.URLs = convertArrayOfURLsToArrayOfStrings(opts.Routes)
+		s.varzUpdateRouteURLs = false
+	}
 }
 
 // Updates the runtime Varz fields, that is, fields that change during
 // runtime and that should be updated any time Varz() or polling of /varz
 // is done.
 // Server lock is held on entry.
-func (s *Server) updateVarzRuntimeFields(v *Varz, pcpu float64, rss int64) {
+func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64, rss int64) {
 	v.Now = time.Now()
 	v.Uptime = myUptime(time.Since(s.start))
 	v.Mem = rss
@@ -1135,6 +1147,36 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, pcpu float64, rss int64) {
 	for key, val := range s.httpReqStats {
 		v.HTTPReqStats[key] = val
 	}
+
+	// Update Gateway remote urls if applicable
+	gw := s.gateway
+	gw.RLock()
+	if gw.enabled {
+		for i := 0; i < len(v.Gateway.Gateways); i++ {
+			g := &v.Gateway.Gateways[i]
+			rgw := gw.remotes[g.Name]
+			if rgw != nil {
+				rgw.RLock()
+				// forceUpdate is needed if user calls Varz() programmatically,
+				// since we need to create a new instance every time and the
+				// gateway's varzUpdateURLs may have been set to false after
+				// a web /varz inspection.
+				if forceUpdate || rgw.varzUpdateURLs {
+					// Make reuse of backend array
+					g.URLs = g.URLs[:0]
+					// rgw.urls is a map[string]*url.URL where the key is
+					// already in the right format (host:port, without any
+					// user info present).
+					for u := range rgw.urls {
+						g.URLs = append(g.URLs, u)
+					}
+					rgw.varzUpdateURLs = false
+				}
+				rgw.RUnlock()
+			}
+		}
+	}
+	gw.RUnlock()
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -1160,7 +1202,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	if s.varz == nil {
 		s.varz = s.createVarz(pcpu, rss)
 	} else {
-		s.updateVarzRuntimeFields(s.varz, pcpu, rss)
+		s.updateVarzRuntimeFields(s.varz, false, pcpu, rss)
 	}
 	s.mu.Unlock()
 

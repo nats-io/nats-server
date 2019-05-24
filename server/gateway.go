@@ -133,11 +133,12 @@ type sitally struct {
 type gatewayCfg struct {
 	sync.RWMutex
 	*RemoteGatewayOpts
-	replyPfx     []byte
-	urls         map[string]*url.URL
-	connAttempts int
-	implicit     bool
-	tlsName      string
+	replyPfx       []byte
+	urls           map[string]*url.URL
+	connAttempts   int
+	tlsName        string
+	implicit       bool
+	varzUpdateURLs bool // Tells monitoring code to update URLs when varz is inspected.
 }
 
 // Struct for client's gateway related fields
@@ -1379,6 +1380,8 @@ func (g *gatewayCfg) addURLs(infoURLs []string) {
 				g.saveTLSHostname(u)
 				// Use u.Host for the key.
 				g.urls[u.Host] = u
+				// Signal that we have updated the list. Used by monitoring code.
+				g.varzUpdateURLs = true
 			}
 		}
 	}
