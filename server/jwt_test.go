@@ -898,12 +898,8 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	activation.ImportType = jwt.Stream
 	now := time.Now()
 	activation.IssuedAt = now.Add(-10 * time.Second).Unix()
-	// These are second resolution. So check that we actually expire in a second and adjust if needed.
-	expires := now.Add(time.Second).Unix()
-	if expires == now.Unix() {
-		expires++
-	}
-	activation.Expires = expires
+	// These are second resolution. So round up before adding a second.
+	activation.Expires = now.Round(time.Second).Add(time.Second).Unix()
 	actJWT, err := activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -938,23 +934,26 @@ func TestJWTAccountImportActivationExpires(t *testing.T) {
 	parseAsync("SUB import.foo 1\r\nPING\r\n")
 	expectPong(cr)
 
-	checkShadow := func(expected int) {
+	checkShadow := func(t *testing.T, expected int) {
 		t.Helper()
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		sub := c.subs["1"]
-		if ls := len(sub.shadow); ls != expected {
-			t.Fatalf("Expected shadows to be %d, got %d", expected, ls)
-		}
+		checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			sub := c.subs["1"]
+			if ls := len(sub.shadow); ls != expected {
+				return fmt.Errorf("Expected shadows to be %d, got %d", expected, ls)
+			}
+			return nil
+		})
 	}
 
 	// We created a SUB on foo which should create a shadow subscription.
-	checkShadow(1)
+	checkShadow(t, 1)
 
 	time.Sleep(1250 * time.Millisecond)
 
 	// Should have expired and been removed.
-	checkShadow(0)
+	checkShadow(t, 0)
 }
 
 func TestJWTAccountLimitsSubs(t *testing.T) {
