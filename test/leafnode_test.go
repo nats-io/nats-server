@@ -539,6 +539,9 @@ func shutdownCluster(c *cluster) {
 // Wait for the expected number of outbound gateways, or fails.
 func waitForOutboundGateways(t *testing.T, s *server.Server, expected int, timeout time.Duration) {
 	t.Helper()
+	if timeout < 2*time.Second {
+		timeout = 2 * time.Second
+	}
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		if n := s.NumOutboundGateways(); n != expected {
 			return fmt.Errorf("Expected %v outbound gateway(s), got %v", expected, n)
@@ -1902,6 +1905,10 @@ func TestLeafNodeResetsMSGProto(t *testing.T) {
 	defer lc.Close()
 
 	leafSend, leafExpect := setupConn(t, lc)
+
+	// To avoid possible INFO when switching to interest mode only,
+	// delay start of gateway.
+	time.Sleep(500 * time.Millisecond)
 
 	gw := createGatewayConn(t, opts.Gateway.Host, opts.Gateway.Port)
 	defer gw.Close()

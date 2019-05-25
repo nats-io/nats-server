@@ -497,9 +497,9 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 		nc.Close()
 	}
 
-	// Wait for all 4 notifications.
+	// Wait for the 4 new notifications, 8 total (4 for connect, 4 for disconnect)
 	checkFor(t, time.Second, 50*time.Millisecond, func() error {
-		if len(received) == 4 {
+		if len(received) == 8 {
 			return nil
 		}
 		return fmt.Errorf("Not enough messages, %d vs 4", len(received))
