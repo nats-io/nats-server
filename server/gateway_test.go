@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -119,6 +120,22 @@ func checkForSubjectNoInterest(t *testing.T, c *client, account, subject string,
 	})
 }
 
+func checkForAccountNoInterest(t *testing.T, c *client, account string, expectedNoInterest bool, timeout time.Duration) {
+	t.Helper()
+	checkFor(t, timeout, 15*time.Millisecond, func() error {
+		ei, ok := c.gw.outsim.Load(account)
+		if !ok && expectedNoInterest {
+			return fmt.Errorf("No-interest for account %q not yet registered", account)
+		} else if ok && !expectedNoInterest {
+			return fmt.Errorf("Account %q should not have a no-interest", account)
+		}
+		if ei != nil {
+			return fmt.Errorf("Account %q should have a global no-interest, not subject no-interest", account)
+		}
+		return nil
+	})
+}
+
 func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	t.Helper()
 	select {
@@ -154,6 +171,15 @@ func natsSubSync(t *testing.T, nc *nats.Conn, subj string) *nats.Subscription {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
 	return sub
+}
+
+func natsNexMsg(t *testing.T, sub *nats.Subscription, timeout time.Duration) *nats.Msg {
+	t.Helper()
+	msg, err := sub.NextMsg(timeout)
+	if err != nil {
+		t.Fatalf("Failed getting next message: %v", err)
+	}
+	return msg
 }
 
 func natsQueueSub(t *testing.T, nc *nats.Conn, subj, queue string, cb nats.MsgHandler) *nats.Subscription {
@@ -321,13 +347,9 @@ func TestGatewayBasic(t *testing.T) {
 	s1.Shutdown()
 	// When s2 detects the connection is closed, it will attempt
 	// to reconnect once (even if the route is implicit).
-	// Wait a bit before restarting s1. For Windows, we need to wait
-	// more than the dialTimeout before restarting the server.
-	wait := 500 * time.Millisecond
-	if runtime.GOOS == "windows" {
-		wait = 1200 * time.Millisecond
-	}
-	time.Sleep(wait)
+	// We need to wait more than a dial timeout to make sure
+	// s1 does not restart too quickly and s2 can actually reconnect.
+	time.Sleep(DEFAULT_ROUTE_DIAL + 250*time.Millisecond)
 	// Restart s1 without gateway to B.
 	o1.Gateway.Gateways = nil
 	s1 = runGatewayServer(o1)
@@ -794,10 +816,10 @@ func TestGatewayTLS(t *testing.T) {
 	s1 = runGatewayServer(o1)
 	defer s1.Shutdown()
 
-	waitForOutboundGateways(t, s1, 1, time.Second)
-	waitForOutboundGateways(t, s2, 1, time.Second)
-	waitForInboundGateways(t, s1, 1, time.Second)
-	waitForInboundGateways(t, s2, 1, time.Second)
+	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+	waitForOutboundGateways(t, s2, 1, 2*time.Second)
+	waitForInboundGateways(t, s1, 1, 2*time.Second)
+	waitForInboundGateways(t, s2, 1, 2*time.Second)
 
 	cfg = s1.getRemoteGateway("B")
 	cfg.RLock()
@@ -2438,8 +2460,8 @@ func TestGatewayComplexSetup(t *testing.T) {
 	}
 	natsFlush(t, ncsa1)
 
-	expectedLow := int(float32(total/2) * 0.7)
-	expectedHigh := int(float32(total/2) * 1.3)
+	expectedLow := int(float32(total/2) * 0.6)
+	expectedHigh := int(float32(total/2) * 1.4)
 	checkCount := func(t *testing.T, count *int32) {
 		t.Helper()
 		c := int(atomic.LoadInt32(count))
@@ -4585,4 +4607,183 @@ func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("Did not get replies")
 	}
+}
+
+func TestGatewayNoAccInterestThenQSubThenRegularSub(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Connect on A and send a message
+	ncA := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+	defer ncA.Close()
+	natsPub(t, ncA, "foo", []byte("hello"))
+	natsFlush(t, ncA)
+
+	// expect an A- on return
+	gwb := sa.getOutboundGatewayConnection("B")
+	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
+
+	// Create a connection o B, and create a queue sub first
+	ncB := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncB.Close()
+	qsub := natsQueueSubSync(t, ncB, "bar", "queue")
+	natsFlush(t, ncB)
+
+	// A should have received a queue interest
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "bar", 1, time.Second)
+
+	// Now on B, create a regular sub
+	sub := natsSubSync(t, ncB, "baz")
+	natsFlush(t, ncB)
+
+	// From A now, produce a message on each subject and
+	// expect both subs to receive their message.
+	msgForQSub := []byte("msg_qsub")
+	natsPub(t, ncA, "bar", msgForQSub)
+	natsFlush(t, ncA)
+
+	if msg := natsNexMsg(t, qsub, time.Second); !bytes.Equal(msgForQSub, msg.Data) {
+		t.Fatalf("Expected msg for queue sub to be %q, got %q", msgForQSub, msg.Data)
+	}
+
+	// Publish for the regular sub
+	msgForSub := []byte("msg_sub")
+	natsPub(t, ncA, "baz", msgForSub)
+	natsFlush(t, ncA)
+
+	if msg := natsNexMsg(t, sub, time.Second); !bytes.Equal(msgForSub, msg.Data) {
+		t.Fatalf("Expected msg for sub to be %q, got %q", msgForSub, msg.Data)
+	}
+}
+
+// Similar to TestGatewayNoAccInterestThenQSubThenRegularSub but simulate
+// older incorrect behavior.
+func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Connect on A and send a message
+	ncA := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+	defer ncA.Close()
+	natsPub(t, ncA, "foo", []byte("hello"))
+	natsFlush(t, ncA)
+
+	// expect an A- on return
+	gwb := sa.getOutboundGatewayConnection("B")
+	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
+
+	// Create a connection o B, and create a queue sub first
+	ncB := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncB.Close()
+	qsub := natsQueueSubSync(t, ncB, "bar", "queue")
+	natsFlush(t, ncB)
+
+	// A should have received a queue interest
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "bar", 1, time.Second)
+
+	// Now on B, create a regular sub
+	sub := natsSubSync(t, ncB, "baz")
+	natsFlush(t, ncB)
+	// and reproduce old, wrong, behavior that would have resulted in sending an A-
+	gwA := getInboundGatewayConnection(sb, "A")
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.mu.Unlock()
+
+	// From A now, produce a message on each subject and
+	// expect both subs to receive their message.
+	msgForQSub := []byte("msg_qsub")
+	natsPub(t, ncA, "bar", msgForQSub)
+	natsFlush(t, ncA)
+
+	if msg := natsNexMsg(t, qsub, time.Second); !bytes.Equal(msgForQSub, msg.Data) {
+		t.Fatalf("Expected msg for queue sub to be %q, got %q", msgForQSub, msg.Data)
+	}
+
+	// Publish for the regular sub
+	msgForSub := []byte("msg_sub")
+	natsPub(t, ncA, "baz", msgForSub)
+	natsFlush(t, ncA)
+
+	if msg := natsNexMsg(t, sub, time.Second); !bytes.Equal(msgForSub, msg.Data) {
+		t.Fatalf("Expected msg for sub to be %q, got %q", msgForSub, msg.Data)
+	}
+
+	// Remove all subs on B.
+	qsub.Unsubscribe()
+	sub.Unsubscribe()
+	ncB.Flush()
+
+	// Produce a message from A expect A-
+	natsPub(t, ncA, "foo", []byte("hello"))
+	natsFlush(t, ncA)
+
+	// expect an A- on return
+	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
+
+	// Simulate B sending another A-, on A account no interest should remain same.
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.mu.Unlock()
+
+	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
+
+	// Create a queue sub on B
+	qsub = natsQueueSubSync(t, ncB, "bar", "queue")
+	natsFlush(t, ncB)
+
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "bar", 1, time.Second)
+
+	// Make B send an A+ and verify that we sitll have the registered qsub interest
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.mu.Unlock()
+
+	// Give a chance to A to possibly misbehave when receiving this proto
+	time.Sleep(250 * time.Millisecond)
+	// Now check interest is still there
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "bar", 1, time.Second)
+
+	qsub.Unsubscribe()
+	natsFlush(t, ncB)
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "bar", 0, time.Second)
+
+	// Send A-, server A should set entry to nil
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.mu.Unlock()
+	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
+
+	// Send A+ and entry should be removed since there is no longer reason to
+	// keep the entry.
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.mu.Unlock()
+	checkForAccountNoInterest(t, gwb, globalAccountName, false, time.Second)
+
+	// Last A+ should not change because account already removed from map.
+	gwA.mu.Lock()
+	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.mu.Unlock()
+	checkForAccountNoInterest(t, gwb, globalAccountName, false, time.Second)
 }
