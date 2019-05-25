@@ -1218,6 +1218,317 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
+// GatewayzOptions are the options passed to Gatewayz()
+type GatewayzOptions struct {
+	// Name will output only remote gateways with this name
+	Name string
+
+	// Accounts indicates if accounts with its interest should be included in the results.
+	Accounts bool
+
+	// AccountName will limit the list of accounts to that account name (makes Accounts implicit)
+	AccountName string
+}
+
+// Gatewayz represents detailed information on Gateways
+type Gatewayz struct {
+	ID               string                       `json:"server_id"`
+	Now              time.Time                    `json:"now"`
+	Name             string                       `json:"name,omitempty"`
+	Host             string                       `json:"host,omitempty"`
+	Port             int                          `json:"port,omitempty"`
+	OutboundGateways map[string]*RemoteGatewayz   `json:"outbound_gateways"`
+	InboundGateways  map[string][]*RemoteGatewayz `json:"inbound_gateways"`
+}
+
+// RemoteGatewayz represents information about an outbound connection to a gateway
+type RemoteGatewayz struct {
+	IsConfigured bool               `json:"configured"`
+	Connection   *ConnInfo          `json:"connection,omitempty"`
+	Accounts     []*AccountGatewayz `json:"accounts,omitempty"`
+}
+
+// AccountGatewayz represents interest mode for this account
+type AccountGatewayz struct {
+	Name                  string `json:"name"`
+	InterestMode          string `json:"interest_mode"`
+	NoInterestCount       int    `json:"no_interest_count,omitempty"`
+	InterestOnlyThreshold int    `json:"interest_only_threshold,omitempty"`
+	TotalSubscriptions    int    `json:"num_subs,omitempty"`
+	NumQueueSubscriptions int    `json:"num_queue_subs,omitempty"`
+}
+
+// Gatewayz returns a Gatewayz struct containing information about gateways.
+func (s *Server) Gatewayz(opts *GatewayzOptions) (*Gatewayz, error) {
+	srvID := s.ID()
+	now := time.Now()
+	gw := s.gateway
+	gw.RLock()
+	if !gw.enabled {
+		gw.RUnlock()
+		gwz := &Gatewayz{
+			ID:               srvID,
+			Now:              now,
+			OutboundGateways: map[string]*RemoteGatewayz{},
+			InboundGateways:  map[string][]*RemoteGatewayz{},
+		}
+		return gwz, nil
+	}
+	// Here gateways are enabled, so fill up more.
+	gwz := &Gatewayz{
+		ID:   srvID,
+		Now:  now,
+		Name: gw.name,
+		Host: gw.info.Host,
+		Port: gw.info.Port,
+	}
+	gw.RUnlock()
+
+	gwz.OutboundGateways = s.createOutboundsRemoteGatewayz(opts, now)
+	gwz.InboundGateways = s.createInboundsRemoteGatewayz(opts, now)
+
+	return gwz, nil
+}
+
+// Based on give options struct, returns if there is a filtered
+// Gateway Name and if we should do report Accounts.
+// Note that if Accounts is false but AccountName is not empty,
+// then Accounts is implicitly set to true.
+func getMonitorGWOptions(opts *GatewayzOptions) (string, bool) {
+	var name string
+	var accs bool
+	if opts != nil {
+		if opts.Name != _EMPTY_ {
+			name = opts.Name
+		}
+		accs = opts.Accounts
+		if !accs && opts.AccountName != _EMPTY_ {
+			accs = true
+		}
+	}
+	return name, accs
+}
+
+// Returns a map of gateways outbound connections.
+// Based on options, will include a single or all gateways,
+// with no/single/or all accounts interest information.
+func (s *Server) createOutboundsRemoteGatewayz(opts *GatewayzOptions, now time.Time) map[string]*RemoteGatewayz {
+	targetGWName, doAccs := getMonitorGWOptions(opts)
+
+	if targetGWName != _EMPTY_ {
+		c := s.getOutboundGatewayConnection(targetGWName)
+		if c == nil {
+			return nil
+		}
+		outbounds := make(map[string]*RemoteGatewayz, 1)
+		_, rgw := createOutboundRemoteGatewayz(c, opts, now, doAccs)
+		outbounds[targetGWName] = rgw
+		return outbounds
+	}
+
+	var connsa [16]*client
+	var conns = connsa[:0]
+
+	s.getOutboundGatewayConnections(&conns)
+
+	outbounds := make(map[string]*RemoteGatewayz, len(conns))
+	for _, c := range conns {
+		name, rgw := createOutboundRemoteGatewayz(c, opts, now, doAccs)
+		if rgw != nil {
+			outbounds[name] = rgw
+		}
+	}
+	return outbounds
+}
+
+// Returns a RemoteGatewayz for a given outbound gw connection
+func createOutboundRemoteGatewayz(c *client, opts *GatewayzOptions, now time.Time, doAccs bool) (string, *RemoteGatewayz) {
+	var name string
+	var rgw *RemoteGatewayz
+
+	c.mu.Lock()
+	if c.gw != nil {
+		rgw = &RemoteGatewayz{}
+		if doAccs {
+			rgw.Accounts = createOutboundAccountsGatewayz(opts, c.gw)
+		}
+		if c.gw.cfg != nil {
+			rgw.IsConfigured = !c.gw.cfg.isImplicit()
+		}
+		rgw.Connection = &ConnInfo{}
+		rgw.Connection.fill(c, c.nc, now)
+		name = c.gw.name
+	}
+	c.mu.Unlock()
+
+	return name, rgw
+}
+
+// Returns the list of accounts for this outbound gateway connection.
+// Based on the options, it will be a single or all accounts for
+// this outbound.
+func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*AccountGatewayz {
+	if gw.outsim == nil {
+		return nil
+	}
+
+	var accName string
+	if opts != nil {
+		accName = opts.AccountName
+	}
+	if accName != _EMPTY_ {
+		ei, ok := gw.outsim.Load(accName)
+		if !ok {
+			return nil
+		}
+		a := createAccountOutboundGatewayz(accName, ei)
+		return []*AccountGatewayz{a}
+	}
+
+	accs := make([]*AccountGatewayz, 0, 4)
+	gw.outsim.Range(func(k, v interface{}) bool {
+		name := k.(string)
+		a := createAccountOutboundGatewayz(name, v)
+		accs = append(accs, a)
+		return true
+	})
+	return accs
+}
+
+// Returns an AccountGatewayz for this gateway outbound connection
+func createAccountOutboundGatewayz(name string, ei interface{}) *AccountGatewayz {
+	a := &AccountGatewayz{
+		Name:                  name,
+		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
+	}
+	if ei != nil {
+		e := ei.(*outsie)
+		e.RLock()
+		a.InterestMode = e.mode.String()
+		a.NoInterestCount = len(e.ni)
+		a.NumQueueSubscriptions = e.qsubs
+		a.TotalSubscriptions = int(e.sl.Count())
+		e.RUnlock()
+	} else {
+		a.InterestMode = Optimistic.String()
+	}
+	return a
+}
+
+// Returns a map of gateways inbound connections.
+// Each entry is an array of RemoteGatewayz since a given server
+// may have more than one inbound from the same remote gateway.
+// Based on options, will include a single or all gateways,
+// with no/single/or all accounts interest information.
+func (s *Server) createInboundsRemoteGatewayz(opts *GatewayzOptions, now time.Time) map[string][]*RemoteGatewayz {
+	targetGWName, doAccs := getMonitorGWOptions(opts)
+
+	var connsa [16]*client
+	var conns = connsa[:0]
+	s.getInboundGatewayConnections(&conns)
+
+	m := make(map[string][]*RemoteGatewayz)
+	for _, c := range conns {
+		c.mu.Lock()
+		if c.gw != nil && (targetGWName == _EMPTY_ || targetGWName == c.gw.name) {
+			igws := m[c.gw.name]
+			if igws == nil {
+				igws = make([]*RemoteGatewayz, 0, 2)
+			}
+			rgw := &RemoteGatewayz{}
+			if doAccs {
+				rgw.Accounts = createInboundAccountsGatewayz(opts, c.gw)
+			}
+			rgw.Connection = &ConnInfo{}
+			rgw.Connection.fill(c, c.nc, now)
+			igws = append(igws, rgw)
+			m[c.gw.name] = igws
+		}
+		c.mu.Unlock()
+	}
+	return m
+}
+
+// Returns the list of accounts for this inbound gateway connection.
+// Based on the options, it will be a single or all accounts for
+// this inbound.
+func createInboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*AccountGatewayz {
+	if gw.insim == nil {
+		return nil
+	}
+
+	var accName string
+	if opts != nil {
+		accName = opts.AccountName
+	}
+	if accName != _EMPTY_ {
+		e, ok := gw.insim[accName]
+		if !ok {
+			return nil
+		}
+		a := createInboundAccountGatewayz(accName, e)
+		return []*AccountGatewayz{a}
+	}
+
+	accs := make([]*AccountGatewayz, 0, 4)
+	for name, e := range gw.insim {
+		a := createInboundAccountGatewayz(name, e)
+		accs = append(accs, a)
+	}
+	return accs
+}
+
+// Returns an AccountGatewayz for this gateway inbound connection
+func createInboundAccountGatewayz(name string, e *insie) *AccountGatewayz {
+	a := &AccountGatewayz{
+		Name:                  name,
+		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
+	}
+	if e != nil {
+		a.InterestMode = e.mode.String()
+		a.NoInterestCount = len(e.ni)
+	} else {
+		a.InterestMode = Optimistic.String()
+	}
+	return a
+}
+
+// HandleGatewayz process HTTP requests for route information.
+func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[GatewayzPath]++
+	s.mu.Unlock()
+
+	accs, err := decodeBool(w, r, "accs")
+	if err != nil {
+		return
+	}
+	gwName := r.URL.Query().Get("gw_name")
+	accName := r.URL.Query().Get("acc_name")
+	if accName != _EMPTY_ {
+		accs = true
+	}
+
+	opts := &GatewayzOptions{
+		Name:        gwName,
+		Accounts:    accs,
+		AccountName: accName,
+	}
+	gw, err := s.Gatewayz(opts)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	b, err := json.MarshalIndent(gw, "", "  ")
+	if err != nil {
+		s.Errorf("Error marshaling response to /gatewayz request: %v", err)
+	}
+
+	// Handle response
+	ResponseHandler(w, r, b)
+}
+
 // ResponseHandler handles responses for monitoring routes
 func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 	// Get callback from request

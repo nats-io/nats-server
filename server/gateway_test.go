@@ -3031,7 +3031,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		var switchedMode bool
 		e := c.gw.insim[globalAccountName]
 		if e != nil {
-			switchedMode = e.ni == nil && e.mode == modeInterestOnly
+			switchedMode = e.ni == nil && e.mode == InterestOnly
 		}
 		c.mu.Unlock()
 		if !switchedMode {
@@ -3044,7 +3044,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		if ei != nil {
 			e := ei.(*outsie)
 			e.RLock()
-			switchedMode = e.ni == nil && e.mode == modeInterestOnly
+			switchedMode = e.ni == nil && e.mode == InterestOnly
 			e.RUnlock()
 		}
 		if !switchedMode {
@@ -3457,7 +3457,7 @@ func TestGatewayServiceImport(t *testing.T) {
 		outsie.RLock()
 		mode := outsie.mode
 		outsie.RUnlock()
-		if mode != modeInterestOnly {
+		if mode != InterestOnly {
 			return fmt.Errorf("Should have switched to interest only mode")
 		}
 		return nil
@@ -3764,7 +3764,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		outsie.RLock()
 		mode := outsie.mode
 		outsie.RUnlock()
-		if mode != modeInterestOnly {
+		if mode != InterestOnly {
 			return fmt.Errorf("Should have switched to interest only mode")
 		}
 		return nil
@@ -4105,7 +4105,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 		outsie.RLock()
 		mode := outsie.mode
 		outsie.RUnlock()
-		if mode != modeInterestOnly {
+		if mode != InterestOnly {
 			return fmt.Errorf("Not in interest-only mode yet")
 		}
 		return nil
@@ -4454,7 +4454,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				outsie.RLock()
 				mode := outsie.mode
 				outsie.RUnlock()
-				if mode != modeInterestOnly {
+				if mode != InterestOnly {
 					return fmt.Errorf("Not in interest-only mode yet")
 				}
 				return nil

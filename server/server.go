@@ -1332,12 +1332,13 @@ func (s *Server) StartMonitoring() error {
 
 // HTTP endpoints
 const (
-	RootPath    = "/"
-	VarzPath    = "/varz"
-	ConnzPath   = "/connz"
-	RoutezPath  = "/routez"
-	SubszPath   = "/subsz"
-	StackszPath = "/stacksz"
+	RootPath     = "/"
+	VarzPath     = "/varz"
+	ConnzPath    = "/connz"
+	RoutezPath   = "/routez"
+	GatewayzPath = "/gatewayz"
+	SubszPath    = "/subsz"
+	StackszPath  = "/stacksz"
 )
 
 // Start the monitoring server
@@ -1347,11 +1348,12 @@ func (s *Server) startMonitoring(secure bool) error {
 
 	// Used to track HTTP requests
 	s.httpReqStats = map[string]uint64{
-		RootPath:   0,
-		VarzPath:   0,
-		ConnzPath:  0,
-		RoutezPath: 0,
-		SubszPath:  0,
+		RootPath:     0,
+		VarzPath:     0,
+		ConnzPath:    0,
+		RoutezPath:   0,
+		GatewayzPath: 0,
+		SubszPath:    0,
 	}
 
 	var (
@@ -1400,6 +1402,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(ConnzPath, s.HandleConnz)
 	// Routez
 	mux.HandleFunc(RoutezPath, s.HandleRoutez)
+	// Gatewayz
+	mux.HandleFunc(GatewayzPath, s.HandleGatewayz)
 	// Subz
 	mux.HandleFunc(SubszPath, s.HandleSubsz)
 	// Subz alias for backwards compatibility
