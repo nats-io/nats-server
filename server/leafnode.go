@@ -59,7 +59,7 @@ func (c *client) isSolicitedLeafNode() bool {
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 	for _, r := range remotes {
 		remote := newLeafNodeCfg(r)
-		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote) })
+		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
 	}
 }
 
@@ -97,7 +97,7 @@ func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
 		s.grWG.Done()
 		return
 	}
-	s.connectToRemoteLeafNode(remote)
+	s.connectToRemoteLeafNode(remote, false)
 }
 
 // Creates a leafNodeCfg object that wraps the RemoteLeafOpts.
@@ -149,7 +149,7 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 	}
 }
 
-func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
+func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool) {
 	defer s.grWG.Done()
 
 	if remote == nil || remote.URL == nil {
@@ -182,9 +182,10 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg) {
 		}
 		if err != nil {
 			attempts++
-			s.Debugf(connErrFmt, attempts, err)
-			if shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts) {
+			if s.shouldReportConnectErr(firstConnect, attempts) {
 				s.Errorf(connErrFmt, attempts, err)
+			} else {
+				s.Debugf(connErrFmt, attempts, err)
 			}
 			select {
 			case <-s.quitCh:

@@ -110,11 +110,3 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 func urlsAreEqual(u1, u2 *url.URL) bool {
 	return reflect.DeepEqual(u1, u2)
 }
-
-// Returns true for the first attempt and every `reportAttempts`.
-func shouldReportConnectErr(reportAttempts int, attempts int) bool {
-	if attempts == 1 || attempts%reportAttempts == 0 {
-		return true
-	}
-	return false
-}

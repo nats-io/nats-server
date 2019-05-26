@@ -2123,6 +2123,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	ob2 := testDefaultOptionsForGateway("B")
 	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob1.Cluster.Host, ob1.Cluster.Port))
 	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
 
 	checkClusterFormed(t, sb1, sb2)
 
