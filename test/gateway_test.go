@@ -461,6 +461,8 @@ func TestGatewayNoPanicOnBadProtocol(t *testing.T) {
 		{"rsub", "RS+ $foo foo 2\r\n"},
 		{"runsub", "RS- $foo foo 2\r\n"},
 		{"pub", "PUB foo 2\r\nok\r\n"},
+		{"msg", "MSG foo 2\r\nok\r\n"},
+		{"rmsg", "RMSG $foo foo 2\r\nok\r\n"},
 		{"anything", "xxxx\r\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -478,4 +480,39 @@ func TestGatewayNoPanicOnBadProtocol(t *testing.T) {
 	clientSend, clientExpect := setupConn(t, client)
 	clientSend("PING\r\n")
 	clientExpect(pongRe)
+}
+
+func TestGatewayNoAccUnsubAfterQSub(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
+	defer gA.Close()
+
+	gASend, gAExpect := setupGatewayConn(t, gA, "A", "B")
+	gASend("PING\r\n")
+	gAExpect(pongRe)
+
+	// Simulate a client connecting to A and publishing a message
+	// so we get an A- from B since there is no interest.
+	gASend("RMSG $G foo 2\r\nok\r\n")
+	gAExpect(aunsubRe)
+
+	// Now create client on B and create queue sub.
+	client := createClientConn(t, ob.Host, ob.Port)
+	defer client.Close()
+	clientSend, clientExpect := setupConn(t, client)
+
+	clientSend("SUB bar queue 1\r\nPING\r\n")
+	clientExpect(pongRe)
+
+	// A should receive an RS+ for this queue sub.
+	gAExpect(rsubRe)
+
+	// On B, create a plain sub now. We should get nothing.
+	clientSend("SUB baz 2\r\nPING\r\n")
+	clientExpect(pongRe)
+
+	expectNothing(t, gA)
 }

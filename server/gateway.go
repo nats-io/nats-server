@@ -1580,7 +1580,27 @@ func (s *Server) GatewayAddr() *net.TCPAddr {
 func (c *client) processGatewayAccountUnsub(accName string) {
 	// Just to indicate activity around "subscriptions" events.
 	c.in.subs++
-	c.gw.outsim.Store(accName, nil)
+	// This account may have an entry because of queue subs.
+	// If that's the case, we can reset the no-interest map,
+	// but not set the entry to nil.
+	setToNil := true
+	if ei, ok := c.gw.outsim.Load(accName); ei != nil {
+		e := ei.(*outsie)
+		e.Lock()
+		// Reset the no-interest map if we have queue subs
+		// and don't set the entry to nil.
+		if e.qsubs > 0 {
+			e.ni = make(map[string]struct{})
+			setToNil = false
+		}
+		e.Unlock()
+	} else if ok {
+		// Already set to nil, so skip
+		setToNil = false
+	}
+	if setToNil {
+		c.gw.outsim.Store(accName, nil)
+	}
 }
 
 // A+ protocol received from remote gateway if it had previously
@@ -1589,7 +1609,23 @@ func (c *client) processGatewayAccountUnsub(accName string) {
 func (c *client) processGatewayAccountSub(accName string) error {
 	// Just to indicate activity around "subscriptions" events.
 	c.in.subs++
-	c.gw.outsim.Delete(accName)
+	// If this account has an entry because of queue subs, we
+	// can't delete the entry.
+	remove := true
+	if ei, ok := c.gw.outsim.Load(accName); ei != nil {
+		e := ei.(*outsie)
+		e.Lock()
+		if e.qsubs > 0 {
+			remove = false
+		}
+		e.Unlock()
+	} else if !ok {
+		// There is no entry, so skip
+		remove = false
+	}
+	if remove {
+		c.gw.outsim.Delete(accName)
+	}
 	return nil
 }
 
@@ -2006,6 +2042,15 @@ func (s *Server) sendQueueSubOrUnsubToGateways(accName string, qsub *subscriptio
 			proto = append(proto, CR_LF...)
 		}
 		c.mu.Lock()
+		// If we add a queue sub, and we had previously sent an A-,
+		// we don't need to send an A+ here, but we need to clear
+		// the fact that we did sent the A- so that we don't send
+		// an A+ when we will get the first non-queue sub registered.
+		if added {
+			if ei, ok := c.gw.insim[accName]; ok && ei == nil {
+				delete(c.gw.insim, accName)
+			}
+		}
 		c.sendProto(proto, false)
 		if c.trace {
 			c.traceOutOp("", proto[:len(proto)-LEN_CR_LF])
