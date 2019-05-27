@@ -39,6 +39,9 @@ func init() {
 // Wait for the expected number of outbound gateways, or fails.
 func waitForOutboundGateways(t *testing.T, s *Server, expected int, timeout time.Duration) {
 	t.Helper()
+	if timeout < 2*time.Second {
+		timeout = 2 * time.Second
+	}
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		if n := s.numOutboundGateways(); n != expected {
 			return fmt.Errorf("Expected %v outbound gateway(s), got %v", expected, n)
@@ -50,6 +53,9 @@ func waitForOutboundGateways(t *testing.T, s *Server, expected int, timeout time
 // Wait for the expected number of inbound gateways, or fails.
 func waitForInboundGateways(t *testing.T, s *Server, expected int, timeout time.Duration) {
 	t.Helper()
+	if timeout < 2*time.Second {
+		timeout = 2 * time.Second
+	}
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		if n := s.numInboundGateways(); n != expected {
 			return fmt.Errorf("Expected %v inbound gateway(s), got %v", expected, n)
@@ -2123,6 +2129,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	ob2 := testDefaultOptionsForGateway("B")
 	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob1.Cluster.Host, ob1.Cluster.Port))
 	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
 
 	checkClusterFormed(t, sb1, sb2)
 
@@ -3128,7 +3135,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
 		c = getInboundGatewayConnection(sa, "A")
 		if c == nil {
-			t.Fatalf("Did not reconnect")
+			return fmt.Errorf("Did not reconnect")
 		}
 		return nil
 	})

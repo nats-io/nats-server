@@ -2427,6 +2427,7 @@ func TestMonitorGatewayURLsUpdated(t *testing.T) {
 	ob2 := testDefaultOptionsForGateway("B")
 	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
 	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
 
 	// Wait for sb1 and sb2 to connect
 	checkClusterFormed(t, sb1, sb2)
