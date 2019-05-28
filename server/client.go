@@ -3097,3 +3097,8 @@ func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Tracef(format, v...)
 }
+
+func (c *client) Warnf(format string, v ...interface{}) {
+	format = fmt.Sprintf("%s - %s", c, format)
+	c.srv.Warnf(format, v...)
+}
