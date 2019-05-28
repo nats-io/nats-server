@@ -187,14 +187,15 @@ type Options struct {
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
 
-	// ConnectionErrorReportAttempts is the number of consecutive failed
-	// attempts to connect a route, gateway or leaf node at which point
-	// the server report the failure in the log. This is to prevent
-	// lots of errors when a configured endpoint is offline for a longer
-	// period of time.
-	// Default is DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS (3600) which
-	// means that the server will report the error every hour.
-	ConnectionErrorReportAttempts int
+	// ConnectErrorReports specifies the number of failed attempts
+	// at which point server should report the failure of an initial
+	// connection to a route, gateway or leaf node.
+	// See DEFAULT_CONNECT_ERROR_REPORTS for default value.
+	ConnectErrorReports int
+
+	// ReconnectErrorReports is similar to ConnectErrorReports except
+	// that this applies to reconnect events.
+	ReconnectErrorReports int
 
 	// private fields, used to know if bool options are explicitly
 	// defined in config and/or command line params.
@@ -687,8 +688,10 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 					errors = append(errors, err)
 				}
 			}
-		case "connection_error_report_attempts":
-			o.ConnectionErrorReportAttempts = int(v.(int64))
+		case "connect_error_reports":
+			o.ConnectErrorReports = int(v.(int64))
+		case "reconnect_error_reports":
+			o.ReconnectErrorReports = int(v.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2432,8 +2435,11 @@ func setBaselineOptions(opts *Options) {
 			opts.Gateway.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 		}
 	}
-	if opts.ConnectionErrorReportAttempts == 0 {
-		opts.ConnectionErrorReportAttempts = DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS
+	if opts.ConnectErrorReports == 0 {
+		opts.ConnectErrorReports = DEFAULT_CONNECT_ERROR_REPORTS
+	}
+	if opts.ReconnectErrorReports == 0 {
+		opts.ReconnectErrorReports = DEFAULT_RECONNECT_ERROR_REPORTS
 	}
 }
 

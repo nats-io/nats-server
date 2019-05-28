@@ -507,6 +507,30 @@ func (a *accountsOption) Apply(s *Server) {
 	s.Noticef("Reloaded: accounts")
 }
 
+// connectErrorReports implements the option interface for the `connect_error_reports`
+// setting.
+type connectErrorReports struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the value will be reloaded after options are applied.
+func (c *connectErrorReports) Apply(s *Server) {
+	s.Noticef("Reloaded: connect_error_reports = %v", c.newValue)
+}
+
+// connectErrorReports implements the option interface for the `connect_error_reports`
+// setting.
+type reconnectErrorReports struct {
+	noopOption
+	newValue int
+}
+
+// Apply is a no-op because the value will be reloaded after options are applied.
+func (r *reconnectErrorReports) Apply(s *Server) {
+	s.Noticef("Reloaded: reconnect_error_reports = %v", r.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -741,6 +765,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "connecterrorreports":
+			diffOpts = append(diffOpts, &connectErrorReports{newValue: newValue.(int)})
+		case "reconnecterrorreports":
+			diffOpts = append(diffOpts, &reconnectErrorReports{newValue: newValue.(int)})
 		case "nolog", "nosigs":
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.

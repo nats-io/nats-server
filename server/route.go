@@ -586,7 +586,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	if info.AuthRequired {
 		r.User = url.UserPassword(opts.Cluster.Username, opts.Cluster.Password)
 	}
-	s.startGoRoutine(func() { s.connectToRoute(r, false) })
+	s.startGoRoutine(func() { s.connectToRoute(r, false, true) })
 }
 
 // hasThisRouteConfigured returns true if info.Host:info.Port is present
@@ -1571,7 +1571,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 		s.grWG.Done()
 		return
 	}
-	s.connectToRoute(rURL, tryForEver)
+	s.connectToRoute(rURL, tryForEver, false)
 }
 
 // Checks to make sure the route is still valid.
@@ -1584,7 +1584,7 @@ func (s *Server) routeStillValid(rURL *url.URL) bool {
 	return false
 }
 
-func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
+func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -1601,9 +1601,10 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver bool) {
 		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			attempts++
-			s.Debugf(connErrFmt, attempts, err)
-			if shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts) {
+			if s.shouldReportConnectErr(firstConnect, attempts) {
 				s.Errorf(connErrFmt, attempts, err)
+			} else {
+				s.Debugf(connErrFmt, attempts, err)
 			}
 			if !tryForEver {
 				if opts.Cluster.ConnectRetries <= 0 {
@@ -1642,7 +1643,7 @@ func (c *client) isSolicitedRoute() bool {
 func (s *Server) solicitRoutes(routes []*url.URL) {
 	for _, r := range routes {
 		route := r
-		s.startGoRoutine(func() { s.connectToRoute(route, true) })
+		s.startGoRoutine(func() { s.connectToRoute(route, true, true) })
 	}
 }
 

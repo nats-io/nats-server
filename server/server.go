@@ -2370,3 +2370,20 @@ func (s *Server) getRandomIP(resolver netResolver, url string) (string, error) {
 	}
 	return address, nil
 }
+
+// Returns true for the first attempt and depending on the nature
+// of the attempt (first connect or a reconnect), when the number
+// of attempts is equal to the configured report attempts.
+func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
+	opts := s.getOpts()
+	if firstConnect {
+		if attempts == 1 || attempts%opts.ConnectErrorReports == 0 {
+			return true
+		}
+		return false
+	}
+	if attempts == 1 || attempts%opts.ReconnectErrorReports == 0 {
+		return true
+	}
+	return false
+}

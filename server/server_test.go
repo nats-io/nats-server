@@ -1142,14 +1142,14 @@ func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
 	checkServerFails(t, o)
 }
 
-func TestConnErrorReports(t *testing.T) {
+func TestConnectErrorReports(t *testing.T) {
 	// Check that default report attempts is as expected
 	opts := DefaultOptions()
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	if ra := s.getOpts().ConnectionErrorReportAttempts; ra != DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS {
-		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_CONNECTION_ERROR_REPORT_ATTEMPTS, ra)
+	if ra := s.getOpts().ConnectErrorReports; ra != DEFAULT_CONNECT_ERROR_REPORTS {
+		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_CONNECT_ERROR_REPORTS, ra)
 	}
 
 	tmpFile, err := ioutil.TempFile("", "")
@@ -1163,7 +1163,7 @@ func TestConnErrorReports(t *testing.T) {
 	remoteURLs := RoutesFromStr("nats://127.0.0.1:1234")
 
 	opts = DefaultOptions()
-	opts.ConnectionErrorReportAttempts = 3
+	opts.ConnectErrorReports = 3
 	opts.Cluster.Port = -1
 	opts.Routes = remoteURLs
 	opts.NoLog = false
@@ -1192,24 +1192,25 @@ func TestConnErrorReports(t *testing.T) {
 		}
 	}
 
-	// We should find both [DBG] and [ERR] for the failed first attempt
-	checkContent(t, "[DBG] Error trying to connect to route", 1, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 1, true)
-	// We should find only [DBG] for second attempt...
-	checkContent(t, "[DBG] Error trying to connect to route", 2, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 2, false)
-	// Then it should repeat at attempt 3
-	checkContent(t, "[DBG] Error trying to connect to route", 3, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 3, true)
-	// Only DBG again for next
-	checkContent(t, "[DBG] Error trying to connect to route", 4, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 4, false)
-	// Then 6..
-	checkContent(t, "[DBG] Error trying to connect to route", 6, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 6, true)
-	// for 7, only DBG
-	checkContent(t, "[DBG] Error trying to connect to route", 7, true)
-	checkContent(t, "[ERR] Error trying to connect to route", 7, false)
+	type testConnect struct {
+		name        string
+		attempt     int
+		errExpected bool
+	}
+	for _, test := range []testConnect{
+		{"route_attempt_1", 1, true},
+		{"route_attempt_2", 2, false},
+		{"route_attempt_3", 3, true},
+		{"route_attempt_4", 4, false},
+		{"route_attempt_6", 6, true},
+		{"route_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			checkContent(t, "[DBG] Error trying to connect to route", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect to route", test.attempt, test.errExpected)
+		})
+	}
 
 	os.Remove(log)
 
@@ -1230,24 +1231,20 @@ func TestConnErrorReports(t *testing.T) {
 		t.Fatalf("Error reading log file: %v", err)
 	}
 
-	// We should find both [DBG] and [ERR] for the failed first attempt
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 1, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 1, true)
-	// For second attempt, only debug
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 2, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 2, false)
-	// Then it should repeat at attempt 3
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 3, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 3, true)
-	// Next, only DBG
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 4, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 4, false)
-	// Then 6..
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 6, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 6, true)
-	// Next only DBG...
-	checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", 7, true)
-	checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", 7, false)
+	for _, test := range []testConnect{
+		{"leafnode_attempt_1", 1, true},
+		{"leafnode_attempt_2", 2, false},
+		{"leafnode_attempt_3", 3, true},
+		{"leafnode_attempt_4", 4, false},
+		{"leafnode_attempt_6", 6, true},
+		{"leafnode_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", test.attempt, test.errExpected)
+		})
+	}
 
 	os.Remove(log)
 
@@ -1274,40 +1271,217 @@ func TestConnErrorReports(t *testing.T) {
 		t.Fatalf("Error reading log file: %v", err)
 	}
 
-	// For gateways, we also check our notice that we attempt to connect
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 1, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 1, true)
-	// Should get failed attempt 1 for both DBG and ERR
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 1, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 1, true)
+	for _, test := range []testConnect{
+		{"gateway_attempt_1", 1, true},
+		{"gateway_attempt_2", 2, false},
+		{"gateway_attempt_3", 3, true},
+		{"gateway_attempt_4", 4, false},
+		{"gateway_attempt_6", 6, true},
+		{"gateway_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			infoExpected := test.errExpected
+			// For gateways, we also check our notice that we attempt to connect
+			checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", test.attempt, debugExpected)
+			checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", test.attempt, infoExpected)
+			checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", test.attempt, test.errExpected)
+		})
+	}
+}
 
-	// For second attempt, just DBG for both connect and connect error
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, false)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 2, false)
+func TestReconnectErrorReports(t *testing.T) {
+	// Check that default report attempts is as expected
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
 
-	// All for 3
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 3, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 3, true)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 3, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 3, true)
+	if ra := s.getOpts().ReconnectErrorReports; ra != DEFAULT_RECONNECT_ERROR_REPORTS {
+		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_RECONNECT_ERROR_REPORTS, ra)
+	}
 
-	// Next only DBG
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 4, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 4, false)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 4, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 4, false)
+	tmpFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating temp file: %v", err)
+	}
+	log := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(log)
 
-	// All for 6
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 6, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 6, true)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 6, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 6, true)
+	csOpts := DefaultOptions()
+	csOpts.Cluster.Port = -1
+	cs := RunServer(csOpts)
+	defer cs.Shutdown()
 
-	// Next, only DBG
-	checkContent(t, "[DBG] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 7, true)
-	checkContent(t, "[INF] Connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 7, false)
-	checkContent(t, "[DBG] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 7, true)
-	checkContent(t, "[ERR] Error connecting to explicit gateway \"B\" (127.0.0.1:1234) at 127.0.0.1:1234", 7, false)
+	opts = DefaultOptions()
+	opts.ReconnectErrorReports = 3
+	opts.Cluster.Port = -1
+	opts.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", cs.ClusterAddr().Port))
+	opts.NoLog = false
+	opts.LogFile = log
+	opts.Logtime = true
+	opts.Debug = true
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	// Wait for cluster to be formed
+	checkClusterFormed(t, s, cs)
+
+	// Now shutdown the server s connected to.
+	cs.Shutdown()
+
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(DEFAULT_ROUTE_RECONNECT + 15*routeConnectDelay)
+	s.Shutdown()
+
+	content, err := ioutil.ReadFile(log)
+	if err != nil {
+		t.Fatalf("Error reading log file: %v", err)
+	}
+
+	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
+		t.Helper()
+		present := bytes.Contains(content, []byte(fmt.Sprintf("%s (attempt %d)", txt, attempt)))
+		if shouldBeThere && !present {
+			t.Fatalf("Did not find expected log statement (%s) for attempt %d: %s", txt, attempt, content)
+		} else if !shouldBeThere && present {
+			t.Fatalf("Log statement (%s) for attempt %d should not be present: %s", txt, attempt, content)
+		}
+	}
+
+	type testConnect struct {
+		name        string
+		attempt     int
+		errExpected bool
+	}
+	for _, test := range []testConnect{
+		{"route_attempt_1", 1, true},
+		{"route_attempt_2", 2, false},
+		{"route_attempt_3", 3, true},
+		{"route_attempt_4", 4, false},
+		{"route_attempt_6", 6, true},
+		{"route_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			checkContent(t, "[DBG] Error trying to connect to route", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect to route", test.attempt, test.errExpected)
+		})
+	}
+
+	os.Remove(log)
+
+	// Now try with leaf nodes
+	csOpts.Cluster.Port = 0
+	csOpts.LeafNode.Port = -1
+	cs = RunServer(csOpts)
+	defer cs.Shutdown()
+
+	opts.Cluster.Port = 0
+	opts.Routes = nil
+	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", csOpts.LeafNode.Port))
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URL: u}}
+	opts.LeafNode.ReconnectInterval = 15 * time.Millisecond
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
+		if nln := s.NumLeafNodes(); nln != 1 {
+			return fmt.Errorf("Number of leaf nodes is %d", nln)
+		}
+		return nil
+	})
+
+	// Now shutdown the server s is connected to
+	cs.Shutdown()
+
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(opts.LeafNode.ReconnectInterval + 15*opts.LeafNode.ReconnectInterval)
+	s.Shutdown()
+
+	content, err = ioutil.ReadFile(log)
+	if err != nil {
+		t.Fatalf("Error reading log file: %v", err)
+	}
+
+	for _, test := range []testConnect{
+		{"leafnode_attempt_1", 1, true},
+		{"leafnode_attempt_2", 2, false},
+		{"leafnode_attempt_3", 3, true},
+		{"leafnode_attempt_4", 4, false},
+		{"leafnode_attempt_6", 6, true},
+		{"leafnode_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", test.attempt, test.errExpected)
+		})
+	}
+
+	os.Remove(log)
+
+	// Now try with gateways
+	csOpts.LeafNode.Port = 0
+	csOpts.Gateway.Name = "B"
+	csOpts.Gateway.Port = -1
+	cs = RunServer(csOpts)
+
+	opts.LeafNode.Remotes = nil
+	opts.Gateway.Name = "A"
+	opts.Gateway.Port = -1
+	remoteGWPort := cs.GatewayAddr().Port
+	u, _ = url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", remoteGWPort))
+	opts.Gateway.Gateways = []*RemoteGatewayOpts{
+		&RemoteGatewayOpts{
+			Name: "B",
+			URLs: []*url.URL{u},
+		},
+	}
+	opts.gatewaysSolicitDelay = 15 * time.Millisecond
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	waitForOutboundGateways(t, s, 1, 2*time.Second)
+	waitForInboundGateways(t, s, 1, 2*time.Second)
+
+	// Now stop server s is connecting to
+	cs.Shutdown()
+
+	// Wait long enough for the number of recurring attempts to happen
+	time.Sleep(2*gatewayReconnectDelay + 15*gatewayConnectDelay)
+	s.Shutdown()
+
+	content, err = ioutil.ReadFile(log)
+	if err != nil {
+		t.Fatalf("Error reading log file: %v", err)
+	}
+
+	connTxt := fmt.Sprintf("Connecting to explicit gateway \"B\" (127.0.0.1:%d) at 127.0.0.1:%d", remoteGWPort, remoteGWPort)
+	dbgConnTxt := fmt.Sprintf("[DBG] %s", connTxt)
+	infConnTxt := fmt.Sprintf("[INF] %s", connTxt)
+
+	errTxt := fmt.Sprintf("Error connecting to explicit gateway \"B\" (127.0.0.1:%d) at 127.0.0.1:%d", remoteGWPort, remoteGWPort)
+	dbgErrTxt := fmt.Sprintf("[DBG] %s", errTxt)
+	errErrTxt := fmt.Sprintf("[ERR] %s", errTxt)
+
+	for _, test := range []testConnect{
+		{"gateway_attempt_1", 1, true},
+		{"gateway_attempt_2", 2, false},
+		{"gateway_attempt_3", 3, true},
+		{"gateway_attempt_4", 4, false},
+		{"gateway_attempt_6", 6, true},
+		{"gateway_attempt_7", 7, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			debugExpected := !test.errExpected
+			infoExpected := test.errExpected
+			// For gateways, we also check our notice that we attempt to connect
+			checkContent(t, dbgConnTxt, test.attempt, debugExpected)
+			checkContent(t, infConnTxt, test.attempt, infoExpected)
+			checkContent(t, dbgErrTxt, test.attempt, debugExpected)
+			checkContent(t, errErrTxt, test.attempt, test.errExpected)
+		})
+	}
 }

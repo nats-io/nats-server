@@ -537,7 +537,7 @@ func (s *Server) solicitGateways() {
 		if !cfg.isImplicit() {
 			cfg := cfg // Create new instance for the goroutine.
 			s.startGoRoutine(func() {
-				s.solicitGateway(cfg)
+				s.solicitGateway(cfg, true)
 				s.grWG.Done()
 			})
 		}
@@ -558,12 +558,12 @@ func (s *Server) reconnectGateway(cfg *gatewayCfg) {
 	case <-s.quitCh:
 		return
 	}
-	s.solicitGateway(cfg)
+	s.solicitGateway(cfg, false)
 }
 
 // This function will loop trying to connect to any URL attached
 // to the given Gateway. It will return once a connection has been created.
-func (s *Server) solicitGateway(cfg *gatewayCfg) {
+func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 	var (
 		opts       = s.getOpts()
 		isImplicit = cfg.isImplicit()
@@ -582,7 +582,7 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 
 	for s.isRunning() && len(urls) > 0 {
 		attempts++
-		report := shouldReportConnectErr(opts.ConnectionErrorReportAttempts, attempts)
+		report := s.shouldReportConnectErr(firstConnect, attempts)
 		// Iteration is random
 		for _, u := range urls {
 			address, err := s.getRandomIP(s.gateway.resolver, u.Host)
@@ -590,9 +590,10 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 				s.Errorf("Error getting IP for %s gateway %q (%s): %v", typeStr, cfg.Name, u.Host, err)
 				continue
 			}
-			s.Debugf(connFmt, typeStr, cfg.Name, u.Host, address, attempts)
 			if report {
 				s.Noticef(connFmt, typeStr, cfg.Name, u.Host, address, attempts)
+			} else {
+				s.Debugf(connFmt, typeStr, cfg.Name, u.Host, address, attempts)
 			}
 			conn, err := net.DialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
 			if err == nil {
@@ -600,9 +601,10 @@ func (s *Server) solicitGateway(cfg *gatewayCfg) {
 				s.createGateway(cfg, u, conn)
 				return
 			}
-			s.Debugf(connErrFmt, typeStr, cfg.Name, u.Host, address, attempts, err)
 			if report {
 				s.Errorf(connErrFmt, typeStr, cfg.Name, u.Host, address, attempts, err)
+			} else {
+				s.Debugf(connErrFmt, typeStr, cfg.Name, u.Host, address, attempts, err)
 			}
 			// Break this loop if server is being shutdown...
 			if !s.isRunning() {
@@ -1261,7 +1263,7 @@ func (s *Server) processImplicitGateway(info *Info) {
 	}
 	s.gateway.remotes[gwName] = cfg
 	s.startGoRoutine(func() {
-		s.solicitGateway(cfg)
+		s.solicitGateway(cfg, true)
 		s.grWG.Done()
 	})
 }

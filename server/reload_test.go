@@ -3798,3 +3798,38 @@ func TestConfigReloadAndVarz(t *testing.T) {
 		t.Fatalf("MaxConn should be 10, got %v", v.MaxConn)
 	}
 }
+
+func TestConfigReloadConnectErrReports(t *testing.T) {
+	template := `
+		port: -1
+		%s
+		%s
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "", "")))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	if cer := opts.ConnectErrorReports; cer != DEFAULT_CONNECT_ERROR_REPORTS {
+		t.Fatalf("Expected ConnectErrorReports to be %v, got %v", DEFAULT_CONNECT_ERROR_REPORTS, cer)
+	}
+	if rer := opts.ReconnectErrorReports; rer != DEFAULT_RECONNECT_ERROR_REPORTS {
+		t.Fatalf("Expected ReconnectErrorReports to be %v, got %v", DEFAULT_RECONNECT_ERROR_REPORTS, rer)
+	}
+
+	changeCurrentConfigContentWithNewContent(t, conf,
+		[]byte(fmt.Sprintf(template, "connect_error_reports: 2", "reconnect_error_reports: 3")))
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	opts = s.getOpts()
+	if cer := opts.ConnectErrorReports; cer != 2 {
+		t.Fatalf("Expected ConnectErrorReports to be %v, got %v", 2, cer)
+	}
+	if rer := opts.ReconnectErrorReports; rer != 3 {
+		t.Fatalf("Expected ReconnectErrorReports to be %v, got %v", 3, rer)
+	}
+}
