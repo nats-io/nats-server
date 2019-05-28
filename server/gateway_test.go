@@ -4794,3 +4794,102 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 	gwA.mu.Unlock()
 	checkForAccountNoInterest(t, gwb, globalAccountName, false, time.Second)
 }
+
+type captureGWInterestSwitchLogger struct {
+	DummyLogger
+	imss []string
+}
+
+func (l *captureGWInterestSwitchLogger) Noticef(format string, args ...interface{}) {
+	l.Lock()
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode", globalAccountName, InterestOnly)) ||
+		strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode complete", globalAccountName, InterestOnly)) {
+		l.imss = append(l.imss, msg)
+	}
+	l.Unlock()
+}
+
+func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	logB := &captureGWInterestSwitchLogger{}
+	sb.SetLogger(logB, true, true)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	logA := &captureGWInterestSwitchLogger{}
+	sa.SetLogger(logA, true, true)
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	ncB := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", ob.Port))
+	defer ncB.Close()
+	natsSubSync(t, ncB, "foo")
+	natsFlush(t, ncB)
+
+	ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", oa.Port))
+	defer ncA.Close()
+	for i := 0; i < gatewayMaxRUnsubBeforeSwitch+10; i++ {
+		subj := fmt.Sprintf("bar.%d", i)
+		natsPub(t, ncA, subj, []byte("hello"))
+	}
+	natsFlush(t, ncA)
+
+	gwA := getInboundGatewayConnection(sb, "A")
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		mode := Optimistic
+		gwA.mu.Lock()
+		e := gwA.gw.insim[globalAccountName]
+		if e != nil {
+			mode = e.mode
+		}
+		gwA.mu.Unlock()
+		if mode != InterestOnly {
+			return fmt.Errorf("not switched yet")
+		}
+		return nil
+	})
+
+	gwB := sa.getOutboundGatewayConnection("B")
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		ei, ok := gwB.gw.outsim.Load(globalAccountName)
+		if !ok || ei == nil {
+			return fmt.Errorf("not switched yet")
+		}
+		e := ei.(*outsie)
+		e.RLock()
+		mode := e.mode
+		e.RUnlock()
+		if mode != InterestOnly {
+			return fmt.Errorf("not in interest mode only yet")
+		}
+		return nil
+	})
+
+	checkLog := func(t *testing.T, l *captureGWInterestSwitchLogger) {
+		t.Helper()
+		l.Lock()
+		logs := append([]string(nil), l.imss...)
+		l.Unlock()
+
+		if len(logs) != 2 {
+			t.Fatalf("Expected 2 logs about switching to interest-only, got %v", logs)
+		}
+		if !strings.Contains(logs[0], "switching account") {
+			t.Fatalf("First log statement should have been about switching, got %v", logs[0])
+		}
+		if !strings.Contains(logs[1], "complete") {
+			t.Fatalf("Second log statement should have been about having switched, got %v", logs[1])
+		}
+	}
+	checkLog(t, logB)
+	checkLog(t, logA)
+}
