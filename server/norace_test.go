@@ -472,7 +472,7 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 			if ei != nil {
 				e := ei.(*outsie)
 				e.RLock()
-				switchedMode = e.ni == nil && e.mode == modeInterestOnly
+				switchedMode = e.ni == nil && e.mode == InterestOnly
 				e.RUnlock()
 			}
 			if !switchedMode {

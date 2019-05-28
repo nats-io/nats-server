@@ -148,15 +148,19 @@ func readBody(t *testing.T, url string) []byte {
 }
 
 func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) *Varz {
+	t.Helper()
 	if mode == 0 {
 		v := &Varz{}
 		body := readBody(t, url)
 		if err := json.Unmarshal(body, v); err != nil {
-			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 		}
 		return v
 	}
-	v, _ := s.Varz(opts)
+	v, err := s.Varz(opts)
+	if err != nil {
+		t.Fatalf("Error on Varz: %v", err)
+	}
 	return v
 }
 
@@ -211,6 +215,7 @@ func TestHandleVarz(t *testing.T) {
 }
 
 func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions) *Connz {
+	t.Helper()
 	if mode == 0 {
 		body := readBody(t, url)
 		c := &Connz{}
@@ -221,7 +226,7 @@ func pollConz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions)
 	}
 	c, err := s.Connz(opts)
 	if err != nil {
-		stackFatalf(t, "Error on Connz(): %v", err)
+		t.Fatalf("Error on Connz(): %v", err)
 	}
 	return c
 }
@@ -1137,15 +1142,19 @@ func TestConnzSortBadRequest(t *testing.T) {
 }
 
 func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptions) *Routez {
+	t.Helper()
 	if mode == 0 {
 		rz := &Routez{}
 		body := readBody(t, url)
 		if err := json.Unmarshal(body, rz); err != nil {
-			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 		}
 		return rz
 	}
-	rz, _ := s.Routez(opts)
+	rz, err := s.Routez(opts)
+	if err != nil {
+		t.Fatalf("Error on Routez: %v", err)
+	}
 	return rz
 }
 
@@ -1242,15 +1251,19 @@ func TestRoutezWithBadParams(t *testing.T) {
 }
 
 func pollSubsz(t *testing.T, s *Server, mode int, url string, opts *SubszOptions) *Subsz {
+	t.Helper()
 	if mode == 0 {
 		body := readBody(t, url)
 		sz := &Subsz{}
 		if err := json.Unmarshal(body, sz); err != nil {
-			stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 		}
 		return sz
 	}
-	sz, _ := s.Subsz(opts)
+	sz, err := s.Subsz(opts)
+	if err != nil {
+		t.Fatalf("Error on Subsz: %v", err)
+	}
 	return sz
 }
 
@@ -2529,4 +2542,586 @@ func TestMonitorLeafNode(t *testing.T) {
 		v = pollVarz(t, s, mode, varzURL, nil)
 		check(t, v)
 	}
+}
+
+func pollGatewayz(t *testing.T, s *Server, mode int, url string, opts *GatewayzOptions) *Gatewayz {
+	t.Helper()
+	if mode == 0 {
+		g := &Gatewayz{}
+		body := readBody(t, url)
+		if err := json.Unmarshal(body, g); err != nil {
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		return g
+	}
+	g, err := s.Gatewayz(opts)
+	if err != nil {
+		t.Fatalf("Error on Gatewayz: %v", err)
+	}
+	return g
+}
+
+func TestMonitorGatewayz(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	// First check that without gateway configured
+	s := runMonitorServer()
+	defer s.Shutdown()
+	url := fmt.Sprintf("http://127.0.0.1:%d/gatewayz", s.MonitorAddr().Port)
+	for pollMode := 0; pollMode < 2; pollMode++ {
+		g := pollGatewayz(t, s, pollMode, url, nil)
+		// Expect Name and port to be empty
+		if g.Name != _EMPTY_ || g.Port != 0 {
+			t.Fatalf("Expected no gateway, got %+v", g)
+		}
+	}
+	s.Shutdown()
+
+	ob1 := testDefaultOptionsForGateway("B")
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	// Start a1 that has a single URL to sb1.
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb1)
+	oa.HTTPHost = "127.0.0.1"
+	oa.HTTPPort = MONITOR_PORT
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+	waitForInboundGateways(t, sb1, 1, 2*time.Second)
+
+	gatewayzURL := fmt.Sprintf("http://127.0.0.1:%d/gatewayz", sa.MonitorAddr().Port)
+	for pollMode := 0; pollMode < 2; pollMode++ {
+		g := pollGatewayz(t, sa, pollMode, gatewayzURL, nil)
+		if g.Host != oa.Gateway.Host {
+			t.Fatalf("mode=%v - Expected host to be %q, got %q", pollMode, oa.Gateway.Host, g.Host)
+		}
+		if g.Port != oa.Gateway.Port {
+			t.Fatalf("mode=%v - Expected port to be %v, got %v", pollMode, oa.Gateway.Port, g.Port)
+		}
+		if n := len(g.OutboundGateways); n != 1 {
+			t.Fatalf("mode=%v - Expected outbound to 1 gateway, got %v", pollMode, n)
+		}
+		if n := len(g.InboundGateways); n != 1 {
+			t.Fatalf("mode=%v - Expected inbound from 1 gateway, got %v", pollMode, n)
+		}
+		og := g.OutboundGateways["B"]
+		if og == nil {
+			t.Fatalf("mode=%v - Expected to find outbound connection to B, got none", pollMode)
+		}
+		if !og.IsConfigured {
+			t.Fatalf("mode=%v - Expected gw connection to be configured, was not", pollMode)
+		}
+		if og.Connection == nil {
+			t.Fatalf("mode=%v - Expected outbound connection to B to be set, wat not", pollMode)
+		}
+		if og.Connection.Name != sb1.ID() {
+			t.Fatalf("mode=%v - Expected outbound connection to B to have name %q, got %q", pollMode, sb1.ID(), og.Connection.Name)
+		}
+		if n := len(og.Accounts); n != 0 {
+			t.Fatalf("mode=%v - Expected no account, got %v", pollMode, n)
+		}
+		ig := g.InboundGateways["B"]
+		if ig == nil {
+			t.Fatalf("mode=%v - Expected to find inbound connection from B, got none", pollMode)
+		}
+		if n := len(ig); n != 1 {
+			t.Fatalf("mode=%v - Expected 1 inbound connection, got %v", pollMode, n)
+		}
+		igc := ig[0]
+		if igc.Connection == nil {
+			t.Fatalf("mode=%v - Expected inbound connection to B to be set, wat not", pollMode)
+		}
+		if igc.Connection.Name != sb1.ID() {
+			t.Fatalf("mode=%v - Expected inbound connection to B to have name %q, got %q", pollMode, sb1.ID(), igc.Connection.Name)
+		}
+	}
+
+	// Now start sb2 that clusters with sb1. sa should add to its list of URLs
+	// sb2 gateway's connect URL.
+	ob2 := testDefaultOptionsForGateway("B")
+	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
+	sb2 := runGatewayServer(ob2)
+
+	// Wait for sb1 and sb2 to connect
+	checkClusterFormed(t, sb1, sb2)
+	// sb2 should be made aware of gateway A and connect to sa
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+	// Now check that URLs in /varz get updated
+	checkGatewayB := func(t *testing.T, url string, opts *GatewayzOptions) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			for pollMode := 0; pollMode < 2; pollMode++ {
+				g := pollGatewayz(t, sa, pollMode, url, opts)
+				if n := len(g.OutboundGateways); n != 1 {
+					t.Fatalf("mode=%v - Expected outbound to 1 gateway, got %v", pollMode, n)
+				}
+				// The InboundGateways is a map with key the gateway names,
+				// then value is array of connections. So should be 1 here.
+				if n := len(g.InboundGateways); n != 1 {
+					t.Fatalf("mode=%v - Expected inbound from 1 gateway, got %v", pollMode, n)
+				}
+				ig := g.InboundGateways["B"]
+				if ig == nil {
+					t.Fatalf("mode=%v - Expected to find inbound connection from B, got none", pollMode)
+				}
+				if n := len(ig); n != 2 {
+					t.Fatalf("mode=%v - Expected 2 inbound connections from gateway B, got %v", pollMode, n)
+				}
+				gotSB1 := false
+				gotSB2 := false
+				for _, rg := range ig {
+					if rg.Connection != nil {
+						if rg.Connection.Name == sb1.ID() {
+							gotSB1 = true
+						} else if rg.Connection.Name == sb2.ID() {
+							gotSB2 = true
+						}
+					}
+				}
+				if !gotSB1 {
+					t.Fatalf("mode=%v - Missing inbound connection from sb1", pollMode)
+				}
+				if !gotSB2 {
+					t.Fatalf("mode=%v - Missing inbound connection from sb2", pollMode)
+				}
+			}
+			return nil
+		})
+	}
+	checkGatewayB(t, gatewayzURL, nil)
+
+	// Start a new cluser C that connects to B. A should see it as
+	// a non-configured gateway.
+	oc := testGatewayOptionsFromToWithServers(t, "C", "B", sb1)
+	sc := runGatewayServer(oc)
+	defer sc.Shutdown()
+
+	// All servers should have 2 outbound connections (one for each other cluster)
+	waitForOutboundGateways(t, sa, 2, 2*time.Second)
+	waitForOutboundGateways(t, sb1, 2, 2*time.Second)
+	waitForOutboundGateways(t, sb2, 2, 2*time.Second)
+	waitForOutboundGateways(t, sc, 2, 2*time.Second)
+
+	// Server sa should have 3 inbounds now
+	waitForInboundGateways(t, sa, 3, 2*time.Second)
+
+	// Check gatewayz again to see that we have C now.
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			g := pollGatewayz(t, sa, pollMode, gatewayzURL, nil)
+			if n := len(g.OutboundGateways); n != 2 {
+				t.Fatalf("mode=%v - Expected outbound to 2 gateways, got %v", pollMode, n)
+			}
+			// The InboundGateways is a map with key the gateway names,
+			// then value is array of connections. So should be 2 here.
+			if n := len(g.InboundGateways); n != 2 {
+				t.Fatalf("mode=%v - Expected inbound from 2 gateways, got %v", pollMode, n)
+			}
+			og := g.OutboundGateways["C"]
+			if og == nil {
+				t.Fatalf("mode=%v - Expected to find outbound connection to C, got none", pollMode)
+			}
+			if og.IsConfigured {
+				t.Fatalf("mode=%v - Expected IsConfigured for gateway C to be false, was true", pollMode)
+			}
+			if og.Connection == nil {
+				t.Fatalf("mode=%v - Expected connection to C, got none", pollMode)
+			}
+			if og.Connection.Name != sc.ID() {
+				t.Fatalf("mode=%v - Expected outbound connection to C to have name %q, got %q", pollMode, sc.ID(), og.Connection.Name)
+			}
+			ig := g.InboundGateways["C"]
+			if ig == nil {
+				t.Fatalf("mode=%v - Expected to find inbound connection from C, got none", pollMode)
+			}
+			if n := len(ig); n != 1 {
+				t.Fatalf("mode=%v - Expected 1 inbound connections from gateway C, got %v", pollMode, n)
+			}
+			igc := ig[0]
+			if igc.Connection == nil {
+				t.Fatalf("mode=%v - Expected connection to C, got none", pollMode)
+			}
+			if igc.Connection.Name != sc.ID() {
+				t.Fatalf("mode=%v - Expected outbound connection to C to have name %q, got %q", pollMode, sc.ID(), og.Connection.Name)
+			}
+		}
+		return nil
+	})
+
+	// Select only 1 gateway by passing the name to option/url
+	opts := &GatewayzOptions{Name: "B"}
+	checkGatewayB(t, gatewayzURL+"?gw_name=B", opts)
+
+	// Stop gateway C and check that we have only B, with and without filter.
+	sc.Shutdown()
+	checkGatewayB(t, gatewayzURL+"?gw_name=B", opts)
+	checkGatewayB(t, gatewayzURL, nil)
+}
+
+func TestMonitorGatewayzAccounts(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	// Create bunch of Accounts
+	totalAccounts := 15
+	accounts := ""
+	for i := 0; i < totalAccounts; i++ {
+		acc := fmt.Sprintf("	acc_%d: { users=[{user:user_%d, password: pwd}] }\n", i, i)
+		accounts += acc
+	}
+
+	bConf := createConfFile(t, []byte(fmt.Sprintf(`
+		accounts {
+			%s
+		}
+		port: -1
+		http: -1
+		gateway: {
+			name: "B"
+			port: -1
+		}
+	`, accounts)))
+	defer os.Remove(bConf)
+
+	sb, ob := RunServerWithConfig(bConf)
+	defer sb.Shutdown()
+	sb.SetLogger(&DummyLogger{}, true, true)
+
+	// Start a1 that has a single URL to sb1.
+	aConf := createConfFile(t, []byte(fmt.Sprintf(`
+		accounts {
+			%s
+		}
+		port: -1
+		http: -1
+		gateway: {
+			name: "A"
+			port: -1
+			gateways [
+				{
+					name: "B"
+					url: "nats://127.0.0.1:%d"
+				}
+			]
+		}
+	`, accounts, sb.GatewayAddr().Port)))
+	defer os.Remove(aConf)
+
+	sa, oa := RunServerWithConfig(aConf)
+	defer sa.Shutdown()
+	sa.SetLogger(&DummyLogger{}, true, true)
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// Create clients for each account on A and publish a message
+	// so that list of accounts appear in gatewayz
+	produceMsgsFromA := func(t *testing.T) {
+		t.Helper()
+		for i := 0; i < totalAccounts; i++ {
+			nc, err := nats.Connect(fmt.Sprintf("nats://user_%d:pwd@%s:%d", i, oa.Host, oa.Port))
+			if err != nil {
+				t.Fatalf("Error on connect: %v", err)
+			}
+			nc.Publish("foo", []byte("hello"))
+			nc.Flush()
+			nc.Close()
+		}
+	}
+	produceMsgsFromA(t)
+
+	// Wait for A- for all accounts
+	gwc := sa.getOutboundGatewayConnection("B")
+	for i := 0; i < totalAccounts; i++ {
+		checkForAccountNoInterest(t, gwc, fmt.Sprintf("acc_%d", i), true, 2*time.Second)
+	}
+
+	// Check accounts...
+	gatewayzURL := fmt.Sprintf("http://127.0.0.1:%d/gatewayz", sa.MonitorAddr().Port)
+	for pollMode := 0; pollMode < 2; pollMode++ {
+		// First, without asking for it, they should not be present.
+		g := pollGatewayz(t, sa, pollMode, gatewayzURL, nil)
+		og := g.OutboundGateways["B"]
+		if og == nil {
+			t.Fatalf("mode=%v - Expected outbound gateway to B, got none", pollMode)
+		}
+		if n := len(og.Accounts); n != 0 {
+			t.Fatalf("mode=%v - Expected accounts list to not be present by default, got %v", pollMode, n)
+		}
+		// Now ask for the accounts
+		g = pollGatewayz(t, sa, pollMode, gatewayzURL+"?accs=1", &GatewayzOptions{Accounts: true})
+		og = g.OutboundGateways["B"]
+		if og == nil {
+			t.Fatalf("mode=%v - Expected outbound gateway to B, got none", pollMode)
+		}
+		if n := len(og.Accounts); n != totalAccounts {
+			t.Fatalf("mode=%v - Expected to get all %d accounts, got %v", pollMode, totalAccounts, n)
+		}
+		// Now account details
+		for _, acc := range og.Accounts {
+			if acc.InterestMode != Optimistic.String() {
+				t.Fatalf("mode=%v - Expected optimistic mode, got %q", pollMode, acc.InterestMode)
+			}
+			// Since there is no interest at all on B, the publish
+			// will have resulted in total account no interest, so
+			// the number of no interest (subject wise) should be 0
+			if acc.NoInterestCount != 0 {
+				t.Fatalf("mode=%v - Expected 0 no-interest, got %v", pollMode, acc.NoInterestCount)
+			}
+			if acc.NumQueueSubscriptions != 0 || acc.TotalSubscriptions != 0 {
+				t.Fatalf("mode=%v - Expected total subs to be 0, got %v - and num queue subs to be 0, got %v",
+					pollMode, acc.TotalSubscriptions, acc.NumQueueSubscriptions)
+			}
+		}
+	}
+
+	// Check inbound on B
+	gwURLServerB := fmt.Sprintf("http://127.0.0.1:%d/gatewayz", sb.MonitorAddr().Port)
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			// First, without asking for it, they should not be present.
+			g := pollGatewayz(t, sb, pollMode, gwURLServerB, nil)
+			igs := g.InboundGateways["A"]
+			if igs == nil {
+				return fmt.Errorf("mode=%v - Expected inbound gateway to A, got none", pollMode)
+			}
+			if len(igs) != 1 {
+				return fmt.Errorf("mode=%v - Expected single inbound, got %v", pollMode, len(igs))
+			}
+			ig := igs[0]
+			if n := len(ig.Accounts); n != 0 {
+				return fmt.Errorf("mode=%v - Expected no account, got %v", pollMode, n)
+			}
+			// Check that list of accounts
+			g = pollGatewayz(t, sb, pollMode, gwURLServerB+"?accs=1", &GatewayzOptions{Accounts: true})
+			igs = g.InboundGateways["A"]
+			if igs == nil {
+				return fmt.Errorf("mode=%v - Expected inbound gateway to A, got none", pollMode)
+			}
+			if len(igs) != 1 {
+				return fmt.Errorf("mode=%v - Expected single inbound, got %v", pollMode, len(igs))
+			}
+			ig = igs[0]
+			if ig.Connection == nil {
+				return fmt.Errorf("mode=%v - Expected inbound connection from A to be set, wat not", pollMode)
+			}
+			if ig.Connection.Name != sa.ID() {
+				t.Fatalf("mode=%v - Expected inbound connection from A to have name %q, got %q", pollMode, sa.ID(), ig.Connection.Name)
+			}
+			if n := len(ig.Accounts); n != totalAccounts {
+				return fmt.Errorf("mode=%v - Expected to get all %d accounts, got %v", pollMode, totalAccounts, n)
+			}
+			// Now account details
+			for _, acc := range ig.Accounts {
+				if acc.InterestMode != Optimistic.String() {
+					return fmt.Errorf("mode=%v - Expected optimistic mode, got %q", pollMode, acc.InterestMode)
+				}
+				// Since there is no interest at all on B, the publish
+				// will have resulted in total account no interest, so
+				// the number of no interest (subject wise) should be 0
+				if acc.NoInterestCount != 0 {
+					t.Fatalf("mode=%v - Expected 0 no-interest, got %v", pollMode, acc.NoInterestCount)
+				}
+				// For inbound gateway, NumQueueSubscriptions and TotalSubscriptions
+				// are not relevant.
+				if acc.NumQueueSubscriptions != 0 || acc.TotalSubscriptions != 0 {
+					return fmt.Errorf("mode=%v - For inbound connection, expected num queue subs and total subs to be 0, got %v and %v",
+						pollMode, acc.TotalSubscriptions, acc.NumQueueSubscriptions)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Now create subscriptions on B to prevent A- and check on subject no interest
+	for i := 0; i < totalAccounts; i++ {
+		nc, err := nats.Connect(fmt.Sprintf("nats://user_%d:pwd@%s:%d", i, ob.Host, ob.Port))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer nc.Close()
+		// Create a queue sub so it shows up in gatewayz
+		nc.QueueSubscribeSync("bar", "queue")
+		// Create plain subscriptions on baz.0, baz.1 and baz.2.
+		// Create to for each subject. Since gateways will send
+		// only once per subject, the number of subs should be 3, not 6.
+		for j := 0; j < 3; j++ {
+			subj := fmt.Sprintf("baz.%d", j)
+			nc.SubscribeSync(subj)
+			nc.SubscribeSync(subj)
+		}
+		nc.Flush()
+	}
+
+	for i := 0; i < totalAccounts; i++ {
+		accName := fmt.Sprintf("acc_%d", i)
+		checkForRegisteredQSubInterest(t, sa, "B", accName, "bar", 1, 2*time.Second)
+	}
+
+	// Resend msgs from A on foo, on all accounts. There will be no interest on this subject.
+	produceMsgsFromA(t)
+
+	for i := 0; i < totalAccounts; i++ {
+		accName := fmt.Sprintf("acc_%d", i)
+		checkForSubjectNoInterest(t, gwc, accName, "foo", true, 2*time.Second)
+		// Verify that we still have the queue interest registered
+		checkForRegisteredQSubInterest(t, sa, "B", accName, "bar", 1, 2*time.Second)
+	}
+
+	// Check accounts...
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			g := pollGatewayz(t, sa, pollMode, gatewayzURL+"?accs=1", &GatewayzOptions{Accounts: true})
+			og := g.OutboundGateways["B"]
+			if og == nil {
+				return fmt.Errorf("mode=%v - Expected outbound gateway to B, got none", pollMode)
+			}
+			if n := len(og.Accounts); n != totalAccounts {
+				return fmt.Errorf("mode=%v - Expected to get all %d accounts, got %v", pollMode, totalAccounts, n)
+			}
+			// Now account details
+			for _, acc := range og.Accounts {
+				if acc.InterestMode != Optimistic.String() {
+					return fmt.Errorf("mode=%v - Expected optimistic mode, got %q", pollMode, acc.InterestMode)
+				}
+				if acc.NoInterestCount != 1 {
+					return fmt.Errorf("mode=%v - Expected 1 no-interest, got %v", pollMode, acc.NoInterestCount)
+				}
+				if acc.NumQueueSubscriptions != 1 || acc.TotalSubscriptions != 1 {
+					return fmt.Errorf("mode=%v - Expected total subs to be 1, got %v - and num queue subs to be 1, got %v",
+						pollMode, acc.TotalSubscriptions, acc.NumQueueSubscriptions)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Check inbound on server B
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			// Ask for accounts list
+			g := pollGatewayz(t, sb, pollMode, gwURLServerB+"?accs=1", &GatewayzOptions{Accounts: true})
+			igs := g.InboundGateways["A"]
+			if igs == nil {
+				return fmt.Errorf("mode=%v - Expected inbound gateway to A, got none", pollMode)
+			}
+			if len(igs) != 1 {
+				return fmt.Errorf("mode=%v - Expected single inbound, got %v", pollMode, len(igs))
+			}
+			ig := igs[0]
+			if ig.Connection == nil {
+				return fmt.Errorf("mode=%v - Expected inbound connection from A to be set, wat not", pollMode)
+			}
+			if ig.Connection.Name != sa.ID() {
+				t.Fatalf("mode=%v - Expected inbound connection from A to have name %q, got %q", pollMode, sa.ID(), ig.Connection.Name)
+			}
+			if n := len(ig.Accounts); n != totalAccounts {
+				return fmt.Errorf("mode=%v - Expected to get all %d accounts, got %v", pollMode, totalAccounts, n)
+			}
+			// Now account details
+			for _, acc := range ig.Accounts {
+				if acc.InterestMode != Optimistic.String() {
+					return fmt.Errorf("mode=%v - Expected optimistic mode, got %q", pollMode, acc.InterestMode)
+				}
+				if acc.NoInterestCount != 1 {
+					return fmt.Errorf("mode=%v - Expected 1 no-interest, got %v", pollMode, acc.NoInterestCount)
+				}
+				// For inbound gateway, NumQueueSubscriptions and TotalSubscriptions
+				// are not relevant.
+				if acc.NumQueueSubscriptions != 0 || acc.TotalSubscriptions != 0 {
+					return fmt.Errorf("mode=%v - For inbound connection, expected num queue subs and total subs to be 0, got %v and %v",
+						pollMode, acc.TotalSubscriptions, acc.NumQueueSubscriptions)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Make one of the account to switch to interest only
+	nc, err := nats.Connect(fmt.Sprintf("nats://user_1:pwd@%s:%d", oa.Host, oa.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	for i := 0; i < 1100; i++ {
+		nc.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
+	}
+	nc.Flush()
+	nc.Close()
+
+	// Check that we can select single account
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			g := pollGatewayz(t, sa, pollMode, gatewayzURL+"?gw_name=B&acc_name=acc_1", &GatewayzOptions{Name: "B", AccountName: "acc_1"})
+			og := g.OutboundGateways["B"]
+			if og == nil {
+				return fmt.Errorf("mode=%v - Expected outbound gateway to B, got none", pollMode)
+			}
+			if n := len(og.Accounts); n != 1 {
+				return fmt.Errorf("mode=%v - Expected to get 1 account, got %v", pollMode, n)
+			}
+			// Now account details
+			acc := og.Accounts[0]
+			if acc.InterestMode != InterestOnly.String() {
+				return fmt.Errorf("mode=%v - Expected interest-only mode, got %q", pollMode, acc.InterestMode)
+			}
+			// Since we switched, this should be set to 0
+			if acc.NoInterestCount != 0 {
+				return fmt.Errorf("mode=%v - Expected 0 no-interest, got %v", pollMode, acc.NoInterestCount)
+			}
+			// We have created 3 subs on that account on B, and 1 queue sub.
+			// So total should be 4 and 1 for queue sub.
+			if acc.NumQueueSubscriptions != 1 {
+				return fmt.Errorf("mode=%v - Expected num queue subs to be 1, got %v",
+					pollMode, acc.NumQueueSubscriptions)
+			}
+			if acc.TotalSubscriptions != 4 {
+				return fmt.Errorf("mode=%v - Expected total subs to be 4, got %v",
+					pollMode, acc.TotalSubscriptions)
+			}
+		}
+		return nil
+	})
+
+	// Check inbound on B now...
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			g := pollGatewayz(t, sb, pollMode, gwURLServerB+"?gw_name=A&acc_name=acc_1", &GatewayzOptions{Name: "A", AccountName: "acc_1"})
+			igs := g.InboundGateways["A"]
+			if igs == nil {
+				return fmt.Errorf("mode=%v - Expected inbound gateway from A, got none", pollMode)
+			}
+			if len(igs) != 1 {
+				return fmt.Errorf("mode=%v - Expected single inbound, got %v", pollMode, len(igs))
+			}
+			ig := igs[0]
+			if n := len(ig.Accounts); n != 1 {
+				return fmt.Errorf("mode=%v - Expected to get 1 account, got %v", pollMode, n)
+			}
+			// Now account details
+			acc := ig.Accounts[0]
+			if acc.InterestMode != InterestOnly.String() {
+				return fmt.Errorf("mode=%v - Expected interest-only mode, got %q", pollMode, acc.InterestMode)
+			}
+			if acc.InterestMode != InterestOnly.String() {
+				return fmt.Errorf("Should be in %q mode, got %q", InterestOnly.String(), acc.InterestMode)
+			}
+			// Since we switched, this should be set to 0
+			if acc.NoInterestCount != 0 {
+				return fmt.Errorf("mode=%v - Expected 0 no-interest, got %v", pollMode, acc.NoInterestCount)
+			}
+			// Again, for inbound, these should be always 0.
+			if acc.NumQueueSubscriptions != 0 || acc.TotalSubscriptions != 0 {
+				return fmt.Errorf("mode=%v - For inbound connection, expected num queue subs and total subs to be 0, got %v and %v",
+					pollMode, acc.TotalSubscriptions, acc.NumQueueSubscriptions)
+			}
+		}
+		return nil
+	})
 }
