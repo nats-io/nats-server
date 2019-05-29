@@ -919,7 +919,12 @@ func (s *Server) sendSubsToRoute(route *client) {
 			a.mu.RLock()
 			c := a.randomClient()
 			if c == nil {
+				nsubs := len(a.rm)
+				accName := a.Name
 				a.mu.RUnlock()
+				if nsubs > 0 {
+					route.Warnf("Ignoring account %q with %d subs, no clients", accName, nsubs)
+				}
 				continue
 			}
 			for key, n := range a.rm {
@@ -936,7 +941,6 @@ func (s *Server) sendSubsToRoute(route *client) {
 				// efficient with these tmp subs.
 				sub := &subscription{client: c, subject: subj, queue: qn, qw: n}
 				subs = append(subs, sub)
-
 			}
 			a.mu.RUnlock()
 
