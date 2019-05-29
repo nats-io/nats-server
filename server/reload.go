@@ -730,8 +730,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &accountsOption{})
 		case "accountresolver":
 			// We can't move from no resolver to one. So check for that.
-			if oldValue == nil && newValue != nil {
-				return nil, fmt.Errorf("config reload does not support adding a new account resolver")
+			if (oldValue == nil && newValue != nil) ||
+				(oldValue != nil && newValue == nil) {
+				return nil, fmt.Errorf("config reload does not support moving to or from an account resolver")
 			}
 			diffOpts = append(diffOpts, &accountsOption{})
 		case "gateway":
