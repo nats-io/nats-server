@@ -1229,3 +1229,62 @@ func TestClientUserInfo(t *testing.T) {
 		t.Errorf("Expected %q, got %q", expected, got)
 	}
 }
+
+type captureWarnLogger struct {
+	DummyLogger
+	warn chan string
+}
+
+func (l *captureWarnLogger) Warnf(format string, v ...interface{}) {
+	select {
+	case l.warn <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+type pauseWriteConn struct {
+	net.Conn
+}
+
+func (swc *pauseWriteConn) Write(b []byte) (int, error) {
+	time.Sleep(250 * time.Millisecond)
+	return swc.Conn.Write(b)
+}
+
+func TestReadloopWarning(t *testing.T) {
+	readLoopReportThreshold = 100 * time.Millisecond
+	defer func() { readLoopReportThreshold = readLoopReport }()
+
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	l := &captureWarnLogger{warn: make(chan string, 1)}
+	s.SetLogger(l, false, false)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc := natsConnect(t, url)
+	defer nc.Close()
+	natsSubSync(t, nc, "foo")
+	cid, _ := nc.GetClientID()
+
+	sender := natsConnect(t, url)
+	defer sender.Close()
+
+	c := s.getClient(cid)
+	c.mu.Lock()
+	c.nc = &pauseWriteConn{Conn: c.nc}
+	c.mu.Unlock()
+
+	natsPub(t, nc, "foo", make([]byte, 100))
+	natsFlush(t, nc)
+
+	select {
+	case warn := <-l.warn:
+		if !strings.Contains(warn, "Readloop") {
+			t.Fatalf("unexpected warning: %v", warn)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("No warning printed")
+	}
+}
