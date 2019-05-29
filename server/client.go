@@ -70,7 +70,10 @@ const (
 	maxBufSize      = 65536 // 64k
 	shortsToShrink  = 2     // Trigger to shrink dynamic buffers
 	maxFlushPending = 10    // Max fsps to have in order to wait for writeLoop
+	readLoopReport  = 2 * time.Second
 )
+
+var readLoopReportThreshold = readLoopReport
 
 // Represent client booleans with a bitmask
 type clientFlag byte
@@ -741,6 +744,7 @@ func (c *client) readLoop() {
 			}
 			return
 		}
+		start := time.Now()
 
 		// Clear inbound stats cache
 		c.in.msgs = 0
@@ -750,6 +754,9 @@ func (c *client) readLoop() {
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
 		if err := c.parse(b[:n]); err != nil {
+			if dur := time.Since(start); dur >= readLoopReportThreshold {
+				c.Warnf("Readloop processing time: %v", dur)
+			}
 			// handled inline
 			if err != ErrMaxPayload && err != ErrAuthentication {
 				c.Errorf("%s", err.Error())
@@ -805,6 +812,10 @@ func (c *client) readLoop() {
 			b = make([]byte, c.in.rsz)
 		}
 		c.mu.Unlock()
+
+		if dur := time.Since(start); dur >= readLoopReportThreshold {
+			c.Warnf("Readloop processing time: %v", dur)
+		}
 
 		// Check to see if we got closed, e.g. slow consumer
 		if nc == nil {
@@ -3096,4 +3107,9 @@ func (c *client) Noticef(format string, v ...interface{}) {
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Tracef(format, v...)
+}
+
+func (c *client) Warnf(format string, v ...interface{}) {
+	format = fmt.Sprintf("%s - %s", c, format)
+	c.srv.Warnf(format, v...)
 }
