@@ -44,7 +44,11 @@ const (
 	serverSubjectIndex  = 2
 	accUpdateTokens     = 5
 	accUpdateAccIndex   = 2
+	defaultEventsHBItvl = 30 * time.Second
 )
+
+// FIXME(dlc) - make configurable.
+var eventsHBInterval = defaultEventsHBItvl
 
 // Used to send and receive messages from inside the server.
 type internal struct {
@@ -702,9 +706,6 @@ func (s *Server) sendLeafNodeConnect(a *Account) {
 	s.switchAccountToInterestMode(a.Name)
 }
 
-// FIXME(dlc) - make configurable.
-const eventsHBInterval = 30 * time.Second
-
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
 // Lock should be held on entry.
@@ -734,13 +735,13 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
 	// Set timer to fire again unless we are at zero.
 	a.mu.Lock()
 	if a.numLocalConnections() == 0 {
-		clearTimer(&a.etmr)
+		clearTimer(&a.ctmr)
 	} else {
 		// Check to see if we have an HB running and update.
 		if a.ctmr == nil {
-			a.etmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
+			a.ctmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
 		} else {
-			a.etmr.Reset(eventsHBInterval)
+			a.ctmr.Reset(eventsHBInterval)
 		}
 	}
 	a.mu.Unlock()
