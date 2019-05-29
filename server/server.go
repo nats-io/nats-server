@@ -405,20 +405,10 @@ func (s *Server) configureAccounts() error {
 	})
 
 	// Check for configured account resolvers.
-	if opts.AccountResolver != nil {
-		s.accResolver = opts.AccountResolver
-		if len(opts.resolverPreloads) > 0 {
-			if _, ok := s.accResolver.(*MemAccResolver); !ok {
-				return fmt.Errorf("resolver preloads only available for MemAccResolver")
-			}
-			for k, v := range opts.resolverPreloads {
-				if _, _, err := s.verifyAccountClaims(v); err != nil {
-					return fmt.Errorf("preloaded Account: %v", err)
-				}
-				s.accResolver.Store(k, v)
-			}
-		}
+	if err := s.configureResolver(); err != nil {
+		return err
 	}
+
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
 		// Lock is held entering this function, so release to call lookupAccount.
@@ -430,6 +420,23 @@ func (s *Server) configureAccounts() error {
 		}
 	}
 
+	return nil
+}
+
+func (s *Server) configureResolver() error {
+	opts := s.opts
+	s.accResolver = opts.AccountResolver
+	if opts.AccountResolver != nil && len(opts.resolverPreloads) > 0 {
+		if _, ok := s.accResolver.(*MemAccResolver); !ok {
+			return fmt.Errorf("resolver preloads only available for MemAccResolver")
+		}
+		for k, v := range opts.resolverPreloads {
+			if _, _, err := s.verifyAccountClaims(v); err != nil {
+				return fmt.Errorf("preloaded Account: %v", err)
+			}
+			s.accResolver.Store(k, v)
+		}
+	}
 	return nil
 }
 

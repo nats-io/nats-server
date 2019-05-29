@@ -3833,3 +3833,74 @@ func TestConfigReloadConnectErrReports(t *testing.T) {
 		t.Fatalf("Expected ReconnectErrorReports to be %v, got %v", 3, rer)
 	}
 }
+
+func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
+	s, opts := RunServerWithConfig("./configs/seed_tls.conf")
+	defer s.Shutdown()
+
+	// Create client and sub interest on seed server.
+	urlSeed := fmt.Sprintf("nats://%s:%d/", opts.Host, opts.Port)
+	nc, err := nats.Connect(urlSeed)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc.Close()
+
+	ch := make(chan bool)
+	nc.Subscribe("foo", func(m *nats.Msg) { ch <- true })
+	nc.Flush()
+
+	// Use this to check for message.
+	checkForMsg := func() {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Timeout waiting for message across route")
+		}
+	}
+
+	// Create second server and form cluster. We will send from here.
+	urlRoute := fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	optsA := nextServerOpts(opts)
+	optsA.Routes = RoutesFromStr(urlRoute)
+
+	sa := RunServer(optsA)
+	defer sa.Shutdown()
+
+	checkClusterFormed(t, s, sa)
+
+	// Create second client and send message from this one. Interest should be here.
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	nc2, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+
+	// Check that we can send messages.
+	nc2.Publish("foo", nil)
+	checkForMsg()
+
+	// Now shutdown nc2 and srvA.
+	nc2.Close()
+	sa.Shutdown()
+
+	// Now force reload on seed server of auth.
+	s.reloadAuthorization()
+
+	// Restart both server A and client 2.
+	sa = RunServer(optsA)
+	defer sa.Shutdown()
+
+	checkClusterFormed(t, s, sa)
+
+	nc2, err = nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+
+	// Check that we can still send messages.
+	nc2.Publish("foo", nil)
+	checkForMsg()
+}
