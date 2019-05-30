@@ -860,11 +860,12 @@ func (a *Account) IsExpired() bool {
 
 // Called when an account has expired.
 func (a *Account) expiredTimeout() {
-	// Collect the clients.
+	// Mark expired first.
 	a.mu.Lock()
 	a.expired = true
 	a.mu.Unlock()
 
+	// Collect the clients and expire them.
 	cs := make([]*client, 0, len(a.clients))
 	a.mu.RLock()
 	for c := range a.clients {

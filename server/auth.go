@@ -357,8 +357,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		if juc.IssuerAccount != "" {
 			issuer = juc.IssuerAccount
 		}
-		if acc, _ = s.LookupAccount(issuer); acc == nil {
-			c.Debugf("Account JWT can not be found")
+		if acc, err = s.LookupAccount(issuer); acc == nil {
+			c.Debugf("Account JWT lookup error: %v", err)
 			return false
 		}
 		if !s.isTrustedIssuer(acc.Issuer) {

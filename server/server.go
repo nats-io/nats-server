@@ -775,6 +775,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 		// If we are expired and we have a resolver, then
 		// return the latest information from the resolver.
 		if acc.IsExpired() {
+			s.Debugf("Requested account [%s] has expired", name)
 			var err error
 			s.mu.Lock()
 			if s.accResolver != nil {
@@ -782,7 +783,8 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 			}
 			s.mu.Unlock()
 			if err != nil {
-				return nil, err
+				// This error could mask expired, so just return expired here.
+				return nil, ErrAccountExpired
 			}
 		}
 		return acc, nil
@@ -851,12 +853,12 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	fetchTime := time.Since(start)
 	s.mu.Lock()
 	if fetchTime > time.Second {
-		s.Warnf("Account Fetch: %s in %v\n", name, fetchTime)
+		s.Warnf("Account [%s] fetch took %v\n", name, fetchTime)
 	} else {
-		s.Debugf("Account Fetch: %s in %v\n", name, fetchTime)
+		s.Debugf("Account [%s] fetch took %v\n", name, fetchTime)
 	}
 	if err != nil {
-		s.Warnf("Account Fetch Failed: %v\n", err)
+		s.Warnf("Account fetch failed: %v\n", err)
 		return "", err
 	}
 	return claimJWT, nil
