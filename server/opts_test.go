@@ -1819,3 +1819,44 @@ func TestLargeMaxPayload(t *testing.T) {
 		t.Fatalf("Expected an error from too large of a max_payload entry")
 	}
 }
+
+func TestHandleUnknownTopLevelConfigurationField(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: 1234
+		streaming {
+			id: "me"
+		}
+	`))
+	defer os.Remove(conf)
+
+	// Verify that we get an error because of unknown "streaming" field.
+	opts := &Options{}
+	if err := opts.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), "streaming") {
+		t.Fatal("Expected error, got none")
+	}
+
+	// Verify that if that is set, we get no error
+	NoErrOnUnknownFields(true)
+	defer NoErrOnUnknownFields(false)
+
+	if err := opts.ProcessConfigFile(conf); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 1234 {
+		t.Fatalf("Port was not parsed correctly: %v", opts.Port)
+	}
+
+	// Verify that ignore works only on top level fields.
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(`
+		port: 1234
+		cluster {
+			non_top_level_unknown_field: 123
+		}
+		streaming {
+			id: "me"
+		}
+	`))
+	if err := opts.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), "non_top_level") {
+		t.Fatal("Expected error, got none")
+	}
+}

@@ -27,12 +27,27 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats-server/conf"
 	"github.com/nats-io/nkeys"
 )
+
+var allowUnknownTopLevelField = int32(0)
+
+// NoErrOnUnknownFields can be used to change the behavior the processing
+// of a configuration file. By default, an error is reported if unknown
+// fields are found. If `noError` is set to true, no error will be reported
+// if top-level unknown fields are found.
+func NoErrOnUnknownFields(noError bool) {
+	var val int32
+	if noError {
+		val = int32(1)
+	}
+	atomic.StoreInt32(&allowUnknownTopLevelField, val)
+}
 
 // ClusterOpts are options for clusters.
 // NOTE: This structure is no longer used for monitoring endpoints
@@ -693,7 +708,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "reconnect_error_reports":
 			o.ReconnectErrorReports = int(v.(int64))
 		default:
-			if !tk.IsUsedVariable() {
+			if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
 					field: k,
 					configErr: configErr{
