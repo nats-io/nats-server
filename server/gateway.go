@@ -1920,7 +1920,10 @@ func (s *Server) switchAccountToInterestMode(accName string) {
 			e = &insie{}
 			gin.gw.insim[accName] = e
 		}
-		gin.gatewaySwitchAccountToSendAllSubs(e, []byte(accName))
+		// Do it only if we are in Optimistic mode
+		if e.mode == Optimistic {
+			gin.gatewaySwitchAccountToSendAllSubs(e, []byte(accName))
+		}
 		gin.mu.Unlock()
 	}
 }
