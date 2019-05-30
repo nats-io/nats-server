@@ -419,6 +419,10 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	}
 
 	addAccountToMemResolver(s, apub, ajwt)
+	acc, err := s.LookupAccount(apub)
+	if acc == nil || err != nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
 
 	// Create a new user
 	c, cr, cs := createClient(t, s, akp)
@@ -433,8 +437,13 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	go c.parse([]byte(cs))
 	expectPong(cr)
 
-	// Now we should expire after 1 second or so.
-	time.Sleep(1250 * time.Millisecond)
+	// Wait for the account to be expired.
+	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
+		if acc.IsExpired() {
+			return nil
+		}
+		return fmt.Errorf("Account not expired yet")
+	})
 
 	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
@@ -493,7 +502,7 @@ func TestJWTAccountRenew(t *testing.T) {
 	addAccountToMemResolver(s, apub, ajwt)
 	acc, _ := s.LookupAccount(apub)
 	if acc == nil {
-		t.Fatalf("Expected to retrive the account")
+		t.Fatalf("Expected to retrieve the account")
 	}
 	s.updateAccountClaims(acc, nac)
 
