@@ -153,7 +153,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	defer s.grWG.Done()
 
 	if remote == nil || remote.URL == nil {
-		s.Debugf("Empty remote leaf node definition, nothing to connect")
+		s.Debugf("Empty remote leafnode definition, nothing to connect")
 		return
 	}
 
@@ -166,7 +166,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 	var conn net.Conn
 
-	const connErrFmt = "Error trying to connect as leaf node to remote server (attempt %v): %v"
+	const connErrFmt = "Error trying to connect as leafnode to remote server (attempt %v): %v"
 
 	attempts := 0
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
@@ -177,7 +177,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			if url != rURL.Host {
 				ipStr = fmt.Sprintf(" (%s)", url)
 			}
-			s.Debugf("Trying to connect as leaf node to remote server on %s%s", rURL.Host, ipStr)
+			s.Debugf("Trying to connect as leafnode to remote server on %s%s", rURL.Host, ipStr)
 			conn, err = net.DialTimeout("tcp", url, dialTimeout)
 		}
 		if err != nil {
@@ -472,8 +472,6 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 	c.initClient()
 
-	c.Debugf("Leafnode connection created")
-
 	if solicited {
 		// We need to wait here for the info, but not for too long.
 		c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
@@ -553,7 +551,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 
 		c.sendLeafConnect(tlsRequired)
-		c.Debugf("Remote leaf node connect msg sent")
+		c.Debugf("Remote leafnode connect msg sent")
 
 	} else {
 		// Send our info to the other side.
@@ -622,6 +620,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		s.initLeafNodeSmap(c)
 		c.sendAllAccountSubs()
 	}
+
+	c.Noticef("Leafnode connection created")
 
 	return c
 }
@@ -804,7 +804,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 func (s *Server) initLeafNodeSmap(c *client) {
 	acc := c.acc
 	if acc == nil {
-		c.Debugf("Leaf node does not have an account bound")
+		c.Debugf("Leafnode does not have an account bound")
 		return
 	}
 	// Collect all account subs here.
