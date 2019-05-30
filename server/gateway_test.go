@@ -4892,4 +4892,20 @@ func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
 	}
 	checkLog(t, logB)
 	checkLog(t, logA)
+
+	// Clear log of server B
+	logB.Lock()
+	logB.imss = nil
+	logB.Unlock()
+
+	// Force a switch on B to inbound gateway from A and make sure that it is
+	// a no-op since this gateway connection has already been switched.
+	sb.switchAccountToInterestMode(globalAccountName)
+
+	logB.Lock()
+	didSwitch := len(logB.imss) > 0
+	logB.Unlock()
+	if didSwitch {
+		t.Fatalf("Attempted to switch while it was already in interest mode only")
+	}
 }
