@@ -410,8 +410,9 @@ func TestJWTAccountExpiresAfterConnect(t *testing.T) {
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
 	nac := jwt.NewAccountClaims(apub)
-	nac.IssuedAt = time.Now().Unix()
-	nac.Expires = time.Now().Add(time.Second).Unix()
+	now := time.Now()
+	nac.IssuedAt = now.Add(-10 * time.Second).Unix()
+	nac.Expires = now.Round(time.Second).Add(time.Second).Unix()
 	ajwt, err := nac.Encode(okp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
