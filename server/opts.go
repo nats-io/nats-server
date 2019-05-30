@@ -27,12 +27,26 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats-server/conf"
 	"github.com/nats-io/nkeys"
 )
+
+var allowUnknownTopLevelField = int32(0)
+
+// AllowUnknownTopLevelConfigurationField sets if the processing of a
+// configuration file returns an error if it finds an unknown top-level
+// configuration option.
+func AllowUnknownTopLevelConfigurationField(allow bool) {
+	var val int32
+	if allow {
+		val = int32(1)
+	}
+	atomic.StoreInt32(&allowUnknownTopLevelField, val)
+}
 
 // ClusterOpts are options for clusters.
 // NOTE: This structure is no longer used for monitoring endpoints
@@ -693,7 +707,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "reconnect_error_reports":
 			o.ReconnectErrorReports = int(v.(int64))
 		default:
-			if !tk.IsUsedVariable() {
+			if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
 					field: k,
 					configErr: configErr{
