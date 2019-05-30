@@ -1241,8 +1241,8 @@ func TestConnectErrorReports(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
-			checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", test.attempt, debugExpected)
-			checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", test.attempt, test.errExpected)
+			checkContent(t, "[DBG] Error trying to connect as leafnode to remote server", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect as leafnode to remote server", test.attempt, test.errExpected)
 		})
 	}
 
@@ -1415,8 +1415,8 @@ func TestReconnectErrorReports(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
-			checkContent(t, "[DBG] Error trying to connect as leaf node to remote server", test.attempt, debugExpected)
-			checkContent(t, "[ERR] Error trying to connect as leaf node to remote server", test.attempt, test.errExpected)
+			checkContent(t, "[DBG] Error trying to connect as leafnode to remote server", test.attempt, debugExpected)
+			checkContent(t, "[ERR] Error trying to connect as leafnode to remote server", test.attempt, test.errExpected)
 		})
 	}
 
