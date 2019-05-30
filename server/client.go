@@ -940,7 +940,8 @@ func (c *client) flushOutbound() bool {
 			if sce {
 				atomic.AddInt64(&srv.slowConsumers, 1)
 				c.clearConnection(SlowConsumerWriteDeadline)
-				c.Noticef("Slow Consumer Detected: WriteDeadline of %v Exceeded", c.out.wdl)
+				c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
+					c.out.wdl, len(cnb), attempted)
 			}
 		} else {
 			c.clearConnection(WriteError)
