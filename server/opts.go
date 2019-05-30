@@ -37,12 +37,13 @@ import (
 
 var allowUnknownTopLevelField = int32(0)
 
-// AllowUnknownTopLevelConfigurationField sets if the processing of a
-// configuration file returns an error if it finds an unknown top-level
-// configuration option.
-func AllowUnknownTopLevelConfigurationField(allow bool) {
+// NoErrOnUnknownFields can be used to change the behavior the processing
+// of a configuration file. By default, an error is reported if unknown
+// fields are found. If `noError` is set to true, no error will be reported
+// if top-level unknown fields are found.
+func NoErrOnUnknownFields(noError bool) {
 	var val int32
-	if allow {
+	if noError {
 		val = int32(1)
 	}
 	atomic.StoreInt32(&allowUnknownTopLevelField, val)

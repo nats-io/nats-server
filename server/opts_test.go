@@ -1836,8 +1836,8 @@ func TestHandleUnknownTopLevelConfigurationField(t *testing.T) {
 	}
 
 	// Verify that if that is set, we get no error
-	AllowUnknownTopLevelConfigurationField(true)
-	defer AllowUnknownTopLevelConfigurationField(false)
+	NoErrOnUnknownFields(true)
+	defer NoErrOnUnknownFields(false)
 
 	if err := opts.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
