@@ -2739,8 +2739,8 @@ func (c *client) clearConnection(reason ClosedState) {
 	// Do this always to also kick out any IO writes.
 	nc.SetWriteDeadline(time.Time{})
 
-	// Save off the connection if its a client.
-	if c.kind == CLIENT {
+	// Save off the connection if its a client or leafnode.
+	if c.kind == CLIENT || c.kind == LEAF {
 		go srv.saveClosedClient(c, nc, reason)
 	}
 }

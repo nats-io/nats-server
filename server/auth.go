@@ -636,6 +636,9 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 			return false
 		}
 
+		// Generate an event if we have a system account.
+		s.accountConnectEvent(c)
+
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())
 		return true
