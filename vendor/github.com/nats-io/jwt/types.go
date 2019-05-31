@@ -168,6 +168,7 @@ func (tr *TimeRange) Validate(vr *ValidationResults) {
 }
 
 // Limits are used to control acccess for users and importing accounts
+// Src is a comma separated list of CIDR specifications
 type Limits struct {
 	Max     int64       `json:"max,omitempty"`
 	Payload int64       `json:"payload,omitempty"`
@@ -185,10 +186,14 @@ func (l *Limits) Validate(vr *ValidationResults) {
 	}
 
 	if l.Src != "" {
-		ip := net.ParseIP(l.Src)
+		elements := strings.Split(l.Src, ",")
 
-		if ip == nil {
-			vr.AddError("invalid src %q in limits", l.Src)
+		for _, cidr := range elements {
+			cidr = strings.TrimSpace(cidr)
+			_, ipNet, err := net.ParseCIDR(cidr)
+			if err != nil || ipNet == nil {
+				vr.AddError("invalid cidr %q in user src limits", cidr)
+			}
 		}
 	}
 

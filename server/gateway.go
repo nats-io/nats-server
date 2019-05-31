@@ -2230,7 +2230,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		mreplya    [256]byte
 		mreply     []byte
 		dstPfx     []byte
-		checkReply = reply != nil
+		checkReply = len(reply) > 0
 	)
 
 	// Get a subscription from the pool

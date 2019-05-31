@@ -553,10 +553,50 @@ func waitForOutboundGateways(t *testing.T, s *server.Server, expected int, timeo
 // Creates a full cluster with numServers and given name and makes sure its well formed.
 // Will have Gateways and Leaf Node connections active.
 func createClusterWithName(t *testing.T, clusterName string, numServers int, connectTo ...*cluster) *cluster {
+	return createClusterEx(t, false, clusterName, numServers, connectTo...)
+}
+
+// Creates a cluster and optionally additional accounts and users.
+// Will have Gateways and Leaf Node connections active.
+func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServers int, connectTo ...*cluster) *cluster {
 	t.Helper()
 
 	if clusterName == "" || numServers < 1 {
 		t.Fatalf("Bad params")
+	}
+
+	// Setup some accounts and users.
+	// $SYS is always the system account. And we have default FOO and BAR accounts, as well
+	// as DLC and NGS which do a service import.
+	createAccountsAndUsers := func() ([]*server.Account, []*server.User) {
+		if !doAccounts {
+			return []*server.Account{server.NewAccount("$SYS")}, nil
+		}
+
+		ngs := server.NewAccount("NGS")
+		dlc := server.NewAccount("DLC")
+		accounts := []*server.Account{
+			server.NewAccount("$SYS"),
+			server.NewAccount("FOO"),
+			server.NewAccount("BAR"),
+			ngs, dlc,
+		}
+		ngs.AddServiceExport("ngs.usage.*", nil)
+		dlc.AddServiceImport(ngs, "ngs.usage", "ngs.usage.dlc")
+
+		// Setup users
+		users := []*server.User{
+			&server.User{Username: "dlc", Password: "pass", Permissions: nil, Account: dlc},
+			&server.User{Username: "ngs", Password: "pass", Permissions: nil, Account: ngs},
+		}
+		return accounts, users
+	}
+
+	bindGlobal := func(s *server.Server) {
+		ngs, _ := s.LookupAccount("NGS")
+		// Bind global to service import
+		gacc, _ := s.LookupAccount("$G")
+		gacc.AddServiceImport(ngs, "ngs.usage", "ngs.usage.$G")
 	}
 
 	// If we are going to connect to another cluster set that up now for options.
@@ -573,9 +613,11 @@ func createClusterWithName(t *testing.T, clusterName string, numServers int, con
 	o.Gateway.Name = clusterName
 	o.Gateway.Gateways = gws
 	// All of these need system accounts.
-	o.Accounts = []*server.Account{server.NewAccount("$SYS")}
+	o.Accounts, o.Users = createAccountsAndUsers()
 	o.SystemAccount = "$SYS"
+	// Run the server
 	s := RunServer(o)
+	bindGlobal(s)
 
 	c := &cluster{servers: make([]*server.Server, 0, 3), opts: make([]*server.Options, 0, 3), name: clusterName}
 	c.servers = append(c.servers, s)
@@ -592,9 +634,11 @@ func createClusterWithName(t *testing.T, clusterName string, numServers int, con
 		o.Gateway.Gateways = gws
 		o.Routes = routes
 		// All of these need system accounts.
-		o.Accounts = []*server.Account{server.NewAccount("$SYS")}
+		o.Accounts, o.Users = createAccountsAndUsers()
 		o.SystemAccount = "$SYS"
 		s := RunServer(o)
+		bindGlobal(s)
+
 		c.servers = append(c.servers, s)
 		c.opts = append(c.opts, o)
 	}
@@ -1978,4 +2022,58 @@ func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
 
 	_, leafExpect := setupConn(t, lc)
 	leafExpect(lsubRe)
+}
+
+func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterEx(t, true, "A", 3)
+	defer shutdownCluster(ca)
+	cb := createClusterEx(t, true, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	// Hang a responder off of cluster A.
+	opts := ca.opts[0]
+	url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Create a queue subscriber to send results
+	nc.QueueSubscribe("ngs.usage.*", "ngs", func(m *nats.Msg) {
+		m.Respond([]byte("22"))
+	})
+	nc.Flush()
+
+	// Now create a leafnode server on B.
+	opts = cb.opts[1]
+	sl, slOpts := runSolicitLeafServer(opts)
+	defer sl.Shutdown()
+
+	// Create a normal direct connect client on B.
+	url = fmt.Sprintf("nats://dlc:pass@%s:%d", opts.Host, opts.Port)
+	nc2, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	if _, err := nc2.Request("ngs.usage", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
+		t.Fatalf("Did not receive response: %v", err)
+	}
+
+	// Now create a client on the leafnode.
+	url = fmt.Sprintf("nats://%s:%d", slOpts.Host, slOpts.Port)
+	ncl, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl.Close()
+
+	if _, err := ncl.Request("ngs.usage", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
+		t.Fatalf("Did not receive response: %v", err)
+	}
 }
