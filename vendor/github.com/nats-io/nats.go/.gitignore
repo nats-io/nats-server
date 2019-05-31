@@ -37,3 +37,6 @@ _testmain.go
 .settings/
 
 # bin
+
+# Goland
+.idea

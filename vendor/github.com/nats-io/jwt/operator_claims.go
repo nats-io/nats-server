@@ -17,18 +17,26 @@ package jwt
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
 
 	"github.com/nats-io/nkeys"
 )
 
 // Operator specific claims
 type Operator struct {
-	Identities  []Identity `json:"identity,omitempty"`
-	SigningKeys StringList `json:"signing_keys,omitempty"`
+	Identities       []Identity `json:"identity,omitempty"`
+	SigningKeys      StringList `json:"signing_keys,omitempty"`
+	AccountServerURL string     `json:"account_server_url,omitempty"`
 }
 
 // Validate checks the validity of the operators contents
 func (o *Operator) Validate(vr *ValidationResults) {
+	err := o.validateAccountServerURL()
+	if err != nil {
+		vr.AddError(err.Error())
+	}
+
 	for _, i := range o.Identities {
 		i.Validate(vr)
 	}
@@ -38,6 +46,22 @@ func (o *Operator) Validate(vr *ValidationResults) {
 			vr.AddError("%s is not an operator public key", k)
 		}
 	}
+}
+
+func (o *Operator) validateAccountServerURL() error {
+	if o.AccountServerURL != "" {
+		// We don't care what kind of URL it is so long as it parses
+		// and has a protocol. The account server may impose additional
+		// constraints on the type of URLs that it is able to notify to
+		u, err := url.Parse(o.AccountServerURL)
+		if err != nil {
+			return fmt.Errorf("error parsing account server url: %v", err)
+		}
+		if u.Scheme == "" {
+			return fmt.Errorf("account server url %q requires a protocol", o.AccountServerURL)
+		}
+	}
+	return nil
 }
 
 // OperatorClaims define the data for an operator JWT
@@ -77,6 +101,10 @@ func (oc *OperatorClaims) AddSigningKey(pk string) {
 func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if !nkeys.IsValidPublicOperatorKey(oc.Subject) {
 		return "", errors.New("expected subject to be an operator public key")
+	}
+	err := oc.validateAccountServerURL()
+	if err != nil {
+		return "", err
 	}
 	oc.ClaimsData.Type = OperatorClaim
 	return oc.ClaimsData.encode(pair, oc)

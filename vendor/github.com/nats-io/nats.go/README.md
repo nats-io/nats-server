@@ -9,7 +9,7 @@ A [Go](http://golang.org) client for the [NATS messaging system](https://nats.io
 
 ```bash
 # Go client
-go get github.com/nats-io/nats.go
+go get github.com/nats-io/nats.go/
 
 # Server
 go get github.com/nats-io/nats-server
@@ -29,6 +29,11 @@ nc.Publish("foo", []byte("Hello World"))
 // Simple Async Subscriber
 nc.Subscribe("foo", func(m *nats.Msg) {
     fmt.Printf("Received a message: %s\n", string(m.Data))
+})
+
+// Responding to a request message
+nc.Subscribe("request", func(m *nats.Msg) {
+    m.Respond([]byte("answer is 42")
 })
 
 // Simple Sync Subscriber
@@ -125,7 +130,7 @@ The simplest form is to use the helper method UserCredentials(credsFilepath).
 nc, err := nats.Connect(url, UserCredentials("user.creds"))
 ```
 
-The helper methos creates two callback handlers to present the user JWT and sign the nonce challenge from the server.
+The helper methods creates two callback handlers to present the user JWT and sign the nonce challenge from the server.
 The core client library never has direct access to your private key and simply performs the callback for signing the server challenge.
 The helper will load and wipe and erase memory it uses for each connect or reconnect.
 
@@ -311,8 +316,8 @@ nc, err = nats.Connect(servers, nats.DontRandomize())
 
 // Setup callbacks to be notified on disconnects, reconnects and connection closed.
 nc, err = nats.Connect(servers,
-	nats.DisconnectHandler(func(nc *nats.Conn) {
-		fmt.Printf("Got disconnected!\n")
+	nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
+		fmt.Printf("Got disconnected! Reason: %q\n", err)
 	}),
 	nats.ReconnectHandler(func(nc *nats.Conn) {
 		fmt.Printf("Got reconnected to %v!\n", nc.ConnectedUrl())
@@ -339,9 +344,9 @@ nc, err = nats.Connect("nats://localhost:4222",
     nats.Token("S3cretT0ken"))
 
 // Note that if credentials are specified in the initial URLs, they take
-// precedence on the credentials specfied through the options.
+// precedence on the credentials specified through the options.
 // For instance, in the connect call below, the client library will use
-// the user "my" and password "pwd" to connect to locahost:4222, however,
+// the user "my" and password "pwd" to connect to localhost:4222, however,
 // it will use username "foo" and password "bar" when (re)connecting to
 // a different server URL that it got as part of the auto-discovery.
 nc, err = nats.Connect("nats://my:pwd@localhost:4222", nats.UserInfo("foo", "bar"))

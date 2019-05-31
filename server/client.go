@@ -2348,7 +2348,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			// gateway mode, we need to send RS+ to local cluster
 			// and possibly to inbound GW connections for
 			// which we are in interest-only mode.
-			if c.kind == CLIENT && c.srv.gateway.enabled {
+			if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == LEAF) {
 				c.srv.gatewayHandleServiceImport(rm.acc, nrr, c, 1)
 			}
 		}

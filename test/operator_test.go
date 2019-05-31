@@ -474,8 +474,8 @@ func TestReloadDoesUpdatesAccountsWithMemoryResolver(t *testing.T) {
 		if err != nats.ErrAuthorization {
 			t.Fatalf("Expected ErrAuthorization, got %v", err)
 		}
-	case <-time.After(time.Second):
-		// Give it up to 1 sec.
+	case <-time.After(2 * time.Second):
+		// Give it up to 2 sec.
 		t.Fatal("Expected connection to be disconnected")
 	}
 
