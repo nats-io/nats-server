@@ -1922,7 +1922,7 @@ func (s *Server) switchAccountToInterestMode(accName string) {
 		}
 		// Do it only if we are in Optimistic mode
 		if e.mode == Optimistic {
-			gin.gatewaySwitchAccountToSendAllSubs(e, []byte(accName))
+			gin.gatewaySwitchAccountToSendAllSubs(e, accName)
 		}
 		gin.mu.Unlock()
 	}
@@ -2438,7 +2438,7 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 				// we need to switch mode
 				if len(e.ni) >= gatewayMaxRUnsubBeforeSwitch {
 					// If too many RS-, switch to all-subs-mode.
-					c.gatewaySwitchAccountToSendAllSubs(e, accName)
+					c.gatewaySwitchAccountToSendAllSubs(e, string(accName))
 				} else {
 					e.ni[string(subject)] = struct{}{}
 					sendProto = true
@@ -2650,12 +2650,10 @@ func getAccountFromGatewayCommand(c *client, info *Info, cmd string) string {
 // sent.
 // The client's lock is held on entry.
 // <Invoked from inbound connection's readLoop>
-func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName []byte) {
+func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 	// Set this map to nil so that the no-interest is
 	// no longer checked.
 	e.ni = nil
-	// Capture this since we are passing it to a go-routine.
-	account := string(accName)
 	s := c.srv
 
 	remoteGWName := c.gw.name
@@ -2670,7 +2668,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName []byte) {
 		info := Info{
 			Gateway:           s.getGatewayName(),
 			GatewayCmd:        cmd,
-			GatewayCmdPayload: []byte(account),
+			GatewayCmdPayload: []byte(accName),
 		}
 
 		b, _ := json.Marshal(&info)
@@ -2695,7 +2693,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName []byte) {
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
 
-		s.sendAccountSubsToGateway(c, []byte(account))
+		s.sendAccountSubsToGateway(c, []byte(accName))
 		// Send the complete command. When the remote receives
 		// this, it will not send a message unless it has a
 		// matching sub from us.
