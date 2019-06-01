@@ -15,6 +15,7 @@ package test
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -2075,5 +2076,71 @@ func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
 
 	if _, err := ncl.Request("ngs.usage", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
 		t.Fatalf("Did not receive response: %v", err)
+	}
+}
+
+func TestLeafNodeSendsAccountingEvents(t *testing.T) {
+	s, opts, conf := runLeafNodeOperatorServer(t)
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	// System account
+	acc, akp := createAccount(t, s)
+	if err := s.SetSystemAccount(acc.Name); err != nil {
+		t.Fatalf("Expected this succeed, got %v", err)
+	}
+
+	// Leafnode Account
+	lacc, lakp := createAccount(t, s)
+
+	// Create a system account user and connect a client to listen for the events.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Watch only for our leaf node account.
+	cSub, _ := nc.SubscribeSync(fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", lacc.Name))
+	dSub, _ := nc.SubscribeSync(fmt.Sprintf("$SYS.ACCOUNT.%s.DISCONNECT", lacc.Name))
+	nc.Flush()
+
+	// Now create creds for the leafnode and connect the server.
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(lakp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	seed, _ := kp.Seed()
+	mycreds := genCredsFile(t, ujwt, seed)
+	defer os.Remove(mycreds)
+
+	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf)
+	defer sl.Shutdown()
+
+	// Wait for connect event
+	msg, err := cSub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error waiting for account connect event: %v", err)
+	}
+	m := server.ConnectEventMsg{}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatal("Did not get correctly formatted event")
+	}
+
+	// Shutdown leafnode to generate disconnect event.
+	sl.Shutdown()
+
+	msg, err = dSub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error waiting for account disconnect event: %v", err)
+	}
+	dm := server.DisconnectEventMsg{}
+	if err := json.Unmarshal(msg.Data, &dm); err != nil {
+		t.Fatal("Did not get correctly formatted event")
 	}
 }
