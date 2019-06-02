@@ -644,6 +644,9 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		return true
 	}
 
+	// FIXME(dlc) - Add ability to support remote account bindings via
+	// other auth like user or nkey and tlsMapping.
+
 	// For now this means we are binding the leafnode to the global account.
 	c.registerWithAccount(s.globalAccount())
 
