@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/logger"
+	"github.com/nats-io/nats-server/v2/logger"
 )
 
 func TestSignalToReOpenLogFile(t *testing.T) {

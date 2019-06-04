@@ -23,7 +23,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nats-io/nats-server/logger"
+	"github.com/nats-io/nats-server/v2/logger"
 )
 
 func TestSetLogger(t *testing.T) {
