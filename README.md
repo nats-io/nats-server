@@ -1112,8 +1112,8 @@ NATS Office Hours will be on hiatus for the US summer season. Please join our [S
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
 [Build-Status-Url]: https://travis-ci.org/nats-io/nats-server
 [Build-Status-Image]: https://travis-ci.org/nats-io/nats-server.svg?branch=master
-[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.0.0-RC14
-[Release-image]: https://img.shields.io/badge/release-v2.0.0--RC14-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.0.0--RC19
+[Release-image]: https://img.shields.io/badge/release-v2.0.0--RC19-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=master
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
