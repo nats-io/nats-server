@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/server/pse"
+	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
 const (

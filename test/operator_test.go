@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/server"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )

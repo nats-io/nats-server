@@ -3,6 +3,8 @@ sudo: false
 go:
 - 1.12.x
 - 1.11.x
+env:
+- GO111MODULE=off
 go_import_path: github.com/nats-io/nats.go
 install:
 - go get -t ./...
