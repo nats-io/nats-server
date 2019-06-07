@@ -1,0 +1,15 @@
+[Unit]
+Description=NATS Server
+After=network.target ntp.service
+
+[Service]
+PrivateTmp=true
+Type=simple
+ExecStart=/usr/sbin/nats-server -c /etc/nats-server.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s SIGINT $MAINPID
+User=nats
+Group=nats
+
+[Install]
+WantedBy=multi-user.target
