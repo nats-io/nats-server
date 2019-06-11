@@ -155,6 +155,7 @@ type Options struct {
 	Accounts         []*Account    `json:"-"`
 	SystemAccount    string        `json:"-"`
 	AllowNewAccounts bool          `json:"-"`
+	AllowAuthFailure bool          `json:"-"`
 	Username         string        `json:"-"`
 	Password         string        `json:"-"`
 	Authorization    string        `json:"-"`
@@ -507,6 +508,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 		case "logfile", "log_file":
 			o.LogFile = v.(string)
+		case "allow_authentication_failure":
+			o.AllowAuthFailure = v.(bool)
 		case "syslog":
 			o.Syslog = v.(bool)
 			trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)

@@ -254,6 +254,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	s.optsMu.RLock()
 	customClientAuthentication := s.opts.CustomClientAuthentication
 	authorization := s.opts.Authorization
+	allowAuthFailure := s.opts.AllowAuthFailure
 	username := s.opts.Username
 	password := s.opts.Password
 	tlsMap := s.opts.TLSMap
@@ -281,6 +282,12 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	if !authRequired {
 		// TODO(dlc) - If they send us credentials should we fail?
 		s.mu.Unlock()
+		return true
+	}
+
+	// Check if allowFailure is defined. If so, WARN in the logs but allow the user to continue.
+	if allowAuthFailure {
+		s.Warnf("Allowed host %v because allow_authentication_failure was set", c.host)
 		return true
 	}
 
