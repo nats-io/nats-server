@@ -2151,7 +2151,7 @@ func TestLeafNodeSendsAccountingEvents(t *testing.T) {
 	}
 }
 
-func TestLeadNodeDistributedQueueAcrossGWs(t *testing.T) {
+func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
 	defer server.ResetGatewaysSolicitDelay()
 
@@ -2237,5 +2237,96 @@ func TestLeadNodeDistributedQueueAcrossGWs(t *testing.T) {
 		defer sl.Shutdown()
 		// Now connect to the leafnode server and run test.
 		checkLeafDQ(slOpts, c.name, 100)
+	}
+}
+
+func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterEx(t, true, "A", 3)
+	defer shutdownCluster(ca)
+	cb := createClusterEx(t, true, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	// Create queue subscribers
+	createQS := func(c *cluster) *nats.Conn {
+		t.Helper()
+		opts := c.opts[rand.Intn(len(c.opts))]
+		url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
+		nc, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		cid, _ := nc.GetClientID()
+		response := []byte(fmt.Sprintf("%s:%d:%d", c.name, opts.Port, cid))
+		nc.QueueSubscribe("ngs.usage.*", "dq", func(m *nats.Msg) {
+			m.Respond(response)
+		})
+		nc.Flush()
+		return nc
+	}
+
+	ncA1 := createQS(ca)
+	defer ncA1.Close()
+
+	ncA2 := createQS(ca)
+	defer ncA2.Close()
+
+	ncA3 := createQS(ca)
+	defer ncA3.Close()
+
+	resp := make(map[string]int)
+
+	connectAndRequest := func(url, clusterName string, nreqs int) {
+		t.Helper()
+		nc, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer nc.Close()
+		for i := 0; i < nreqs; i++ {
+			m, err := nc.Request("ngs.usage", nil, 500*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Did not receive a response: %v", err)
+			}
+			if string(m.Data[0]) != clusterName {
+				t.Fatalf("Expected to prefer %q, but got response from %q", clusterName, m.Data[0])
+			}
+			resp[string(m.Data)]++
+		}
+	}
+
+	createLNS := func(c *cluster) (*server.Server, *server.Options) {
+		t.Helper()
+		// Pick one at random.
+		copts := c.opts[rand.Intn(len(c.servers))]
+		s, opts := runSolicitLeafServer(copts)
+		checkLeafNodeConnected(t, s)
+		return s, opts
+	}
+
+	checkLeafDQ := func(opts *server.Options, clusterName string, nreqs int) {
+		t.Helper()
+		url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+		connectAndRequest(url, clusterName, nreqs)
+	}
+
+	// Now create a leafnode on cluster A.
+	sl, slOpts := createLNS(ca)
+	defer sl.Shutdown()
+
+	// Now connect to the leafnode server and run test.
+	checkLeafDQ(slOpts, ca.name, 100)
+
+	// Should have some for all 3 QS [ncA1, ncA2, ncA3]
+	if lr := len(resp); lr != 3 {
+		t.Fatalf("Expected all 3 queue subscribers to have received some messages, only got %d", lr)
+	}
+	// Now check that we have at least 10% for each subscriber.
+	for _, r := range resp {
+		if r < 10 {
+			t.Fatalf("Got a subscriber with less than 10 responses: %d", r)
+		}
 	}
 }
