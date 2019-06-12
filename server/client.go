@@ -35,7 +35,7 @@ import (
 const (
 	// CLIENT is an end user.
 	CLIENT = iota
-	// ROUTER is another router in the cluster.
+	// ROUTER represents another server in the cluster.
 	ROUTER
 	// GATEWAY is a link between 2 clusters.
 	GATEWAY
@@ -2264,6 +2264,11 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		return
 	}
 
+	// Check to see if we need to map/route to another account.
+	if c.acc.imports.services != nil {
+		c.checkForImportServices(c.acc, msg)
+	}
+
 	// Match the subscriptions. We will use our own L1 map if
 	// it's still valid, avoiding contention on the shared sublist.
 	var r *SublistResult
@@ -2292,11 +2297,6 @@ func (c *client) processInboundClientMsg(msg []byte) {
 				}
 			}
 		}
-	}
-
-	// Check to see if we need to map/route to another account.
-	if c.acc.imports.services != nil {
-		c.checkForImportServices(c.acc, msg)
 	}
 
 	var qnames [][]byte
@@ -2328,6 +2328,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 	if acc == nil || acc.imports.services == nil {
 		return
 	}
+
 	acc.mu.RLock()
 	rm := acc.imports.services[string(c.pa.subject)]
 	invalid := rm != nil && rm.invalid
@@ -2500,25 +2501,25 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		}
 
 	selectQSub:
-
 		// We will hold onto remote or lead qsubs when we are coming from
 		// a route or a leaf node just in case we can no longer do local delivery.
 		var rsub *subscription
 
 		// Find a subscription that is able to deliver this message
 		// starting at a random index.
-		startIndex := c.in.prand.Intn(len(qsubs))
-		for i := 0; i < len(qsubs); i++ {
+		for startIndex, i := c.in.prand.Intn(len(qsubs)), 0; i < len(qsubs); i++ {
 			index := (startIndex + i) % len(qsubs)
 			sub := qsubs[index]
 			if sub == nil {
 				continue
 			}
-			kind := sub.client.kind
+
 			// Potentially sending to a remote sub across a route or leaf node.
-			if kind == ROUTER || kind == LEAF {
-				if c.kind == ROUTER || c.kind == LEAF || (c.kind == CLIENT && kind == LEAF) {
-					// We just came from a route/leaf, so skip and prefer local subs.
+			// We may want to skip this and prefer locals depending on where we
+			// were sourced from.
+			if src, dst := c.kind, sub.client.kind; dst == ROUTER || dst == LEAF {
+				if src == ROUTER || ((src == LEAF || src == CLIENT) && dst == LEAF) {
+					// We just came from a route, so skip and prefer local subs.
 					// Keep our first rsub in case all else fails.
 					if rsub == nil {
 						rsub = sub

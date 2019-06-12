@@ -1221,6 +1221,11 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		return
 	}
 
+	// Check to see if we need to map/route to another account.
+	if acc.imports.services != nil {
+		c.checkForImportServices(acc, msg)
+	}
+
 	// Match the subscriptions. We will use our own L1 map if
 	// it's still valid, avoiding contention on the shared sublist.
 	var r *SublistResult
@@ -1249,11 +1254,6 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 				}
 			}
 		}
-	}
-
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
-		c.checkForImportServices(acc, msg)
 	}
 
 	// Collect queue names if needed.

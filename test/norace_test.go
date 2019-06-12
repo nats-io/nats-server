@@ -150,7 +150,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 	expectedBytes := (len(fmt.Sprintf("MSG ping.replies 123456789 %d\r\n\r\n", len(payload))) + len(payload)) * totalReplies
 	ch := make(chan error, 2)
 	recvReplies := func(c net.Conn) {
-		var buf [16 * 1024]byte
+		var buf [32 * 1024]byte
 
 		for total := 0; total < expectedBytes; {
 			n, err := c.Read(buf[:])
@@ -185,7 +185,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 			if e != nil {
 				t.Fatalf("Error: %v", e)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("Did not receive all %v replies", totalReplies)
 		}
 	}

@@ -305,8 +305,8 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
-// Helper function for routes and gateways to create qfilters need for
-// converted subs from imports, etc.
+// Helper function for routes and gateways and leafnodes to create qfilters
+// needed for converted subs from imports, etc.
 func (c *client) makeQFilter(qsubs [][]*subscription) {
 	qs := make([][]byte, 0, len(qsubs))
 	for _, qsub := range qsubs {
