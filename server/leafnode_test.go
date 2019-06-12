@@ -136,3 +136,128 @@ func TestLeafNodeTLSWithCerts(t *testing.T) {
 		return nil
 	})
 }
+
+func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls {
+				ca_file: "../test/configs/certs/tlsauth/ca.pem"
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				timeout: 2
+			}
+		}
+	`))
+	defer os.Remove(conf1)
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", o1.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+						timeout: 5
+					}
+				}
+			]
+		}
+	`, u.String())))
+	defer os.Remove(conf2)
+	o2, err := ProcessConfigFile(conf2)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	if len(o2.LeafNode.Remotes) == 0 {
+		t.Fatal("Expected at least a single leaf remote")
+	}
+
+	var (
+		got      float64 = o2.LeafNode.Remotes[0].TLSTimeout
+		expected float64 = 5
+	)
+	if got != expected {
+		t.Fatalf("Expected %v, got: %v", expected, got)
+	}
+	o2.NoLog, o2.NoSigs = true, true
+	o2.LeafNode.resolver = &testLoopbackResolver{}
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
+		if nln := s1.NumLeafNodes(); nln != 1 {
+			return fmt.Errorf("Number of leaf nodes is %d", nln)
+		}
+		return nil
+	})
+
+	// Here we only process options without starting the server
+	// and without a root CA for the remote.
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						timeout: 10
+					}
+				}
+			]
+		}
+	`, u.String())))
+	defer os.Remove(conf3)
+	o3, err := ProcessConfigFile(conf3)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	if len(o3.LeafNode.Remotes) == 0 {
+		t.Fatal("Expected at least a single leaf remote")
+	}
+	got = o3.LeafNode.Remotes[0].TLSTimeout
+	expected = 10
+	if got != expected {
+		t.Fatalf("Expected %v, got: %v", expected, got)
+	}
+
+	// Here we only process options without starting the server
+	// and check the default for leafnode remotes.
+	conf4 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+					}
+				}
+			]
+		}
+	`, u.String())))
+	defer os.Remove(conf4)
+	o4, err := ProcessConfigFile(conf4)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+
+	if len(o4.LeafNode.Remotes) == 0 {
+		t.Fatal("Expected at least a single leaf remote")
+	}
+	got = o4.LeafNode.Remotes[0].TLSTimeout
+	expected = float64(DEFAULT_LEAF_TLS_TIMEOUT)
+	if int(got) != int(expected) {
+		t.Fatalf("Expected %v, got: %v", expected, got)
+	}
+}

@@ -1096,7 +1096,11 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				// Set RootCAs since this tls.Config is used when soliciting
 				// a connection (therefore behaves as a client).
 				remote.TLSConfig.RootCAs = remote.TLSConfig.ClientCAs
-				remote.TLSTimeout = tc.Timeout
+				if tc.Timeout > 0 {
+					remote.TLSTimeout = tc.Timeout
+				} else {
+					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT)
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -2144,27 +2148,33 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 
 // GenTLSConfig loads TLS related configuration parameters.
 func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
-
-	// Now load in cert and private key
-	cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
-	}
-	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("error parsing certificate: %v", err)
-	}
-
-	// Create the tls.Config from our options.
-	// We will determine the cipher suites that we prefer.
+	// Create the tls.Config from our options before including the certs.
+	// It will determine the cipher suites that we prefer.
 	// FIXME(dlc) change if ARM based.
 	config := tls.Config{
 		MinVersion:               tls.VersionTLS12,
 		CipherSuites:             tc.Ciphers,
 		PreferServerCipherSuites: true,
 		CurvePreferences:         tc.CurvePreferences,
-		Certificates:             []tls.Certificate{cert},
 		InsecureSkipVerify:       tc.Insecure,
+	}
+
+	switch {
+	case tc.CertFile != "" && tc.KeyFile == "":
+		return nil, fmt.Errorf("missing 'key_file' in TLS configuration")
+	case tc.CertFile == "" && tc.KeyFile != "":
+		return nil, fmt.Errorf("missing 'cert_file' in TLS configuration")
+	case tc.CertFile != "" && tc.KeyFile != "":
+		// Now load in cert and private key
+		cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
+		}
+		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("error parsing certificate: %v", err)
+		}
+		config.Certificates = []tls.Certificate{cert}
 	}
 
 	// Require client certificates as needed
