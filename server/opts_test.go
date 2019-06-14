@@ -1614,12 +1614,59 @@ func TestParsingGatewaysErrors(t *testing.T) {
 			"to be filename",
 		},
 		{
-			"tls_gen_error",
+			"tls_gen_error_cert_file_not_found",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					cert_file: "./configs/certs/missing.pem"
+					key_file: "./configs/certs/server-key.pem"
+				}
+			}`,
+			"certificate/key pair",
+		},
+		{
+			"tls_gen_error_key_file_not_found",
 			`gateway {
 				name: "A"
 				port: -1
 				tls {
 					cert_file: "./configs/certs/server.pem"
+					key_file: "./configs/certs/missing.pem"
+				}
+			}`,
+			"certificate/key pair",
+		},
+		{
+			"tls_gen_error_key_file_missing",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					cert_file: "./configs/certs/server.pem"
+				}
+			}`,
+			`missing 'key_file' in TLS configuration`,
+		},
+		{
+			"tls_gen_error_cert_file_missing",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					key_file: "./configs/certs/server-key.pem"
+				}
+			}`,
+			`missing 'cert_file' in TLS configuration`,
+		},
+		{
+			"tls_gen_error_key_file_not_found",
+			`gateway {
+				name: "A"
+				port: -1
+				tls {
+					cert_file: "./configs/certs/server.pem"
+					key_file: "./configs/certs/missing.pem"
 				}
 			}`,
 			"certificate/key pair",
@@ -1687,7 +1734,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 			"to be filename",
 		},
 		{
-			"gateway_unknon_field",
+			"gateway_unknown_field",
 			`gateway {
 				name: "A"
 				port: -1

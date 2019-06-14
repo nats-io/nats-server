@@ -1083,9 +1083,9 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			err:       errors.New(`error parsing X509 certificate/key pair: open : no such file or directory`),
-			errorLine: 3,
-			errorPos:  5,
+			err:       nil,
+			errorLine: 0,
+			errorPos:  0,
 		},
 		{
 			name: "invalid lame_duck_duration type",
@@ -1095,6 +1095,23 @@ func TestConfigCheck(t *testing.T) {
 			err:       errors.New(`error parsing lame_duck_duration: time: invalid duration abc`),
 			errorLine: 2,
 			errorPos:  3,
+		},
+		{
+			name: "when only setting TLS timeout for a leafnode remote",
+			config: `
+		leafnodes {
+		  remotes = [
+		    {
+		      url: "tls://connect.ngs.global:7422"
+		      tls {
+		        timeout: 0.01
+		      }
+		    }
+		  ]
+		}`,
+			err:       nil,
+			errorLine: 0,
+			errorPos:  0,
 		},
 	}
 

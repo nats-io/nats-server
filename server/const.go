@@ -115,6 +115,9 @@ const (
 	// DEFAULT_LEAF_NODE_RECONNECT LeafNode reconnect interval.
 	DEFAULT_LEAF_NODE_RECONNECT = time.Second
 
+	// DEFAULT_LEAF_TLS_TIMEOUT TLS timeout for LeafNodes
+	DEFAULT_LEAF_TLS_TIMEOUT = 2 * time.Second
+
 	// PROTO_SNIPPET_SIZE is the default size of proto to print on parse errors.
 	PROTO_SNIPPET_SIZE = 32
 
