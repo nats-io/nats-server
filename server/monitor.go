@@ -1398,7 +1398,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 // Returns an AccountGatewayz for this gateway outbound connection
 func createAccountOutboundGatewayz(name string, ei interface{}) *AccountGatewayz {
 	a := &AccountGatewayz{
-		Name: name,
+		Name:                  name,
 		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
 	}
 	if ei != nil {
@@ -1481,7 +1481,7 @@ func createInboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accoun
 // Returns an AccountGatewayz for this gateway inbound connection
 func createInboundAccountGatewayz(name string, e *insie) *AccountGatewayz {
 	a := &AccountGatewayz{
-		Name: name,
+		Name:                  name,
 		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
 	}
 	if e != nil {

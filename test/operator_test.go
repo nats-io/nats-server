@@ -28,7 +28,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-const testOpConfig = "./configs/operator.conf"
+const (
+	testOpConfig       = "./configs/operator.conf"
+	testOpInlineConfig = "./configs/operator_inline.conf"
+)
 
 // This matches ./configs/nkeys_jwts/test.seed
 // Test operator seed.
@@ -122,8 +125,26 @@ func TestOperatorConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected to create a server: %v", err)
 	}
-	// We should have filled in the TrustedKeys here.
-	// Our master key (issuer) plus the signing keys (3).
+	// We should have filled in the public TrustedKeys here.
+	// Our master public key (issuer) plus the signing keys (3).
+	checkKeys(t, opts, opts.TrustedOperators[0], 4)
+}
+
+func TestOperatorConfigInline(t *testing.T) {
+	opts, err := server.ProcessConfigFile(testOpInlineConfig)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	// Check we have the TrustedOperators
+	if len(opts.TrustedOperators) != 1 {
+		t.Fatalf("Expected to load the operator")
+	}
+	_, err = server.NewServer(opts)
+	if err != nil {
+		t.Fatalf("Expected to create a server: %v", err)
+	}
+	// We should have filled in the public TrustedKeys here.
+	// Our master public key (issuer) plus the signing keys (3).
 	checkKeys(t, opts, opts.TrustedOperators[0], 4)
 }
 
@@ -486,5 +507,74 @@ func TestReloadDoesUpdatesAccountsWithMemoryResolver(t *testing.T) {
 
 	if _, err := s.LookupAccount(accPub); err == nil {
 		t.Fatalf("Expected error looking up old account")
+	}
+}
+
+func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
+	// Create two accounts, system and normal account.
+	sysJWT, sysKP := createAccountForConfig(t)
+	sysPub, _ := sysKP.PublicKey()
+
+	// Create an expired account by hand here. We want to make sure we start up correctly
+	// with expired or otherwise accounts with validation issues.
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	nac.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
+	nac.Expires = time.Now().Add(-2 * time.Second).Unix()
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	cf := `
+	listen: 127.0.0.1:-1
+	cluster {
+		listen: 127.0.0.1:-1
+		authorization {
+			timeout: 2.2
+		} %s
+	}
+
+	operator = "./configs/nkeys/op.jwt"
+	system_account = "%s"
+
+	resolver = MEMORY
+	resolver_preload = {
+		%s : "%s"
+		%s : "%s"
+	}
+	`
+	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, apub, ajwt), "\n\t", "\n", -1)
+	conf := createConfFile(t, []byte(contents))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Now add in bogus account for second item and make sure reload fails.
+	contents = strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, "foo", "bar"), "\n\t", "\n", -1)
+	err = ioutil.WriteFile(conf, []byte(contents), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Reload(); err == nil {
+		t.Fatalf("Expected fatal error with bad account on reload")
+	}
+
+	// Put it back with a normal account and reload should succeed.
+	accJWT, accKP := createAccountForConfig(t)
+	accPub, _ := accKP.PublicKey()
+
+	contents = strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
+	err = ioutil.WriteFile(conf, []byte(contents), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Got unexpected error on reload: %v", err)
 	}
 }
