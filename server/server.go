@@ -423,21 +423,46 @@ func (s *Server) configureAccounts() error {
 	return nil
 }
 
+// Setup the memory resolver, make sure the JWTs are properly formed but do not
+// enforce expiration etc.
 func (s *Server) configureResolver() error {
 	opts := s.opts
 	s.accResolver = opts.AccountResolver
 	if opts.AccountResolver != nil && len(opts.resolverPreloads) > 0 {
 		if _, ok := s.accResolver.(*MemAccResolver); !ok {
-			return fmt.Errorf("resolver preloads only available for MemAccResolver")
+			return fmt.Errorf("resolver preloads only available for resolver type MEM")
 		}
 		for k, v := range opts.resolverPreloads {
-			if _, _, err := s.verifyAccountClaims(v); err != nil {
-				return fmt.Errorf("preloaded Account: %v", err)
+			_, err := jwt.DecodeAccountClaims(v)
+			if err != nil {
+				return fmt.Errorf("preload account error for %q: %v", k, err)
 			}
 			s.accResolver.Store(k, v)
 		}
 	}
 	return nil
+}
+
+// This will check preloads for validation issues.
+func (s *Server) checkResolvePreloads() {
+	opts := s.getOpts()
+	// We can just check the read-only opts versions here, that way we do not need
+	// to grab server lock or access s.accResolver.
+	for k, v := range opts.resolverPreloads {
+		claims, err := jwt.DecodeAccountClaims(v)
+		if err != nil {
+			s.Errorf("Preloaded account [%s] not valid", k)
+		}
+		// Check if it is expired.
+		vr := jwt.CreateValidationResults()
+		claims.Validate(vr)
+		if vr.IsBlocking(true) {
+			s.Warnf("Account [%s] has validation issues:", k)
+			for _, v := range vr.Issues {
+				s.Warnf("  - %s", v.Description)
+			}
+		}
+	}
 }
 
 func (s *Server) generateRouteInfoJSON() {
@@ -953,6 +978,12 @@ func (s *Server) Start() {
 	}
 	if hasOperators && opts.SystemAccount == _EMPTY_ {
 		s.Warnf("Trusted Operators should utilize a System Account")
+	}
+
+	// If we have a memory resolver, check the accounts here for validation exceptions.
+	// This allows them to be logged right away vs when they are accessed via a client.
+	if hasOperators && len(opts.resolverPreloads) > 0 {
+		s.checkResolvePreloads()
 	}
 
 	// Log the pid to a file

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"regexp"
+	"strings"
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nkeys"
@@ -24,11 +25,19 @@ import (
 
 var nscDecoratedRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}[\n]*))`)
 
+// All JWTs once encoded start with this
+const jwtPrefix = "eyJ"
+
 // readOperatorJWT
 func readOperatorJWT(jwtfile string) (*jwt.OperatorClaims, error) {
 	contents, err := ioutil.ReadFile(jwtfile)
 	if err != nil {
-		return nil, err
+		// Check to see if the JWT has been inlined.
+		if !strings.HasPrefix(jwtfile, jwtPrefix) {
+			return nil, err
+		}
+		// We may have an inline jwt here.
+		contents = []byte(jwtfile)
 	}
 	defer wipeSlice(contents)
 

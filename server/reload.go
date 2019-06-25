@@ -882,6 +882,8 @@ func (s *Server) reloadAuthorization() {
 	} else if s.opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {
+			// Check preloads so we can issue warnings etc if needed.
+			s.checkResolvePreloads()
 			// With a memory resolver we want to do something similar to configured accounts.
 			// We will walk the accounts and delete them if they are no longer present via fetch.
 			// If they are present we will force a claim update to process changes.

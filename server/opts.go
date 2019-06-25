@@ -602,9 +602,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
 				errors = append(errors, err)
 			}
-			// Assume for now these are file names.
-			// TODO(dlc) - If we try to read the file and it fails we could treat the string
-			// as the JWT itself.
+			// Assume for now these are file names, but they can also be the JWT itself inline.
 			o.TrustedOperators = make([]*jwt.OperatorClaims, 0, len(opFiles))
 			for _, fname := range opFiles {
 				opc, err := readOperatorJWT(fname)
@@ -651,19 +649,26 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "resolver_preload":
 			mp, ok := v.(map[string]interface{})
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("preload should be a map of key:jwt")}
+				err := &configErr{tk, fmt.Sprintf("preload should be a map of account_public_key:account_jwt")}
 				errors = append(errors, err)
 				continue
 			}
 			o.resolverPreloads = make(map[string]string)
 			for key, val := range mp {
 				tk, val = unwrapValue(val)
-				if jwt, ok := val.(string); !ok {
-					err := &configErr{tk, fmt.Sprintf("preload map value should be a string jwt")}
+				if jwtstr, ok := val.(string); !ok {
+					err := &configErr{tk, fmt.Sprintf("preload map value should be a string JWT")}
 					errors = append(errors, err)
 					continue
 				} else {
-					o.resolverPreloads[key] = jwt
+					// Make sure this is a valid account JWT, that is a config error.
+					// We will warn of expirations, etc later.
+					if _, err := jwt.DecodeAccountClaims(jwtstr); err != nil {
+						err := &configErr{tk, fmt.Sprintf("invalid account JWT")}
+						errors = append(errors, err)
+						continue
+					}
+					o.resolverPreloads[key] = jwtstr
 				}
 			}
 		case "system_account", "system":
