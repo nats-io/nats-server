@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,13 +102,13 @@ func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 }
 
 func TestFileLogger(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "_gnatsd")
+	tmpDir, err := ioutil.TempDir("", "_nats-server")
 	if err != nil {
 		t.Fatal("Could not create tmp dir")
 	}
 	defer os.RemoveAll(tmpDir)
 
-	file, err := ioutil.TempFile(tmpDir, "gnatsd:log_")
+	file, err := ioutil.TempFile(tmpDir, "nats-server:log_")
 	if err != nil {
 		t.Fatalf("Could not create the temp file: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestFileLogger(t *testing.T) {
 		t.Fatalf("Expected '%s', received '%s'\n", "[INFO] foo", string(buf))
 	}
 
-	file, err = ioutil.TempFile(tmpDir, "gnatsd:log_")
+	file, err = ioutil.TempFile(tmpDir, "nats-server:log_")
 	if err != nil {
 		t.Fatalf("Could not create the temp file: %v", err)
 	}
@@ -155,14 +156,24 @@ func TestFileLogger(t *testing.T) {
 	if pid[0] != '[' || pid[len(pid)-1] != ']' {
 		t.Fatalf("%v", errMsg)
 	}
-	//TODO: Parse date.
+
+	date := str[pidEnd:infoStart]
+	dateRegExp := "[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{6}"
+	reg, err := regexp.Compile(dateRegExp)
+	if err != nil {
+		t.Fatalf("Compile date regexp error: %v", err)
+	}
+	if matched := reg.Match([]byte(date)); !matched {
+		t.Fatalf("Date string '%s' does not match '%s'", date, dateRegExp)
+	}
+
 	if !strings.HasSuffix(str, "[ERR] foo\n") {
 		t.Fatalf("%v", errMsg)
 	}
 }
 
 func expectOutput(t *testing.T, f func(), expected string) {
-	old := os.Stderr // keep backup of the real stdout
+	old := os.Stderr // keep backup of the real stderr
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
