@@ -202,8 +202,9 @@ type client struct {
 
 // Struct for PING initiation from the server.
 type pinfo struct {
-	tmr *time.Timer
-	out int
+	tmr  *time.Timer
+	last time.Time
+	out  int
 }
 
 // outbound holds pending data for a socket.
@@ -1461,6 +1462,10 @@ func (c *client) processPing() {
 	}
 	c.sendPong()
 
+	// Record this to suppress us sending one if this
+	// is withing a given time interval for activity.
+	c.ping.last = time.Now()
+
 	// If not a CLIENT, we are done
 	if c.kind != CLIENT {
 		c.mu.Unlock()
@@ -2635,10 +2640,15 @@ func (c *client) processPingTimer() {
 
 	c.Debugf("%s Ping Timer", c.typeString())
 
-	// If we have had activity within the PingInterval no
-	// need to send a ping.
-	if delta := time.Since(c.last); delta < c.srv.getOpts().PingInterval {
-		c.Debugf("Delaying PING due to activity %v ago", delta.Round(time.Second))
+	// If we have had activity within the PingInterval then
+	// there is no need to send a ping. This can be client data
+	// or if we received a ping from the other side.
+	pingInterval := c.srv.getOpts().PingInterval
+
+	if delta := time.Since(c.last); delta < pingInterval {
+		c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
+	} else if delta := time.Since(c.ping.last); delta < pingInterval {
+		c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
 	} else {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
@@ -2653,6 +2663,20 @@ func (c *client) processPingTimer() {
 
 	// Reset to fire again.
 	c.setPingTimer()
+}
+
+// Lock should be held
+// We Randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
+// This is because the clients by default are usually setting same interval
+// and we have alot of cross ping/pongs between clients and servers.
+// We will now suppress the server ping/pong if we have received a client ping.
+func (c *client) setFirstPingTimer(pingInterval time.Duration) {
+	if c.srv == nil {
+		return
+	}
+	addDelay := rand.Int63n(int64(pingInterval / 5))
+	d := pingInterval + time.Duration(addDelay)
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 // Lock should be held

@@ -187,3 +187,42 @@ func TestUnpromptedPong(t *testing.T) {
 		t.Fatal("timeout: Expected to have connection closed")
 	}
 }
+
+func TestPingSuppresion(t *testing.T) {
+	pingInterval := 100 * time.Millisecond
+
+	opts := DefaultTestOptions
+	opts.Port = PING_TEST_PORT
+	opts.PingInterval = pingInterval
+
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	c := createClientConn(t, "127.0.0.1", PING_TEST_PORT)
+	defer c.Close()
+
+	connectTime := time.Now()
+
+	send, expect := setupConn(t, c)
+
+	expect(pingRe)
+	pingTime := time.Since(connectTime)
+
+	// Should be > 100 but less then 120(ish)
+	if pingTime < pingInterval {
+		t.Fatalf("pingTime too low: %v", pingTime)
+	}
+	// +5 is just for fudging in case things are slow in the testing system.
+	if pingTime > pingInterval+(pingInterval/5)+5 {
+		t.Fatalf("pingTime too high: %v", pingTime)
+	}
+
+	time.Sleep(pingInterval / 2)
+
+	// Sending a PING should suppress.
+	send("PING\r\n")
+	expect(pongRe)
+
+	// This will wait for
+	expectNothingTimeout(t, c, time.Now().Add(100*time.Millisecond))
+}
