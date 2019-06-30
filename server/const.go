@@ -143,6 +143,9 @@ const (
 	// DEFAULT_LEAFNODE_INFO_WAIT Route dial timeout.
 	DEFAULT_LEAFNODE_INFO_WAIT = 1 * time.Second
 
+	// DEFAULT_LEAFNODE_PORT is the default port for remote leafnode connections.
+	DEFAULT_LEAFNODE_PORT = 7422
+
 	// DEFAULT_CONNECT_ERROR_REPORTS is the number of attempts at which a
 	// repeated failed route, gateway or leaf node connection is reported.
 	// This is used for initial connection, that is, when the server has

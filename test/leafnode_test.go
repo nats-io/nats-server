@@ -2330,3 +2330,27 @@ func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
 		}
 	}
 }
+
+func TestLeafNodeDefaultPort(t *testing.T) {
+	o := testDefaultOptionsForLeafNodes()
+	o.LeafNode.Port = server.DEFAULT_LEAFNODE_PORT
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	conf := createConfFile(t, []byte(`
+		port: -1
+		leaf {
+			remotes = [
+				{
+					url: "leafnode://127.0.0.1"
+				}
+			]
+		}
+	`))
+	defer os.Remove(conf)
+
+	sl, _ := RunServerWithConfig(conf)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+}
