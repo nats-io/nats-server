@@ -2435,7 +2435,7 @@ func setBaselineOptions(opts *Options) {
 	// Set baseline connect port for remotes.
 	for _, r := range opts.LeafNode.Remotes {
 		if r != nil && r.URL.Port() == "" {
-			r.URL.Host = fmt.Sprintf("%s:%d", r.URL.Host, DEFAULT_LEAFNODE_PORT)
+			r.URL.Host = net.JoinHostPort(r.URL.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
 		}
 	}
 
