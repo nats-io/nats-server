@@ -207,6 +207,7 @@ func TestPingSuppresion(t *testing.T) {
 
 	expect(pingRe)
 	pingTime := time.Since(connectTime)
+	send("PONG\r\n")
 
 	// Should be > 100 but less then 120(ish)
 	if pingTime < pingInterval {

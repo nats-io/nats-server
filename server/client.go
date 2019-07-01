@@ -2644,10 +2644,12 @@ func (c *client) processPingTimer() {
 	// there is no need to send a ping. This can be client data
 	// or if we received a ping from the other side.
 	pingInterval := c.srv.getOpts().PingInterval
+	now := time.Now()
+	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	if delta := time.Since(c.last); delta < pingInterval {
+	if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
 		c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
-	} else if delta := time.Since(c.ping.last); delta < pingInterval {
+	} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
 		c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
 	} else {
 		// Check for violation

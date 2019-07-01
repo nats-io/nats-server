@@ -156,4 +156,8 @@ const (
 	// attempt to reconnect a route, gateway or leaf node connection.
 	// The default is to report every attempt.
 	DEFAULT_RECONNECT_ERROR_REPORTS = 1
+
+	// DEFAULT_RTT_MEASUREMENT_INTERVAL	is how often we want to measure RTT from
+	// this server to clients, routes, gateways or leafnode connections.
+	DEFAULT_RTT_MEASUREMENT_INTERVAL = time.Hour
 )
