@@ -97,3 +97,28 @@ func TestMaxPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxPayloadOverrun(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.MaxPayload = 10000
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	// Overrun a int32
+	c := createClientConn(t, "127.0.0.1", opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("PUB foo 380571791000988\r\n")
+	expect(errRe)
+
+	// Now overrun an int64, parseSize will have returned -1,
+	// so we get disconnected.
+	c = createClientConn(t, "127.0.0.1", opts.Port)
+	defer c.Close()
+
+	send, _ = setupConn(t, c)
+	send("PUB foo 18446744073709551615123\r\n")
+	expectDisconnect(t, c)
+}
