@@ -2432,10 +2432,18 @@ func setBaselineOptions(opts *Options) {
 			opts.LeafNode.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
 		}
 	}
+	// Set baseline connect port for remotes.
+	for _, r := range opts.LeafNode.Remotes {
+		if r != nil && r.URL.Port() == "" {
+			r.URL.Host = net.JoinHostPort(r.URL.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
+		}
+	}
+
 	// Set this regardless of opts.LeafNode.Port
 	if opts.LeafNode.ReconnectInterval == 0 {
 		opts.LeafNode.ReconnectInterval = DEFAULT_LEAF_NODE_RECONNECT
 	}
+
 	if opts.MaxControlLine == 0 {
 		opts.MaxControlLine = MAX_CONTROL_LINE_SIZE
 	}

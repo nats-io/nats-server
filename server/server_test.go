@@ -1231,6 +1231,16 @@ func TestConnectErrorReports(t *testing.T) {
 		t.Fatalf("Error reading log file: %v", err)
 	}
 
+	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
+		t.Helper()
+		present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
+		if shouldBeThere && !present {
+			t.Fatalf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
+		} else if !shouldBeThere && present {
+			t.Fatalf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
+		}
+	}
+
 	for _, test := range []testConnect{
 		{"leafnode_attempt_1", 1, true},
 		{"leafnode_attempt_2", 2, false},
@@ -1241,8 +1251,8 @@ func TestConnectErrorReports(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
-			checkContent(t, "[DBG] Error trying to connect as leafnode to remote server", test.attempt, debugExpected)
-			checkContent(t, "[ERR] Error trying to connect as leafnode to remote server", test.attempt, test.errExpected)
+			checkLeafContent(t, "[DBG] Error trying to connect as leafnode to remote server", remoteURLs[0].Host, test.attempt, debugExpected)
+			checkLeafContent(t, "[ERR] Error trying to connect as leafnode to remote server", remoteURLs[0].Host, test.attempt, test.errExpected)
 		})
 	}
 
@@ -1374,7 +1384,9 @@ func TestReconnectErrorReports(t *testing.T) {
 
 	// Now try with leaf nodes
 	csOpts.Cluster.Port = 0
+	csOpts.LeafNode.Host = "127.0.0.1"
 	csOpts.LeafNode.Port = -1
+
 	cs = RunServer(csOpts)
 	defer cs.Shutdown()
 
@@ -1405,6 +1417,16 @@ func TestReconnectErrorReports(t *testing.T) {
 		t.Fatalf("Error reading log file: %v", err)
 	}
 
+	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
+		t.Helper()
+		present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
+		if shouldBeThere && !present {
+			t.Fatalf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
+		} else if !shouldBeThere && present {
+			t.Fatalf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
+		}
+	}
+
 	for _, test := range []testConnect{
 		{"leafnode_attempt_1", 1, true},
 		{"leafnode_attempt_2", 2, false},
@@ -1415,8 +1437,8 @@ func TestReconnectErrorReports(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
-			checkContent(t, "[DBG] Error trying to connect as leafnode to remote server", test.attempt, debugExpected)
-			checkContent(t, "[ERR] Error trying to connect as leafnode to remote server", test.attempt, test.errExpected)
+			checkLeafContent(t, "[DBG] Error trying to connect as leafnode to remote server", u.Host, test.attempt, debugExpected)
+			checkLeafContent(t, "[ERR] Error trying to connect as leafnode to remote server", u.Host, test.attempt, test.errExpected)
 		})
 	}
 
