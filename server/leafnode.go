@@ -1193,7 +1193,7 @@ func (c *client) processLeafMsgArgs(trace bool, arg []byte) error {
 		}
 	}
 	if c.pa.size < 0 {
-		return fmt.Errorf("processRoutedMsgArgs Bad or Missing Size: '%s'", args)
+		return fmt.Errorf("processLeafMsgArgs Bad or Missing Size: '%s'", args)
 	}
 
 	// Common ones processed after check for arg length

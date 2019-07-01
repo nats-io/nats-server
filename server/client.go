@@ -1567,11 +1567,13 @@ func (c *client) processPub(trace bool, arg []byte) error {
 	default:
 		return fmt.Errorf("processPub Parse Error: '%s'", arg)
 	}
+	// If number overruns an int64, parseSize() will have returned a negative value
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: '%s'", arg)
 	}
 	maxPayload := atomic.LoadInt32(&c.mpay)
-	if maxPayload != jwt.NoLimit && int32(c.pa.size) > maxPayload {
+	// Use int64() to avoid int32 overrun...
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
