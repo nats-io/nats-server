@@ -1463,7 +1463,7 @@ func (c *client) processPing() {
 	c.sendPong()
 
 	// Record this to suppress us sending one if this
-	// is withing a given time interval for activity.
+	// is within a given time interval for activity.
 	c.ping.last = time.Now()
 
 	// If not a CLIENT, we are done
@@ -2666,7 +2666,7 @@ func (c *client) processPingTimer() {
 }
 
 // Lock should be held
-// We Randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
+// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
 // This is because the clients by default are usually setting same interval
 // and we have alot of cross ping/pongs between clients and servers.
 // We will now suppress the server ping/pong if we have received a client ping.

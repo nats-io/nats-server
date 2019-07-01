@@ -223,6 +223,7 @@ func TestPingSuppresion(t *testing.T) {
 	send("PING\r\n")
 	expect(pongRe)
 
-	// This will wait for
+	// This will wait for the time period where a PING should have fired
+	// and been delivered. We expect nothing here since it should be suppressed.
 	expectNothingTimeout(t, c, time.Now().Add(100*time.Millisecond))
 }
