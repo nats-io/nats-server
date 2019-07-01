@@ -350,8 +350,12 @@ func expectDisconnect(t *testing.T, c net.Conn) {
 }
 
 func expectNothing(t tLogger, c net.Conn) {
+	expectNothingTimeout(t, c, time.Now().Add(100*time.Millisecond))
+}
+
+func expectNothingTimeout(t tLogger, c net.Conn, dl time.Time) {
 	expBuf := make([]byte, 32)
-	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	c.SetReadDeadline(dl)
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 	if err == nil && n > 0 {
