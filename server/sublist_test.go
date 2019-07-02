@@ -1,4 +1,4 @@
-// Copyright 2016-2018 The NATS Authors
+// Copyright 2016-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1004,6 +1004,20 @@ func TestSublistSharedEmptyResult(t *testing.T) {
 
 	if r1 != r2 {
 		t.Fatalf("Expected empty result to be a shared result set")
+	}
+}
+
+func TestSublistNoCacheStats(t *testing.T) {
+	s := NewSublistNoCache()
+	s.Insert(newSub("foo"))
+	s.Insert(newSub("bar"))
+	s.Insert(newSub("baz"))
+	s.Insert(newSub("foo.bar.baz"))
+	s.Match("a.b.c")
+	s.Match("bar")
+	stats := s.Stats()
+	if stats.NumCache != 0 {
+		t.Fatalf("Expected 0 for NumCache stat, got %d", stats.NumCache)
 	}
 }
 
