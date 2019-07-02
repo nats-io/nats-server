@@ -120,7 +120,6 @@ type exportMap struct {
 func NewAccount(name string) *Account {
 	a := &Account{
 		Name:   name,
-		sl:     NewSublist(),
 		limits: limits{-1, -1, -1, -1, 0, 0},
 	}
 	return a

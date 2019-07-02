@@ -765,7 +765,7 @@ func (s *Server) shouldTrackSubscriptions() bool {
 // Lock should be held on entry.
 func (s *Server) registerAccount(acc *Account) {
 	if acc.sl == nil {
-		acc.sl = NewSublist()
+		acc.sl = NewSublist(s.opts != nil && !s.opts.NoSublistCache)
 	}
 	if acc.maxnae == 0 {
 		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
