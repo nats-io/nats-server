@@ -710,8 +710,8 @@ func (s *Sublist) Stats() *SublistStats {
 
 	// whip through cache for fanout stats, this can be off if cache is full and doing evictions.
 	// If this is called frequently, which it should not be, this could hurt performance.
-	tot, max, clen := 0, 0, 0
 	if cache != nil {
+		tot, max, clen := 0, 0, 0
 		s.cache.Range(func(k, v interface{}) bool {
 			clen++
 			r := v.(*SublistResult)
@@ -722,10 +722,10 @@ func (s *Sublist) Stats() *SublistStats {
 			}
 			return true
 		})
-	}
-	st.MaxFanout = uint32(max)
-	if tot > 0 {
-		st.AvgFanout = float64(tot) / float64(clen)
+		st.MaxFanout = uint32(max)
+		if tot > 0 {
+			st.AvgFanout = float64(tot) / float64(clen)
+		}
 	}
 	return st
 }
