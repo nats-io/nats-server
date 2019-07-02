@@ -147,6 +147,7 @@ type Options struct {
 	Debug            bool          `json:"-"`
 	NoLog            bool          `json:"-"`
 	NoSigs           bool          `json:"-"`
+	NoSublistCache   bool          `json:"-"`
 	Logtime          bool          `json:"-"`
 	MaxConn          int           `json:"max_connections"`
 	MaxSubs          int           `json:"max_subscriptions,omitempty"`
@@ -423,6 +424,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 		case "logtime":
 			o.Logtime = v.(bool)
 			trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
+		case "disable_sublist_cache", "no_sublist_cache":
+			o.NoSublistCache = v.(bool)
 		case "accounts":
 			err := parseAccounts(tk, o, &errors, &warnings)
 			if err != nil {

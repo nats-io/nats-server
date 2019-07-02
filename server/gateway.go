@@ -1695,7 +1695,7 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		return nil
 	} else {
 		// Plain sub, assume optimistic sends, create entry.
-		e = &outsie{ni: make(map[string]struct{}), sl: NewSublist()}
+		e = &outsie{ni: make(map[string]struct{}), sl: NewSublistWithCache()}
 		newe = true
 	}
 	// This is when a sub or queue sub is supposed to be in
@@ -1796,7 +1796,7 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	} else if queue == nil {
 		return nil
 	} else {
-		e = &outsie{ni: make(map[string]struct{}), sl: NewSublist()}
+		e = &outsie{ni: make(map[string]struct{}), sl: NewSublistWithCache()}
 		newe = true
 		useSl = true
 	}
@@ -2594,7 +2594,7 @@ func (c *client) gatewayAllSubsReceiveStart(info *Info) {
 		e.mode = Transitioning
 		e.Unlock()
 	} else {
-		e := &outsie{sl: NewSublist()}
+		e := &outsie{sl: NewSublistWithCache()}
 		e.mode = Transitioning
 		c.mu.Lock()
 		c.gw.outsim.Store(account, e)

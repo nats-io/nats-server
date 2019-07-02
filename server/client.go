@@ -579,14 +579,14 @@ func (c *client) setPermissions(perms *Permissions) {
 	// Loop over publish permissions
 	if perms.Publish != nil {
 		if len(perms.Publish.Allow) > 0 {
-			c.perms.pub.allow = NewSublist()
+			c.perms.pub.allow = NewSublistWithCache()
 		}
 		for _, pubSubject := range perms.Publish.Allow {
 			sub := &subscription{subject: []byte(pubSubject)}
 			c.perms.pub.allow.Insert(sub)
 		}
 		if len(perms.Publish.Deny) > 0 {
-			c.perms.pub.deny = NewSublist()
+			c.perms.pub.deny = NewSublistWithCache()
 		}
 		for _, pubSubject := range perms.Publish.Deny {
 			sub := &subscription{subject: []byte(pubSubject)}
@@ -597,14 +597,14 @@ func (c *client) setPermissions(perms *Permissions) {
 	// Loop over subscribe permissions
 	if perms.Subscribe != nil {
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublist()
+			c.perms.sub.allow = NewSublistWithCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{subject: []byte(subSubject)}
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublist()
+			c.perms.sub.deny = NewSublistWithCache()
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -633,7 +633,7 @@ func (c *client) checkExpiration(claims *jwt.ClaimsData) {
 // messages based on a deny clause for subscriptions.
 // Lock should be held.
 func (c *client) loadMsgDenyFilter() {
-	c.mperms = &msgDeny{NewSublist(), make(map[string]bool)}
+	c.mperms = &msgDeny{NewSublistWithCache(), make(map[string]bool)}
 	for _, sub := range c.darray {
 		c.mperms.deny.Insert(&subscription{subject: []byte(sub)})
 	}

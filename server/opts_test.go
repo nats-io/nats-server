@@ -1907,3 +1907,54 @@ func TestHandleUnknownTopLevelConfigurationField(t *testing.T) {
 		t.Fatal("Expected error, got none")
 	}
 }
+
+func TestSublistNoCacheConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+      disable_sublist_cache: true
+    `))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if !opts.NoSublistCache {
+		t.Fatalf("Expected sublist cache to be disabled")
+	}
+}
+
+func TestSublistNoCacheConfigOnAccounts(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	  listen: "127.0.0.1:-1"
+      disable_sublist_cache: true
+
+	  accounts {
+		synadia {
+			users [ {nkey : UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E} ]
+		}
+		nats.io {
+			users [ {nkey : UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ]
+		}
+	  }
+    `))
+	defer os.Remove(confFileName)
+
+	s, _ := RunServerWithConfig(confFileName)
+	defer s.Shutdown()
+
+	// Check that all account sublists do not have caching enabled.
+	ta := s.numReservedAccounts() + 2
+	if la := s.numAccounts(); la != ta {
+		t.Fatalf("Expected to have a server with %d active accounts, got %v", ta, la)
+	}
+
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		if acc == nil {
+			t.Fatalf("Expected non-nil sublist for account")
+		}
+		if acc.sl.CacheEnabled() {
+			t.Fatalf("Expected the account sublist to not have caching enabled")
+		}
+		return true
+	})
+}
