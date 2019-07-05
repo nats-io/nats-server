@@ -523,6 +523,20 @@ func (r *reconnectErrorReports) Apply(s *Server) {
 	s.Noticef("Reloaded: reconnect_error_reports = %v", r.newValue)
 }
 
+// maxTracedMsgLenOption implements the option interface for the `max_traced_msg_len` setting.
+type maxTracedMsgLenOption struct {
+	noopOption
+	newValue int
+}
+
+// Apply the setting by updating the maximum traced message length.
+func (m *maxTracedMsgLenOption) Apply(server *Server) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.opts.MaxTracedMsgLen = m.newValue
+	server.Noticef("Reloaded: max_traced_msg_len = %d", m.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -771,6 +785,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.
 			continue
+		case "maxtracedmsglen":
+			diffOpts = append(diffOpts, &maxTracedMsgLenOption{newValue: newValue.(int)})
 		case "port":
 			// check to see if newValue == 0 and continue if so.
 			if newValue == 0 {
@@ -778,7 +794,6 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				continue
 			}
 			fallthrough
-
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and

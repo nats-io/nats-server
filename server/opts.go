@@ -190,6 +190,8 @@ type Options struct {
 	WriteDeadline    time.Duration `json:"-"`
 	MaxClosedClients int           `json:"-"`
 	LameDuckDuration time.Duration `json:"-"`
+	// MaxTracedMsgLen is the maximum printable length for traced messages.
+	MaxTracedMsgLen int `json:"-"`
 
 	// Operating a trusted NATS server
 	TrustedKeys      []string              `json:"-"`
@@ -539,6 +541,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.MaxPending = v.(int64)
 		case "max_connections", "max_conn":
 			o.MaxConn = int(v.(int64))
+		case "max_traced_msg_len":
+			o.MaxTracedMsgLen = int(v.(int64))
 		case "max_subscriptions", "max_subs":
 			o.MaxSubs = int(v.(int64))
 		case "ping_interval":
@@ -2551,6 +2555,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
