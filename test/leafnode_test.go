@@ -694,6 +694,8 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	leafSend, leafExpect := setupConn(t, lc)
+	// This is for our global responses since we are setting up GWs above.
+	leafExpect(lsubRe)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -777,6 +779,8 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	leafSend, leafExpect := setupConn(t, lc)
+	// This is for our global responses since we are setting up GWs above.
+	leafExpect(lsubRe)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1925,6 +1929,8 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	leafSend, leafExpect := setupConn(t, lc)
+	// This is for our global responses since we are setting up GWs above.
+	leafExpect(lsubRe)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
@@ -1967,6 +1973,9 @@ func TestLeafNodeResetsMSGProto(t *testing.T) {
 	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "lproto")
 	gwSend("PING\r\n")
 	gwExpect(pongRe)
+
+	// This is for our global responses since we are setting up GWs above.
+	leafExpect(lsubRe)
 
 	// Now setup interest in the leaf node for 'foo'.
 	leafSend("LS+ foo\r\nPING\r\n")
@@ -2353,4 +2362,46 @@ func TestLeafNodeDefaultPort(t *testing.T) {
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
+}
+
+// Since leafnode's are true interest only we need to make sure that we
+// register the proper interest with global routing $GR.xxxxxx._INBOX.>
+func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
+	server.SetGatewaysSolicitDelay(50 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	ca := createClusterWithName(t, "A", 3)
+	defer shutdownCluster(ca)
+	cb := createClusterWithName(t, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	sl, slOpts := runSolicitLeafServer(ca.opts[1])
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, ca.servers[1])
+
+	// Create a client on the leafnode. This will listen for requests.
+	ncl, err := nats.Connect(fmt.Sprintf("nats://%s:%d", slOpts.Host, slOpts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl.Close()
+
+	ncl.Subscribe("foo", func(m *nats.Msg) {
+		fmt.Printf("Reply is %v\n", m.Reply)
+		m.Respond([]byte("World"))
+	})
+
+	// Create a direct connect requestor.
+	opts := cb.opts[1]
+	url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	if _, err := nc.Request("foo", []byte("Hello"), 250*time.Millisecond); err != nil {
+		t.Fatalf("Failed to get response: %v", err)
+	}
 }
