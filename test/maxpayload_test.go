@@ -21,7 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 func TestMaxPayload(t *testing.T) {
@@ -121,4 +123,36 @@ func TestMaxPayloadOverrun(t *testing.T) {
 	send, _ = setupConn(t, c)
 	send("PUB foo 18446744073709551615123\r\n")
 	expectDisconnect(t, c)
+}
+
+func TestAsyncInfoWithSmallerMaxPayload(t *testing.T) {
+	s, opts := runOperatorServer(t)
+	defer s.Shutdown()
+
+	const testMaxPayload = 522
+
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	nac.Limits.Payload = testMaxPayload
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	if err := s.AccountResolver().Store(apub, ajwt); err != nil {
+		t.Fatalf("Account Resolver returned an error: %v", err)
+	}
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	nc.Flush()
+	defer nc.Close()
+
+	if mp := nc.MaxPayload(); mp != testMaxPayload {
+		t.Fatalf("Expected MaxPayload of %d, got %d", testMaxPayload, mp)
+	}
 }
