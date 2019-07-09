@@ -845,6 +845,8 @@ func (s *Server) initLeafNodeSmap(c *client) {
 		}
 	}
 
+	applyGlobalRouting := s.gateway.enabled
+
 	// Now walk the results and add them to our smap
 	c.mu.Lock()
 	for _, sub := range subs {
@@ -856,6 +858,12 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	// FIXME(dlc) - We need to update appropriately on an account claims update.
 	for _, isubj := range ims {
 		c.leaf.smap[isubj]++
+	}
+	// If we have gateways enabled we need to make sure the other side sends us responses
+	// that have been augmented from the original subscription.
+	// TODO(dlc) - Should we lock this down more?
+	if applyGlobalRouting {
+		c.leaf.smap[gwReplyPrefix+"*.>"]++
 	}
 	c.mu.Unlock()
 }
@@ -952,7 +960,7 @@ func (c *client) sendAllAccountSubs() {
 		c.writeLeafSub(&b, key, n)
 	}
 
-	// We will make sure we don't overflow here due to an max_pending.
+	// We will make sure we don't overflow here due to a max_pending.
 	chunks := protoChunks(b.Bytes(), MAX_PAYLOAD_SIZE)
 	for _, chunk := range chunks {
 		c.queueOutbound(chunk)
