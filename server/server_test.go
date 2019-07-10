@@ -1217,7 +1217,7 @@ func TestConnectErrorReports(t *testing.T) {
 	// Now try with leaf nodes
 	opts.Cluster.Port = 0
 	opts.Routes = nil
-	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URL: remoteURLs[0]}}
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{remoteURLs[0]}}}
 	opts.LeafNode.ReconnectInterval = 15 * time.Millisecond
 	s = RunServer(opts)
 	defer s.Shutdown()
@@ -1393,7 +1393,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	opts.Cluster.Port = 0
 	opts.Routes = nil
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", csOpts.LeafNode.Port))
-	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URL: u}}
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 	opts.LeafNode.ReconnectInterval = 15 * time.Millisecond
 	s = RunServer(opts)
 	defer s.Shutdown()

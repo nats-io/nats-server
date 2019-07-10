@@ -2492,7 +2492,7 @@ func TestMonitorLeafNode(t *testing.T) {
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{
 		&RemoteLeafOpts{
 			LocalAccount: "acc",
-			URL:          u,
+			URLs:         []*url.URL{u},
 			TLSTimeout:   1,
 		},
 	}
@@ -2506,9 +2506,7 @@ func TestMonitorLeafNode(t *testing.T) {
 		opts.LeafNode.TLSTimeout,
 		[]RemoteLeafOptsVarz{
 			{
-				"acc",
-				"localhost:1234",
-				1,
+				"acc", 1, []string{"localhost:1234"},
 			},
 		},
 	}
@@ -2527,7 +2525,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = LeafNodeOptsVarz{"", 0, 0, 0, []RemoteLeafOptsVarz{{"", "", 0}}}
+		_ = LeafNodeOptsVarz{"", 0, 0, 0, []RemoteLeafOptsVarz{{"", 0, nil}}}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2537,7 +2535,7 @@ func TestMonitorLeafNode(t *testing.T) {
 		v.LeafNode.AuthTimeout = 1234.5
 		v.LeafNode.TLSTimeout = 1234.5
 		v.LeafNode.Remotes[0].LocalAccount = "wrong"
-		v.LeafNode.Remotes[0].URL = "wrong"
+		v.LeafNode.Remotes[0].URLs = append(v.LeafNode.Remotes[0].URLs, "wrong")
 		v.LeafNode.Remotes[0].TLSTimeout = 1234.5
 		v = pollVarz(t, s, mode, varzURL, nil)
 		check(t, v)

@@ -24,6 +24,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/url"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -66,7 +67,7 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
 	for _, ri := range s.getOpts().LeafNode.Remotes {
 		// FIXME(dlc) - What about auth changes?
-		if urlsAreEqual(ri.URL, remote.URL) {
+		if reflect.DeepEqual(ri.URLs, remote.URLs) {
 			return true
 		}
 	}
@@ -108,7 +109,7 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	}
 	// Start with the one that is configured. We will add to this
 	// array when receiving async leafnode INFOs.
-	cfg.urls = append(cfg.urls, cfg.URL)
+	cfg.urls = append(cfg.urls, cfg.URLs...)
 	return cfg
 }
 
@@ -152,7 +153,7 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool) {
 	defer s.grWG.Done()
 
-	if remote == nil || remote.URL == nil {
+	if remote == nil || len(remote.URLs) == 0 {
 		s.Debugf("Empty remote leafnode definition, nothing to connect")
 		return
 	}
@@ -206,7 +207,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		// We will put this in the normal log if first connect, does not force -DV mode to know
 		// that the connect worked.
 		if firstConnect {
-			s.Noticef("Connected leafnode to %q", remote.RemoteLeafOpts.URL.Hostname())
+			s.Noticef("Connected leafnode to %q", rURL.Hostname())
 		}
 		return
 	}
@@ -343,7 +344,7 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 		sig := base64.RawURLEncoding.EncodeToString(sigraw)
 		cinfo.JWT = string(tmp)
 		cinfo.Sig = sig
-	} else if userInfo := c.leaf.remote.URL.User; userInfo != nil {
+	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
 		pass, _ := userInfo.Password()
 		cinfo.Pass = pass
@@ -524,7 +525,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			// had this advertised to us an should use the configured host
 			// name for the TLS server name.
 			if net.ParseIP(host) != nil {
-				host, _, _ = net.SplitHostPort(c.leaf.remote.RemoteLeafOpts.URL.Host)
+				host, _, _ = net.SplitHostPort(c.leaf.remote.curURL.Host)
 			}
 			tlsConfig.ServerName = host
 
@@ -674,15 +675,20 @@ func (c *client) updateLeafNodeURLs(info *Info) {
 			c.Errorf("Error parsing url %q: %v", surl, err)
 			continue
 		}
-		// Do not add if it's the same than the one that
-		// we have configured.
-		if urlsAreEqual(url, cfg.URL) {
-			continue
+		// Do not add if it's the same as what we already have configured.
+		var dup bool
+		for _, u := range cfg.URLs {
+			if urlsAreEqual(url, u) {
+				dup = true
+				break
+			}
 		}
-		cfg.urls = append(cfg.urls, url)
+		if !dup {
+			cfg.urls = append(cfg.urls, url)
+		}
 	}
 	// Add the configured one
-	cfg.urls = append(cfg.urls, cfg.URL)
+	cfg.urls = append(cfg.urls, cfg.URLs...)
 }
 
 // Similar to setInfoHostPortAndGenerateJSON, but for leafNodeInfo.
