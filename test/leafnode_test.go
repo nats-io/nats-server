@@ -2405,3 +2405,56 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 		t.Fatalf("Failed to get response: %v", err)
 	}
 }
+
+func checkLeafNode2Connected(t *testing.T, s *server.Server) {
+	t.Helper()
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if nln := s.NumLeafNodes(); nln != 2 {
+			return fmt.Errorf("Expected a connected leafnode for server %q, got none", s.ID())
+		}
+		return nil
+	})
+}
+
+func TestLeafNodesStaggeredSubPub(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	sl1, sl1Opts := runSolicitLeafServer(opts)
+	defer sl1.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	// Create a client on the leafnode and a subscription.
+	ncl, err := nats.Connect(fmt.Sprintf("nats://%s:%d", sl1Opts.Host, sl1Opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl.Close()
+
+	sub, err := ncl.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	sl2, sl2Opts := runSolicitLeafServer(opts)
+	defer sl2.Shutdown()
+
+	checkLeafNode2Connected(t, s)
+
+	// Create a client on the second leafnode and publish a message.
+	ncl2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", sl2Opts.Host, sl2Opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl2.Close()
+
+	ncl2.Publish("foo", nil)
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != 1 {
+			return fmt.Errorf("Did not receive the message: %v", err)
+		}
+		return nil
+	})
+}
