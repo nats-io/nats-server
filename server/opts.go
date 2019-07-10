@@ -102,8 +102,6 @@ type RemoteGatewayOpts struct {
 }
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
-// NOTE: This structure is no longer used for monitoring endpoints
-// and json tags are deprecated and may be removed in the future.
 type LeafNodeOpts struct {
 	Host              string            `json:"addr,omitempty"`
 	Port              int               `json:"port,omitempty"`
@@ -124,11 +122,9 @@ type LeafNodeOpts struct {
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
-// NOTE: This structure is no longer used for monitoring endpoints
-// and json tags are deprecated and may be removed in the future.
 type RemoteLeafOpts struct {
 	LocalAccount string      `json:"local_account,omitempty"`
-	URL          *url.URL    `json:"url,omitempty"`
+	URLs         []*url.URL  `json:"urls,omitempty"`
 	Credentials  string      `json:"-"`
 	TLS          bool        `json:"-"`
 	TLSConfig    *tls.Config `json:"-"`
@@ -1085,7 +1081,14 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 					*errors = append(*errors, &configErr{tk, err.Error()})
 					continue
 				}
-				remote.URL = url
+				remote.URLs = append(remote.URLs, url)
+			case "urls":
+				urls, errs := parseURLs(v.([]interface{}), "leafnode")
+				if errs != nil {
+					*errors = append(*errors, errs...)
+					continue
+				}
+				remote.URLs = urls
 			case "account", "local":
 				remote.LocalAccount = v.(string)
 			case "creds", "credentials":
@@ -2437,8 +2440,12 @@ func setBaselineOptions(opts *Options) {
 	}
 	// Set baseline connect port for remotes.
 	for _, r := range opts.LeafNode.Remotes {
-		if r != nil && r.URL.Port() == "" {
-			r.URL.Host = net.JoinHostPort(r.URL.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
+		if r != nil {
+			for _, u := range r.URLs {
+				if u.Port() == "" {
+					u.Host = net.JoinHostPort(u.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
+				}
+			}
 		}
 	}
 

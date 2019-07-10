@@ -67,7 +67,7 @@ func runSolicitLeafServerToURL(surl string) (*server.Server, *server.Options) {
 	o.Host = "127.0.0.1"
 	o.Port = -1
 	rurl, _ := url.Parse(surl)
-	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URL: rurl}}
+	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
 	return RunServer(&o), &o
 }
@@ -931,7 +931,7 @@ func runTLSSolicitLeafServer(lso *server.Options) (*server.Server, *server.Optio
 	o.Host = "127.0.0.1"
 	o.Port = -1
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port))
-	remote := &server.RemoteLeafOpts{URL: rurl}
+	remote := &server.RemoteLeafOpts{URLs: []*url.URL{rurl}}
 	remote.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	host, _, _ := net.SplitHostPort(lso.LeafNode.Host)
 	remote.TLSConfig.ServerName = host
@@ -2457,4 +2457,28 @@ func TestLeafNodesStaggeredSubPub(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestLeafNodeMultipleRemoteURLs(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	content := `
+		port: -1
+		leafnodes {
+			remotes = [
+				{
+					urls: [nats-leaf://127.0.0.1:%d,nats-leaf://localhost:%d]
+				}
+			]
+		}
+		`
+
+	config := fmt.Sprintf(content, opts.LeafNode.Port, opts.LeafNode.Port)
+	conf := createConfFile(t, []byte(config))
+	sl, _ := RunServerWithConfig(conf)
+	defer os.Remove(conf)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
 }

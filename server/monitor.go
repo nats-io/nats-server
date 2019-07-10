@@ -922,9 +922,9 @@ type LeafNodeOptsVarz struct {
 
 // RemoteLeafOptsVarz contains monitoring remote leaf node information
 type RemoteLeafOptsVarz struct {
-	LocalAccount string  `json:"local_account,omitempty"`
-	URL          string  `json:"url,omitempty"`
-	TLSTimeout   float64 `json:"tls_timeout,omitempty"`
+	LocalAccount string   `json:"local_account,omitempty"`
+	TLSTimeout   float64  `json:"tls_timeout,omitempty"`
+	URLs         []string `json:"urls,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1067,7 +1067,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		for i, r := range ln.Remotes {
 			rlna[i] = RemoteLeafOptsVarz{
 				LocalAccount: r.LocalAccount,
-				URL:          r.URL.Host,
+				URLs:         urlsToStrings(r.URLs),
 				TLSTimeout:   r.TLSTimeout,
 			}
 		}

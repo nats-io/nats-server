@@ -1833,7 +1833,8 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		LocalAccount: "foobar",
 		Credentials:  "./my.creds",
 	}
-	expected.URL, _ = url.Parse("nats-leaf://127.0.0.1:2222")
+	u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
+	expected.URLs = append(expected.URLs, u)
 	if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
 		t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
 	}
