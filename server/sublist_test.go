@@ -1021,6 +1021,27 @@ func TestSublistNoCacheStats(t *testing.T) {
 	}
 }
 
+func TestSublistAll(t *testing.T) {
+	s := NewSublistNoCache()
+	subs := []*subscription{
+		newSub("foo.bar.baz"),
+		newSub("foo"),
+		newSub("baz"),
+	}
+	// alter client's kind
+	subs[0].client.kind = LEAF
+	for _, sub := range subs {
+		s.Insert(sub)
+	}
+
+	var buf [32]*subscription
+	output := buf[:0]
+	s.All(&output)
+	if len(output) != len(subs) {
+		t.Fatalf("Expected %d for All, got %d", len(subs), len(output))
+	}
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription
