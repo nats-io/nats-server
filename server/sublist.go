@@ -1047,14 +1047,14 @@ func (s *Sublist) addAllNodeToSubs(n *node, subs *[]*subscription) {
 func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 	for _, n := range l.nodes {
 		s.addAllNodeToSubs(n, subs)
-		s.collectLocalSubs(n.next, subs)
+		s.collectAllSubs(n.next, subs)
 	}
 	if l.pwc != nil {
 		s.addAllNodeToSubs(l.pwc, subs)
-		s.collectLocalSubs(l.pwc.next, subs)
+		s.collectAllSubs(l.pwc.next, subs)
 	}
 	if l.fwc != nil {
 		s.addAllNodeToSubs(l.fwc, subs)
-		s.collectLocalSubs(l.fwc.next, subs)
+		s.collectAllSubs(l.fwc.next, subs)
 	}
 }
