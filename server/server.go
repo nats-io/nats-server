@@ -1471,7 +1471,14 @@ func (s *Server) startMonitoring(secure bool) error {
 	s.mu.Unlock()
 
 	go func() {
-		srv.Serve(httpListener)
+		if err := srv.Serve(httpListener); err != nil {
+			s.mu.Lock()
+			shutdown := s.shutdown
+			s.mu.Unlock()
+			if !shutdown {
+				s.Fatalf("Error starting monitor on %q: %v", hp, err)
+			}
+		}
 		srv.Handler = nil
 		s.mu.Lock()
 		s.httpHandler = nil
