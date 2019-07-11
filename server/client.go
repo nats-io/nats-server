@@ -2426,8 +2426,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	msgh = append(msgh, ' ')
 	si := len(msgh)
 
-	// For sending messages across routes. Reset it if we have one.
-	// We reuse this data structure.
+	// For sending messages across routes and leafnodes.
+	// Reset if we have one since we reuse this data structure.
 	if c.in.rts != nil {
 		c.in.rts = c.in.rts[:0]
 	}
@@ -2438,10 +2438,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		// these after everything else.
 		switch sub.client.kind {
 		case ROUTER:
-			if c.kind == ROUTER {
-				continue
+			if c.kind != ROUTER && !c.isSolicitedLeafNode() {
+				c.addSubToRouteTargets(sub)
 			}
-			c.addSubToRouteTargets(sub)
 			continue
 		case GATEWAY:
 			// Never send to gateway from here.
@@ -2451,7 +2450,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// Leaf node delivery audience is different however.
 			// Also leaf nodes are always no echo, so we make sure we are not
 			// going to send back to ourselves here.
-			if c != sub.client {
+			if c != sub.client && (c.kind != ROUTER || !c.isSolicitedLeafNode()) {
 				c.addSubToRouteTargets(sub)
 			}
 			continue
@@ -2576,7 +2575,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 
 sendToRoutesOrLeafs:
 
-	// If no messages for routes return here.
+	// If no messages for routes or leafnodes return here.
 	if len(c.in.rts) == 0 {
 		return queues
 	}

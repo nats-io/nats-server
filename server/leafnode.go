@@ -52,6 +52,7 @@ type leafNodeCfg struct {
 	curURL *url.URL
 }
 
+// Check to see if this is a solicited leafnode. We do special processing for solicited.
 func (c *client) isSolicitedLeafNode() bool {
 	return c.kind == LEAF && c.leaf.remote != nil
 }
@@ -627,7 +628,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		c.registerWithAccount(c.acc)
 		s.addLeafNodeConnection(c)
 		s.initLeafNodeSmap(c)
-		c.sendAllAccountSubs()
+		c.sendAllLeafSubs()
 	}
 
 	return c
@@ -797,7 +798,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// We are good to go, send over all the bound account subscriptions.
 	s.startGoRoutine(func() {
-		c.sendAllAccountSubs()
+		c.sendAllLeafSubs()
 		s.grWG.Done()
 	})
 
@@ -825,7 +826,12 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	ims := []string{}
 	acc.mu.RLock()
 	accName := acc.Name
-	acc.sl.All(&subs)
+	// If we are solicited we only send interest for local clients.
+	if c.isSolicitedLeafNode() {
+		acc.sl.localSubs(&subs)
+	} else {
+		acc.sl.All(&subs)
+	}
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
 	for isubj := range acc.imports.services {
@@ -894,7 +900,7 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 	_l := [32]*client{}
 	leafs := _l[:0]
 
-	// Grab all leaf nodes. Ignore leafnode if sub's client is a leafnode and matches.
+	// Grab all leaf nodes. Ignore a leafnode if sub's client is a leafnode and matches.
 	acc.mu.RLock()
 	for _, ln := range acc.lleafs {
 		if ln != sub.client {
@@ -909,11 +915,18 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 }
 
 // This will make an update to our internal smap and determine if we should send out
-// and interest update to the remote side.
+// an interest update to the remote side.
 func (c *client) updateSmap(sub *subscription, delta int32) {
 	key := keyFromSub(sub)
 
 	c.mu.Lock()
+
+	// If we are solicited make sure this is a local client.
+	if c.isSolicitedLeafNode() && sub.client.kind != CLIENT {
+		c.mu.Unlock()
+		return
+	}
+
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
 	update := sub.queue != nil || n == 0 || n+delta <= 0
@@ -956,8 +969,8 @@ func keyFromSub(sub *subscription) string {
 }
 
 // Send all subscriptions for this account that include local
-// and all subscriptions besides our own.
-func (c *client) sendAllAccountSubs() {
+// and possibly all other remote subscriptions.
+func (c *client) sendAllLeafSubs() {
 	// Hold all at once for now.
 	var b bytes.Buffer
 
@@ -1084,23 +1097,25 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		atomic.StoreInt32(&osub.qw, sub.qw)
 		acc.sl.UpdateRemoteQSub(osub)
 	}
-
+	solicited := c.isSolicitedLeafNode()
 	c.mu.Unlock()
 
-	// Treat leaf node subscriptions similar to a client subscription, meaning we
-	// send them to both routes and gateways and other leaf nodes. We also do
-	// the shadow subscriptions.
 	if err := c.addShadowSubscriptions(acc, sub); err != nil {
 		c.Errorf(err.Error())
 	}
-	// If we are routing add to the route map for the associated account.
-	srv.updateRouteSubscriptionMap(acc, sub, 1)
-	if updateGWs {
-		srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
-	}
-	// Now check on leafnode updates for other leaf nodes.
-	srv.updateLeafNodes(acc, sub, 1)
 
+	// If we are not solicited, treat leaf node subscriptions similar to a
+	// client subscription, meaning we forward them to routes, gateways and
+	// other leaf nodes as needed.
+	if !solicited {
+		// If we are routing add to the route map for the associated account.
+		srv.updateRouteSubscriptionMap(acc, sub, 1)
+		if updateGWs {
+			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
+		}
+		// Now check on leafnode updates for other leaf nodes.
+		srv.updateLeafNodes(acc, sub, 1)
+	}
 	return nil
 }
 
