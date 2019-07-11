@@ -128,7 +128,7 @@ func IsValidEncoding(src []byte) bool {
 
 // decode will decode the base32 and check crc16 and the prefix for validity.
 func decode(src []byte) ([]byte, error) {
-	raw := make([]byte, b32Enc.EncodedLen(len(src)))
+	raw := make([]byte, b32Enc.DecodedLen(len(src)))
 	n, err := b32Enc.Decode(raw, src)
 	if err != nil {
 		return nil, err

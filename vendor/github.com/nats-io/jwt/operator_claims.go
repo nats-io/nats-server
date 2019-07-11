@@ -19,22 +19,29 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/nats-io/nkeys"
 )
 
 // Operator specific claims
 type Operator struct {
-	Identities       []Identity `json:"identity,omitempty"`
-	SigningKeys      StringList `json:"signing_keys,omitempty"`
-	AccountServerURL string     `json:"account_server_url,omitempty"`
+	Identities          []Identity `json:"identity,omitempty"`
+	SigningKeys         StringList `json:"signing_keys,omitempty"`
+	AccountServerURL    string     `json:"account_server_url,omitempty"`
+	OperatorServiceURLs StringList `json:"operator_service_urls,omitempty"`
 }
 
 // Validate checks the validity of the operators contents
 func (o *Operator) Validate(vr *ValidationResults) {
-	err := o.validateAccountServerURL()
-	if err != nil {
+	if err := o.validateAccountServerURL(); err != nil {
 		vr.AddError(err.Error())
+	}
+
+	for _, v := range o.validateOperatorServiceURLs() {
+		if v != nil {
+			vr.AddError(v.Error())
+		}
 	}
 
 	for _, i := range o.Identities {
@@ -62,6 +69,44 @@ func (o *Operator) validateAccountServerURL() error {
 		}
 	}
 	return nil
+}
+
+// ValidateOperatorServiceURL returns an error if the URL is not a valid NATS or TLS url.
+func ValidateOperatorServiceURL(v string) error {
+	u, err := url.Parse(v)
+	if err != nil {
+		return fmt.Errorf("error parsing operator service url %q: %v", v, err)
+	}
+
+	if u.User != nil {
+		return fmt.Errorf("operator service url %q - credentials are not supported", v)
+	}
+
+	if u.Path != "" {
+		return fmt.Errorf("operator service url %q - paths are not supported", v)
+	}
+
+	lcs := strings.ToLower(u.Scheme)
+	switch lcs {
+	case "nats":
+		return nil
+	case "tls":
+		return nil
+	default:
+		return fmt.Errorf("operator service url %q - protocol not supported (only 'nats' or 'tls' only)", v)
+	}
+}
+
+func (o *Operator) validateOperatorServiceURLs() []error {
+	var errors []error
+	for _, v := range o.OperatorServiceURLs {
+		if v != "" {
+			if err := ValidateOperatorServiceURL(v); err != nil {
+				errors = append(errors, err)
+			}
+		}
+	}
+	return errors
 }
 
 // OperatorClaims define the data for an operator JWT
@@ -92,7 +137,7 @@ func (oc *OperatorClaims) DidSign(op Claims) bool {
 	return oc.SigningKeys.Contains(issuer)
 }
 
-// deprecated AddSigningKey, use claim.SigningKeys.Add()
+// Deprecated: AddSigningKey, use claim.SigningKeys.Add()
 func (oc *OperatorClaims) AddSigningKey(pk string) {
 	oc.SigningKeys.Add(pk)
 }
