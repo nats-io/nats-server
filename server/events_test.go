@@ -436,6 +436,7 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 		nc.Publish("foo", m)
 		nc.Publish("bar", m)
 	}
+	nc.Flush()
 
 	// Now shutdown the leafnode server since this is where the event tracking should
 	// happen. Right now we do not track local clients to the leafnode server that
