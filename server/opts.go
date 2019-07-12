@@ -1023,6 +1023,8 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				continue
 			}
 			opts.LeafNode.Remotes = remotes
+		case "reconnect", "reconnect_delay", "reconnect_interval":
+			opts.LeafNode.ReconnectInterval = time.Duration(int(mv.(int64))) * time.Second
 		case "tls":
 			tc, err := parseTLS(tk)
 			if err != nil {
@@ -1075,20 +1077,23 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 		for k, v := range rm {
 			tk, v = unwrapValue(v)
 			switch strings.ToLower(k) {
-			case "url":
-				url, err := parseURL(v.(string), "leafnode")
-				if err != nil {
-					*errors = append(*errors, &configErr{tk, err.Error()})
-					continue
+			case "url", "urls":
+				switch v := v.(type) {
+				case []interface{}, []string:
+					urls, errs := parseURLs(v.([]interface{}), "leafnode")
+					if errs != nil {
+						*errors = append(*errors, errs...)
+						continue
+					}
+					remote.URLs = urls
+				case string:
+					url, err := parseURL(v, "leafnode")
+					if err != nil {
+						*errors = append(*errors, &configErr{tk, err.Error()})
+						continue
+					}
+					remote.URLs = append(remote.URLs, url)
 				}
-				remote.URLs = append(remote.URLs, url)
-			case "urls":
-				urls, errs := parseURLs(v.([]interface{}), "leafnode")
-				if errs != nil {
-					*errors = append(*errors, errs...)
-					continue
-				}
-				remote.URLs = urls
 			case "account", "local":
 				remote.LocalAccount = v.(string)
 			case "creds", "credentials":

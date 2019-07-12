@@ -45,11 +45,13 @@ type leaf struct {
 	remote *leafNodeCfg
 }
 
+// Used for remote (solicited) leafnodes.
 type leafNodeCfg struct {
 	sync.RWMutex
 	*RemoteLeafOpts
-	urls   []*url.URL
-	curURL *url.URL
+	urls    []*url.URL
+	curURL  *url.URL
+	tlsName string
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -106,11 +108,15 @@ func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
 func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	cfg := &leafNodeCfg{
 		RemoteLeafOpts: remote,
-		urls:           make([]*url.URL, 0, 4),
+		urls:           make([]*url.URL, 0, len(remote.URLs)),
 	}
 	// Start with the one that is configured. We will add to this
 	// array when receiving async leafnode INFOs.
 	cfg.urls = append(cfg.urls, cfg.URLs...)
+	// If we are TLS make sure we save off a proper servername if possible.
+	for _, u := range cfg.urls {
+		cfg.saveTLSHostname(u)
+	}
 	return cfg
 }
 
@@ -214,6 +220,15 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	}
 }
 
+// Save off the tlsName for when we use TLS and mix hostnames and IPs. IPs usually
+// come from the server we connect to.
+func (lcfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
+	isTLS := lcfg.TLSConfig != nil || u.Scheme == "tls"
+	if isTLS && lcfg.tlsName == "" && net.ParseIP(u.Hostname()) == nil {
+		lcfg.tlsName = u.Hostname()
+	}
+}
+
 // This is the leafnode's accept loop. This runs as a go-routine.
 // The listen specification is resolved (if use of random port),
 // then a listener is started. After that, this routine enters
@@ -245,15 +260,15 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 		net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	s.mu.Lock()
-	tlsReq := opts.LeafNode.TLSConfig != nil
-	tlsVerify := tlsReq && opts.LeafNode.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
+	tlsRequired := opts.LeafNode.TLSConfig != nil
+	tlsVerify := tlsRequired && opts.LeafNode.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
 	info := Info{
 		ID:           s.info.ID,
 		Version:      s.info.Version,
 		GitCommit:    gitCommit,
 		GoVersion:    runtime.Version(),
 		AuthRequired: true,
-		TLSRequired:  tlsReq,
+		TLSRequired:  tlsRequired,
 		TLSVerify:    tlsVerify,
 		MaxPayload:   s.info.MaxPayload, // TODO(dlc) - Allow override?
 		Proto:        1,                 // Fixed for now.
@@ -462,7 +477,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// FIXME(dlc) - Make this resolve at startup.
 		acc, err := s.LookupAccount(remote.LocalAccount)
 		if err != nil {
-			c.Debugf("Can not locate local account %q for leafnode", remote.LocalAccount)
+			c.Debugf("No local account %q for leafnode", remote.LocalAccount)
 			c.closeConnection(MissingAccount)
 			return nil
 		}
@@ -526,7 +541,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			// had this advertised to us an should use the configured host
 			// name for the TLS server name.
 			if net.ParseIP(host) != nil {
-				host, _, _ = net.SplitHostPort(c.leaf.remote.curURL.Host)
+				if c.leaf.remote.tlsName != "" {
+					host = c.leaf.remote.tlsName
+				} else {
+					host, _, _ = net.SplitHostPort(c.leaf.remote.curURL.Host)
+				}
 			}
 			tlsConfig.ServerName = host
 
@@ -686,6 +705,7 @@ func (c *client) updateLeafNodeURLs(info *Info) {
 		}
 		if !dup {
 			cfg.urls = append(cfg.urls, url)
+			cfg.saveTLSHostname(url)
 		}
 	}
 	// Add the configured one

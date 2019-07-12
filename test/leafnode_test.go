@@ -975,6 +975,75 @@ func TestLeafNodeTLS(t *testing.T) {
 	checkLeafNodeConnected(t, s)
 }
 
+type captureLeafNodeErrLogger struct {
+	dummyLogger
+	ch chan string
+}
+
+func (c *captureLeafNodeErrLogger) Errorf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	select {
+	case c.ch <- msg:
+	default:
+	}
+}
+
+func TestLeafNodeTLSMixIP(t *testing.T) {
+	content := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		listen: "127.0.0.1:-1"
+        authorization {
+			user: dlc
+			pass: monkey
+		}
+		tls {
+			cert_file: "./configs/certs/server-noip.pem"
+			key_file:  "./configs/certs/server-key-noip.pem"
+			ca_file:   "./configs/certs/ca.pem"
+		}
+	}
+	`
+	conf := createConfFile(t, []byte(content))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	slContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		reconnect: 1
+		remotes: [
+			{
+				url: [tls://127.0.0.1:%d, "tls://localhost:%d"]
+				tls { ca_file: "./configs/certs/ca.pem" }
+			}
+		]
+	}
+	`
+	slconf := createConfFile(t, []byte(fmt.Sprintf(slContent, opts.LeafNode.Port, opts.LeafNode.Port)))
+	defer os.Remove(slconf)
+
+	// This will fail but we want to make sure in the correct way, not with
+	// TLS issue because we used an IP for serverName.
+	sl, _ := RunServerWithConfig(slconf)
+	defer s.Shutdown()
+
+	ll := &captureLeafNodeErrLogger{ch: make(chan string, 2)}
+	sl.SetLogger(ll, false, false)
+
+	// We may or may not get an error depending on timing. For the handshake bug
+	// we would always get it, so make sure if we have anything it is not that.
+	select {
+	case msg := <-ll.ch:
+		if strings.Contains(msg, "TLS handshake error") && strings.Contains(msg, "doesn't contain any IP SANs") {
+			t.Fatalf("Got bad error about TLS handshake")
+		}
+	default:
+	}
+}
+
 func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, string) {
 	t.Helper()
 	content := `
