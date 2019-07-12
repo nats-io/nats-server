@@ -97,7 +97,7 @@ const (
 const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
 
 // Warning when user configures cluster TLS insecure
-const clusterTLSInsecureWarning = "TLS Hostname verification disabled, system will not verify identity of the solicited route"
+const clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
 
 // Can be changed for tests
 var routeConnectDelay = DEFAULT_ROUTE_CONNECT

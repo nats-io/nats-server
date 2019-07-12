@@ -1088,16 +1088,31 @@ func TestClientWriteLoopStall(t *testing.T) {
 	}
 }
 
-func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
-	checkServerFails := func(t *testing.T, o *Options) {
+func TestInsecureSkipVerifyWarning(t *testing.T) {
+	checkServerFails := func(t *testing.T, o *Options, expectedWarn string) {
 		t.Helper()
 		s, err := NewServer(o)
-		if s != nil {
-			s.Shutdown()
+		if err != nil {
+			t.Fatalf("Error on new server: %v", err)
 		}
-		if err == nil || !strings.Contains(err.Error(), "not supported") {
-			t.Fatalf("Expected error about not supported feature, got %v", err)
+		l := &captureWarnLogger{warn: make(chan string, 1)}
+		s.SetLogger(l, false, false)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			s.Start()
+			wg.Done()
+		}()
+		select {
+		case w := <-l.warn:
+			if !strings.Contains(w, expectedWarn) {
+				t.Fatalf("Expected warning %q, got %q", expectedWarn, w)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Did not get any warning")
 		}
+		s.Shutdown()
+		wg.Wait()
 	}
 
 	tc := &TLSConfigOpts{}
@@ -1111,20 +1126,22 @@ func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating tls config: %v", err)
 	}
-	o.TLSConfig = config
-	checkServerFails(t, o)
+	o.Cluster.Port = -1
+	o.Cluster.TLSConfig = config
+	checkServerFails(t, o, clusterTLSInsecureWarning)
 
 	// Get a clone that we will use for the Gateway TLS setting
 	gwConfig := config.Clone()
 
-	// Remove the setting
-	o.TLSConfig.InsecureSkipVerify = false
+	// Remove the route setting
+	o.Cluster.Port = 0
+	o.Cluster.TLSConfig = nil
 	// Configure GW
 	o.Gateway.Name = "A"
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
 	o.Gateway.TLSConfig = gwConfig
-	checkServerFails(t, o)
+	checkServerFails(t, o, gatewayTLSInsecureWarning)
 
 	// Get a config for the remote gateway
 	rgwConfig := gwConfig.Clone()
@@ -1139,7 +1156,7 @@ func TestInsecureSkipVerifyNotSupportedForClientAndGateways(t *testing.T) {
 			TLSConfig: rgwConfig,
 		},
 	}
-	checkServerFails(t, o)
+	checkServerFails(t, o, gatewayTLSInsecureWarning)
 }
 
 func TestConnectErrorReports(t *testing.T) {
