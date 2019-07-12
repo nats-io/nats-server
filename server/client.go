@@ -1064,6 +1064,8 @@ func (c *client) processErr(errStr string) {
 		c.Errorf("Route Error %s", errStr)
 	case GATEWAY:
 		c.Errorf("Gateway Error %s", errStr)
+	case LEAF:
+		c.Errorf("Leafnode Error %s", errStr)
 	}
 	c.closeConnection(ParseError)
 }
@@ -1266,6 +1268,8 @@ func (c *client) authViolation() {
 		hasNkeys = s.nkeys != nil
 		hasUsers = s.users != nil
 		s.mu.Unlock()
+		defer s.sendAuthErrorEvent(c)
+
 	}
 	if hasTrustedNkeys {
 		c.Errorf("%v", ErrAuthentication)
@@ -1282,9 +1286,6 @@ func (c *client) authViolation() {
 	}
 	c.sendErr("Authorization Violation")
 	c.closeConnection(AuthenticationViolation)
-	if s != nil {
-		s.sendAuthErrorEvent(c)
-	}
 }
 
 func (c *client) maxAccountConnExceeded() {
