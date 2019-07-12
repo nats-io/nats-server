@@ -47,7 +47,7 @@ var (
 )
 
 // Warning when user configures gateway TLS insecure
-const gatewayTLSInsecureWarning = "TLS certificate chain and hostname of solicited gateways will not be verified, do not use in production!"
+const gatewayTLSInsecureWarning = "TLS certificate chain and hostname of solicited gateways will not be verified. DO NOT USE IN PRODUCTION!"
 
 // SetGatewaysSolicitDelay sets the initial delay before gateways
 // connections are initiated.
