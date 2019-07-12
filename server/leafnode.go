@@ -36,6 +36,9 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+// Warning when user configures leafnode TLS insecure
+const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
+
 type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
@@ -293,6 +296,25 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 
 	// Setup state that can enable shutdown
 	s.leafNodeListener = l
+
+	// As of now, a server that does not have remotes configured would
+	// never solicit a connection, so we should not have to warn if
+	// InsecureSkipVerify is set in main LeafNodes config (since
+	// this TLS setting matters only when soliciting a connection).
+	// Still, warn if insecure is set in any of LeafNode block.
+	// We need to check remotes, even if tls is not required on accept.
+	warn := tlsRequired && opts.LeafNode.TLSConfig.InsecureSkipVerify
+	if !warn {
+		for _, r := range opts.LeafNode.Remotes {
+			if r.TLSConfig != nil && r.TLSConfig.InsecureSkipVerify {
+				warn = true
+				break
+			}
+		}
+	}
+	if warn {
+		s.Warnf(leafnodeTLSInsecureWarning)
+	}
 	s.mu.Unlock()
 
 	// Let them know we are up

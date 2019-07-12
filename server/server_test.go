@@ -1089,7 +1089,7 @@ func TestClientWriteLoopStall(t *testing.T) {
 }
 
 func TestInsecureSkipVerifyWarning(t *testing.T) {
-	checkServerFails := func(t *testing.T, o *Options, expectedWarn string) {
+	checkWarnReported := func(t *testing.T, o *Options, expectedWarn string) {
 		t.Helper()
 		s, err := NewServer(o)
 		if err != nil {
@@ -1109,7 +1109,7 @@ func TestInsecureSkipVerifyWarning(t *testing.T) {
 				t.Fatalf("Expected warning %q, got %q", expectedWarn, w)
 			}
 		case <-time.After(2 * time.Second):
-			t.Fatalf("Did not get any warning")
+			t.Fatalf("Did not get warning %q", expectedWarn)
 		}
 		s.Shutdown()
 		wg.Wait()
@@ -1120,43 +1120,63 @@ func TestInsecureSkipVerifyWarning(t *testing.T) {
 	tc.KeyFile = "../test/configs/certs/server-key.pem"
 	tc.CaFile = "../test/configs/certs/ca.pem"
 	tc.Insecure = true
-
-	o := DefaultOptions()
 	config, err := GenTLSConfig(tc)
 	if err != nil {
 		t.Fatalf("Error generating tls config: %v", err)
 	}
-	o.Cluster.Port = -1
-	o.Cluster.TLSConfig = config
-	checkServerFails(t, o, clusterTLSInsecureWarning)
 
-	// Get a clone that we will use for the Gateway TLS setting
-	gwConfig := config.Clone()
+	o := DefaultOptions()
+	o.Cluster.Port = -1
+	o.Cluster.TLSConfig = config.Clone()
+	checkWarnReported(t, o, clusterTLSInsecureWarning)
 
 	// Remove the route setting
 	o.Cluster.Port = 0
 	o.Cluster.TLSConfig = nil
-	// Configure GW
+
+	// Configure LeafNode with no TLS in the main block first, but only with remotes.
+	o.LeafNode.Port = -1
+	rurl, _ := url.Parse("nats://127.0.0.1:1234")
+	o.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs:      []*url.URL{rurl},
+			TLSConfig: config.Clone(),
+		},
+	}
+	checkWarnReported(t, o, leafnodeTLSInsecureWarning)
+
+	// Now add to main block.
+	o.LeafNode.TLSConfig = config.Clone()
+	checkWarnReported(t, o, leafnodeTLSInsecureWarning)
+
+	// Now remove remote and check warning still reported
+	o.LeafNode.Remotes = nil
+	checkWarnReported(t, o, leafnodeTLSInsecureWarning)
+
+	// Remove the LN setting
+	o.LeafNode.Port = 0
+	o.LeafNode.TLSConfig = nil
+
+	// Configure GW with no TLS in main block first, but only with remotes
 	o.Gateway.Name = "A"
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
-	o.Gateway.TLSConfig = gwConfig
-	checkServerFails(t, o, gatewayTLSInsecureWarning)
-
-	// Get a config for the remote gateway
-	rgwConfig := gwConfig.Clone()
-	gurl, _ := url.Parse("nats://127.0.0.1:1234")
-
-	// Remove the insecure for the main gateway config
-	o.Gateway.TLSConfig.InsecureSkipVerify = false
 	o.Gateway.Gateways = []*RemoteGatewayOpts{
 		{
 			Name:      "B",
-			URLs:      []*url.URL{gurl},
-			TLSConfig: rgwConfig,
+			URLs:      []*url.URL{rurl},
+			TLSConfig: config.Clone(),
 		},
 	}
-	checkServerFails(t, o, gatewayTLSInsecureWarning)
+	checkWarnReported(t, o, gatewayTLSInsecureWarning)
+
+	// Now add to main block.
+	o.Gateway.TLSConfig = config.Clone()
+	checkWarnReported(t, o, gatewayTLSInsecureWarning)
+
+	// Now remove remote and check warning still reported
+	o.Gateway.Gateways = nil
+	checkWarnReported(t, o, gatewayTLSInsecureWarning)
 }
 
 func TestConnectErrorReports(t *testing.T) {
