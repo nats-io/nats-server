@@ -89,7 +89,7 @@ type captureClusterTLSInsecureLogger struct {
 
 func (c *captureClusterTLSInsecureLogger) Warnf(format string, v ...interface{}) {
 	msg := fmt.Sprintf(format, v...)
-	if strings.Contains(msg, "verification disabled") {
+	if strings.Contains(msg, "solicited routes will not be verified") {
 		select {
 		case c.ch <- struct{}{}:
 		default:
