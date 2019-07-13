@@ -739,12 +739,9 @@ func (c *client) readLoop() {
 
 	for {
 		n, err := nc.Read(b)
-		if err != nil {
-			if err == io.EOF {
-				c.closeConnection(ClientClosed)
-			} else {
-				c.closeConnection(ReadError)
-			}
+		// If we have any data we will try to parse and exit at the end.
+		if n == 0 && err != nil {
+			c.closeConnection(closedStateForErr(err))
 			return
 		}
 		start := time.Now()
@@ -824,7 +821,22 @@ func (c *client) readLoop() {
 		if nc == nil {
 			return
 		}
+
+		// We could have had a read error from above but still read some data.
+		// If so do the close here unconditionally.
+		if err != nil {
+			c.closeConnection(closedStateForErr(err))
+			return
+		}
 	}
+}
+
+// Returns the appropriate closed state for a given read error.
+func closedStateForErr(err error) ClosedState {
+	if err == io.EOF {
+		return ClientClosed
+	}
+	return ReadError
 }
 
 // collapsePtoNB will place primary onto nb buffer as needed in prep for WriteTo.
