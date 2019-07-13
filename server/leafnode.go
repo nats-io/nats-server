@@ -507,9 +507,14 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		c.leaf.remote = remote
 	}
 
+	var nonce [nonceLen]byte
+
 	// Grab server variables
 	s.mu.Lock()
 	info := s.copyLeafNodeInfo()
+	if !solicited {
+		s.generateNonce(nonce[:])
+	}
 	s.mu.Unlock()
 
 	// Grab lock
@@ -606,7 +611,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// Send our info to the other side.
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
-		s.generateNonce(c.nonce)
+		copy(c.nonce, nonce[:])
 		info.Nonce = string(c.nonce)
 		info.CID = c.cid
 		b, _ := json.Marshal(info)

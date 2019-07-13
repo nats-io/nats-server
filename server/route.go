@@ -1280,6 +1280,11 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 			rs := *c.route
 			r = &rs
 		}
+		// Since this duplicate route is going to be removed, make sure we clear
+		// c.route.leafnodeURL, otherwise, when processing the disconnect, this
+		// would cause the leafnode URL for that remote server to be removed
+		// from our list.
+		c.route.leafnodeURL = _EMPTY_
 		c.mu.Unlock()
 
 		remote.mu.Lock()
