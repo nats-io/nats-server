@@ -431,20 +431,21 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 	}
 	// Setup state that can enable shutdown
 	s.gatewayListener = l
-	// Warn if insecure is configured in gateway{} or any remoteGateway{}
-	if tlsReq {
-		warn := opts.Gateway.TLSConfig.InsecureSkipVerify
-		if !warn {
-			for _, g := range opts.Gateway.Gateways {
-				if g.TLSConfig != nil && g.TLSConfig.InsecureSkipVerify {
-					warn = true
-					break
-				}
+
+	// Warn if insecure is configured in the main Gateway configuration
+	// or any of the RemoteGateway's. This means that we need to check
+	// remotes even if TLS would not be configured for the accept.
+	warn := tlsReq && opts.Gateway.TLSConfig.InsecureSkipVerify
+	if !warn {
+		for _, g := range opts.Gateway.Gateways {
+			if g.TLSConfig != nil && g.TLSConfig.InsecureSkipVerify {
+				warn = true
+				break
 			}
 		}
-		if warn {
-			s.Warnf(gatewayTLSInsecureWarning)
-		}
+	}
+	if warn {
+		s.Warnf(gatewayTLSInsecureWarning)
 	}
 	s.mu.Unlock()
 
