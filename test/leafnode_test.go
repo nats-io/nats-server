@@ -1584,6 +1584,59 @@ func TestLeafNodeInfoURLs(t *testing.T) {
 				t.Fatalf("Expected URL to be %s, got %s", s1LNURL, url)
 			}
 			lc.Close()
+
+			s1.Shutdown()
+
+			// Now we need a configuration where both s1 and s2 have a route
+			// to each other, so we need explicit configuration. We are trying
+			// to get S1->S2 and S2->S1 so one of the route is dropped. This
+			// should not affect the number of URLs reported in INFO.
+
+			opts.Cluster.Port = 5223
+			opts.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:5224", opts2.Host))
+			s1, _ = server.NewServer(opts)
+			defer s1.Shutdown()
+
+			opts2.Cluster.Port = 5224
+			opts2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:5223", opts.Host))
+			s2, _ = server.NewServer(opts2)
+			defer s2.Shutdown()
+
+			// Start this way to increase chance of having the two connect
+			// to each other at the same time. This will cause one of the
+			// route to be dropped.
+			wg := &sync.WaitGroup{}
+			wg.Add(2)
+			go func() {
+				s1.Start()
+				wg.Done()
+			}()
+			go func() {
+				s2.Start()
+				wg.Done()
+			}()
+
+			checkClusterFormed(t, s1, s2)
+
+			lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+			defer lc.Close()
+			info = checkInfoMsg(t, lc)
+			if sz := len(info.LeafNodeURLs); sz != 2 {
+				t.Fatalf("Expected LeafNodeURLs array to be size 2, got %v", sz)
+			}
+			ok[0], ok[1] = 0, 0
+			for _, url := range info.LeafNodeURLs {
+				if url == s1LNURL {
+					ok[0]++
+				} else if url == s2LNURL {
+					ok[1]++
+				}
+			}
+			for i, res := range ok {
+				if res != 1 {
+					t.Fatalf("URL from server %v was found %v times", i+1, res)
+				}
+			}
 		})
 	}
 }
@@ -2700,4 +2753,48 @@ func TestLeafNodeCycleWithSolicited(t *testing.T) {
 	defer nc.Close()
 	verifyOneResponse(rsub)
 	verifyRequestTotal(2) // This is total since use same responders.
+}
+
+func TestLeafNodeNoRaceGeneratingNonce(t *testing.T) {
+	opts := testDefaultOptionsForLeafNodes()
+	opts.Cluster.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	quitCh := make(chan struct{})
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for {
+			lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+			checkInfoMsg(t, lc)
+			lc.Close()
+			select {
+			case <-quitCh:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+			checkInfoMsg(t, rc)
+			rc.Close()
+			select {
+			case <-quitCh:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+
+	// Let this run for a bit to see if we get data race
+	time.Sleep(100 * time.Millisecond)
+	close(quitCh)
+	wg.Wait()
 }
