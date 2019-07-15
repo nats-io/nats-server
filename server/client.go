@@ -1026,7 +1026,7 @@ func (c *client) traceMsg(msg []byte) {
 	}
 
 	maxTrace := c.srv.getOpts().MaxTracedMsgLen
-	if maxTrace != 0 && (len(msg)-LEN_CR_LF) > maxTrace {
+	if maxTrace > 0 && (len(msg)-LEN_CR_LF) > maxTrace {
 		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", msg[:maxTrace])
 	} else {
 		c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:len(msg)-LEN_CR_LF])

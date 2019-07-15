@@ -1288,3 +1288,55 @@ func TestReadloopWarning(t *testing.T) {
 		t.Fatalf("No warning printed")
 	}
 }
+
+func TestTraceMsg(t *testing.T) {
+	c := &client{}
+	// Enable message trace
+	c.trace = true
+
+	cases := []struct {
+		Desc            string
+		Msg             []byte
+		Wanted          string
+		MaxTracedMsgLen int
+	}{
+		{
+			Desc:            "normal length",
+			Msg:             []byte(fmt.Sprintf("normal%s", CR_LF)),
+			Wanted:          " - <<- MSG_PAYLOAD: [\"normal\"]",
+			MaxTracedMsgLen: 10,
+		},
+		{
+			Desc:            "over length",
+			Msg:             []byte(fmt.Sprintf("over length%s", CR_LF)),
+			Wanted:          " - <<- MSG_PAYLOAD: [\"over lengt...\"]",
+			MaxTracedMsgLen: 10,
+		},
+		{
+			Desc:            "unlimited length",
+			Msg:             []byte(fmt.Sprintf("unlimited length%s", CR_LF)),
+			Wanted:          " - <<- MSG_PAYLOAD: [\"unlimited length\"]",
+			MaxTracedMsgLen: 0,
+		},
+		{
+			Desc:            "negative max traced msg len",
+			Msg:             []byte(fmt.Sprintf("negative max traced msg len%s", CR_LF)),
+			Wanted:          " - <<- MSG_PAYLOAD: [\"negative max traced msg len\"]",
+			MaxTracedMsgLen: -1,
+		},
+	}
+
+	for _, ut := range cases {
+		c.srv = &Server{
+			opts: &Options{MaxTracedMsgLen: ut.MaxTracedMsgLen},
+		}
+		c.srv.SetLogger(&DummyLogger{}, true, true)
+
+		c.traceMsg(ut.Msg)
+
+		got := c.srv.logging.logger.(*DummyLogger).msg
+		if !reflect.DeepEqual(ut.Wanted, got) {
+			t.Errorf("Desc: %s. Msg %q. Traced msg want: %s, got: %s", ut.Desc, ut.Msg, ut.Wanted, got)
+		}
+	}
+}
