@@ -1024,8 +1024,13 @@ func (c *client) traceMsg(msg []byte) {
 	if !c.trace {
 		return
 	}
-	// FIXME(dlc), allow limits to printable payload.
-	c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:len(msg)-LEN_CR_LF])
+
+	maxTrace := c.srv.getOpts().MaxTracedMsgLen
+	if maxTrace != 0 && (len(msg)-LEN_CR_LF) > maxTrace {
+		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", msg[:maxTrace])
+	} else {
+		c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:len(msg)-LEN_CR_LF])
+	}
 }
 
 func (c *client) traceInOp(op string, arg []byte) {
