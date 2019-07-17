@@ -595,12 +595,20 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// If we have a jwt and a userClaim, make sure we have the Account, etc associated.
 	// We need to look up the account. This will use an account resolver if one is present.
 	if juc != nil {
-		if acc, _ = s.LookupAccount(juc.Issuer); acc == nil {
-			c.Debugf("Account JWT can not be found")
+		issuer := juc.Issuer
+		if juc.IssuerAccount != "" {
+			issuer = juc.IssuerAccount
+		}
+		if acc, err = s.LookupAccount(issuer); acc == nil {
+			c.Debugf("Account JWT lookup error: %v", err)
 			return false
 		}
 		if !s.isTrustedIssuer(acc.Issuer) {
 			c.Debugf("Account JWT not signed by trusted operator")
+			return false
+		}
+		if juc.IssuerAccount != "" && !acc.hasIssuer(juc.Issuer) {
+			c.Debugf("User JWT issuer is not known")
 			return false
 		}
 		if acc.IsExpired() {
