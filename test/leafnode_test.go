@@ -1203,6 +1203,79 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	}
 }
 
+func TestLeafNodeSignerUser(t *testing.T) {
+	s, opts, conf := runLeafNodeOperatorServer(t)
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	// Setup the two accounts for this server.
+	_, akp1 := createAccount(t, s)
+	apk1, _ := akp1.PublicKey()
+
+	// add a signing key to the account
+	akp2, err := nkeys.CreateAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	apk2, _ := akp2.PublicKey()
+
+	token, err := s.AccountResolver().Fetch(apk1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac, err := jwt.DecodeAccountClaims(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ac.SigningKeys.Add(apk2)
+	okp, _ := nkeys.FromSeed(oSeed)
+	token, err = ac.Encode(okp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// update the resolver
+	account, _ := s.LookupAccount(apk1)
+	err = s.AccountResolver().Store(apk1, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.UpdateAccountClaims(account, ac)
+
+	tt, err := s.AccountResolver().Fetch(apk1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac2, err := jwt.DecodeAccountClaims(tt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ac2.SigningKeys) != 1 && ac2.SigningKeys[0] != apk2 {
+		t.Fatal("signing key is not added")
+	}
+
+	// create an user signed by the signing key
+	kp1, _ := nkeys.CreateUser()
+	pub1, _ := kp1.PublicKey()
+	nuc1 := jwt.NewUserClaims(pub1)
+	nuc1.IssuerAccount = apk1
+	ujwt1, err := nuc1.Encode(akp2)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	// Create the leaf node server using the first account.
+	seed, _ := kp1.Seed()
+	mycreds := genCredsFile(t, ujwt1, seed)
+	defer os.Remove(mycreds)
+
+	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+}
+
 func TestLeafNodeExportsImports(t *testing.T) {
 	// So we will create a main server with two accounts. The remote server, acting as a leaf node, will simply have
 	// the $G global account and no auth. Make sure things work properly here.
