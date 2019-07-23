@@ -712,11 +712,8 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	c.in.subs++
 
 	args := splitArg(arg)
-	var (
-		accountName string
-		subject     []byte
-		queue       []byte
-	)
+	var queue []byte
+
 	switch len(args) {
 	case 2:
 	case 3:
@@ -724,9 +721,7 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	default:
 		return "", nil, nil, fmt.Errorf("parse error: '%s'", arg)
 	}
-	subject = args[1]
-	accountName = string(args[0])
-	return accountName, subject, queue, nil
+	return string(args[0]), args[1], queue, nil
 }
 
 // Indicates no more interest in the given account/subject for the remote side.
@@ -944,10 +939,7 @@ func (s *Server) sendSubsToRoute(route *client) {
 			}
 			a.mu.RUnlock()
 
-			closed = route.sendRouteSubProtos(subs, false, func(sub *subscription) bool {
-				return route.canImport(string(sub.subject))
-			})
-
+			closed = route.sendRouteSubProtos(subs, false, route.importFilter)
 			if closed {
 				route.mu.Unlock()
 				return
@@ -1305,18 +1297,15 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	return !exists, sendInfo
 }
 
+// Import filter check.
+func (c *client) importFilter(sub *subscription) bool {
+	return c.canImport(string(sub.subject))
+}
+
 // updateRouteSubscriptionMap will make sure to update the route map for the subscription. Will
 // also forward to all routes if needed.
 func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, delta int32) {
 	if acc == nil || sub == nil {
-		return
-	}
-	acc.mu.RLock()
-	rm := acc.rm
-	acc.mu.RUnlock()
-
-	// This is non-nil when we know we are in cluster mode.
-	if rm == nil {
 		return
 	}
 
@@ -1325,51 +1314,55 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
-	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
-	var (
-		_rkey  [1024]byte
-		key    []byte
-		update bool
-	)
-	if sub.queue != nil {
-		// Just make the key subject spc group, e.g. 'foo bar'
-		key = _rkey[:0]
-		key = append(key, sub.subject...)
-		key = append(key, byte(' '))
-		key = append(key, sub.queue...)
-		// We always update for a queue subscriber since we need to send our relative weight.
-		update = true
-	} else {
-		key = sub.subject
-	}
-
 	// Copy to hold outside acc lock.
 	var n int32
 	var ok bool
 
+	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
+	key := keyFromSub(sub)
+	isq := len(sub.queue) > 0
+
+	// Decide whether we need to send an update out to all the routes.
+	update := isq
+
 	acc.mu.Lock()
-	if n, ok = rm[string(key)]; ok {
+
+	// This is non-nil when we know we are in cluster mode.
+	rm, lqws := acc.rm, acc.lqws
+	if rm == nil {
+		acc.mu.Unlock()
+		return
+	}
+
+	// This is where we do update to account. For queues we need to take
+	// special care that this order of updates is same as what is sent out
+	// over routes.
+	if n, ok = rm[key]; ok {
 		n += delta
 		if n <= 0 {
-			delete(rm, string(key))
+			delete(rm, key)
+			if isq {
+				delete(lqws, key)
+			}
 			update = true // Update for deleting (N->0)
 		} else {
-			rm[string(key)] = n
+			rm[key] = n
 		}
 	} else if delta > 0 {
 		n = delta
-		rm[string(key)] = delta
+		rm[key] = delta
 		update = true // Adding a new entry for normal sub means update (0->1)
 	}
+
 	acc.mu.Unlock()
 
 	if !update {
 		return
 	}
-	// We need to send out this update.
 
-	// If we are sending a queue sub, copy and place in the queue weight.
-	if sub.queue != nil {
+	// If we are sending a queue sub, make a copy and place in the queue weight.
+	// FIXME(dlc) - We can be smarter here and avoid copying and acquiring the lock.
+	if isq {
 		sub.client.mu.Lock()
 		nsub := *sub
 		sub.client.mu.Unlock()
@@ -1377,45 +1370,46 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		sub = &nsub
 	}
 
-	// Note that queue unsubs where entry.n > 0 are still
-	// subscribes with a smaller weight.
-	if n > 0 {
-		s.broadcastSubscribe(sub)
-	} else {
-		s.broadcastUnSubscribe(sub)
-	}
-}
+	// We need to send out this update. Gather routes
+	var _routes [32]*client
+	routes := _routes[:0]
 
-// broadcastSubscribe will forward a client subscription
-// to all active routes as needed.
-func (s *Server) broadcastSubscribe(sub *subscription) {
-	trace := atomic.LoadInt32(&s.logging.trace) == 1
 	s.mu.Lock()
-	subs := []*subscription{sub}
 	for _, route := range s.routes {
+		routes = append(routes, route)
+	}
+	trace := atomic.LoadInt32(&s.logging.trace) == 1
+	s.mu.Unlock()
+
+	// If we are a queue subscriber we need to make sure our updates are serialized from
+	// poyential multiple connections. We want to make sure that the order above is preserved
+	// here but not necessarily all updates need to be sent. We need to block and recheck the
+	// n count with the lock held through sending here. We will suppress duplicate sends of same qw.
+	if isq {
+		acc.mu.Lock()
+		defer acc.mu.Unlock()
+		n = rm[key]
+		sub.qw = n
+		// Check the last sent weight here. If same, then someone
+		// beat us to it and we can just return here. Otherwise update
+		if ls, ok := lqws[key]; ok && ls == n {
+			return
+		} else {
+			lqws[key] = n
+		}
+	}
+
+	// Snapshot into array
+	subs := []*subscription{sub}
+
+	// Deliver to all routes.
+	for _, route := range routes {
 		route.mu.Lock()
-		route.sendRouteSubProtos(subs, trace, func(sub *subscription) bool {
-			return route.canImport(string(sub.subject))
-		})
+		// Note that queue unsubs where n > 0 are still
+		// subscribes with a smaller weight.
+		route.sendRouteSubOrUnSubProtos(subs, n > 0, trace, route.importFilter)
 		route.mu.Unlock()
 	}
-	s.mu.Unlock()
-}
-
-// broadcastUnSubscribe will forward a client unsubscribe
-// action to all active routes.
-func (s *Server) broadcastUnSubscribe(sub *subscription) {
-	trace := atomic.LoadInt32(&s.logging.trace) == 1
-	s.mu.Lock()
-	subs := []*subscription{sub}
-	for _, route := range s.routes {
-		route.mu.Lock()
-		route.sendRouteUnSubProtos(subs, trace, func(sub *subscription) bool {
-			return route.canImport(string(sub.subject))
-		})
-		route.mu.Unlock()
-	}
-	s.mu.Unlock()
 }
 
 func (s *Server) routeAcceptLoop(ch chan struct{}) {

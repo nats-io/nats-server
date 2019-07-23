@@ -954,13 +954,13 @@ func (c *client) flushOutbound() bool {
 			}
 			if sce {
 				atomic.AddInt64(&srv.slowConsumers, 1)
-				c.clearConnection(SlowConsumerWriteDeadline)
 				c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
 					c.out.wdl, len(cnb), attempted)
+				c.clearConnection(SlowConsumerWriteDeadline)
 			}
 		} else {
-			c.clearConnection(WriteError)
 			c.Debugf("Error flushing: %v", err)
+			c.clearConnection(WriteError)
 		}
 		return true
 	}
@@ -1343,9 +1343,9 @@ func (c *client) queueOutbound(data []byte) bool {
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
 	if c.out.pb > c.out.mp {
-		c.clearConnection(SlowConsumerPendingBytes)
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
+		c.clearConnection(SlowConsumerPendingBytes)
 		return referenced
 	}
 
@@ -2913,7 +2913,8 @@ func (c *client) closeConnection(reason ClosedState) {
 	// and reference existing one.
 	var subs []*subscription
 	if kind == CLIENT || kind == LEAF {
-		subs = make([]*subscription, 0, len(c.subs))
+		var _subs [32]*subscription
+		subs = _subs[:0]
 		for _, sub := range c.subs {
 			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
 			sub.max = 0
