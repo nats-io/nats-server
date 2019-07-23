@@ -50,6 +50,7 @@ type Account struct {
 	nrleafs    int32
 	clients    map[*client]*client
 	rm         map[string]int32
+	lqws       map[string]int32
 	lleafs     []*client
 	imports    importMap
 	exports    exportMap
