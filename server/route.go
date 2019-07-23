@@ -1318,13 +1318,6 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	var n int32
 	var ok bool
 
-	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
-	key := keyFromSub(sub)
-	isq := len(sub.queue) > 0
-
-	// Decide whether we need to send an update out to all the routes.
-	update := isq
-
 	acc.mu.Lock()
 
 	// This is non-nil when we know we are in cluster mode.
@@ -1333,6 +1326,13 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		acc.mu.Unlock()
 		return
 	}
+
+	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
+	key := keyFromSub(sub)
+	isq := len(sub.queue) > 0
+
+	// Decide whether we need to send an update out to all the routes.
+	update := isq
 
 	// This is where we do update to account. For queues we need to take
 	// special care that this order of updates is same as what is sent out
@@ -1382,7 +1382,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	s.mu.Unlock()
 
 	// If we are a queue subscriber we need to make sure our updates are serialized from
-	// poyential multiple connections. We want to make sure that the order above is preserved
+	// potential multiple connections. We want to make sure that the order above is preserved
 	// here but not necessarily all updates need to be sent. We need to block and recheck the
 	// n count with the lock held through sending here. We will suppress duplicate sends of same qw.
 	if isq {
