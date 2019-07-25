@@ -627,7 +627,7 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 func (c *client) canImport(subject string) bool {
 	// Use pubAllowed() since this checks Publish permissions which
 	// is what Import maps to.
-	return c.pubAllowed(subject)
+	return c.pubAllowedFullCheck(subject, false)
 }
 
 // canExport is whether or not we will accept a SUB from the remote for a given subject.

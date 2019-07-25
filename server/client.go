@@ -157,33 +157,35 @@ const (
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
-	mpay   int32
-	msubs  int32
-	mcl    int32
-	mu     sync.Mutex
-	kind   int
-	cid    uint64
-	opts   clientOpts
-	start  time.Time
-	nonce  []byte
-	nc     net.Conn
-	ncs    string
-	out    outbound
-	srv    *Server
-	acc    *Account
-	user   *NkeyUser
-	host   string
-	port   uint16
-	subs   map[string]*subscription
-	perms  *permissions
-	mperms *msgDeny
-	darray []string
-	in     readCache
-	pcd    map[*client]struct{}
-	atmr   *time.Timer
-	ping   pinfo
-	msgb   [msgScratchSize]byte
-	last   time.Time
+	mpay    int32
+	msubs   int32
+	mcl     int32
+	mu      sync.Mutex
+	kind    int
+	cid     uint64
+	opts    clientOpts
+	start   time.Time
+	nonce   []byte
+	nc      net.Conn
+	ncs     string
+	out     outbound
+	srv     *Server
+	acc     *Account
+	user    *NkeyUser
+	host    string
+	port    uint16
+	subs    map[string]*subscription
+	perms   *permissions
+	replies map[string]*resp
+	rcheck  time.Time
+	mperms  *msgDeny
+	darray  []string
+	in      readCache
+	pcd     map[*client]struct{}
+	atmr    *time.Timer
+	ping    pinfo
+	msgb    [msgScratchSize]byte
+	last    time.Time
 	parseState
 
 	rtt      time.Duration
@@ -230,10 +232,19 @@ type perm struct {
 	allow *Sublist
 	deny  *Sublist
 }
+
 type permissions struct {
 	sub    perm
 	pub    perm
+	resp   *ResponsePermission
 	pcache map[string]bool
+}
+
+// This is used to dynamically track responses and reply subjects
+// for dynamic permissioning.
+type resp struct {
+	t time.Time
+	n int
 }
 
 // msgDeny is used when a user permission for subscriptions has a deny
@@ -259,6 +270,8 @@ const (
 	maxPermCacheSize     = 128
 	pruneSize            = 32
 	routeTargetInit      = 8
+	replyPermLimit       = 4096
+	replyCheckMin        = 30 * time.Second
 )
 
 // Used in readloop to cache hot subject lookups and group statistics.
@@ -536,10 +549,9 @@ func (c *client) RegisterUser(user *User) {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
-		c.mu.Unlock()
-		return
+	} else {
+		c.setPermissions(user.Permissions)
 	}
-	c.setPermissions(user.Permissions)
 	c.mu.Unlock()
 }
 
@@ -580,7 +592,7 @@ func (c *client) setPermissions(perms *Permissions) {
 
 	// Loop over publish permissions
 	if perms.Publish != nil {
-		if len(perms.Publish.Allow) > 0 {
+		if perms.Publish.Allow != nil {
 			c.perms.pub.allow = NewSublistWithCache()
 		}
 		for _, pubSubject := range perms.Publish.Allow {
@@ -594,6 +606,14 @@ func (c *client) setPermissions(perms *Permissions) {
 			sub := &subscription{subject: []byte(pubSubject)}
 			c.perms.pub.deny.Insert(sub)
 		}
+	}
+
+	// Check if we are allowed to send responses.
+	if perms.Response != nil {
+		rp := *perms.Response
+		c.perms.resp = &rp
+		c.replies = make(map[string]*resp)
+		c.rcheck = time.Now()
 	}
 
 	// Loop over subscribe permissions
@@ -2131,6 +2151,15 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	client.out.pm++
 
+	// If we are tracking dynamic publish permissions that track reply subjects,
+	// do that accounting here. We only look at client.replies which will be non-nil.
+	if client.replies != nil && len(c.pa.reply) > 0 {
+		client.replies[string(c.pa.reply)] = &resp{time.Now(), 0}
+		if len(client.replies) > replyPermLimit {
+			client.pruneReplyPerms()
+		}
+	}
+
 	// Check outbound threshold and queue IO flush if needed.
 	// This is specifically looking at situations where we are getting behind and may want
 	// to intervene before this producer goes back to top of readloop. We are in the producer's
@@ -2154,6 +2183,27 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	client.mu.Unlock()
 
 	return true
+}
+
+// pruneReplyPerms will remove any stale or expired entries
+// in our reply cache. We make sure to not check too often.
+func (c *client) pruneReplyPerms() {
+	// Make sure we do not check too often.
+	if c.perms.resp == nil || time.Since(c.rcheck) < replyCheckMin {
+		return
+	}
+
+	mm := c.perms.resp.MaxMsgs
+	ttl := c.perms.resp.Expires
+	c.rcheck = time.Now()
+
+	for k, resp := range c.replies {
+		if mm > 0 && resp.n >= mm {
+			delete(c.replies, k)
+		} else if ttl > 0 && c.rcheck.Sub(resp.t) > ttl {
+			delete(c.replies, k)
+		}
+	}
 }
 
 // pruneDenyCache will prune the deny cache via randomly
@@ -2183,7 +2233,14 @@ func (c *client) prunePubPermsCache() {
 }
 
 // pubAllowed checks on publish permissioning.
+// Lock should not be held.
 func (c *client) pubAllowed(subject string) bool {
+	return c.pubAllowedFullCheck(subject, true)
+}
+
+// pubAllowedFullCheck checks on all publish permissioning depending
+// on the flag for dynamic reply permissions.
+func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 	if c.perms == nil || (c.perms.pub.allow == nil && c.perms.pub.deny == nil) {
 		return true
 	}
@@ -2205,11 +2262,31 @@ func (c *client) pubAllowed(subject string) bool {
 		r := c.perms.pub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
 	}
-	// Update our cache here.
-	c.perms.pcache[string(subject)] = allowed
-	// Prune if needed.
-	if len(c.perms.pcache) > maxPermCacheSize {
-		c.prunePubPermsCache()
+
+	// If we are currently not allowed but we are tracking reply subjects
+	// dynamically, check to see if we are allowed here Avoid pcache.
+	// We need to acquire the lock though.
+	if !allowed && fullCheck && c.perms.resp != nil {
+		c.mu.Lock()
+		if resp := c.replies[subject]; resp != nil {
+			resp.n++
+			// Check if we have sent too many responses.
+			if c.perms.resp.MaxMsgs > 0 && resp.n > c.perms.resp.MaxMsgs {
+				delete(c.replies, subject)
+			} else if c.perms.resp.Expires > 0 && time.Since(resp.t) > c.perms.resp.Expires {
+				delete(c.replies, subject)
+			} else {
+				allowed = true
+			}
+		}
+		c.mu.Unlock()
+	} else {
+		// Update our cache here.
+		c.perms.pcache[string(subject)] = allowed
+		// Prune if needed.
+		if len(c.perms.pcache) > maxPermCacheSize {
+			c.prunePubPermsCache()
+		}
 	}
 	return allowed
 }

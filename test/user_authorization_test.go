@@ -1,4 +1,4 @@
-// Copyright 2016-2018 The NATS Authors
+// Copyright 2016-2019 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,6 +16,7 @@ package test
 import (
 	"regexp"
 	"testing"
+	"time"
 )
 
 const DefaultPass = "foo"
@@ -219,5 +220,97 @@ func TestUserAuthorizationProto(t *testing.T) {
 	expectResult(t, c, okRe)
 
 	sendProto(t, c, "SUB SYS.bar 5\r\n")
+	expectResult(t, c, errRe)
+}
+
+func TestUserAuthorizationAllowResponses(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/authorization.conf")
+	defer srv.Shutdown()
+
+	// Alice can do anything, so she will be our requestor
+	rc := createClientConn(t, opts.Host, opts.Port)
+	defer rc.Close()
+	expectAuthRequired(t, rc)
+	doAuthConnect(t, rc, "", "alice", DefaultPass)
+	expectResult(t, rc, okRe)
+
+	// MY_SERVICE can subscribe to a single request subject but can
+	// respond to any reply subject that it receives, but only
+	// for one response.
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "svca", DefaultPass)
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB my.service.req 1\r\n")
+	expectResult(t, c, okRe)
+
+	sendProto(t, rc, "PUB my.service.req resp.bar.22 2\r\nok\r\n")
+	expectResult(t, rc, okRe)
+
+	matches := msgRe.FindAllSubmatch(expectResult(t, c, msgRe), -1)
+	checkMsg(t, matches[0], "my.service.req", "1", "resp.bar.22", "2", "ok")
+
+	// This should be allowed
+	sendProto(t, c, "PUB resp.bar.22 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+
+	// This should not be allowed
+	sendProto(t, c, "PUB resp.bar.33 2\r\nok\r\n")
+	expectResult(t, c, errRe)
+
+	// This should also not be allowed now since we already sent a response and max is 1.
+	sendProto(t, c, "PUB resp.bar.22 2\r\nok\r\n")
+	expectResult(t, c, errRe)
+
+	c.Close() // from MY_SERVICE
+
+	// MY_STREAM_SERVICE can subscribe to a single request subject but can
+	// respond to any reply subject that it receives, and send up to 10 responses.
+	// Each permission for a response can last up to 10ms.
+	c = createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "svcb", DefaultPass)
+	expectResult(t, c, okRe)
+
+	sendProto(t, c, "SUB my.service.req 1\r\n")
+	expectResult(t, c, okRe)
+
+	// Same rules as above.
+	sendProto(t, rc, "PUB my.service.req resp.bar.22 2\r\nok\r\n")
+	expectResult(t, rc, okRe)
+
+	matches = msgRe.FindAllSubmatch(expectResult(t, c, msgRe), -1)
+	checkMsg(t, matches[0], "my.service.req", "1", "resp.bar.22", "2", "ok")
+
+	// This should be allowed
+	sendProto(t, c, "PUB resp.bar.22 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+
+	// This should not be allowed
+	sendProto(t, c, "PUB resp.bar.33 2\r\nok\r\n")
+	expectResult(t, c, errRe)
+
+	// We should be able to send 9 more here since we are allowed 10 total
+	for i := 0; i < 9; i++ {
+		sendProto(t, c, "PUB resp.bar.22 2\r\nok\r\n")
+		expectResult(t, c, okRe)
+	}
+	// Now this should fail since we already sent 10 responses.
+	sendProto(t, c, "PUB resp.bar.22 2\r\nok\r\n")
+	expectResult(t, c, errRe)
+
+	// Now test timeout.
+	sendProto(t, rc, "PUB my.service.req resp.bar.11 2\r\nok\r\n")
+	expectResult(t, rc, okRe)
+
+	matches = msgRe.FindAllSubmatch(expectResult(t, c, msgRe), -1)
+	checkMsg(t, matches[0], "my.service.req", "1", "resp.bar.11", "2", "ok")
+
+	time.Sleep(20 * time.Millisecond)
+
+	sendProto(t, c, "PUB resp.bar.11 2\r\nok\r\n")
 	expectResult(t, c, errRe)
 }
