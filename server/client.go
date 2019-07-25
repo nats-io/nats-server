@@ -177,7 +177,6 @@ type client struct {
 	subs    map[string]*subscription
 	perms   *permissions
 	replies map[string]*resp
-	rcheck  time.Time
 	mperms  *msgDeny
 	darray  []string
 	in      readCache
@@ -271,7 +270,6 @@ const (
 	pruneSize            = 32
 	routeTargetInit      = 8
 	replyPermLimit       = 4096
-	replyCheckMin        = 30 * time.Second
 )
 
 // Used in readloop to cache hot subject lookups and group statistics.
@@ -613,7 +611,6 @@ func (c *client) setPermissions(perms *Permissions) {
 		rp := *perms.Response
 		c.perms.resp = &rp
 		c.replies = make(map[string]*resp)
-		c.rcheck = time.Now()
 	}
 
 	// Loop over subscribe permissions
@@ -2189,18 +2186,18 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 // in our reply cache. We make sure to not check too often.
 func (c *client) pruneReplyPerms() {
 	// Make sure we do not check too often.
-	if c.perms.resp == nil || time.Since(c.rcheck) < replyCheckMin {
+	if c.perms.resp == nil {
 		return
 	}
 
 	mm := c.perms.resp.MaxMsgs
 	ttl := c.perms.resp.Expires
-	c.rcheck = time.Now()
+	now := time.Now()
 
 	for k, resp := range c.replies {
 		if mm > 0 && resp.n >= mm {
 			delete(c.replies, k)
-		} else if ttl > 0 && c.rcheck.Sub(resp.t) > ttl {
+		} else if ttl > 0 && now.Sub(resp.t) > ttl {
 			delete(c.replies, k)
 		}
 	}
