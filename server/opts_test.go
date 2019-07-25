@@ -76,7 +76,7 @@ func TestOptions_RandomPort(t *testing.T) {
 
 	if opts.Port != 0 {
 		t.Fatalf("Process of options should have resolved random port to "+
-			"zero.\nexpected: %d\ngot: %d\n", 0, opts.Port)
+			"zero.\nexpected: %d\ngot: %d", 0, opts.Port)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestConfigFile(t *testing.T) {
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	checkOptionsEqual(t, golden, opts)
@@ -129,7 +129,7 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	tlsConfig := opts.TLSConfig
 	if tlsConfig == nil {
@@ -156,13 +156,13 @@ func TestTLSConfigFile(t *testing.T) {
 	}
 	cert := tlsConfig.Certificates[0].Leaf
 	if err := cert.VerifyHostname("127.0.0.1"); err != nil {
-		t.Fatalf("Could not verify hostname in certificate: %v\n", err)
+		t.Fatalf("Could not verify hostname in certificate: %v", err)
 	}
 
 	// Now test adding cipher suites.
 	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	tlsConfig = opts.TLSConfig
 	if tlsConfig == nil {
@@ -208,7 +208,7 @@ func TestTLSConfigFile(t *testing.T) {
 	// test on a file that  will load the curve preference defaults
 	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	if !reflect.DeepEqual(opts.TLSConfig.CurvePreferences, defaultCurvePreferences()) {
@@ -269,7 +269,7 @@ func TestMergeOverrides(t *testing.T) {
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	// Overrides via flags
@@ -345,7 +345,7 @@ func TestRouteFlagOverride(t *testing.T) {
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	// Overrides via flags
@@ -384,7 +384,7 @@ func TestClusterFlagsOverride(t *testing.T) {
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	// Overrides via flags
@@ -419,7 +419,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	// Overrides via flags
@@ -434,23 +434,23 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 func TestDynamicPortOnListen(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/listen-1.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	if opts.Port != -1 {
-		t.Fatalf("Received incorrect port %v, expected -1\n", opts.Port)
+		t.Fatalf("Received incorrect port %v, expected -1", opts.Port)
 	}
 	if opts.HTTPPort != -1 {
-		t.Fatalf("Received incorrect monitoring port %v, expected -1\n", opts.HTTPPort)
+		t.Fatalf("Received incorrect monitoring port %v, expected -1", opts.HTTPPort)
 	}
 	if opts.HTTPSPort != -1 {
-		t.Fatalf("Received incorrect secure monitoring port %v, expected -1\n", opts.HTTPSPort)
+		t.Fatalf("Received incorrect secure monitoring port %v, expected -1", opts.HTTPSPort)
 	}
 }
 
 func TestListenConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/listen.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 
@@ -459,13 +459,13 @@ func TestListenConfig(t *testing.T) {
 	port := 4422
 	monHost := "127.0.0.1"
 	if opts.Host != host {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, host)
 	}
 	if opts.HTTPHost != monHost {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.HTTPHost, monHost)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.HTTPHost, monHost)
 	}
 	if opts.Port != port {
-		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+		t.Fatalf("Received incorrect port %v, expected %v", opts.Port, port)
 	}
 
 	// Clustering
@@ -473,10 +473,10 @@ func TestListenConfig(t *testing.T) {
 	clusterPort := 4244
 
 	if opts.Cluster.Host != clusterHost {
-		t.Fatalf("Received incorrect cluster host %q, expected %q\n", opts.Cluster.Host, clusterHost)
+		t.Fatalf("Received incorrect cluster host %q, expected %q", opts.Cluster.Host, clusterHost)
 	}
 	if opts.Cluster.Port != clusterPort {
-		t.Fatalf("Received incorrect cluster port %v, expected %v\n", opts.Cluster.Port, clusterPort)
+		t.Fatalf("Received incorrect cluster port %v, expected %v", opts.Cluster.Port, clusterPort)
 	}
 
 	// HTTP
@@ -484,56 +484,56 @@ func TestListenConfig(t *testing.T) {
 	httpPort := 8422
 
 	if opts.HTTPHost != httpHost {
-		t.Fatalf("Received incorrect http host %q, expected %q\n", opts.HTTPHost, httpHost)
+		t.Fatalf("Received incorrect http host %q, expected %q", opts.HTTPHost, httpHost)
 	}
 	if opts.HTTPPort != httpPort {
-		t.Fatalf("Received incorrect http port %v, expected %v\n", opts.HTTPPort, httpPort)
+		t.Fatalf("Received incorrect http port %v, expected %v", opts.HTTPPort, httpPort)
 	}
 
 	// HTTPS
 	httpsPort := 9443
 	if opts.HTTPSPort != httpsPort {
-		t.Fatalf("Received incorrect https port %v, expected %v\n", opts.HTTPSPort, httpsPort)
+		t.Fatalf("Received incorrect https port %v, expected %v", opts.HTTPSPort, httpsPort)
 	}
 }
 
 func TestListenPortOnlyConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/listen_port.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 
 	port := 8922
 
 	if opts.Host != DEFAULT_HOST {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, DEFAULT_HOST)
 	}
 	if opts.HTTPHost != DEFAULT_HOST {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, DEFAULT_HOST)
 	}
 	if opts.Port != port {
-		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+		t.Fatalf("Received incorrect port %v, expected %v", opts.Port, port)
 	}
 }
 
 func TestListenPortWithColonConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/listen_port_with_colon.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 
 	port := 8922
 
 	if opts.Host != DEFAULT_HOST {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, DEFAULT_HOST)
 	}
 	if opts.HTTPHost != DEFAULT_HOST {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, DEFAULT_HOST)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, DEFAULT_HOST)
 	}
 	if opts.Port != port {
-		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, port)
+		t.Fatalf("Received incorrect port %v, expected %v", opts.Port, port)
 	}
 }
 
@@ -545,20 +545,20 @@ func TestListenMonitoringDefault(t *testing.T) {
 
 	host := "10.0.1.22"
 	if opts.Host != host {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, host)
 	}
 	if opts.HTTPHost != host {
-		t.Fatalf("Received incorrect host %q, expected %q\n", opts.Host, host)
+		t.Fatalf("Received incorrect host %q, expected %q", opts.Host, host)
 	}
 	if opts.Port != DEFAULT_PORT {
-		t.Fatalf("Received incorrect port %v, expected %v\n", opts.Port, DEFAULT_PORT)
+		t.Fatalf("Received incorrect port %v, expected %v", opts.Port, DEFAULT_PORT)
 	}
 }
 
 func TestMultipleUsersConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/multiple_users.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 }
@@ -568,12 +568,12 @@ func TestMultipleUsersConfig(t *testing.T) {
 func TestAuthorizationConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/authorization.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 	lu := len(opts.Users)
-	if lu != 3 {
-		t.Fatalf("Expected 3 users, got %d\n", lu)
+	if lu != 5 {
+		t.Fatalf("Expected 5 users, got %d", lu)
 	}
 	// Build a map
 	mu := make(map[string]*User)
@@ -584,69 +584,153 @@ func TestAuthorizationConfig(t *testing.T) {
 	// Alice
 	alice, ok := mu["alice"]
 	if !ok {
-		t.Fatalf("Expected to see user Alice\n")
+		t.Fatalf("Expected to see user Alice")
 	}
 	// Check for permissions details
 	if alice.Permissions == nil {
-		t.Fatalf("Expected Alice's permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's permissions to be non-nil")
 	}
 	if alice.Permissions.Publish == nil {
-		t.Fatalf("Expected Alice's publish permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's publish permissions to be non-nil")
 	}
 	if len(alice.Permissions.Publish.Allow) != 1 {
-		t.Fatalf("Expected Alice's publish permissions to have 1 element, got %d\n",
+		t.Fatalf("Expected Alice's publish permissions to have 1 element, got %d",
 			len(alice.Permissions.Publish.Allow))
 	}
 	pubPerm := alice.Permissions.Publish.Allow[0]
 	if pubPerm != "*" {
-		t.Fatalf("Expected Alice's publish permissions to be '*', got %q\n", pubPerm)
+		t.Fatalf("Expected Alice's publish permissions to be '*', got %q", pubPerm)
 	}
 	if alice.Permissions.Subscribe == nil {
-		t.Fatalf("Expected Alice's subscribe permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's subscribe permissions to be non-nil")
 	}
 	if len(alice.Permissions.Subscribe.Allow) != 1 {
-		t.Fatalf("Expected Alice's subscribe permissions to have 1 element, got %d\n",
+		t.Fatalf("Expected Alice's subscribe permissions to have 1 element, got %d",
 			len(alice.Permissions.Subscribe.Allow))
 	}
 	subPerm := alice.Permissions.Subscribe.Allow[0]
 	if subPerm != ">" {
-		t.Fatalf("Expected Alice's subscribe permissions to be '>', got %q\n", subPerm)
+		t.Fatalf("Expected Alice's subscribe permissions to be '>', got %q", subPerm)
 	}
 
 	// Bob
 	bob, ok := mu["bob"]
 	if !ok {
-		t.Fatalf("Expected to see user Bob\n")
+		t.Fatalf("Expected to see user Bob")
 	}
 	if bob.Permissions == nil {
-		t.Fatalf("Expected Bob's permissions to be non-nil\n")
+		t.Fatalf("Expected Bob's permissions to be non-nil")
 	}
 
 	// Susan
 	susan, ok := mu["susan"]
 	if !ok {
-		t.Fatalf("Expected to see user Susan\n")
+		t.Fatalf("Expected to see user Susan")
 	}
 	if susan.Permissions == nil {
-		t.Fatalf("Expected Susan's permissions to be non-nil\n")
+		t.Fatalf("Expected Susan's permissions to be non-nil")
 	}
 	// Check susan closely since she inherited the default permissions.
 	if susan.Permissions == nil {
-		t.Fatalf("Expected Susan's permissions to be non-nil\n")
+		t.Fatalf("Expected Susan's permissions to be non-nil")
 	}
 	if susan.Permissions.Publish != nil {
-		t.Fatalf("Expected Susan's publish permissions to be nil\n")
+		t.Fatalf("Expected Susan's publish permissions to be nil")
 	}
 	if susan.Permissions.Subscribe == nil {
-		t.Fatalf("Expected Susan's subscribe permissions to be non-nil\n")
+		t.Fatalf("Expected Susan's subscribe permissions to be non-nil")
 	}
 	if len(susan.Permissions.Subscribe.Allow) != 1 {
-		t.Fatalf("Expected Susan's subscribe permissions to have 1 element, got %d\n",
+		t.Fatalf("Expected Susan's subscribe permissions to have 1 element, got %d",
 			len(susan.Permissions.Subscribe.Allow))
 	}
 	subPerm = susan.Permissions.Subscribe.Allow[0]
 	if subPerm != "PUBLIC.>" {
-		t.Fatalf("Expected Susan's subscribe permissions to be 'PUBLIC.>', got %q\n", subPerm)
+		t.Fatalf("Expected Susan's subscribe permissions to be 'PUBLIC.>', got %q", subPerm)
+	}
+
+	// Service A
+	svca, ok := mu["svca"]
+	if !ok {
+		t.Fatalf("Expected to see user Service A")
+	}
+	if svca.Permissions == nil {
+		t.Fatalf("Expected Service A's permissions to be non-nil")
+	}
+	if svca.Permissions.Subscribe == nil {
+		t.Fatalf("Expected Service A's subscribe permissions to be non-nil")
+	}
+	if len(svca.Permissions.Subscribe.Allow) != 1 {
+		t.Fatalf("Expected Service A's subscribe permissions to have 1 element, got %d",
+			len(svca.Permissions.Subscribe.Allow))
+	}
+	subPerm = svca.Permissions.Subscribe.Allow[0]
+	if subPerm != "my.service.req" {
+		t.Fatalf("Expected Service A's subscribe permissions to be 'my.service.req', got %q", subPerm)
+	}
+	// We want allow_responses to essentially set deny all, or allow none in this case.
+	if svca.Permissions.Publish == nil {
+		t.Fatalf("Expected Service A's publish permissions to be non-nil")
+	}
+	if len(svca.Permissions.Publish.Allow) != 0 {
+		t.Fatalf("Expected Service A's publish permissions to have no elements, got %d",
+			len(svca.Permissions.Publish.Allow))
+	}
+	// We should have a ResponsePermission present with default values.
+	if svca.Permissions.Response == nil {
+		t.Fatalf("Expected Service A's response permissions to be non-nil")
+	}
+	if svca.Permissions.Response.MaxMsgs != DEFAULT_ALLOW_RESPONSE_MAX_MSGS {
+		t.Fatalf("Expected Service A's response permissions of max msgs to be %d, got %d",
+			DEFAULT_ALLOW_RESPONSE_MAX_MSGS, svca.Permissions.Response.MaxMsgs,
+		)
+	}
+	if svca.Permissions.Response.Expires != DEFAULT_ALLOW_RESPONSE_EXPIRATION {
+		t.Fatalf("Expected Service A's response permissions of expiration to be %v, got %v",
+			DEFAULT_ALLOW_RESPONSE_EXPIRATION, svca.Permissions.Response.Expires,
+		)
+	}
+
+	// Service B
+	svcb, ok := mu["svcb"]
+	if !ok {
+		t.Fatalf("Expected to see user Service B")
+	}
+	if svcb.Permissions == nil {
+		t.Fatalf("Expected Service B's permissions to be non-nil")
+	}
+	if svcb.Permissions.Subscribe == nil {
+		t.Fatalf("Expected Service B's subscribe permissions to be non-nil")
+	}
+	if len(svcb.Permissions.Subscribe.Allow) != 1 {
+		t.Fatalf("Expected Service B's subscribe permissions to have 1 element, got %d",
+			len(svcb.Permissions.Subscribe.Allow))
+	}
+	subPerm = svcb.Permissions.Subscribe.Allow[0]
+	if subPerm != "my.service.req" {
+		t.Fatalf("Expected Service B's subscribe permissions to be 'my.service.req', got %q", subPerm)
+	}
+	// We want allow_responses to essentially set deny all, or allow none in this case.
+	if svcb.Permissions.Publish == nil {
+		t.Fatalf("Expected Service B's publish permissions to be non-nil")
+	}
+	if len(svcb.Permissions.Publish.Allow) != 0 {
+		t.Fatalf("Expected Service B's publish permissions to have no elements, got %d",
+			len(svcb.Permissions.Publish.Allow))
+	}
+	// We should have a ResponsePermission present with default values.
+	if svcb.Permissions.Response == nil {
+		t.Fatalf("Expected Service B's response permissions to be non-nil")
+	}
+	if svcb.Permissions.Response.MaxMsgs != 10 {
+		t.Fatalf("Expected Service B's response permissions of max msgs to be %d, got %d",
+			10, svcb.Permissions.Response.MaxMsgs,
+		)
+	}
+	if svcb.Permissions.Response.Expires != time.Minute {
+		t.Fatalf("Expected Service B's response permissions of expiration to be %v, got %v",
+			time.Minute, svcb.Permissions.Response.Expires,
+		)
 	}
 }
 
@@ -655,13 +739,13 @@ func TestAuthorizationConfig(t *testing.T) {
 func TestNewStyleAuthorizationConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/new_style_authorization.conf")
 	if err != nil {
-		t.Fatalf("Received an error reading config file: %v\n", err)
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 	setBaselineOptions(opts)
 
 	lu := len(opts.Users)
 	if lu != 2 {
-		t.Fatalf("Expected 2 users, got %d\n", lu)
+		t.Fatalf("Expected 2 users, got %d", lu)
 	}
 	// Build a map
 	mu := make(map[string]*User)
@@ -671,99 +755,99 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 	// Alice
 	alice, ok := mu["alice"]
 	if !ok {
-		t.Fatalf("Expected to see user Alice\n")
+		t.Fatalf("Expected to see user Alice")
 	}
 	if alice.Permissions == nil {
-		t.Fatalf("Expected Alice's permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's permissions to be non-nil")
 	}
 
 	if alice.Permissions.Publish == nil {
-		t.Fatalf("Expected Alice's publish permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's publish permissions to be non-nil")
 	}
 	if len(alice.Permissions.Publish.Allow) != 3 {
-		t.Fatalf("Expected Alice's allowed publish permissions to have 3 elements, got %d\n",
+		t.Fatalf("Expected Alice's allowed publish permissions to have 3 elements, got %d",
 			len(alice.Permissions.Publish.Allow))
 	}
 	pubPerm := alice.Permissions.Publish.Allow[0]
 	if pubPerm != "foo" {
-		t.Fatalf("Expected Alice's first allowed publish permission to be 'foo', got %q\n", pubPerm)
+		t.Fatalf("Expected Alice's first allowed publish permission to be 'foo', got %q", pubPerm)
 	}
 	pubPerm = alice.Permissions.Publish.Allow[1]
 	if pubPerm != "bar" {
-		t.Fatalf("Expected Alice's second allowed publish permission to be 'bar', got %q\n", pubPerm)
+		t.Fatalf("Expected Alice's second allowed publish permission to be 'bar', got %q", pubPerm)
 	}
 	pubPerm = alice.Permissions.Publish.Allow[2]
 	if pubPerm != "baz" {
-		t.Fatalf("Expected Alice's third allowed publish permission to be 'baz', got %q\n", pubPerm)
+		t.Fatalf("Expected Alice's third allowed publish permission to be 'baz', got %q", pubPerm)
 	}
 	if len(alice.Permissions.Publish.Deny) != 0 {
-		t.Fatalf("Expected Alice's denied publish permissions to have 0 elements, got %d\n",
+		t.Fatalf("Expected Alice's denied publish permissions to have 0 elements, got %d",
 			len(alice.Permissions.Publish.Deny))
 	}
 
 	if alice.Permissions.Subscribe == nil {
-		t.Fatalf("Expected Alice's subscribe permissions to be non-nil\n")
+		t.Fatalf("Expected Alice's subscribe permissions to be non-nil")
 	}
 	if len(alice.Permissions.Subscribe.Allow) != 0 {
-		t.Fatalf("Expected Alice's allowed subscribe permissions to have 0 elements, got %d\n",
+		t.Fatalf("Expected Alice's allowed subscribe permissions to have 0 elements, got %d",
 			len(alice.Permissions.Subscribe.Allow))
 	}
 	if len(alice.Permissions.Subscribe.Deny) != 1 {
-		t.Fatalf("Expected Alice's denied subscribe permissions to have 1 element, got %d\n",
+		t.Fatalf("Expected Alice's denied subscribe permissions to have 1 element, got %d",
 			len(alice.Permissions.Subscribe.Deny))
 	}
 	subPerm := alice.Permissions.Subscribe.Deny[0]
 	if subPerm != "$SYSTEM.>" {
-		t.Fatalf("Expected Alice's only denied subscribe permission to be '$SYSTEM.>', got %q\n", subPerm)
+		t.Fatalf("Expected Alice's only denied subscribe permission to be '$SYSTEM.>', got %q", subPerm)
 	}
 
 	// Bob
 	bob, ok := mu["bob"]
 	if !ok {
-		t.Fatalf("Expected to see user Bob\n")
+		t.Fatalf("Expected to see user Bob")
 	}
 	if bob.Permissions == nil {
-		t.Fatalf("Expected Bob's permissions to be non-nil\n")
+		t.Fatalf("Expected Bob's permissions to be non-nil")
 	}
 
 	if bob.Permissions.Publish == nil {
-		t.Fatalf("Expected Bobs's publish permissions to be non-nil\n")
+		t.Fatalf("Expected Bobs's publish permissions to be non-nil")
 	}
 	if len(bob.Permissions.Publish.Allow) != 1 {
-		t.Fatalf("Expected Bob's allowed publish permissions to have 1 element, got %d\n",
+		t.Fatalf("Expected Bob's allowed publish permissions to have 1 element, got %d",
 			len(bob.Permissions.Publish.Allow))
 	}
 	pubPerm = bob.Permissions.Publish.Allow[0]
 	if pubPerm != "$SYSTEM.>" {
-		t.Fatalf("Expected Bob's first allowed publish permission to be '$SYSTEM.>', got %q\n", pubPerm)
+		t.Fatalf("Expected Bob's first allowed publish permission to be '$SYSTEM.>', got %q", pubPerm)
 	}
 	if len(bob.Permissions.Publish.Deny) != 0 {
-		t.Fatalf("Expected Bob's denied publish permissions to have 0 elements, got %d\n",
+		t.Fatalf("Expected Bob's denied publish permissions to have 0 elements, got %d",
 			len(bob.Permissions.Publish.Deny))
 	}
 
 	if bob.Permissions.Subscribe == nil {
-		t.Fatalf("Expected Bob's subscribe permissions to be non-nil\n")
+		t.Fatalf("Expected Bob's subscribe permissions to be non-nil")
 	}
 	if len(bob.Permissions.Subscribe.Allow) != 0 {
-		t.Fatalf("Expected Bob's allowed subscribe permissions to have 0 elements, got %d\n",
+		t.Fatalf("Expected Bob's allowed subscribe permissions to have 0 elements, got %d",
 			len(bob.Permissions.Subscribe.Allow))
 	}
 	if len(bob.Permissions.Subscribe.Deny) != 3 {
-		t.Fatalf("Expected Bobs's denied subscribe permissions to have 3 elements, got %d\n",
+		t.Fatalf("Expected Bobs's denied subscribe permissions to have 3 elements, got %d",
 			len(bob.Permissions.Subscribe.Deny))
 	}
 	subPerm = bob.Permissions.Subscribe.Deny[0]
 	if subPerm != "foo" {
-		t.Fatalf("Expected Bobs's first denied subscribe permission to be 'foo', got %q\n", subPerm)
+		t.Fatalf("Expected Bobs's first denied subscribe permission to be 'foo', got %q", subPerm)
 	}
 	subPerm = bob.Permissions.Subscribe.Deny[1]
 	if subPerm != "bar" {
-		t.Fatalf("Expected Bobs's second denied subscribe permission to be 'bar', got %q\n", subPerm)
+		t.Fatalf("Expected Bobs's second denied subscribe permission to be 'bar', got %q", subPerm)
 	}
 	subPerm = bob.Permissions.Subscribe.Deny[2]
 	if subPerm != "baz" {
-		t.Fatalf("Expected Bobs's third denied subscribe permission to be 'baz', got %q\n", subPerm)
+		t.Fatalf("Expected Bobs's third denied subscribe permission to be 'baz', got %q", subPerm)
 	}
 }
 
@@ -816,7 +900,7 @@ func TestNkeyUsersWithPermsConfig(t *testing.T) {
 		t.Fatal("Expected to have publish permissions")
 	}
 	if nk.Permissions.Publish.Allow[0] != "$SYSTEM.>" {
-		t.Fatalf("Expected publish to allow \"$SYSTEM.>\", but got %v\n", nk.Permissions.Publish.Allow[0])
+		t.Fatalf("Expected publish to allow \"$SYSTEM.>\", but got %v", nk.Permissions.Publish.Allow[0])
 	}
 	if nk.Permissions.Subscribe == nil {
 		t.Fatal("Expected to have subscribe permissions")
@@ -909,7 +993,7 @@ func TestTokenWithUsers(t *testing.T) {
 func TestParseWriteDeadline(t *testing.T) {
 	confFile := "test.conf"
 	defer os.Remove(confFile)
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1x\"\n"), 0666); err != nil {
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1x\""), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	_, err := ProcessConfigFile(confFile)
@@ -920,7 +1004,7 @@ func TestParseWriteDeadline(t *testing.T) {
 		t.Fatalf("Expected error related to parsing, got %v", err)
 	}
 	os.Remove(confFile)
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1s\"\n"), 0666); err != nil {
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1s\""), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	opts, err := ProcessConfigFile(confFile)
@@ -938,7 +1022,7 @@ func TestParseWriteDeadline(t *testing.T) {
 		os.Stdout = oldStdout
 	}()
 	os.Stdout = w
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: 2\n"), 0666); err != nil {
+	if err := ioutil.WriteFile(confFile, []byte("write_deadline: 2"), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	opts, err = ProcessConfigFile(confFile)
@@ -1044,14 +1128,14 @@ func TestEmptyConfig(t *testing.T) {
 func TestMalformedListenAddress(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/malformed_listen_address.conf")
 	if err == nil {
-		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
+		t.Fatalf("Expected an error reading config file: got %+v", opts)
 	}
 }
 
 func TestMalformedClusterAddress(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/malformed_cluster_address.conf")
 	if err == nil {
-		t.Fatalf("Expected an error reading config file: got %+v\n", opts)
+		t.Fatalf("Expected an error reading config file: got %+v", opts)
 	}
 }
 
@@ -1757,9 +1841,9 @@ func TestParsingGatewaysErrors(t *testing.T) {
 			}
 			_, err := ProcessConfigFile(file)
 			if err == nil {
-				t.Fatalf("Expected to fail, did not. Content:\n%s\n", test.content)
+				t.Fatalf("Expected to fail, did not. Content:\n%s", test.content)
 			} else if !strings.Contains(err.Error(), test.expectedErr) {
-				t.Fatalf("Expected error containing %q, got %q, for content:\n%s\n", test.expectedErr, err, test.content)
+				t.Fatalf("Expected error containing %q, got %q, for content:\n%s", test.expectedErr, err, test.content)
 			}
 		})
 	}

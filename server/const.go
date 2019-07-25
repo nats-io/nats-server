@@ -163,4 +163,12 @@ const (
 	// DEFAULT_RTT_MEASUREMENT_INTERVAL is how often we want to measure RTT from
 	// this server to clients, routes, gateways or leafnode connections.
 	DEFAULT_RTT_MEASUREMENT_INTERVAL = time.Hour
+
+	// DEFAULT_ALLOW_RESPONSE_MAX_MSGS is the default number of responses allowed
+	// for a reply subject.
+	DEFAULT_ALLOW_RESPONSE_MAX_MSGS = 1
+
+	// DEFAULT_ALLOW_RESPONSE_EXPIRATION is the default time allowed for a given
+	// dynamic response permission.
+	DEFAULT_ALLOW_RESPONSE_EXPIRATION = 2 * time.Minute
 )

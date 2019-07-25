@@ -859,6 +859,12 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
+			// Dynamic response permissions do not make sense here.
+			if perms.Response != nil {
+				err := &configErr{tk, fmt.Sprintf("Cluster permissions do not support dynamic responses")}
+				*errors = append(*errors, err)
+				continue
+			}
 			// This will possibly override permissions that were define in auth block
 			setClusterPermissions(&opts.Cluster, perms)
 		default:
@@ -1909,26 +1915,49 @@ func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissio
 		return nil, &configErr{tk, fmt.Sprintf("Expected permissions to be a map/struct, got %+v", mv)}
 	}
 	for k, v := range pm {
-		tk, v = unwrapValue(v)
+		tk, mv = unwrapValue(v)
 
 		switch strings.ToLower(k) {
 		// For routes:
 		// Import is Publish
 		// Export is Subscribe
 		case "pub", "publish", "import":
-			perms, err := parseVariablePermissions(v, errors, warnings)
+			perms, err := parseVariablePermissions(mv, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Publish = perms
 		case "sub", "subscribe", "export":
-			perms, err := parseVariablePermissions(v, errors, warnings)
+			perms, err := parseVariablePermissions(mv, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Subscribe = perms
+		case "publish_allow_responses", "allow_responses":
+			rp := &ResponsePermission{
+				MaxMsgs: DEFAULT_ALLOW_RESPONSE_MAX_MSGS,
+				Expires: DEFAULT_ALLOW_RESPONSE_EXPIRATION,
+			}
+			// Try boolean first
+			responses, ok := mv.(bool)
+			if ok {
+				if responses {
+					p.Response = rp
+				}
+			} else {
+				p.Response = parseAllowResponses(v, errors, warnings)
+			}
+			if p.Response != nil {
+				if p.Publish == nil {
+					p.Publish = &SubjectPermission{}
+				}
+				if p.Publish.Allow == nil {
+					// We turn off the blanket allow statement.
+					p.Publish.Allow = []string{}
+				}
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing permissions", k)}
@@ -1978,6 +2007,52 @@ func parseSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
 		return nil, &configErr{tk, err.Error()}
 	}
 	return subjects, nil
+}
+
+// Helper function to parse a ResponsePermission.
+func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePermission {
+	tk, v := unwrapValue(v)
+	// Check if this is a map.
+	pm, ok := v.(map[string]interface{})
+	if !ok {
+		err := &configErr{tk, "error parsing response permissions, expected a boolean or a map"}
+		*errors = append(*errors, err)
+		return nil
+	}
+
+	rp := &ResponsePermission{
+		MaxMsgs: DEFAULT_ALLOW_RESPONSE_MAX_MSGS,
+		Expires: DEFAULT_ALLOW_RESPONSE_EXPIRATION,
+	}
+
+	for k, v := range pm {
+		tk, v = unwrapValue(v)
+		switch strings.ToLower(k) {
+		case "max", "max_msgs", "max_messages", "max_responses":
+			rp.MaxMsgs = int(v.(int64))
+		case "expires", "expiration", "ttl":
+			wd, ok := v.(string)
+			if ok {
+				ttl, err := time.ParseDuration(wd)
+				if err != nil {
+					err := &configErr{tk, fmt.Sprintf("error parsing expires: %v", err)}
+					*errors = append(*errors, err)
+					return nil
+				}
+				rp.Expires = ttl
+			} else {
+				err := &configErr{tk, "error parsing expires, not a duration string"}
+				*errors = append(*errors, err)
+				return nil
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing permissions", k)}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+	return rp
 }
 
 // Helper function to parse old style authorization configs.
