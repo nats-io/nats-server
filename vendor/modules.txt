@@ -1,4 +1,4 @@
-# github.com/nats-io/jwt v0.2.8
+# github.com/nats-io/jwt v0.2.13-0.20190726194050-829b612a49c3
 github.com/nats-io/jwt
 # github.com/nats-io/nats.go v1.8.1
 github.com/nats-io/nats.go
@@ -13,7 +13,7 @@ golang.org/x/crypto/bcrypt
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/sys v0.0.0-20190710143415-6ec70d6a5542
+# golang.org/x/sys v0.0.0-20190726091711-fc99dfbffb4e
 golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc
 golang.org/x/sys/windows/svc/debug

@@ -83,7 +83,7 @@ func (a *ActivationClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", errors.New("expected subject to be an account")
 	}
 	a.ClaimsData.Type = ActivationClaim
-	return a.ClaimsData.encode(pair, a)
+	return a.ClaimsData.Encode(pair, a)
 }
 
 // DecodeActivationClaims tries to create an activation claim from a JWT string

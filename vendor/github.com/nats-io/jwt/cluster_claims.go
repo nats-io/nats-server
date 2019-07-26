@@ -56,7 +56,7 @@ func (c *ClusterClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", errors.New("expected subject to be a cluster public key")
 	}
 	c.ClaimsData.Type = ClusterClaim
-	return c.ClaimsData.encode(pair, c)
+	return c.ClaimsData.Encode(pair, c)
 }
 
 // DecodeClusterClaims tries to parse cluster claims from a JWT string

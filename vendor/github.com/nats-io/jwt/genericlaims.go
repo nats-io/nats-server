@@ -48,14 +48,14 @@ func (gc *GenericClaims) Claims() *ClaimsData {
 	return &gc.ClaimsData
 }
 
-// Payload returns the custom part of the claiims data
+// Payload returns the custom part of the claims data
 func (gc *GenericClaims) Payload() interface{} {
 	return &gc.Data
 }
 
 // Encode takes a generic claims and creates a JWT string
 func (gc *GenericClaims) Encode(pair nkeys.KeyPair) (string, error) {
-	return gc.ClaimsData.encode(pair, gc)
+	return gc.ClaimsData.Encode(pair, gc)
 }
 
 // Validate checks the generic part of the claims data

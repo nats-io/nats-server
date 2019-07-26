@@ -17,11 +17,12 @@ package jwt
 
 import (
 	"errors"
+	"time"
 
 	"github.com/nats-io/nkeys"
 )
 
-// Signifies no limit.
+// NoLimit is used to indicate a limit field is unlimited in value.
 const NoLimit = -1
 
 // OperatorLimits are used to limit access by an account
@@ -58,6 +59,7 @@ type Account struct {
 	Identities  []Identity     `json:"identity,omitempty"`
 	Limits      OperatorLimits `json:"limits,omitempty"`
 	SigningKeys StringList     `json:"signing_keys,omitempty"`
+	Revocations RevocationList `json:"revocations,omitempty"`
 }
 
 // Validate checks if the account is valid, based on the wrapper
@@ -127,7 +129,7 @@ func (a *AccountClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	}
 
 	a.ClaimsData.Type = AccountClaim
-	return a.ClaimsData.encode(pair, a)
+	return a.ClaimsData.Encode(pair, a)
 }
 
 // DecodeAccountClaims decodes account claims from a JWT string
@@ -183,4 +185,36 @@ func (a *AccountClaims) DidSign(op Claims) bool {
 		return a.SigningKeys.Contains(issuer)
 	}
 	return false
+}
+
+// Revoke enters a revocation by publickey using time.Now().
+func (a *AccountClaims) Revoke(pubKey string) {
+	a.RevokeAt(pubKey, time.Now())
+}
+
+// RevokeAt enters a revocation by publickey and timestamp into this export
+// If there is already a revocation for this public key that is newer, it is kept.
+func (a *AccountClaims) RevokeAt(pubKey string, timestamp time.Time) {
+	if a.Revocations == nil {
+		a.Revocations = RevocationList{}
+	}
+
+	a.Revocations.Revoke(pubKey, timestamp)
+}
+
+// ClearRevocation removes any revocation for the public key
+func (a *AccountClaims) ClearRevocation(pubKey string) {
+	a.Revocations.ClearRevocation(pubKey)
+}
+
+// IsRevokedAt checks if the public key is in the revoked list with a timestamp later than
+// the one passed in. Generally this method is called with time.Now() but other time's can
+// be used for testing.
+func (a *AccountClaims) IsRevokedAt(pubKey string, timestamp time.Time) bool {
+	return a.Revocations.IsRevoked(pubKey, timestamp)
+}
+
+// IsRevoked checks if the public key is in the revoked list with time.Now()
+func (a *AccountClaims) IsRevoked(pubKey string) bool {
+	return a.Revocations.IsRevoked(pubKey, time.Now())
 }

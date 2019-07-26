@@ -586,8 +586,9 @@ func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 func (a *Account) checkStreamImportAuthorized(account *Account, subject string, imClaim *jwt.Import) bool {
 	// Find the subject in the exports list.
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.checkStreamImportAuthorizedNoLock(account, subject, imClaim)
+	auth := a.checkStreamImportAuthorizedNoLock(account, subject, imClaim)
+	a.mu.RUnlock()
+	return auth
 }
 
 func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject string, imClaim *jwt.Import) bool {
@@ -1164,6 +1165,19 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 		p.Subscribe = &SubjectPermission{}
 		p.Subscribe.Allow = uc.Sub.Allow
 		p.Subscribe.Deny = uc.Sub.Deny
+	}
+	if uc.Resp != nil {
+		if p == nil {
+			p = &Permissions{Publish: &SubjectPermission{}}
+		}
+		if p.Publish.Allow == nil {
+			// We turn off the blanket allow statement.
+			p.Publish.Allow = []string{}
+		}
+		p.Response = &ResponsePermission{
+			MaxMsgs: uc.Resp.MaxMsgs,
+			Expires: uc.Resp.Expires,
+		}
 	}
 	nu.Permissions = p
 	return nu

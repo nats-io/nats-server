@@ -370,6 +370,78 @@ func TestJWTUserPermissionClaims(t *testing.T) {
 	}
 }
 
+func TestJWTUserResponsePermissionClaims(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	nuc.Permissions.Resp = &jwt.ResponsePermission{
+		MaxMsgs: 22,
+		Expires: 100 * time.Millisecond,
+	}
+
+	akp, _ := nkeys.FromSeed(aSeed)
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	jwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK/-ERR to us.
+	// This should fail too since no account resolver is defined.
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt, sig)
+	go c.parse([]byte(cs))
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected an OK, got: %v", l)
+	}
+
+	// Now check client to make sure permissions transferred.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.perms == nil {
+		t.Fatalf("Expected client permissions to be set")
+	}
+	if c.perms.pub.allow == nil {
+		t.Fatalf("Expected client perms for pub allow to be non-nil")
+	}
+	if lpa := c.perms.pub.allow.Count(); lpa != 0 {
+		t.Fatalf("Expected 0 publish allow subjects, got %d", lpa)
+	}
+	if c.perms.resp == nil {
+		t.Fatalf("Expected client perms for response permissions to be non-nil")
+	}
+	if c.perms.resp.MaxMsgs != nuc.Permissions.Resp.MaxMsgs {
+		t.Fatalf("Expected client perms for response permissions MaxMsgs to be same as jwt: %d vs %d",
+			c.perms.resp.MaxMsgs, nuc.Permissions.Resp.MaxMsgs)
+	}
+	if c.perms.resp.Expires != nuc.Permissions.Resp.Expires {
+		t.Fatalf("Expected client perms for response permissions Expires to be same as jwt: %v vs %v",
+			c.perms.resp.Expires, nuc.Permissions.Resp.Expires)
+	}
+}
+
 func TestJWTAccountExpired(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()
