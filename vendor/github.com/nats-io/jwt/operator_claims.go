@@ -73,6 +73,10 @@ func (o *Operator) validateAccountServerURL() error {
 
 // ValidateOperatorServiceURL returns an error if the URL is not a valid NATS or TLS url.
 func ValidateOperatorServiceURL(v string) error {
+	// should be possible for the service url to not be expressed
+	if v == "" {
+		return nil
+	}
 	u, err := url.Parse(v)
 	if err != nil {
 		return fmt.Errorf("error parsing operator service url %q: %v", v, err)
@@ -152,7 +156,7 @@ func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", err
 	}
 	oc.ClaimsData.Type = OperatorClaim
-	return oc.ClaimsData.encode(pair, oc)
+	return oc.ClaimsData.Encode(pair, oc)
 }
 
 // DecodeOperatorClaims tries to create an operator claims from a JWt string

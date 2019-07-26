@@ -56,7 +56,7 @@ func (s *ServerClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", errors.New("expected subject to be a server public key")
 	}
 	s.ClaimsData.Type = ServerClaim
-	return s.ClaimsData.encode(pair, s)
+	return s.ClaimsData.Encode(pair, s)
 }
 
 // DecodeServerClaims tries to parse server claims from a JWT string

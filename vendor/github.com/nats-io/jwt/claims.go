@@ -44,8 +44,6 @@ const (
 	ClusterClaim = "cluster"
 	//OperatorClaim is the type of an operator JWT
 	OperatorClaim = "operator"
-	//RevocationClaim is the type of an revocation JWT
-	RevocationClaim = "revocation"
 )
 
 // Claims is a JWT claims
@@ -180,9 +178,9 @@ func (c *ClaimsData) hash() (string, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(h.Sum(nil)), nil
 }
 
-// encode encodes a claim into a JWT token. The claim is signed with the
+// Encode encodes a claim into a JWT token. The claim is signed with the
 // provided nkey's private key
-func (c *ClaimsData) encode(kp nkeys.KeyPair, payload Claims) (string, error) {
+func (c *ClaimsData) Encode(kp nkeys.KeyPair, payload Claims) (string, error) {
 	return c.doEncode(&Header{TokenTypeJwt, AlgorithmNkey}, kp, payload)
 }
 
@@ -241,7 +239,7 @@ func (c *ClaimsData) IsSelfSigned() bool {
 // Decode takes a JWT string decodes it and validates it
 // and return the embedded Claims. If the token header
 // doesn't match the expected algorithm, or the claim is
-// not valid or verification fails an error is returned
+// not valid or verification fails an error is returned.
 func Decode(token string, target Claims) error {
 	// must have 3 chunks
 	chunks := strings.Split(token, ".")

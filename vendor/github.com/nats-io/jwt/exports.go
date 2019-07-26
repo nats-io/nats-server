@@ -17,14 +17,16 @@ package jwt
 
 import (
 	"fmt"
+	"time"
 )
 
 // Export represents a single export
 type Export struct {
-	Name     string     `json:"name,omitempty"`
-	Subject  Subject    `json:"subject,omitempty"`
-	Type     ExportType `json:"type,omitempty"`
-	TokenReq bool       `json:"token_req,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Subject     Subject        `json:"subject,omitempty"`
+	Type        ExportType     `json:"type,omitempty"`
+	TokenReq    bool           `json:"token_req,omitempty"`
+	Revocations RevocationList `json:"revocations,omitempty"`
 }
 
 // IsService returns true if an export is for a service
@@ -43,6 +45,38 @@ func (e *Export) Validate(vr *ValidationResults) {
 		vr.AddError("invalid export type: %q", e.Type)
 	}
 	e.Subject.Validate(vr)
+}
+
+// Revoke enters a revocation by publickey using time.Now().
+func (e *Export) Revoke(pubKey string) {
+	e.RevokeAt(pubKey, time.Now())
+}
+
+// RevokeAt enters a revocation by publickey and timestamp into this export
+// If there is already a revocation for this public key that is newer, it is kept.
+func (e *Export) RevokeAt(pubKey string, timestamp time.Time) {
+	if e.Revocations == nil {
+		e.Revocations = RevocationList{}
+	}
+
+	e.Revocations.Revoke(pubKey, timestamp)
+}
+
+// ClearRevocation removes any revocation for the public key
+func (e *Export) ClearRevocation(pubKey string) {
+	e.Revocations.ClearRevocation(pubKey)
+}
+
+// IsRevokedAt checks if the public key is in the revoked list with a timestamp later than
+// the one passed in. Generally this method is called with time.Now() but other time's can
+// be used for testing.
+func (e *Export) IsRevokedAt(pubKey string, timestamp time.Time) bool {
+	return e.Revocations.IsRevoked(pubKey, timestamp)
+}
+
+// IsRevoked checks if the public key is in the revoked list with time.Now()
+func (e *Export) IsRevoked(pubKey string) bool {
+	return e.Revocations.IsRevoked(pubKey, time.Now())
 }
 
 // Exports is an array of exports

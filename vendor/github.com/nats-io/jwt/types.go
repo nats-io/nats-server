@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The NATS Authors
+ * Copyright 2018-2019 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -220,16 +220,32 @@ func (p *Permission) Validate(vr *ValidationResults) {
 	}
 }
 
+// ResponsePermission can be used to allow responses to any reply subject
+// that is received on a valid subscription.
+type ResponsePermission struct {
+	MaxMsgs int           `json:"max"`
+	Expires time.Duration `json:"ttl"`
+}
+
+// Validate the response permission.
+func (p *ResponsePermission) Validate(vr *ValidationResults) {
+	// Any values can be valid for now.
+}
+
 // Permissions are used to restrict subject access, either on a user or for everyone on a server by default
 type Permissions struct {
-	Pub Permission `json:"pub,omitempty"`
-	Sub Permission `json:"sub,omitempty"`
+	Pub  Permission          `json:"pub,omitempty"`
+	Sub  Permission          `json:"sub,omitempty"`
+	Resp *ResponsePermission `json:"resp,omitempty"`
 }
 
 // Validate the pub and sub fields in the permissions list
 func (p *Permissions) Validate(vr *ValidationResults) {
 	p.Pub.Validate(vr)
 	p.Sub.Validate(vr)
+	if p.Resp != nil {
+		p.Resp.Validate(vr)
+	}
 }
 
 // StringList is a wrapper for an array of strings
