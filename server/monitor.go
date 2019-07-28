@@ -1595,6 +1595,8 @@ func (reason ClosedState) String() string {
 		return "Wrong Gateway"
 	case MissingAccount:
 		return "Missing Account"
+	case Revocation:
+		return "Credentials Revoked"
 	}
 	return "Unknown State"
 }

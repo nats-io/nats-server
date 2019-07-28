@@ -34,26 +34,28 @@ const globalAccountName = "$G"
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via Exports and Imports of Streams and Services.
 type Account struct {
-	Name       string
-	Nkey       string
-	Issuer     string
-	claimJWT   string
-	updated    time.Time
-	mu         sync.RWMutex
-	sl         *Sublist
-	etmr       *time.Timer
-	ctmr       *time.Timer
-	strack     map[string]sconns
-	nrclients  int32
-	sysclients int32
-	nleafs     int32
-	nrleafs    int32
-	clients    map[*client]*client
-	rm         map[string]int32
-	lqws       map[string]int32
-	lleafs     []*client
-	imports    importMap
-	exports    exportMap
+	Name         string
+	Nkey         string
+	Issuer       string
+	claimJWT     string
+	updated      time.Time
+	mu           sync.RWMutex
+	sl           *Sublist
+	etmr         *time.Timer
+	ctmr         *time.Timer
+	strack       map[string]sconns
+	nrclients    int32
+	sysclients   int32
+	nleafs       int32
+	nrleafs      int32
+	clients      map[*client]*client
+	rm           map[string]int32
+	lqws         map[string]int32
+	usersRevoked map[string]int64
+	actsRevoked  map[string]int64
+	lleafs       []*client
+	imports      importMap
+	exports      exportMap
 	limits
 	nae         int32
 	pruning     bool
@@ -759,6 +761,12 @@ func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool
 			})
 		}
 	}
+	// Check for token revocation..
+	if a.actsRevoked != nil {
+		if t, ok := a.actsRevoked[act.Subject]; ok && t <= time.Now().Unix() {
+			return false
+		}
+	}
 
 	return true
 }
@@ -894,6 +902,19 @@ func (a *Account) clearExpirationTimer() bool {
 	return stopped
 }
 
+// checkUserRevoked will check if a user has been revoked.
+func (a *Account) checkUserRevoked(nkey string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.usersRevoked == nil {
+		return false
+	}
+	if t, ok := a.usersRevoked[nkey]; !ok || t > time.Now().Unix() {
+		return false
+	}
+	return true
+}
+
 // Check expiration and set the proper state as needed.
 func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 	a.mu.Lock()
@@ -976,6 +997,8 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	// Reset exports and imports here.
 	a.exports = exportMap{}
 	a.imports = importMap{}
+	// Reset any notion of export revocations.
+	a.actsRevoked = nil
 
 	// update account signing keys
 	a.signingKeys = nil
@@ -1019,6 +1042,17 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			if err := a.AddServiceExport(string(e.Subject), authAccounts(e.TokenReq)); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err.Error())
 			}
+		}
+		// We will track these at the account level. Should not have any collisions.
+		if e.Revocations != nil {
+			a.mu.Lock()
+			if a.actsRevoked == nil {
+				a.actsRevoked = make(map[string]int64)
+			}
+			for k, t := range e.Revocations {
+				a.actsRevoked[k] = t
+			}
+			a.mu.Unlock()
 		}
 	}
 	for _, i := range ac.Imports {
@@ -1100,6 +1134,15 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int32(ac.Limits.Conn)
 	a.mleafs = int32(ac.Limits.LeafNodeConn)
+	// Check for any revocations
+	if len(ac.Revocations) > 0 {
+		// We will always replace whatever we had with most current, so no
+		// need to look at what we have.
+		a.usersRevoked = make(map[string]int64, len(ac.Revocations))
+		for pk, t := range ac.Revocations {
+			a.usersRevoked[pk] = t
+		}
+	}
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -1109,6 +1152,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			return clients[i].start.After(clients[j].start)
 		})
 	}
+	now := time.Now().Unix()
 	for i, c := range clients {
 		if a.mconns != jwt.NoLimit && i >= int(a.mconns) {
 			c.maxAccountConnExceeded()
@@ -1116,7 +1160,22 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 		c.mu.Lock()
 		c.applyAccountLimits()
+		// Check for being revoked here. We use ac one to avoid
+		// the account lock.
+		var nkey string
+		if c.user != nil {
+			nkey = c.user.Nkey
+		}
 		c.mu.Unlock()
+
+		// Check if we have been revoked.
+		if ac.Revocations != nil {
+			if t, ok := ac.Revocations[nkey]; ok && now >= t {
+				c.sendErrAndDebug("User Authentication Revoked")
+				c.closeConnection(Revocation)
+				continue
+			}
+		}
 	}
 
 	// Check if the signing keys changed, might have to evict

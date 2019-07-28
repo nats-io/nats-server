@@ -1908,3 +1908,262 @@ func TestJWTAccountImportSignerRemoved(t *testing.T) {
 	expectPong(clientReader)
 	checkShadow(0)
 }
+
+func TestJWTUserRevokedOnAccountUpdate(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	// Create a new user.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	jwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK/-ERR to us.
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", jwt, sig)
+
+	go c.parse([]byte(cs))
+
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected a PONG")
+	}
+
+	// Now revoke the user.
+	nac.Revoke(pub)
+
+	ajwt, err = nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	// Update the account on the server.
+	addAccountToMemResolver(s, apub, ajwt)
+	acc, err := s.LookupAccount(apub)
+	if err != nil {
+		t.Fatalf("Error looking up the account: %v", err)
+	}
+
+	// This is simulating a system update for the account claims.
+	go s.updateAccountWithClaimJWT(acc, ajwt)
+
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+	if !strings.Contains(l, "Revoked") {
+		t.Fatalf("Expected 'Revoked' to be in the error")
+	}
+}
+
+func TestJWTUserRevoked(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create a new user that we will make sure has been revoked.
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	// Revoke the user right away.
+	nac.Revoke(pub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	// Sign for the user.
+	jwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	c, cr, l := newClientForServer(s)
+
+	// Sign Nonce
+	var info nonceInfo
+	json.Unmarshal([]byte(l[5:]), &info)
+	sigraw, _ := nkp.Sign([]byte(info.Nonce))
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+	// PING needed to flush the +OK/-ERR to us.
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"sig\":\"%s\"}\r\nPING\r\n", jwt, sig)
+
+	go c.parse([]byte(cs))
+
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR ") {
+		t.Fatalf("Expected an error")
+	}
+	if !strings.Contains(l, "Authorization") {
+		t.Fatalf("Expected 'Revoked' to be in the error")
+	}
+}
+
+// Test that an account update that revokes an import authorization cancels the import.
+func TestJWTImportTokenRevokedAfter(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+
+	// Now create Exports.
+	export := &jwt.Export{Subject: "foo.private", Type: jwt.Stream, TokenReq: true}
+
+	fooAC.Exports.Add(export)
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	barKP, _ := nkeys.CreateAccount()
+	barPub, _ := barKP.PublicKey()
+	barAC := jwt.NewAccountClaims(barPub)
+	simport := &jwt.Import{Account: fooPub, Subject: "foo.private", Type: jwt.Stream}
+
+	activation := jwt.NewActivationClaims(barPub)
+	activation.ImportSubject = "foo.private"
+	activation.ImportType = jwt.Stream
+	actJWT, err := activation.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating activation token: %v", err)
+	}
+
+	simport.Token = actJWT
+	barAC.Imports.Add(simport)
+	barJWT, err := barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, barPub, barJWT)
+
+	// Now revoke the export.
+	decoded, _ := jwt.DecodeActivationClaims(actJWT)
+	export.Revoke(decoded.Subject)
+
+	fooJWT, err = fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	fooAcc, _ := s.LookupAccount(fooPub)
+	if fooAcc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
+
+	// Now lookup bar account and make sure it was revoked.
+	acc, _ := s.LookupAccount(barPub)
+	if acc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
+	if les := len(acc.imports.streams); les != 0 {
+		t.Fatalf("Expected imports streams len of 0, got %d", les)
+	}
+}
+
+// Test that an account update that revokes an import authorization cancels the import.
+func TestJWTImportTokenRevokedBefore(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+
+	// Now create Exports.
+	export := &jwt.Export{Subject: "foo.private", Type: jwt.Stream, TokenReq: true}
+
+	fooAC.Exports.Add(export)
+
+	// Import account
+	barKP, _ := nkeys.CreateAccount()
+	barPub, _ := barKP.PublicKey()
+	barAC := jwt.NewAccountClaims(barPub)
+	simport := &jwt.Import{Account: fooPub, Subject: "foo.private", Type: jwt.Stream}
+
+	activation := jwt.NewActivationClaims(barPub)
+	activation.ImportSubject = "foo.private"
+	activation.ImportType = jwt.Stream
+	actJWT, err := activation.Encode(fooKP)
+	if err != nil {
+		t.Fatalf("Error generating activation token: %v", err)
+	}
+
+	simport.Token = actJWT
+	barAC.Imports.Add(simport)
+
+	// Now revoke the export.
+	decoded, _ := jwt.DecodeActivationClaims(actJWT)
+	export.Revoke(decoded.Subject)
+
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	barJWT, err := barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, barPub, barJWT)
+
+	fooAcc, _ := s.LookupAccount(fooPub)
+	if fooAcc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
+
+	// Now lookup bar account and make sure it was revoked.
+	acc, _ := s.LookupAccount(barPub)
+	if acc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
+	if les := len(acc.imports.streams); les != 0 {
+		t.Fatalf("Expected imports streams len of 0, got %d", les)
+	}
+}
