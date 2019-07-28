@@ -190,7 +190,7 @@ func TestUnpromptedPong(t *testing.T) {
 
 func TestPingSuppresion(t *testing.T) {
 	pingInterval := 100 * time.Millisecond
-
+	highWater := 130 * time.Millisecond
 	opts := DefaultTestOptions
 	opts.Port = PING_TEST_PORT
 	opts.PingInterval = pingInterval
@@ -214,7 +214,7 @@ func TestPingSuppresion(t *testing.T) {
 		t.Fatalf("pingTime too low: %v", pingTime)
 	}
 	// +5 is just for fudging in case things are slow in the testing system.
-	if pingTime > pingInterval+(pingInterval/5)+5 {
+	if pingTime > highWater {
 		t.Fatalf("pingTime too high: %v", pingTime)
 	}
 
