@@ -281,6 +281,7 @@ type readCache struct {
 
 	// This is for routes and gateways to have their own L1 as well that is account aware.
 	pacache map[string]*perAccountCache
+	losc    int64 // last orphan subs check
 
 	// This is for when we deliver messages across a route. We use this structure
 	// to make sure to only send one message and properly scope to queues as needed.
@@ -298,8 +299,15 @@ type readCache struct {
 }
 
 const (
-	maxPerAccountCacheSize   = 32768
-	prunePerAccountCacheSize = 512
+	defaultMaxPerAccountCacheSie    = 4096
+	defaultPrunePerAccountCacheSize = 256
+	defaultOrphanSubsCheckInterval  = 5 * time.Minute
+)
+
+var (
+	maxPerAccountCacheSize   = defaultMaxPerAccountCacheSie
+	prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
+	orphanSubsCheckInterval  = defaultOrphanSubsCheckInterval
 )
 
 // perAccountCache is for L1 semantics for inbound messages from a route or gateway to mimic the performance of clients.
@@ -333,15 +341,27 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 // FIXME(dlc) - This is getting bloated for normal subs, need
 // to optionally have an opts section for non-normal stuff.
 type subscription struct {
+	nm      int64 // Will atomicall be set to -1 on unsub or connection close
 	client  *client
 	im      *streamImport   // This is for import stream support.
 	shadow  []*subscription // This is to track shadowed accounts.
 	subject []byte
 	queue   []byte
 	sid     []byte
-	nm      int64
 	max     int64
 	qw      int32
+}
+
+// Indicate that this subscription is closed.
+// This is used in pruning of some cache.
+func (s *subscription) close() {
+	atomic.StoreInt64(&s.nm, -1)
+}
+
+// Return true if this subscription was unsubscribed
+// or its connection has been closed.
+func (s *subscription) isClosed() bool {
+	return atomic.LoadInt64(&s.nm) == -1
 }
 
 type clientOpts struct {
@@ -685,9 +705,13 @@ func (c *client) writeLoop() {
 		c.mu.Unlock()
 
 		if isClosed {
-			return
+			break
 		}
 	}
+
+	c.mu.Lock()
+	c.out.p, c.out.s = nil, nil
+	c.mu.Unlock()
 }
 
 // flushClients will make sure to flush any clients we may have
@@ -735,6 +759,7 @@ func (c *client) readLoop() {
 	nc := c.nc
 	s := c.srv
 	c.in.rsz = startBufSize
+	c.in.losc = time.Now().UnixNano()
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
 	// to be reloaded without restart, this code will need to change.
@@ -750,6 +775,12 @@ func (c *client) readLoop() {
 	if nc == nil {
 		return
 	}
+
+	defer func() {
+		// These are used only in the readloop, so we can set them to nil
+		// on exit of the readLoop.
+		c.in.results, c.in.pacache = nil, nil
+	}()
 
 	// Start read buffer.
 
@@ -1929,6 +1960,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	if len(shadowSubs) > 0 {
 		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
 	}
+	sub.close()
 	c.mu.Unlock()
 
 	for _, nsub := range shadowSubs {
@@ -2993,6 +3025,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		for _, sub := range c.subs {
 			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
 			sub.max = 0
+			sub.close()
 			subs = append(subs, sub)
 		}
 	}
@@ -3192,10 +3225,40 @@ func (c *client) Account() *Account {
 // prunePerAccountCache will prune off a random number of cache entries.
 func (c *client) prunePerAccountCache() {
 	n := 0
-	for cacheKey := range c.in.pacache {
-		delete(c.in.pacache, cacheKey)
-		if n++; n > prunePerAccountCacheSize {
-			break
+	if time.Now().UnixNano()-c.in.losc >= int64(orphanSubsCheckInterval) {
+		for cacheKey, pac := range c.in.pacache {
+			canRemove := true
+			for _, sub := range pac.results.psubs {
+				if !sub.isClosed() {
+					canRemove = false
+					break
+				}
+			}
+			if canRemove {
+				for _, qsub := range pac.results.qsubs {
+					for _, sub := range qsub {
+						if !sub.isClosed() {
+							{
+								canRemove = false
+								break
+							}
+						}
+					}
+				}
+			}
+			if canRemove {
+				delete(c.in.pacache, cacheKey)
+				n++
+			}
+		}
+		c.in.losc = time.Now().UnixNano()
+	}
+	if n < prunePerAccountCacheSize {
+		for cacheKey := range c.in.pacache {
+			delete(c.in.pacache, cacheKey)
+			if n++; n > prunePerAccountCacheSize {
+				break
+			}
 		}
 	}
 }
