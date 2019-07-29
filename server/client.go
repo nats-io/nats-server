@@ -145,6 +145,7 @@ const (
 	AuthenticationExpired
 	WrongGateway
 	MissingAccount
+	Revocation
 )
 
 // Some flags passed to processMsgResultsEx

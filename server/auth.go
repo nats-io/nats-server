@@ -411,6 +411,11 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			c.Debugf("Signature not verified")
 			return false
 		}
+		if acc.checkUserRevoked(juc.Subject) {
+			c.Debugf("User authentication revoked")
+			return false
+		}
+
 		nkey = buildInternalNkeyUser(juc, acc)
 		c.RegisterNkeyUser(nkey)
 

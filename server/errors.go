@@ -109,6 +109,9 @@ var (
 	// ErrNoSysAccount is returned when an attempt to publish or subscribe is made
 	// when there is no internal system account defined.
 	ErrNoSysAccount = errors.New("system account not setup")
+
+	// ErrRevocation is returned when a credential has been revoked.
+	ErrRevocation = errors.New("credentials have been revoked")
 )
 
 // configErr is a configuration error.
