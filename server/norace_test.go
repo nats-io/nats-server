@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -554,5 +556,181 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 	// the member on cluster B.
 	if n := atomic.LoadInt32(&qrcvOnA); n != 0 {
 		t.Fatalf("Queue sub on A should not have received message, got %v", n)
+	}
+}
+
+func TestNoRaceRouteMemUsage(t *testing.T) {
+	oa := DefaultOptions()
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	ob := DefaultOptions()
+	ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	responder := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+	defer responder.Close()
+	for i := 0; i < 10; i++ {
+		natsSub(t, responder, "foo", func(m *nats.Msg) {
+			m.Respond(m.Data)
+		})
+	}
+	natsFlush(t, responder)
+
+	payload := make([]byte, 50*1024)
+
+	bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+
+	// Capture mem usage
+	mem := runtime.MemStats{}
+	runtime.ReadMemStats(&mem)
+	inUseBefore := mem.HeapInuse
+
+	for i := 0; i < 100; i++ {
+		requestor := natsConnect(t, bURL)
+		inbox := nats.NewInbox()
+		sub := natsSubSync(t, requestor, inbox)
+		natsPubReq(t, requestor, "foo", inbox, payload)
+		for j := 0; j < 10; j++ {
+			natsNexMsg(t, sub, time.Second)
+		}
+		requestor.Close()
+	}
+
+	runtime.GC()
+	debug.FreeOSMemory()
+	runtime.ReadMemStats(&mem)
+	inUseNow := mem.HeapInuse
+	if inUseNow > 3*inUseBefore {
+		t.Fatalf("Heap in-use before was %v, now %v: too high", inUseBefore, inUseNow)
+	}
+}
+
+func TestNoRaceRouteCache(t *testing.T) {
+	maxPerAccountCacheSize = 20
+	prunePerAccountCacheSize = 5
+	orphanSubsCheckInterval = 1
+
+	defer func() {
+		maxPerAccountCacheSize = defaultMaxPerAccountCacheSize
+		prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
+		orphanSubsCheckInterval = defaultOrphanSubsCheckInterval
+	}()
+
+	for _, test := range []struct {
+		name     string
+		useQueue bool
+	}{
+		{"plain_sub", false},
+		{"queue_sub", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+
+			oa := DefaultOptions()
+			sa := RunServer(oa)
+			defer sa.Shutdown()
+
+			ob := DefaultOptions()
+			ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
+			sb := RunServer(ob)
+			defer sb.Shutdown()
+
+			checkClusterFormed(t, sa, sb)
+
+			responder := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+			defer responder.Close()
+			natsSub(t, responder, "foo", func(m *nats.Msg) {
+				m.Respond(m.Data)
+			})
+			natsFlush(t, responder)
+
+			bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+			requestor := natsConnect(t, bURL)
+			defer requestor.Close()
+
+			ch := make(chan struct{}, 1)
+			cb := func(_ *nats.Msg) {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+
+			sendReqs := func(t *testing.T, nc *nats.Conn, count int, unsub bool) {
+				t.Helper()
+				for i := 0; i < count; i++ {
+					inbox := nats.NewInbox()
+					var sub *nats.Subscription
+					if test.useQueue {
+						sub = natsQueueSub(t, nc, inbox, "queue", cb)
+					} else {
+						sub = natsSub(t, nc, inbox, cb)
+					}
+					natsPubReq(t, nc, "foo", inbox, []byte("hello"))
+					select {
+					case <-ch:
+					case <-time.After(time.Second):
+						t.Fatalf("Failed to get reply")
+					}
+					if unsub {
+						natsUnsub(t, sub)
+					}
+				}
+			}
+			sendReqs(t, requestor, maxPerAccountCacheSize+1, true)
+
+			var route *client
+			sb.mu.Lock()
+			for _, r := range sb.routes {
+				route = r
+				break
+			}
+			sb.mu.Unlock()
+
+			checkExpected := func(t *testing.T, expected int) {
+				t.Helper()
+				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+					route.mu.Lock()
+					n := len(route.in.pacache)
+					route.mu.Unlock()
+					if n != expected {
+						return fmt.Errorf("Expected %v subs in the cache, got %v", expected, n)
+					}
+					return nil
+				})
+			}
+			checkExpected(t, (maxPerAccountCacheSize+1)-(prunePerAccountCacheSize+1))
+
+			// Wait for more than the orphan check
+			time.Sleep(1500 * time.Millisecond)
+
+			// Add a new subs up to point where new prune would occur
+			sendReqs(t, requestor, prunePerAccountCacheSize+1, false)
+
+			// Now closed subs should have been removed, so expected
+			// subs in the cache should be the new ones.
+			checkExpected(t, prunePerAccountCacheSize+1)
+
+			// Now try wil implicit unsubscribe (due to connection close)
+			sendReqs(t, requestor, maxPerAccountCacheSize+1, false)
+			requestor.Close()
+
+			checkExpected(t, maxPerAccountCacheSize-prunePerAccountCacheSize)
+
+			// Wait for more than the orphan check
+			time.Sleep(1500 * time.Millisecond)
+
+			// Now create new connection and send prunePerAccountCacheSize+1
+			// and that should cause all subs from previous connection to be
+			// removed from cache
+			requestor = natsConnect(t, bURL)
+			defer requestor.Close()
+
+			sendReqs(t, requestor, prunePerAccountCacheSize+1, false)
+			checkExpected(t, prunePerAccountCacheSize+1)
+		})
 	}
 }
