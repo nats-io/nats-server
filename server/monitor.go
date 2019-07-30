@@ -873,6 +873,7 @@ type Varz struct {
 	TotalConnections  uint64            `json:"total_connections"`
 	Routes            int               `json:"routes"`
 	Remotes           int               `json:"remotes"`
+	Leafs             int               `json:"leafnodes"`
 	InMsgs            int64             `json:"in_msgs"`
 	OutMsgs           int64             `json:"out_msgs"`
 	InBytes           int64             `json:"in_bytes"`
@@ -1136,6 +1137,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.TotalConnections = s.totalClients
 	v.Routes = len(s.routes)
 	v.Remotes = len(s.remotes)
+	v.Leafs = len(s.leafs)
 	v.InMsgs = atomic.LoadInt64(&s.inMsgs)
 	v.InBytes = atomic.LoadInt64(&s.inBytes)
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
