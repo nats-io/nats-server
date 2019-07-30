@@ -3227,30 +3227,22 @@ func (c *client) prunePerAccountCache() {
 	now := time.Now().Unix()
 	if now-c.in.losc >= orphanSubsCheckInterval {
 		for cacheKey, pac := range c.in.pacache {
-			remove := false
 			for _, sub := range pac.results.psubs {
 				if sub.isClosed() {
-					remove = true
-					break
+					goto REMOVE
 				}
 			}
-			if !remove {
-				for _, qsub := range pac.results.qsubs {
-					for _, sub := range qsub {
-						if sub.isClosed() {
-							remove = true
-							break
-						}
-					}
-					if remove {
-						break
+			for _, qsub := range pac.results.qsubs {
+				for _, sub := range qsub {
+					if sub.isClosed() {
+						goto REMOVE
 					}
 				}
 			}
-			if remove {
-				delete(c.in.pacache, cacheKey)
-				n++
-			}
+			continue
+		REMOVE:
+			delete(c.in.pacache, cacheKey)
+			n++
 		}
 		c.in.losc = now
 	}
