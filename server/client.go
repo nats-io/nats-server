@@ -299,13 +299,13 @@ type readCache struct {
 }
 
 const (
-	defaultMaxPerAccountCacheSie    = 4096
+	defaultMaxPerAccountCacheSize   = 4096
 	defaultPrunePerAccountCacheSize = 256
-	defaultOrphanSubsCheckInterval  = 5 * time.Minute
+	defaultOrphanSubsCheckInterval  = int64(5 * 60) //5 min in number of seconds
 )
 
 var (
-	maxPerAccountCacheSize   = defaultMaxPerAccountCacheSie
+	maxPerAccountCacheSize   = defaultMaxPerAccountCacheSize
 	prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
 	orphanSubsCheckInterval  = defaultOrphanSubsCheckInterval
 )
@@ -353,7 +353,7 @@ type subscription struct {
 }
 
 // Indicate that this subscription is closed.
-// This is used in pruning of some cache.
+// This is used in pruning of route and gateway cache items.
 func (s *subscription) close() {
 	atomic.StoreInt64(&s.nm, -1)
 }
@@ -702,16 +702,15 @@ func (c *client) writeLoop() {
 		// TODO(dlc) - This could spin if another go routine in flushOutbound waiting on a slow IO.
 		waitOk = c.flushOutbound()
 		isClosed := c.flags.isSet(clearConnection)
+		if isClosed {
+			c.out.p, c.out.s = nil, nil
+		}
 		c.mu.Unlock()
 
 		if isClosed {
-			break
+			return
 		}
 	}
-
-	c.mu.Lock()
-	c.out.p, c.out.s = nil, nil
-	c.mu.Unlock()
 }
 
 // flushClients will make sure to flush any clients we may have
@@ -759,7 +758,7 @@ func (c *client) readLoop() {
 	nc := c.nc
 	s := c.srv
 	c.in.rsz = startBufSize
-	c.in.losc = time.Now().UnixNano()
+	c.in.losc = time.Now().Unix()
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
 	// to be reloaded without restart, this code will need to change.
@@ -3225,33 +3224,35 @@ func (c *client) Account() *Account {
 // prunePerAccountCache will prune off a random number of cache entries.
 func (c *client) prunePerAccountCache() {
 	n := 0
-	if time.Now().UnixNano()-c.in.losc >= int64(orphanSubsCheckInterval) {
+	now := time.Now().Unix()
+	if now-c.in.losc >= orphanSubsCheckInterval {
 		for cacheKey, pac := range c.in.pacache {
-			canRemove := true
+			remove := false
 			for _, sub := range pac.results.psubs {
-				if !sub.isClosed() {
-					canRemove = false
+				if sub.isClosed() {
+					remove = true
 					break
 				}
 			}
-			if canRemove {
+			if !remove {
 				for _, qsub := range pac.results.qsubs {
 					for _, sub := range qsub {
-						if !sub.isClosed() {
-							{
-								canRemove = false
-								break
-							}
+						if sub.isClosed() {
+							remove = true
+							break
 						}
+					}
+					if remove {
+						break
 					}
 				}
 			}
-			if canRemove {
+			if remove {
 				delete(c.in.pacache, cacheKey)
 				n++
 			}
 		}
-		c.in.losc = time.Now().UnixNano()
+		c.in.losc = now
 	}
 	if n < prunePerAccountCacheSize {
 		for cacheKey := range c.in.pacache {
