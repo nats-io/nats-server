@@ -114,7 +114,6 @@ type LeafNodeOpts struct {
 	Advertise         string        `json:"-"`
 	NoAdvertise       bool          `json:"-"`
 	ReconnectInterval time.Duration `json:"-"`
-	MaxConn           int           `json:"max_connections"`
 
 	// For solicited connections to other clusters/superclusters.
 	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`

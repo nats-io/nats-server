@@ -60,6 +60,7 @@ type Account struct {
 	limits
 	nae         int32
 	pruning     bool
+	rmPruning   bool
 	expired     bool
 	signingKeys []string
 	srv         *Server // server this account is registered with (possibly nil)
@@ -461,7 +462,8 @@ func (a *Account) addRespMapEntry(acc *Account, reply, from string) {
 	sre := &serviceRespEntry{acc, from}
 	sra := a.respMap[reply]
 	a.respMap[reply] = append(sra, sre)
-	if len(a.respMap) > int(a.maxnrm) {
+	if len(a.respMap) > int(a.maxnrm) && !a.rmPruning {
+		a.rmPruning = true
 		go a.pruneNonAutoExpireResponseMaps()
 	}
 	a.mu.Unlock()
@@ -629,6 +631,7 @@ func (a *Account) pruneNonAutoExpireResponseMaps() {
 			sres = append(sres, sra...)
 		}
 	}
+	a.rmPruning = false
 	a.mu.Unlock()
 
 	for _, sre := range sres {
