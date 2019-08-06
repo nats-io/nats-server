@@ -1189,7 +1189,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	c.mu.Unlock()
 
 	if ok {
-		c.unsubscribe(acc, sub, true)
+		c.unsubscribe(acc, sub, true, true)
 		updateGWs = srv.gateway.enabled
 	}
 

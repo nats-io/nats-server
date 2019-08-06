@@ -421,11 +421,33 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if lis := len(natsAcc.imports.services); lis != 1 {
 		t.Fatalf("Expected 1 imported service, got %d\n", lis)
 	}
-	if les := len(natsAcc.exports.services); les != 1 {
-		t.Fatalf("Expected 1 exported service, got %d\n", les)
+	if les := len(natsAcc.exports.services); les != 4 {
+		t.Fatalf("Expected 4 exported services, got %d\n", les)
 	}
 	if les := len(natsAcc.exports.streams); les != 0 {
 		t.Fatalf("Expected no exported streams, got %d\n", les)
+	}
+
+	ea := natsAcc.exports.services["nats.time"]
+	if ea == nil {
+		t.Fatalf("Expected to get a non-nil exportAuth for service")
+	}
+	if ea.respType != Stream {
+		t.Fatalf("Expected to get a Stream response type, got %q", ea.respType)
+	}
+	ea = natsAcc.exports.services["nats.photo"]
+	if ea == nil {
+		t.Fatalf("Expected to get a non-nil exportAuth for service")
+	}
+	if ea.respType != Chunked {
+		t.Fatalf("Expected to get a Chunked response type, got %q", ea.respType)
+	}
+	ea = natsAcc.exports.services["nats.add"]
+	if ea == nil {
+		t.Fatalf("Expected to get a non-nil exportAuth for service")
+	}
+	if ea.respType != Singelton {
+		t.Fatalf("Expected to get a Singelton response type, got %q", ea.respType)
 	}
 
 	if synAcc == nil {
@@ -671,6 +693,46 @@ func TestSimpleMapping(t *testing.T) {
 	if fslc := fooAcc.sl.Count(); fslc != 0 {
 		t.Fatalf("Expected no shadowed subscriptions on fooAcc, got %d", fslc)
 	}
+}
+
+func TestShadowSubsCleanupOnClientClose(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	// Now map the subject space between foo and bar.
+	// Need to do export first.
+	if err := fooAcc.AddStreamExport("foo", nil); err != nil { // Public with no accounts defined.
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := barAcc.AddStreamImport(fooAcc, "foo", "import"); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	cbar, _, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Normal and Queue Subscription on bar client.
+	if err := cbar.parse([]byte("SUB import.foo 1\r\nSUB import.foo bar 2\r\n")); err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	if fslc := fooAcc.sl.Count(); fslc != 2 {
+		t.Fatalf("Expected 2 shadowed subscriptions on fooAcc, got %d", fslc)
+	}
+
+	// Now close cbar and make sure we remove shadows.
+	cbar.closeConnection(ClientClosed)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if fslc := fooAcc.sl.Count(); fslc != 0 {
+			return fmt.Errorf("Number of shadow subscriptions is %d", fslc)
+		}
+		return nil
+	})
 }
 
 func TestNoPrefixWildcardMapping(t *testing.T) {
@@ -1142,7 +1204,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
 	}
 
-	// Now add in the Route for request to be routed to the foo account.
+	// Now add in the route mapping for request to be routed to the foo account.
 	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
 		t.Fatalf("Error adding account service import to client bar: %v", err)
 	}
@@ -1263,6 +1325,209 @@ func TestCrossAccountRequestReplyResponseMaps(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestCrossAccountServiceResponseTypes(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Add in the service export for the requests. Make it public.
+	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Stream, nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	// Now add in the route mapping for request to be routed to the foo account.
+	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
+		t.Fatalf("Error adding account service import to client bar: %v", err)
+	}
+
+	// Now setup the resonder under cfoo
+	cfoo.parse([]byte("SUB test.request 1\r\n"))
+
+	// Now send the request. Remember we expect the request on our local foo. We added the route
+	// with that "from" and will map it to "test.request"
+	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n"))
+
+	// Now read the request from crFoo
+	l, err := crFoo.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	reply := matches[REPLY_INDEX]
+	if !strings.HasPrefix(reply, "_R_.") {
+		t.Fatalf("Expected an _R_.* like reply, got '%s'", reply)
+	}
+	crFoo.ReadString('\n')
+
+	replyOp := []byte(fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX]))
+	var mReply []byte
+	for i := 0; i < 10; i++ {
+		mReply = append(mReply, replyOp...)
+	}
+
+	go cfoo.parseAndFlush(mReply)
+
+	var b [256]byte
+	n, err := crBar.Read(b[:])
+	if err != nil {
+		t.Fatalf("Error reading response: %v", err)
+	}
+	mraw = msgPat.FindAllStringSubmatch(string(b[:n]), -1)
+	if len(mraw) != 10 {
+		t.Fatalf("Expected a response but got %d", len(mraw))
+	}
+
+	// Also make sure the response map gets cleaned up when interest goes away.
+	cbar.closeConnection(ClientClosed)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nr := fooAcc.numServiceRoutes(); nr != 0 {
+			return fmt.Errorf("Number of implicit service imports is %d", nr)
+		}
+		return nil
+	})
+
+	// Now test bogus reply subjects are handled and do not accumulate the response maps.
+
+	cbar, _, _ = newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Do not create any interest in the reply subject 'bar'. Just send a request.
+	go cbar.parseAndFlush([]byte("PUB foo bar 4\r\nhelp\r\n"))
+
+	// Now read the request from crFoo
+	l, err = crFoo.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw = msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches = mraw[0]
+	reply = matches[REPLY_INDEX]
+	if !strings.HasPrefix(reply, "_R_.") {
+		t.Fatalf("Expected an _R_.* like reply, got '%s'", reply)
+	}
+	crFoo.ReadString('\n')
+
+	replyOp = []byte(fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX]))
+
+	// Make sure we have the response map.
+	if nr := fooAcc.numServiceRoutes(); nr != 1 {
+		t.Fatalf("Expected a response map to be present, got %d", nr)
+	}
+
+	go cfoo.parseAndFlush(replyOp)
+
+	// Now wait for a bit, the reply should trip a no interest condition
+	// which should clean this up.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nr := fooAcc.numServiceRoutes(); nr != 0 {
+			return fmt.Errorf("Number of implicit service imports is %d", nr)
+		}
+		return nil
+	})
+
+	// Also make sure the response map entry is gone as well.
+	barAcc.mu.RLock()
+	lrm := len(barAcc.respMap)
+	barAcc.mu.RUnlock()
+
+	if lrm != 0 {
+		t.Fatalf("Expected the respMap tp be cleared, got %d entries", lrm)
+	}
+}
+
+// This is for bogus reply subjects and no responses from a service provider.
+func TestCrossAccountServiceResponseLeaks(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	// Set max response maps to < 100
+	barAcc.SetMaxResponseMaps(99)
+
+	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, _, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Add in the service export for the requests. Make it public.
+	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Stream, nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	// Now add in the route mapping for request to be routed to the foo account.
+	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
+		t.Fatalf("Error adding account service import to client bar: %v", err)
+	}
+
+	// Now setup the resonder under cfoo
+	cfoo.parse([]byte("SUB test.request 1\r\n"))
+
+	// Now send some requests..We will not respond.
+	var sb strings.Builder
+	for i := 0; i < 100; i++ {
+		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
+	}
+	go cbar.parseAndFlush([]byte(sb.String()))
+
+	// Make sure requests are processed.
+	_, err := crFoo.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+
+	// We should have leaked response maps.
+	if nr := fooAcc.numServiceRoutes(); nr != 100 {
+		t.Fatalf("Expected response maps to be present, got %d", nr)
+	}
+
+	// They should be gone here eventually.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nr := fooAcc.numServiceRoutes(); nr != 0 {
+			return fmt.Errorf("Number of implicit service imports is %d", nr)
+		}
+		return nil
+	})
+
+	// Also make sure the response map entry is gone as well.
+	barAcc.mu.RLock()
+	lrm := len(barAcc.respMap)
+	barAcc.mu.RUnlock()
+
+	if lrm != 0 {
+		t.Fatalf("Expected the respMap tp be cleared, got %d entries", lrm)
+	}
 }
 
 func TestAccountMapsUsers(t *testing.T) {
