@@ -103,18 +103,20 @@ type RemoteGatewayOpts struct {
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
 type LeafNodeOpts struct {
-	Host              string            `json:"addr,omitempty"`
-	Port              int               `json:"port,omitempty"`
-	Username          string            `json:"-"`
-	Password          string            `json:"-"`
-	AuthTimeout       float64           `json:"auth_timeout,omitempty"`
-	TLSConfig         *tls.Config       `json:"-"`
-	TLSTimeout        float64           `json:"tls_timeout,omitempty"`
-	TLSMap            bool              `json:"-"`
-	Remotes           []*RemoteLeafOpts `json:"remotes,omitempty"`
-	Advertise         string            `json:"-"`
-	NoAdvertise       bool              `json:"-"`
-	ReconnectInterval time.Duration     `json:"-"`
+	Host              string        `json:"addr,omitempty"`
+	Port              int           `json:"port,omitempty"`
+	Username          string        `json:"-"`
+	Password          string        `json:"-"`
+	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
+	TLSConfig         *tls.Config   `json:"-"`
+	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
+	TLSMap            bool          `json:"-"`
+	Advertise         string        `json:"-"`
+	NoAdvertise       bool          `json:"-"`
+	ReconnectInterval time.Duration `json:"-"`
+
+	// For solicited connections to other clusters/superclusters.
+	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`
 
 	// Not exported, for tests.
 	resolver    netResolver
@@ -1247,6 +1249,7 @@ type export struct {
 	acc  *Account
 	sub  string
 	accs []string
+	rt   ServiceRespType
 }
 
 type importStream struct {
@@ -1439,7 +1442,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := service.acc.AddServiceExport(service.sub, accounts); err != nil {
+		if err := service.acc.AddServiceExportWithResponse(service.sub, service.rt, accounts); err != nil {
 			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -1576,6 +1579,8 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		curStream  *export
 		curService *export
 		accounts   []string
+		rt         ServiceRespType
+		rtSeen     bool
 	)
 	tk, v := unwrapValue(v)
 	vv, ok := v.(map[string]interface{})
@@ -1591,7 +1596,11 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				*errors = append(*errors, err)
 				continue
 			}
-
+			if rtSeen {
+				err := &configErr{tk, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
+				continue
+			}
 			mvs, ok := mv.(string)
 			if !ok {
 				err := &configErr{tk, fmt.Sprintf("Expected stream name to be string, got %T", mv)}
@@ -1601,6 +1610,33 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			curStream = &export{sub: mvs}
 			if accounts != nil {
 				curStream.accs = accounts
+			}
+		case "response", "response_type":
+			rtSeen = true
+			mvs, ok := mv.(string)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("Expected response type to be string, got %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			switch strings.ToLower(mvs) {
+			case "single", "singelton":
+				rt = Singelton
+			case "stream":
+				rt = Stream
+			case "chunk", "chunked":
+				rt = Chunked
+			default:
+				err := &configErr{tk, fmt.Sprintf("Unknown response type: %q", mvs)}
+				*errors = append(*errors, err)
+				continue
+			}
+			if curService != nil {
+				curService.rt = rt
+			}
+			if curStream != nil {
+				err := &configErr{tk, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
 			}
 		case "service":
 			if curStream != nil {
@@ -1617,6 +1653,9 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			curService = &export{sub: mvs}
 			if accounts != nil {
 				curService.accs = accounts
+			}
+			if rtSeen {
+				curService.rt = rt
 			}
 		case "accounts":
 			for _, iv := range mv.([]interface{}) {

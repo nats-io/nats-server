@@ -773,6 +773,9 @@ func (s *Server) registerAccount(acc *Account) {
 	if acc.maxaettl == 0 {
 		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
 	}
+	if acc.maxnrm == 0 {
+		acc.maxnrm = DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS
+	}
 	if acc.clients == nil {
 		acc.clients = make(map[*client]*client)
 	}

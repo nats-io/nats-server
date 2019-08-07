@@ -116,7 +116,7 @@ func (c *client) addReplySubTimeout(acc *Account, sub *subscription, d time.Dura
 		delete(rs, sub)
 		sub.max = 0
 		c.mu.Unlock()
-		c.unsubscribe(acc, sub, true)
+		c.unsubscribe(acc, sub, true, true)
 	})
 }
 

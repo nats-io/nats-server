@@ -341,7 +341,7 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 // FIXME(dlc) - This is getting bloated for normal subs, need
 // to optionally have an opts section for non-normal stuff.
 type subscription struct {
-	nm      int64 // Will atomicall be set to -1 on unsub or connection close
+	nm      int64 // Will atomically be set to -1 on unsub or connection close
 	client  *client
 	im      *streamImport   // This is for import stream support.
 	shadow  []*subscription // This is to track shadowed accounts.
@@ -1932,7 +1932,7 @@ func (c *client) canSubscribe(subject string) bool {
 }
 
 // Low level unsubscribe for a given client.
-func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
+func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool) {
 	c.mu.Lock()
 	if !force && sub.max > 0 && sub.nm < sub.max {
 		c.Debugf(
@@ -1943,13 +1943,17 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	}
 	c.traceOp("<-> %s", "DELSUB", sub.sid)
 
-	delete(c.subs, string(sub.sid))
 	if c.kind != CLIENT && c.kind != SYSTEM {
 		c.removeReplySubTimeout(sub)
 	}
 
-	if acc != nil {
-		acc.sl.Remove(sub)
+	// Remove accounting if requested. This will be false when we close a connection
+	// with open subscriptions.
+	if remove {
+		delete(c.subs, string(sub.sid))
+		if acc != nil {
+			acc.sl.Remove(sub)
+		}
 	}
 
 	// Check to see if we have shadow subscriptions.
@@ -1962,6 +1966,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 	sub.close()
 	c.mu.Unlock()
 
+	// Process shadow subs if we have them.
 	for _, nsub := range shadowSubs {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
@@ -1970,6 +1975,11 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force bool) {
 		}
 		// Now check on leafnode updates.
 		c.srv.updateLeafNodes(nsub.im.acc, nsub, -1)
+	}
+
+	// Now check to see if this was part of a respMap entry for service imports.
+	if acc != nil {
+		acc.checkForRespEntry(string(sub.subject))
 	}
 }
 
@@ -2020,7 +2030,7 @@ func (c *client) processUnsub(arg []byte) error {
 	}
 
 	if unsub {
-		c.unsubscribe(acc, sub, false)
+		c.unsubscribe(acc, sub, false, true)
 		if acc != nil && kind == CLIENT || kind == SYSTEM {
 			srv.updateRouteSubscriptionMap(acc, sub, -1)
 			if updateGWs {
@@ -2127,11 +2137,11 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 				if shouldForward {
 					defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
 				}
-				defer client.unsubscribe(client.acc, sub, true)
+				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
 				client.Debugf("Auto-unsubscribe limit [%d] exceeded", sub.max)
 				client.mu.Unlock()
-				client.unsubscribe(client.acc, sub, true)
+				client.unsubscribe(client.acc, sub, true, true)
 				if shouldForward {
 					srv.updateRouteSubscriptionMap(client.acc, sub, -1)
 				}
@@ -2463,45 +2473,57 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 	}
 
 	acc.mu.RLock()
-	rm := acc.imports.services[string(c.pa.subject)]
-	invalid := rm != nil && rm.invalid
+	si := acc.imports.services[string(c.pa.subject)]
+	invalid := si != nil && si.invalid
 	acc.mu.RUnlock()
 
 	// Get the results from the other account for the mapped "to" subject.
 	// If we have been marked invalid simply return here.
-	if rm != nil && !invalid && rm.acc != nil && rm.acc.sl != nil {
+	if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
 		var nrr []byte
-		if rm.ae {
-			acc.removeServiceImport(rm.from)
+		if si.ae {
+			acc.removeServiceImport(si.from)
 		}
 		if c.pa.reply != nil {
 			// We want to remap this to provide anonymity.
 			nrr = c.newServiceReply()
-			rm.acc.addImplicitServiceImport(acc, string(nrr), string(c.pa.reply), true, nil)
-			// If this is a client connection and we are in
-			// gateway mode, we need to send RS+ to local cluster
-			// and possibly to inbound GW connections for
-			// which we are in interest-only mode.
+			si.acc.addResponseServiceImport(acc, string(nrr), string(c.pa.reply), si.rt)
+
+			// Track our responses for cleanup if not auto-expire.
+			if si.rt != Singelton {
+				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
+			}
+
+			// If this is a client or leaf connection and we are in gateway mode,
+			// we need to send RS+ to our local cluster and possibly to inbound
+			// GW connections for which we are in interest-only mode.
 			if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == LEAF) {
-				c.srv.gatewayHandleServiceImport(rm.acc, nrr, c, 1)
+				c.srv.gatewayHandleServiceImport(si.acc, nrr, c, 1)
 			}
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
-		rr := rm.acc.sl.Match(rm.to)
+		rr := si.acc.sl.Match(si.to)
+
+		// Check to see if we have no results and this is an internal serviceImport. If so we
+		// need to clean that up.
+		if len(rr.psubs)+len(rr.qsubs) == 0 && si.internal {
+			// We may also have a response entry, so go through that way.
+			si.acc.checkForRespEntry(si.to)
+		}
 
 		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
-		if (c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF) && c.pa.queues == nil && len(rr.qsubs) > 0 {
+		if len(rr.qsubs) > 0 && c.pa.queues == nil && (c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF) {
 			c.makeQFilter(rr.qsubs)
 		}
 
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
 		if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) {
-			queues := c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, pmrCollectQueueNames)
-			c.sendMsgToGateways(rm.acc, msg, []byte(rm.to), nrr, queues)
+			queues := c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, pmrCollectQueueNames)
+			c.sendMsgToGateways(si.acc, msg, []byte(si.to), nrr, queues)
 		} else {
-			c.processMsgResults(rm.acc, rr, msg, []byte(rm.to), nrr, pmrNoFlag)
+			c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, pmrNoFlag)
 		}
 	}
 }
@@ -2968,7 +2990,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 
 	// Unsubscribe all that need to be removed and report back to client and logs.
 	for _, sub := range removed {
-		c.unsubscribe(acc, sub, true)
+		c.unsubscribe(acc, sub, true, true)
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
 			sub.subject, sub.sid))
 		srv.Noticef("Removed sub %q (sid %q) for %s - not authorized",
@@ -3067,6 +3089,9 @@ func (c *client) closeConnection(reason ClosedState) {
 		if acc != nil && (kind == CLIENT || kind == LEAF) {
 			qsubs := map[string]*qsub{}
 			for _, sub := range subs {
+				// Call unsubscribe here to cleanup shadow subscriptions and such.
+				c.unsubscribe(acc, sub, true, false)
+				// Update route as normal for a normal subscriber.
 				if sub.queue == nil {
 					srv.updateRouteSubscriptionMap(acc, sub, -1)
 				} else {

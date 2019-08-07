@@ -66,6 +66,7 @@ func newClientForServer(s *Server) (*client, *bufio.Reader, string) {
 }
 
 var defaultServerOptions = Options{
+	Host:   "127.0.0.1",
 	Trace:  false,
 	Debug:  false,
 	NoLog:  true,
@@ -295,7 +296,7 @@ func TestClientPing(t *testing.T) {
 	}
 }
 
-var msgPat = regexp.MustCompile(`\AMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n`)
+var msgPat = regexp.MustCompile(`MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n`)
 
 const (
 	SUB_INDEX   = 1

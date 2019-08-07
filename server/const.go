@@ -133,6 +133,10 @@ const (
 	// DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS is for auto-expire response maps for imports.
 	DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS = 100000
 
+	// DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS is for non auto-expire response maps for imports.
+	// These are present for non-singelton response types.
+	DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS = 100000
+
 	// DEFAULT_TTL_AE_RESPONSE_MAP is the default time to expire auto-response map entries.
 	DEFAULT_TTL_AE_RESPONSE_MAP = 10 * time.Minute
 

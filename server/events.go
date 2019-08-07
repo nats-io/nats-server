@@ -934,7 +934,7 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	c := s.sys.client
 	delete(s.sys.subs, string(sub.sid))
 	s.mu.Unlock()
-	c.unsubscribe(acc, sub, true)
+	c.unsubscribe(acc, sub, true, true)
 }
 
 // Helper to grab name for a client.

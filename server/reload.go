@@ -884,6 +884,7 @@ func (s *Server) reloadAuthorization() {
 				}
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
+				newAcc.respMap = acc.respMap
 				acc.mu.RUnlock()
 
 				// Check if current and new config of this account are same
