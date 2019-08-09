@@ -20,13 +20,28 @@ import (
 	"time"
 )
 
+// ResponseType is used to store an export response type
+type ResponseType string
+
+const (
+	// ResponseTypeSingleton is used for a service that sends a single response only
+	ResponseTypeSingleton = "Singleton"
+
+	// ResponseTypeStream is used for a service that will send multiple responses
+	ResponseTypeStream = "Stream"
+
+	// ResponseTypeChunked is used for a service that sends a single response in chunks (so not quite a stream)
+	ResponseTypeChunked = "Chunked"
+)
+
 // Export represents a single export
 type Export struct {
-	Name        string         `json:"name,omitempty"`
-	Subject     Subject        `json:"subject,omitempty"`
-	Type        ExportType     `json:"type,omitempty"`
-	TokenReq    bool           `json:"token_req,omitempty"`
-	Revocations RevocationList `json:"revocations,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Subject      Subject        `json:"subject,omitempty"`
+	Type         ExportType     `json:"type,omitempty"`
+	TokenReq     bool           `json:"token_req,omitempty"`
+	Revocations  RevocationList `json:"revocations,omitempty"`
+	ResponseType ResponseType   `json:"response_type,omitempty"`
 }
 
 // IsService returns true if an export is for a service
@@ -39,10 +54,32 @@ func (e *Export) IsStream() bool {
 	return e.Type == Stream
 }
 
+// IsSingleResponse returns true if an export has a single response
+// or no resopnse type is set, also checks that the type is service
+func (e *Export) IsSingleResponse() bool {
+	return e.Type == Service && (e.ResponseType == ResponseTypeSingleton || e.ResponseType == "")
+}
+
+// IsChunkedResponse returns true if an export has a chunked response
+func (e *Export) IsChunkedResponse() bool {
+	return e.Type == Service && e.ResponseType == ResponseTypeChunked
+}
+
+// IsStreamResponse returns true if an export has a chunked response
+func (e *Export) IsStreamResponse() bool {
+	return e.Type == Service && e.ResponseType == ResponseTypeStream
+}
+
 // Validate appends validation issues to the passed in results list
 func (e *Export) Validate(vr *ValidationResults) {
 	if !e.IsService() && !e.IsStream() {
 		vr.AddError("invalid export type: %q", e.Type)
+	}
+	if e.IsService() && !e.IsSingleResponse() && !e.IsChunkedResponse() && !e.IsStreamResponse() {
+		vr.AddError("invalid response type for service: %q", e.ResponseType)
+	}
+	if e.IsStream() && e.ResponseType != "" {
+		vr.AddError("invalid response type for stream: %q", e.ResponseType)
 	}
 	e.Subject.Validate(vr)
 }
