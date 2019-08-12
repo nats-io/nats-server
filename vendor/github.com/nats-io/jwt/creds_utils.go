@@ -33,6 +33,15 @@ func formatJwt(kind string, jwtString string) ([]byte, error) {
 	return w.Bytes(), nil
 }
 
+// DecorateSeed takes a seed and returns a string that wraps
+// the seed in the form:
+//  ************************* IMPORTANT *************************
+//  NKEY Seed printed below can be used sign and prove identity.
+//  NKEYs are sensitive and should be treated as secrets.
+//
+//  -----BEGIN USER NKEY SEED-----
+//  SUAIO3FHUX5PNV2LQIIP7TZ3N4L7TX3W53MQGEIVYFIGA635OZCKEYHFLM
+//  ------END USER NKEY SEED------
 func DecorateSeed(seed []byte) ([]byte, error) {
 	w := bytes.NewBuffer(nil)
 	ts := bytes.TrimSpace(seed)
@@ -121,6 +130,7 @@ func FormatUserConfig(jwtString string, seed []byte) ([]byte, error) {
 	return w.Bytes(), nil
 }
 
+// ParseDecoratedJWT takes a creds file and returns the JWT portion.
 func ParseDecoratedJWT(contents []byte) (string, error) {
 	defer wipeSlice(contents)
 
@@ -136,6 +146,8 @@ func ParseDecoratedJWT(contents []byte) (string, error) {
 	return string(tmp), nil
 }
 
+// ParseDecoratedNKey takes a creds file, finds the NKey portion and creates a
+// key pair from it.
 func ParseDecoratedNKey(contents []byte) (nkeys.KeyPair, error) {
 	var seed []byte
 	defer wipeSlice(contents)
@@ -169,6 +181,8 @@ func ParseDecoratedNKey(contents []byte) (nkeys.KeyPair, error) {
 	return kp, nil
 }
 
+// ParseDecoratedUserNKey takes a creds file, finds the NKey portion and creates a
+// key pair from it. Similar to ParseDecoratedNKey but fails for non-user keys.
 func ParseDecoratedUserNKey(contents []byte) (nkeys.KeyPair, error) {
 	nk, err := ParseDecoratedNKey(contents)
 	if err != nil {

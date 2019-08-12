@@ -835,6 +835,94 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 }
 
+func TestJWTAccountExportWithResponseType(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+
+	// Now create Exports.
+	serviceStreamExport := &jwt.Export{Subject: "test.stream", Type: jwt.Service, ResponseType: jwt.ResponseTypeStream, TokenReq: false}
+	serviceChunkExport := &jwt.Export{Subject: "test.chunk", Type: jwt.Service, ResponseType: jwt.ResponseTypeChunked, TokenReq: false}
+	serviceSingletonExport := &jwt.Export{Subject: "test.single", Type: jwt.Service, ResponseType: jwt.ResponseTypeSingleton, TokenReq: true}
+	serviceDefExport := &jwt.Export{Subject: "test.def", Type: jwt.Service, TokenReq: true}
+	serviceOldExport := &jwt.Export{Subject: "test.old", Type: jwt.Service, TokenReq: false}
+
+	fooAC.Exports.Add(serviceStreamExport, serviceSingletonExport, serviceChunkExport, serviceDefExport, serviceOldExport)
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	fooAcc, _ := s.LookupAccount(fooPub)
+	if fooAcc == nil {
+		t.Fatalf("Expected to retrieve the account")
+	}
+
+	services := fooAcc.exports.services
+
+	if len(services) != 5 {
+		t.Fatalf("Expected 4 services")
+	}
+
+	se, ok := services["test.stream"]
+	if !ok || se == nil {
+		t.Fatalf("Expected to map a service export")
+	}
+	if se.tokenReq {
+		t.Fatalf("Expected the service export to not require tokens")
+	}
+	if se.respType != Stream {
+		t.Fatalf("Expected the service export to respond with a stream")
+	}
+
+	se, ok = services["test.chunk"]
+	if !ok || se == nil {
+		t.Fatalf("Expected to map a service export")
+	}
+	if se.tokenReq {
+		t.Fatalf("Expected the service export to not require tokens")
+	}
+	if se.respType != Chunked {
+		t.Fatalf("Expected the service export to respond with a stream")
+	}
+
+	se, ok = services["test.def"]
+	if !ok || se == nil {
+		t.Fatalf("Expected to map a service export")
+	}
+	if !se.tokenReq {
+		t.Fatalf("Expected the service export to not require tokens")
+	}
+	if se.respType != Singelton {
+		t.Fatalf("Expected the service export to respond with a stream")
+	}
+
+	se, ok = services["test.single"]
+	if !ok || se == nil {
+		t.Fatalf("Expected to map a service export")
+	}
+	if !se.tokenReq {
+		t.Fatalf("Expected the service export to not require tokens")
+	}
+	if se.respType != Singelton {
+		t.Fatalf("Expected the service export to respond with a stream")
+	}
+
+	se, ok = services["test.old"]
+	if !ok || se != nil {
+		t.Fatalf("Service with a singleton response and no tokens should be nil in the map")
+	}
+}
+
 func TestJWTAccountImportExportUpdates(t *testing.T) {
 	s := opTrustBasicSetup()
 	defer s.Shutdown()

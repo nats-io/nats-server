@@ -1200,7 +1200,14 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			}
 		case jwt.Service:
 			s.Debugf("Adding service export %q for %s", e.Subject, a.Name)
-			if err := a.AddServiceExport(string(e.Subject), authAccounts(e.TokenReq)); err != nil {
+			rt := Singelton
+			switch e.ResponseType {
+			case jwt.ResponseTypeStream:
+				rt = Stream
+			case jwt.ResponseTypeChunked:
+				rt = Chunked
+			}
+			if err := a.AddServiceExportWithResponse(string(e.Subject), rt, authAccounts(e.TokenReq)); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err.Error())
 			}
 		}
