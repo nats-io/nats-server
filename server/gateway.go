@@ -953,10 +953,23 @@ func (c *client) processGatewayInfo(info *Info) {
 
 			// Register as an outbound gateway.. if we had a protocol to ack our connect,
 			// then we should do that when process that ack.
-			s.registerOutboundGatewayConnection(gwName, c)
-			c.Noticef("Outbound gateway connection to %q (%s) registered", gwName, info.ID)
-			// Now that the outbound gateway is registered, we can remove from temp map.
-			s.removeFromTempClients(cid)
+			if s.registerOutboundGatewayConnection(gwName, c) {
+				c.Noticef("Outbound gateway connection to %q (%s) registered", gwName, info.ID)
+				// Now that the outbound gateway is registered, we can remove from temp map.
+				s.removeFromTempClients(cid)
+			} else {
+				// There was a bug that would cause a connection to possibly
+				// be called twice resulting in reconnection of twice the
+				// same outbound connection. The issue is fixed, but adding
+				// defensive code above that if we did not register this connection
+				// because we already have an outbound for this name, then
+				// close this connection (and make sure it does not try to reconnect)
+				c.mu.Lock()
+				c.flags.set(noReconnect)
+				c.mu.Unlock()
+				c.closeConnection(WrongGateway)
+				return
+			}
 		} else if info.GatewayCmd > 0 {
 			switch info.GatewayCmd {
 			case gatewayCmdAllSubsStart:
@@ -1476,12 +1489,17 @@ func (s *Server) registerInboundGatewayConnection(cid uint64, gwc *client) {
 
 // Register the given gateway connection (*client) in the outbound gateways
 // map with the given name as the key.
-func (s *Server) registerOutboundGatewayConnection(name string, gwc *client) {
+func (s *Server) registerOutboundGatewayConnection(name string, gwc *client) bool {
 	s.gateway.Lock()
+	if _, exist := s.gateway.out[name]; exist {
+		s.gateway.Unlock()
+		return false
+	}
 	s.gateway.out[name] = gwc
 	s.gateway.outo = append(s.gateway.outo, gwc)
 	s.gateway.orderOutboundConnectionsLocked()
 	s.gateway.Unlock()
+	return true
 }
 
 // Returns the outbound gateway connection (*client) with the given name,

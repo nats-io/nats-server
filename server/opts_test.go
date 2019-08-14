@@ -1321,7 +1321,7 @@ func TestConfigureOptions(t *testing.T) {
 	// that Visit() stops when an error is found).
 	expectToFail([]string{"-cluster", ":", "-routes", ""}, "protocol")
 	expectToFail([]string{"-cluster", "nats://127.0.0.1", "-routes", ""}, "port")
-	expectToFail([]string{"-cluster", "nats://127.0.0.1:xxx", "-routes", ""}, "integer")
+	expectToFail([]string{"-cluster", "nats://127.0.0.1:xxx", "-routes", ""}, "invalid port")
 	expectToFail([]string{"-cluster", "nats://ivan:127.0.0.1:6222", "-routes", ""}, "colons")
 	expectToFail([]string{"-cluster", "nats://ivan@127.0.0.1:6222", "-routes", ""}, "password")
 
