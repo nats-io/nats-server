@@ -607,7 +607,15 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This ensures that srvA has received the sub, not srvB
 	nc1.Flush()
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if n := srvB.NumSubscriptions(); n != 1 {
+			return fmt.Errorf("Expected 1 sub, got %v", n)
+		}
+		return nil
+	})
 
 	// Not forwarded by cluster so won't be received.
 	err = nc2.Publish("private.foo", []byte("private message on server B"))
