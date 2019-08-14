@@ -548,28 +548,13 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 		t.Error("Expected Cluster TLS verify and map feature to be activated")
 	}
 
-	routeA, err := url.Parse("nats://localhost:9935")
-	if err != nil {
-		t.Fatal(err)
-	}
-	routeB, err := url.Parse("nats://localhost:9936")
-	if err != nil {
-		t.Fatal(err)
-	}
-	routeC, err := url.Parse("nats://localhost:9937")
-	if err != nil {
-		t.Fatal(err)
-	}
-	routes := make([]*url.URL, 3)
-	routes[0] = routeA
-	routes[1] = routeB
-	routes[2] = routeC
+	routeURLs := "nats://localhost:9935, nats://localhost:9936, nats://localhost:9937"
 
 	optsA.Host = "127.0.0.1"
 	optsA.Port = 9335
 	optsA.Cluster.Host = optsA.Host
 	optsA.Cluster.Port = 9935
-	optsA.Routes = routes
+	optsA.Routes = server.RoutesFromStr(routeURLs)
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -577,7 +562,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	optsB.Port = 9336
 	optsB.Cluster.Host = optsB.Host
 	optsB.Cluster.Port = 9936
-	optsB.Routes = routes
+	optsB.Routes = server.RoutesFromStr(routeURLs)
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
@@ -585,9 +570,12 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	optsC.Port = 9337
 	optsC.Cluster.Host = optsC.Host
 	optsC.Cluster.Port = 9937
-	optsC.Routes = routes
+	optsC.Routes = server.RoutesFromStr(routeURLs)
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
+
+	// srvC is not connected to srvA and srvB due to wrong cert
+	checkClusterFormed(t, srvA, srvB)
 
 	nc1, err := nats.Connect(fmt.Sprintf("%s:%d", optsA.Host, optsA.Port), nats.Name("A"))
 	if err != nil {
@@ -719,6 +707,9 @@ func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
 
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
+
+	waitForOutboundGateways(t, srvA, 1, 2*time.Second)
+	waitForOutboundGateways(t, srvB, 1, 2*time.Second)
 
 	nc1, err := nats.Connect(srvA.Addr().String(), nats.Name("A"))
 	if err != nil {
