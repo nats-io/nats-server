@@ -16,15 +16,21 @@
 package test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -269,4 +275,128 @@ func TestNoRaceDynamicResponsePermsMemory(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNoRaceLargeClusterMem(t *testing.T) {
+	// Try to clean up.
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	pta := m.TotalAlloc
+
+	opts := func() *server.Options {
+		o := DefaultTestOptions
+		o.Host = "127.0.0.1"
+		o.Port = -1
+		o.Cluster.Host = o.Host
+		o.Cluster.Port = -1
+		return &o
+	}
+
+	var servers []*server.Server
+
+	// Create seed first.
+	o := opts()
+	s := RunServer(o)
+	servers = append(servers, s)
+
+	// For connecting to seed server above.
+	routeAddr := fmt.Sprintf("nats-route://%s:%d", o.Cluster.Host, o.Cluster.Port)
+	rurl, _ := url.Parse(routeAddr)
+	routes := []*url.URL{rurl}
+
+	numServers := 15
+
+	for i := 1; i < numServers; i++ {
+		o := opts()
+		o.Routes = routes
+		s := RunServer(o)
+		servers = append(servers, s)
+	}
+	checkClusterFormed(t, servers...)
+
+	// Calculate in MB what we are using now.
+	const max = 50 * 1024 * 1024 // 50MB
+	runtime.ReadMemStats(&m)
+	used := m.TotalAlloc - pta
+	if used > max {
+		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used/(1024*1024))
+	}
+
+	for _, s := range servers {
+		s.Shutdown()
+	}
+}
+
+// Make sure we have the correct remote state when dealing with queue subscribers
+// across many client connections.
+func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
+	s, opts := runNewRouteServer(t)
+	defer s.Shutdown()
+
+	// Create 100 connections to s
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	clients := make([]*nats.Conn, 0, 100)
+	for i := 0; i < 100; i++ {
+		nc, err := nats.Connect(url, nats.NoReconnect())
+		if err != nil {
+			t.Fatalf("Error connecting: %v", err)
+		}
+		defer nc.Close()
+		clients = append(clients, nc)
+	}
+
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+
+	routeID := "RTEST_NEW:22"
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
+
+	info := checkInfoMsg(t, rc)
+
+	info.ID = routeID
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+
+	start := make(chan bool)
+	for _, nc := range clients {
+		go func(nc *nats.Conn) {
+			<-start
+			// Now create 100 identical queue subscribers on each connection.
+			for i := 0; i < 100; i++ {
+				if _, err := nc.QueueSubscribeSync("foo", "bar"); err != nil {
+					return
+				}
+			}
+			nc.Flush()
+		}(nc)
+	}
+	close(start)
+
+	// We did have this where we wanted to get every update, but now with optimizations
+	// we just want to make sure we always are increasing and that a previous update to
+	// a lesser queue weight is never delivered for this test.
+	maxExpected := 10000
+	for qw := 0; qw < maxExpected; {
+		buf := routeExpect(rsubRe)
+		matches := rsubRe.FindAllSubmatch(buf, -1)
+		for _, m := range matches {
+			if len(m) != 5 {
+				t.Fatalf("Expected a weight for the queue group")
+			}
+			nqw, err := strconv.Atoi(string(m[4]))
+			if err != nil {
+				t.Fatalf("Got an error converting queue weight: %v", err)
+			}
+			// Make sure the new value only increases, ok to skip since we will
+			// optimize this now, but needs to always be increasing.
+			if nqw <= qw {
+				t.Fatalf("Was expecting increasing queue weight after %d, got %d", qw, nqw)
+			}
+			qw = nqw
+		}
+	}
 }

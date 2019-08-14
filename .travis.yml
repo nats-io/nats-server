@@ -25,7 +25,7 @@ before_script:
 script:
 - go test -i $EXCLUDE_VENDOR
 - go test -run=TestNoRace $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else GOGC=10 go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
 
 deploy:
   provider: script
