@@ -106,7 +106,7 @@ type serviceImport struct {
 }
 
 // This is used to record when we create a mapping for implicit service
-// imports. We use this to clean up entries that are not singeltons when
+// imports. We use this to clean up entries that are not singletons when
 // we detect that interest is no longer present. The key to the map will
 // be the actual interest. We record the mapped subject and the serviceImport
 type serviceRespEntry struct {
@@ -117,9 +117,9 @@ type serviceRespEntry struct {
 // ServiceRespType represents the types of service request response types.
 type ServiceRespType uint8
 
-// Service response types. Defaults to a singelton.
+// Service response types. Defaults to a singleton.
 const (
-	Singelton ServiceRespType = iota
+	Singleton ServiceRespType = iota
 	Stream
 	Chunked
 )
@@ -127,8 +127,8 @@ const (
 // String helper.
 func (rt ServiceRespType) String() string {
 	switch rt {
-	case Singelton:
-		return "Singelton"
+	case Singleton:
+		return "Singleton"
 	case Stream:
 		return "Stream"
 	case Chunked:
@@ -360,7 +360,7 @@ func (a *Account) randomClient() *client {
 
 // AddServiceExport will configure the account with the defined export.
 func (a *Account) AddServiceExport(subject string, accounts []*Account) error {
-	return a.AddServiceExportWithResponse(subject, Singelton, accounts)
+	return a.AddServiceExportWithResponse(subject, Singleton, accounts)
 }
 
 // AddServiceExportWithresponse will configure the account with the defined export and response type.
@@ -376,7 +376,7 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 
 	ea := a.exports.services[subject]
 
-	if respType != Singelton {
+	if respType != Singleton {
 		if ea == nil {
 			ea = &exportAuth{}
 		}
@@ -581,7 +581,7 @@ func (a *Account) SetMaxResponseMaps(max int) {
 // This does no checks and should be only called by the msg processing code. Use
 // AddServiceImport from above if responding to user input or config changes, etc.
 func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) *serviceImport {
-	rt := Singelton
+	rt := Singleton
 	dest.mu.Lock()
 	if ae := dest.exports.services[to]; ae != nil {
 		rt = ae.respType
@@ -605,7 +605,7 @@ func (a *Account) addResponseServiceImport(dest *Account, from, to string, rt Se
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
 	}
-	ae := rt == Singelton
+	ae := rt == Singleton
 	si := &serviceImport{dest, nil, from, to, rt, 0, ae, true, false}
 	a.imports.services[from] = si
 	if ae {
@@ -620,7 +620,7 @@ func (a *Account) addResponseServiceImport(dest *Account, from, to string, rt Se
 	return si
 }
 
-// This will prune off the non auto-expire (non singelton) response maps.
+// This will prune off the non auto-expire (non singleton) response maps.
 func (a *Account) pruneNonAutoExpireResponseMaps() {
 	var sres []*serviceRespEntry
 	a.mu.Lock()
@@ -1200,7 +1200,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			}
 		case jwt.Service:
 			s.Debugf("Adding service export %q for %s", e.Subject, a.Name)
-			rt := Singelton
+			rt := Singleton
 			switch e.ResponseType {
 			case jwt.ResponseTypeStream:
 				rt = Stream

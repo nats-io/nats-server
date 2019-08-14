@@ -2482,7 +2482,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			si.acc.addResponseServiceImport(acc, string(nrr), string(c.pa.reply), si.rt)
 
 			// Track our responses for cleanup if not auto-expire.
-			if si.rt != Singelton {
+			if si.rt != Singleton {
 				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
 			}
 

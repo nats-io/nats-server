@@ -1620,8 +1620,8 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				continue
 			}
 			switch strings.ToLower(mvs) {
-			case "single", "singelton":
-				rt = Singelton
+			case "single", "singleton":
+				rt = Singleton
 			case "stream":
 				rt = Stream
 			case "chunk", "chunked":
@@ -2019,7 +2019,7 @@ func parseVariablePermissions(v interface{}, errors, warnings *[]error) (*Subjec
 	}
 }
 
-// Helper function to parse subject singeltons and/or arrays
+// Helper function to parse subject singletons and/or arrays
 func parseSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
 	tk, v := unwrapValue(v)
 

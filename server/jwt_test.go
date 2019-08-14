@@ -902,7 +902,7 @@ func TestJWTAccountExportWithResponseType(t *testing.T) {
 	if !se.tokenReq {
 		t.Fatalf("Expected the service export to not require tokens")
 	}
-	if se.respType != Singelton {
+	if se.respType != Singleton {
 		t.Fatalf("Expected the service export to respond with a stream")
 	}
 
@@ -913,7 +913,7 @@ func TestJWTAccountExportWithResponseType(t *testing.T) {
 	if !se.tokenReq {
 		t.Fatalf("Expected the service export to not require tokens")
 	}
-	if se.respType != Singelton {
+	if se.respType != Singleton {
 		t.Fatalf("Expected the service export to respond with a stream")
 	}
 

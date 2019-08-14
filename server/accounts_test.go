@@ -446,8 +446,8 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if ea == nil {
 		t.Fatalf("Expected to get a non-nil exportAuth for service")
 	}
-	if ea.respType != Singelton {
-		t.Fatalf("Expected to get a Singelton response type, got %q", ea.respType)
+	if ea.respType != Singleton {
+		t.Fatalf("Expected to get a Singleton response type, got %q", ea.respType)
 	}
 
 	if synAcc == nil {
