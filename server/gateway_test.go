@@ -4909,3 +4909,32 @@ func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
 		t.Fatalf("Attempted to switch while it was already in interest mode only")
 	}
 }
+
+func TestGatewaySingleOutbound(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Error on listen: %v", err)
+	}
+	defer l.Close()
+	port := l.Addr().(*net.TCPAddr).Port
+
+	o1 := testGatewayOptionsFromToWithTLS(t, "A", "B", []string{fmt.Sprintf("nats://127.0.0.1:%d", port)})
+	o1.Gateway.TLSTimeout = 0.1
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	buf := make([]byte, 10000)
+	// Check for a little bit that we don't have the situation
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		n := runtime.Stack(buf, true)
+		index := strings.Index(string(buf[:n]), "reconnectGateway")
+		if index != -1 {
+			newIndex := strings.LastIndex(string(buf[:n]), "reconnectGateway")
+			if newIndex > index {
+				t.Fatalf("Trying to reconnect twice for the same outbound!")
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+}

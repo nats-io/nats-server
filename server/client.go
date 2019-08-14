@@ -22,7 +22,6 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -911,13 +910,6 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 // Lock must be held
 func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
-		// Another go-routine has set this and is either
-		// doing the write or waiting to re-acquire the
-		// lock post write. Release lock to give it a
-		// chance to complete.
-		c.mu.Unlock()
-		runtime.Gosched()
-		c.mu.Lock()
 		return false
 	}
 	c.flags.set(flushOutbound)
