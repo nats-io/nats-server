@@ -36,5 +36,3 @@ deploy:
     tags: true
     condition: $TRAVIS_GO_VERSION =~ 1.12
 
-notifications:
-  email: false
