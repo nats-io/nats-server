@@ -54,5 +54,5 @@ archives:
       - LICENSE
 
 checksum:
-  name_template: '{{.ProjectName}}-{{.Tag}}-checksums.txt'
+  name_template: 'SHA256SUMS'
   algorithm: sha256
