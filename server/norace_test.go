@@ -692,7 +692,7 @@ func TestNoRaceRouteCache(t *testing.T) {
 
 			checkExpected := func(t *testing.T, expected int) {
 				t.Helper()
-				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 					route.mu.Lock()
 					n := len(route.in.pacache)
 					route.mu.Unlock()

@@ -2,6 +2,10 @@ language: go
 go:
 - 1.11.x
 - 1.12.x
+addons:
+  apt:
+    packages:
+    - rpm
 env:
 - GO111MODULE=off
 go_import_path: github.com/nats-io/nats-server
@@ -9,9 +13,6 @@ install:
 - go get github.com/nats-io/nats.go/
 - go get github.com/nats-io/nkeys
 - go get github.com/nats-io/jwt
-- go get github.com/mattn/goveralls
-- go get github.com/wadey/gocovmerge
-- go get github.com/tcnksm/ghr
 - go get -u honnef.co/go/tools/cmd/staticcheck
 - go get -u github.com/client9/misspell/cmd/misspell
 before_script:
@@ -21,11 +22,19 @@ before_script:
 - go vet $EXCLUDE_VENDOR
 - misspell -error -locale US $EXCLUDE_VENDOR
 - staticcheck $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 script:
 - go test -i $EXCLUDE_VENDOR
 - go test -run=TestNoRace $EXCLUDE_VENDOR
-- GOGC=10 go test -v -race -p=1 --failfast $EXCLUDE_VENDOR
-# - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]]; then ./scripts/cov.sh TRAVIS; else GOGC=10 go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
-after_success:
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+
+deploy:
+  provider: script
+  skip_cleanup: true
+  script: curl -sL http://git.io/goreleaser | bash
+  verbose: true
+  on:
+    tags: true
+    condition: $TRAVIS_GO_VERSION =~ 1.12
+
+notifications:
+  email: false
