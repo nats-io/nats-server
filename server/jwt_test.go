@@ -1636,11 +1636,12 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	barAC = jwt.NewAccountClaims(barPub)
 	serviceImport = &jwt.Import{Account: fooPub, Subject: "foo", Type: jwt.Service}
 
+	now := time.Now()
 	activation := jwt.NewActivationClaims(barPub)
 	activation.ImportSubject = "foo"
 	activation.ImportType = jwt.Service
-	activation.IssuedAt = time.Now().Add(-10 * time.Second).Unix()
-	activation.Expires = time.Now().Add(time.Second).Unix()
+	activation.IssuedAt = now.Add(-10 * time.Second).Unix()
+	activation.Expires = now.Add(time.Second).Round(time.Second).Unix()
 	actJWT, err := activation.Encode(fooKP)
 	if err != nil {
 		t.Fatalf("Error generating activation token: %v", err)
@@ -1666,13 +1667,14 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	expectMsg(crb, "foo", "hi2")
 
 	// Now wait for it to expire, then retry.
-	time.Sleep(1250 * time.Millisecond)
+	waitTime := time.Duration(activation.Expires-time.Now().Unix()) * time.Second
+	time.Sleep(waitTime + 250*time.Millisecond)
 
 	// Send Another Request
 	parseAsyncA("PUB foo 3\r\nhi3\r\nPING\r\n")
 	expectPong(cra)
 
-	// We should receive the request. PING needed to flush.
+	// We should NOT receive the request. PING needed to flush.
 	parseAsyncB("PING\r\n")
 	expectPong(crb)
 }
