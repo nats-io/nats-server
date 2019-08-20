@@ -3123,3 +3123,39 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		return nil
 	})
 }
+
+func TestMonitorRouteRTT(t *testing.T) {
+	// Do not change default PingInterval and expect RTT
+	// to still be reported
+
+	ob := DefaultOptions()
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := DefaultOptions()
+	oa.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob.Cluster.Host, ob.Cluster.Port))
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	checkRouteInfo := func(t *testing.T, s *Server) {
+		t.Helper()
+		routezURL := fmt.Sprintf("http://127.0.0.1:%d/routez", s.MonitorAddr().Port)
+		for pollMode := 0; pollMode < 2; pollMode++ {
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				rz := pollRoutez(t, s, pollMode, routezURL, nil)
+				if len(rz.Routes) != 1 {
+					return fmt.Errorf("Expected 1 route, got %v", len(rz.Routes))
+				}
+				ri := rz.Routes[0]
+				if ri.RTT == _EMPTY_ {
+					return fmt.Errorf("Route's RTT not reported")
+				}
+				return nil
+			})
+		}
+	}
+	checkRouteInfo(t, sa)
+	checkRouteInfo(t, sb)
+}

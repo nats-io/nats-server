@@ -1078,3 +1078,72 @@ func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
 
 	waitCh(t, ch, "Did not get all messages")
 }
+
+func TestRouteRTT(t *testing.T) {
+	checkRTT := func(t *testing.T, s *Server, checkForUpdate bool) {
+		t.Helper()
+		var route *client
+		s.mu.Lock()
+		for _, r := range s.routes {
+			route = r
+			break
+		}
+		s.mu.Unlock()
+
+		prev := time.Duration(0)
+		check := func(t *testing.T) {
+			t.Helper()
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				route.mu.Lock()
+				rtt := route.rtt
+				route.mu.Unlock()
+				if rtt == 0 || rtt == prev {
+					return fmt.Errorf("RTT probably not tracked")
+				}
+				prev = rtt
+				return nil
+			})
+		}
+		check(t)
+		if checkForUpdate {
+			// Wait a bit and check that rtt is updated
+			time.Sleep(30 * time.Millisecond)
+			check(t)
+		}
+	}
+
+	ob := DefaultOptions()
+	ob.PingInterval = 15 * time.Millisecond
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := DefaultOptions()
+	oa.PingInterval = 15 * time.Millisecond
+	oa.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob.Cluster.Host, ob.Cluster.Port))
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+	checkRTT(t, sa, true)
+	checkRTT(t, sb, true)
+
+	sa.Shutdown()
+	sb.Shutdown()
+
+	// Now check that initial RTT is computed prior to first PingInterval
+	// Get new options to avoid possible race changing the ping interval.
+	ob = DefaultOptions()
+	ob.PingInterval = time.Minute
+	sb = RunServer(ob)
+	defer sb.Shutdown()
+
+	oa = DefaultOptions()
+	oa.PingInterval = time.Minute
+	oa.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", ob.Cluster.Host, ob.Cluster.Port))
+	sa = RunServer(oa)
+	defer sa.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+	checkRTT(t, sa, false)
+	checkRTT(t, sb, false)
+}

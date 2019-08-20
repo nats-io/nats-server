@@ -485,6 +485,12 @@ func (c *client) processRouteInfo(info *Info) {
 		if !s.getOpts().Cluster.NoAdvertise {
 			s.addClientConnectURLsAndSendINFOToClients(info.ClientConnectURLs)
 		}
+
+		// This will allow us to determine the initial RTT without having to
+		// wait for first timer based PING.
+		c.mu.Lock()
+		c.sendPing()
+		c.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)

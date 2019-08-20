@@ -74,8 +74,7 @@ func TestSeedMultipleRouteInfo(t *testing.T) {
 	// register ourselves via INFO
 	r1Info := server.Info{ID: rc1ID, Host: rc1Host, Port: rc1Port}
 	b, _ := json.Marshal(r1Info)
-	infoJSON := fmt.Sprintf(server.InfoProto, b)
-	routeSend1(infoJSON)
+	routeSendInfo(b, routeSend1, route1Expect)
 	routeSend1("PING\r\n")
 	route1Expect(pongRe)
 
@@ -93,7 +92,7 @@ func TestSeedMultipleRouteInfo(t *testing.T) {
 	// register ourselves via INFO
 	r2Info := server.Info{ID: rc2ID, Host: rc2Host, Port: rc2Port}
 	b, _ = json.Marshal(r2Info)
-	infoJSON = fmt.Sprintf(server.InfoProto, b)
+	infoJSON := fmt.Sprintf(server.InfoProto, b)
 	routeSend2(infoJSON)
 
 	// Now read back the second INFO route1 should receive letting
@@ -556,8 +555,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 	// register ourselves via INFO
 	r1Info := server.Info{ID: rc1ID, Host: rc1Host, Port: rc1Port}
 	b, _ := json.Marshal(r1Info)
-	infoJSON := fmt.Sprintf(server.InfoProto, b)
-	routeSend1(infoJSON)
+	routeSendInfo(b, routeSend1, route1Expect)
 	routeSend1("PING\r\n")
 	route1Expect(pongRe)
 
@@ -573,7 +571,7 @@ func TestSeedReturnIPInInfo(t *testing.T) {
 	// register ourselves via INFO
 	r2Info := server.Info{ID: rc2ID, Host: rc2Host, Port: rc2Port}
 	b, _ = json.Marshal(r2Info)
-	infoJSON = fmt.Sprintf(server.InfoProto, b)
+	infoJSON := fmt.Sprintf(server.InfoProto, b)
 	routeSend2(infoJSON)
 
 	// Now read info that route1 should have received from the seed
@@ -621,8 +619,7 @@ func TestImplicitRouteRetry(t *testing.T) {
 	// register ourselves via INFO
 	rbInfo := server.Info{ID: rcbID, Host: optsB.Cluster.Host, Port: optsB.Cluster.Port}
 	b, _ := json.Marshal(rbInfo)
-	infoJSON := fmt.Sprintf(server.InfoProto, b)
-	routeBSend(infoJSON)
+	routeSendInfo(b, routeBSend, routeBExpect)
 	routeBSend("PING\r\n")
 	routeBExpect(pongRe)
 
@@ -634,6 +631,7 @@ func TestImplicitRouteRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error during listen: %v", err)
 	}
+	defer rbListen.Close()
 	c, err := rbListen.Accept()
 	if err != nil {
 		t.Fatalf("Error during accept: %v", err)

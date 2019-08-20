@@ -558,6 +558,7 @@ type RouteInfo struct {
 	Import       *SubjectPermission `json:"import,omitempty"`
 	Export       *SubjectPermission `json:"export,omitempty"`
 	Pending      int                `json:"pending_size"`
+	RTT          string             `json:"rtt,omitempty"`
 	InMsgs       int64              `json:"in_msgs"`
 	OutMsgs      int64              `json:"out_msgs"`
 	InBytes      int64              `json:"in_bytes"`
@@ -600,6 +601,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			NumSubs:      uint32(len(r.subs)),
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
+			RTT:          r.getRTT(),
 		}
 
 		if subs && len(r.subs) > 0 {
