@@ -1455,6 +1455,7 @@ func TestGatewayAccountUnsub(t *testing.T) {
 	natsSub(t, ncb, "foo", func(m *nats.Msg) {
 		ncb.Publish(m.Reply, []byte("reply"))
 	})
+	natsFlush(t, ncb)
 
 	// Connect on A
 	nca := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
@@ -1474,6 +1475,12 @@ func TestGatewayAccountUnsub(t *testing.T) {
 	total := 5000
 	for i := 0; i < total; i++ {
 		natsPub(t, nca, "foo", []byte("hello"))
+		// Try to slow down things a bit to give a chance
+		// to srvB to send the A- and to srvA to be able
+		// to process it, which will then suppress the sends.
+		if i%100 == 0 {
+			natsFlush(t, nca)
+		}
 	}
 	natsFlush(t, nca)
 

@@ -2583,6 +2583,7 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 	ncl.Subscribe("foo", func(m *nats.Msg) {
 		m.Respond([]byte("World"))
 	})
+	ncl.Flush()
 
 	// Create a direct connect requestor.
 	opts := cb.opts[1]

@@ -349,6 +349,7 @@ func TestSeedSolicitWorks(t *testing.T) {
 	defer nc2.Close()
 
 	checkClusterFormed(t, srvSeed, srvA, srvB)
+	checkExpectedSubs(t, 1, srvB)
 
 	nc2.Publish("foo", []byte("Hello"))
 
@@ -404,6 +405,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	defer nc2.Close()
 
 	checkClusterFormed(t, srvSeed, srvA, srvB)
+	checkExpectedSubs(t, 1, srvB)
 
 	nc2.Publish("foo", []byte("Hello"))
 
@@ -461,6 +463,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	defer nc2.Close()
 
 	checkClusterFormed(t, srvSeed, srvA, srvB)
+	checkExpectedSubs(t, 1, srvB)
 
 	nc2.Publish("foo", []byte("Hello"))
 
