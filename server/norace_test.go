@@ -612,12 +612,12 @@ func TestNoRaceRouteMemUsage(t *testing.T) {
 func TestNoRaceRouteCache(t *testing.T) {
 	maxPerAccountCacheSize = 20
 	prunePerAccountCacheSize = 5
-	orphanSubsCheckInterval = 1
+	closedSubsCheckInterval = 250 * time.Millisecond
 
 	defer func() {
 		maxPerAccountCacheSize = defaultMaxPerAccountCacheSize
 		prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
-		orphanSubsCheckInterval = defaultOrphanSubsCheckInterval
+		closedSubsCheckInterval = defaultClosedSubsCheckInterval
 	}()
 
 	for _, test := range []struct {
@@ -705,7 +705,7 @@ func TestNoRaceRouteCache(t *testing.T) {
 			checkExpected(t, (maxPerAccountCacheSize+1)-(prunePerAccountCacheSize+1))
 
 			// Wait for more than the orphan check
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(2 * closedSubsCheckInterval)
 
 			// Add a new subs up to point where new prune would occur
 			sendReqs(t, requestor, prunePerAccountCacheSize+1, false)
@@ -721,7 +721,7 @@ func TestNoRaceRouteCache(t *testing.T) {
 			checkExpected(t, maxPerAccountCacheSize-prunePerAccountCacheSize)
 
 			// Wait for more than the orphan check
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(2 * closedSubsCheckInterval)
 
 			// Now create new connection and send prunePerAccountCacheSize+1
 			// and that should cause all subs from previous connection to be
