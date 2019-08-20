@@ -4229,7 +4229,21 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			setAccountUserPassInOptions(oa2, "$foo", "clientA", "password")
 			setAccountUserPassInOptions(oa2, "$bar", "yyyyyyy", "password")
 			oa2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
-			sa2 := runGatewayServer(oa2)
+			var sa2 *Server
+			sb2ID := sb2.ID()
+			for i := 0; i < 10; i++ {
+				sa2 = runGatewayServer(oa2)
+				ogc := sa2.getOutboundGatewayConnection("B")
+				if ogc != nil {
+					ogc.mu.Lock()
+					ok := ogc.opts.Name == sb2ID
+					ogc.mu.Unlock()
+					if ok {
+						break
+					}
+				}
+				sa2.Shutdown()
+			}
 			defer sa2.Shutdown()
 
 			checkClusterFormed(t, sa1, sa2)

@@ -23,9 +23,11 @@ before_script:
 - misspell -error -locale US $EXCLUDE_VENDOR
 - staticcheck $EXCLUDE_VENDOR
 script:
+- set -e
 - go test -i $EXCLUDE_VENDOR
-- go test -run=TestNoRace $EXCLUDE_VENDOR
+- go test -run=TestNoRace --failfast -p=1 $EXCLUDE_VENDOR
 - if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+- set +e
 
 deploy:
   provider: script

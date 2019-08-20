@@ -1496,20 +1496,30 @@ func TestCrossAccountServiceResponseLeaks(t *testing.T) {
 
 	// Now send some requests..We will not respond.
 	var sb strings.Builder
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 50; i++ {
 		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
 	}
 	go cbar.parseAndFlush([]byte(sb.String()))
 
 	// Make sure requests are processed.
-	_, err := crFoo.ReadString('\n')
-	if err != nil {
+	if _, err := crFoo.ReadString('\n'); err != nil {
 		t.Fatalf("Error reading from client 'bar': %v", err)
 	}
 
 	// We should have leaked response maps.
-	if nr := fooAcc.numServiceRoutes(); nr != 100 {
+	if nr := fooAcc.numServiceRoutes(); nr != 50 {
 		t.Fatalf("Expected response maps to be present, got %d", nr)
+	}
+
+	sb.Reset()
+	for i := 50; i < 100; i++ {
+		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
+	}
+	go cbar.parseAndFlush([]byte(sb.String()))
+
+	// Make sure requests are processed.
+	if _, err := crFoo.ReadString('\n'); err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
 	}
 
 	// They should be gone here eventually.
