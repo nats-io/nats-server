@@ -359,7 +359,7 @@ func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
 
 	start := make(chan bool)
 	for _, nc := range clients {

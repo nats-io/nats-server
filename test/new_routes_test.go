@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,14 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
+
+func routeSendInfo(b []byte, routeSend sendFun, routeExpect expectFun) {
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	// When a server receives an INFO from a route, it will send a PING
+	// to compute the RTT.
+	routeExpect(pingRe)
+	routeSend("PONG\r\n")
+}
 
 func runNewRouteServer(t *testing.T) (*server.Server, *server.Options) {
 	return RunServerWithConfig("./configs/new_cluster.conf")
@@ -53,6 +62,18 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 	if info.Nonce == "" {
 		t.Fatalf("Expected a non empty nonce in new route INFO")
 	}
+}
+
+func getRSubBuffer(t *testing.T, routeExpect expectFun) (bool, []byte) {
+	t.Helper()
+	buf := routeExpect(rsubRe)
+	// See if PING has been read along with the RS+'s
+	gotPing := false
+	if idx := bytes.Index(buf, []byte("PING\r\n")); idx != -1 {
+		buf = buf[:idx]
+		gotPing = true
+	}
+	return gotPing, buf
 }
 
 func TestNewRouteConnectSubs(t *testing.T) {
@@ -89,7 +110,7 @@ func TestNewRouteConnectSubs(t *testing.T) {
 	}
 	routeSend(fmt.Sprintf("INFO %s\r\n", b))
 
-	buf := routeExpect(rsubRe)
+	gotPing, buf := getRSubBuffer(t, routeExpect)
 
 	matches := rsubRe.FindAllSubmatch(buf, -1)
 	if len(matches) != 2 {
@@ -114,6 +135,11 @@ func TestNewRouteConnectSubs(t *testing.T) {
 				t.Fatalf("Expected Weight of '10', got %q", m[4])
 			}
 		}
+	}
+
+	// Wait for PING if we did not get it yet.
+	if !gotPing {
+		routeExpect(pingRe)
 	}
 
 	// Close the client connection, check the results.
@@ -163,7 +189,7 @@ func TestNewRouteConnectSubsWithAccount(t *testing.T) {
 	}
 	routeSend(fmt.Sprintf("INFO %s\r\n", b))
 
-	buf := routeExpect(rsubRe)
+	gotPing, buf := getRSubBuffer(t, routeExpect)
 
 	matches := rsubRe.FindAllSubmatch(buf, -1)
 	if len(matches) != 2 {
@@ -188,6 +214,11 @@ func TestNewRouteConnectSubsWithAccount(t *testing.T) {
 				t.Fatalf("Expected Weight of '10', got %q", m[4])
 			}
 		}
+	}
+
+	// Wait for PING if we did not get it yet.
+	if !gotPing {
+		routeExpect(pingRe)
 	}
 
 	// Close the client connection, check the results.
@@ -240,7 +271,8 @@ func TestNewRouteRSubs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\nPING\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
+	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
 	// Have the client listen on foo.
@@ -317,7 +349,7 @@ func TestNewRouteProgressiveNormalSubs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -414,8 +446,7 @@ func TestNewRouteClientClosedWithNormalSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
-
+	routeSendInfo(b, routeSend, routeExpect)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -464,8 +495,7 @@ func TestNewRouteClientClosedWithQueueSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
-
+	routeSendInfo(b, routeSend, routeExpect)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -512,7 +542,7 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
 
 	// Now create 500 subs on same subject but all different accounts.
 	for i := 0; i < 500; i++ {
@@ -568,7 +598,7 @@ func TestNewRouteRSubCleanupOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
 
 	// Now create 100 subs on 3 different accounts.
 	for i := 0; i < 100; i++ {
@@ -606,7 +636,8 @@ func TestNewRouteSendSubsAndMsgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\nPING\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
+	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
 	// Now let's send in interest from the new protocol.
@@ -733,7 +764,8 @@ func TestNewRouteProcessRoutedMsgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\nPING\r\n", b))
+	routeSendInfo(b, routeSend, routeExpect)
+	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
 	// Create a client
