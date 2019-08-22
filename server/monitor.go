@@ -121,7 +121,7 @@ const DefaultSubListSize = 1024
 
 const defaultStackBufSize = 10000
 
-// Connz returns a Connz struct containing inormation about connections.
+// Connz returns a Connz struct containing information about connections.
 func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	var (
 		sortOpt = ByCid
@@ -567,7 +567,7 @@ type RouteInfo struct {
 	Subs         []string           `json:"subscriptions_list,omitempty"`
 }
 
-// Routez returns a Routez struct containing inormation about routes.
+// Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
 	rs.Now = time.Now()
