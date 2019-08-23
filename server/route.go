@@ -99,8 +99,15 @@ const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
 // Warning when user configures cluster TLS insecure
 const clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
 
+const (
+	routeDefaultFirstPingInterval = int64(time.Second)
+)
+
 // Can be changed for tests
-var routeConnectDelay = DEFAULT_ROUTE_CONNECT
+var (
+	routeConnectDelay      = DEFAULT_ROUTE_CONNECT
+	routeFirstPingInterval = routeDefaultFirstPingInterval
+)
 
 // This will add a timer to watch over remote reply subjects in case
 // they fail to receive a response. The duration will be taken from the
@@ -485,12 +492,6 @@ func (c *client) processRouteInfo(info *Info) {
 		if !s.getOpts().Cluster.NoAdvertise {
 			s.addClientConnectURLsAndSendINFOToClients(info.ClientConnectURLs)
 		}
-
-		// This will allow us to determine the initial RTT without having to
-		// wait for first timer based PING.
-		c.mu.Lock()
-		c.sendPing()
-		c.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
@@ -1184,7 +1185,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Set the Ping timer
-	c.setPingTimer()
+	c.routeSetFirstPingTimer()
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.
@@ -1231,6 +1232,11 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c.Noticef("Route connection created")
 	return c
+}
+
+func (c *client) routeSetFirstPingTimer() {
+	d := time.Duration(atomic.LoadInt64(&routeFirstPingInterval))
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 const (

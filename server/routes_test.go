@@ -1083,6 +1083,9 @@ func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
 }
 
 func TestRouteRTT(t *testing.T) {
+	atomic.StoreInt64(&routeFirstPingInterval, int64(15*time.Millisecond))
+	defer func() { atomic.StoreInt64(&routeFirstPingInterval, routeDefaultFirstPingInterval) }()
+
 	ob := DefaultOptions()
 	ob.PingInterval = 15 * time.Millisecond
 	sb := RunServer(ob)

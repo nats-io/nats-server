@@ -39,6 +39,14 @@ import (
 // Warning when user configures leafnode TLS insecure
 const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
 
+const (
+	leafDefaultFirstPingInterval = int64(time.Second)
+)
+
+var (
+	leafFirstPingInterval = leafDefaultFirstPingInterval
+)
+
 type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
@@ -682,7 +690,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	s.startGoRoutine(func() { c.writeLoop() })
 
 	// Set the Ping timer
-	c.setPingTimer()
+	c.setLeafFirstPingTimer()
 
 	c.mu.Unlock()
 
@@ -699,6 +707,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	}
 
 	return c
+}
+
+func (c *client) setLeafFirstPingTimer() {
+	d := time.Duration(atomic.LoadInt64(&leafFirstPingInterval))
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 func (c *client) processLeafnodeInfo(info *Info) {

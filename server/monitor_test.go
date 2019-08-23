@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode"
@@ -3126,6 +3127,9 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 }
 
 func TestMonitorRouteRTT(t *testing.T) {
+	atomic.StoreInt64(&routeFirstPingInterval, int64(15*time.Millisecond))
+	defer func() { atomic.StoreInt64(&routeFirstPingInterval, routeDefaultFirstPingInterval) }()
+
 	// Do not change default PingInterval and expect RTT
 	// to still be reported
 

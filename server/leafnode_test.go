@@ -399,3 +399,99 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 	// Should be able to reconnect
 	checkLeafNodeConnected(t, sa)
 }
+
+func TestLeafNodeRTT(t *testing.T) {
+	atomic.StoreInt64(&leafFirstPingInterval, int64(15*time.Millisecond))
+	defer func() { atomic.StoreInt64(&leafFirstPingInterval, leafDefaultFirstPingInterval) }()
+
+	ob := DefaultOptions()
+	ob.PingInterval = 15 * time.Millisecond
+	ob.LeafNode.Host = "127.0.0.1"
+	ob.LeafNode.Port = -1
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	lnBURL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
+	oa := DefaultOptions()
+	oa.PingInterval = 15 * time.Millisecond
+	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lnBURL}}}
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	checkLeafNodeConnected(t, sa)
+
+	checkRTT := func(t *testing.T, s *Server) time.Duration {
+		t.Helper()
+		var ln *client
+		s.mu.Lock()
+		for _, l := range s.leafs {
+			ln = l
+			break
+		}
+		s.mu.Unlock()
+		var rtt time.Duration
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			ln.mu.Lock()
+			rtt = ln.rtt
+			ln.mu.Unlock()
+			if rtt == 0 {
+				return fmt.Errorf("RTT not tracked")
+			}
+			return nil
+		})
+		return rtt
+	}
+
+	prevA := checkRTT(t, sa)
+	prevB := checkRTT(t, sb)
+
+	// Wait to see if RTT is updated
+	checkUpdated := func(t *testing.T, s *Server, prev time.Duration) {
+		attempts := 0
+		timeout := time.Now().Add(time.Second)
+		for time.Now().Before(timeout) {
+			if rtt := checkRTT(t, s); rtt != prev {
+				return
+			}
+			attempts++
+			if attempts == 5 {
+				s.mu.Lock()
+				for _, ln := range s.leafs {
+					ln.mu.Lock()
+					ln.rtt = 0
+					ln.mu.Unlock()
+					break
+				}
+				s.mu.Unlock()
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		t.Fatalf("RTT probably not updated")
+	}
+	checkUpdated(t, sa, prevA)
+	checkUpdated(t, sb, prevB)
+
+	sa.Shutdown()
+	sb.Shutdown()
+
+	// Now check that initial RTT is computed prior to first PingInterval
+	// Get new options to avoid possible race changing the ping interval.
+	ob = DefaultOptions()
+	ob.PingInterval = time.Minute
+	ob.LeafNode.Host = "127.0.0.1"
+	ob.LeafNode.Port = -1
+	sb = RunServer(ob)
+	defer sb.Shutdown()
+
+	lnBURL, _ = url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
+	oa = DefaultOptions()
+	oa.PingInterval = time.Minute
+	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lnBURL}}}
+	sa = RunServer(oa)
+	defer sa.Shutdown()
+
+	checkLeafNodeConnected(t, sa)
+
+	checkRTT(t, sa)
+	checkRTT(t, sb)
+}
