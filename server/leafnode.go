@@ -682,7 +682,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	s.startGoRoutine(func() { c.writeLoop() })
 
 	// Set the Ping timer
-	c.setPingTimer()
+	s.setFirstPingTimer(c)
 
 	c.mu.Unlock()
 

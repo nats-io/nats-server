@@ -1107,7 +1107,7 @@ func TestRouteRTT(t *testing.T) {
 		s.mu.Unlock()
 
 		var rtt time.Duration
-		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 2*firstPingInterval, 15*time.Millisecond, func() error {
 			route.mu.Lock()
 			rtt = route.rtt
 			route.mu.Unlock()
@@ -1125,7 +1125,7 @@ func TestRouteRTT(t *testing.T) {
 	checkUpdated := func(t *testing.T, s *Server, prev time.Duration) {
 		t.Helper()
 		attempts := 0
-		timeout := time.Now().Add(time.Second)
+		timeout := time.Now().Add(2 * firstPingInterval)
 		for time.Now().Before(timeout) {
 			if rtt := checkRTT(t, s); rtt != 0 {
 				return

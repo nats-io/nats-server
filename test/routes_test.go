@@ -86,7 +86,8 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSendInfo(b, routeSend, routeExpect)
+	infoJSON := fmt.Sprintf("INFO %s\r\n", b)
+	routeSend(infoJSON)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 }
@@ -139,7 +140,7 @@ func TestSendRouteSubAndUnsub(t *testing.T) {
 
 	expectAuthRequired(t, rc)
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, "ROUTER:xyz")
-	routeSendInfo([]byte("{\"server_id\":\"ROUTER:xyz\"}"), routeSend, routeExpect)
+	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
 
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
@@ -310,7 +311,7 @@ func TestRouteQueueSemantics(t *testing.T) {
 
 	expectAuthRequired(t, route)
 	routeSend, routeExpect := setupRouteEx(t, route, opts, "ROUTER:xyz")
-	routeSendInfo([]byte("{\"server_id\":\"ROUTER:xyz\"}"), routeSend, routeExpect)
+	routeSend("INFO {\"server_id\":\"ROUTER:xyz\"}\r\n")
 	expectMsgs := expectRmsgsCommand(t, routeExpect)
 
 	// Express multiple interest on this route for foo, queue group bar.
@@ -606,7 +607,8 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			if err != nil {
 				stackFatalf(t, "Could not marshal test route info: %v", err)
 			}
-			routeSendInfo(b, routeSend, routeExpect)
+			infoJSON := fmt.Sprintf("INFO %s\r\n", b)
+			routeSend(infoJSON)
 			routeSend("PING\r\n")
 			routeExpect(pongRe)
 		}

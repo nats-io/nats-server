@@ -41,8 +41,13 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// Time to wait before starting closing clients when in LD mode.
-const lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
+const (
+	// Time to wait before starting closing clients when in LD mode.
+	lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
+
+	// Interval for the first PING for non client connections.
+	firstPingInterval = time.Second
+)
 
 // Make this a variable so that we can change during tests
 var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
@@ -2450,4 +2455,16 @@ func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
 		return true
 	}
 	return false
+}
+
+// Invoked for route, leaf and gateway connections. Set the very first
+// PING to a lower interval to capture the initial RTT.
+// After that the PING interval will be set to the user defined value.
+func (s *Server) setFirstPingTimer(c *client) {
+	opts := s.getOpts()
+	d := opts.PingInterval
+	if d > firstPingInterval {
+		d = firstPingInterval
+	}
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }

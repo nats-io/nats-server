@@ -92,12 +92,14 @@ const (
 	InfoProto = "INFO %s" + _CRLF_
 )
 
-// Used to decide if the sending of the route SUBs list should be
-// done in place or in separate go routine.
-const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
+const (
+	// Used to decide if the sending of the route SUBs list should be
+	// done in place or in separate go routine.
+	sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
 
-// Warning when user configures cluster TLS insecure
-const clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
+	// Warning when user configures cluster TLS insecure
+	clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
+)
 
 // Can be changed for tests
 var routeConnectDelay = DEFAULT_ROUTE_CONNECT
@@ -485,12 +487,6 @@ func (c *client) processRouteInfo(info *Info) {
 		if !s.getOpts().Cluster.NoAdvertise {
 			s.addClientConnectURLsAndSendINFOToClients(info.ClientConnectURLs)
 		}
-
-		// This will allow us to determine the initial RTT without having to
-		// wait for first timer based PING.
-		c.mu.Lock()
-		c.sendPing()
-		c.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
@@ -1184,7 +1180,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Set the Ping timer
-	c.setPingTimer()
+	s.setFirstPingTimer(c)
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.

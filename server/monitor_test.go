@@ -3144,7 +3144,7 @@ func TestMonitorRouteRTT(t *testing.T) {
 		t.Helper()
 		routezURL := fmt.Sprintf("http://127.0.0.1:%d/routez", s.MonitorAddr().Port)
 		for pollMode := 0; pollMode < 2; pollMode++ {
-			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			checkFor(t, 2*firstPingInterval, 15*time.Millisecond, func() error {
 				rz := pollRoutez(t, s, pollMode, routezURL, nil)
 				if len(rz.Routes) != 1 {
 					return fmt.Errorf("Expected 1 route, got %v", len(rz.Routes))
