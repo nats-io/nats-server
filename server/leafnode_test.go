@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -260,4 +261,141 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 	if int(got) != int(expected) {
 		t.Fatalf("Expected %v, got: %v", expected, got)
 	}
+}
+
+type captureErrorLogger struct {
+	DummyLogger
+	errCh chan string
+}
+
+func (l *captureErrorLogger) Errorf(format string, v ...interface{}) {
+	select {
+	case l.errCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func TestLeafNodeAccountNotFound(t *testing.T) {
+	ob := DefaultOptions()
+	ob.LeafNode.Host = "127.0.0.1"
+	ob.LeafNode.Port = -1
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
+
+	logFileName := createConfFile(t, []byte(""))
+	defer os.Remove(logFileName)
+
+	oa := DefaultOptions()
+	oa.LeafNode.ReconnectInterval = 15 * time.Millisecond
+	oa.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			LocalAccount: "foo",
+			URLs:         []*url.URL{u},
+		},
+	}
+	// Expected to fail
+	if _, err := NewServer(oa); err == nil || !strings.Contains(err.Error(), "local account") {
+		t.Fatalf("Expected server to fail with error about no local account, got %v", err)
+	}
+	oa.Accounts = []*Account{NewAccount("foo")}
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 1)}
+	sa.SetLogger(l, false, false)
+
+	checkLeafNodeConnected(t, sa)
+
+	// Now simulate account is removed with config reload, or it expires.
+	sa.accounts.Delete("foo")
+
+	// Restart B (with same Port)
+	sb.Shutdown()
+	sb = RunServer(ob)
+	defer sb.Shutdown()
+
+	// Wait for report of error
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, "No local account") {
+			t.Fatalf("Expected error about no local account, got %s", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error")
+	}
+
+	// For now, sa would try to recreate the connection for ever.
+	// Check that lid is increasing...
+	time.Sleep(100 * time.Millisecond)
+	lid := atomic.LoadUint64(&sa.gcid)
+	if lid < 4 {
+		t.Fatalf("Seems like connection was not retried")
+	}
+}
+
+// This test ensures that we can connect using proper user/password
+// to a LN URL that was discovered through the INFO protocol.
+func TestLeafNodeBasicAuthFailover(t *testing.T) {
+	content := `
+	listen: "127.0.0.1:-1"
+	cluster {
+		listen: "127.0.0.1:-1"
+		%s
+	}
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		authorization {
+			user: foo
+			password: pwd
+			timeout: 1
+		}
+	}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(content, "")))
+	defer os.Remove(conf)
+
+	sb1, ob1 := RunServerWithConfig(conf)
+	defer sb1.Shutdown()
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(content, fmt.Sprintf("routes: [nats://127.0.0.1:%d]", ob1.Cluster.Port))))
+	defer os.Remove(conf)
+
+	sb2, _ := RunServerWithConfig(conf)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+
+	content = `
+	port: -1
+	accounts {
+		foo {}
+	}
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		remotes [
+			{
+				account: "foo"
+				url: "nats://foo:pwd@127.0.0.1:%d"
+			}
+		]
+	}
+	`
+	conf = createConfFile(t, []byte(fmt.Sprintf(content, ob1.LeafNode.Port)))
+	defer os.Remove(conf)
+
+	sa, _ := RunServerWithConfig(conf)
+	defer sa.Shutdown()
+
+	checkLeafNodeConnected(t, sa)
+
+	// Shutdown sb1, sa should reconnect to sb2
+	sb1.Shutdown()
+
+	// Wait a bit to make sure there was a disconnect and attempt to reconnect.
+	time.Sleep(250 * time.Millisecond)
+
+	// Should be able to reconnect
+	checkLeafNodeConnected(t, sa)
 }

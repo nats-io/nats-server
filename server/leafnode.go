@@ -52,9 +52,11 @@ type leaf struct {
 type leafNodeCfg struct {
 	sync.RWMutex
 	*RemoteLeafOpts
-	urls    []*url.URL
-	curURL  *url.URL
-	tlsName string
+	urls     []*url.URL
+	curURL   *url.URL
+	tlsName  string
+	username string
+	password string
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -117,8 +119,11 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	// array when receiving async leafnode INFOs.
 	cfg.urls = append(cfg.urls, cfg.URLs...)
 	// If we are TLS make sure we save off a proper servername if possible.
+	// Do same for user/password since we may need them to connect to
+	// a bare URL that we get from INFO protocol.
 	for _, u := range cfg.urls {
 		cfg.saveTLSHostname(u)
+		cfg.saveUserPassword(u)
 	}
 	return cfg
 }
@@ -225,10 +230,19 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 // Save off the tlsName for when we use TLS and mix hostnames and IPs. IPs usually
 // come from the server we connect to.
-func (lcfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
-	isTLS := lcfg.TLSConfig != nil || u.Scheme == "tls"
-	if isTLS && lcfg.tlsName == "" && net.ParseIP(u.Hostname()) == nil {
-		lcfg.tlsName = u.Hostname()
+func (cfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
+	isTLS := cfg.TLSConfig != nil || u.Scheme == "tls"
+	if isTLS && cfg.tlsName == "" && net.ParseIP(u.Hostname()) == nil {
+		cfg.tlsName = u.Hostname()
+	}
+}
+
+// Save off the username/password for when we connect using a bare URL
+// that we get from the INFO protocol.
+func (cfg *leafNodeCfg) saveUserPassword(u *url.URL) {
+	if cfg.username == _EMPTY_ && u.User != nil {
+		cfg.username = u.User.Username()
+		cfg.password, _ = u.User.Password()
 	}
 }
 
@@ -384,8 +398,10 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 		cinfo.Sig = sig
 	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
-		pass, _ := userInfo.Password()
-		cinfo.Pass = pass
+		cinfo.Pass, _ = userInfo.Password()
+	} else if c.leaf.remote.username != _EMPTY_ {
+		cinfo.User = c.leaf.remote.username
+		cinfo.Pass = c.leaf.remote.password
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -489,6 +505,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
 
+	c.mu.Lock()
+	c.initClient()
 	if remote != nil {
 		solicited = true
 		// Users can bind to any local account, if its empty
@@ -496,16 +514,21 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		if remote.LocalAccount == "" {
 			remote.LocalAccount = globalAccountName
 		}
-		// FIXME(dlc) - Make this resolve at startup.
+		c.leaf.remote = remote
+		c.mu.Unlock()
+		// TODO: Decide what should be the optimal behavior here.
+		// For now, if lookup fails, we will constantly try
+		// to recreate this LN connection.
 		acc, err := s.LookupAccount(remote.LocalAccount)
 		if err != nil {
-			c.Debugf("No local account %q for leafnode", remote.LocalAccount)
+			c.Errorf("No local account %q for leafnode: %v", remote.LocalAccount, err)
 			c.closeConnection(MissingAccount)
 			return nil
 		}
+		c.mu.Lock()
 		c.acc = acc
-		c.leaf.remote = remote
 	}
+	c.mu.Unlock()
 
 	var nonce [nonceLen]byte
 
@@ -519,8 +542,6 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 	// Grab lock
 	c.mu.Lock()
-
-	c.initClient()
 
 	if solicited {
 		// We need to wait here for the info, but not for too long.
@@ -725,7 +746,10 @@ func (c *client) updateLeafNodeURLs(info *Info) {
 		// Do not add if it's the same as what we already have configured.
 		var dup bool
 		for _, u := range cfg.URLs {
-			if urlsAreEqual(url, u) {
+			// URLs that we receive never have user info, but the
+			// ones that were configured may have. Simply compare
+			// host and port to decide if they are equal or not.
+			if url.Host == u.Host && url.Port() == u.Port() {
 				dup = true
 				break
 			}

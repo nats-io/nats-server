@@ -2488,6 +2488,7 @@ func TestMonitorLeafNode(t *testing.T) {
 	opts.LeafNode.Port = -1
 	opts.LeafNode.AuthTimeout = 1
 	opts.LeafNode.TLSTimeout = 1
+	opts.Accounts = []*Account{NewAccount("acc")}
 	u, _ := url.Parse("nats://ivan:pwd@localhost:1234")
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{
 		&RemoteLeafOpts{

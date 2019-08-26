@@ -1083,38 +1083,6 @@ func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
 }
 
 func TestRouteRTT(t *testing.T) {
-	checkRTT := func(t *testing.T, s *Server, checkForUpdate bool) {
-		t.Helper()
-		var route *client
-		s.mu.Lock()
-		for _, r := range s.routes {
-			route = r
-			break
-		}
-		s.mu.Unlock()
-
-		prev := time.Duration(0)
-		check := func(t *testing.T) {
-			t.Helper()
-			checkFor(t, time.Second, 15*time.Millisecond, func() error {
-				route.mu.Lock()
-				rtt := route.rtt
-				route.mu.Unlock()
-				if rtt == 0 || rtt == prev {
-					return fmt.Errorf("RTT probably not tracked")
-				}
-				prev = rtt
-				return nil
-			})
-		}
-		check(t)
-		if checkForUpdate {
-			// Wait a bit and check that rtt is updated
-			time.Sleep(30 * time.Millisecond)
-			check(t)
-		}
-	}
-
 	ob := DefaultOptions()
 	ob.PingInterval = 15 * time.Millisecond
 	sb := RunServer(ob)
@@ -1127,8 +1095,62 @@ func TestRouteRTT(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, sa, sb)
-	checkRTT(t, sa, true)
-	checkRTT(t, sb, true)
+
+	checkRTT := func(t *testing.T, s *Server) time.Duration {
+		t.Helper()
+		var route *client
+		s.mu.Lock()
+		for _, r := range s.routes {
+			route = r
+			break
+		}
+		s.mu.Unlock()
+
+		var rtt time.Duration
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			route.mu.Lock()
+			rtt = route.rtt
+			route.mu.Unlock()
+			if rtt == 0 {
+				return fmt.Errorf("RTT not tracked")
+			}
+			return nil
+		})
+		return rtt
+	}
+
+	prevA := checkRTT(t, sa)
+	prevB := checkRTT(t, sb)
+
+	checkUpdated := func(t *testing.T, s *Server, prev time.Duration) {
+		t.Helper()
+		attempts := 0
+		timeout := time.Now().Add(time.Second)
+		for time.Now().Before(timeout) {
+			if rtt := checkRTT(t, s); rtt != 0 {
+				return
+			}
+			attempts++
+			if attempts == 5 {
+				// If could be that we are very unlucky
+				// and the RTT is constant. So override
+				// the route's RTT to 0 to see if it gets
+				// updated.
+				s.mu.Lock()
+				for _, r := range s.routes {
+					r.mu.Lock()
+					r.rtt = 0
+					r.mu.Unlock()
+					break
+				}
+				s.mu.Unlock()
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		t.Fatalf("RTT probably not updated")
+	}
+	checkUpdated(t, sa, prevA)
+	checkUpdated(t, sb, prevB)
 
 	sa.Shutdown()
 	sb.Shutdown()
@@ -1147,6 +1169,6 @@ func TestRouteRTT(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, sa, sb)
-	checkRTT(t, sa, false)
-	checkRTT(t, sb, false)
+	checkRTT(t, sa)
+	checkRTT(t, sb)
 }

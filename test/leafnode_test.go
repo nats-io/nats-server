@@ -916,8 +916,6 @@ func TestLeafNodeBasicAuth(t *testing.T) {
 	// This one should work.
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
-
-	// This should fail since we want u/p
 	leafSend, leafExpect := setupConnWithUserPass(t, lc, "derek", "s3cr3t!")
 	leafSend("PING\r\n")
 	leafExpect(pongRe)

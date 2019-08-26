@@ -299,6 +299,19 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
+	// In local config mode, if remote leafs are configured,
+	// make sure that if they reference local accounts, they exist.
+	if len(opts.TrustedOperators) == 0 && len(opts.LeafNode.Remotes) > 0 {
+		for _, r := range opts.LeafNode.Remotes {
+			if r.LocalAccount == _EMPTY_ {
+				continue
+			}
+			if _, err := s.lookupAccount(r.LocalAccount); err != nil {
+				return nil, fmt.Errorf("no local account %q for leafnode: %v", r.LocalAccount, err)
+			}
+		}
+	}
+
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
