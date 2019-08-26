@@ -1399,6 +1399,7 @@ const (
 	ConnzPath    = "/connz"
 	RoutezPath   = "/routez"
 	GatewayzPath = "/gatewayz"
+	LeafzPath    = "/leafz"
 	SubszPath    = "/subsz"
 	StackszPath  = "/stacksz"
 )
@@ -1466,6 +1467,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(RoutezPath, s.HandleRoutez)
 	// Gatewayz
 	mux.HandleFunc(GatewayzPath, s.HandleGatewayz)
+	// Leafz
+	mux.HandleFunc(LeafzPath, s.HandleLeafz)
 	// Subz
 	mux.HandleFunc(SubszPath, s.HandleSubsz)
 	// Subz alias for backwards compatibility
