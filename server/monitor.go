@@ -982,6 +982,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=/connz>connz</a><br/>
 	<a href=/routez>routez</a><br/>
 	<a href=/gatewayz>gatewayz</a><br/>
+	<a href=/leafz>leafz</a><br/>
 	<a href=/subsz>subsz</a><br/>
     <br/>
     <a href=https://nats-io.github.io/docs/nats_server/monitoring.html>help</a>
@@ -1528,6 +1529,111 @@ func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
 	b, err := json.MarshalIndent(gw, "", "  ")
 	if err != nil {
 		s.Errorf("Error marshaling response to /gatewayz request: %v", err)
+	}
+
+	// Handle response
+	ResponseHandler(w, r, b)
+}
+
+// Leafz represents detailed information on Leafnodes.
+type Leafz struct {
+	ID       string      `json:"server_id"`
+	Now      time.Time   `json:"now"`
+	NumLeafs int         `json:"leafnodes"`
+	Leafs    []*LeafInfo `json:"leafs"`
+}
+
+// LeafzOptions are options passed to Leafz
+type LeafzOptions struct {
+	// Subscriptions indicates that Leafz will return a leafnode's subscriptions
+	Subscriptions bool `json:"subscriptions"`
+}
+
+// LeafInfo has detailed information on each remote leafnode connection.
+type LeafInfo struct {
+	Account  string   `json:"account"`
+	IP       string   `json:"ip"`
+	Port     int      `json:"port"`
+	RTT      string   `json:"rtt,omitempty"`
+	InMsgs   int64    `json:"in_msgs"`
+	OutMsgs  int64    `json:"out_msgs"`
+	InBytes  int64    `json:"in_bytes"`
+	OutBytes int64    `json:"out_bytes"`
+	NumSubs  uint32   `json:"subscriptions"`
+	Subs     []string `json:"subscriptions_list,omitempty"`
+}
+
+// Leafz returns a Leafz structure containing information about leafnodes.
+func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
+	// Grab leafnodes
+	var lconns []*client
+	s.mu.Lock()
+	if len(s.leafs) > 0 {
+		lconns = make([]*client, 0, len(s.leafs))
+		for _, ln := range s.leafs {
+			lconns = append(lconns, ln)
+		}
+	}
+	s.mu.Unlock()
+
+	var leafnodes []*LeafInfo
+	if len(lconns) > 0 {
+		leafnodes = make([]*LeafInfo, 0, len(lconns))
+		for _, ln := range lconns {
+			ln.mu.Lock()
+			lni := &LeafInfo{
+				Account:  ln.acc.Name,
+				IP:       ln.host,
+				Port:     int(ln.port),
+				RTT:      ln.getRTT(),
+				InMsgs:   atomic.LoadInt64(&ln.inMsgs),
+				OutMsgs:  ln.outMsgs,
+				InBytes:  atomic.LoadInt64(&ln.inBytes),
+				OutBytes: ln.outBytes,
+				NumSubs:  uint32(len(ln.subs)),
+			}
+			if opts != nil && opts.Subscriptions {
+				lni.Subs = make([]string, 0, len(ln.subs))
+				for _, sub := range ln.subs {
+					lni.Subs = append(lni.Subs, string(sub.subject))
+				}
+			}
+			ln.mu.Unlock()
+			leafnodes = append(leafnodes, lni)
+		}
+	}
+	return &Leafz{
+		ID:       s.ID(),
+		Now:      time.Now(),
+		NumLeafs: len(leafnodes),
+		Leafs:    leafnodes,
+	}, nil
+}
+
+// HandleLeafz process HTTP requests for leafnode information.
+func (s *Server) HandleLeafz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[LeafzPath]++
+	s.mu.Unlock()
+
+	subs, err := decodeBool(w, r, "subs")
+	if err != nil {
+		return
+	}
+	var opts *LeafzOptions
+	if subs {
+		opts = &LeafzOptions{Subscriptions: true}
+	}
+
+	l, err := s.Leafz(opts)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	b, err := json.MarshalIndent(l, "", "  ")
+	if err != nil {
+		s.Errorf("Error marshaling response to /leafz request: %v", err)
 	}
 
 	// Handle response
