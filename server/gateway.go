@@ -782,7 +782,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	}
 
 	// Set the Ping timer after sending connect and info.
-	c.setPingTimer()
+	s.setFirstPingTimer(c)
 
 	c.mu.Unlock()
 }

@@ -401,9 +401,6 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 }
 
 func TestLeafNodeRTT(t *testing.T) {
-	atomic.StoreInt64(&leafFirstPingInterval, int64(15*time.Millisecond))
-	defer func() { atomic.StoreInt64(&leafFirstPingInterval, leafDefaultFirstPingInterval) }()
-
 	ob := DefaultOptions()
 	ob.PingInterval = 15 * time.Millisecond
 	ob.LeafNode.Host = "127.0.0.1"
@@ -430,7 +427,7 @@ func TestLeafNodeRTT(t *testing.T) {
 		}
 		s.mu.Unlock()
 		var rtt time.Duration
-		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 2*firstPingInterval, 15*time.Millisecond, func() error {
 			ln.mu.Lock()
 			rtt = ln.rtt
 			ln.mu.Unlock()
@@ -448,7 +445,7 @@ func TestLeafNodeRTT(t *testing.T) {
 	// Wait to see if RTT is updated
 	checkUpdated := func(t *testing.T, s *Server, prev time.Duration) {
 		attempts := 0
-		timeout := time.Now().Add(time.Second)
+		timeout := time.Now().Add(2 * firstPingInterval)
 		for time.Now().Before(timeout) {
 			if rtt := checkRTT(t, s); rtt != prev {
 				return

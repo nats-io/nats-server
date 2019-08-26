@@ -92,22 +92,17 @@ const (
 	InfoProto = "INFO %s" + _CRLF_
 )
 
-// Used to decide if the sending of the route SUBs list should be
-// done in place or in separate go routine.
-const sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
-
-// Warning when user configures cluster TLS insecure
-const clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
-
 const (
-	routeDefaultFirstPingInterval = int64(time.Second)
+	// Used to decide if the sending of the route SUBs list should be
+	// done in place or in separate go routine.
+	sendRouteSubsInGoRoutineThreshold = 1024 * 1024 // 1MB
+
+	// Warning when user configures cluster TLS insecure
+	clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
 )
 
 // Can be changed for tests
-var (
-	routeConnectDelay      = DEFAULT_ROUTE_CONNECT
-	routeFirstPingInterval = routeDefaultFirstPingInterval
-)
+var routeConnectDelay = DEFAULT_ROUTE_CONNECT
 
 // This will add a timer to watch over remote reply subjects in case
 // they fail to receive a response. The duration will be taken from the
@@ -1185,7 +1180,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Set the Ping timer
-	c.routeSetFirstPingTimer()
+	s.setFirstPingTimer(c)
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.
@@ -1232,11 +1227,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c.Noticef("Route connection created")
 	return c
-}
-
-func (c *client) routeSetFirstPingTimer() {
-	d := time.Duration(atomic.LoadInt64(&routeFirstPingInterval))
-	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 const (
