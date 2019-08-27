@@ -16,12 +16,9 @@ before_script:
   - export PATH=$GOPATH/bin:$PATH
 
   # install
-  - go get github.com/nats-io/go-nats
+  - go get github.com/nats-io/nats.go/
   - go get github.com/nats-io/nkeys
   - go get github.com/nats-io/jwt
-  - go get github.com/mattn/goveralls
-  - go get github.com/wadey/gocovmerge
-  - go get github.com/tcnksm/ghr
   - go get -u honnef.co/go/tools/cmd/staticcheck
   - go get -u github.com/client9/misspell/cmd/misspell
 
@@ -31,18 +28,19 @@ before_script:
   - go vet $EXCLUDE_VENDOR
   - misspell -error -locale US $EXCLUDE_VENDOR
   - staticcheck $EXCLUDE_VENDOR
-  - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ./scripts/cross_compile.sh $TRAVIS_TAG; fi
 
 stages:
   - test
-  - release
+  - deploy
 
 .test: &test
   stage: test
   script:
+    - set -e
     - go test -i $EXCLUDE_VENDOR
-    - go test -run=TestNoRace $EXCLUDE_VENDOR
-    - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]]; then ./scripts/cov.sh TRAVIS; else GOGC=10 go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+    - go test -run=TestNoRace --failfast -p=1 $EXCLUDE_VENDOR
+    - if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+    - set +e
 
 go:1.11:
   <<: *test
@@ -56,7 +54,10 @@ go:1.12:
   variables:
     TRAVIS_GO_VERSION: "1.12"
 
-release:
-  stage: release
+deploy:
+  image: golang:1.12
+  stage: deploy
   script:
-    - if [[ "$TRAVIS_GO_VERSION" =~ 1.11 ]] && [ "$TRAVIS_TAG" != "" ]; then ghr --owner nats-io --token $GITHUB_TOKEN --draft --replace $TRAVIS_TAG pkg/; fi
+    - curl -sL http://git.io/goreleaser | bash
+  only:
+    - tags
