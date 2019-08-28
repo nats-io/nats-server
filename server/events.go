@@ -14,6 +14,8 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -39,6 +41,7 @@ const (
 	serverStatsReqSubj       = "$SYS.REQ.SERVER.%s.STATSZ"
 	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"
 	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT"
+	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
 
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
@@ -65,6 +68,7 @@ type internal struct {
 	orphMax time.Duration
 	chkOrph time.Duration
 	statsz  time.Duration
+	shash   string
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -173,6 +177,7 @@ type DataStats struct {
 
 // Used for internally queueing up messages that the server wants to send.
 type pubMsg struct {
+	acc  *Account
 	sub  string
 	rply string
 	si   *ServerInfo
@@ -197,6 +202,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 		return
 	}
 	c := s.sys.client
+	sysacc := s.sys.account
 	sendq := s.sys.sendq
 	id := s.info.ID
 	host := s.info.Host
@@ -207,16 +213,25 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	}
 	s.mu.Unlock()
 
+	// Warn when internal send queue is backed up past 75%
+	warnThresh := 3 * internalSendQLen / 4
+	warnFreq := time.Second
+	last := time.Now().Add(-warnFreq)
+
 	for s.eventsRunning() {
 		// Setup information for next message
-		seq := atomic.AddUint64(seqp, 1)
+		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
+			s.Warnf("Internal system send queue > 75%")
+			last = time.Now()
+		}
+
 		select {
 		case pm := <-sendq:
 			if pm.si != nil {
 				pm.si.Host = host
 				pm.si.Cluster = cluster
 				pm.si.ID = id
-				pm.si.Seq = seq
+				pm.si.Seq = atomic.AddUint64(seqp, 1)
 				pm.si.Version = VERSION
 				pm.si.Time = time.Now()
 			}
@@ -224,11 +239,20 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			if pm.msg != nil {
 				b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
 			}
+			// We can have an override for account here.
+			c.mu.Lock()
+			if pm.acc != nil {
+				c.acc = pm.acc
+			} else {
+				c.acc = sysacc
+			}
 			// Prep internal structures needed to send message.
 			c.pa.subject = []byte(pm.sub)
 			c.pa.size = len(b)
 			c.pa.szb = []byte(strconv.FormatInt(int64(len(b)), 10))
 			c.pa.reply = []byte(pm.rply)
+			c.mu.Unlock()
+
 			// Add in NL
 			b = append(b, _CRLF_...)
 			c.processInboundClientMsg(b)
@@ -258,7 +282,29 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.subs = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
-	sendq <- &pubMsg{subj, _EMPTY_, nil, nil, true}
+	sendq <- &pubMsg{nil, subj, _EMPTY_, nil, nil, true}
+}
+
+// Used to send an internal message to an arbitrary account.
+func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interface{}) error {
+	s.mu.Lock()
+	if s.sys == nil || s.sys.sendq == nil {
+		s.mu.Unlock()
+		return ErrNoSysAccount
+	}
+	sendq := s.sys.sendq
+	// Don't hold lock while placing on the channel.
+	s.mu.Unlock()
+	sendq <- &pubMsg{a, subject, "", nil, msg, false}
+	return nil
+}
+
+// This will queue up a message to be sent.
+// Lock should not be held.
+func (s *Server) sendInternalMsgLocked(sub, rply string, si *ServerInfo, msg interface{}) {
+	s.mu.Lock()
+	s.sendInternalMsg(sub, rply, si, msg)
+	s.mu.Unlock()
 }
 
 // This will queue up a message to be sent.
@@ -270,7 +316,7 @@ func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface
 	sendq := s.sys.sendq
 	// Don't hold lock while placing on the channel.
 	s.mu.Unlock()
-	sendq <- &pubMsg{sub, rply, si, msg, false}
+	sendq <- &pubMsg{nil, sub, rply, si, msg, false}
 	s.mu.Lock()
 }
 
@@ -414,6 +460,9 @@ func (s *Server) startRemoteServerSweepTimer() {
 	s.sys.sweeper = time.AfterFunc(s.sys.chkOrph, s.wrapChk(s.checkRemoteServers))
 }
 
+// Length of our system hash used for server targetted messages.
+const sysHashLen = 4
+
 // This will setup our system wide tracking subs.
 // For now we will setup one wildcard subscription to
 // monitor all accounts for changes in number of connections.
@@ -424,6 +473,12 @@ func (s *Server) initEventTracking() {
 	if !s.eventsEnabled() {
 		return
 	}
+	// Create a system hash which we use for other servers to target us
+	// specifically.
+	sha := sha256.New()
+	sha.Write([]byte(s.info.ID))
+	s.sys.shash = fmt.Sprintf("%x", sha.Sum(nil))[:sysHashLen]
+
 	subject := fmt.Sprintf(accConnsEventSubj, "*")
 	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
@@ -462,6 +517,11 @@ func (s *Server) initEventTracking() {
 	subject = fmt.Sprintf(leafNodeConnectEventSubj, "*")
 	if _, err := s.sysSubscribe(subject, s.leafNodeConnected); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+	// For tracking remote lateny measurements.
+	subject = fmt.Sprintf(remoteLatencyEventSubj, s.sys.shash)
+	if _, err := s.sysSubscribe(subject, s.remoteLatencyUpdate); err != nil {
+		s.Errorf("Error setting up internal latency tracking: %v", err)
 	}
 }
 
@@ -786,9 +846,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 	c.mu.Unlock()
 
-	s.mu.Lock()
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
-	s.mu.Unlock()
+	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
 // accountDisconnectEvent will send an account client disconnect event if there is interest.
@@ -837,9 +895,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 
 	subj := fmt.Sprintf(disconnectEventSubj, c.acc.Name)
 
-	s.mu.Lock()
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
-	s.mu.Unlock()
+	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
 func (s *Server) sendAuthErrorEvent(c *client) {
@@ -880,7 +936,6 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	subj := fmt.Sprintf(authErrorEventSubj, s.info.ID)
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 	s.mu.Unlock()
-
 }
 
 // Internal message callback. If the msg is needed past the callback it is
@@ -937,6 +992,76 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	c.unsubscribe(acc, sub, true, true)
 }
 
+// This will generate the tracking subject for remote latency from the response subject.
+func remoteLatencySubjectForResponse(subject []byte) string {
+	if !isTrackedReply(subject) {
+		return ""
+	}
+	toks := bytes.Split(subject, []byte(tsep))
+	// FIXME(dlc) - Sprintf may become a performance concern at some point.
+	return fmt.Sprintf(remoteLatencyEventSubj, toks[len(toks)-2])
+}
+
+// remoteLatencyUpdate is used to track remote latency measurements for tracking on exported services.
+func (s *Server) remoteLatencyUpdate(sub *subscription, subject, _ string, msg []byte) {
+	if !s.eventsRunning() {
+		return
+	}
+	rl := remoteLatency{}
+	if err := json.Unmarshal(msg, &rl); err != nil {
+		s.Errorf("Error unmarshalling remot elatency measurement: %v", err)
+		return
+	}
+	// Now we need to look up the responseServiceImport associated with thsi measurement.
+	acc, err := s.LookupAccount(rl.Account)
+	if err != nil {
+		s.Warnf("Could not lookup account %q for latency measurement", rl.Account)
+	}
+	// Now get the request id / reply. We need to see if we have a GW prefix and if so strip that off.
+	reply := rl.ReqId
+	if subjectStartsWithGatewayReplyPrefix([]byte(reply)) {
+		reply = reply[gwReplyStart:]
+	}
+	acc.mu.RLock()
+	si := acc.imports.services[reply]
+	if si == nil {
+		acc.mu.RUnlock()
+		return
+	}
+	m1 := si.m1
+	m2 := rl.M2
+	lsub := si.latency.subject
+	acc.mu.RUnlock()
+
+	// So we have no processed the response tracking measurement yet.
+	if m1 == nil {
+		acc.mu.Lock()
+		// Double check since could have slipped in.
+		m1 = si.m1
+		if m1 == nil {
+			// Store our value there for them to pick up.
+			si.m1 = &m2
+		}
+		acc.mu.Unlock()
+		if m1 == nil {
+			return
+		}
+	}
+
+	// Calculate the correct latency given M1 and M2.
+	// M2 ServiceLatency is correct, so use that.
+	// M1 TotalLatency is correct, so use that.
+	// Will use those to back into NATS latency.
+	m1.AppName = m2.AppName
+	m1.ServiceLatency = m2.ServiceLatency
+	m1.NATSLatency = m1.TotalLatency - m1.ServiceLatency
+
+	// Make sure we remove the entry here.
+	si.acc.removeServiceImport(si.from)
+	// Send the metrics
+	s.sendInternalAccountMsg(acc, lsub, &m1)
+}
+
 // Helper to grab name for a client.
 func nameForClient(c *client) string {
 	if c.user != nil {
@@ -966,10 +1091,11 @@ func clearTimer(tp **time.Timer) {
 func (s *Server) wrapChk(f func()) func() {
 	return func() {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		if !s.eventsEnabled() {
+			s.mu.Unlock()
 			return
 		}
 		f()
+		s.mu.Unlock()
 	}
 }

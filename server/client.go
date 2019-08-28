@@ -187,8 +187,9 @@ type client struct {
 	last    time.Time
 	parseState
 
-	rtt      time.Duration
-	rttStart time.Time
+	rtt        time.Duration
+	rttStart   time.Time
+	rrTracking map[string]*remoteLatency
 
 	route *route
 	gw    *gateway
@@ -319,6 +320,15 @@ func (c *client) String() (id string) {
 	return c.ncs
 }
 
+// GetName returns the application supplied name for the connection.
+func (c *client) GetName() string {
+	c.mu.Lock()
+	name := c.opts.Name
+	c.mu.Unlock()
+	return name
+}
+
+// GetOpts returns the client options provided by the application.
 func (c *client) GetOpts() *clientOpts {
 	return &c.opts
 }
@@ -1480,6 +1490,15 @@ func (c *client) sendPong() {
 	c.sendProto([]byte("PONG\r\n"), true)
 }
 
+// Used to kick off a RTT measurement for latency tracking.
+func (c *client) sendRTTPing() {
+	c.mu.Lock()
+	if c.flags.isSet(connectReceived) {
+		c.sendPing()
+	}
+	c.mu.Unlock()
+}
+
 // Assume the lock is held upon entry.
 func (c *client) sendPing() {
 	c.rttStart = time.Now()
@@ -2192,6 +2211,24 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 		return false
 	}
 
+	// Do a fast check here to see if we should be tracking this from a latency
+	// persepective. This will be for a request being received for an exported service.
+	// This needs to be from a non-client (otherwise tracking happens at requestor).
+	if c.kind != CLIENT && client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
+		// FIXME(dlc) - We may need to optimize this.
+		if client.acc.IsExportServiceTracking(string(c.pa.subject)) {
+			// If we do not have a registered RTT queue that up now.
+			if client.rtt == 0 {
+				client.sendPing()
+			}
+			// We will have tagged this with a suffix ('.T') if we are tracking. This is
+			// needed from sampling. Not all will be tracked.
+			if isTrackedReply(c.pa.reply) {
+				client.trackRemoteReply(string(c.pa.reply))
+			}
+		}
+	}
+
 	// Queue to outbound buffer
 	client.queueOutbound(mh)
 	client.queueOutbound(msg)
@@ -2230,6 +2267,21 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	client.mu.Unlock()
 
 	return true
+}
+
+// This will track a remote reply for an exported service that has requested
+// latency tracking.
+// Lock assumed to be held.
+func (c *client) trackRemoteReply(reply string) {
+	if c.rrTracking == nil {
+		c.rrTracking = make(map[string]*remoteLatency)
+	}
+	rl := remoteLatency{
+		Account: c.acc.Name,
+		ReqId:   reply,
+	}
+	rl.M2.RequestStart = time.Now()
+	c.rrTracking[reply] = &rl
 }
 
 // pruneReplyPerms will remove any stale or expired entries
@@ -2341,27 +2393,43 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 // Used to mimic client like replies.
 const (
 	replyPrefix    = "_R_."
+	trackSuffix    = ".T"
 	replyPrefixLen = len(replyPrefix)
+	minReplyLen    = 15
 	digits         = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	base           = 62
 )
 
 // newServiceReply is used when rewriting replies that cross account boundaries.
 // These will look like _R_.XXXXXXXX.
-func (c *client) newServiceReply() []byte {
+func (c *client) newServiceReply(tracking bool) []byte {
 	// Check to see if we have our own rand yet. Global rand
 	// has contention with lots of clients, etc.
 	if c.in.prand == nil {
 		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 
-	var b = [15]byte{'_', 'R', '_', '.'}
+	var b = [minReplyLen]byte{'_', 'R', '_', '.'}
 	rn := c.in.prand.Int63()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
 	}
-	return b[:]
+	reply := b[:]
+	if tracking && c.srv.sys != nil {
+		// Add in our tracking identifier. This allows the metrics to get back to only
+		// this server without needless SUBS/UNSUBS.
+		reply = append(reply, '.')
+		reply = append(reply, c.srv.sys.shash...)
+		reply = append(reply, '.', 'T')
+	}
+	return reply
+}
+
+// Test whether this is a tracked reply.
+func isTrackedReply(reply []byte) bool {
+	lreply := len(reply) - 1
+	return lreply > 3 && reply[lreply-1] == '.' && reply[lreply] == 'T'
 }
 
 // Test whether a reply subject is a service import reply.
@@ -2418,6 +2486,28 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	// Check to see if we need to map/route to another account.
 	if c.acc.imports.services != nil {
 		c.checkForImportServices(c.acc, msg)
+	}
+
+	// If we have an exported service and we are doing remote tracking, check this subject
+	// to see if we need to report the latency.
+	if c.acc.exports.services != nil && c.rrTracking != nil {
+		c.mu.Lock()
+		rl := c.rrTracking[string(c.pa.subject)]
+		if rl != nil {
+			delete(c.rrTracking, string(c.pa.subject))
+		}
+		rtt := c.rtt
+		c.mu.Unlock()
+		if rl != nil {
+			sl := &rl.M2
+			// Fill this in and send it off to the other side.
+			sl.AppName = c.opts.Name
+			sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
+			sl.NATSLatency = rtt
+			sl.TotalLatency = sl.ServiceLatency + sl.NATSLatency
+			lsub := remoteLatencySubjectForResponse(c.pa.subject)
+			c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
+		}
 	}
 
 	// Match the subscriptions. We will use our own L1 map if
@@ -2489,17 +2579,22 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 	// If we have been marked invalid simply return here.
 	if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
 		var nrr []byte
-		if si.ae {
-			acc.removeServiceImport(si.from)
-		}
 		if c.pa.reply != nil {
+			var latency *serviceLatency
+			var tracking bool
+			if tracking = shouldSample(si.latency); tracking {
+				latency = si.latency
+			}
 			// We want to remap this to provide anonymity.
-			nrr = c.newServiceReply()
-			si.acc.addResponseServiceImport(acc, string(nrr), string(c.pa.reply), si.rt)
+			nrr = c.newServiceReply(tracking)
+			si.acc.addRespServiceImport(acc, string(nrr), string(c.pa.reply), si.rt, latency)
 
 			// Track our responses for cleanup if not auto-expire.
 			if si.rt != Singleton {
 				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
+			} else if si.latency != nil && c.rtt == 0 {
+				// We have a service import that we are tracking but have not established RTT
+				c.sendRTTPing()
 			}
 
 			// If this is a client or leaf connection and we are in gateway mode,
@@ -2533,6 +2628,20 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		} else {
 			c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, pmrNoFlag)
 		}
+
+		shouldRemove := si.ae
+
+		// Calculate tracking info here if we are tracking this request/response.
+		if si.tracking {
+			if requesting := firstSubFromResult(rr); requesting != nil {
+				shouldRemove = acc.sendTrackingLatency(si, requesting.client, c)
+			}
+		}
+
+		if shouldRemove {
+			acc.removeServiceImport(si.from)
+		}
+
 	}
 }
 

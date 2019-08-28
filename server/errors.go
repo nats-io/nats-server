@@ -40,6 +40,9 @@ var (
 	// ErrReservedPublishSubject represents an error condition when sending to a reserved subject, e.g. _SYS.>
 	ErrReservedPublishSubject = errors.New("reserved internal subject")
 
+	// ErrBadPublishSubject represents an error condition for an invalid publish subject.
+	ErrBadPublishSubject = errors.New("invalid publish subject")
+
 	// ErrBadClientProtocol signals a client requested an invalid client protocol.
 	ErrBadClientProtocol = errors.New("invalid client protocol")
 
@@ -75,6 +78,15 @@ var (
 
 	// ErrMissingAccount is returned when an account does not exist.
 	ErrMissingAccount = errors.New("account missing")
+
+	// ErrMissingService is returned when an account does not have an exported service.
+	ErrMissingService = errors.New("service missing")
+
+	// ErrBadServiceType is returned when latency tracking is being applied to non-singleton response types.
+	ErrBadServiceType = errors.New("bad service response type")
+
+	// ErrBadSampling is returned when the sampling for latency tracking is not 1 >= sample <= 100.
+	ErrBadSampling = errors.New("bad sampling percentage, should be 1-100")
 
 	// ErrAccountValidation is returned when an account has failed validation.
 	ErrAccountValidation = errors.New("account validation failed")

@@ -305,6 +305,13 @@ const (
 	LEN_INDEX   = 5
 )
 
+func grabPayload(cr *bufio.Reader, expected int) []byte {
+	d := make([]byte, expected)
+	n, _ := cr.Read(d)
+	cr.ReadString('\n')
+	return d[:n]
+}
+
 func checkPayload(cr *bufio.Reader, expected []byte, t *testing.T) {
 	t.Helper()
 	// Read in payload

@@ -802,6 +802,11 @@ func subjectIsLiteral(subject string) bool {
 	return true
 }
 
+// IsValidPublishSubject returns true if a subject is valid and a literal, false otherwise
+func IsValidPublishSubject(subject string) bool {
+	return IsValidSubject(subject) && subjectIsLiteral(subject)
+}
+
 // IsValidSubject returns true if a subject is valid, false otherwise
 func IsValidSubject(subject string) bool {
 	if subject == "" {
@@ -1057,4 +1062,18 @@ func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 		s.addAllNodeToSubs(l.fwc, subs)
 		s.collectAllSubs(l.fwc.next, subs)
 	}
+}
+
+// Helper to get the first result sub.
+func firstSubFromResult(rr *SublistResult) *subscription {
+	if rr == nil {
+		return nil
+	}
+	if len(rr.psubs) > 0 {
+		return rr.psubs[0]
+	}
+	if len(rr.qsubs) > 0 {
+		return rr.qsubs[0][0]
+	}
+	return nil
 }

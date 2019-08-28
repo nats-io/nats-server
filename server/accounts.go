@@ -16,6 +16,7 @@ package server
 import (
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -98,11 +99,14 @@ type serviceImport struct {
 	claim    *jwt.Import
 	from     string
 	to       string
-	rt       ServiceRespType
 	ts       int64
+	rt       ServiceRespType
+	latency  *serviceLatency
+	m1       *ServiceLatency
 	ae       bool
 	internal bool
 	invalid  bool
+	tracking bool
 }
 
 // This is used to record when we create a mapping for implicit service
@@ -142,7 +146,15 @@ func (rt ServiceRespType) String() string {
 type exportAuth struct {
 	tokenReq bool
 	approved map[string]*Account
+	// Only used for service types
 	respType ServiceRespType
+	latency  *serviceLatency
+}
+
+// Used to track service latency.
+type serviceLatency struct {
+	sampling int8
+	subject  string
 }
 
 // importMap tracks the imported streams and services.
@@ -403,6 +415,173 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 	return nil
 }
 
+// TrackServiceExport will enable latency tracking of the named service.
+// Results will be published in this account to the given results subject.
+func (a *Account) TrackServiceExport(service, results string) error {
+	return a.TrackServiceExportWithSampling(service, results, 100)
+}
+
+// TrackServiceExportWithSampling will enable latency tracking of the named service for the given
+// sampling rate (1-100). Results will be published in this account to the given results subject.
+func (a *Account) TrackServiceExportWithSampling(service, results string, sampling int) error {
+	if sampling < 1 || sampling > 100 {
+		return ErrBadSampling
+	}
+	if !IsValidPublishSubject(results) {
+		return ErrBadPublishSubject
+	}
+	// Don't loop back on outselves.
+	if a.IsExportService(results) {
+		return ErrBadPublishSubject
+	}
+
+	if a.srv == nil || !a.srv.eventsEnabled() {
+		return ErrNoSysAccount
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a == nil {
+		return ErrMissingAccount
+	}
+	if a.exports.services == nil {
+		return ErrMissingService
+	}
+	ea, ok := a.exports.services[service]
+	if !ok {
+		return ErrMissingService
+	}
+	if ea == nil {
+		ea = &exportAuth{}
+		a.exports.services[service] = ea
+	} else if ea.respType != Singleton {
+		return ErrBadServiceType
+	}
+	ea.latency = &serviceLatency{
+		sampling: int8(sampling),
+		subject:  results,
+	}
+
+	return nil
+}
+
+// IsExportService will indicate if this service exists. Will check wildcard scenarios.
+func (a *Account) IsExportService(service string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, ok := a.exports.services[service]
+	if ok {
+		return true
+	}
+	tokens := strings.Split(service, tsep)
+	for subj := range a.exports.services {
+		if isSubsetMatch(tokens, subj) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsExportServiceTracking will indicate if given publish subject is an export service with tracking enabled.
+func (a *Account) IsExportServiceTracking(service string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	ea, ok := a.exports.services[service]
+	if ok && ea == nil {
+		return false
+	}
+	if ok && ea != nil && ea.latency != nil {
+		return true
+	}
+	// FIXME(dlc) - Might want to cache this is in the hot path checking for
+	// latency tracking.
+	tokens := strings.Split(service, tsep)
+	for subj, ea := range a.exports.services {
+		if isSubsetMatch(tokens, subj) && ea != nil && ea.latency != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ServiceLatency is the JSON message sent out in respone to latency tracking for
+// exported services.
+type ServiceLatency struct {
+	AppName        string        `json:"app_name,omitempty"`
+	RequestStart   time.Time     `json:"request_start"`
+	ServiceLatency time.Duration `json:"service_latency"`
+	NATSLatency    time.Duration `json:"nats_latency"`
+	TotalLatency   time.Duration `json:"total_latency"`
+}
+
+// Used for transporting remote laytency measurements.
+type remoteLatency struct {
+	Account string         `json:"account"`
+	ReqId   string         `json:"req_id"`
+	M2      ServiceLatency `json:"m2"`
+}
+
+// sendTrackingMessage will send out the appropriate tracking information for the
+// service request/response latency. This is called when the requestor's server has
+// received the response.
+// TODO(dlc) - holding locks for RTTs may be too much long term. Should revisit.
+func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *client) bool {
+	now := time.Now()
+	serviceRTT := time.Duration(now.UnixNano() - si.ts)
+
+	var (
+		reqClientRTT  = requestor.getRTTValue()
+		natsRTT       = reqClientRTT
+		respClientRTT time.Duration
+		appName       string
+	)
+
+	expectRemoteM2 := responder != nil && responder.kind != CLIENT
+
+	if responder != nil && responder.kind == CLIENT {
+		respClientRTT = responder.getRTTValue()
+		natsRTT += respClientRTT
+		appName = responder.GetName()
+	}
+
+	// We will estimate time when request left the requestor by time we received
+	// and the client RTT for the requestor.
+	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
+	sl := ServiceLatency{
+		AppName:        appName,
+		RequestStart:   reqStart,
+		ServiceLatency: serviceRTT - respClientRTT,
+		NATSLatency:    natsRTT,
+		TotalLatency:   reqClientRTT + serviceRTT,
+	}
+
+	// If we are expecting a remote measurement, store our sl here.
+	// We need to account for the race between this and us receiving the
+	// remote measurement.
+	// FIXME(dlc) - We need to clean these up but this should happen
+	// already with the auto-expire logic.
+	if expectRemoteM2 {
+		si.acc.mu.Lock()
+		if si.m1 != nil {
+			m2 := si.m1
+			m1 := &sl
+			m1.AppName = m2.AppName
+			m1.ServiceLatency = m2.ServiceLatency
+			m1.NATSLatency = m1.TotalLatency - m1.ServiceLatency
+			si.acc.mu.Unlock()
+			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
+			return true
+		}
+		si.m1 = &sl
+		si.acc.mu.Unlock()
+		return false
+	} else {
+		a.srv.sendInternalAccountMsg(a, si.latency.subject, &sl)
+	}
+	return true
+}
+
 // numServiceRoutes returns the number of service routes on this account.
 func (a *Account) numServiceRoutes() int {
 	a.mu.RLock()
@@ -582,9 +761,12 @@ func (a *Account) SetMaxResponseMaps(max int) {
 // AddServiceImport from above if responding to user input or config changes, etc.
 func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) *serviceImport {
 	rt := Singleton
+	var lat *serviceLatency
+
 	dest.mu.Lock()
-	if ae := dest.exports.services[to]; ae != nil {
-		rt = ae.respType
+	if ea := dest.getExportAuth(to); ea != nil {
+		rt = ea.respType
+		lat = ea.latency
 	}
 	dest.mu.Unlock()
 
@@ -592,25 +774,40 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
 	}
-	si := &serviceImport{dest, claim, from, to, rt, 0, false, false, false}
+	si := &serviceImport{dest, claim, from, to, 0, rt, lat, nil, false, false, false, false}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
 	return si
 }
 
+// Helper to detrmine when to sample.
+func shouldSample(l *serviceLatency) bool {
+	if l == nil || l.sampling <= 0 {
+		return false
+	}
+	if l.sampling >= 100 {
+		return true
+	}
+	return rand.Int31n(100) <= int32(l.sampling)
+}
+
 // This is for internal responses.
-func (a *Account) addResponseServiceImport(dest *Account, from, to string, rt ServiceRespType) *serviceImport {
+func (a *Account) addRespServiceImport(dest *Account, from, to string, rt ServiceRespType, lat *serviceLatency) *serviceImport {
 	a.mu.Lock()
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
 	}
 	ae := rt == Singleton
-	si := &serviceImport{dest, nil, from, to, rt, 0, ae, true, false}
+	si := &serviceImport{dest, nil, from, to, 0, rt, nil, nil, ae, true, false, false}
 	a.imports.services[from] = si
 	if ae {
 		a.nae++
-		si.ts = time.Now().Unix()
+		si.ts = time.Now().UnixNano()
+		if lat != nil {
+			si.latency = lat
+			si.tracking = true
+		}
 		if a.nae > a.maxnae && !a.pruning {
 			a.pruning = true
 			go a.pruneAutoExpireResponseMaps()
@@ -648,14 +845,14 @@ func (a *Account) pruneAutoExpireResponseMaps() {
 	}()
 
 	a.mu.RLock()
-	ttl := int64(a.maxaettl/time.Second) + 1
+	ttl := int64(a.maxaettl)
 	a.mu.RUnlock()
 
 	for {
 		sis := a.autoExpireResponseMaps()
 
 		// Check ttl items.
-		now := time.Now().Unix()
+		now := time.Now().UnixNano()
 		for i, si := range sis {
 			if now-si.ts >= ttl {
 				a.removeServiceImport(si.from)
@@ -796,6 +993,30 @@ func (a *Account) checkExportApproved(account *Account, subject string, imClaim 
 		}
 	}
 	return false
+}
+
+// Helper function to get an exportAuth.
+// Lock should be held on entry.
+func (a *Account) getExportAuth(subj string) *exportAuth {
+	ea, ok := a.exports.services[subj]
+	// The export probably has a wildcard, so lookup that up.
+	if !ok {
+		ea = a.getWildcardExportAuth(subj)
+	}
+	return ea
+}
+
+// This helper is used when trying to match an exportAuth record that is
+// represented by a wildcard.
+// Lock should be held on entry.
+func (a *Account) getWildcardExportAuth(to string) *exportAuth {
+	tokens := strings.Split(to, tsep)
+	for subj, ea := range a.exports.services {
+		if isSubsetMatch(tokens, subj) {
+			return ea
+		}
+	}
+	return nil
 }
 
 // Will fetch the activation token for an import.
