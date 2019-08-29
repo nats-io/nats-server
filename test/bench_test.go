@@ -1382,6 +1382,14 @@ func Benchmark___________RoutedInterestGraph(b *testing.B) {
 		bw := bufio.NewWriterSize(route.r, defaultSendBufSize)
 		account := fmt.Sprintf("$foo.account.%d", index)
 
+		// Wait for seed server's first PING so that it does
+		// not interfere with the expected PONG after sending
+		// all RS- and last PING.
+		// The wait here does not affect perf measurements
+		// since we do so *before* we signal that we are ready.
+		route.expect(pingRe)
+		route.send("PONG\r\n")
+
 		// Signal we are ready
 		close(ch)
 
