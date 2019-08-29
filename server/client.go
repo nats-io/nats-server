@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,6 +87,7 @@ const (
 	clearConnection                          // Marks that clearConnection has already been called.
 	flushOutbound                            // Marks client as having a flushOutbound call in progress.
 	noReconnect                              // Indicate that on close, this connection should not attempt a reconnect
+	closeConnection                          // Marks that closeConnection has already been called.
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -918,6 +920,13 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 // Lock must be held
 func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
+		// Another go-routine has set this and is either
+		// doing the write or waiting to re-acquire the
+		// lock post write. Release lock to give it a
+		// chance to complete.
+		c.mu.Unlock()
+		runtime.Gosched()
+		c.mu.Lock()
 		return false
 	}
 	c.flags.set(flushOutbound)
@@ -3014,10 +3023,11 @@ type qsub struct {
 
 func (c *client) closeConnection(reason ClosedState) {
 	c.mu.Lock()
-	if c.nc == nil {
+	if c.nc == nil || c.flags.isSet(closeConnection) {
 		c.mu.Unlock()
 		return
 	}
+	c.flags.set(closeConnection)
 
 	// Be consistent with the creation: for routes and gateways,
 	// we use Noticef on create, so use that too for delete.
