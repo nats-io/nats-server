@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1181,6 +1182,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
+
 	cbar, crBar, _ := newClientForServer(s)
 	defer cbar.nc.Close()
 
@@ -1267,6 +1269,140 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	// for the response but should be removed when the response was processed.
 	if nr := fooAcc.numServiceRoutes(); nr != 0 {
 		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+	}
+}
+
+func TestAccountRequestReplyTrackLatency(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	// Run server in Go routine. We need this one running for internal sending of msgs.
+	go s.Start()
+	// Wait for accept loop(s) to be started
+	if !s.ReadyForConnections(10 * time.Second) {
+		panic("Unable to start NATS Server in Go Routine")
+	}
+
+	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Add in the service export for the requests. Make it public.
+	if err := fooAcc.AddServiceExport("track.service", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+
+	// Now let's add in tracking
+
+	// This looks ok but should fail because we have not set a system account needed for internal msgs.
+	if err := fooAcc.TrackServiceExport("track.service", "results"); err != ErrNoSysAccount {
+		t.Fatalf("Expected error enabling tracking latency without a system account")
+	}
+
+	if err := s.SetSystemAccount(globalAccountName); err != nil {
+		t.Fatalf("Error setting system account: %v", err)
+	}
+
+	// First check we get an error if service does not exist.
+	if err := fooAcc.TrackServiceExport("track.wrong", "results"); err != ErrMissingService {
+		t.Fatalf("Expected error enabling tracking latency for wrong service")
+	}
+	// Check results should be a valid subject
+	if err := fooAcc.TrackServiceExport("track.service", "results.*"); err != ErrBadPublishSubject {
+		t.Fatalf("Expected error enabling tracking latency for bad results subject")
+	}
+	// Make sure we can not loop around on ourselves..
+	if err := fooAcc.TrackServiceExport("track.service", "track.service"); err != ErrBadPublishSubject {
+		t.Fatalf("Expected error enabling tracking latency for same subject")
+	}
+	// Check bad sampling
+	if err := fooAcc.TrackServiceExportWithSampling("track.service", "results", -1); err != ErrBadSampling {
+		t.Fatalf("Expected error enabling tracking latency for bad sampling")
+	}
+	if err := fooAcc.TrackServiceExportWithSampling("track.service", "results", 101); err != ErrBadSampling {
+		t.Fatalf("Expected error enabling tracking latency for bad sampling")
+	}
+
+	// Now let's add in tracking for real. This will be 100%
+	if err := fooAcc.TrackServiceExport("track.service", "results"); err != nil {
+		t.Fatalf("Error enabling tracking latency: %v", err)
+	}
+
+	// Now add in the route mapping for request to be routed to the foo account.
+	if err := barAcc.AddServiceImport(fooAcc, "req", "track.service"); err != nil {
+		t.Fatalf("Error adding account service import to client bar: %v", err)
+	}
+
+	// Now setup the resonder under cfoo and the listener for the results
+	cfoo.parse([]byte("SUB track.service 1\r\nSUB results 2\r\n"))
+
+	readFooMsg := func() ([]byte, string) {
+		t.Helper()
+		l, err := crFoo.ReadString('\n')
+		if err != nil {
+			t.Fatalf("Error reading from client 'bar': %v", err)
+		}
+		mraw := msgPat.FindAllStringSubmatch(l, -1)
+		if len(mraw) == 0 {
+			t.Fatalf("No message received")
+		}
+		msg := mraw[0]
+		msgSize, _ := strconv.Atoi(msg[LEN_INDEX])
+		return grabPayload(crFoo, msgSize), msg[REPLY_INDEX]
+	}
+
+	start := time.Now()
+
+	// Now send the request. Remember we expect the request on our local foo. We added the route
+	// with that "from" and will map it to "test.request"
+	go cbar.parseAndFlush([]byte("SUB resp 11\r\nPUB req resp 4\r\nhelp\r\n"))
+
+	// Now read the request from crFoo
+	_, reply := readFooMsg()
+	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", reply)
+
+	serviceTime := 25 * time.Millisecond
+
+	// We will wait a bit to check latency results
+	go func() {
+		time.Sleep(serviceTime)
+		cfoo.parseAndFlush([]byte(replyOp))
+	}()
+
+	// Now read the response from crBar
+	_, err := crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+
+	// Now let's check that we got the sampling results
+	rMsg, _ := readFooMsg()
+
+	// Unmarshal and check it.
+	var sl ServiceLatency
+	err = json.Unmarshal(rMsg, &sl)
+	if err != nil {
+		t.Fatalf("Could not parse latency json: %v\n", err)
+	}
+	startDelta := sl.RequestStart.Sub(start)
+	if startDelta > 5*time.Millisecond {
+		t.Fatalf("Bad start delta %v", startDelta)
+	}
+	if sl.ServiceLatency < serviceTime {
+		t.Fatalf("Bad service latency: %v", sl.ServiceLatency)
+	}
+	if sl.TotalLatency < sl.ServiceLatency {
+		t.Fatalf("Bad total latency: %v", sl.ServiceLatency)
 	}
 }
 
@@ -1774,6 +1910,6 @@ func BenchmarkNewRouteReply(b *testing.B) {
 	c, _, _ := newClientForServer(s)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.newServiceReply()
+		c.newServiceReply(false)
 	}
 }

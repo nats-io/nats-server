@@ -579,14 +579,14 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 			return []*server.Account{server.NewAccount("$SYS")}, nil
 		}
 
+		sys := server.NewAccount("$SYS")
 		ngs := server.NewAccount("NGS")
 		dlc := server.NewAccount("DLC")
-		accounts := []*server.Account{
-			server.NewAccount("$SYS"),
-			server.NewAccount("FOO"),
-			server.NewAccount("BAR"),
-			ngs, dlc,
-		}
+		foo := server.NewAccount("FOO")
+		bar := server.NewAccount("BAR")
+
+		accounts := []*server.Account{sys, foo, bar, ngs, dlc}
+
 		ngs.AddServiceExport("ngs.usage.*", nil)
 		dlc.AddServiceImport(ngs, "ngs.usage", "ngs.usage.dlc")
 
@@ -594,6 +594,8 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 		users := []*server.User{
 			&server.User{Username: "dlc", Password: "pass", Permissions: nil, Account: dlc},
 			&server.User{Username: "ngs", Password: "pass", Permissions: nil, Account: ngs},
+			&server.User{Username: "foo", Password: "pass", Permissions: nil, Account: foo},
+			&server.User{Username: "bar", Password: "pass", Permissions: nil, Account: bar},
 		}
 		return accounts, users
 	}
@@ -613,6 +615,10 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 		gwurl, _ := url.Parse(gwAddr)
 		gws = append(gws, &server.RemoteGatewayOpts{Name: c.name, URLs: []*url.URL{gwurl}})
 	}
+
+	// Make the GWs form faster for the tests.
+	server.SetGatewaysSolicitDelay(5 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
 
 	// Create seed first.
 	o := testDefaultClusterOptionsForLeafNodes()

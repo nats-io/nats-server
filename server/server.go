@@ -697,9 +697,12 @@ func (s *Server) SystemAccount() *Account {
 	return nil
 }
 
+// For internal sends.
+const internalSendQLen = 1024
+
 // Assign a system account. Should only be called once.
-// This sets up a server to send and receive messages from inside
-// the server itself.
+// This sets up a server to send and receive messages from
+// inside the server itself.
 func (s *Server) setSystemAccount(acc *Account) error {
 	if acc == nil {
 		return ErrMissingAccount
@@ -728,7 +731,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		subs:    make(map[string]msgHandler),
-		sendq:   make(chan *pubMsg, 128),
+		sendq:   make(chan *pubMsg, internalSendQLen),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
@@ -900,12 +903,12 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	fetchTime := time.Since(start)
 	s.mu.Lock()
 	if fetchTime > time.Second {
-		s.Warnf("Account [%s] fetch took %v\n", name, fetchTime)
+		s.Warnf("Account [%s] fetch took %v", name, fetchTime)
 	} else {
-		s.Debugf("Account [%s] fetch took %v\n", name, fetchTime)
+		s.Debugf("Account [%s] fetch took %v", name, fetchTime)
 	}
 	if err != nil {
-		s.Warnf("Account fetch failed: %v\n", err)
+		s.Warnf("Account fetch failed: %v", err)
 		return "", err
 	}
 	return claimJWT, nil
