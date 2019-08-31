@@ -192,6 +192,7 @@ type client struct {
 	rtt        time.Duration
 	rttStart   time.Time
 	rrTracking map[string]*remoteLatency
+	rrMax      int
 
 	route *route
 	gw    *gateway
@@ -2227,7 +2228,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 		// FIXME(dlc) - We may need to optimize this.
 		if client.acc.IsExportServiceTracking(string(c.pa.subject)) {
 			// If we do not have a registered RTT queue that up now.
-			if client.rtt == 0 {
+			if client.rtt == 0 && c.flags.isSet(connectReceived) {
 				client.sendPing()
 			}
 			// We will have tagged this with a suffix ('.T') if we are tracking. This is
@@ -2284,6 +2285,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 func (c *client) trackRemoteReply(reply string) {
 	if c.rrTracking == nil {
 		c.rrTracking = make(map[string]*remoteLatency)
+		c.rrMax = c.acc.MaxAutoExpireResponseMaps()
 	}
 	rl := remoteLatency{
 		Account: c.acc.Name,
@@ -2291,6 +2293,9 @@ func (c *client) trackRemoteReply(reply string) {
 	}
 	rl.M2.RequestStart = time.Now()
 	c.rrTracking[reply] = &rl
+	if len(c.rrTracking) >= c.rrMax {
+		c.pruneRemoteTracking()
+	}
 }
 
 // pruneReplyPerms will remove any stale or expired entries
@@ -2336,6 +2341,20 @@ func (c *client) prunePubPermsCache() {
 		delete(c.perms.pcache, subject)
 		if r++; r > pruneSize {
 			break
+		}
+	}
+}
+
+// pruneRemoteTracking will prune any remote tracking objects
+// that are too old. These are orphaned when a service is not
+// sending reponses etc.
+// Lock should be held upon entry.
+func (c *client) pruneRemoteTracking() {
+	ttl := c.acc.AutoExpireTTL()
+	now := time.Now()
+	for reply, rl := range c.rrTracking {
+		if now.Sub(rl.M2.RequestStart) > ttl {
+			delete(c.rrTracking, reply)
 		}
 	}
 }
