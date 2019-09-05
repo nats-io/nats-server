@@ -797,8 +797,8 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 			len(alice.Permissions.Subscribe.Deny))
 	}
 	subPerm := alice.Permissions.Subscribe.Deny[0]
-	if subPerm != "$SYSTEM.>" {
-		t.Fatalf("Expected Alice's only denied subscribe permission to be '$SYSTEM.>', got %q", subPerm)
+	if subPerm != "$SYS.>" {
+		t.Fatalf("Expected Alice's only denied subscribe permission to be '$SYS.>', got %q", subPerm)
 	}
 
 	// Bob
@@ -818,8 +818,8 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 			len(bob.Permissions.Publish.Allow))
 	}
 	pubPerm = bob.Permissions.Publish.Allow[0]
-	if pubPerm != "$SYSTEM.>" {
-		t.Fatalf("Expected Bob's first allowed publish permission to be '$SYSTEM.>', got %q", pubPerm)
+	if pubPerm != "$SYS.>" {
+		t.Fatalf("Expected Bob's first allowed publish permission to be '$SYS.>', got %q", pubPerm)
 	}
 	if len(bob.Permissions.Publish.Deny) != 0 {
 		t.Fatalf("Expected Bob's denied publish permissions to have 0 elements, got %d",
@@ -877,7 +877,7 @@ func TestNkeyUsersWithPermsConfig(t *testing.T) {
       users = [
         {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV",
          permissions = {
-           publish = "$SYSTEM.>"
+           publish = "$SYS.>"
            subscribe = { deny = ["foo", "bar", "baz"] }
          }
         }
@@ -899,8 +899,8 @@ func TestNkeyUsersWithPermsConfig(t *testing.T) {
 	if nk.Permissions.Publish == nil {
 		t.Fatal("Expected to have publish permissions")
 	}
-	if nk.Permissions.Publish.Allow[0] != "$SYSTEM.>" {
-		t.Fatalf("Expected publish to allow \"$SYSTEM.>\", but got %v", nk.Permissions.Publish.Allow[0])
+	if nk.Permissions.Publish.Allow[0] != "$SYS.>" {
+		t.Fatalf("Expected publish to allow \"$SYS.>\", but got %v", nk.Permissions.Publish.Allow[0])
 	}
 	if nk.Permissions.Subscribe == nil {
 		t.Fatal("Expected to have subscribe permissions")
