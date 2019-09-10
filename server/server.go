@@ -104,6 +104,7 @@ type Server struct {
 	gacc             *Account
 	sys              *internal
 	accounts         sync.Map
+	tmpAccounts      sync.Map // Temporarily stores accounts that are being built
 	activeAccounts   int32
 	accResolver      AccountResolver
 	clients          map[uint64]*client
@@ -814,6 +815,7 @@ func (s *Server) registerAccount(acc *Account) {
 	acc.srv = s
 	acc.mu.Unlock()
 	s.accounts.Store(acc.Name, acc)
+	s.tmpAccounts.Delete(acc.Name)
 	s.enableAccountTracking(acc)
 }
 
