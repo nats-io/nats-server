@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"regexp"
@@ -1347,4 +1348,18 @@ func TestTraceMsg(t *testing.T) {
 			t.Errorf("Desc: %s. Msg %q. Traced msg want: %s, got: %s", ut.Desc, ut.Msg, ut.Wanted, got)
 		}
 	}
+}
+
+func TestClientMaxPending(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = math.MaxInt32 + 1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	defer nc.Close()
+
+	sub := natsSubSync(t, nc, "foo")
+	natsPub(t, nc, "foo", []byte("msg"))
+	natsNexMsg(t, sub, 100*time.Millisecond)
 }
