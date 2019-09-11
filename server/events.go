@@ -460,7 +460,7 @@ func (s *Server) startRemoteServerSweepTimer() {
 	s.sys.sweeper = time.AfterFunc(s.sys.chkOrph, s.wrapChk(s.checkRemoteServers))
 }
 
-// Length of our system hash used for server targetted messages.
+// Length of our system hash used for server targeted messages.
 const sysHashLen = 4
 
 // This will setup our system wide tracking subs.
@@ -1012,7 +1012,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, subject, _ string, msg [
 		s.Errorf("Error unmarshalling remot elatency measurement: %v", err)
 		return
 	}
-	// Now we need to look up the responseServiceImport associated with thsi measurement.
+	// Now we need to look up the responseServiceImport associated with this measurement.
 	acc, err := s.LookupAccount(rl.Account)
 	if err != nil {
 		s.Warnf("Could not lookup account %q for latency measurement", rl.Account)

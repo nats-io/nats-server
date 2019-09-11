@@ -505,7 +505,7 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 	return false
 }
 
-// ServiceLatency is the JSON message sent out in respone to latency tracking for
+// ServiceLatency is the JSON message sent out in response to latency tracking for
 // exported services.
 type ServiceLatency struct {
 	AppName        string        `json:"app_name,omitempty"`
@@ -1450,6 +1450,13 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			acc = v.(*Account)
 		}
 		if acc == nil {
+			// Check to see if the account referenced is not one that
+			// we are currently building (but not yet fully registered).
+			if v, ok := s.tmpAccounts.Load(i.Account); ok {
+				acc = v.(*Account)
+			}
+		}
+		if acc == nil {
 			if acc, _ = s.fetchAccount(i.Account); acc == nil {
 				s.Debugf("Can't locate account [%s] for import of [%v] %s", i.Account, i.Subject, i.Type)
 				continue
@@ -1584,6 +1591,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	acc := NewAccount(ac.Subject)
 	acc.Issuer = ac.Issuer
+	// We don't want to register an account that is in the process of
+	// being built, however, to solve circular import dependencies, we
+	// need to store it here.
+	s.tmpAccounts.Store(ac.Subject, acc)
 	s.updateAccountClaims(acc, ac)
 	return acc
 }

@@ -2257,3 +2257,64 @@ func TestJWTImportTokenRevokedBefore(t *testing.T) {
 		t.Fatalf("Expected imports streams len of 0, got %d", les)
 	}
 }
+
+func TestJWTCircularAccountServiceImport(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+
+	barKP, _ := nkeys.CreateAccount()
+	barPub, _ := barKP.PublicKey()
+	barAC := jwt.NewAccountClaims(barPub)
+
+	// Create service export/import for account foo
+	serviceExport := &jwt.Export{Subject: "foo", Type: jwt.Service, TokenReq: true}
+	serviceImport := &jwt.Import{Account: barPub, Subject: "bar", Type: jwt.Service}
+
+	fooAC.Exports.Add(serviceExport)
+	fooAC.Imports.Add(serviceImport)
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	// Create service export/import for account bar
+	serviceExport = &jwt.Export{Subject: "bar", Type: jwt.Service, TokenReq: true}
+	serviceImport = &jwt.Import{Account: fooPub, Subject: "foo", Type: jwt.Service}
+
+	barAC.Exports.Add(serviceExport)
+	barAC.Imports.Add(serviceImport)
+	barJWT, err := barAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	addAccountToMemResolver(s, barPub, barJWT)
+
+	c, cr, cs := createClient(t, s, fooKP)
+	parseAsync, quit := genAsyncParser(c)
+	defer func() { quit <- true }()
+
+	expectPong := func(cr *bufio.Reader) {
+		t.Helper()
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, "PONG") {
+			t.Fatalf("Expected a PONG, got %q", l)
+		}
+	}
+
+	parseAsync(cs)
+	expectPong(cr)
+
+	parseAsync("SUB foo 1\r\nPING\r\n")
+	expectPong(cr)
+}
