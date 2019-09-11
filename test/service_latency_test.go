@@ -115,15 +115,18 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	if sl.TotalLatency < sl.ServiceLatency {
 		t.Fatalf("Bad total latency: %v", sl.ServiceLatency)
 	}
+
 	// We should have NATS latency here that is non-zero with real clients.
-	if sl.NATSLatency == 0 {
-		t.Fatalf("Expected non-zero NATS latency")
+	if sl.NATSLatency.Requestor == 0 {
+		t.Fatalf("Expected non-zero NATS Requestor latency")
+	}
+	if sl.NATSLatency.Responder == 0 {
+		t.Fatalf("Expected non-zero NATS Requestor latency")
 	}
 	// Make sure they add up
-	if sl.TotalLatency != sl.ServiceLatency+sl.NATSLatency {
+	if sl.TotalLatency != sl.ServiceLatency+sl.NATSLatency.TotalTime() {
 		t.Fatalf("Numbers do not add up: %+v", sl)
 	}
-
 }
 
 func TestServiceLatencySingleServerConnect(t *testing.T) {
@@ -220,8 +223,8 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
-	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency < crtt {
-		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency, crtt)
+	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency.TotalTime() < crtt {
+		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency.TotalTime(), crtt)
 	}
 
 	// Gateway Requestor
@@ -244,8 +247,8 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
-	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency < crtt {
-		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency, crtt)
+	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency.TotalTime() < crtt {
+		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency.TotalTime(), crtt)
 	}
 }
 
