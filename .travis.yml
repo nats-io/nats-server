@@ -16,17 +16,17 @@ install:
 - go get -u honnef.co/go/tools/cmd/staticcheck
 - go get -u github.com/client9/misspell/cmd/misspell
 before_script:
-- EXCLUDE_VENDOR=$(go list ./... | grep -v "/vendor/")
+- GO_LIST=$(go list ./...)
 - go build
-- $(exit $(go fmt $EXCLUDE_VENDOR | wc -l))
-- go vet $EXCLUDE_VENDOR
-- misspell -error -locale US $EXCLUDE_VENDOR
-- staticcheck $EXCLUDE_VENDOR
+- $(exit $(go fmt $GO_LIST | wc -l))
+- go vet $GO_LIST
+- find . -type f -name "*.go" | grep -v "/vendor/" | xargs misspell -error -locale US
+- staticcheck $GO_LIST
 script:
 - set -e
-- go test -i $EXCLUDE_VENDOR
-- go test -run=TestNoRace --failfast -p=1 $EXCLUDE_VENDOR
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast $EXCLUDE_VENDOR; fi
+- go test -i ./...
+- go test -run=TestNoRace --failfast -p=1 ./...
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
 - set +e
 
 deploy:
