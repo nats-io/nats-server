@@ -2124,7 +2124,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
+func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -2139,7 +2139,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
-	if client.mperms != nil && client.checkDenySub(string(c.pa.subject)) {
+	if client.mperms != nil && client.checkDenySub(string(subject)) {
 		client.mu.Unlock()
 		return false
 	}
@@ -2204,7 +2204,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	if client.kind == SYSTEM {
 		s := client.srv
 		client.mu.Unlock()
-		s.deliverInternalMsg(sub, c.pa.subject, c.pa.reply, msg[:msgSize])
+		s.deliverInternalMsg(sub, subject, c.pa.reply, msg[:msgSize])
 		return true
 	}
 
@@ -2224,18 +2224,16 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) bool {
 	// Do a fast check here to see if we should be tracking this from a latency
 	// persepective. This will be for a request being received for an exported service.
 	// This needs to be from a non-client (otherwise tracking happens at requestor).
-	if c.kind != CLIENT && client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
+	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
+		// If we do not have a registered RTT queue that up now.
+		if client.rtt == 0 && client.flags.isSet(connectReceived) {
+			client.sendPing()
+		}
 		// FIXME(dlc) - We may need to optimize this.
-		if client.acc.IsExportServiceTracking(string(c.pa.subject)) {
-			// If we do not have a registered RTT queue that up now.
-			if client.rtt == 0 && c.flags.isSet(connectReceived) {
-				client.sendPing()
-			}
-			// We will have tagged this with a suffix ('.T') if we are tracking. This is
-			// needed from sampling. Not all will be tracked.
-			if isTrackedReply(c.pa.reply) {
-				client.trackRemoteReply(string(c.pa.reply))
-			}
+		// We will have tagged this with a suffix ('.T') if we are tracking. This is
+		// needed from sampling. Not all will be tracked.
+		if c.kind != CLIENT && client.acc.IsExportServiceTracking(string(subject)) && isTrackedReply(c.pa.reply) {
+			client.trackRemoteReply(string(c.pa.reply))
 		}
 	}
 
@@ -2531,8 +2529,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 			// Fill this in and send it off to the other side.
 			sl.AppName = c.opts.Name
 			sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
-			sl.NATSLatency = rtt
-			sl.TotalLatency = sl.ServiceLatency + sl.NATSLatency
+			sl.NATSLatency.Responder = rtt
+			sl.TotalLatency = sl.ServiceLatency + rtt
 			lsub := remoteLatencySubjectForResponse(c.pa.subject)
 			c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
 		}
@@ -2624,7 +2622,6 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 				// We have a service import that we are tracking but have not established RTT
 				c.sendRTTPing()
 			}
-
 			// If this is a client or leaf connection and we are in gateway mode,
 			// we need to send RS+ to our local cluster and possibly to inbound
 			// GW connections for which we are in interest-only mode.
@@ -2757,7 +2754,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		}
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub, reply)
-		c.deliverMsg(sub, mh, msg)
+		c.deliverMsg(sub, subject, mh, msg)
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -2844,7 +2841,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			}
 
 			mh := c.msgHeader(msgh[:si], sub, reply)
-			if c.deliverMsg(sub, mh, msg) {
+			if c.deliverMsg(sub, subject, mh, msg) {
 				// Clear rsub
 				rsub = nil
 				if flags&pmrCollectQueueNames != 0 {
@@ -2908,7 +2905,7 @@ sendToRoutesOrLeafs:
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, _CRLF_...)
-		c.deliverMsg(rt.sub, mh, msg)
+		c.deliverMsg(rt.sub, subject, mh, msg)
 	}
 	return queues
 }

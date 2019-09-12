@@ -486,12 +486,13 @@ func (a *Account) IsExportService(service string) bool {
 // IsExportServiceTracking will indicate if given publish subject is an export service with tracking enabled.
 func (a *Account) IsExportServiceTracking(service string) bool {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
 	ea, ok := a.exports.services[service]
 	if ok && ea == nil {
+		a.mu.RUnlock()
 		return false
 	}
 	if ok && ea != nil && ea.latency != nil {
+		a.mu.RUnlock()
 		return true
 	}
 	// FIXME(dlc) - Might want to cache this is in the hot path checking for
@@ -499,10 +500,24 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 	tokens := strings.Split(service, tsep)
 	for subj, ea := range a.exports.services {
 		if isSubsetMatch(tokens, subj) && ea != nil && ea.latency != nil {
+			a.mu.RUnlock()
 			return true
 		}
 	}
+	a.mu.RUnlock()
 	return false
+}
+
+// NATSLatency represents the internal NATS latencies, including RTTs to clients.
+type NATSLatency struct {
+	Requestor time.Duration `json:"requestor_rtt"`
+	Responder time.Duration `json:"responder_rtt"`
+	System    time.Duration `json:"system_latency"`
+}
+
+// TotalTime is a helper function that totals the NATS latencies.
+func (nl *NATSLatency) TotalTime() time.Duration {
+	return nl.Requestor + nl.Responder + nl.System
 }
 
 // ServiceLatency is the JSON message sent out in response to latency tracking for
@@ -511,11 +526,25 @@ type ServiceLatency struct {
 	AppName        string        `json:"app_name,omitempty"`
 	RequestStart   time.Time     `json:"request_start"`
 	ServiceLatency time.Duration `json:"service_latency"`
-	NATSLatency    time.Duration `json:"nats_latency"`
+	NATSLatency    NATSLatency   `json:"nats_latency"`
 	TotalLatency   time.Duration `json:"total_latency"`
 }
 
-// Used for transporting remote laytency measurements.
+// Merge function to merge m1 and m2 (requestor and responder) measurements
+// when there are two samples. This happens when the requestor and responder
+// are on different servers.
+//
+// m2 ServiceLatency is correct, so use that.
+// m1 TotalLatency is correct, so use that.
+// Will use those to back into NATS latency.
+func (m1 *ServiceLatency) merge(m2 *ServiceLatency) {
+	m1.AppName = m2.AppName
+	m1.NATSLatency.System = m1.ServiceLatency - (m2.ServiceLatency + m2.NATSLatency.Responder)
+	m1.ServiceLatency = m2.ServiceLatency
+	m1.NATSLatency.Responder = m2.NATSLatency.Responder
+}
+
+// Used for transporting remote latency measurements.
 type remoteLatency struct {
 	Account string         `json:"account"`
 	ReqId   string         `json:"req_id"`
@@ -532,7 +561,6 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 
 	var (
 		reqClientRTT  = requestor.getRTTValue()
-		natsRTT       = reqClientRTT
 		respClientRTT time.Duration
 		appName       string
 	)
@@ -541,7 +569,6 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 
 	if responder != nil && responder.kind == CLIENT {
 		respClientRTT = responder.getRTTValue()
-		natsRTT += respClientRTT
 		appName = responder.GetName()
 	}
 
@@ -552,8 +579,12 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 		AppName:        appName,
 		RequestStart:   reqStart,
 		ServiceLatency: serviceRTT - respClientRTT,
-		NATSLatency:    natsRTT,
-		TotalLatency:   reqClientRTT + serviceRTT,
+		NATSLatency: NATSLatency{
+			Requestor: reqClientRTT,
+			Responder: respClientRTT,
+			System:    0,
+		},
+		TotalLatency: reqClientRTT + serviceRTT,
 	}
 
 	// If we are expecting a remote measurement, store our sl here.
@@ -564,11 +595,8 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 	if expectRemoteM2 {
 		si.acc.mu.Lock()
 		if si.m1 != nil {
-			m2 := si.m1
-			m1 := &sl
-			m1.AppName = m2.AppName
-			m1.ServiceLatency = m2.ServiceLatency
-			m1.NATSLatency = m1.TotalLatency - m1.ServiceLatency
+			m1, m2 := &sl, si.m1
+			m1.merge(m2)
 			si.acc.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			return true

@@ -1033,7 +1033,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, subject, _ string, msg [
 	lsub := si.latency.subject
 	acc.mu.RUnlock()
 
-	// So we have no processed the response tracking measurement yet.
+	// So we have not processed the response tracking measurement yet.
 	if m1 == nil {
 		acc.mu.Lock()
 		// Double check since could have slipped in.
@@ -1052,9 +1052,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, subject, _ string, msg [
 	// M2 ServiceLatency is correct, so use that.
 	// M1 TotalLatency is correct, so use that.
 	// Will use those to back into NATS latency.
-	m1.AppName = m2.AppName
-	m1.ServiceLatency = m2.ServiceLatency
-	m1.NATSLatency = m1.TotalLatency - m1.ServiceLatency
+	m1.merge(&m2)
 
 	// Make sure we remove the entry here.
 	si.acc.removeServiceImport(si.from)
