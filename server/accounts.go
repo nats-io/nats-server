@@ -510,7 +510,7 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 
 // NATSLatency represents the internal NATS latencies, including RTTs to clients.
 type NATSLatency struct {
-	Requestor time.Duration `json:"request_rtt"`
+	Requestor time.Duration `json:"requestor_rtt"`
 	Responder time.Duration `json:"responder_rtt"`
 	System    time.Duration `json:"system_latency"`
 }
