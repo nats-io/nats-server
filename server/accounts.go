@@ -510,9 +510,9 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 
 // NATSLatency represents the internal NATS latencies, including RTTs to clients.
 type NATSLatency struct {
-	Requestor time.Duration `json:"requestor_rtt"`
-	Responder time.Duration `json:"responder_rtt"`
-	System    time.Duration `json:"system_latency"`
+	Requestor time.Duration `json:"req"`
+	Responder time.Duration `json:"resp"`
+	System    time.Duration `json:"sys"`
 }
 
 // TotalTime is a helper function that totals the NATS latencies.
@@ -523,11 +523,11 @@ func (nl *NATSLatency) TotalTime() time.Duration {
 // ServiceLatency is the JSON message sent out in response to latency tracking for
 // exported services.
 type ServiceLatency struct {
-	AppName        string        `json:"app_name,omitempty"`
-	RequestStart   time.Time     `json:"request_start"`
-	ServiceLatency time.Duration `json:"service_latency"`
-	NATSLatency    NATSLatency   `json:"nats_latency"`
-	TotalLatency   time.Duration `json:"total_latency"`
+	AppName        string        `json:"app,omitempty"`
+	RequestStart   time.Time     `json:"start"`
+	ServiceLatency time.Duration `json:"svc"`
+	NATSLatency    NATSLatency   `json:"nats"`
+	TotalLatency   time.Duration `json:"total"`
 }
 
 // Merge function to merge m1 and m2 (requestor and responder) measurements
