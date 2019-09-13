@@ -41,6 +41,7 @@ type Account struct {
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
+	sqmu         sync.Mutex
 	sl           *Sublist
 	etmr         *time.Timer
 	ctmr         *time.Timer

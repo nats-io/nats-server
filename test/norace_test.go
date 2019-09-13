@@ -380,6 +380,7 @@ func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
 	// we just want to make sure we always are increasing and that a previous update to
 	// a lesser queue weight is never delivered for this test.
 	maxExpected := 10000
+	updates := 0
 	for qw := 0; qw < maxExpected; {
 		buf := routeExpect(rsubRe)
 		matches := rsubRe.FindAllSubmatch(buf, -1)
@@ -397,6 +398,10 @@ func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
 				t.Fatalf("Was expecting increasing queue weight after %d, got %d", qw, nqw)
 			}
 			qw = nqw
+			updates++
 		}
+	}
+	if updates >= maxExpected {
+		t.Fatalf("Was not expecting all %v updates to be received", maxExpected)
 	}
 }

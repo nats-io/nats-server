@@ -20,9 +20,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
 
@@ -2052,6 +2054,47 @@ func TestAccountCheckStreamImportsEqual(t *testing.T) {
 	if aAcc.checkStreamImportsEqual(bAcc) {
 		t.Fatal("Expected stream imports to be different")
 	}
+}
+
+func TestAccountNoDeadlockOnQueueSubRouteMapUpdate(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	nc.QueueSubscribeSync("foo", "bar")
+
+	var accs []*Account
+	for i := 0; i < 10; i++ {
+		acc, _ := s.RegisterAccount(fmt.Sprintf("acc%d", i))
+		acc.mu.Lock()
+		accs = append(accs, acc)
+	}
+
+	opts2 := DefaultOptions()
+	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port))
+	s2 := RunServer(opts2)
+	defer s2.Shutdown()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		for _, acc := range accs {
+			acc.mu.Unlock()
+		}
+		wg.Done()
+	}()
+
+	nc.QueueSubscribeSync("foo", "bar")
+	nc.Flush()
+
+	wg.Wait()
 }
 
 func BenchmarkNewRouteReply(b *testing.B) {
