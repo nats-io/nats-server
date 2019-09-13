@@ -1320,18 +1320,36 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	var n int32
 	var ok bool
 
-	acc.mu.Lock()
+	isq := len(sub.queue) > 0
+
+	accLock := func() {
+		// Not required for code correctness, but helps reduce the number of
+		// updates sent to the routes when processing high number of concurrent
+		// queue subscriptions updates (sub/unsub).
+		// See https://github.com/nats-io/nats-server/pull/1126 ffor more details.
+		if isq {
+			acc.sqmu.Lock()
+		}
+		acc.mu.Lock()
+	}
+	accUnlock := func() {
+		acc.mu.Unlock()
+		if isq {
+			acc.sqmu.Unlock()
+		}
+	}
+
+	accLock()
 
 	// This is non-nil when we know we are in cluster mode.
 	rm, lqws := acc.rm, acc.lqws
 	if rm == nil {
-		acc.mu.Unlock()
+		accUnlock()
 		return
 	}
 
 	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
 	key := keyFromSub(sub)
-	isq := len(sub.queue) > 0
 
 	// Decide whether we need to send an update out to all the routes.
 	update := isq
@@ -1356,7 +1374,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		update = true // Adding a new entry for normal sub means update (0->1)
 	}
 
-	acc.mu.Unlock()
+	accUnlock()
 
 	if !update {
 		return
@@ -1388,17 +1406,23 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	// here but not necessarily all updates need to be sent. We need to block and recheck the
 	// n count with the lock held through sending here. We will suppress duplicate sends of same qw.
 	if isq {
+		// However, we can't hold the acc.mu lock since we allow client.mu.Lock -> acc.mu.Lock
+		// but not the opposite. So use a dedicated lock while holding the route's lock.
+		acc.sqmu.Lock()
+		defer acc.sqmu.Unlock()
+
 		acc.mu.Lock()
-		defer acc.mu.Unlock()
 		n = rm[key]
 		sub.qw = n
 		// Check the last sent weight here. If same, then someone
 		// beat us to it and we can just return here. Otherwise update
 		if ls, ok := lqws[key]; ok && ls == n {
+			acc.mu.Unlock()
 			return
 		} else {
 			lqws[key] = n
 		}
+		acc.mu.Unlock()
 	}
 
 	// Snapshot into array
