@@ -189,11 +189,74 @@ func (a *Account) shallowCopy() *Account {
 	return na
 }
 
+// Called to track a remote server and connections and leafnodes it
+// has for this account.
+func (a *Account) updateRemoteServer(m *AccountNumConns) {
+	a.mu.Lock()
+	if a.strack == nil {
+		a.strack = make(map[string]sconns)
+	}
+	// This does not depend on receiving all updates since each one is idempotent.
+	// FIXME(dlc) - We should cleanup when these both go to zero.
+	prev := a.strack[m.Server.ID]
+	a.strack[m.Server.ID] = sconns{conns: int32(m.Conns), leafs: int32(m.LeafNodes)}
+	a.nrclients += int32(m.Conns) - prev.conns
+	a.nrleafs += int32(m.LeafNodes) - prev.leafs
+	a.mu.Unlock()
+}
+
+// Removes tracking for a remote server that has shutdown.
+func (a *Account) removeRemoteServer(sid string) {
+	a.mu.Lock()
+	if a.strack != nil {
+		prev := a.strack[sid]
+		delete(a.strack, sid)
+		a.nrclients -= prev.conns
+		a.nrleafs -= prev.leafs
+	}
+	a.mu.Unlock()
+}
+
+// When querying for subject interest this is the number of
+// expected responses. We need to actually check that the entry
+// has active connections.
+func (a *Account) expectedRemoteResponses() (expected int32) {
+	a.mu.RLock()
+	for _, sc := range a.strack {
+		if sc.conns > 0 || sc.leafs > 0 {
+			expected++
+		}
+	}
+	a.mu.RUnlock()
+	return
+}
+
+// Clears eventing and tracking for this account.
+func (a *Account) clearEventing() {
+	a.mu.Lock()
+	a.nrclients = 0
+	// Now clear state
+	clearTimer(&a.etmr)
+	clearTimer(&a.ctmr)
+	a.clients = nil
+	a.strack = nil
+	a.mu.Unlock()
+}
+
 // NumConnections returns active number of clients for this account for
 // all known servers.
 func (a *Account) NumConnections() int {
 	a.mu.RLock()
 	nc := len(a.clients) + int(a.nrclients)
+	a.mu.RUnlock()
+	return nc
+}
+
+// NumRemoteConnections returns the number of client or leaf connections that
+// are not on this server.
+func (a *Account) NumRemoteConnections() int {
+	a.mu.RLock()
+	nc := int(a.nrclients + a.nrleafs)
 	a.mu.RUnlock()
 	return nc
 }
@@ -210,6 +273,15 @@ func (a *Account) NumLocalConnections() int {
 // Do not account for the system accounts.
 func (a *Account) numLocalConnections() int {
 	return len(a.clients) - int(a.sysclients) - int(a.nleafs)
+}
+
+// This is for extended local interest.
+// Lock should not be held.
+func (a *Account) numLocalAndLeafConnections() int {
+	a.mu.RLock()
+	nlc := len(a.clients) - int(a.sysclients)
+	a.mu.RUnlock()
+	return nlc
 }
 
 func (a *Account) numLocalLeafNodes() int {
@@ -613,8 +685,9 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 // numServiceRoutes returns the number of service routes on this account.
 func (a *Account) numServiceRoutes() int {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return len(a.imports.services)
+	num := len(a.imports.services)
+	a.mu.RUnlock()
+	return num
 }
 
 // AddServiceImportWithClaim will add in the service import via the jwt claim.

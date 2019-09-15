@@ -460,6 +460,8 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		// for pub/sub authorizations.
 		if ok {
 			c.RegisterUser(user)
+			// Generate an event if we have a system account and this is not the $G account.
+			s.accountConnectEvent(c)
 		}
 		return ok
 	}
@@ -581,13 +583,14 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 
 	// Grab under lock but process after.
 	var (
-		juc *jwt.UserClaims
-		acc *Account
-		err error
+		juc  *jwt.UserClaims
+		acc  *Account
+		user *User
+		ok   bool
+		err  error
 	)
 
 	s.mu.Lock()
-
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
 		if c.opts.JWT == "" {
@@ -608,6 +611,14 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 			s.mu.Unlock()
 			c.Debugf("User JWT no longer valid: %+v", vr)
 			return false
+		}
+	} else if s.users != nil {
+		if c.opts.Username != "" {
+			user, ok = s.users[c.opts.Username]
+			if !ok {
+				s.mu.Unlock()
+				return false
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -670,6 +681,18 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())
 		return true
+	}
+
+	if user != nil {
+		ok = comparePasswords(user.Password, c.opts.Password)
+		// If we are authorized, register the user which will properly setup any permissions
+		// for pub/sub authorizations.
+		if ok {
+			c.RegisterUser(user)
+			// Generate an event if we have a system account and this is not the $G account.
+			s.accountConnectEvent(c)
+		}
+		return ok
 	}
 
 	// FIXME(dlc) - Add ability to support remote account bindings via

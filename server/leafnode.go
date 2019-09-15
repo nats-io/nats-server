@@ -64,6 +64,10 @@ func (c *client) isSolicitedLeafNode() bool {
 	return c.kind == LEAF && c.leaf.remote != nil
 }
 
+func (c *client) isUnsolicitedLeafNode() bool {
+	return c.kind == LEAF && c.leaf.remote == nil
+}
+
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 	for _, r := range remotes {
@@ -403,7 +407,6 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
 	}
-
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
@@ -1001,6 +1004,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
 	update := sub.queue != nil || n == 0 || n+delta <= 0
+
 	n += delta
 	if n > 0 {
 		c.leaf.smap[key] = n

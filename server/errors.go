@@ -124,6 +124,9 @@ var (
 
 	// ErrRevocation is returned when a credential has been revoked.
 	ErrRevocation = errors.New("credentials have been revoked")
+
+	// Used to signal an error that a server is not running.
+	ErrServerNotRunning = errors.New("server is not running")
 )
 
 // configErr is a configuration error.

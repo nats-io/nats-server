@@ -1704,7 +1704,7 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte) (err error) {
+func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) {
 	c.traceInOp("SUB", argo)
 
 	// Indicate activity.
@@ -1726,7 +1726,7 @@ func (c *client) processSub(argo []byte) (err error) {
 		sub.queue = args[1]
 		sub.sid = args[2]
 	default:
-		return fmt.Errorf("processSub Parse Error: '%s'", arg)
+		return nil, fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
 
 	c.mu.Lock()
@@ -1740,7 +1740,7 @@ func (c *client) processSub(argo []byte) (err error) {
 
 	if c.nc == nil && kind != SYSTEM {
 		c.mu.Unlock()
-		return nil
+		return sub, nil
 	}
 
 	// Check permissions if applicable.
@@ -1749,17 +1749,18 @@ func (c *client) processSub(argo []byte) (err error) {
 		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 		c.Errorf("Subscription Violation - %s, Subject %q, SID %s",
 			c.getAuthUser(), sub.subject, sub.sid)
-		return nil
+		return nil, nil
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
 	if c.subsAtLimit() {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
-		return nil
+		return nil, nil
 	}
 
-	updateGWs := false
+	var updateGWs bool
+	var err error
 
 	// Subscribe here.
 	if c.subs[sid] == nil {
@@ -1778,19 +1779,24 @@ func (c *client) processSub(argo []byte) (err error) {
 
 	if err != nil {
 		c.sendErr("Invalid Subject")
-		return nil
+		return nil, nil
 	} else if c.opts.Verbose && kind != SYSTEM {
 		c.sendOK()
 	}
 
 	// No account just return.
 	if acc == nil {
-		return nil
+		return sub, nil
 	}
 
 	if err := c.addShadowSubscriptions(acc, sub); err != nil {
 		c.Errorf(err.Error())
 	}
+
+	if noForward {
+		return sub, nil
+	}
+
 	// If we are routing and this is a local sub, add to the route map for the associated account.
 	if kind == CLIENT || kind == SYSTEM {
 		srv.updateRouteSubscriptionMap(acc, sub, 1)
@@ -1800,7 +1806,7 @@ func (c *client) processSub(argo []byte) (err error) {
 	}
 	// Now check on leafnode updates.
 	srv.updateLeafNodes(acc, sub, 1)
-	return nil
+	return sub, nil
 }
 
 // If the client's account has stream imports and there are matches for
@@ -2204,7 +2210,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	if client.kind == SYSTEM {
 		s := client.srv
 		client.mu.Unlock()
-		s.deliverInternalMsg(sub, subject, c.pa.reply, msg[:msgSize])
+		s.deliverInternalMsg(sub, c, subject, c.pa.reply, msg[:msgSize])
 		return true
 	}
 
@@ -2389,7 +2395,7 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 	}
 
 	// If we are currently not allowed but we are tracking reply subjects
-	// dynamically, check to see if we are allowed here Avoid pcache.
+	// dynamically, check to see if we are allowed here but avoid pcache.
 	// We need to acquire the lock though.
 	if !allowed && fullCheck && c.perms.resp != nil {
 		c.mu.Lock()
@@ -2516,7 +2522,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 
 	// If we have an exported service and we are doing remote tracking, check this subject
 	// to see if we need to report the latency.
-	if c.acc.exports.services != nil && c.rrTracking != nil {
+	if c.rrTracking != nil {
 		c.mu.Lock()
 		rl := c.rrTracking[string(c.pa.subject)]
 		if rl != nil {

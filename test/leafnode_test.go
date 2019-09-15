@@ -596,6 +596,7 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 			&server.User{Username: "ngs", Password: "pass", Permissions: nil, Account: ngs},
 			&server.User{Username: "foo", Password: "pass", Permissions: nil, Account: foo},
 			&server.User{Username: "bar", Password: "pass", Permissions: nil, Account: bar},
+			&server.User{Username: "sys", Password: "pass", Permissions: nil, Account: sys},
 		}
 		return accounts, users
 	}
