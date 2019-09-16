@@ -175,4 +175,8 @@ const (
 	// DEFAULT_ALLOW_RESPONSE_EXPIRATION is the default time allowed for a given
 	// dynamic response permission.
 	DEFAULT_ALLOW_RESPONSE_EXPIRATION = 2 * time.Minute
+
+	// DEFAULT_SERVICE_LATENCY_SAMPLING is the default sampling rate for service
+	// latency metrics
+	DEFAULT_SERVICE_LATENCY_SAMPLING = 100
 )

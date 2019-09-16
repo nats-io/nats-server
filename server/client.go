@@ -2228,7 +2228,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	}
 
 	// Do a fast check here to see if we should be tracking this from a latency
-	// persepective. This will be for a request being received for an exported service.
+	// perspective. This will be for a request being received for an exported service.
 	// This needs to be from a non-client (otherwise tracking happens at requestor).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
 		// If we do not have a registered RTT queue that up now.

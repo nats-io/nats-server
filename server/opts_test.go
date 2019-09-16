@@ -1514,6 +1514,139 @@ func TestClusterPermissionsConfig(t *testing.T) {
 	}
 }
 
+func TestParseServiceLatency(t *testing.T) {
+	cases := []struct {
+		name    string
+		conf    string
+		want    *serviceLatency
+		wantErr bool
+	}{
+		{
+			name: "block with percent sample default value",
+			conf: `system_account = nats.io
+			accounts {
+				nats.io {
+					exports [{
+						service: nats.add
+						latency: {
+							sampling: 100%
+							subject: latency.tracking.add
+						}
+					}]
+				}
+			}`,
+			want: &serviceLatency{
+				subject:  "latency.tracking.add",
+				sampling: 100,
+			},
+		},
+		{
+			name: "block with percent sample nondefault value",
+			conf: `system_account = nats.io
+			accounts {
+				nats.io {
+					exports [{
+						service: nats.add
+						latency: {
+							sampling: 33%
+							subject: latency.tracking.add
+						}
+					}]
+				}
+			}`,
+			want: &serviceLatency{
+				subject:  "latency.tracking.add",
+				sampling: 33,
+			},
+		},
+		{
+			name: "block with number sample nondefault value",
+			conf: `system_account = nats.io
+			accounts {
+				nats.io {
+					exports [{
+						service: nats.add
+						latency: {
+							sampling: 87
+							subject: latency.tracking.add
+						}
+					}]
+				}
+			}`,
+			want: &serviceLatency{
+				subject:  "latency.tracking.add",
+				sampling: 87,
+			},
+		},
+		{
+			name: "field with subject",
+			conf: `system_account = nats.io
+			accounts {
+				nats.io {
+					exports [{
+						service: nats.add
+						latency: latency.tracking.add
+					}]
+				}
+			}`,
+			want: &serviceLatency{
+				subject:  "latency.tracking.add",
+				sampling: 100,
+			},
+		},
+		{
+			name: "block with missing subject",
+			conf: `system_account = nats.io
+			accounts {
+				nats.io {
+					exports [{
+						service: nats.add
+						latency: {
+							sampling: 87
+						}
+					}]
+				}
+			}`,
+			wantErr: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := createConfFile(t, []byte(c.conf))
+			opts, err := ProcessConfigFile(f)
+			os.Remove(f)
+			switch {
+			case c.wantErr && err == nil:
+				t.Fatalf("Expected ProcessConfigFile to fail, but didn't")
+			case c.wantErr && err != nil:
+				// We wanted an error and got one, test passed.
+				return
+			case !c.wantErr && err == nil:
+				// We didn't want an error and didn't get one, keep going.
+				break
+			case !c.wantErr && err != nil:
+				t.Fatalf("Failed to process config: %v", err)
+			}
+
+			if len(opts.Accounts) != 1 {
+				t.Fatalf("Expected accounts to have len %d, got %d", 1, len(opts.Accounts))
+			}
+			if len(opts.Accounts[0].exports.services) != 1 {
+				t.Fatalf("Expected export services to have len %d, got %d", 1, len(opts.Accounts[0].exports.services))
+			}
+			s, ok := opts.Accounts[0].exports.services["nats.add"]
+			if !ok {
+				t.Fatalf("Expected export service nats.add, missing")
+			}
+
+			if !reflect.DeepEqual(s.latency, c.want) {
+				t.Fatalf("Expected latency to be %#v, got %#v", c.want, s.latency)
+			}
+		})
+	}
+}
+
 func TestAccountUsersLoadedProperly(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 	listen: "127.0.0.1:-1"
