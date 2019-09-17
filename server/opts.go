@@ -2886,7 +2886,7 @@ func overrideCluster(opts *Options) error {
 		return nil
 	}
 	// -1 will fail url.Parse, so if we have -1, change it to
-	// 0, and then on parse, replace the port with -1 so we get
+	// 0, and then after parse, replace the port with -1 so we get
 	// automatic port allocation
 	wantsRandom := false
 	if strings.HasSuffix(opts.Cluster.ListenStr, ":-1") {
