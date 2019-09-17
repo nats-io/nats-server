@@ -2885,6 +2885,15 @@ func overrideCluster(opts *Options) error {
 		opts.Cluster.Port = 0
 		return nil
 	}
+	// -1 will fail url.Parse, so if we have -1, change it to
+	// 0, and then after parse, replace the port with -1 so we get
+	// automatic port allocation
+	wantsRandom := false
+	if strings.HasSuffix(opts.Cluster.ListenStr, ":-1") {
+		wantsRandom = true
+		cls := fmt.Sprintf("%s:0", opts.Cluster.ListenStr[0:len(opts.Cluster.ListenStr)-3])
+		opts.Cluster.ListenStr = cls
+	}
 	clusterURL, err := url.Parse(opts.Cluster.ListenStr)
 	if err != nil {
 		return err
@@ -2892,6 +2901,9 @@ func overrideCluster(opts *Options) error {
 	h, p, err := net.SplitHostPort(clusterURL.Host)
 	if err != nil {
 		return err
+	}
+	if wantsRandom {
+		p = "-1"
 	}
 	opts.Cluster.Host = h
 	_, err = fmt.Sscan(p, &opts.Cluster.Port)
