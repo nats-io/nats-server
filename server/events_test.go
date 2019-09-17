@@ -538,7 +538,7 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 
 	received := make(chan *nats.Msg)
 	// Create message callback handler.
-	cb := func(sub *subscription, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
@@ -612,7 +612,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 
 	// Listen for updates to the new account connection activity.
 	received := make(chan *nats.Msg, 10)
-	cb := func(sub *subscription, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
@@ -1172,9 +1172,10 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	sub, _ := nca.SubscribeSync("$SYS.ACCOUNT.>")
 	defer sub.Unsubscribe()
 	nca.Flush()
+
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 10, sa)
+	checkExpectedSubs(t, 13, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1467,8 +1468,9 @@ func TestFetchAccountRace(t *testing.T) {
 }
 
 func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
+	origEventsHBInterval := eventsHBInterval
 	eventsHBInterval = 50 * time.Millisecond
-	defer func() { eventsHBInterval = defaultEventsHBItvl }()
+	defer func() { eventsHBInterval = origEventsHBInterval }()
 
 	sa, _, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
@@ -1486,7 +1488,7 @@ func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
 
 	// Listen for HB updates...
 	count := int32(0)
-	cb := func(sub *subscription, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 		atomic.AddInt32(&count, 1)
 	}
 	subj := fmt.Sprintf(accConnsEventSubj, pub)

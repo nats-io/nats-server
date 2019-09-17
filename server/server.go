@@ -327,6 +327,18 @@ func NewServer(opts *Options) (*Server, error) {
 	return s, nil
 }
 
+// ClientURL returns the URL used to connect clients. Helpful in testing
+// when we designate a random client port (-1).
+func (s *Server) ClientURL() string {
+	// FIXME(dlc) - should we add in user and pass if defined single?
+	opts := s.getOpts()
+	scheme := "nats://"
+	if opts.TLSConfig != nil {
+		scheme = "tls://"
+	}
+	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+}
+
 func validateOptions(o *Options) error {
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
@@ -725,6 +737,14 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		return ErrAccountExists
 	}
 
+	// This is here in an attempt to quiet the race detector and not have to place
+	// locks on fast path for inbound messages and checking service imports.
+	acc.mu.Lock()
+	if acc.imports.services == nil {
+		acc.imports.services = make(map[string]*serviceImport)
+	}
+	acc.mu.Unlock()
+
 	s.sys = &internal{
 		account: acc,
 		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
@@ -732,6 +752,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		subs:    make(map[string]msgHandler),
+		replies: make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, internalSendQLen),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,

@@ -407,7 +407,7 @@ func (c *client) parse(buf []byte) error {
 
 				switch c.kind {
 				case CLIENT:
-					err = c.processSub(arg)
+					_, err = c.processSub(arg, false)
 				case ROUTER:
 					err = c.processRemoteSub(arg)
 				case GATEWAY:
