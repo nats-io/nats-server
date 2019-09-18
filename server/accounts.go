@@ -1801,12 +1801,18 @@ func NewURLAccResolver(url string) (*URLAccResolver, error) {
 	if !strings.HasSuffix(url, "/") {
 		url += "/"
 	}
-	// Do basic test to see if anyone is home.
-	// FIXME(dlc) - Make timeout configurable post MVP.
+
+	// FIXME(dlc) - Make timeout and others configurable.
+	// We create our own transport to amortize TLS.
+	tr := &http.Transport{
+		MaxIdleConns:    10,
+		IdleConnTimeout: 30 * time.Second,
+	}
 	ur := &URLAccResolver{
 		url: url,
-		c:   &http.Client{Timeout: 2 * time.Second},
+		c:   &http.Client{Timeout: 2 * time.Second, Transport: tr},
 	}
+	// Do basic test to see if anyone is home.
 	if _, err := ur.Fetch(""); err != nil {
 		return nil, err
 	}
