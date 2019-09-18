@@ -828,7 +828,7 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 	}
 
 	// Restart server B.
-	optsB.AccountResolver = sa.accResolver
+	optsB.AccountResolver = sa.AccountResolver()
 	optsB.SystemAccount = sa.systemAccount().Name
 	sb = RunServer(optsB)
 	defer sb.Shutdown()
@@ -1409,10 +1409,8 @@ func TestFetchAccountRace(t *testing.T) {
 
 	// Replace B's account resolver with one that introduces
 	// delay during the Fetch()
-	sb.mu.Lock()
-	sac := &slowAccResolver{AccountResolver: sb.accResolver}
-	sb.accResolver = sac
-	sb.mu.Unlock()
+	sac := &slowAccResolver{AccountResolver: sb.AccountResolver()}
+	sb.SetAccountResolver(sac)
 
 	// Add the account in sa and sb
 	addAccountToMemResolver(sa, userAcc, jwt)

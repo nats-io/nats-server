@@ -912,6 +912,8 @@ func (s *Server) reloadAuthorization() {
 				acc.mu.RLock()
 				accName := acc.Name
 				acc.mu.RUnlock()
+				// Release server lock for following actions
+				s.mu.Unlock()
 				accClaims, claimJWT, _ := s.fetchAccountClaims(accName)
 				if accClaims != nil {
 					err := s.updateAccountWithClaimJWT(acc, claimJWT)
@@ -923,9 +925,10 @@ func (s *Server) reloadAuthorization() {
 					s.Noticef("Reloaded: deleting account [removed]: %q", accName)
 					s.accounts.Delete(k)
 				}
+				// Regrab server lock.
+				s.mu.Lock()
 				return true
 			})
-
 		}
 	}
 

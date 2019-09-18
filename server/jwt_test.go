@@ -46,15 +46,11 @@ func opTrustBasicSetup() *Server {
 
 func buildMemAccResolver(s *Server) {
 	mr := &MemAccResolver{}
-	s.mu.Lock()
-	s.accResolver = mr
-	s.mu.Unlock()
+	s.SetAccountResolver(mr)
 }
 
 func addAccountToMemResolver(s *Server, pub, jwtclaim string) {
-	s.mu.Lock()
-	s.accResolver.Store(pub, jwtclaim)
-	s.mu.Unlock()
+	s.AccountResolver().Store(pub, jwtclaim)
 }
 
 func createClient(t *testing.T, s *Server, akp nkeys.KeyPair) (*client, *bufio.Reader, string) {
@@ -2317,4 +2313,82 @@ func TestJWTCircularAccountServiceImport(t *testing.T) {
 
 	parseAsync("SUB foo 1\r\nPING\r\n")
 	expectPong(cr)
+}
+
+// This test ensures that connected clients are properly evicted
+// (no deadlock) if the max conns of an account has been lowered
+// and the account is being updated (following expiration during
+// a lookup).
+func TestJWTAccountLimitsMaxConnsAfterExpired(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create accounts and imports/exports.
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+	fooAC.Limits.Conn = 10
+	fooJWT, err := fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	newClient := func(expPre string) {
+		t.Helper()
+		// Create a client.
+		c, cr, cs := createClient(t, s, fooKP)
+		go c.parse([]byte(cs))
+		l, _ := cr.ReadString('\n')
+		if !strings.HasPrefix(l, expPre) {
+			t.Fatalf("Expected a response starting with %q, got %q", expPre, l)
+		}
+		go func() {
+			for {
+				if _, _, err := cr.ReadLine(); err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 4; i++ {
+		newClient("PONG")
+	}
+
+	// We will simulate that the account has expired. When
+	// a new client will connect, the server will do a lookup
+	// and find the account expired, which then will cause
+	// a fetch and a rebuild of the account. Since max conns
+	// is now lower, some clients should have been removed.
+	acc, _ := s.LookupAccount(fooPub)
+	acc.mu.Lock()
+	acc.expired = true
+	acc.mu.Unlock()
+
+	// Now update with new expiration and max connections lowered to 2
+	fooAC.Limits.Conn = 2
+	fooJWT, err = fooAC.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	// Cause the lookup that will detect that account was expired
+	// and rebuild it, and kick clients out.
+	newClient("-ERR ")
+
+	acc, _ = s.LookupAccount(fooPub)
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		acc.mu.RLock()
+		numClients := len(acc.clients)
+		acc.mu.RUnlock()
+		if numClients != 2 {
+			return fmt.Errorf("Should have 2 clients, got %v", numClients)
+		}
+		return nil
+	})
 }

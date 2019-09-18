@@ -572,9 +572,7 @@ func (s *Server) initEventTracking() {
 
 // accountClaimUpdate will receive claim updates for accounts.
 func (s *Server) accountClaimUpdate(sub *subscription, _ *client, subject, reply string, msg []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+	if !s.EventsEnabled() {
 		return
 	}
 	toks := strings.Split(subject, tsep)
@@ -903,8 +901,8 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			RTT:     c.getRTT(),
 		},
 		Sent: DataStats{
-			Msgs:  c.inMsgs,
-			Bytes: c.inBytes,
+			Msgs:  atomic.LoadInt64(&c.inMsgs),
+			Bytes: atomic.LoadInt64(&c.inBytes),
 		},
 		Received: DataStats{
 			Msgs:  c.outMsgs,

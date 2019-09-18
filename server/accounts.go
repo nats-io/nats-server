@@ -291,17 +291,13 @@ func (a *Account) numLocalLeafNodes() int {
 
 // MaxTotalConnectionsReached returns if we have reached our limit for number of connections.
 func (a *Account) MaxTotalConnectionsReached() bool {
+	var mtc bool
 	a.mu.RLock()
-	mtc := a.maxTotalConnectionsReached()
+	if a.mconns != jwt.NoLimit {
+		mtc = len(a.clients)-int(a.sysclients)+int(a.nrclients) >= int(a.mconns)
+	}
 	a.mu.RUnlock()
 	return mtc
-}
-
-func (a *Account) maxTotalConnectionsReached() bool {
-	if a.mconns != jwt.NoLimit {
-		return len(a.clients)-int(a.sysclients)+int(a.nrclients) >= int(a.mconns)
-	}
-	return false
 }
 
 // MaxActiveConnections return the set limit for the account system
@@ -1456,8 +1452,9 @@ func (s *Server) SetAccountResolver(ar AccountResolver) {
 // AccountResolver returns the registered account resolver.
 func (s *Server) AccountResolver() AccountResolver {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.accResolver
+	ar := s.accResolver
+	s.mu.Unlock()
+	return ar
 }
 
 // UpdateAccountClaims will call updateAccountClaims.
@@ -1467,6 +1464,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 // updateAccountClaims will update an existing account with new claims.
 // This will replace any exports or imports previously defined.
+// Lock MUST NOT be held upon entry.
 func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	if a == nil {
 		return
@@ -1567,22 +1565,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	for _, i := range ac.Imports {
-		var acc *Account
-		if v, ok := s.accounts.Load(i.Account); ok {
-			acc = v.(*Account)
-		}
-		if acc == nil {
-			// Check to see if the account referenced is not one that
-			// we are currently building (but not yet fully registered).
-			if v, ok := s.tmpAccounts.Load(i.Account); ok {
-				acc = v.(*Account)
-			}
-		}
-		if acc == nil {
-			if acc, _ = s.fetchAccount(i.Account); acc == nil {
-				s.Debugf("Can't locate account [%s] for import of [%v] %s", i.Account, i.Subject, i.Type)
-				continue
-			}
+		acc, err := s.lookupAccount(i.Account)
+		if acc == nil || err != nil {
+			s.Errorf("Can't locate account [%s] for import of [%v] %s (err=%v)", i.Account, i.Subject, i.Type, err)
+			continue
 		}
 		switch i.Type {
 		case jwt.Stream:
@@ -1665,14 +1651,17 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 	clients := gatherClients()
 	// Sort if we are over the limit.
-	if a.maxTotalConnectionsReached() {
+	if a.MaxTotalConnectionsReached() {
 		sort.Slice(clients, func(i, j int) bool {
 			return clients[i].start.After(clients[j].start)
 		})
 	}
 	now := time.Now().Unix()
 	for i, c := range clients {
-		if a.mconns != jwt.NoLimit && i >= int(a.mconns) {
+		a.mu.RLock()
+		exceeded := a.mconns != jwt.NoLimit && i >= int(a.mconns)
+		a.mu.RUnlock()
+		if exceeded {
 			c.maxAccountConnExceeded()
 			continue
 		}
@@ -1710,6 +1699,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 }
 
 // Helper to build an internal account structure from a jwt.AccountClaims.
+// Lock MUST NOT be held upon entry.
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	acc := NewAccount(ac.Subject)
 	acc.Issuer = ac.Issuer
