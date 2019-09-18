@@ -380,7 +380,7 @@ func (s *Server) configureAccounts() error {
 	// Create global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
-		s.registerAccount(s.gacc)
+		s.registerAccountNoLock(s.gacc)
 	}
 
 	opts := s.opts
@@ -391,7 +391,7 @@ func (s *Server) configureAccounts() error {
 		a := acc.shallowCopy()
 		acc.sl = nil
 		acc.clients = nil
-		s.registerAccount(a)
+		s.registerAccountNoLock(a)
 	}
 
 	// Now that we have this we need to remap any referenced accounts in
@@ -658,10 +658,8 @@ func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew b
 	if v, ok := s.accounts.Load(name); ok {
 		return v.(*Account), false
 	}
-	s.mu.Lock()
 	acc := NewAccount(name)
 	s.registerAccount(acc)
-	s.mu.Unlock()
 	return acc, true
 }
 
@@ -671,10 +669,8 @@ func (s *Server) RegisterAccount(name string) (*Account, error) {
 	if _, ok := s.accounts.Load(name); ok {
 		return nil, ErrAccountExists
 	}
-	s.mu.Lock()
 	acc := NewAccount(name)
 	s.registerAccount(acc)
-	s.mu.Unlock()
 	return acc, nil
 }
 
@@ -693,9 +689,7 @@ func (s *Server) SetSystemAccount(accName string) error {
 	}
 	acc := s.buildInternalAccount(ac)
 	acc.claimJWT = jwt
-	s.mu.Lock()
 	s.registerAccount(acc)
-	s.mu.Unlock()
 
 	return s.setSystemAccount(acc)
 }
@@ -799,9 +793,17 @@ func (s *Server) shouldTrackSubscriptions() bool {
 	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
 }
 
+// Invokes registerAccountNoLock under the protection of the server lock.
+// That is, server lock is acquired/released in this function.
+func (s *Server) registerAccount(acc *Account) {
+	s.mu.Lock()
+	s.registerAccountNoLock(acc)
+	s.mu.Unlock()
+}
+
 // Place common account setup here.
 // Lock should be held on entry.
-func (s *Server) registerAccount(acc *Account) {
+func (s *Server) registerAccountNoLock(acc *Account) {
 	if acc.sl == nil {
 		opts := s.getOpts()
 		if opts != nil && opts.NoSublistCache {
@@ -982,9 +984,7 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		}
 		acc := s.buildInternalAccount(accClaims)
 		acc.claimJWT = claimJWT
-		s.mu.Lock()
 		s.registerAccount(acc)
-		s.mu.Unlock()
 		return acc, nil
 	}
 	return nil, err
