@@ -17,13 +17,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 // Used to setup superclusters for tests.
@@ -104,6 +108,8 @@ func clientConnect(t *testing.T, opts *server.Options, user string) *nats.Conn {
 
 func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time, serviceTime time.Duration) {
 	t.Helper()
+
+	serviceTime = serviceTime.Round(time.Millisecond)
 
 	startDelta := sl.RequestStart.Sub(start)
 	if startDelta > 5*time.Millisecond {
@@ -440,5 +446,144 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		if rl := results[sname(i)]; rl < thresh {
 			t.Fatalf("Total for %q is less then threshold: %v vs %v", sname(i), thresh, rl)
 		}
+	}
+}
+
+func createAccountWithJWT(t *testing.T) (string, nkeys.KeyPair, *jwt.AccountClaims) {
+	t.Helper()
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	jwt, _ := nac.Encode(okp)
+	return jwt, akp, nac
+}
+
+func TestServiceLatencyWithJWT(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Create three accounts, system, service and normal account.
+	sysJWT, sysKP, _ := createAccountWithJWT(t)
+	sysPub, _ := sysKP.PublicKey()
+
+	_, svcKP, svcAcc := createAccountWithJWT(t)
+	svcPub, _ := svcKP.PublicKey()
+
+	// Add in the service export with latency tracking here.
+	serviceExport := &jwt.Export{Subject: "req.echo", Type: jwt.Service}
+	serviceExport.Latency = &jwt.ServiceLatency{Sampling: 100, Results: "results"}
+	svcAcc.Exports.Add(serviceExport)
+	svcJWT, err := svcAcc.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	_, accKP, accAcc := createAccountWithJWT(t)
+	accPub, _ := accKP.PublicKey()
+
+	// Add in the import.
+	serviceImport := &jwt.Import{Account: svcPub, Subject: "request", To: "req.echo", Type: jwt.Service}
+	accAcc.Imports.Add(serviceImport)
+	accJWT, err := accAcc.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	cf := `
+	listen: 127.0.0.1:-1
+	cluster {
+		listen: 127.0.0.1:-1
+		authorization {
+			timeout: 2.2
+		} %s
+	}
+
+	operator = "./configs/nkeys/op.jwt"
+	system_account = "%s"
+
+	resolver = MEMORY
+	resolver_preload = {
+		%s : "%s"
+		%s : "%s"
+		%s : "%s"
+	}
+	`
+	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, svcPub, svcJWT, accPub, accJWT), "\n\t", "\n", -1)
+	conf := createConfFile(t, []byte(contents))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Create a new server and route to main one.
+	routeStr := fmt.Sprintf("\n\t\troutes = [nats-route://%s:%d]", opts.Cluster.Host, opts.Cluster.Port)
+	contents2 := strings.Replace(fmt.Sprintf(cf, routeStr, sysPub, sysPub, sysJWT, svcPub, svcJWT, accPub, accJWT), "\n\t", "\n", -1)
+
+	conf2 := createConfFile(t, []byte(contents2))
+	defer os.Remove(conf2)
+
+	s2, opts2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s, s2)
+
+	// Create service provider.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, svcKP))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// The service listener.
+	serviceTime := 25 * time.Millisecond
+	nc.Subscribe("req.echo", func(msg *nats.Msg) {
+		time.Sleep(serviceTime)
+		msg.Respond(msg.Data)
+	})
+
+	// Listen for metrics
+	rsub, _ := nc.SubscribeSync("results")
+
+	// Create second client and send request from this one.
+	url2 := fmt.Sprintf("nats://%s:%d/", opts2.Host, opts2.Port)
+	nc2, err := nats.Connect(url2, createUserCreds(t, s2, accKP))
+	if err != nil {
+		t.Fatalf("Error creating client: %v\n", err)
+	}
+	defer nc2.Close()
+
+	// Send the request.
+	start := time.Now()
+	_, err = nc2.Request("request", []byte("hello"), time.Second)
+	if err != nil {
+		t.Fatalf("Expected a response")
+	}
+
+	var sl server.ServiceLatency
+	rmsg, err := rsub.NextMsg(time.Second)
+	if err != nil || rmsg == nil {
+		t.Fatalf("Did not receive a latency metric")
+	}
+	json.Unmarshal(rmsg.Data, &sl)
+	checkServiceLatency(t, sl, start, serviceTime)
+
+	// Now we will remove tracking. Do this by simulating a JWT update.
+	serviceExport.Latency = nil
+
+	svcAccount, err := s.LookupAccount(svcPub)
+	if err != nil {
+		t.Fatalf("Could not lookup service account")
+	}
+	s.UpdateAccountClaims(svcAccount, svcAcc)
+
+	// Now we should not get any tracking data.
+	_, err = nc2.Request("request", []byte("hello"), time.Second)
+	if err != nil {
+		t.Fatalf("Expected a response")
+	}
+	_, err = rsub.NextMsg(100 * time.Millisecond)
+	if err == nil {
+		t.Fatalf("Did not expect to receive a latency metric")
 	}
 }

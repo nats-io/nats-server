@@ -508,7 +508,7 @@ func (a *Account) TrackServiceExportWithSampling(service, results string, sampli
 		return ErrBadPublishSubject
 	}
 
-	if a.srv == nil || !a.srv.eventsEnabled() {
+	if a.srv != nil && !a.srv.eventsEnabled() {
 		return ErrNoSysAccount
 	}
 
@@ -1476,11 +1476,26 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 	a.mu.Lock()
 	// Clone to update, only select certain fields.
-	old := &Account{Name: a.Name, imports: a.imports, exports: a.exports, limits: a.limits, signingKeys: a.signingKeys}
+	old := &Account{Name: a.Name, exports: a.exports, limits: a.limits, signingKeys: a.signingKeys}
 
 	// Reset exports and imports here.
 	a.exports = exportMap{}
-	a.imports = importMap{}
+
+	// Imports are checked unlocked in processInbound, so we can't change out the struct here. Need to process inline.
+	if a.imports.streams != nil {
+		old.imports.streams = make(map[string]*streamImport, len(a.imports.streams))
+	}
+	if a.imports.services != nil {
+		old.imports.services = make(map[string]*serviceImport, len(a.imports.services))
+	}
+	for k, v := range a.imports.streams {
+		old.imports.streams[k] = v
+		delete(a.imports.streams, k)
+	}
+	for k, v := range a.imports.services {
+		old.imports.services[k] = v
+		delete(a.imports.services, k)
+	}
 	// Reset any notion of export revocations.
 	a.actsRevoked = nil
 
@@ -1531,7 +1546,12 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 				rt = Chunked
 			}
 			if err := a.AddServiceExportWithResponse(string(e.Subject), rt, authAccounts(e.TokenReq)); err != nil {
-				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err.Error())
+				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err)
+			}
+			if e.Latency != nil {
+				if err := a.TrackServiceExportWithSampling(string(e.Subject), string(e.Latency.Results), e.Latency.Sampling); err != nil {
+					s.Debugf("Error adding latency tracking for service export to account [%s]: %v", a.Name, err)
+				}
 			}
 		}
 		// We will track these at the account level. Should not have any collisions.
