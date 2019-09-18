@@ -487,7 +487,7 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 // TrackServiceExport will enable latency tracking of the named service.
 // Results will be published in this account to the given results subject.
 func (a *Account) TrackServiceExport(service, results string) error {
-	return a.TrackServiceExportWithSampling(service, results, 100)
+	return a.TrackServiceExportWithSampling(service, results, DEFAULT_SERVICE_LATENCY_SAMPLING)
 }
 
 // TrackServiceExportWithSampling will enable latency tracking of the named service for the given

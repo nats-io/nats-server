@@ -1113,6 +1113,105 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 0,
 			errorPos:  0,
 		},
+		{
+			name: "when setting latency tracking without a system account",
+			config: `
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+
+                    exports = [
+                      { service: "nats.add"
+                        response: singleton
+                        latency: {
+                          sampling: 100%
+                          subject: "latency.tracking.add"
+                        }
+                      }
+
+                    ]
+                  }
+                }
+                `,
+			err:       errors.New(`Error adding service latency sampling for "nats.add": system account not setup`),
+			errorLine: 2,
+			errorPos:  17,
+		},
+		{
+			name: "when setting latency tracking with a system account",
+			config: `
+                system_account: sys
+
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+
+                    exports = [
+                      { service: "nats.add"
+                        response: singleton
+                        latency: {
+                          sampling: 100%
+                          subject: "latency.tracking.add"
+                        }
+                      }
+
+                    ]
+                  }
+                }
+                `,
+			err:       nil,
+			errorLine: 0,
+			errorPos:  0,
+		},
+		{
+			name: "when setting latency tracking with an invalid publish subject",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+
+                    exports = [
+                      { service: "nats.add"
+                        response: singleton
+                        latency: "*"
+                      }
+                    ]
+                  }
+                }
+                `,
+			err:       errors.New(`Error adding service latency sampling for "nats.add" on subject "*": invalid publish subject`),
+			errorLine: 3,
+			errorPos:  17,
+		},
+		{
+			name: "when setting latency tracking on a stream",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+
+                    exports = [
+                      { stream: "nats.add"
+                        latency: "foo"
+                      }
+                    ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected latency directive on non-service`),
+			errorLine: 11,
+			errorPos:  25,
+		},
 	}
 
 	checkConfig := func(config string) error {
