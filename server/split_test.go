@@ -29,7 +29,9 @@ func TestSplitBufferSubOp(t *testing.T) {
 		t.Fatalf("Error creating gateways: %v", err)
 	}
 	s := &Server{gacc: NewAccount(globalAccountName), gateway: gws}
+	s.mu.Lock()
 	s.registerAccount(s.gacc)
+	s.mu.Unlock()
 	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), nc: cli}
 
 	subop := []byte("SUB foo 1\r\n")
@@ -66,7 +68,9 @@ func TestSplitBufferSubOp(t *testing.T) {
 
 func TestSplitBufferUnsubOp(t *testing.T) {
 	s := &Server{gacc: NewAccount(globalAccountName), gateway: &srvGateway{}}
+	s.mu.Lock()
 	s.registerAccount(s.gacc)
+	s.mu.Unlock()
 	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 
 	subop := []byte("SUB foo 1024\r\n")
