@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 The NATS Authors
+ * Copyright 2018-2019 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -34,14 +34,40 @@ const (
 	ResponseTypeChunked = "Chunked"
 )
 
+// ServiceLatency is used when observing and exported service for
+// latency measurements.
+// Sampling 1-100, represents sampling rate, defaults to 100.
+// Results is the subject where the latency metrics are published.
+// A metric will be defined by the nats-server's ServiceLatency. Time durations
+// are in nanoseconds.
+// see https://github.com/nats-io/nats-server/blob/master/server/accounts.go#L524
+// e.g.
+// {
+//  "app": "dlc22",
+//  "start": "2019-09-16T21:46:23.636869585-07:00",
+//  "svc": 219732,
+//  "nats": {
+//    "req": 320415,
+//    "resp": 228268,
+//    "sys": 0
+//  },
+//  "total": 768415
+// }
+//
+type ServiceLatency struct {
+	Sampling int     `json:"sampling,omitempty"`
+	Results  Subject `json:"results"`
+}
+
 // Export represents a single export
 type Export struct {
-	Name         string         `json:"name,omitempty"`
-	Subject      Subject        `json:"subject,omitempty"`
-	Type         ExportType     `json:"type,omitempty"`
-	TokenReq     bool           `json:"token_req,omitempty"`
-	Revocations  RevocationList `json:"revocations,omitempty"`
-	ResponseType ResponseType   `json:"response_type,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Subject      Subject         `json:"subject,omitempty"`
+	Type         ExportType      `json:"type,omitempty"`
+	TokenReq     bool            `json:"token_req,omitempty"`
+	Revocations  RevocationList  `json:"revocations,omitempty"`
+	ResponseType ResponseType    `json:"response_type,omitempty"`
+	Latency      *ServiceLatency `json:"service_latency,omitempty"`
 }
 
 // IsService returns true if an export is for a service
@@ -80,6 +106,18 @@ func (e *Export) Validate(vr *ValidationResults) {
 	}
 	if e.IsStream() && e.ResponseType != "" {
 		vr.AddError("invalid response type for stream: %q", e.ResponseType)
+	}
+	if e.Latency != nil {
+		if !e.IsService() {
+			vr.AddError("latency tracking only permitted for services")
+		}
+		if e.Latency.Sampling < 1 || e.Latency.Sampling > 100 {
+			vr.AddError("sampling percentage needs to be between 1-100")
+		}
+		if e.Latency.Results.HasWildCards() {
+			vr.AddError("results subject can not contain wildcards")
+		}
+		e.Latency.Results.Validate(vr)
 	}
 	e.Subject.Validate(vr)
 }
