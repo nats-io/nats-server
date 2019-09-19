@@ -2177,3 +2177,101 @@ func TestSublistNoCacheConfigOnAccounts(t *testing.T) {
 		return true
 	})
 }
+
+func TestParsingResponsePermissions(t *testing.T) {
+	template := `
+		listen: "127.0.0.1:-1"
+		authorization {
+			users [
+				{
+					user: ivan
+					password: pwd
+					permissions {
+						allow_responses {
+							%s
+							%s
+						}
+					}
+				}
+			]
+		}
+	`
+
+	check := func(t *testing.T, conf string, expectedError string, expectedMaxMsgs int, expectedTTL time.Duration) {
+		t.Helper()
+		opts, err := ProcessConfigFile(conf)
+		if expectedError != "" {
+			if err == nil || !strings.Contains(err.Error(), expectedError) {
+				t.Fatalf("Expected error about %q, got %q", expectedError, err)
+			}
+			// OK!
+			return
+		}
+		if err != nil {
+			t.Fatalf("Error on process: %v", err)
+		}
+		u := opts.Users[0]
+		p := u.Permissions.Response
+		if p == nil {
+			t.Fatalf("Expected response permissions to be set, it was not")
+		}
+		if n := p.MaxMsgs; n != expectedMaxMsgs {
+			t.Fatalf("Expected response max msgs to be %v, got %v", expectedMaxMsgs, n)
+		}
+		if ttl := p.Expires; ttl != expectedTTL {
+			t.Fatalf("Expected response ttl to be %v, got %v", expectedTTL, ttl)
+		}
+	}
+
+	// Check defaults
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "", "")))
+	defer os.Remove(conf)
+	check(t, conf, "", DEFAULT_ALLOW_RESPONSE_MAX_MSGS, DEFAULT_ALLOW_RESPONSE_EXPIRATION)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", "")))
+	defer os.Remove(conf)
+	check(t, conf, "", 10, DEFAULT_ALLOW_RESPONSE_EXPIRATION)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "", "ttl: 5s")))
+	defer os.Remove(conf)
+	check(t, conf, "", DEFAULT_ALLOW_RESPONSE_MAX_MSGS, 5*time.Second)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 0", "")))
+	defer os.Remove(conf)
+	check(t, conf, "", DEFAULT_ALLOW_RESPONSE_MAX_MSGS, DEFAULT_ALLOW_RESPONSE_EXPIRATION)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "", `ttl: "0s"`)))
+	defer os.Remove(conf)
+	check(t, conf, "", DEFAULT_ALLOW_RESPONSE_MAX_MSGS, DEFAULT_ALLOW_RESPONSE_EXPIRATION)
+
+	// Check normal values
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", `ttl: "5s"`)))
+	defer os.Remove(conf)
+	check(t, conf, "", 10, 5*time.Second)
+
+	// Check negative values ok
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: -1", `ttl: "5s"`)))
+	defer os.Remove(conf)
+	check(t, conf, "", -1, 5*time.Second)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", `ttl: "-1s"`)))
+	defer os.Remove(conf)
+	check(t, conf, "", 10, -1*time.Second)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: -1", `ttl: "-1s"`)))
+	defer os.Remove(conf)
+	check(t, conf, "", -1, -1*time.Second)
+
+	// Check parsing errors
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "unknown_field: 123", "")))
+	defer os.Remove(conf)
+	check(t, conf, "Unknown field", 0, 0)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", "ttl: 123")))
+	defer os.Remove(conf)
+	check(t, conf, "not a duration string", 0, 0)
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", "ttl: xyz")))
+	defer os.Remove(conf)
+	check(t, conf, "error parsing expires", 0, 0)
+}

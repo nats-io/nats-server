@@ -1363,3 +1363,88 @@ func TestClientMaxPending(t *testing.T) {
 	natsPub(t, nc, "foo", []byte("msg"))
 	natsNexMsg(t, sub, 100*time.Millisecond)
 }
+
+func TestResponsePermissions(t *testing.T) {
+	for i, test := range []struct {
+		name  string
+		perms *ResponsePermission
+	}{
+		{"max_msgs", &ResponsePermission{MaxMsgs: 2, Expires: time.Hour}},
+		{"no_expire_limit", &ResponsePermission{MaxMsgs: 3, Expires: -1 * time.Millisecond}},
+		{"expire", &ResponsePermission{MaxMsgs: 1000, Expires: 100 * time.Millisecond}},
+		{"no_msgs_limit", &ResponsePermission{MaxMsgs: -1, Expires: 100 * time.Millisecond}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := DefaultOptions()
+			u1 := &User{
+				Username:    "service",
+				Password:    "pwd",
+				Permissions: &Permissions{Response: test.perms},
+			}
+			u2 := &User{Username: "ivan", Password: "pwd"}
+			opts.Users = []*User{u1, u2}
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			svcNC := natsConnect(t, fmt.Sprintf("nats://service:pwd@%s:%d", opts.Host, opts.Port))
+			defer svcNC.Close()
+			reqSub := natsSubSync(t, svcNC, "request")
+
+			nc := natsConnect(t, fmt.Sprintf("nats://ivan:pwd@%s:%d", opts.Host, opts.Port))
+			defer nc.Close()
+
+			replySub := natsSubSync(t, nc, "reply")
+
+			natsPubReq(t, nc, "request", "reply", []byte("req1"))
+
+			req1 := natsNexMsg(t, reqSub, 100*time.Millisecond)
+
+			checkFailed := func(t *testing.T) {
+				t.Helper()
+				if reply, err := replySub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+					if reply != nil {
+						t.Fatalf("Expected to receive timeout, got reply=%q", reply.Data)
+					} else {
+						t.Fatalf("Unexpected error: %v", err)
+					}
+				}
+			}
+
+			switch i {
+			case 0:
+				// Should allow only 2 replies...
+				for i := 0; i < 10; i++ {
+					natsPub(t, svcNC, req1.Reply, []byte("reply"))
+				}
+				natsNexMsg(t, replySub, 100*time.Millisecond)
+				natsNexMsg(t, replySub, 100*time.Millisecond)
+				// The next should fail...
+				checkFailed(t)
+			case 1:
+				// Expiration is set to -1ms, which should count as infinite...
+				natsPub(t, svcNC, req1.Reply, []byte("reply"))
+				// Sleep a bit before next send
+				time.Sleep(50 * time.Millisecond)
+				natsPub(t, svcNC, req1.Reply, []byte("reply"))
+				// Make sure we receive both
+				natsNexMsg(t, replySub, 100*time.Millisecond)
+				natsNexMsg(t, replySub, 100*time.Millisecond)
+			case 2:
+				fallthrough
+			case 3:
+				// Expire set to 100ms so make sure we wait more between
+				// next publish
+				natsPub(t, svcNC, req1.Reply, []byte("reply"))
+				time.Sleep(200 * time.Millisecond)
+				natsPub(t, svcNC, req1.Reply, []byte("reply"))
+				// Should receive one, and fail on the other
+				natsNexMsg(t, replySub, 100*time.Millisecond)
+				checkFailed(t)
+			}
+			// When testing expiration, sleep before sending next reply
+			if i >= 2 {
+				time.Sleep(400 * time.Millisecond)
+			}
+		})
+	}
+}

@@ -1521,7 +1521,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 	return nil
 }
 
-// Parse the account imports
+// Parse the account exports
 func parseAccountExports(v interface{}, acc *Account, errors, warnings *[]error) ([]*export, []*export, error) {
 	// This should be an array of objects/maps.
 	tk, v := unwrapValue(v)
@@ -1608,7 +1608,7 @@ func parseAccount(v map[string]interface{}, errors, warnings *[]error) (string, 
 	return accountName, subject, nil
 }
 
-// Parse an import stream or service.
+// Parse an export stream or service.
 // e.g.
 //   {stream: "public.>"} # No accounts means public.
 //   {stream: "synadia.private.>", accounts: [cncf, natsio]}
@@ -1621,7 +1621,9 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		accounts   []string
 		rt         ServiceRespType
 		rtSeen     bool
+		rtToken    token
 		lat        *serviceLatency
+		latToken   token
 	)
 	tk, v := unwrapValue(v)
 	vv, ok := v.(map[string]interface{})
@@ -1637,8 +1639,13 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				*errors = append(*errors, err)
 				continue
 			}
-			if rtSeen {
-				err := &configErr{tk, "Detected response directive on non-service"}
+			if rtToken != nil {
+				err := &configErr{rtToken, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
+				continue
+			}
+			if latToken != nil {
+				err := &configErr{latToken, "Detected latency directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1654,6 +1661,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			}
 		case "response", "response_type":
 			rtSeen = true
+			rtToken = tk
 			mvs, ok := mv.(string)
 			if !ok {
 				err := &configErr{tk, fmt.Sprintf("Expected response type to be string, got %T", mv)}
@@ -1712,6 +1720,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				curService.accs = accounts
 			}
 		case "latency":
+			latToken = tk
 			var err error
 			lat, err = parseServiceLatency(tk, mv)
 			if err != nil {
@@ -1721,6 +1730,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			if curStream != nil {
 				err = &configErr{tk, "Detected latency directive on non-service"}
 				*errors = append(*errors, err)
+				continue
 			}
 			if curService != nil {
 				curService.lat = lat
@@ -2192,7 +2202,12 @@ func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePerm
 		tk, v = unwrapValue(v)
 		switch strings.ToLower(k) {
 		case "max", "max_msgs", "max_messages", "max_responses":
-			rp.MaxMsgs = int(v.(int64))
+			max := int(v.(int64))
+			// Negative values are accepted (mean infinite), and 0
+			// means default value (set above).
+			if max != 0 {
+				rp.MaxMsgs = max
+			}
 		case "expires", "expiration", "ttl":
 			wd, ok := v.(string)
 			if ok {
@@ -2202,7 +2217,11 @@ func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePerm
 					*errors = append(*errors, err)
 					return nil
 				}
-				rp.Expires = ttl
+				// Negative values are accepted (mean infinite), and 0
+				// means default value (set above).
+				if ttl != 0 {
+					rp.Expires = ttl
+				}
 			} else {
 				err := &configErr{tk, "error parsing expires, not a duration string"}
 				*errors = append(*errors, err)
