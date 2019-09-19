@@ -397,9 +397,6 @@ func (s *Server) configureAccounts() error {
 	// Now that we have this we need to remap any referenced accounts in
 	// import or export maps to the new ones.
 	swapApproved := func(ea *exportAuth) {
-		if ea == nil {
-			return
-		}
 		for sub, a := range ea.approved {
 			var acc *Account
 			if v, ok := s.accounts.Load(a.Name); ok {
@@ -408,14 +405,19 @@ func (s *Server) configureAccounts() error {
 			ea.approved[sub] = acc
 		}
 	}
+
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Exports
 		for _, ea := range acc.exports.streams {
-			swapApproved(ea)
+			if ea != nil {
+				swapApproved(&ea.exportAuth)
+			}
 		}
 		for _, ea := range acc.exports.services {
-			swapApproved(ea)
+			if ea != nil {
+				swapApproved(&ea.exportAuth)
+			}
 		}
 		// Imports
 		for _, si := range acc.imports.streams {
