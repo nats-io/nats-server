@@ -1739,16 +1739,13 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 	}
 	if uc.Resp != nil {
 		if p == nil {
-			p = &Permissions{Publish: &SubjectPermission{}}
-		}
-		if p.Publish.Allow == nil {
-			// We turn off the blanket allow statement.
-			p.Publish.Allow = []string{}
+			p = &Permissions{}
 		}
 		p.Response = &ResponsePermission{
 			MaxMsgs: uc.Resp.MaxMsgs,
 			Expires: uc.Resp.Expires,
 		}
+		validateResponsePermissions(p)
 	}
 	nu.Permissions = p
 	return nu

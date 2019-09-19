@@ -193,6 +193,31 @@ func (s *Server) assignGlobalAccountToOrphanUsers() {
 	}
 }
 
+// If the given permissions has a ResponsePermission
+// set, ensure that defaults are set (if values are 0)
+// and that a Publish permission is set, and Allow
+// is disabled if not explicitly set.
+func validateResponsePermissions(p *Permissions) {
+	if p == nil || p.Response == nil {
+		return
+	}
+	if p.Publish == nil {
+		p.Publish = &SubjectPermission{}
+	}
+	if p.Publish.Allow == nil {
+		// We turn off the blanket allow statement.
+		p.Publish.Allow = []string{}
+	}
+	// If there is a response permission, ensure
+	// that if value is 0, we set the default value.
+	if p.Response.MaxMsgs == 0 {
+		p.Response.MaxMsgs = DEFAULT_ALLOW_RESPONSE_MAX_MSGS
+	}
+	if p.Response.Expires == 0 {
+		p.Response.Expires = DEFAULT_ALLOW_RESPONSE_EXPIRATION
+	}
+}
+
 // configureAuthorization will do any setup needed for authorization.
 // Lock is assumed held.
 func (s *Server) configureAuthorization() {
@@ -220,6 +245,9 @@ func (s *Server) configureAuthorization() {
 						copy.Account = v.(*Account)
 					}
 				}
+				if copy.Permissions != nil {
+					validateResponsePermissions(copy.Permissions)
+				}
 				s.nkeys[u.Nkey] = copy
 			}
 		}
@@ -231,6 +259,9 @@ func (s *Server) configureAuthorization() {
 					if v, ok := s.accounts.Load(u.Account.Name); ok {
 						copy.Account = v.(*Account)
 					}
+				}
+				if copy.Permissions != nil {
+					validateResponsePermissions(copy.Permissions)
 				}
 				s.users[u.Username] = copy
 			}
