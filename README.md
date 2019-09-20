@@ -29,8 +29,8 @@ If you are interested in contributing to NATS, read about our...
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
 [Build-Status-Url]: https://travis-ci.org/nats-io/nats-server
 [Build-Status-Image]: https://travis-ci.org/nats-io/nats-server.svg?branch=master
-[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.0.4
-[Release-image]: https://img.shields.io/badge/release-v2.0.4-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.1.0
+[Release-image]: https://img.shields.io/badge/release-v2.1.0-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=master
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=master
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
