@@ -502,6 +502,10 @@ func (a *Account) TrackServiceExport(service, results string) error {
 // TrackServiceExportWithSampling will enable latency tracking of the named service for the given
 // sampling rate (1-100). Results will be published in this account to the given results subject.
 func (a *Account) TrackServiceExportWithSampling(service, results string, sampling int) error {
+	if a == nil {
+		return ErrMissingAccount
+	}
+
 	if sampling < 1 || sampling > 100 {
 		return ErrBadSampling
 	}
@@ -513,12 +517,8 @@ func (a *Account) TrackServiceExportWithSampling(service, results string, sampli
 		return ErrBadPublishSubject
 	}
 
-	if a.srv != nil && !a.srv.eventsEnabled() {
+	if a.srv != nil && !a.srv.EventsEnabled() {
 		return ErrNoSysAccount
-	}
-
-	if a == nil {
-		return ErrMissingAccount
 	}
 
 	a.mu.Lock()
@@ -567,7 +567,7 @@ func (a *Account) TrackServiceExportWithSampling(service, results string, sampli
 
 // UnTrackServiceExport will disable latency tracking of the named service.
 func (a *Account) UnTrackServiceExport(service string) {
-	if a.srv != nil && !a.srv.eventsEnabled() {
+	if a == nil || (a.srv != nil && !a.srv.EventsEnabled()) {
 		return
 	}
 
@@ -583,14 +583,15 @@ func (a *Account) UnTrackServiceExport(service string) {
 	}
 	// We have latency here.
 	ea.latency = nil
+	s := a.srv
 	a.mu.Unlock()
 
-	if a.srv == nil {
+	if s == nil {
 		return
 	}
 
 	// Now track down the imports and clean them up.
-	a.srv.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		acc.mu.Lock()
 		for _, im := range acc.imports.services {
