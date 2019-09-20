@@ -2537,6 +2537,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 			sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
 			sl.NATSLatency.Responder = rtt
 			sl.TotalLatency = sl.ServiceLatency + rtt
+			sanitizeLatencyMetric(sl)
+
 			lsub := remoteLatencySubjectForResponse(c.pa.subject)
 			c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
 		}

@@ -682,6 +682,21 @@ func (m1 *ServiceLatency) merge(m2 *ServiceLatency) {
 	m1.NATSLatency.System = m1.ServiceLatency - (m2.ServiceLatency + m2.NATSLatency.Responder)
 	m1.ServiceLatency = m2.ServiceLatency
 	m1.NATSLatency.Responder = m2.NATSLatency.Responder
+	sanitizeLatencyMetric(m1)
+}
+
+// sanitizeLatencyMetric adjusts latency metric values that could go
+// negative in some edge conditions since we estimate client RTT
+// for both requestor and responder.
+// These numbers are never meant to be negative, it just could be
+// how we back into the values based on estimated RTT.
+func sanitizeLatencyMetric(sl *ServiceLatency) {
+	if sl.ServiceLatency < 0 {
+		sl.ServiceLatency = 0
+	}
+	if sl.NATSLatency.System < 0 {
+		sl.NATSLatency.System = 0
+	}
 }
 
 // Used for transporting remote latency measurements.
@@ -726,6 +741,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 		},
 		TotalLatency: reqClientRTT + serviceRTT,
 	}
+	sanitizeLatencyMetric(&sl)
 
 	// If we are expecting a remote measurement, store our sl here.
 	// We need to account for the race between this and us receiving the
