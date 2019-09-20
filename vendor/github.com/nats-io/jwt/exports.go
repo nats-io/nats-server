@@ -59,6 +59,16 @@ type ServiceLatency struct {
 	Results  Subject `json:"results"`
 }
 
+func (sl *ServiceLatency) Validate(vr *ValidationResults) {
+	if sl.Sampling < 1 || sl.Sampling > 100 {
+		vr.AddError("sampling percentage needs to be between 1-100")
+	}
+	sl.Results.Validate(vr)
+	if sl.Results.HasWildCards() {
+		vr.AddError("results subject can not contain wildcards")
+	}
+}
+
 // Export represents a single export
 type Export struct {
 	Name         string          `json:"name,omitempty"`
@@ -111,13 +121,7 @@ func (e *Export) Validate(vr *ValidationResults) {
 		if !e.IsService() {
 			vr.AddError("latency tracking only permitted for services")
 		}
-		if e.Latency.Sampling < 1 || e.Latency.Sampling > 100 {
-			vr.AddError("sampling percentage needs to be between 1-100")
-		}
-		if e.Latency.Results.HasWildCards() {
-			vr.AddError("results subject can not contain wildcards")
-		}
-		e.Latency.Results.Validate(vr)
+		e.Latency.Validate(vr)
 	}
 	e.Subject.Validate(vr)
 }

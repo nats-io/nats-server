@@ -132,8 +132,6 @@ func FormatUserConfig(jwtString string, seed []byte) ([]byte, error) {
 
 // ParseDecoratedJWT takes a creds file and returns the JWT portion.
 func ParseDecoratedJWT(contents []byte) (string, error) {
-	defer wipeSlice(contents)
-
 	items := userConfigRE.FindAllSubmatch(contents, -1)
 	if len(items) == 0 {
 		return string(contents), nil
@@ -150,7 +148,6 @@ func ParseDecoratedJWT(contents []byte) (string, error) {
 // key pair from it.
 func ParseDecoratedNKey(contents []byte) (nkeys.KeyPair, error) {
 	var seed []byte
-	defer wipeSlice(contents)
 
 	items := userConfigRE.FindAllSubmatch(contents, -1)
 	if len(items) > 1 {
@@ -200,11 +197,4 @@ func ParseDecoratedUserNKey(contents []byte) (nkeys.KeyPair, error) {
 		return nil, err
 	}
 	return kp, nil
-}
-
-// Just wipe slice with 'x', for clearing contents of nkey seed file.
-func wipeSlice(buf []byte) {
-	for i := range buf {
-		buf[i] = 'x'
-	}
 }

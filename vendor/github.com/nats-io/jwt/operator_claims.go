@@ -26,9 +26,19 @@ import (
 
 // Operator specific claims
 type Operator struct {
-	Identities          []Identity `json:"identity,omitempty"`
-	SigningKeys         StringList `json:"signing_keys,omitempty"`
-	AccountServerURL    string     `json:"account_server_url,omitempty"`
+	// Slice of real identies (like websites) that can be used to identify the operator.
+	Identities []Identity `json:"identity,omitempty"`
+	// Slice of other operator NKeys that can be used to sign on behalf of the main
+	// operator identity.
+	SigningKeys StringList `json:"signing_keys,omitempty"`
+	// AccountServerURL is a partial URL like "https://host.domain.org:<port>/jwt/v1"
+	// tools will use the prefix and build queries by appending /accounts/<account_id>
+	// or /operator to the path provided. Note this assumes that the account server
+	// can handle requests in a nats-account-server compatible way. See
+	// https://github.com/nats-io/nats-account-server.
+	AccountServerURL string `json:"account_server_url,omitempty"`
+	// A list of NATS urls (tls://host:port) where tools can connect to the server
+	// using proper credentials.
 	OperatorServiceURLs StringList `json:"operator_service_urls,omitempty"`
 }
 
