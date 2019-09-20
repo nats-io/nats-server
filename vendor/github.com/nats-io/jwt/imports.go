@@ -120,7 +120,14 @@ type Imports []*Import
 
 // Validate checks if an import is valid for the wrapping account
 func (i *Imports) Validate(acctPubKey string, vr *ValidationResults) {
+	toSet := make(map[Subject]bool, len(*i))
 	for _, v := range *i {
+		if v.Type == Service {
+			if _, ok := toSet[v.To]; ok {
+				vr.AddError("Duplicate To subjects for %q", v.To)
+			}
+			toSet[v.To] = true
+		}
 		v.Validate(acctPubKey, vr)
 	}
 }
