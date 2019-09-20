@@ -2097,6 +2097,24 @@ func TestAccountNoDeadlockOnQueueSubRouteMapUpdate(t *testing.T) {
 	wg.Wait()
 }
 
+func TestAccountDuplicateServiceImportSubject(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	fooAcc, _ := s.RegisterAccount("foo")
+	fooAcc.AddServiceExport("remote1", nil)
+	fooAcc.AddServiceExport("remote2", nil)
+
+	barAcc, _ := s.RegisterAccount("bar")
+	if err := barAcc.AddServiceImport(fooAcc, "foo", "remote1"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	if err := barAcc.AddServiceImport(fooAcc, "foo", "remote2"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("Expected an error about duplicate service import subject, got %q", err)
+	}
+}
+
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)

@@ -1212,6 +1212,30 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 11,
 			errorPos:  25,
 		},
+		{
+			name: "when using duplicate service import subject",
+			config: `
+								accounts {
+									 A: {
+										 users = [ {user: user1, pass: ""} ]
+										 exports = [
+											 {service: "remote1"}
+											 {service: "remote2"}
+										 ]
+									 }
+									 B: {
+										 users = [ {user: user2, pass: ""} ]
+										 imports = [
+											 {service: {account: "A", subject: "remote1"}, to: "local"}
+											 {service: {account: "A", subject: "remote2"}, to: "local"}
+										 ]
+									 }
+								}
+							`,
+			err:       errors.New(`Duplicate service import subject "local", previously used in import for account "A", subject "remote1"`),
+			errorLine: 14,
+			errorPos:  71,
+		},
 	}
 
 	checkConfig := func(config string) error {

@@ -791,8 +791,8 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 		return ErrServiceImportAuthorization
 	}
 
-	a.addServiceImport(destination, from, to, imClaim)
-	return nil
+	_, err := a.addServiceImport(destination, from, to, imClaim)
+	return err
 }
 
 // AddServiceImport will add a route to an account to send published messages / requests
@@ -944,7 +944,7 @@ func (a *Account) SetMaxResponseMaps(max int) {
 // Add a route to connect from an implicit route created for a response to a request.
 // This does no checks and should be only called by the msg processing code. Use
 // AddServiceImport from above if responding to user input or config changes, etc.
-func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) *serviceImport {
+func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) (*serviceImport, error) {
 	rt := Singleton
 	var lat *serviceLatency
 
@@ -958,12 +958,16 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	a.mu.Lock()
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
+	} else if dup := a.imports.services[from]; dup != nil {
+		a.mu.Unlock()
+		return nil, fmt.Errorf("duplicate service import subject %q, previously used in import for account %q, subject %q",
+			from, dup.acc.Name, dup.to)
 	}
 	si := &serviceImport{dest, claim, from, to, 0, rt, lat, nil, false, false, false, false}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
-	return si
+	return si, nil
 }
 
 // Helper to detrmine when to sample.
