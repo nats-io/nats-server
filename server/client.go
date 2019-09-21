@@ -665,6 +665,30 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.deny.Insert(sub)
 		}
 	}
+
+	// TODO(jaime): What to do if have perms.Subscribe AND perms.QueueSubscribe?
+	// Loop over queue subscribe permissions
+	if perms.QueueSubscribe != nil {
+		if len(perms.QueueSubscribe.Allow) > 0 {
+			c.perms.sub.allow = NewSublistWithCache()
+		}
+		for _, sp := range perms.QueueSubscribe.Allow {
+			sub := &subscription{subject: []byte(sp.Subject), queue: []byte(sp.Queue)}
+			c.perms.sub.allow.Insert(sub)
+		}
+
+		if len(perms.QueueSubscribe.Deny) > 0 {
+			c.perms.sub.deny = NewSublistWithCache()
+
+			// TODO(jaime): Probably add this back.
+			// Also hold onto this array for later.
+			// c.darray = perms.Subscribe.Deny
+		}
+		for _, sp := range perms.QueueSubscribe.Deny {
+			sub := &subscription{subject: []byte(sp.Subject), queue: []byte(sp.Queue)}
+			c.perms.sub.deny.Insert(sub)
+		}
+	}
 }
 
 // Check to see if we have an expiration for the user JWT via base claims.
@@ -1744,11 +1768,12 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	}
 
 	// Check permissions if applicable.
-	if kind == CLIENT && !c.canSubscribe(string(sub.subject)) {
+	if kind == CLIENT && !c.canSubscribe(string(sub.subject), string(sub.queue)) {
 		c.mu.Unlock()
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		c.Errorf("Subscription Violation - %s, Subject %q, SID %s",
-			c.getAuthUser(), sub.subject, sub.sid)
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to subject %q, queue %q",
+			sub.subject, sub.queue))
+		c.Errorf("Subscription Violation - %s, Subject %q, Queue Group %q SID %s",
+			c.getAuthUser(), sub.subject, sub.queue, sub.sid)
 		return nil, nil
 	}
 
@@ -1931,22 +1956,45 @@ func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool)
 
 // canSubscribe determines if the client is authorized to subscribe to the
 // given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(subject string) bool {
+func (c *client) canSubscribe(subject, queue string) bool {
 	if c.perms == nil {
 		return true
 	}
 
 	allowed := true
 
-	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
+	// Check allow list. If no allow list that means all are allowed. Deny can
+	// overrule.
 	if c.perms.sub.allow != nil {
+		allowed = false
 		r := c.perms.sub.allow.Match(subject)
-		allowed = len(r.psubs) != 0
+
+		// If queue is empty, then we only have plain subscriptions. If
+		// len(psubs) > 0, then subject is in the allow list.
+		if queue == "" && len(r.psubs) > 0 {
+			allowed = true
+		}
+
+		// If queue is not empty, then we have queue subscriptions. If
+		// len(qsubs) > 0, then subject is in the allow list.
+		if queue != "" && len(r.qsubs) > 0 {
+			// qsubs[i] will all be same queue name, so no need to iterate over
+			// the whole 2D array.
+			if len(r.qsubs[0]) > 0 {
+				s, q := string(r.qsubs[0][0].subject), string(r.qsubs[0][0].queue)
+				allowed = (s == subject && q == queue)
+			}
+		}
 	}
+
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {
+		allowed = false
 		r := c.perms.sub.deny.Match(subject)
-		allowed = len(r.psubs) == 0
+
+		// If subject was matched in either plain or queue subscriptions, then
+		// deny.
+		allowed = len(r.psubs) == 0 && len(r.qsubs) == 0
 
 		// We use the actual subscription to signal us to spin up the deny mperms
 		// and cache. We check if the subject is a wildcard that contains any of
@@ -1963,6 +2011,7 @@ func (c *client) canSubscribe(subject string) bool {
 			}
 		}
 	}
+
 	return allowed
 }
 
@@ -3118,7 +3167,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range c.subs {
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
 		// Only collect under subs array of canSubscribe and checkAcc true.
-		if !c.canSubscribe(string(sub.subject)) {
+		if !c.canSubscribe(string(sub.subject), string(sub.queue)) {
 			removed = append(removed, sub)
 		} else if checkAcc {
 			subs = append(subs, sub)

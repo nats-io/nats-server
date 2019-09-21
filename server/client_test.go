@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"reflect"
@@ -482,6 +483,119 @@ func TestClientPubWithQueueSub(t *testing.T) {
 	// Threshold for randomness for now
 	if n1 < 20 || n2 < 20 {
 		t.Fatalf("Received wrong # of msgs per subscriber: %d - %d\n", n1, n2)
+	}
+}
+
+func TestQueueSubscribePermissions(t *testing.T) {
+	cases := []struct {
+		name    string
+		perms   *SubjectQueuePermission
+		subject string
+		queue   string
+		want    string
+	}{
+		{
+			name:    "no queue subscribe permissions",
+			perms:   nil,
+			subject: "foo",
+			queue:   "g1",
+			want:    "MSG foo 1 5\r\nhello\r\n",
+		},
+		{
+			name: "allow queue subscribe, same subject, same group",
+			perms: &SubjectQueuePermission{
+				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "foo",
+			queue:   "g1",
+			want:    "MSG foo 1 5\r\nhello\r\n",
+		},
+		{
+			name: "allow queue subscribe, same subject, different group",
+			perms: &SubjectQueuePermission{
+				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "foo",
+			queue:   "g2",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"foo\", queue \"g2\"'\r\n",
+		},
+		{
+			name: "allow queue subscribe, different subject, same group",
+			perms: &SubjectQueuePermission{
+				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "bar",
+			queue:   "g1",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"bar\", queue \"g1\"'\r\n",
+		},
+		{
+			name: "allow queue subscribe, different subject, different group",
+			perms: &SubjectQueuePermission{
+				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "bar",
+			queue:   "g2",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"bar\", queue \"g2\"'\r\n",
+		},
+		{
+			name: "deny queue subscribe, same subject, same group",
+			perms: &SubjectQueuePermission{
+				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "foo",
+			queue:   "g1",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"foo\", queue \"g1\"'\r\n",
+		},
+		{
+			name: "deny queue subscribe, same subject, different group",
+			perms: &SubjectQueuePermission{
+				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "foo",
+			queue:   "g2",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"foo\", queue \"g2\"'\r\n",
+		},
+		{
+			name: "deny queue subscribe, different subject, same group",
+			perms: &SubjectQueuePermission{
+				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "bar",
+			queue:   "g1",
+			want:    "MSG bar 1 5\r\nhello\r\n",
+		},
+		{
+			name: "deny queue subscribe, different subject, different group",
+			perms: &SubjectQueuePermission{
+				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			},
+			subject: "bar",
+			queue:   "g2",
+			want:    "MSG bar 1 5\r\nhello\r\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, client, r := setupClient()
+
+			client.RegisterUser(&User{
+				Permissions: &Permissions{QueueSubscribe: c.perms},
+			})
+
+			qsub := []byte(fmt.Sprintf("SUB %s %s 1\r\n", c.subject, c.queue))
+			pub := []byte(fmt.Sprintf("PUB %s 5\r\nhello\r\n", c.subject))
+
+			go client.parseFlushAndClose(append(qsub, pub...))
+
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, r); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := buf.String(); got != c.want {
+				t.Fatalf("Expected to receive %q, but instead received %q", c.want, got)
+			}
+		})
 	}
 }
 
