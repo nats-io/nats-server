@@ -1563,6 +1563,7 @@ func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error)
 
 	var services []*importService
 	var streams []*importStream
+	svcSubjects := map[string]*importService{}
 
 	for _, v := range ims {
 		// Should have stream or service
@@ -1572,6 +1573,15 @@ func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error)
 			continue
 		}
 		if service != nil {
+			if dup := svcSubjects[service.to]; dup != nil {
+				tk, _ := unwrapValue(v)
+				err := &configErr{tk,
+					fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
+						service.to, dup.an, dup.sub)}
+				*errors = append(*errors, err)
+				continue
+			}
+			svcSubjects[service.to] = service
 			service.acc = acc
 			services = append(services, service)
 		}
