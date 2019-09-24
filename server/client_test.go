@@ -489,7 +489,7 @@ func TestClientPubWithQueueSub(t *testing.T) {
 func TestQueueSubscribePermissions(t *testing.T) {
 	cases := []struct {
 		name    string
-		perms   *SubjectQueuePermission
+		perms   *Permissions
 		subject string
 		queue   string
 		want    string
@@ -503,8 +503,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "allow queue subscribe, same subject, same group",
-			perms: &SubjectQueuePermission{
-				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "foo",
 			queue:   "g1",
@@ -512,8 +514,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "allow queue subscribe, same subject, different group",
-			perms: &SubjectQueuePermission{
-				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "foo",
 			queue:   "g2",
@@ -521,8 +525,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "allow queue subscribe, different subject, same group",
-			perms: &SubjectQueuePermission{
-				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "bar",
 			queue:   "g1",
@@ -530,8 +536,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "allow queue subscribe, different subject, different group",
-			perms: &SubjectQueuePermission{
-				Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Allow: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "bar",
 			queue:   "g2",
@@ -539,8 +547,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "deny queue subscribe, same subject, same group",
-			perms: &SubjectQueuePermission{
-				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "foo",
 			queue:   "g1",
@@ -548,8 +558,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "deny queue subscribe, same subject, different group",
-			perms: &SubjectQueuePermission{
-				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "foo",
 			queue:   "g2",
@@ -557,8 +569,10 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "deny queue subscribe, different subject, same group",
-			perms: &SubjectQueuePermission{
-				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "bar",
 			queue:   "g1",
@@ -566,12 +580,36 @@ func TestQueueSubscribePermissions(t *testing.T) {
 		},
 		{
 			name: "deny queue subscribe, different subject, different group",
-			perms: &SubjectQueuePermission{
-				Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+			perms: &Permissions{
+				QueueSubscribe: &SubjectQueuePermission{
+					Deny: []SubjectQueue{{Subject: "foo", Queue: "g1"}},
+				},
 			},
 			subject: "bar",
 			queue:   "g2",
 			want:    "MSG bar 1 5\r\nhello\r\n",
+		},
+		{
+			name: "no queue subscribe, same subject",
+			perms: &Permissions{
+				Subscribe: &SubjectPermission{
+					Allow: []string{"foo"},
+				},
+			},
+			subject: "foo",
+			queue:   "g1",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"foo\", queue \"g1\"'\r\n",
+		},
+		{
+			name: "no queue subscribe, different subject",
+			perms: &Permissions{
+				Subscribe: &SubjectPermission{
+					Allow: []string{"foo"},
+				},
+			},
+			subject: "bar",
+			queue:   "g1",
+			want:    "-ERR 'Permissions Violation for Subscription to subject \"bar\", queue \"g1\"'\r\n",
 		},
 	}
 	for _, c := range cases {
@@ -579,7 +617,7 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			_, client, r := setupClient()
 
 			client.RegisterUser(&User{
-				Permissions: &Permissions{QueueSubscribe: c.perms},
+				Permissions: c.perms,
 			})
 
 			qsub := []byte(fmt.Sprintf("SUB %s %s 1\r\n", c.subject, c.queue))
