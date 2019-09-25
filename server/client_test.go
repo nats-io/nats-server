@@ -498,28 +498,94 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			name:    "plain subscription on foo",
 			perms:   &SubjectPermission{Allow: []string{"foo"}},
 			subject: "foo",
-			want:    "MSG foo 1 5\r\nhello\r\n",
+			want:    "MSG foo 1 2\r\nhi\r\n",
 		},
 		{
 			name:    "queue subscribe with allowed group",
 			perms:   &SubjectPermission{Allow: []string{"foo bar"}},
 			subject: "foo",
 			queue:   "bar",
-			want:    "MSG foo 1 5\r\nhello\r\n",
+			want:    "MSG foo 1 2\r\nhi\r\n",
 		},
 		{
 			name:    "queue subscribe with wildcard allowed group",
 			perms:   &SubjectPermission{Allow: []string{"foo bar.*"}},
 			subject: "foo",
 			queue:   "bar.fizz",
-			want:    "MSG foo 1 5\r\nhello\r\n",
+			want:    "MSG foo 1 2\r\nhi\r\n",
 		},
 		{
 			name:    "queue subscribe with full wildcard subject and subgroup",
 			perms:   &SubjectPermission{Allow: []string{"> bar.>"}},
 			subject: "whizz",
 			queue:   "bar.bang",
-			want:    "MSG whizz 1 5\r\nhello\r\n",
+			want:    "MSG whizz 1 2\r\nhi\r\n",
+		},
+		{
+			name:    "plain subscribe with full wildcard subject and subgroup",
+			perms:   &SubjectPermission{Allow: []string{"> bar.>"}},
+			subject: "whizz",
+			want:    "-ERR 'Permissions Violation for Subscription to \"whizz\"'\r\n",
+		},
+		{
+			name:    "deny plain subscription on foo",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{"foo"}},
+			subject: "foo",
+			want:    "-ERR 'Permissions Violation for Subscription to \"foo\"'\r\n",
+		},
+		{
+			name:    "allow plain subscription, except foo",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{"foo"}},
+			subject: "bar",
+			want:    "MSG bar 1 2\r\nhi\r\n",
+		},
+		{
+			name:    "deny everything",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{">"}},
+			subject: "foo",
+			queue:   "bar",
+			want:    "-ERR 'Permissions Violation for Subscription to \"foo\" using queue \"bar\"'\r\n",
+		},
+		{
+			name:    "can only subscribe to queues v1",
+			perms:   &SubjectPermission{Allow: []string{"> v1.>"}},
+			subject: "foo",
+			queue:   "v1.prod",
+			want:    "MSG foo 1 2\r\nhi\r\n",
+		},
+		{
+			name:    "cannot subscribe to queues, plain subscribe ok",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{"> >"}},
+			subject: "foo",
+			want:    "MSG foo 1 2\r\nhi\r\n",
+		},
+		{
+			name:    "cannot subscribe to queues, queue subscribe not ok",
+			perms:   &SubjectPermission{Deny: []string{"> >"}},
+			subject: "foo",
+			queue:   "bar",
+			want:    "-ERR 'Permissions Violation for Subscription to \"foo\" using queue \"bar\"'\r\n",
+		},
+		{
+			name:    "deny all queue subscriptions on dev or stg only",
+			perms:   &SubjectPermission{Deny: []string{"> *.dev", "> *.stg"}},
+			subject: "foo",
+			queue:   "bar",
+			want:    "MSG foo 1 2\r\nhi\r\n",
+		},
+		{
+			name:    "allow only queue subscription on dev or stg",
+			perms:   &SubjectPermission{Allow: []string{"> *.dev", "> *.stg"}},
+			subject: "foo",
+			queue:   "bar",
+			want:    "-ERR 'Permissions Violation for Subscription to \"foo\" using queue \"bar\"'\r\n",
+		},
+		{
+			name:    "deny queue subscriptions with subject foo",
+			perms:   &SubjectPermission{Deny: []string{"foo >"}},
+			subject: "foo",
+			queue:   "bar",
+			want:    "-ERR 'Permissions Violation for Subscription to \"foo\" using queue \"bar\"'\r\n",
 		},
 	}
 	for _, c := range cases {
@@ -531,7 +597,7 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			})
 
 			qsub := []byte(fmt.Sprintf("SUB %s %s 1\r\n", c.subject, c.queue))
-			pub := []byte(fmt.Sprintf("PUB %s 5\r\nhello\r\n", c.subject))
+			pub := []byte(fmt.Sprintf("PUB %s 2\r\nhi\r\n", c.subject))
 
 			go client.parseFlushAndClose(append(qsub, pub...))
 
