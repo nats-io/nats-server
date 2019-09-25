@@ -638,7 +638,7 @@ func (c *client) canImport(subject string) bool {
 func (c *client) canExport(subject string) bool {
 	// Use canSubscribe() since this checks Subscribe permissions which
 	// is what Export maps to.
-	return c.canSubscribe(subject, "")
+	return c.canSubscribe(subject)
 }
 
 // Initialize or reset cluster's permissions.

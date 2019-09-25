@@ -646,13 +646,34 @@ func (c *client) setPermissions(perms *Permissions) {
 		c.replies = make(map[string]*resp)
 	}
 
+	split := func(subject string) (string, string) {
+		// permission rules are syntactically valid.
+		vals := strings.Split(subject, " ")
+		var s, q string
+		n := len(vals)
+		if n == 1 {
+			s = vals[0]
+		} else if n >= 2 {
+			s = vals[0]
+			q = vals[1]
+		}
+
+		return s, q
+	}
+
 	// Loop over subscribe permissions
 	if perms.Subscribe != nil {
 		if len(perms.Subscribe.Allow) > 0 {
 			c.perms.sub.allow = NewSublistWithCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
-			sub := &subscription{subject: []byte(subSubject)}
+			// TODO: We should validate earlier the config.
+			s, q := split(subSubject)
+
+			sub := &subscription{subject: []byte(s)}
+			if q != "" {
+				sub.queue = []byte(q)
+			}
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
@@ -661,7 +682,12 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.darray = perms.Subscribe.Deny
 		}
 		for _, subSubject := range perms.Subscribe.Deny {
-			sub := &subscription{subject: []byte(subSubject)}
+			s, q := split(subSubject)
+
+			sub := &subscription{subject: []byte(s)}
+			if q != "" {
+				sub.queue = []byte(q)
+			}
 			c.perms.sub.deny.Insert(sub)
 		}
 	}
@@ -1744,15 +1770,32 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	}
 
 	// Check permissions if applicable.
-	if kind == CLIENT && !c.canSubscribe(string(sub.subject), string(sub.queue)) {
-		c.mu.Unlock()
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to subject %q, queue %q",
-			sub.subject, sub.queue))
-		c.Errorf("Subscription Violation - %s, Subject %q, Queue Group %q SID %s",
-			c.getAuthUser(), sub.subject, sub.queue, sub.sid)
-		return nil, nil
-	}
+	if kind == CLIENT {
+		// First do a pass whether queue subscription is valid. This does not necessarily
+		// mean that it will not be able to plain subscribe.
+		//
+		// allow = ["foo"]              -> can subscribe or queue subscribe to foo using any queue
+		// allow = ["foo v1"]           -> can only queue subscribe to 'foo v1'
+		// allow = ["foo", "foo v1"]    -> can subscribe to foo but can only queue subscribe to 'foo v1'
+		//
+		if sub.queue != nil {
+			if !c.canQueueSubscribe(string(sub.subject), string(sub.queue)) {
+				c.mu.Unlock()
 
+				c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q using queue %q", sub.subject, sub.queue))
+				c.Errorf("Subscription Violation - %s, Subject %q, Queue: %q, SID %s",
+					c.getAuthUser(), sub.subject, sub.queue, sub.sid)
+				return nil, nil
+			}
+		} else if !c.canSubscribe(string(sub.subject)) {
+			c.mu.Unlock()
+
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			c.Errorf("Subscription Violation - %s, Subject %q, SID %s",
+				c.getAuthUser(), sub.subject, sub.sid)
+			return nil, nil
+		}
+	}
 	// Check if we have a maximum on the number of subscriptions.
 	if c.subsAtLimit() {
 		c.mu.Unlock()
@@ -1932,45 +1975,23 @@ func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool)
 
 // canSubscribe determines if the client is authorized to subscribe to the
 // given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(subject, queue string) bool {
+func (c *client) canSubscribe(subject string) bool {
 	if c.perms == nil {
 		return true
 	}
 
 	allowed := true
 
-	// Check allow list. If no allow list that means all are allowed. Deny can
-	// overrule.
+	// Check allow list. If no allow list that means all are
+	// allowed. Deny can overrule.
 	if c.perms.sub.allow != nil {
-		allowed = false
 		r := c.perms.sub.allow.Match(subject)
-
-		// If queue is empty, then we only have plain subscriptions. If
-		// len(psubs) > 0, then subject is in the allow list.
-		if queue == "" && len(r.psubs) > 0 {
-			allowed = true
-		}
-
-		// If queue is not empty, then we have queue subscriptions. If
-		// len(qsubs) > 0, then subject is in the allow list.
-		if queue != "" && len(r.qsubs) > 0 {
-			// qsubs[i] will all be same queue name, so no need to iterate over
-			// the whole 2D array.
-			if len(r.qsubs[0]) > 0 {
-				s, q := string(r.qsubs[0][0].subject), string(r.qsubs[0][0].queue)
-				allowed = (s == subject && q == queue)
-			}
-		}
+		allowed = len(r.psubs) != 0
 	}
-
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {
-		allowed = false
 		r := c.perms.sub.deny.Match(subject)
-
-		// If subject was matched in either plain or queue subscriptions, then
-		// deny.
-		allowed = len(r.psubs) == 0 && len(r.qsubs) == 0
+		allowed = len(r.psubs) == 0
 
 		// We use the actual subscription to signal us to spin up the deny mperms
 		// and cache. We check if the subject is a wildcard that contains any of
@@ -1986,6 +2007,70 @@ func (c *client) canSubscribe(subject, queue string) bool {
 				}
 			}
 		}
+	}
+	return allowed
+}
+
+func (c *client) canQueueSubscribe(subject, queue string) bool {
+	if c.perms == nil {
+		return true
+	}
+
+	allowed := true
+	if c.perms.sub.allow != nil {
+		r := c.perms.sub.allow.Match(subject)
+
+		// If there is an explicit sub permission it allows any
+		// queue subscription unless there are explicit rules
+		// involving queue subscriptions.
+		subAllowed := len(r.psubs) != 0
+		allQueuesAllowed := len(r.qsubs) == 0
+		allowed = subAllowed && allQueuesAllowed
+
+		// We first check for explicit permissions for queue subscriptions,
+		// we later do another check for all subscriptions instead.
+	Loop:
+		for _, qsub := range r.qsubs {
+			for _, qq := range qsub {
+				qname := string(qq.queue)
+
+				// NOTE: '*' and '>' tokens can also be valid
+				// queue names so we first check against the
+				// literal name.  e.g. v1.* == v1.*
+				if queue == qname || subjectHasWildcard(qname) && subjectIsSubsetMatch(queue, qname) {
+					allowed = true
+					break Loop
+				}
+			}
+		}
+	}
+
+	// Check whether there is an explicit deny against this queue subscription.
+	if allowed && c.perms.sub.deny != nil {
+		r := c.perms.sub.deny.Match(subject)
+		subAllowed := len(r.psubs) == 0
+		allQueuesAllowed := len(r.qsubs) == 0
+
+		// allowed = subAllowed && allQueuesAllowed
+		if subAllowed && !allQueuesAllowed {
+		Loop2:
+			for _, qsub := range r.qsubs {
+				for _, qq := range qsub {
+					qname := string(qq.queue)
+
+					// NOTE: '*' and '>' tokens can also be valid
+					// queue names so we first check against the
+					// literal name.  e.g. v1.* == v1.*
+					if queue == qname || subjectHasWildcard(qname) && subjectIsSubsetMatch(queue, qname) {
+						allowed = false
+						break Loop2
+					}
+				}
+			}
+		} else if subAllowed && allQueuesAllowed {
+			allowed = true
+		}
+		allowed = false
 	}
 
 	return allowed
@@ -3143,7 +3228,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range c.subs {
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
 		// Only collect under subs array of canSubscribe and checkAcc true.
-		if !c.canSubscribe(string(sub.subject), string(sub.queue)) {
+		if !c.canSubscribe(string(sub.subject)) {
 			removed = append(removed, sub)
 		} else if checkAcc {
 			subs = append(subs, sub)
