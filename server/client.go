@@ -2051,7 +2051,6 @@ func (c *client) canQueueSubscribe(subject, queue string) bool {
 		subAllowed := len(r.psubs) == 0
 		allQueuesAllowed := len(r.qsubs) == 0
 
-		// allowed = subAllowed && allQueuesAllowed
 		if subAllowed && !allQueuesAllowed {
 		Loop2:
 			for _, qsub := range r.qsubs {
@@ -2069,8 +2068,9 @@ func (c *client) canQueueSubscribe(subject, queue string) bool {
 			}
 		} else if subAllowed && allQueuesAllowed {
 			allowed = true
+		} else {
+			allowed = false
 		}
-		allowed = false
 	}
 
 	return allowed
