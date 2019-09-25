@@ -100,20 +100,9 @@ type ResponsePermission struct {
 // Permissions are the allowed subjects on a per
 // publish or subscribe basis.
 type Permissions struct {
-	Publish        *SubjectPermission      `json:"publish"`
-	Subscribe      *SubjectPermission      `json:"subscribe"`
-	QueueSubscribe *SubjectQueuePermission `json:"queue_subscribe"`
-	Response       *ResponsePermission     `json:"responses,omitempty"`
-}
-
-type SubjectQueuePermission struct {
-	Allow []SubjectQueue `json:"allow,omitempty"`
-	Deny  []SubjectQueue `json:"deny,omitempty"`
-}
-
-type SubjectQueue struct {
-	Subject string `json:"subject"`
-	Queue   string `json:"queue"`
+	Publish   *SubjectPermission  `json:"publish"`
+	Subscribe *SubjectPermission  `json:"subscribe"`
+	Response  *ResponsePermission `json:"responses,omitempty"`
 }
 
 // RoutePermissions are similar to user permissions

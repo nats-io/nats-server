@@ -665,30 +665,6 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.deny.Insert(sub)
 		}
 	}
-
-	// TODO(jaime): What to do if have perms.Subscribe AND perms.QueueSubscribe?
-	// Loop over queue subscribe permissions
-	if perms.QueueSubscribe != nil {
-		if len(perms.QueueSubscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublistWithCache()
-		}
-		for _, sp := range perms.QueueSubscribe.Allow {
-			sub := &subscription{subject: []byte(sp.Subject), queue: []byte(sp.Queue)}
-			c.perms.sub.allow.Insert(sub)
-		}
-
-		if len(perms.QueueSubscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublistWithCache()
-
-			// TODO(jaime): Probably add this back.
-			// Also hold onto this array for later.
-			// c.darray = perms.Subscribe.Deny
-		}
-		for _, sp := range perms.QueueSubscribe.Deny {
-			sub := &subscription{subject: []byte(sp.Subject), queue: []byte(sp.Queue)}
-			c.perms.sub.deny.Insert(sub)
-		}
-	}
 }
 
 // Check to see if we have an expiration for the user JWT via base claims.
