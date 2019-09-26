@@ -647,7 +647,6 @@ func (c *client) setPermissions(perms *Permissions) {
 	}
 
 	split := func(subject string) (string, string) {
-		// permission rules are syntactically valid.
 		vals := strings.Split(subject, " ")
 		var s, q string
 		n := len(vals)
@@ -667,7 +666,6 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow = NewSublistWithCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
-			// TODO: We should validate earlier the config.
 			s, q := split(subSubject)
 
 			sub := &subscription{subject: []byte(s)}
@@ -3228,7 +3226,10 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range c.subs {
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
 		// Only collect under subs array of canSubscribe and checkAcc true.
-		if !c.canSubscribe(string(sub.subject)) {
+		canSub := c.canSubscribe(string(sub.subject))
+		canQSub := sub.queue != nil && c.canQueueSubscribe(string(sub.subject), string(sub.queue))
+
+		if !canSub && !canQSub {
 			removed = append(removed, sub)
 		} else if checkAcc {
 			subs = append(subs, sub)
