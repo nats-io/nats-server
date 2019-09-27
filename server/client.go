@@ -2025,31 +2025,29 @@ func (c *client) canQueueSubscribe(subject, queue string) bool {
 	}
 
 	allowed := true
+
 	if c.perms.sub.allow != nil {
 		r := c.perms.sub.allow.Match(subject)
 
-		// If there is an explicit sub permission it allows any
-		// queue subscription unless there are explicit rules
-		// involving queue subscriptions.
-		subAllowed := len(r.psubs) != 0
-		allQueuesAllowed := len(r.qsubs) == 0
-
-		if allowed = subAllowed && allQueuesAllowed; !allowed {
-			// If the queue matches, then the queue name is on the allow list.
-			// Therefore, we ARE allowed.
+		// If perms DO NOT have queue name, then psubs will be greater than
+		// zero. If perms DO have queue name, then qsubs will be greater than
+		// zero.
+		allowed = len(r.psubs) > 0
+		if len(r.qsubs) > 0 {
+			// If the queue appears in the allow list, then DO allow.
 			allowed = queueMatches(queue, r.qsubs)
 		}
 	}
 
-	// Check whether there is an explicit deny against this queue subscription.
 	if allowed && c.perms.sub.deny != nil {
 		r := c.perms.sub.deny.Match(subject)
-		subAllowed := len(r.psubs) == 0
-		allQueuesAllowed := len(r.qsubs) == 0
 
-		if allowed = subAllowed && allQueuesAllowed; !allowed {
-			// If the queue matches, then the queue is on the deny list.
-			// Therefore, we're NOT allowed.
+		// If perms DO NOT have queue name, then psubs will be greater than
+		// zero. If perms DO have queue name, then qsubs will be greater than
+		// zero.
+		allowed = len(r.psubs) == 0
+		if len(r.qsubs) > 0 {
+			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
 	}
