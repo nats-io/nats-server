@@ -1236,6 +1236,37 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 14,
 			errorPos:  71,
 		},
+		{
+			name: "mixing single and multi users in leafnode authorization",
+			config: `
+                leafnodes {
+                   authorization {
+                     user: user1
+                     password: pwd
+                     users = [{user: user2, password: pwd}]
+									 }
+								}
+              `,
+			err:       errors.New("can not have a single user/pass and a users array"),
+			errorLine: 3,
+			errorPos:  20,
+		},
+		{
+			name: "dulpicate usernames in leafnode authorization",
+			config: `
+                leafnodes {
+                   authorization {
+                     users = [
+                       {user: user, password: pwd}
+											 {user: user, password: pwd}
+                     ]
+									 }
+								}
+              `,
+			err:       errors.New(`duplicate user "user" detected in leafnode authorization`),
+			errorLine: 3,
+			errorPos:  20,
+		},
 	}
 
 	checkConfig := func(config string) error {

@@ -88,6 +88,9 @@ func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
 
 // Ensure that leafnode is properly configured.
 func validateLeafNode(o *Options) error {
+	if err := validateLeafNodeAuthOptions(o); err != nil {
+		return err
+	}
 	if o.LeafNode.Port == 0 {
 		return nil
 	}
@@ -98,6 +101,26 @@ func validateLeafNode(o *Options) error {
 	// is a system account defined.
 	if o.SystemAccount == "" {
 		return fmt.Errorf("leaf nodes and gateways (both being defined) require a system account to also be configured")
+	}
+	return nil
+}
+
+// Used to validate user names in LeafNode configuration.
+// - rejects mix of single and multiple users.
+// - rejects duplicate user names.
+func validateLeafNodeAuthOptions(o *Options) error {
+	if len(o.LeafNode.Users) == 0 {
+		return nil
+	}
+	if o.LeafNode.Username != _EMPTY_ {
+		return fmt.Errorf("can not have a single user/pass and a users array")
+	}
+	users := map[string]struct{}{}
+	for _, u := range o.LeafNode.Users {
+		if _, exists := users[u.Username]; exists {
+			return fmt.Errorf("duplicate user %q detected in leafnode authorization", u.Username)
+		}
+		users[u.Username] = struct{}{}
 	}
 	return nil
 }

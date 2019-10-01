@@ -305,9 +305,29 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
-	// In local config mode, if remote leafs are configured,
-	// make sure that if they reference local accounts, they exist.
-	if len(opts.TrustedOperators) == 0 && len(opts.LeafNode.Remotes) > 0 {
+	// In local config mode, check that leafnode configuration
+	// refers to account that exist.
+	if len(opts.TrustedOperators) == 0 {
+		checkAccountExists := func(accName string) error {
+			if accName == _EMPTY_ {
+				return nil
+			}
+			if _, ok := s.accounts.Load(accName); !ok {
+				return fmt.Errorf("cannot find account %q specified in leafnode authorization", accName)
+			}
+			return nil
+		}
+		if err := checkAccountExists(opts.LeafNode.Account); err != nil {
+			return nil, err
+		}
+		for _, lu := range opts.LeafNode.Users {
+			if lu.Account == nil {
+				continue
+			}
+			if err := checkAccountExists(lu.Account.Name); err != nil {
+				return nil, err
+			}
+		}
 		for _, r := range opts.LeafNode.Remotes {
 			if r.LocalAccount == _EMPTY_ {
 				continue

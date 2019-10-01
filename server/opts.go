@@ -107,6 +107,8 @@ type LeafNodeOpts struct {
 	Port              int           `json:"port,omitempty"`
 	Username          string        `json:"-"`
 	Password          string        `json:"-"`
+	Account           string        `json:"-"`
+	Users             []*User       `json:"-"`
 	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
 	TLSConfig         *tls.Config   `json:"-"`
 	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
@@ -288,6 +290,7 @@ type authorization struct {
 	user  string
 	pass  string
 	token string
+	acc   string
 	// Multiple Nkeys/Users
 	nkeys              []*NkeyUser
 	users              []*User
@@ -1039,20 +1042,21 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		case "host", "net":
 			opts.LeafNode.Host = mv.(string)
 		case "authorization":
-			auth, err := parseAuthorization(tk, opts, errors, warnings)
+			auth, err := parseLeafAuthorization(tk, errors, warnings)
 			if err != nil {
-				*errors = append(*errors, err)
-				continue
-			}
-			if auth.users != nil {
-				err := &configErr{tk, fmt.Sprintf("Leafnode authorization does not allow multiple users")}
 				*errors = append(*errors, err)
 				continue
 			}
 			opts.LeafNode.Username = auth.user
 			opts.LeafNode.Password = auth.pass
 			opts.LeafNode.AuthTimeout = auth.timeout
-
+			opts.LeafNode.Account = auth.acc
+			opts.LeafNode.Users = auth.users
+			// Validate user info config for leafnode authorization
+			if err := validateLeafNodeAuthOptions(opts); err != nil {
+				*errors = append(*errors, &configErr{tk, err.Error()})
+				continue
+			}
 		case "remotes":
 			// Parse the remote options here.
 			remotes, err := parseRemoteLeafNodes(mv, errors, warnings)
@@ -1093,6 +1097,114 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		}
 	}
 	return nil
+}
+
+// This is the authorization parser adapter for the leafnode's
+// authorization config.
+func parseLeafAuthorization(v interface{}, errors *[]error, warnings *[]error) (*authorization, error) {
+	var (
+		am   map[string]interface{}
+		tk   token
+		auth = &authorization{}
+	)
+	_, v = unwrapValue(v)
+	am = v.(map[string]interface{})
+	for mk, mv := range am {
+		tk, mv = unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "user", "username":
+			auth.user = mv.(string)
+		case "pass", "password":
+			auth.pass = mv.(string)
+		case "timeout":
+			at := float64(1)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			}
+			auth.timeout = at
+		case "users":
+			users, err := parseLeafUsers(tk, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			auth.users = users
+		case "account":
+			auth.acc = mv.(string)
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+			}
+			continue
+		}
+	}
+	return auth, nil
+}
+
+// This is a trimmed down version of parseUsers that is adapted
+// for the users possibly defined in the authorization{} section
+// of leafnodes {}.
+func parseLeafUsers(mv interface{}, errors *[]error, warnings *[]error) ([]*User, error) {
+	var (
+		tk    token
+		users = []*User{}
+	)
+	tk, mv = unwrapValue(mv)
+	// Make sure we have an array
+	uv, ok := mv.([]interface{})
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
+	}
+	for _, u := range uv {
+		tk, u = unwrapValue(u)
+		// Check its a map/struct
+		um, ok := u.(map[string]interface{})
+		if !ok {
+			err := &configErr{tk, fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
+			*errors = append(*errors, err)
+			continue
+		}
+		user := &User{}
+		for k, v := range um {
+			tk, v = unwrapValue(v)
+			switch strings.ToLower(k) {
+			case "user", "username":
+				user.Username = v.(string)
+			case "pass", "password":
+				user.Password = v.(string)
+			case "account":
+				// We really want to save just the account name here, but
+				// the User object is *Account. So we create an account object
+				// but it won't be registered anywhere. The server will just
+				// use opts.LeafNode.Users[].Account.Name. Alternatively
+				// we need to create internal objects to store u/p and account
+				// name and have a server structure to hold that.
+				user.Account = NewAccount(v.(string))
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: k,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteLeafOpts, error) {
