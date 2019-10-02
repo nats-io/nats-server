@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2027,7 +2028,8 @@ func TestParsingLeafNodesListener(t *testing.T) {
 }
 
 func TestParsingLeafNodeRemotes(t *testing.T) {
-	content := `
+	t.Run("parse config file with relative path", func(t *testing.T) {
+		content := `
 		leafnodes {
 			remotes = [
 				{
@@ -2038,24 +2040,62 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 			]
 		}
 		`
-	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
-	opts, err := ProcessConfigFile(conf)
-	if err != nil {
-		t.Fatalf("Error processing file: %v", err)
-	}
-	if len(opts.LeafNode.Remotes) != 1 {
-		t.Fatalf("Expected 1 remote, got %d", len(opts.LeafNode.Remotes))
-	}
-	expected := &RemoteLeafOpts{
-		LocalAccount: "foobar",
-		Credentials:  "./my.creds",
-	}
-	u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
-	expected.URLs = append(expected.URLs, u)
-	if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
-		t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
-	}
+		conf := createConfFile(t, []byte(content))
+		defer os.Remove(conf)
+		opts, err := ProcessConfigFile(conf)
+		if err != nil {
+			t.Fatalf("Error processing file: %v", err)
+		}
+		if len(opts.LeafNode.Remotes) != 1 {
+			t.Fatalf("Expected 1 remote, got %d", len(opts.LeafNode.Remotes))
+		}
+		expected := &RemoteLeafOpts{
+			LocalAccount: "foobar",
+			Credentials:  "./my.creds",
+		}
+		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
+		expected.URLs = append(expected.URLs, u)
+		if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
+			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
+		}
+	})
+
+	t.Run("parse config file with tilde path", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.SkipNow()
+		}
+
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Setenv("HOME", "/home/foo")
+
+		content := `
+		leafnodes {
+			remotes = [
+				{
+					url: nats-leaf://127.0.0.1:2222
+					account: foobar // Local Account to bind to..
+					credentials: "~/my.creds"
+				}
+			]
+		}
+		`
+		conf := createConfFile(t, []byte(content))
+		defer os.Remove(conf)
+		opts, err := ProcessConfigFile(conf)
+		if err != nil {
+			t.Fatalf("Error processing file: %v", err)
+		}
+		expected := &RemoteLeafOpts{
+			LocalAccount: "foobar",
+			Credentials:  "/home/foo/my.creds",
+		}
+		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
+		expected.URLs = append(expected.URLs, u)
+		if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
+			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
+		}
+	})
 }
 
 func TestLargeMaxControlLine(t *testing.T) {
@@ -2274,4 +2314,101 @@ func TestParsingResponsePermissions(t *testing.T) {
 	conf = createConfFile(t, []byte(fmt.Sprintf(template, "max: 10", "ttl: xyz")))
 	defer os.Remove(conf)
 	check(t, conf, "error parsing expires", 0, 0)
+}
+
+func TestExpandPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		origUserProfile := os.Getenv("USERPROFILE")
+		origHomeDrive, origHomePath := os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH")
+		defer func() {
+			os.Setenv("USERPROFILE", origUserProfile)
+			os.Setenv("HOMEDRIVE", origHomeDrive)
+			os.Setenv("HOMEPATH", origHomePath)
+		}()
+
+		cases := []struct {
+			path        string
+			userProfile string
+			homeDrive   string
+			homePath    string
+
+			wantPath string
+			wantErr  bool
+		}{
+			// Missing HOMEDRIVE and HOMEPATH.
+			{path: "/Foo/Bar", userProfile: `C:\Foo\Bar`, wantPath: "/Foo/Bar"},
+			{path: "Foo/Bar", userProfile: `C:\Foo\Bar`, wantPath: "Foo/Bar"},
+			{path: "~/Fizz", userProfile: `C:\Foo\Bar`, wantPath: `C:\Foo\Bar\Fizz`},
+			{path: `${HOMEDRIVE}${HOMEPATH}\Fizz`, userProfile: `C:\Foo\Bar`, wantPath: `C:\Foo\Bar\Fizz`},
+
+			// Missing USERPROFILE.
+			{path: "~/Fizz", homeDrive: "X:", homePath: `\Foo\Bar`, wantPath: `X:\Foo\Bar\Fizz`},
+
+			// Set all environment variables. HOMEDRIVE and HOMEPATH take
+			// precedence.
+			{path: "~/Fizz", userProfile: `C:\Foo\Bar`,
+				homeDrive: "X:", homePath: `\Foo\Bar`, wantPath: `X:\Foo\Bar\Fizz`},
+
+			// Missing all environment variables.
+			{path: "~/Fizz", wantErr: true},
+		}
+		for i, c := range cases {
+			t.Run(fmt.Sprintf("windows case %d", i), func(t *testing.T) {
+				os.Setenv("USERPROFILE", c.userProfile)
+				os.Setenv("HOMEDRIVE", c.homeDrive)
+				os.Setenv("HOMEPATH", c.homePath)
+
+				gotPath, err := expandPath(c.path)
+				if !c.wantErr && err != nil {
+					t.Fatalf("unexpected error: got=%v; want=%v", err, nil)
+				} else if c.wantErr && err == nil {
+					t.Fatalf("unexpected success: got=%v; want=%v", nil, "err")
+				}
+
+				if gotPath != c.wantPath {
+					t.Fatalf("unexpected path: got=%v; want=%v", gotPath, c.wantPath)
+				}
+			})
+		}
+
+		return
+	}
+
+	// Unix tests
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	cases := []struct {
+		path    string
+		home    string
+		testEnv string
+
+		wantPath string
+		wantErr  bool
+	}{
+		{path: "/foo/bar", home: "/fizz/buzz", wantPath: "/foo/bar"},
+		{path: "foo/bar", home: "/fizz/buzz", wantPath: "foo/bar"},
+		{path: "~/fizz", home: "/foo/bar", wantPath: "/foo/bar/fizz"},
+		{path: "$HOME/fizz", home: "/foo/bar", wantPath: "/foo/bar/fizz"},
+
+		// missing HOME env var
+		{path: "~/fizz", wantErr: true},
+	}
+	for i, c := range cases {
+		t.Run(fmt.Sprintf("unix case %d", i), func(t *testing.T) {
+			os.Setenv("HOME", c.home)
+
+			gotPath, err := expandPath(c.path)
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: got=%v; want=%v", err, nil)
+			} else if c.wantErr && err == nil {
+				t.Fatalf("unexpected success: got=%v; want=%v", nil, "err")
+			}
+
+			if gotPath != c.wantPath {
+				t.Fatalf("unexpected path: got=%v; want=%v", gotPath, c.wantPath)
+			}
+		})
+	}
 }

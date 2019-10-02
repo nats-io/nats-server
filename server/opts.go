@@ -24,7 +24,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1246,7 +1248,12 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 			case "account", "local":
 				remote.LocalAccount = v.(string)
 			case "creds", "credentials":
-				remote.Credentials = v.(string)
+				p, err := expandPath(v.(string))
+				if err != nil {
+					*errors = append(*errors, &configErr{tk, err.Error()})
+					continue
+				}
+				remote.Credentials = p
 			case "tls":
 				tc, err := parseTLS(tk)
 				if err != nil {
@@ -3221,4 +3228,42 @@ func maybeReadPidFile(pidStr string) string {
 		return string(b)
 	}
 	return pidStr
+}
+
+func homeDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		homeDrive, homePath := os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH")
+		userProfile := os.Getenv("USERPROFILE")
+
+		home := filepath.Join(homeDrive, homePath)
+		if homeDrive == "" || homePath == "" {
+			if userProfile == "" {
+				return "", errors.New("nats: failed to get home dir, require %HOMEDRIVE% and %HOMEPATH% or %USERPROFILE%")
+			}
+			home = userProfile
+		}
+
+		return home, nil
+	}
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "", errors.New("failed to get home dir, require $HOME")
+	}
+	return home, nil
+}
+
+func expandPath(p string) (string, error) {
+	p = os.ExpandEnv(p)
+
+	if !strings.HasPrefix(p, "~") {
+		return p, nil
+	}
+
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(home, p[1:]), nil
 }
