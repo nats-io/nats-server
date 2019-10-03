@@ -49,6 +49,12 @@ func RunDefaultServer() *server.Server {
 	return RunServer(&DefaultTestOptions)
 }
 
+func RunRandClientPortServer() *server.Server {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	return RunServer(&opts)
+}
+
 // To turn on server tracing and debugging and logging which are
 // normally suppressed.
 var (

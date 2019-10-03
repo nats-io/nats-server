@@ -25,10 +25,12 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	nats "github.com/nats-io/nats.go"
 )
 
 const PERF_PORT = 8422
@@ -1397,4 +1399,116 @@ func Benchmark_____RoutedIntGraph(b *testing.B) {
 		<-route.done
 	}
 	b.StopTimer()
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Simple JetStream Benchmarks
+///////////////////////////////////////////////////////////////////////////
+
+func Benchmark_JetStreamPubWithAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nc.Request("foo", []byte("Hello World!"), 50*time.Millisecond)
+	}
+	b.StopTimer()
+
+	stats := mset.Stats()
+	if int(stats.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	}
+}
+
+func Benchmark_JetStreamPubNoAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := nc.Publish("foo", []byte("Hello World!")); err != nil {
+			b.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	nc.Flush()
+	b.StopTimer()
+
+	stats := mset.Stats()
+	if int(stats.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	}
+}
+
+func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Put ack stream on its own connection.
+	anc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer anc.Close()
+
+	acks := nats.NewInbox()
+	sub, _ := anc.Subscribe(acks, func(m *nats.Msg) {
+		// Just eat them for this test.
+	})
+	// set max pending to unlimited.
+	sub.SetPendingLimits(-1, -1)
+	defer sub.Unsubscribe()
+
+	anc.Flush()
+	runtime.GC()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := nc.PublishRequest("foo", acks, []byte("Hello World!")); err != nil {
+			b.Fatalf("[%d] Unexpected error: %v", i, err)
+		}
+	}
+	nc.Flush()
+	b.StopTimer()
+
+	stats := mset.Stats()
+	if int(stats.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	}
 }
