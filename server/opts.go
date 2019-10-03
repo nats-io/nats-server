@@ -183,6 +183,7 @@ type Options struct {
 	Cluster               ClusterOpts   `json:"cluster,omitempty"`
 	Gateway               GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
+	JetStream             bool          `json:"jetstream"`
 	ProfPort              int           `json:"-"`
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
@@ -203,6 +204,7 @@ type Options struct {
 	WriteDeadline         time.Duration `json:"-"`
 	MaxClosedClients      int           `json:"-"`
 	LameDuckDuration      time.Duration `json:"-"`
+
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
 
@@ -3117,34 +3119,35 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&configFile, "c", "", "Configuration file.")
 	fs.StringVar(&configFile, "config", "", "Configuration file.")
 	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
-	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
-	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
+	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
+	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports)")
+	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
 	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
-	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
+	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
 	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")
 	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://127.0.0.1:514).")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
-	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
+	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port.")
 	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
-	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
+	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
-	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited")
+	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
+	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value

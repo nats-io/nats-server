@@ -71,6 +71,7 @@ type Info struct {
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
 	MaxPayload        int32    `json:"max_payload"`
+	JetStream         bool     `json:"jetstream,omitempty"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	ClientIP          string   `json:"client_ip,omitempty"`
@@ -110,6 +111,7 @@ type Server struct {
 	listener         net.Listener
 	gacc             *Account
 	sys              *internal
+	js               *jetStream
 	accounts         sync.Map
 	tmpAccounts      sync.Map // Temporarily stores accounts that are being built
 	activeAccounts   int32
@@ -185,7 +187,7 @@ type Server struct {
 	// Trusted public operator keys.
 	trustedKeys []string
 
-	// We use this to minimize mem copies for request to monitoring
+	// We use this to minimize mem copies for requests to monitoring
 	// endpoint /varz (when it comes from http).
 	varzMu sync.Mutex
 	varz   *Varz
@@ -264,9 +266,11 @@ func NewServer(opts *Options) (*Server, error) {
 		TLSRequired:  tlsReq,
 		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
+		JetStream:    opts.JetStream,
 	}
 
 	now := time.Now()
+
 	s := &Server{
 		kp:           kp,
 		configFile:   opts.ConfigFile,
@@ -594,6 +598,24 @@ func (s *Server) generateRouteInfoJSON() {
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
+// Determines if we are in operator mode.
+// Uses opts instead of server lock.
+func (s *Server) inOperatorMode() bool {
+	return len(s.getOpts().TrustedOperators) > 0
+}
+
+// Determines if we are in pre NATS 2.0 setup with no accounts.
+// Uses opts instead of server lock.
+func (s *Server) globalAccountOnly() bool {
+	return len(s.getOpts().Accounts) == 0
+}
+
+// Determines if this server is in standalone mode, meaning no routes or gateways or leafnodes.
+func (s *Server) standAloneMode() bool {
+	opts := s.getOpts()
+	return opts.Cluster.Port == 0 && opts.LeafNode.Port == 0 && opts.Gateway.Port == 0
+}
+
 // isTrustedIssuer will check that the issuer is a trusted public key.
 // This is used to make sure an account was signed by a trusted operator.
 func (s *Server) isTrustedIssuer(issuer string) bool {
@@ -809,8 +831,25 @@ func (s *Server) SystemAccount() *Account {
 	return sacc
 }
 
+// GlobalAccount returns the global account.
+// Default clients will use the global account.
+func (s *Server) GlobalAccount() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gacc
+}
+
+// SetDefaultSystemAccount will create a default system account if one is not present.
+func (s *Server) SetDefaultSystemAccount() error {
+	if _, isNew := s.LookupOrRegisterAccount(DEFAULT_SYSTEM_ACCOUNT); !isNew {
+		return nil
+	}
+	s.Debugf("Created system account: %q", DEFAULT_SYSTEM_ACCOUNT)
+	return s.SetSystemAccount(DEFAULT_SYSTEM_ACCOUNT)
+}
+
 // For internal sends.
-const internalSendQLen = 4096
+const internalSendQLen = 8192
 
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
@@ -847,11 +886,10 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	now := time.Now()
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now},
+		client:  s.createInternalSystemClient(),
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
-		subs:    make(map[string]msgHandler),
 		replies: make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, internalSendQLen),
 		resetCh: make(chan struct{}),
@@ -859,8 +897,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
-	s.sys.client.initClient()
-	s.sys.client.echo = false
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -892,6 +928,39 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+func (s *Server) systemAccount() *Account {
+	var sacc *Account
+	s.mu.Lock()
+	if s.sys != nil {
+		sacc = s.sys.account
+	}
+	s.mu.Unlock()
+	return sacc
+}
+
+// Creates an internal system client.
+func (s *Server) createInternalSystemClient() *client {
+	return s.createInternalClient(SYSTEM)
+}
+
+// Creates and internal jetstream client.
+func (s *Server) createInternalJetStreamClient() *client {
+	return s.createInternalClient(JETSTREAM)
+}
+
+// Internal clients. kind should be SYSTEM or JETSTREAM
+func (s *Server) createInternalClient(kind int) *client {
+	if kind != SYSTEM && kind != JETSTREAM {
+		return nil
+	}
+	now := time.Now()
+	c := &client{srv: s, kind: kind, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
+	c.initClient()
+	c.echo = false
+	c.flags.set(noReconnect)
+	return c
 }
 
 // Determine if accounts should track subscriptions for
@@ -1167,12 +1236,6 @@ func (s *Server) Start() {
 		}
 	}
 
-	// Start monitoring if needed
-	if err := s.StartMonitoring(); err != nil {
-		s.Fatalf("Can't start monitoring: %v", err)
-		return
-	}
-
 	// Setup system account which will start the eventing stack.
 	if sa := opts.SystemAccount; sa != _EMPTY_ {
 		if err := s.SetSystemAccount(sa); err != nil {
@@ -1184,6 +1247,22 @@ func (s *Server) Start() {
 	// Start expiration of mapped GW replies, regardless if
 	// this server is configured with gateway or not.
 	s.startGWReplyMapExpiration()
+
+	// Check if JetStream has been enabled. This needs to be after
+	// the system account setup above. JetStream will create its
+	// own system account if one is not present.
+	if opts.JetStream {
+		if err := s.EnableJetStream(nil); err != nil {
+			s.Fatalf("Can't start jetstream: %v", err)
+			return
+		}
+	}
+
+	// Start monitoring if needed
+	if err := s.StartMonitoring(); err != nil {
+		s.Fatalf("Can't start monitoring: %v", err)
+		return
+	}
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
@@ -2270,7 +2349,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 				ip = nil
 				continue
 			}
-			s.Debugf(" ip=%s", ipStr)
+			s.Debugf("  ip=%s", ipStr)
 			ips = append(ips, ipStr)
 			if !all {
 				break
