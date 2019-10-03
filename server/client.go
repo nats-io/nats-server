@@ -43,6 +43,8 @@ const (
 	SYSTEM
 	// LEAF is for leaf node connections.
 	LEAF
+	// JETSTREAM is an internal jetstream client.
+	JETSTREAM
 )
 
 const (
@@ -371,6 +373,7 @@ type subscription struct {
 	client  *client
 	im      *streamImport   // This is for import stream support.
 	shadow  []*subscription // This is to track shadowed accounts.
+	icb     msgHandler
 	subject []byte
 	queue   []byte
 	sid     []byte
@@ -471,6 +474,8 @@ func (c *client) initClient() {
 		c.ncs = fmt.Sprintf("%s - lid:%d", conn, c.cid)
 	case SYSTEM:
 		c.ncs = "SYSTEM"
+	case JETSTREAM:
+		c.ncs = "JETSTREAM"
 	}
 }
 
@@ -771,6 +776,7 @@ func (c *client) writeLoop() {
 // message that now is being delivered.
 func (c *client) flushClients(budget time.Duration) time.Time {
 	last := time.Now()
+
 	// Check pending clients for flush.
 	for cp := range c.pcd {
 		// TODO(dlc) - Wonder if it makes more sense to create a new map?
@@ -930,7 +936,7 @@ func (c *client) readLoop() {
 			return
 		}
 
-		if cpacc && start.Sub(lpacc) >= closedSubsCheckInterval {
+		if cpacc && (start.Sub(lpacc)) >= closedSubsCheckInterval {
 			c.pruneClosedSubFromPerAccountCache()
 			lpacc = time.Now()
 		}
@@ -1005,15 +1011,17 @@ func (c *client) flushOutbound() bool {
 	c.mu.Unlock()
 
 	// flush here
-	now := time.Now()
+	start := time.Now()
+
 	// FIXME(dlc) - writev will do multiple IOs past 1024 on
 	// most platforms, need to account for that with deadline?
-	nc.SetWriteDeadline(now.Add(c.out.wdl))
+	nc.SetWriteDeadline(start.Add(c.out.wdl))
 
 	// Actual write to the socket.
 	n, err := nb.WriteTo(nc)
 	nc.SetWriteDeadline(time.Time{})
-	lft := time.Since(now)
+
+	lft := time.Since(start)
 
 	// Re-acquire client lock.
 	c.mu.Lock()
@@ -1446,7 +1454,7 @@ func (c *client) maxPayloadViolation(sz int, max int32) {
 }
 
 // queueOutbound queues data for a clientconnection.
-// Return if the data is referenced or not. If referenced, the caller
+// Returns if the data is referenced or not. If referenced, the caller
 // should not reuse the `data` array.
 // Lock should be held.
 func (c *client) queueOutbound(data []byte) bool {
@@ -1807,7 +1815,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 
 	sid := string(sub.sid)
 
-	if c.nc == nil && kind != SYSTEM {
+	if c.nc == nil && (kind != SYSTEM && kind != JETSTREAM) {
 		c.mu.Unlock()
 		return sub, nil
 	}
@@ -2347,11 +2355,15 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	atomic.AddInt64(&srv.outMsgs, 1)
 	atomic.AddInt64(&srv.outBytes, msgSize)
 
-	// Check for internal subscription.
-	if client.kind == SYSTEM {
+	// Check for internal subscriptions.
+	if client.kind == SYSTEM || client.kind == JETSTREAM {
 		s := client.srv
 		client.mu.Unlock()
-		s.deliverInternalMsg(sub, c, subject, c.pa.reply, msg[:msgSize])
+		if sub.icb == nil {
+			s.Debugf("Received internal callback with no registered handler")
+			return false
+		}
+		sub.icb(sub, c, string(subject), string(c.pa.reply), msg[:msgSize])
 		return true
 	}
 
@@ -2726,7 +2738,13 @@ func (c *client) processInboundClientMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, flag)
+		// With JetStream we now have times where we want to match a subsctiption
+		// on one subject, but deliver it with abother. e.g. JetStream deliverables.
+		subj := c.pa.subject
+		if len(c.pa.deliver) > 0 {
+			subj = c.pa.deliver
+		}
+		qnames = c.processMsgResults(c.acc, r, msg, subj, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
@@ -3366,7 +3384,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	// we use Noticef on create, so use that too for delete.
 	if c.kind == ROUTER || c.kind == GATEWAY {
 		c.Noticef("%s connection closed", c.typeString())
-	} else { // Client and Leaf Node connections.
+	} else { // Client, System, Jetstream and Leafnode connections.
 		c.Debugf("%s connection closed", c.typeString())
 	}
 
@@ -3416,8 +3434,8 @@ func (c *client) closeConnection(reason ClosedState) {
 
 	c.mu.Unlock()
 
-	// Remove client's or leaf node subscriptions.
-	if kind == CLIENT || kind == LEAF && acc != nil {
+	// Remove client's or leaf node or jetstream subscriptions.
+	if acc != nil && (kind == CLIENT || kind == LEAF || kind == JETSTREAM) {
 		acc.sl.RemoveBatch(subs)
 	} else if kind == ROUTER {
 		go c.removeRemoteSubs()
