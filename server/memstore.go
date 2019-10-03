@@ -137,11 +137,19 @@ func (ms *memStore) expireMsgs() {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	minAge := time.Now().UnixNano() - int64(ms.config.MaxAge)
+	now := time.Now().UnixNano()
+	minAge := now - int64(ms.config.MaxAge)
 	for {
-		if sm, ok := ms.msgs[ms.stats.FirstSeq]; ok && sm.ts < minAge {
+		if sm, ok := ms.msgs[ms.stats.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
 		} else {
+			if !ok {
+				ms.ageChk.Stop()
+				ms.ageChk = nil
+			} else {
+				fireIn := time.Duration(sm.ts-now) + ms.config.MaxAge
+				ms.ageChk.Reset(fireIn)
+			}
 			return
 		}
 	}

@@ -13,6 +13,8 @@
 
 // +build windows
 
+package sysmem
+
 import (
 	"syscall"
 	"unsafe"
