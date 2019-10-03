@@ -22,6 +22,7 @@ type pubArg struct {
 	pacache []byte
 	account []byte
 	subject []byte
+	deliver []byte
 	reply   []byte
 	szb     []byte
 	queues  [][]byte
