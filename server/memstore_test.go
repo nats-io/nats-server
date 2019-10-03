@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -144,14 +145,16 @@ func TestMemStoreAgeLimit(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
 	}
 	// Let them expire
-	time.Sleep(maxAge * 10)
-	stats = ms.Stats()
-	if stats.Msgs != 0 {
-		t.Fatalf("Expected no msgs, got %d", stats.Msgs)
-	}
-	if stats.Bytes != 0 {
-		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
-	}
+	checkFor(t, time.Second, maxAge, func() error {
+		stats = ms.Stats()
+		if stats.Msgs != 0 {
+			return fmt.Errorf("Expected no msgs, got %d", stats.Msgs)
+		}
+		if stats.Bytes != 0 {
+			return fmt.Errorf("Expected no bytes, got %d", stats.Bytes)
+		}
+		return nil
+	})
 }
 
 func TestMemStoreTimeStamps(t *testing.T) {
