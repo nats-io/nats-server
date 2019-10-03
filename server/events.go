@@ -66,11 +66,10 @@ type internal struct {
 	account  *Account
 	client   *client
 	seq      uint64
-	sid      uint64
+	sid      int
 	servers  map[string]*serverUpdate
 	sweeper  *time.Timer
 	stmr     *time.Timer
-	subs     map[string]msgHandler
 	replies  map[string]msgHandler
 	sendq    chan *pubMsg
 	wg       sync.WaitGroup
@@ -251,7 +250,14 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			}
 			var b []byte
 			if pm.msg != nil {
-				b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
+				switch v := pm.msg.(type) {
+				case string:
+					b = []byte(v)
+				case []byte:
+					b = v
+				default:
+					b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
+				}
 			}
 			c.mu.Lock()
 			// We can have an override for account here.
@@ -306,7 +312,6 @@ func (s *Server) sendShutdownEvent() {
 	// Stop any more messages from queueing up.
 	s.sys.sendq = nil
 	// Unhook all msgHandlers. Normal client cleanup will deal with subs, etc.
-	s.sys.subs = nil
 	s.sys.replies = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
@@ -1021,19 +1026,6 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 // required to be copied.
 type msgHandler func(sub *subscription, client *client, subject, reply string, msg []byte)
 
-func (s *Server) deliverInternalMsg(sub *subscription, c *client, subject, reply, msg []byte) {
-	s.mu.Lock()
-	if !s.eventsEnabled() || s.sys.subs == nil {
-		s.mu.Unlock()
-		return
-	}
-	cb := s.sys.subs[string(sub.sid)]
-	s.mu.Unlock()
-	if cb != nil {
-		cb(sub, c, string(subject), string(reply), msg)
-	}
-}
-
 // Create an internal subscription. No support for queue groups atm.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
 	return s.systemSubscribe(subject, false, cb)
@@ -1052,11 +1044,10 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 		return nil, fmt.Errorf("undefined message handler")
 	}
 	s.mu.Lock()
-	sid := strconv.FormatInt(int64(s.sys.sid), 10)
-	s.sys.subs[sid] = cb
-	s.sys.sid++
 	c := s.sys.client
 	trace := c.trace
+	s.sys.sid++
+	sid := s.sys.sid
 	s.mu.Unlock()
 
 	arg := []byte(subject + " " + sid)
@@ -1065,7 +1056,14 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	}
 
 	// Now create the subscription
-	return c.processSub(arg, internalOnly)
+	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(sid)), internalOnly)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	sub.icb = cb
+	c.mu.Unlock()
+	return sub, nil
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {
@@ -1075,7 +1073,6 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	s.mu.Lock()
 	acc := s.sys.account
 	c := s.sys.client
-	delete(s.sys.subs, string(sub.sid))
 	s.mu.Unlock()
 	c.unsubscribe(acc, sub, true, true)
 }
