@@ -31,10 +31,10 @@ Server Options:
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
     -c, --config <file>              Configuration file
+    -t                               Test configuration and exit
     -sl,--signal <signal>[=<pid>]    Send signal to nats-server process (stop, quit, reopen, reload)
                                      <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/nats-server.pid)
         --client_advertise <string>  Client URL to advertise to other servers
-    -t                               Test configuration and exit
 
 Logging Options:
     -l, --log <file>                 File to redirect log output
@@ -44,6 +44,9 @@ Logging Options:
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
     -DV                              Debug and trace
+
+JetStream Options:
+    -js, --jetstream                 Enable JetStream functionality.
 
 Authorization Options:
         --user <user>                User required for connections
@@ -63,7 +66,6 @@ Cluster Options:
         --no_advertise <bool>        Advertise known cluster IPs to clients
         --cluster_advertise <string> Cluster URL to advertise to other servers
         --connect_retries <number>   For implicit routes, number of connect retries
-
 
 Common Options:
     -h, --help                       Show this message
