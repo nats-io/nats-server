@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,12 +229,9 @@ func TestJetStreamCreateObservable(t *testing.T) {
 		t.Fatalf("Expected an error for no config")
 	}
 
-	// Check for delivery subject  errors.
-	// Empty delivery subject
-	if _, err := mset.AddObservable(&server.ObservableConfig{Delivery: ""}); err == nil {
-		t.Fatalf("Expected an error on empty delivery subject")
-	}
-	// No literal delivery subject allowed.
+	// Check for delivery subject errors.
+
+	// Literal delivery subject required.
 	if _, err := mset.AddObservable(&server.ObservableConfig{Delivery: "foo.*"}); err == nil {
 		t.Fatalf("Expected an error on bad delivery subject")
 	}
@@ -423,4 +422,181 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	defer o.Delete()
 
 	checkMsgs(101)
+}
+
+func TestJetStreamBasicWorkQueue(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	if o.NextSeq() != 1 {
+		t.Fatalf("Expected to be starting at sequence 1")
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 100
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	// FIXME(dlc) - Right now this will *not* work with new style nc.Request().
+	// The new Request() mux in client needs the original subject to de-mux. Will panic.
+	// Working on a fix, but for now revert back to old style.
+	nc.Opts.UseOldRequestStyle = true
+
+	getNext := func(seqno int) {
+		t.Helper()
+		nextMsg, err := nc.Request(reqMsgSubj, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if nextMsg.Subject != "bar" {
+			t.Fatalf("Expected subject of %q, got %q", "bar", nextMsg.Subject)
+		}
+		if seq := o.SeqFromReply(nextMsg.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+	}
+
+	// Make sure we can get the messages already there.
+	for i := 1; i <= toSend; i++ {
+		getNext(i)
+	}
+
+	// Now we want to make sure we can get a message that is published to the message
+	// set as we are waiting for it.
+	nextDelay := 100 * time.Millisecond
+
+	go func() {
+		time.Sleep(nextDelay)
+		nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+	}()
+
+	start := time.Now()
+	getNext(toSend + 1)
+	if time.Since(start) < nextDelay {
+		t.Fatalf("Received message too quickly")
+	}
+
+	// Now do same thing but combine waiting for new ones with sending.
+	go func() {
+		time.Sleep(nextDelay)
+		for i := 0; i < toSend; i++ {
+			nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	for i := toSend + 2; i < toSend*2+2; i++ {
+		getNext(i)
+	}
+}
+
+func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	numWorkers := 25
+	counts := make([]int32, numWorkers)
+	var received int32
+
+	wg := &sync.WaitGroup{}
+	wg.Add(numWorkers)
+
+	dwg := &sync.WaitGroup{}
+	dwg.Add(numWorkers)
+
+	toSend := 1000
+
+	for i := 0; i < numWorkers; i++ {
+		nc := clientConnectToServer(t, s)
+		defer nc.Close()
+
+		go func(index int32) {
+			counter := &counts[index]
+			// Signal we are ready
+			wg.Done()
+			defer dwg.Done()
+
+			for {
+				if _, err := nc.Request(reqMsgSubj, nil, 50*time.Millisecond); err != nil {
+					return
+				}
+				atomic.AddInt32(counter, 1)
+				if total := atomic.AddInt32(&received, 1); total >= int32(toSend) {
+					return
+				}
+			}
+		}(int32(i))
+	}
+
+	// To send messages.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Wait for requestors.
+	wg.Wait()
+
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+
+	// Wait for test to complete.
+	dwg.Wait()
+
+	target := toSend / numWorkers
+	delta := target / 3
+	low, high := int32(target-delta), int32(target+delta)
+
+	for i := 0; i < numWorkers; i++ {
+		if msgs := atomic.LoadInt32(&counts[i]); msgs < low || msgs > high {
+			t.Fatalf("Messages received for worker too far off from target of %d, got %d", target, msgs)
+		}
+	}
 }
