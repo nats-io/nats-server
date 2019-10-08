@@ -1,6 +1,6 @@
 # github.com/nats-io/jwt v0.3.0
 github.com/nats-io/jwt
-# github.com/nats-io/nats.go v1.8.1
+# github.com/nats-io/nats.go v1.8.2-0.20191008220554-257351c4291e
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
 github.com/nats-io/nats.go/util
