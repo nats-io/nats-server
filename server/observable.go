@@ -36,12 +36,12 @@ type ObservableConfig struct {
 type AckPolicy int
 
 const (
+	// AckNone requires no acks for delivered messages.
+	AckNone AckPolicy = iota
 	// AckExplicit requires ack or nack for all messages.
-	AckExplicit AckPolicy = iota
+	AckExplicit
 	// When acking a sequence number, this implicitly acks all sequences below this one as well.
 	AckAll
-	// AckNone requires no acks for delivered messages.
-	AckNone
 )
 
 // Observable is a jetstream observable/subscriber.
@@ -51,8 +51,10 @@ type Observable struct {
 	mset     *MsgSet
 	seq      uint64
 	dsubj    string
+	reqSub   *subscription
 	ackSub   *subscription
 	ackReply string
+	waiting  []string
 	config   ObservableConfig
 }
 
@@ -60,16 +62,14 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	if config == nil {
 		return nil, fmt.Errorf("observable config required")
 	}
-	// For now expect a literal subject that is not empty.
-	// FIXME(dlc) - Empty == Worker mode
-	if config.Delivery == "" {
-		return nil, fmt.Errorf("observable delivery subject is empty")
-	}
-	if !subjectIsLiteral(config.Delivery) {
-		return nil, fmt.Errorf("observable delivery subject has wildcards")
-	}
-	if mset.deliveryFormsCycle(config.Delivery) {
-		return nil, fmt.Errorf("observable delivery subject forms a cycle")
+	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
+	if config.Delivery != _EMPTY_ {
+		if !subjectIsLiteral(config.Delivery) {
+			return nil, fmt.Errorf("observable delivery subject has wildcards")
+		}
+		if mset.deliveryFormsCycle(config.Delivery) {
+			return nil, fmt.Errorf("observable delivery subject forms a cycle")
+		}
 	}
 
 	// Check on start position conflicts.
@@ -83,7 +83,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Check if we are not durable that the delivery subject has interest.
-	if config.Durable == "" {
+	if config.Durable == _EMPTY_ && config.Delivery != _EMPTY_ {
 		if mset.noInterest(config.Delivery) {
 			return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
 		}
@@ -123,6 +123,13 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	} else {
 		o.ackSub = sub
 	}
+	// Setup the internal sub for individual message requests.
+	reqSubj := fmt.Sprintf("%s.%s.%s", JsReqPre, cn, o.name)
+	if sub, err := mset.subscribeInternal(reqSubj, o.processObservableMsgRequest); err != nil {
+		return nil, err
+	} else {
+		o.reqSub = sub
+	}
 	mset.obs[o.name] = o
 	mset.mu.Unlock()
 
@@ -143,6 +150,34 @@ func (o *Observable) processObservableAck(_ *subscription, _ *client, subject, _
 	// No-op for now.
 }
 
+func (o *Observable) processObservableMsgRequest(_ *subscription, _ *client, subject, reply string, msg []byte) {
+	o.mu.Lock()
+	mset := o.mset
+	if mset == nil {
+		o.mu.Unlock()
+		// FIXME(dlc) - send err?
+		return
+	}
+	// Determine which sequence number they are looking for. nil request means next message.
+	wantNextMsg := len(msg) == 0
+	var seq uint64
+
+	if wantNextMsg {
+		seq = o.seq
+	}
+	// FIXME(dlc) - do actual sequence numbers.
+	subj, msg, _, err := mset.store.Lookup(seq)
+	if err == nil {
+		o.deliverMsgRequest(mset, reply, subj, msg, seq)
+		if seq == o.seq {
+			o.seq++
+		}
+	} else if wantNextMsg {
+		o.waiting = append(o.waiting, reply)
+	}
+	o.mu.Unlock()
+}
+
 func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 	var mset *MsgSet
 	for {
@@ -150,27 +185,51 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 		if mset = o.msgSet(); mset == nil {
 			return
 		}
+
 		// Deliver all the msgs we have now, once done or on a condition, we wait.
 		for {
-			seq := atomic.LoadUint64(&o.seq)
+			o.mu.Lock()
+			seq := o.seq
 			subj, msg, _, err := mset.store.Lookup(seq)
-			if err == nil {
-				atomic.AddUint64(&o.seq, 1)
-				o.deliverMsg(mset, subj, msg, seq)
-			} else if err != ErrStoreMsgNotFound {
-				s.Warnf("Jetstream internal storage error on lookup: %v", err)
-				return
-			} else {
+
+			if err != nil {
+				o.mu.Unlock()
+				if err != ErrStoreMsgNotFound {
+					s.Warnf("Jetstream internal storage error on lookup: %v", err)
+					return
+				}
 				break
 			}
+
+			// We have the message. We need to check if we are in push mode or pull mode.
+			if o.config.Delivery != "" {
+				o.deliverMsg(mset, subj, msg, seq)
+				o.seq++
+			} else if len(o.waiting) > 0 {
+				reply := o.waiting[0]
+				o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+				o.deliverMsgRequest(mset, reply, subj, msg, seq)
+				o.seq++
+			} else {
+				// No one waiting, let's break out and wait.
+				o.mu.Unlock()
+				break
+			}
+			o.mu.Unlock()
 		}
+		// We will wait here for new messages to arrive.
 		mset.waitForMsgs()
 	}
 }
 
-// Deliver a msg to the observable.
+// Deliver a msg to the observable push delivery subject.
 func (o *Observable) deliverMsg(mset *MsgSet, subj string, msg []byte, seq uint64) {
 	mset.sendq <- &jsPubMsg{o.dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+}
+
+// Deliver a msg to the msg request subject.
+func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
+	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
 }
 
 // SeqFromReply will extract a sequence number from a reply ack subject.
@@ -180,6 +239,11 @@ func (o *Observable) SeqFromReply(reply string) (seq uint64) {
 		return 0
 	}
 	return
+}
+
+// NextSeq returns the next delivered sequence number for this observable.
+func (o *Observable) NextSeq() uint64 {
+	return atomic.LoadUint64(&o.seq)
 }
 
 // Will select the starting sequence.
@@ -203,7 +267,9 @@ func (o *Observable) selectStartingSeqNo() {
 		o.seq = o.config.StartSeq
 	}
 
-	if o.seq < stats.FirstSeq {
+	if stats.FirstSeq == 0 {
+		o.seq = 1
+	} else if o.seq < stats.FirstSeq {
 		o.seq = stats.FirstSeq
 	} else if o.seq > stats.LastSeq {
 		o.seq = stats.LastSeq + 1
@@ -237,7 +303,9 @@ func (o *Observable) Delete() error {
 	mset := o.mset
 	o.mset = nil
 	ackSub := o.ackSub
+	reqSub := o.reqSub
 	o.ackSub = nil
+	o.reqSub = nil
 	o.mu.Unlock()
 
 	if mset == nil {
@@ -251,6 +319,7 @@ func (o *Observable) Delete() error {
 	// performance wise.
 	mset.sg.Broadcast()
 	mset.unsubscribe(ackSub)
+	mset.unsubscribe(reqSub)
 	delete(mset.obs, o.name)
 	mset.mu.Unlock()
 
