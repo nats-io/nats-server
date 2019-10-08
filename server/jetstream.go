@@ -84,6 +84,8 @@ const (
 
 	// JsAckPre is the prefix for the ack stream coming back to observable.
 	JsAckPre = "$JS.A"
+
+	JsReqPre = "$JS.M"
 )
 
 // For easier handling of exports and imports.
