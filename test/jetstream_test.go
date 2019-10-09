@@ -537,6 +537,10 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	}
 	defer o.Delete()
 
+	// To send messages.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
 	// For normal work queue semantics, you send requests to the subject with message set and observable name.
 	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
 
@@ -574,10 +578,6 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 		}(int32(i))
 	}
 
-	// To send messages.
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
-
 	// Wait for requestors.
 	wg.Wait()
 
@@ -598,5 +598,131 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 		if msgs := atomic.LoadInt32(&counts[i]); msgs < low || msgs > high {
 			t.Fatalf("Messages received for worker too far off from target of %d, got %d", target, msgs)
 		}
+	}
+}
+
+func TestJetStreamPartitioning(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "MSET", Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 50
+	subjA := "foo.A"
+	subjB := "foo.B"
+
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(subjA, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+		resp, _ = nc.Request(subjB, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend*2) {
+		t.Fatalf("Expected %d messages, got %d", toSend*2, stats.Msgs)
+	}
+
+	delivery := nats.NewInbox()
+	sub, _ := nc.SubscribeSync(delivery)
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, Partition: subjB, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	// Now let's check the messages
+	for i := 1; i <= toSend; i++ {
+		m, err := sub.NextMsg(time.Millisecond)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// JetStream will have the subject match the stream subject, not delivery subject.
+		// We want these to only be subjB.
+		if m.Subject != subjB {
+			t.Fatalf("Expected original subject of %q, but got %q", subjB, m.Subject)
+		}
+		// Now check that reply subject exists and has a sequence as the last token.
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
+			t.Fatalf("Expected sequence of %d , got %d", i, seq)
+		}
+		// Ack the message here.
+		m.Respond(nil)
+	}
+
+	if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 0 {
+		t.Fatalf("Expected sub to have no pending")
+	}
+}
+
+func TestJetStreamWorkQueuePartitioning(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 50
+	subjA := "foo.A"
+	subjB := "foo.B"
+
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(subjA, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+		resp, _ = nc.Request(subjB, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend*2) {
+		t.Fatalf("Expected %d messages, got %d", toSend*2, stats.Msgs)
+	}
+
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Partition: subjA, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	if o.NextSeq() != 1 {
+		t.Fatalf("Expected to be starting at sequence 1")
+	}
+
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	getNext := func(seqno int) {
+		t.Helper()
+		nextMsg, err := nc.Request(reqMsgSubj, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if nextMsg.Subject != subjA {
+			t.Fatalf("Expected subject of %q, got %q", subjA, nextMsg.Subject)
+		}
+		if seq := o.SeqFromReply(nextMsg.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+	}
+
+	// Make sure we can get the messages already there.
+	for i := 1; i <= toSend; i++ {
+		getNext(i)
 	}
 }
