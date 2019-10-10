@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -320,12 +321,11 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
 
-	delivery := nats.NewInbox()
-	sub, _ := nc2.SubscribeSync(delivery)
+	sub, _ := nc2.SubscribeSync(nats.NewInbox())
 	defer sub.Unsubscribe()
 	nc2.Flush()
 
-	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, DeliverAll: true})
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -337,7 +337,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 
 		checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
-				return fmt.Errorf("Did not receive correct number of  messages: %d vs %d", nmsgs, toSend)
+				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
 			}
 			return nil
 		})
@@ -381,7 +381,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	o.Delete()
 
 	// Now check for deliver last, deliver new and deliver by seq.
-	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: delivery, DeliverLast: true})
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverLast: true})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -398,7 +398,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	checkSubEmpty()
 	o.Delete()
 
-	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: delivery}) // Default is deliver new only.
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject}) // Default is deliver new only.
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -413,7 +413,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	o.Delete()
 
 	// Now try by sequence number.
-	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: delivery, StartSeq: 101})
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, StartSeq: 101})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -560,9 +560,11 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 			<-ch
 
 			for counter := &counts[index]; ; {
-				if _, err := nc.Request(reqMsgSubj, nil, 100*time.Millisecond); err != nil {
+				m, err := nc.Request(reqMsgSubj, nil, 100*time.Millisecond)
+				if err != nil {
 					return
 				}
+				m.Respond(nil)
 				atomic.AddInt32(counter, 1)
 				if total := atomic.AddInt32(&received, 1); total >= int32(toSend) {
 					return
@@ -713,10 +715,127 @@ func TestJetStreamWorkQueuePartitioning(t *testing.T) {
 		if seq := o.SeqFromReply(nextMsg.Reply); seq != uint64(seqno) {
 			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
 		}
+		nextMsg.Respond(nil)
 	}
 
 	// Make sure we can get the messages already there.
 	for i := 1; i <= toSend; i++ {
 		getNext(i)
 	}
+}
+
+func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	if o.NextSeq() != 1 {
+		t.Fatalf("Expected to be starting at sequence 1")
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 100
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	// We will do this to start it off then use ack+next to get other messages.
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+
+	// Kick things off.
+	nc.PublishRequest(reqNextMsgSubj, sub.Subject, nil)
+
+	for i := 0; i < toSend; i++ {
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error waiting for messages: %v", err)
+		}
+		nc.PublishRequest(m.Reply, sub.Subject, server.AckNext)
+	}
+
+}
+
+func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	if o.NextSeq() != 1 {
+		t.Fatalf("Expected to be starting at sequence 1")
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 100
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	// We will do this to start it off then use ack+next to get other messages.
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+
+	// Kick things off with batch size of 50.
+	batchSize := 50
+	nc.PublishRequest(reqNextMsgSubj, sub.Subject, []byte(strconv.Itoa(batchSize)))
+
+	// We should receive batchSize with no acks or additional requests.
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != batchSize {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, batchSize)
+		}
+		return nil
+	})
 }
