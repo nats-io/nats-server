@@ -52,7 +52,8 @@ type Observable struct {
 	mu       sync.Mutex
 	name     string
 	mset     *MsgSet
-	seq      uint64
+	aseq     uint64
+	sseq     uint64
 	dseq     uint64
 	dsubj    string
 	reqSub   *subscription
@@ -209,10 +210,10 @@ func (o *Observable) getNextMsg() (string, []byte, error) {
 		return "", nil, fmt.Errorf("message set not valid")
 	}
 	for {
-		subj, msg, _, err := o.mset.store.Lookup(o.seq)
+		subj, msg, _, err := o.mset.store.Lookup(o.sseq)
 		if err == nil {
 			if o.config.Partition != "" && subj != o.config.Partition {
-				o.seq++
+				o.sseq++
 				continue
 			}
 			// We have the msg here.
@@ -234,7 +235,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 		// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 		for {
 			o.mu.Lock()
-			seq := o.seq
+			seq := o.sseq
 			subj, msg, _, err := mset.store.Lookup(seq)
 
 			// On error either break or return.
@@ -250,7 +251,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			// We have the message. We need to check if we are in push mode or pull mode.
 			// Also need to check if we have a partition filter.
 			if o.config.Partition != "" && subj != o.config.Partition {
-				o.seq++
+				o.sseq++
 				o.mu.Unlock()
 				continue
 			}
@@ -278,7 +279,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 // Advance the sequence numbers.
 // Lock should be held.
 func (o *Observable) incSeqs() {
-	o.seq++
+	o.sseq++
 	o.dseq++
 }
 
@@ -303,7 +304,7 @@ func (o *Observable) SeqFromReply(reply string) (seq uint64) {
 
 // NextSeq returns the next delivered sequence number for this observable.
 func (o *Observable) NextSeq() uint64 {
-	return atomic.LoadUint64(&o.seq)
+	return atomic.LoadUint64(&o.dseq)
 }
 
 // Will select the starting sequence.
@@ -312,30 +313,30 @@ func (o *Observable) selectStartingSeqNo() {
 	noTime := time.Time{}
 	if o.config.StartSeq == 0 {
 		if o.config.DeliverAll {
-			o.seq = stats.FirstSeq
+			o.sseq = stats.FirstSeq
 		} else if o.config.DeliverLast {
-			o.seq = stats.LastSeq
+			o.sseq = stats.LastSeq
 		} else if o.config.StartTime != noTime {
 			// If we are here we are time based.
 			// TODO(dlc) - Once clustered can't rely on this.
-			o.seq = o.mset.store.GetSeqFromTime(o.config.StartTime)
+			o.sseq = o.mset.store.GetSeqFromTime(o.config.StartTime)
 		} else {
 			// Default is deliver new only.
-			o.seq = stats.LastSeq + 1
+			o.sseq = stats.LastSeq + 1
 		}
 	} else {
-		o.seq = o.config.StartSeq
+		o.sseq = o.config.StartSeq
 	}
 
 	if stats.FirstSeq == 0 {
-		o.seq = 1
-	} else if o.seq < stats.FirstSeq {
-		o.seq = stats.FirstSeq
-	} else if o.seq > stats.LastSeq {
-		o.seq = stats.LastSeq + 1
+		o.sseq = 1
+	} else if o.sseq < stats.FirstSeq {
+		o.sseq = stats.FirstSeq
+	} else if o.sseq > stats.LastSeq {
+		o.sseq = stats.LastSeq + 1
 	}
 	// Set deliveryt sequence to be the same to start.
-	o.dseq = o.seq
+	o.dseq = o.sseq
 }
 
 // Test whether a config represents a durable subscriber.
