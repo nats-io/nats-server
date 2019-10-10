@@ -82,10 +82,23 @@ const (
 	JsMsgSetInfoExport = "$JS.*.MSGSET.INFO"
 	JsMsgSetInfo       = "$JS.MSGSET.INFO"
 
-	// JsAckPre is the prefix for the ack stream coming back to observable.
+	// JsAckPre is the prefix for the ack stream coming back to an observable.
 	JsAckPre = "$JS.A"
 
-	JsReqPre = "$JS.M"
+	// JsReqPre is the prefix for the request next message(s) for an observable in worker/pull mode.
+	JsReqPre = "$JS.RN"
+)
+
+// Ack responses. Note that a nil or no payload is same as AckAck
+var (
+	// Ack
+	AckAck = []byte(JsOK) // nil or no payload to ack subject also means ACK
+	// Nack
+	AckNak = []byte("-NAK")
+	// Working indicator
+	AckWork = []byte("+WHB")
+	// Ack + deliver next.
+	AckNext = []byte("+NEXT")
 )
 
 // For easier handling of exports and imports.
