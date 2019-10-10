@@ -14,9 +14,11 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,14 +133,14 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	cn := mset.cleanName()
 	o.ackReply = fmt.Sprintf("%s.%s.%s.%%d", JsAckPre, cn, o.name)
 	ackSubj := fmt.Sprintf("%s.%s.%s.*", JsAckPre, cn, o.name)
-	if sub, err := mset.subscribeInternal(ackSubj, o.processObservableAck); err != nil {
+	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
 		o.ackSub = sub
 	}
 	// Setup the internal sub for individual message requests.
 	reqSubj := fmt.Sprintf("%s.%s.%s", JsReqPre, cn, o.name)
-	if sub, err := mset.subscribeInternal(reqSubj, o.processObservableMsgRequest); err != nil {
+	if sub, err := mset.subscribeInternal(reqSubj, o.processNextMsgReq); err != nil {
 		return nil, err
 	} else {
 		o.reqSub = sub
@@ -159,46 +161,66 @@ func (o *Observable) msgSet() *MsgSet {
 	return mset
 }
 
-func (o *Observable) processObservableAck(_ *subscription, _ *client, subject, _ string, msg []byte) {
-	// No-op for now.
+func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
+	// TODO(dlc) process the ack.
+	if len(msg) > 1 {
+		// TODO(dlc) - move to switch.
+		if bytes.Equal(msg, AckNext) {
+			o.processNextMsgReq(nil, nil, subject, reply, nil)
+		}
+	}
 }
 
-func (o *Observable) processObservableMsgRequest(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	o.mu.Lock()
-	mset := o.mset
-	if mset == nil {
-		o.mu.Unlock()
-		// FIXME(dlc) - send err?
-		return
+// Default is 1 if msg is nil.
+func batchSizeFromMsg(msg []byte) int {
+	bs := 1
+	if len(msg) > 0 {
+		if n, err := strconv.Atoi(string(msg)); err == nil {
+			bs = n
+		}
 	}
-	// Determine which sequence number they are looking for. nil request means next message.
-	wantNextMsg := len(msg) == 0
-	var seq uint64
+	return bs
+}
 
-	if wantNextMsg {
-		seq = o.seq
-	}
-	// FIXME(dlc) - do actual sequence numbers.
-	// We do loop here in case we are partitioned.
-	for {
-		subj, msg, _, err := mset.store.Lookup(seq)
-		if err == nil {
-			if o.config.Partition != "" && subj != o.config.Partition {
-				o.seq++
-				seq = o.seq
-				continue
-			}
-			o.deliverMsgRequest(mset, reply, subj, msg, o.dseq)
-			if wantNextMsg {
-				o.incSeqs()
-			}
-			break
-		} else if wantNextMsg {
+// processNextMsgReq will process a request for the next message available. A nil message payload means deliver
+// a single message. If the payload is a number parseable with Atoi(), then we will send a batch of messages without
+// requiring another request to this endpoint, or an ACK.
+func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply string, msg []byte) {
+	// Check payload here to see if they sent in batch size.
+	batchSize := batchSizeFromMsg(msg)
+
+	o.mu.Lock()
+	for i := 0; i < batchSize; i++ {
+		if subj, msg, err := o.getNextMsg(); err == nil {
+			o.deliverMsgRequest(o.mset, reply, subj, msg, o.dseq)
+			o.incSeqs()
+		} else {
 			o.waiting = append(o.waiting, reply)
-			break
 		}
 	}
 	o.mu.Unlock()
+}
+
+// Get next available message from underlying store.
+// Is partition aware.
+// Lock should be held.
+func (o *Observable) getNextMsg() (string, []byte, error) {
+	if o.mset == nil {
+		return "", nil, fmt.Errorf("message set not valid")
+	}
+	for {
+		subj, msg, _, err := o.mset.store.Lookup(o.seq)
+		if err == nil {
+			if o.config.Partition != "" && subj != o.config.Partition {
+				o.seq++
+				continue
+			}
+			// We have the msg here.
+			return subj, msg, nil
+		}
+		// We got an error here.
+		return "", nil, err
+	}
 }
 
 func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {

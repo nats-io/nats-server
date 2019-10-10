@@ -26,6 +26,8 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1507,4 +1509,96 @@ func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
 	if int(stats.Msgs) != b.N {
 		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
 	}
+}
+
+func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
+	// Avoid running at too low of numbers since that chews up memory and GC.
+	if b.N < numWorkers*batchSize {
+		return
+	}
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MSET22"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname})
+	if err != nil {
+		b.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Queue up messages.
+	for i := 0; i < b.N; i++ {
+		nc.Publish(mname, []byte("Hello World!"))
+	}
+	nc.Flush()
+
+	stats := mset.Stats()
+	if stats.Msgs != uint64(b.N) {
+		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	}
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	if err != nil {
+		b.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	total := int32(b.N)
+	received := int32(0)
+	start := make(chan bool)
+	done := make(chan bool)
+
+	batchSizeMsg := []byte(strconv.Itoa(batchSize))
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+
+	for i := 0; i < numWorkers; i++ {
+		nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+		if err != nil {
+			b.Fatalf("Failed to create client: %v", err)
+		}
+
+		deliverTo := nats.NewInbox()
+		nc.Subscribe(deliverTo, func(m *nats.Msg) {
+			if atomic.AddInt32(&received, 1) >= total {
+				done <- true
+			}
+			// Ack + Next request.
+			nc.PublishRequest(m.Reply, deliverTo, server.AckNext)
+		})
+		nc.Flush()
+		go func() {
+			<-start
+			nc.PublishRequest(reqNextMsgSubj, deliverTo, batchSizeMsg)
+		}()
+	}
+
+	b.ResetTimer()
+	close(start)
+	<-done
+	b.StopTimer()
+}
+
+func Benchmark___JetStream1x1Worker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 1, 1)
+}
+
+func Benchmark__JetStream1x1kWorker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 1, 1024)
+}
+
+func Benchmark_JetStream10x1kWorker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 10, 1024)
+}
+
+func Benchmark_JetStream4x512Worker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 4, 512)
 }
