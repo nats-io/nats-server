@@ -14,7 +14,7 @@
 
 * [Twitter](https://twitter.com/nats_io): Follow us on Twitter!
 * [Google Groups](https://groups.google.com/forum/#!forum/natsio): Where you can ask questions
-* [Slack](https://natsio.slack.com): To join go [here](https://join.slack.com/t/natsio/shared_invite/enQtMzE2NDkxNDI2NTE1LTc5ZDEzYTkwYWZkYWQ5YjY1MzBjMWZmYzA5OGQxMzlkMGQzMjYxNGM3MWYxMjNiYmNjNzIwMTVjMWE2ZDgxZGM). You can ask question to our maintainers and to the rich and active community.
+* [Slack](https://natsio.slack.com): Click [here](https://slack.nats.io) to join. You can ask question to our maintainers and to the rich and active community.
 
 ## Contributing
 
