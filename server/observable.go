@@ -35,16 +35,16 @@ type ObservableConfig struct {
 	Partition   string    `json:"partition"`
 }
 
-// AckPolicy determines how the observable shoulc acknowledge delivered messages.
+// AckPolicy determines how the observable should acknowledge delivered messages.
 type AckPolicy int
 
 const (
 	// AckNone requires no acks for delivered messages.
 	AckNone AckPolicy = iota
-	// AckExplicit requires ack or nack for all messages.
-	AckExplicit
 	// When acking a sequence number, this implicitly acks all sequences below this one as well.
 	AckAll
+	// AckExplicit requires ack or nack for all messages.
+	AckExplicit
 )
 
 // Observable is a jetstream observable/subscriber.
@@ -165,10 +165,27 @@ func (o *Observable) msgSet() *MsgSet {
 func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	// TODO(dlc) process the ack.
 	if len(msg) > 1 {
-		// TODO(dlc) - move to switch.
-		if bytes.Equal(msg, AckNext) {
+		switch {
+		case bytes.Equal(msg, AckNext):
 			o.processNextMsgReq(nil, nil, subject, reply, nil)
+		case bytes.Equal(msg, AckNak):
+			if o.isPushMode() {
+				// Reset our observable to this sequence number.
+				o.resetToSeq(o.SeqFromReply(subject))
+			}
 		}
+	}
+}
+
+// resetToSeq is used when we receive a NAK to reset a push based observable. e.g. a replay.
+func (o *Observable) resetToSeq(seq uint64) {
+	o.mu.Lock()
+	o.sseq, o.dseq = seq, seq
+	mset := o.mset
+	o.mu.Unlock()
+
+	if mset != nil {
+		mset.signalObservers()
 	}
 }
 
@@ -256,7 +273,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 				continue
 			}
 
-			if o.config.Delivery != "" {
+			if o.isPushMode() {
 				o.deliverMsg(mset, subj, msg, o.dseq)
 				o.incSeqs()
 			} else if len(o.waiting) > 0 {
@@ -344,6 +361,19 @@ func isDurableObservable(config *ObservableConfig) bool {
 	return config != nil && config.Durable != _EMPTY_
 }
 
+// Are we in push mode, delivery subject, etc.
+func (o *Observable) isPushMode() bool {
+	return o.config.Delivery != _EMPTY_
+}
+
+// Name returns the name of this observable.
+func (o *Observable) Name() string {
+	o.mu.Lock()
+	n := o.name
+	o.mu.Unlock()
+	return n
+}
+
 const randObservableNameLen = 6
 
 func createObservableName() string {
@@ -357,6 +387,11 @@ func createObservableName() string {
 // DeleteObservable will delete the observable from this message set.
 func (mset *MsgSet) DeleteObservable(o *Observable) error {
 	return o.Delete()
+}
+
+// Active indicates if this observable is still active.
+func (o *Observable) Active() bool {
+	return o.msgSet() != nil
 }
 
 // Delete will delete the observable for the associated message set.
