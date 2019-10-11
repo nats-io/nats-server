@@ -21,21 +21,6 @@ import (
 	"time"
 )
 
-// MsgSet is a jetstream message set. When we receive a message internally destined
-// for a MsgSet we will direct link from the client to this MsgSet structure.
-type MsgSet struct {
-	mu     sync.Mutex
-	sg     *sync.Cond
-	sgw    int
-	jsa    *jsAccount
-	client *client
-	sid    int
-	sendq  chan *jsPubMsg
-	store  MsgSetStore
-	obs    map[string]*Observable
-	config MsgSetConfig
-}
-
 // MsgSetConfig will determine the name, subjects and retention policy
 // for a given message set. If subjects is empty the name will be used.
 type MsgSetConfig struct {
@@ -62,6 +47,26 @@ const (
 	WorkQueuePolicy
 )
 
+// MsgSet is a jetstream message set. When we receive a message internally destined
+// for a MsgSet we will direct link from the client to this MsgSet structure.
+type MsgSet struct {
+	mu     sync.Mutex
+	sg     *sync.Cond
+	sgw    int
+	jsa    *jsAccount
+	client *client
+	sid    int
+	sendq  chan *jsPubMsg
+	store  MsgSetStore
+	obs    map[string]*Observable
+	config MsgSetConfig
+}
+
+const (
+	MsgSetDefaultReplicas = 1
+	MsgSetMaxReplicas     = 8
+)
+
 // JetStreamAddMsgSet adds a message set for the given account.
 func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, error) {
 	js := s.getJetStream()
@@ -75,6 +80,12 @@ func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, 
 	}
 
 	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.
+	if config.Replicas == 0 {
+		config.Replicas = 1
+	}
+	if config.Replicas > MsgSetMaxReplicas {
+		return nil, fmt.Errorf("maximum replicas is %d", MsgSetMaxReplicas)
+	}
 
 	jsa.mu.Lock()
 	if _, ok := jsa.msgSets[config.Name]; ok {
@@ -213,6 +224,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 
 	// FIXME(dlc) - Not inline unless memory based.
 
+	// Copy
 	msg = append(msg[:0:0], msg...)
 
 	if _, err := store.StoreMsg(subject, msg); err != nil {
@@ -227,7 +239,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 	// Send Ack here.
 	if len(reply) > 0 {
-		mset.sendq <- &jsPubMsg{reply, "", "", []byte(JsOK)}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, []byte(JsOK)}
 	}
 
 	mset.signalObservers()
@@ -296,6 +308,8 @@ func (mset *MsgSet) internalSendLoop() {
 			c.pa.szb = []byte(strconv.Itoa(c.pa.size))
 			c.pa.reply = []byte(pm.reply)
 			msg := append(pm.msg, _CRLF_...)
+			// FIXME(dlc) - capture if this sent to anyone and notify
+			// observer if its now zero, meaning no interest.
 			c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
