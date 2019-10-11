@@ -18,6 +18,7 @@ type closedClient struct {
 	ConnInfo
 	subs []string
 	user string
+	acc  string
 }
 
 // Fixed sized ringbuffer for closed connections.

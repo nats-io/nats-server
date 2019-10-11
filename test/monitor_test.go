@@ -536,7 +536,148 @@ func TestConnzWithAuth(t *testing.T) {
 		t.Fatalf("Expected authorized_user to be %q, got %q\n",
 			opts.Users[0].Username, ci.AuthorizedUser)
 	}
+}
 
+func TestConnzWithAccounts(t *testing.T) {
+	resetPreviousHTTPConnections()
+	s, opts := RunServerWithConfig("./configs/multi_accounts.conf")
+	defer s.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+
+	// Connect all the users. Tests depend on knowing users, accounts.
+	if len(opts.Users) != 6 {
+		t.Fatalf("Expected 6 total users, got %d", len(opts.Users))
+	}
+	if len(opts.Accounts) != 3 {
+		t.Fatalf("Expected 3 total accounts, got %d", len(opts.Accounts))
+	}
+
+	// Map from user to account name.
+	utoa := make(map[string]string)
+	conns := make([]*nats.Conn, len(opts.Users))
+	for _, u := range opts.Users {
+		nc, err := nats.Connect(fmt.Sprintf("nats://%s:%s@%s/", u.Username, u.Password, endpoint))
+		if err != nil {
+			t.Fatalf("Got an error on Connect: %+v\n", err)
+		}
+		defer nc.Close()
+		utoa[u.Username] = u.Account.Name
+		conns = append(conns, nc)
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", opts.HTTPPort)
+
+	grabConnz := func(args string) *server.Connz {
+		t.Helper()
+		if args != "" {
+			args = "&" + args
+		}
+		resp, err := http.Get(url + "connz?auth=1" + args)
+		if err != nil {
+			t.Fatalf("Expected no error: Got %v\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+		}
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Got an error reading the body: %v\n", err)
+		}
+		c := server.Connz{}
+		if err := json.Unmarshal(body, &c); err != nil {
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		return &c
+	}
+
+	c := grabConnz("")
+	if c.NumConns != 6 {
+		t.Fatalf("Expected 6 connection entries, got %d", c.NumConns)
+	}
+
+	checkConn := func(ci *server.ConnInfo) {
+		t.Helper()
+		user := ci.AuthorizedUser
+		account := utoa[user]
+		if user == "" || account == "" {
+			t.Fatalf("Empty user or account: %q - %q", user, account)
+		}
+		if ci.Account != account {
+			t.Fatalf("Expected account of %q, got %q", account, ci.Account)
+		}
+	}
+
+	for i, ci := range c.Conns {
+		if ci.Cid != uint64(i+1) {
+			t.Fatalf("Expected CID of %d, got %d", i+1, ci.Cid)
+		}
+		checkConn(ci)
+	}
+
+	// Now make sure we can pull connections by account and user
+	pullByAccount := func(accName, state string) {
+		t.Helper()
+		c = grabConnz("acc=" + accName + "&state=" + state)
+		if c.NumConns != 2 {
+			t.Fatalf("Expected 2 connection entries, got %d", c.NumConns)
+		}
+		for _, ci := range c.Conns {
+			if ci.Account != accName {
+				t.Fatalf("Expected %q account, go %q", accName, ci.Account)
+			}
+		}
+	}
+
+	pullByUser := func(user, state string) {
+		t.Helper()
+		c = grabConnz("user=" + user + "&state=" + state)
+		if c.NumConns != 1 {
+			t.Fatalf("Expected 1 connection, got %d", c.NumConns)
+		}
+		if c.Conns[0].AuthorizedUser != user {
+			t.Fatalf("Expected user %q, got %q", user, c.Conns[0].AuthorizedUser)
+		}
+	}
+
+	pullByAccount("engineering", "open")
+	pullByAccount("finance", "open")
+	pullByAccount("legal", "open")
+
+	pullByUser("alice", "open")
+	pullByUser("bob", "open")
+
+	pullByUser("john", "open")
+	pullByUser("mary", "open")
+
+	pullByUser("peter", "open")
+	pullByUser("paul", "open")
+
+	// Now closed and make sure these work on closed as well.
+	for _, nc := range conns {
+		nc.Close()
+	}
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if numClients := s.NumClients(); numClients != 0 {
+			return fmt.Errorf("Number of client is %d", numClients)
+		}
+		return nil
+	})
+
+	pullByAccount("engineering", "closed")
+	pullByAccount("finance", "closed")
+	pullByAccount("legal", "closed")
+
+	pullByUser("alice", "closed")
+	pullByUser("bob", "closed")
+
+	pullByUser("john", "closed")
+	pullByUser("mary", "closed")
+
+	pullByUser("peter", "closed")
+	pullByUser("paul", "closed")
 }
 
 func TestConnzWithOffsetAndLimit(t *testing.T) {
