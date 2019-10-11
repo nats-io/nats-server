@@ -751,3 +751,93 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamBasicPushNak(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 1000
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	// Now create a normal push based observable.
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	startSeq := 22
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, StartSeq: uint64(startSeq), AckPolicy: server.AckAll})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	if o.NextSeq() != uint64(startSeq) {
+		t.Fatalf("Expected to be starting at sequence %d, got %d", startSeq, o.NextSeq())
+	}
+
+	expected := toSend - startSeq + 1
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expected {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expected)
+		}
+		return nil
+	})
+
+	// Which one to nak.
+	nakSeq := 900
+
+	// So we have all the messages. Whip through them all and nack one.
+	// With push based, nak means restart the stream.
+	for i := 0; i < expected; i++ {
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		seq := o.SeqFromReply(m.Reply)
+		if seq != uint64(i+startSeq) {
+			t.Fatalf("Expected sequence of %d , got %d", (i + startSeq), seq)
+		}
+		if seq == uint64(nakSeq) {
+			nc.Publish(m.Reply, server.AckNak)
+		}
+	}
+
+	// We should expect since we drained the sub above to have the replayed messages again from the nak sequence.
+	expected = toSend - nakSeq + 1
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expected {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expected)
+		}
+		return nil
+	})
+
+	for i := 0; i < expected; i++ {
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		seq := o.SeqFromReply(m.Reply)
+		if seq != uint64(i+nakSeq) {
+			t.Fatalf("Expected sequence of %d , got %d", (i + nakSeq), seq)
+		}
+	}
+}
