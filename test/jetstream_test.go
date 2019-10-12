@@ -1364,3 +1364,100 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 		getMsg(i)
 	}
 }
+
+func TestJetStreamDurableObservableReconnect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	dname := "d22"
+	subj1 := nats.NewInbox()
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: dname, Delivery: subj1, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// For test speed.
+	o.SetActiveCheckParams(50*time.Millisecond, 2)
+
+	sendMsg := func() {
+		t.Helper()
+		if err := nc.Publish("foo.22", []byte("OK!")); err != nil {
+			return
+		}
+	}
+
+	// Send 10 msgs
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		sendMsg()
+	}
+
+	sub, _ := nc.SubscribeSync(subj1)
+	defer sub.Unsubscribe()
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+		}
+		return nil
+	})
+
+	getMsg := func(seqno int) *nats.Msg {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+		m.Respond(nil)
+		return m
+	}
+
+	// Ack first half
+	for i := 1; i <= toSend/2; i++ {
+		m := getMsg(i)
+		m.Respond(nil)
+	}
+
+	// We should not be able to try to add an observer with the same name.
+	if _, err := mset.AddObservable(&server.ObservableConfig{Durable: dname, Delivery: subj1, AckPolicy: server.AckExplicit}); err == nil {
+		t.Fatalf("Expected and error trying to add a new durable observable while first still active")
+	}
+
+	// Now unsubscribe and wait to become inactive
+	sub.Unsubscribe()
+	checkFor(t, 250*time.Millisecond, 50*time.Millisecond, func() error {
+		if o.Active() {
+			return fmt.Errorf("Observable is still active")
+		}
+		return nil
+	})
+
+	// Now we should be able to replace the delivery subject.
+	subj2 := nats.NewInbox()
+	sub, _ = nc.SubscribeSync(subj2)
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err = mset.AddObservable(&server.ObservableConfig{Durable: dname, Delivery: subj2, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Unexpected error trying to add a new durable observable: %v", err)
+	}
+
+	// We should get the remaining messages here.
+	for i := toSend / 2; i <= toSend; i++ {
+		m := getMsg(i)
+		m.Respond(nil)
+	}
+}
