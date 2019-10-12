@@ -1081,3 +1081,77 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 	getMsg(7)
 	getMsg(8)
 }
+
+func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_WQ"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 2
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(mname, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	ackWait := 50 * time.Millisecond
+
+	o, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true, AckPolicy: server.AckExplicit, AckWait: ackWait})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
+
+	getMsg := func(seqno int) *nats.Msg {
+		t.Helper()
+		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+		return m
+	}
+
+	getMsg(1)
+	// Now wait past ackWait
+	time.Sleep(ackWait * 5)
+
+	// We should get 1 back.
+	m := getMsg(1)
+	m.Respond(server.AckWork)
+
+	// Now let's take longer than ackWait to process but signal we are working on the message.
+	timeout := time.Now().Add(5 * ackWait)
+	for time.Now().Before(timeout) {
+		time.Sleep(ackWait / 4)
+		m.Respond(server.AckWork)
+	}
+
+	// We should get 2 here, not 1 since we have indicated we are working on it.
+	m2 := getMsg(2)
+	time.Sleep(ackWait / 2)
+	m2.Respond(server.AckWork)
+
+	// Now should get 1 back then 2.
+	m = getMsg(1)
+	m.Respond(nil)
+
+	getMsg(2)
+}
