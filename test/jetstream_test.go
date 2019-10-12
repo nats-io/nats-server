@@ -1160,6 +1160,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	// We should get 1 back.
 	m := getMsg(1)
 	m.Respond(server.AckProgress)
+	nc.Flush()
 
 	// Now let's take longer than ackWait to process but signal we are working on the message.
 	timeout := time.Now().Add(5 * ackWait)
