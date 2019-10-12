@@ -1018,3 +1018,66 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		t.Fatalf("Expected no messages, got %d", stats.Msgs)
 	}
 }
+
+func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_WQ"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(mname, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	o, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
+
+	getMsg := func(seqno int) *nats.Msg {
+		t.Helper()
+		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+		return m
+	}
+
+	for i := 1; i <= 5; i++ {
+		m := getMsg(i)
+		// Ack the message here.
+		m.Respond(nil)
+	}
+
+	// Grab #6
+	m := getMsg(6)
+	// NAK this one.
+	m.Respond(server.AckNak)
+
+	// When we request again should be 6 again.
+	getMsg(6)
+	// Then we should get 7, 8, etc.
+	getMsg(7)
+	getMsg(8)
+}
