@@ -59,7 +59,9 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 
 	// Make copies - https://github.com/go101/go101/wiki
 	// TODO(dlc) - Maybe be smarter here.
-	msg = append(msg[:0:0], msg...)
+	if len(msg) > 0 {
+		msg = append(msg[:0:0], msg...)
+	}
 
 	ms.msgs[seq] = &storedMsg{subj, msg, seq, time.Now().UnixNano()}
 	ms.stats.Msgs++
@@ -162,17 +164,10 @@ func (ms *memStore) deleteFirstMsgOrPanic() {
 }
 
 func (ms *memStore) deleteFirstMsg() bool {
-	sm, ok := ms.msgs[ms.stats.FirstSeq]
-	if !ok || sm == nil {
-		return false
-	}
-	delete(ms.msgs, ms.stats.FirstSeq)
-	ms.stats.FirstSeq++
-	ms.stats.Msgs--
-	ms.stats.Bytes -= memStoreMsgSize(sm.subj, sm.msg)
-	return true
+	return ms.removeMsg(ms.stats.FirstSeq)
 }
 
+// Lookup will lookup the message by sequence number.
 func (ms *memStore) Lookup(seq uint64) (string, []byte, int64, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
@@ -182,6 +177,28 @@ func (ms *memStore) Lookup(seq uint64) (string, []byte, int64, error) {
 		return "", nil, 0, ErrStoreMsgNotFound
 	}
 	return sm.subj, sm.msg, sm.ts, nil
+}
+
+// RemoveMsg will remove the message from this store.
+func (ms *memStore) RemoveMsg(seq uint64) bool {
+	ms.mu.Lock()
+	ok := ms.removeMsg(seq)
+	ms.mu.Unlock()
+	return ok
+}
+
+// Removes the message referenced by seq.
+func (ms *memStore) removeMsg(seq uint64) bool {
+	sm, ok := ms.msgs[seq]
+	if ok {
+		delete(ms.msgs, seq)
+		ms.stats.Msgs--
+		ms.stats.Bytes -= memStoreMsgSize(sm.subj, sm.msg)
+		if seq == ms.stats.FirstSeq {
+			ms.stats.FirstSeq++
+		}
+	}
+	return ok
 }
 
 func (ms *memStore) Stats() MsgSetStats {
