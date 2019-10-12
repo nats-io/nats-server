@@ -47,6 +47,18 @@ const (
 	AckExplicit
 )
 
+// Ack responses. Note that a nil or no payload is same as AckAck
+var (
+	// Ack
+	AckAck = []byte(JsOK) // nil or no payload to ack subject also means ACK
+	// Nack
+	AckNak = []byte("-NAK")
+	// Working indicator
+	AckWork = []byte("+WHB")
+	// Ack + deliver next.
+	AckNext = []byte("+NEXT")
+)
+
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
 	mu        sync.Mutex
@@ -218,14 +230,30 @@ func (o *Observable) processAck(_ *subscription, _ *client, subject, reply strin
 			// Queue up this message for redelivery
 			o.queueForRedelivery(seq)
 		}
+	case bytes.Equal(msg, AckWork):
+		o.workingUpdate(seq)
 	}
+}
+
+// Used to process a working update to delay redelivery.
+func (o *Observable) workingUpdate(seq uint64) {
+	o.mu.Lock()
+	if o.pending != nil {
+		if _, ok := o.pending[seq]; ok {
+			o.pending[seq] = time.Now().UnixNano()
+		}
+	}
+	o.mu.Unlock()
 }
 
 // queueForRedelivery will queue up a message for redelivery.
 func (o *Observable) queueForRedelivery(seq uint64) {
+	var mset *MsgSet
 	o.mu.Lock()
-	o.redeliver = append(o.redeliver, seq)
-	mset := o.mset
+	if !o.onRedeliverList(seq) {
+		o.redeliver = append(o.redeliver, seq)
+	}
+	mset = o.mset
 	o.mu.Unlock()
 	if mset != nil {
 		mset.signalObservers()
@@ -441,6 +469,18 @@ func (o *Observable) trackPending(seq uint64) {
 	o.pending[seq] = time.Now().UnixNano()
 }
 
+// This checks if we already have this sequence queued for redelivery.
+// FIXME(dlc) - This is O(n) but should be fast with small redeliver size.
+// Lock should be held.
+func (o *Observable) onRedeliverList(seq uint64) bool {
+	for _, rseq := range o.redeliver {
+		if rseq == seq {
+			return true
+		}
+	}
+	return false
+}
+
 func (o *Observable) checkPending() {
 	now := time.Now().UnixNano()
 	shouldSignal := false
@@ -454,12 +494,11 @@ func (o *Observable) checkPending() {
 	aw := int64(o.config.AckWait)
 	for seq := o.aseq; seq < o.dseq; seq++ {
 		if ts, ok := o.pending[seq]; ok {
-			if now-ts > aw {
-				// If we have waiting, go ahead and deliver here.
-				// FIXME(dlc) - Not sure this is correct.
+			if now-ts > aw && !o.onRedeliverList(seq) {
 				o.redeliver = append(o.redeliver, seq)
 				shouldSignal = true
-				continue
+				// Since we support working updates which resets the timestamp we
+				// have to look at them all.
 			}
 		}
 	}
