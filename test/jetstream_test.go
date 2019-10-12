@@ -228,6 +228,12 @@ func TestJetStreamCreateObservable(t *testing.T) {
 		t.Fatalf("Expected an error for no config")
 	}
 
+	// No deliver subject, meaning its in pull mode, work queue mode means it is required to
+	// do explicit ack.
+	if _, err := mset.AddObservable(&server.ObservableConfig{}); err == nil {
+		t.Fatalf("Expected an error on work queue / pull mode without explicit ack mode")
+	}
+
 	// Check for delivery subject errors.
 
 	// Literal delivery subject required.
@@ -420,6 +426,10 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	checkMsgs(101)
 }
 
+func workerModeConfig(name string) *server.ObservableConfig {
+	return &server.ObservableConfig{Durable: name, DeliverAll: true, AckPolicy: server.AckExplicit}
+}
+
 func TestJetStreamBasicWorkQueue(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -433,7 +443,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddObservable(workerModeConfig(oname))
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -602,7 +612,7 @@ func TestJetStreamWorkQueuePartitioning(t *testing.T) {
 	}
 
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Partition: subjA, DeliverAll: true})
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Partition: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -649,7 +659,7 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddObservable(workerModeConfig(oname))
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -707,7 +717,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddObservable(workerModeConfig(oname))
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -839,5 +849,172 @@ func TestJetStreamBasicPushNak(t *testing.T) {
 		if seq != uint64(i+nakSeq) {
 			t.Fatalf("Expected sequence of %d , got %d", (i + nakSeq), seq)
 		}
+	}
+}
+
+func TestJetStreamWorkQueueMsgSet(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_WORK_QUEUE.*"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	// This type of message set has restrictions which we will test here.
+
+	// Push based not allowed.
+	if _, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject}); err == nil {
+		t.Fatalf("Expected an error on delivery subject")
+	}
+
+	// DeliverAll is only start mode allowed.
+	if _, err := mset.AddObservable(&server.ObservableConfig{DeliverLast: true}); err == nil {
+		t.Fatalf("Expected an error with anything but DeliverAll")
+	}
+
+	// We will create a non-partitioned observable. This should succeed.
+	o, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	// Now if we create another this should fail, only can have one non-partitioned.
+	if _, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true}); err == nil {
+		t.Fatalf("Expected an error on attempt for second observable for a workqueue")
+	}
+
+	o.Delete()
+
+	if numo := mset.NumObservables(); numo != 0 {
+		t.Fatalf("Expected to have zero observables, got %d", numo)
+	}
+
+	// Now add in an observable that has a partition.
+
+	pConfig := func(pname string) *server.ObservableConfig {
+		return &server.ObservableConfig{DeliverAll: true, Partition: pname, AckPolicy: server.AckExplicit}
+	}
+	o, err = mset.AddObservable(pConfig("MY_WORK_QUEUE.A"))
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	// Now creating another with separate partition should work.
+	o2, err := mset.AddObservable(pConfig("MY_WORK_QUEUE.B"))
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o2.Delete()
+
+	// Anything that would overlap should fail though.
+	if _, err := mset.AddObservable(pConfig(">")); err == nil {
+		t.Fatalf("Expected an error on attempt for partitioned observable for a workqueue")
+	}
+	if _, err := mset.AddObservable(pConfig("MY_WORK_QUEUE.A")); err == nil {
+		t.Fatalf("Expected an error on attempt for partitioned observable for a workqueue")
+	}
+	if _, err := mset.AddObservable(pConfig("MY_WORK_QUEUE.A")); err == nil {
+		t.Fatalf("Expected an error on attempt for partitioned observable for a workqueue")
+	}
+
+	o3, err := mset.AddObservable(pConfig("MY_WORK_QUEUE.C"))
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o3.Delete()
+}
+
+func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_WQ"
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 100
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(mname, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	ackWait := 50 * time.Millisecond
+
+	o, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true, AckPolicy: server.AckExplicit, AckWait: ackWait})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
+
+	// Consume all the messages. But do not ack.
+	for i := 0; i < toSend; i++ {
+		nc.PublishRequest(reqNextMsgSubj, sub.Subject, nil)
+		if _, err := sub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error waiting for messages: %v", err)
+		}
+	}
+
+	if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 0 {
+		t.Fatalf("Did not consume all messages, still have %d", nmsgs)
+	}
+
+	// All messages should still be there.
+	stats = mset.Stats()
+	if int(stats.Msgs) != toSend {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	// Now consume and ack.
+	for i := 1; i <= toSend; i++ {
+		nc.PublishRequest(reqNextMsgSubj, sub.Subject, nil)
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error waiting for messages: %v", err)
+		}
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
+			t.Fatalf("Expected sequence of %d , got %d", i, seq)
+		}
+		// Ack the message here.
+		m.Respond(nil)
+	}
+
+	if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 0 {
+		t.Fatalf("Did not consume all messages, still have %d", nmsgs)
+	}
+
+	// Flush acks
+	nc.Flush()
+
+	// Now check the mset as well, since we have a WorkQueue retention policy this should be empty.
+	if stats := mset.Stats(); stats.Msgs != 0 {
+		t.Fatalf("Expected no messages, got %d", stats.Msgs)
 	}
 }

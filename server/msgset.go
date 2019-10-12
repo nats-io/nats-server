@@ -43,7 +43,7 @@ const (
 	StreamPolicy RetentionPolicy = iota
 	// InterestPolicy specifies that when all known subscribers have acknowledged a message it can be removed.
 	InterestPolicy
-	// WorkQueuePolicy specifies that when the first subscriber acknowledges the message it can be removed.
+	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
 	WorkQueuePolicy
 )
 
@@ -331,6 +331,7 @@ func (mset *MsgSet) delete() error {
 	for _, o := range mset.obs {
 		obs = append(obs, o)
 	}
+	mset.obs = nil
 	mset.mu.Unlock()
 	c.closeConnection(ClientClosed)
 
@@ -348,6 +349,13 @@ func (mset *MsgSet) cleanName() string {
 	return strings.Replace(mset.config.Name, tsep, "-", -1)
 }
 
+// NumObservables reports on number of active observables for this message set.
+func (mset *MsgSet) NumObservables() int {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return len(mset.obs)
+}
+
 // Stats will return the current stats for this message set.
 func (mset *MsgSet) Stats() MsgSetStats {
 	// Currently rely on store.
@@ -355,6 +363,7 @@ func (mset *MsgSet) Stats() MsgSetStats {
 	return mset.store.Stats()
 }
 
+// waitForMsgs will have the message set wait for the arrival of new messages.
 func (mset *MsgSet) waitForMsgs() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
@@ -366,4 +375,23 @@ func (mset *MsgSet) waitForMsgs() {
 	mset.sgw++
 	mset.sg.Wait()
 	mset.sgw--
+}
+
+// Determines if the new proposed partition is unique amongst all observables.
+// Lock should be held.
+func (mset *MsgSet) partitionUnique(partition string) bool {
+	for _, o := range mset.obs {
+		if o.config.Partition == _EMPTY_ {
+			return false
+		}
+		if subjectIsSubsetMatch(partition, o.config.Partition) {
+			return false
+		}
+	}
+	return true
+}
+
+// ackMsg is called into from an observable when we have a WorkQueue retention policy.
+func (mset *MsgSet) ackMsg(seq uint64) {
+	mset.store.RemoveMsg(seq)
 }
