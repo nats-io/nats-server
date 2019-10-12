@@ -52,9 +52,9 @@ type Observable struct {
 	mu        sync.Mutex
 	name      string
 	mset      *MsgSet
-	pseq      uint64
 	sseq      uint64
 	dseq      uint64
+	aseq      uint64
 	dsubj     string
 	reqSub    *subscription
 	ackSub    *subscription
@@ -214,7 +214,21 @@ func (o *Observable) processAck(_ *subscription, _ *client, subject, reply strin
 		if o.isPushMode() {
 			// Reset our observable to this sequence number.
 			o.resetToSeq(seq)
+		} else {
+			// Queue up this message for redelivery
+			o.queueForRedelivery(seq)
 		}
+	}
+}
+
+// queueForRedelivery will queue up a message for redelivery.
+func (o *Observable) queueForRedelivery(seq uint64) {
+	o.mu.Lock()
+	o.redeliver = append(o.redeliver, seq)
+	mset := o.mset
+	o.mu.Unlock()
+	if mset != nil {
+		mset.signalObservers()
 	}
 }
 
@@ -223,11 +237,11 @@ func (o *Observable) ackMsg(seq uint64) {
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckNone, AckAll:
-		o.pseq = seq
+		o.aseq = seq
 	case AckExplicit:
 		delete(o.pending, seq)
-		if seq == o.pseq+1 {
-			o.pseq++
+		if seq == o.aseq+1 {
+			o.aseq++
 		}
 	}
 	mset := o.mset
@@ -438,15 +452,14 @@ func (o *Observable) checkPending() {
 		return
 	}
 	aw := int64(o.config.AckWait)
-	for seq := o.pseq; seq < o.dseq; seq++ {
+	for seq := o.aseq; seq < o.dseq; seq++ {
 		if ts, ok := o.pending[seq]; ok {
 			if now-ts > aw {
 				// If we have waiting, go ahead and deliver here.
 				// FIXME(dlc) - Not sure this is correct.
 				o.redeliver = append(o.redeliver, seq)
 				shouldSignal = true
-			} else {
-				break
+				continue
 			}
 		}
 	}
@@ -511,7 +524,7 @@ func (o *Observable) selectStartingSeqNo() {
 	// Set delivery sequence to be the same to start.
 	o.dseq = o.sseq
 	// Set pending sequence to delivery - 1
-	o.pseq = o.dseq - 1
+	o.aseq = o.dseq - 1
 }
 
 // Test whether a config represents a durable subscriber.
@@ -532,6 +545,7 @@ func (o *Observable) Name() string {
 	return n
 }
 
+// For now size of 6 for randomly created names.
 const randObservableNameLen = 6
 
 func createObservableName() string {
