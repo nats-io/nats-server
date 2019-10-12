@@ -213,6 +213,30 @@ func TestJetStreamRequestEnabled(t *testing.T) {
 	expectOKResponse(t, resp)
 }
 
+func TestJetStreamNoAckMsgSet(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// We can use NoAck to suppress acks even when reply subjects are present.
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo", NoAck: true})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	if _, err := nc.Request("foo", []byte("Hello World!"), 25*time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected a timeout error and no response with acks suppressed")
+	}
+
+	stats := mset.Stats()
+	if stats.Msgs != 1 {
+		t.Fatalf("Expected 1 message, got %d", stats.Msgs)
+	}
+}
+
 func TestJetStreamCreateObservable(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -1135,19 +1159,19 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 	// We should get 1 back.
 	m := getMsg(1)
-	m.Respond(server.AckWork)
+	m.Respond(server.AckProgress)
 
 	// Now let's take longer than ackWait to process but signal we are working on the message.
 	timeout := time.Now().Add(5 * ackWait)
 	for time.Now().Before(timeout) {
 		time.Sleep(ackWait / 4)
-		m.Respond(server.AckWork)
+		m.Respond(server.AckProgress)
 	}
 
 	// We should get 2 here, not 1 since we have indicated we are working on it.
 	m2 := getMsg(2)
 	time.Sleep(ackWait / 2)
-	m2.Respond(server.AckWork)
+	m2.Respond(server.AckProgress)
 
 	// Now should get 1 back then 2.
 	m = getMsg(1)

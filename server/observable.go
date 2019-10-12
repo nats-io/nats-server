@@ -53,10 +53,10 @@ var (
 	AckAck = []byte(JsOK) // nil or no payload to ack subject also means ACK
 	// Nack
 	AckNak = []byte("-NAK")
-	// Working indicator
-	AckWork = []byte("+WHB")
+	// Progress indicator
+	AckProgress = []byte("+WPI")
 	// Ack + deliver next.
-	AckNext = []byte("+NEXT")
+	AckNext = []byte("+NXT")
 )
 
 // Observable is a jetstream observable/subscriber.
@@ -230,13 +230,13 @@ func (o *Observable) processAck(_ *subscription, _ *client, subject, reply strin
 			// Queue up this message for redelivery
 			o.queueForRedelivery(seq)
 		}
-	case bytes.Equal(msg, AckWork):
-		o.workingUpdate(seq)
+	case bytes.Equal(msg, AckProgress):
+		o.progressUpdate(seq)
 	}
 }
 
 // Used to process a working update to delay redelivery.
-func (o *Observable) workingUpdate(seq uint64) {
+func (o *Observable) progressUpdate(seq uint64) {
 	o.mu.Lock()
 	if o.pending != nil {
 		if _, ok := o.pending[seq]; ok {
