@@ -612,7 +612,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	wg.Wait()
 
 	target := toSend / numWorkers
-	delta := target / 3
+	delta := target / 2
 	low, high := int32(target-delta), int32(target+delta)
 
 	for i := 0; i < numWorkers; i++ {
