@@ -61,25 +61,36 @@ var (
 
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
-	mu        sync.Mutex
-	name      string
-	mset      *MsgSet
-	sseq      uint64
-	dseq      uint64
-	aseq      uint64
-	dsubj     string
-	reqSub    *subscription
-	ackSub    *subscription
-	ackReply  string
-	pending   map[uint64]int64
-	ptmr      *time.Timer
-	redeliver []uint64
-	waiting   []string
-	config    ObservableConfig
+	mu         sync.Mutex
+	name       string
+	mset       *MsgSet
+	sseq       uint64
+	dseq       uint64
+	aseq       uint64
+	dsubj      string
+	reqSub     *subscription
+	ackSub     *subscription
+	ackReply   string
+	pending    map[uint64]int64
+	ptmr       *time.Timer
+	redeliver  []uint64
+	waiting    []string
+	config     ObservableConfig
+	active     bool
+	atmr       *time.Timer
+	nointerest int
+	athresh    int
+	achk       time.Duration
 }
 
-// Default AckWait, only applicable on explicit ack policy observables.
-const JsAckWaitDefault = 30 * time.Second
+const (
+	// Default AckWait, only applicable on explicit ack policy observables.
+	JsAckWaitDefault = 30 * time.Second
+	// JsActiveCheckInterval is default hb interval for push based observables.
+	JsActiveCheckIntervalDefault = time.Second
+	// JsNotActiveThreshold is number of times we detect no interest to close an observable if ephemeral.
+	JsNotActiveThresholdDefault = 2
+)
 
 func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error) {
 	if config == nil {
@@ -159,7 +170,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery}
+	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true}
 	if isDurableObservable(config) {
 		o.name = config.Durable
 	} else {
@@ -191,18 +202,29 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	} else {
 		o.ackSub = sub
 	}
-	// Setup the internal sub for individual message requests.
-	reqSubj := fmt.Sprintf("%s.%s.%s", JsReqPre, cn, o.name)
-	if sub, err := mset.subscribeInternal(reqSubj, o.processNextMsgReq); err != nil {
-		return nil, err
-	} else {
-		o.reqSub = sub
+	// Setup the internal sub for next message requests.
+	if !o.isPushMode() {
+		reqSubj := fmt.Sprintf("%s.%s.%s", JsReqPre, cn, o.name)
+		if sub, err := mset.subscribeInternal(reqSubj, o.processNextMsgReq); err != nil {
+			return nil, err
+		} else {
+			o.reqSub = sub
+		}
 	}
 	mset.obs[o.name] = o
 	mset.mu.Unlock()
 
 	// Now start up Go routine to deliver msgs.
 	go o.loopAndDeliverMsgs(s, a)
+
+	// If push mode, start up active hb timer.
+	if o.isPushMode() {
+		o.mu.Lock()
+		o.athresh = JsNotActiveThresholdDefault
+		o.achk = JsActiveCheckIntervalDefault
+		o.atmr = time.AfterFunc(o.achk, o.checkActive)
+		o.mu.Unlock()
+	}
 
 	return o, nil
 }
@@ -370,6 +392,12 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			var seq uint64
 			var redelivery bool
 
+			// If we are in push mode and not active let's stop sending.
+			if o.isPushMode() && !o.active {
+				o.mu.Unlock()
+				break
+			}
+
 			if len(o.redeliver) > 0 {
 				seq = o.redeliver[0]
 				redelivery = true
@@ -441,12 +469,12 @@ func (o *Observable) incSeqs() {
 
 // Deliver a msg to the observable push delivery subject.
 func (o *Observable) deliverMsg(mset *MsgSet, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{o.dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+	mset.sendq <- &jsPubMsg{o.dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
 }
 
 // Deliver a msg to the msg request subject.
 func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
 	if o.config.AckPolicy == AckExplicit {
 		o.trackPending(seq)
 	}
@@ -454,7 +482,7 @@ func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []b
 
 // Redeliver a message.
 func (o *Observable) reDeliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
@@ -467,6 +495,56 @@ func (o *Observable) trackPending(seq uint64) {
 		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
 	}
 	o.pending[seq] = time.Now().UnixNano()
+}
+
+func (o *Observable) checkActive() {
+	o.mu.Lock()
+	mset := o.mset
+	if mset == nil || !o.isPushMode() {
+		o.mu.Unlock()
+		return
+	}
+	var shouldDelete, shouldSignal bool
+	if o.mset.noInterest(o.config.Delivery) {
+		o.active = false
+		o.nointerest++
+		if o.config.Durable == "" && o.nointerest >= o.athresh {
+			shouldDelete = true
+		}
+	} else {
+		// reset
+		shouldSignal = !o.active
+		o.active = true
+		o.nointerest = 0
+	}
+	// Reset our timer here.
+	o.atmr.Reset(o.achk)
+	o.mu.Unlock()
+
+	if shouldSignal {
+		mset.signalObservers()
+	}
+
+	// This is for push based ephemerals.
+	if shouldDelete {
+		o.Delete()
+	}
+}
+
+// didNotDeliver is called when a delivery for an observable message failed.
+// Depending on our state, we will process the failure.
+func (o *Observable) didNotDeliver(seq uint64) {
+	o.mu.Lock()
+	if o.mset == nil {
+		o.mu.Unlock()
+		return
+	}
+	if o.config.Delivery != _EMPTY_ {
+		o.active = false
+		o.nointerest++
+	}
+	// FIXME(dlc) - Other scenarios. Pull mode, etc.
+	o.mu.Unlock()
 }
 
 // This checks if we already have this sequence queued for redelivery.
@@ -602,7 +680,18 @@ func (mset *MsgSet) DeleteObservable(o *Observable) error {
 
 // Active indicates if this observable is still active.
 func (o *Observable) Active() bool {
-	return o.msgSet() != nil
+	o.mu.Lock()
+	active := o.active && o.mset != nil
+	o.mu.Unlock()
+	return active
+}
+
+func stopAndClearTimer(tp **time.Timer) {
+	if *tp == nil {
+		return
+	}
+	(*tp).Stop()
+	*tp = nil
 }
 
 // Delete will delete the observable for the associated message set.
@@ -611,14 +700,13 @@ func (o *Observable) Delete() error {
 	// TODO(dlc) - Do cleanup here.
 	mset := o.mset
 	o.mset = nil
+	o.active = false
 	ackSub := o.ackSub
 	reqSub := o.reqSub
 	o.ackSub = nil
 	o.reqSub = nil
-	if o.ptmr != nil {
-		o.ptmr.Stop()
-		o.ptmr = nil
-	}
+	stopAndClearTimer(&o.ptmr)
+	stopAndClearTimer(&o.atmr)
 	o.mu.Unlock()
 
 	if mset == nil {
@@ -642,21 +730,49 @@ func (o *Observable) Delete() error {
 // Checks to see if there is registered interest in the delivery subject.
 // Note that since we require delivery to be a literal this is just like
 // a publish match.
-//
-// TODO(dlc) - if gateways are enabled we need to do some more digging for the
-// real answer.
 func (mset *MsgSet) noInterest(delivery string) bool {
+	var c *client
 	var acc *Account
+
 	mset.mu.Lock()
 	if mset.client != nil {
-		acc = mset.client.acc
+		c = mset.client
+		acc = c.acc
 	}
 	mset.mu.Unlock()
 	if acc == nil {
 		return true
 	}
 	r := acc.sl.Match(delivery)
-	return len(r.psubs)+len(r.qsubs) == 0
+	noInterest := len(r.psubs)+len(r.qsubs) == 0
+
+	// Check for service imports here.
+	if acc.imports.services != nil {
+		acc.mu.RLock()
+		si := acc.imports.services[delivery]
+		invalid := si != nil && si.invalid
+		acc.mu.RUnlock()
+		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
+			rr := si.acc.sl.Match(si.to)
+			noInterest = len(rr.psubs)+len(rr.qsubs) == 0 || noInterest
+		}
+	}
+	// Process GWs here. This is not going to exact since it could be that the GW does not
+	// know, that is ok for here.
+	// TODO(@@IK) to check.
+	if c != nil && c.srv != nil && c.srv.gateway.enabled {
+		gw := c.srv.gateway
+		gw.RLock()
+		for _, gwc := range gw.outo {
+			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
+			if psi || qr != nil {
+				noInterest = false
+				break
+			}
+		}
+		gw.RUnlock()
+	}
+	return noInterest
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject
@@ -676,4 +792,19 @@ func (mset *MsgSet) deliveryFormsCycle(deliverySubject string) bool {
 // This is same as check for delivery cycle.
 func (mset *MsgSet) validPartition(partitionSubject string) bool {
 	return mset.deliveryFormsCycle(partitionSubject)
+}
+
+// SetActiveCheckParams allows a server to change the active check parameters
+// for push based observables.
+func (o *Observable) SetActiveCheckParams(achk time.Duration, thresh int) error {
+	o.mu.Lock()
+	if o.atmr == nil || !o.isPushMode() {
+		o.mu.Unlock()
+		return fmt.Errorf("observable not push based")
+	}
+	o.achk = achk
+	o.athresh = thresh
+	o.atmr.Reset(o.achk)
+	o.mu.Unlock()
+	return nil
 }
