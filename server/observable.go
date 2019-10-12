@@ -20,19 +20,19 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type ObservableConfig struct {
-	Delivery    string    `json:"delivery_subject"`
-	Durable     string    `json:"durable_name,omitempty"`
-	StartSeq    uint64    `json:"start_seq,omitempty"`
-	StartTime   time.Time `json:"start_time,omitempty"`
-	DeliverAll  bool      `json:"deliver_all,omitempty"`
-	DeliverLast bool      `json:"deliver_last,omitempty"`
-	AckPolicy   AckPolicy `json:"ack_policy"`
-	Partition   string    `json:"partition"`
+	Delivery    string        `json:"delivery_subject"`
+	Durable     string        `json:"durable_name,omitempty"`
+	StartSeq    uint64        `json:"start_seq,omitempty"`
+	StartTime   time.Time     `json:"start_time,omitempty"`
+	DeliverAll  bool          `json:"deliver_all,omitempty"`
+	DeliverLast bool          `json:"deliver_last,omitempty"`
+	AckPolicy   AckPolicy     `json:"ack_policy"`
+	AckWait     time.Duration `json:"ack_wait"`
+	Partition   string        `json:"partition"`
 }
 
 // AckPolicy determines how the observable should acknowledge delivered messages.
@@ -49,24 +49,31 @@ const (
 
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
-	mu       sync.Mutex
-	name     string
-	mset     *MsgSet
-	aseq     uint64
-	sseq     uint64
-	dseq     uint64
-	dsubj    string
-	reqSub   *subscription
-	ackSub   *subscription
-	ackReply string
-	waiting  []string
-	config   ObservableConfig
+	mu        sync.Mutex
+	name      string
+	mset      *MsgSet
+	pseq      uint64
+	sseq      uint64
+	dseq      uint64
+	dsubj     string
+	reqSub    *subscription
+	ackSub    *subscription
+	ackReply  string
+	pending   map[uint64]int64
+	ptmr      *time.Timer
+	redeliver []uint64
+	waiting   []string
+	config    ObservableConfig
 }
+
+// Default AckWait, only applicable on explicit ack policy observables.
+const JsAckWaitDefault = 30 * time.Second
 
 func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error) {
 	if config == nil {
 		return nil, fmt.Errorf("observable config required")
 	}
+
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
 	if config.Delivery != _EMPTY_ {
 		if !subjectIsLiteral(config.Delivery) {
@@ -74,6 +81,14 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		}
 		if mset.deliveryFormsCycle(config.Delivery) {
 			return nil, fmt.Errorf("observable delivery subject forms a cycle")
+		}
+	} else {
+		// Pull mode / work queue mode require explicit ack.
+		if config.AckPolicy != AckExplicit {
+			return nil, fmt.Errorf("observable in pull mode requires explicit ack policy")
+		}
+		if config.AckWait == time.Duration(0) {
+			config.AckWait = JsAckWaitDefault
 		}
 	}
 
@@ -105,6 +120,32 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		}
 	}
 
+	// Hold mset lock here/
+	mset.mu.Lock()
+
+	// Check on msgset type conflicts.
+	switch mset.config.Retention {
+	case WorkQueuePolicy:
+		if config.Delivery != "" {
+			mset.mu.Unlock()
+			return nil, fmt.Errorf("delivery subject not allowed on workqueue message set")
+		}
+		if len(mset.obs) > 0 {
+			if config.Partition == _EMPTY_ {
+				mset.mu.Unlock()
+				return nil, fmt.Errorf("multiple non-partioned observables not allowed on workqueue message set")
+			} else if !mset.partitionUnique(config.Partition) {
+				// We have a partition but it is not unique amongst the others.
+				mset.mu.Unlock()
+				return nil, fmt.Errorf("partioned observable not unique on workqueue message set")
+			}
+		}
+		if !config.DeliverAll {
+			mset.mu.Unlock()
+			return nil, fmt.Errorf("observable must be deliver all on workqueue message set")
+		}
+	}
+
 	// Set name, which will be durable name if set, otherwise we create one at random.
 	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery}
 	if isDurableObservable(config) {
@@ -117,7 +158,6 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	o.selectStartingSeqNo()
 
 	// Now register with mset and create ack subscription.
-	mset.mu.Lock()
 	c := mset.client
 	if c == nil {
 		mset.mu.Unlock()
@@ -163,17 +203,37 @@ func (o *Observable) msgSet() *MsgSet {
 }
 
 func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	// TODO(dlc) process the ack.
-	if len(msg) > 1 {
-		switch {
-		case bytes.Equal(msg, AckNext):
-			o.processNextMsgReq(nil, nil, subject, reply, nil)
-		case bytes.Equal(msg, AckNak):
-			if o.isPushMode() {
-				// Reset our observable to this sequence number.
-				o.resetToSeq(o.SeqFromReply(subject))
-			}
+	seq := o.SeqFromReply(subject)
+	switch {
+	case len(msg) == 0, bytes.Equal(msg, AckAck):
+		o.ackMsg(seq)
+	case bytes.Equal(msg, AckNext):
+		o.ackMsg(seq)
+		o.processNextMsgReq(nil, nil, subject, reply, nil)
+	case bytes.Equal(msg, AckNak):
+		if o.isPushMode() {
+			// Reset our observable to this sequence number.
+			o.resetToSeq(seq)
 		}
+	}
+}
+
+// Process an ack for a message.
+func (o *Observable) ackMsg(seq uint64) {
+	o.mu.Lock()
+	switch o.config.AckPolicy {
+	case AckNone, AckAll:
+		o.pseq = seq
+	case AckExplicit:
+		delete(o.pending, seq)
+		if seq == o.pseq+1 {
+			o.pseq++
+		}
+	}
+	mset := o.mset
+	o.mu.Unlock()
+	if mset != nil && mset.config.Retention == WorkQueuePolicy {
+		mset.ackMsg(seq)
 	}
 }
 
@@ -208,8 +268,21 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 	batchSize := batchSizeFromMsg(msg)
 
 	o.mu.Lock()
+	mset := o.mset
+	if mset == nil {
+		o.mu.Unlock()
+		return
+	}
 	for i := 0; i < batchSize; i++ {
-		if subj, msg, err := o.getNextMsg(); err == nil {
+		if len(o.redeliver) > 0 {
+			seq := o.redeliver[0]
+			o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
+			subj, msg, _, err := mset.store.Lookup(seq)
+			if err == ErrStoreMsgNotFound {
+				continue
+			}
+			o.reDeliverMsgRequest(mset, reply, subj, msg, seq)
+		} else if subj, msg, err := o.getNextMsg(); err == nil {
 			o.deliverMsgRequest(o.mset, reply, subj, msg, o.dseq)
 			o.incSeqs()
 		} else {
@@ -252,7 +325,16 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 		// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 		for {
 			o.mu.Lock()
-			seq := o.sseq
+			var seq uint64
+			var redelivery bool
+
+			if len(o.redeliver) > 0 {
+				seq = o.redeliver[0]
+				redelivery = true
+			} else {
+				seq = o.sseq
+			}
+
 			subj, msg, _, err := mset.store.Lookup(seq)
 
 			// On error either break or return.
@@ -262,7 +344,12 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 					s.Warnf("Jetstream internal storage error on lookup: %v", err)
 					return
 				}
-				break
+				if !redelivery {
+					break
+				} else {
+					// This was not found so can't be redelivered.
+					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
+				}
 			}
 
 			// We have the message. We need to check if we are in push mode or pull mode.
@@ -274,13 +361,23 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			}
 
 			if o.isPushMode() {
-				o.deliverMsg(mset, subj, msg, o.dseq)
-				o.incSeqs()
+				if !redelivery {
+					o.deliverMsg(mset, subj, msg, o.dseq)
+					o.incSeqs()
+				} else {
+					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
+					o.deliverMsg(mset, subj, msg, seq)
+				}
 			} else if len(o.waiting) > 0 {
 				reply := o.waiting[0]
 				o.waiting = append(o.waiting[:0], o.waiting[1:]...)
-				o.deliverMsgRequest(mset, reply, subj, msg, o.dseq)
-				o.incSeqs()
+				if !redelivery {
+					o.deliverMsgRequest(mset, reply, subj, msg, o.dseq)
+					o.incSeqs()
+				} else {
+					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
+					o.reDeliverMsgRequest(mset, reply, subj, msg, seq)
+				}
 			} else {
 				// No one waiting, let's break out and wait.
 				o.mu.Unlock()
@@ -308,6 +405,62 @@ func (o *Observable) deliverMsg(mset *MsgSet, subj string, msg []byte, seq uint6
 // Deliver a msg to the msg request subject.
 func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
 	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+	if o.config.AckPolicy == AckExplicit {
+		o.trackPending(seq)
+	}
+}
+
+// Redeliver a message.
+func (o *Observable) reDeliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
+	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg}
+}
+
+// Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
+// Lock should be held.
+func (o *Observable) trackPending(seq uint64) {
+	if o.pending == nil {
+		o.pending = make(map[uint64]int64)
+	}
+	if o.ptmr == nil {
+		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
+	}
+	o.pending[seq] = time.Now().UnixNano()
+}
+
+func (o *Observable) checkPending() {
+	now := time.Now().UnixNano()
+	shouldSignal := false
+
+	o.mu.Lock()
+	mset := o.mset
+	if mset == nil {
+		o.mu.Unlock()
+		return
+	}
+	aw := int64(o.config.AckWait)
+	for seq := o.pseq; seq < o.dseq; seq++ {
+		if ts, ok := o.pending[seq]; ok {
+			if now-ts > aw {
+				// If we have waiting, go ahead and deliver here.
+				// FIXME(dlc) - Not sure this is correct.
+				o.redeliver = append(o.redeliver, seq)
+				shouldSignal = true
+			} else {
+				break
+			}
+		}
+	}
+	if len(o.pending) > 0 {
+		o.ptmr.Reset(o.config.AckWait)
+	} else {
+		o.ptmr.Stop()
+		o.ptmr = nil
+	}
+	o.mu.Unlock()
+
+	if shouldSignal {
+		mset.signalObservers()
+	}
 }
 
 // SeqFromReply will extract a sequence number from a reply ack subject.
@@ -321,7 +474,10 @@ func (o *Observable) SeqFromReply(reply string) (seq uint64) {
 
 // NextSeq returns the next delivered sequence number for this observable.
 func (o *Observable) NextSeq() uint64 {
-	return atomic.LoadUint64(&o.dseq)
+	o.mu.Lock()
+	dseq := o.dseq
+	o.mu.Unlock()
+	return dseq
 }
 
 // Will select the starting sequence.
@@ -352,8 +508,10 @@ func (o *Observable) selectStartingSeqNo() {
 	} else if o.sseq > stats.LastSeq {
 		o.sseq = stats.LastSeq + 1
 	}
-	// Set deliveryt sequence to be the same to start.
+	// Set delivery sequence to be the same to start.
 	o.dseq = o.sseq
+	// Set pending sequence to delivery - 1
+	o.pseq = o.dseq - 1
 }
 
 // Test whether a config represents a durable subscriber.
@@ -404,6 +562,10 @@ func (o *Observable) Delete() error {
 	reqSub := o.reqSub
 	o.ackSub = nil
 	o.reqSub = nil
+	if o.ptmr != nil {
+		o.ptmr.Stop()
+		o.ptmr = nil
+	}
 	o.mu.Unlock()
 
 	if mset == nil {
