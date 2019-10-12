@@ -549,7 +549,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true, AckPolicy: server.AckExplicit})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
