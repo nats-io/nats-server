@@ -32,6 +32,7 @@ type MsgSetConfig struct {
 	MaxAge    time.Duration
 	Storage   StorageType
 	Replicas  int
+	NoAck     bool
 }
 
 // RetentionPolicy determines how messages in a set are retained.
@@ -216,6 +217,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
+	doAck := !mset.config.NoAck
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -223,10 +225,6 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 
 	// FIXME(dlc) - Not inline unless memory based.
-
-	// Copy
-	msg = append(msg[:0:0], msg...)
-
 	if _, err := store.StoreMsg(subject, msg); err != nil {
 		mset.mu.Lock()
 		s := c.srv
@@ -238,7 +236,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		return
 	}
 	// Send Ack here.
-	if len(reply) > 0 {
+	if doAck && len(reply) > 0 {
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, []byte(JsOK)}
 	}
 
