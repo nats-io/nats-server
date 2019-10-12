@@ -89,18 +89,6 @@ const (
 	JsReqPre = "$JS.RN"
 )
 
-// Ack responses. Note that a nil or no payload is same as AckAck
-var (
-	// Ack
-	AckAck = []byte(JsOK) // nil or no payload to ack subject also means ACK
-	// Nack
-	AckNak = []byte("-NAK")
-	// Working indicator
-	AckWork = []byte("+WHB")
-	// Ack + deliver next.
-	AckNext = []byte("+NEXT")
-)
-
 // For easier handling of exports and imports.
 var allJsExports = []string{JsEnabledExport, JsInfoExport, JsCreateObservableExport, JsCreateMsgSetExport, JsMsgSetInfoExport}
 
