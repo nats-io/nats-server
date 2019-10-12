@@ -137,10 +137,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Check if we are not durable that the delivery subject has interest.
-	if config.Durable == _EMPTY_ && config.Delivery != _EMPTY_ {
-		if mset.noInterest(config.Delivery) {
-			return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
-		}
+	if config.Delivery != _EMPTY_ && config.Durable == _EMPTY_ && mset.noInterest(config.Delivery) {
+		return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
 	}
 
 	// Hold mset lock here/
@@ -180,16 +178,31 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// Select starting sequence number
 	o.selectStartingSeqNo()
 
-	// Now register with mset and create ack subscription.
+	// Now register with mset and create the ack subscription.
 	c := mset.client
 	if c == nil {
 		mset.mu.Unlock()
 		return nil, fmt.Errorf("message set not valid")
 	}
 	s, a := c.srv, c.acc
-	if _, ok := mset.obs[o.name]; ok {
+	// Check if we already have this one registered.
+	if eo, ok := mset.obs[o.name]; ok {
 		mset.mu.Unlock()
-		return nil, fmt.Errorf("observable already exists")
+		if !o.isDurable() || !o.isPushMode() {
+			return nil, fmt.Errorf("observable already exists")
+		}
+		// If we are here we have already registered this durable. If it is still active that is an error.
+		if eo.Active() {
+			return nil, fmt.Errorf("observable already exists and is still active")
+		}
+		// Since we are here this means we have a potentially new durable so we should update here.
+		// Check that configs are the same.
+		if !configsEqualSansDelivery(o.config, eo.config) {
+			return nil, fmt.Errorf("observable replacement durable config not the same")
+		}
+		// Once we are here we have a replacement push based durable.
+		eo.updateDelivery(o.config.Delivery)
+		return eo, nil
 	}
 	// Set up the ack subscription for this observable. Will use wildcard for all acks.
 	// We will remember the template to generate replaies with sequence numbers and use
@@ -223,10 +236,33 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		o.athresh = JsNotActiveThresholdDefault
 		o.achk = JsActiveCheckIntervalDefault
 		o.atmr = time.AfterFunc(o.achk, o.checkActive)
+		// If durable and no interest mark as not active to start.
+		if o.isDurable() && mset.noInterest(config.Delivery) {
+			o.active = false
+		}
 		o.mu.Unlock()
 	}
 
 	return o, nil
+}
+
+func (o *Observable) updateDelivery(newDelivery string) {
+	// Update the config and the dsubj
+	o.mu.Lock()
+	o.dsubj = newDelivery
+	o.config.Delivery = newDelivery
+	// FIXME(dlc) - check partitions, think we need offset.
+	o.dseq = o.aseq
+	o.sseq = o.aseq
+	o.mu.Unlock()
+
+	o.checkActive()
+}
+
+func configsEqualSansDelivery(a, b ObservableConfig) bool {
+	// These were copied in so can set Delivery here.
+	a.Delivery, b.Delivery = _EMPTY_, _EMPTY_
+	return a == b
 }
 
 func (o *Observable) msgSet() *MsgSet {
@@ -508,7 +544,7 @@ func (o *Observable) checkActive() {
 	if o.mset.noInterest(o.config.Delivery) {
 		o.active = false
 		o.nointerest++
-		if o.config.Durable == "" && o.nointerest >= o.athresh {
+		if !o.isDurable() && o.nointerest >= o.athresh {
 			shouldDelete = true
 		}
 	} else {
@@ -647,6 +683,10 @@ func (o *Observable) selectStartingSeqNo() {
 // Test whether a config represents a durable subscriber.
 func isDurableObservable(config *ObservableConfig) bool {
 	return config != nil && config.Durable != _EMPTY_
+}
+
+func (o *Observable) isDurable() bool {
+	return o.config.Durable != _EMPTY_
 }
 
 // Are we in push mode, delivery subject, etc.
