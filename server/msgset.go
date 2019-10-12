@@ -237,7 +237,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 	// Send Ack here.
 	if doAck && len(reply) > 0 {
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, []byte(JsOK)}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, []byte(JsOK), nil, 0}
 	}
 
 	mset.signalObservers()
@@ -251,11 +251,14 @@ func (mset *MsgSet) signalObservers() {
 	mset.mu.Unlock()
 }
 
+// Internal message for use by jetstream subsystem.
 type jsPubMsg struct {
 	subj  string
 	dsubj string
 	reply string
 	msg   []byte
+	o     *Observable
+	seq   uint64
 }
 
 // TODO(dlc) - Maybe look at onering instead of chan - https://github.com/pltr/onering
@@ -308,9 +311,14 @@ func (mset *MsgSet) internalSendLoop() {
 			msg := append(pm.msg, _CRLF_...)
 			// FIXME(dlc) - capture if this sent to anyone and notify
 			// observer if its now zero, meaning no interest.
-			c.processInboundClientMsg(msg)
+			didDeliver := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
+			// Check to see if this is a delivery for an observable and
+			// we failed to deliver the message. If so alert the observable.
+			if pm.o != nil && !didDeliver {
+				pm.o.didNotDeliver(pm.seq)
+			}
 		case <-s.quitCh:
 			return
 		}

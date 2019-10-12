@@ -1179,3 +1179,187 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 	getMsg(2)
 }
+
+func TestJetStreamEphemeralObservables(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// For test speed.
+	o.SetActiveCheckParams(50*time.Millisecond, 2)
+
+	if !o.Active() {
+		t.Fatalf("Expected the observable to be considered active")
+	}
+	if numo := mset.NumObservables(); numo != 1 {
+		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+	}
+
+	// Make sure works now.
+	nc.Request("foo.22", nil, 100*time.Millisecond)
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 1 {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, 1)
+		}
+		return nil
+	})
+
+	// Now close the subscription and send a message, this should trip active state on ephemeral observable.
+	sub.Unsubscribe()
+	nc.Request("foo.22", nil, 100*time.Millisecond)
+	nc.Flush()
+
+	if o.Active() {
+		t.Fatalf("Expected the ephemeral observable to be considered inactive")
+	}
+	// The reason for this still being 1 is that we give some time in case of a reconnect scenario.
+	// We detect right away on the publish but we wait for interest to be re-established.
+	if numo := mset.NumObservables(); numo != 1 {
+		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+	}
+
+	// We should delete this one after the check interval.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		if numo := mset.NumObservables(); numo != 0 {
+			return fmt.Errorf("Expected number of observables to be 0, go %d", numo)
+		}
+		return nil
+	})
+
+	// Now check that with no publish we still will expire the observable.
+	sub, _ = nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// For test speed.
+	o.SetActiveCheckParams(10*time.Millisecond, 2)
+
+	if !o.Active() {
+		t.Fatalf("Expected the observable to be considered active")
+	}
+	if numo := mset.NumObservables(); numo != 1 {
+		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+	}
+	sub.Unsubscribe()
+	nc.Flush()
+
+	// We should delete this one after the check interval.
+	time.Sleep(50 * time.Millisecond)
+
+	if o.Active() {
+		t.Fatalf("Expected the ephemeral observable to be considered inactive")
+	}
+	if numo := mset.NumObservables(); numo != 0 {
+		t.Fatalf("Expected number of observables to be 0, go %d", numo)
+	}
+}
+
+func TestJetStreamObservableReconnect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	// Capture the subscription.
+	delivery := sub.Subject
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// For test speed.
+	o.SetActiveCheckParams(100*time.Millisecond, 10)
+
+	if !o.Active() {
+		t.Fatalf("Expected the observable to be considered active")
+	}
+	if numo := mset.NumObservables(); numo != 1 {
+		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+	}
+
+	// We will simulate reconnect by unsubscribing on one connection and forming
+	// the same on another. Once we have cluster tests we will do more testing on
+	// reconnect scenarios.
+
+	getMsg := func(seqno int) *nats.Msg {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
+			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		}
+		m.Respond(nil)
+		return m
+	}
+
+	sendMsg := func() {
+		t.Helper()
+		if err := nc.Publish("foo.22", []byte("OK!")); err != nil {
+			return
+		}
+	}
+
+	// Send and Pull first message.
+	sendMsg() // 1
+	getMsg(1)
+	// Cancel first one.
+	sub.Unsubscribe()
+	// Re-establish new sub on same subject.
+	sub, _ = nc.SubscribeSync(delivery)
+	time.Sleep(100 * time.Millisecond)
+
+	// We should be getting 2 here.
+	sendMsg() // 2
+	getMsg(2)
+
+	sub.Unsubscribe()
+	time.Sleep(200 * time.Millisecond)
+
+	// send 3-10
+	for i := 0; i <= 7; i++ {
+		sendMsg()
+	}
+	// Make sure they are queued up with no interest.
+	nc.Flush()
+
+	// Restablish again.
+	sub, _ = nc.SubscribeSync(delivery)
+
+	// We should be getting 3-10 here.
+	for i := 3; i <= 10; i++ {
+		getMsg(i)
+	}
+}
