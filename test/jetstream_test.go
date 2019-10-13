@@ -1155,7 +1155,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 	getMsg(1)
 	// Now wait past ackWait
-	time.Sleep(ackWait * 5)
+	time.Sleep(ackWait * 2)
 
 	// We should get 1 back.
 	m := getMsg(1)

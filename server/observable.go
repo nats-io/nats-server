@@ -381,7 +381,7 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 			if err == ErrStoreMsgNotFound {
 				continue
 			}
-			o.reDeliverMsgRequest(mset, reply, subj, msg, seq)
+			o.deliverMsgRequest(mset, reply, subj, msg, seq)
 		} else if subj, msg, err := o.getNextMsg(); err == nil {
 			o.deliverMsgRequest(o.mset, reply, subj, msg, o.dseq)
 			o.incSeqs()
@@ -482,7 +482,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 					o.incSeqs()
 				} else {
 					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-					o.reDeliverMsgRequest(mset, reply, subj, msg, seq)
+					o.deliverMsgRequest(mset, reply, subj, msg, seq)
 				}
 			} else {
 				// No one waiting, let's break out and wait.
@@ -514,11 +514,6 @@ func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []b
 	if o.config.AckPolicy == AckExplicit {
 		o.trackPending(seq)
 	}
-}
-
-// Redeliver a message.
-func (o *Observable) reDeliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
