@@ -280,7 +280,7 @@ func (o *Observable) processAck(_ *subscription, _ *client, subject, reply strin
 	case bytes.Equal(msg, AckNak):
 		if o.isPushMode() && o.config.AckPolicy != AckExplicit {
 			// Reset our observable to this sequence number.
-			o.resetToSeq(sseq, dseq)
+			o.resetToSeq(sseq+1, dseq+1)
 		} else {
 			// Queue up this message for redelivery
 			o.queueForRedelivery(sseq)
