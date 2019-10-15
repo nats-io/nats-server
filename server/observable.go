@@ -75,7 +75,8 @@ type Observable struct {
 	ackReplyT  string
 	pending    map[uint64]int64
 	ptmr       *time.Timer
-	redeliver  []uint64
+	rdq        []uint64
+	rdc        map[uint64]uint64
 	waiting    []string
 	config     ObservableConfig
 	active     bool
@@ -212,7 +213,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// We will remember the template to generate replaies with sequence numbers and use
 	// that to scanf them back in.
 	cn := mset.cleanName()
-	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%1s.%%d.%%d", JsAckPre, cn, o.name)
+	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JsAckPre, cn, o.name)
 	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JsAckPre, cn, o.name)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
@@ -269,6 +270,7 @@ func configsEqualSansDelivery(a, b ObservableConfig) bool {
 	return a == b
 }
 
+// Process a message for the ack reply subject delivered with a message.
 func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	sseq, dseq, _ := o.ReplyInfo(subject)
 	switch {
@@ -278,13 +280,7 @@ func (o *Observable) processAck(_ *subscription, _ *client, subject, reply strin
 		o.ackMsg(sseq, dseq)
 		o.processNextMsgReq(nil, nil, subject, reply, nil)
 	case bytes.Equal(msg, AckNak):
-		if o.isPushMode() && o.config.AckPolicy != AckExplicit {
-			// Reset our observable to this sequence number.
-			o.resetToSeq(sseq+1, dseq+1)
-		} else {
-			// Queue up this message for redelivery
-			o.queueForRedelivery(sseq)
-		}
+		o.processNak(sseq, dseq)
 	case bytes.Equal(msg, AckProgress):
 		o.progressUpdate(sseq)
 	}
@@ -301,14 +297,27 @@ func (o *Observable) progressUpdate(seq uint64) {
 	o.mu.Unlock()
 }
 
-// queueForRedelivery will queue up a message for redelivery.
-func (o *Observable) queueForRedelivery(seq uint64) {
+// Process a NAK.
+func (o *Observable) processNak(sseq, dseq uint64) {
 	var mset *MsgSet
 	o.mu.Lock()
-	if !o.onRedeliverList(seq) {
-		o.redeliver = append(o.redeliver, seq)
+	// Check for out of range.
+	if dseq <= o.aflr || dseq > o.dseq {
+		o.mu.Unlock()
+		return
 	}
-	mset = o.mset
+	// If we are explicit ack make sure this is still on pending list.
+	if len(o.pending) > 0 {
+		if _, ok := o.pending[sseq]; !ok {
+			o.mu.Unlock()
+			return
+		}
+	}
+	// If already queued up also ignore.
+	if !o.onRedeliverQueue(sseq) {
+		o.rdq = append(o.rdq, sseq)
+		mset = o.mset
+	}
 	o.mu.Unlock()
 	if mset != nil {
 		mset.signalObservers()
@@ -321,29 +330,19 @@ func (o *Observable) ackMsg(sseq, dseq uint64) {
 	switch o.config.AckPolicy {
 	case AckNone, AckAll:
 		o.aflr = dseq
+		// FIXME(dlc) - delete rdc entries?
 	case AckExplicit:
 		delete(o.pending, sseq)
 		if dseq == o.aflr+1 {
 			o.aflr++
 		}
+		delete(o.rdc, sseq)
 	}
 	mset := o.mset
 	o.mu.Unlock()
 
 	if mset != nil && mset.config.Retention == WorkQueuePolicy {
 		mset.ackMsg(sseq)
-	}
-}
-
-// resetToSeq is used when we receive a NAK to reset a push based observable. e.g. a replay.
-func (o *Observable) resetToSeq(sseq, dseq uint64) {
-	o.mu.Lock()
-	o.sseq, o.dseq = sseq, dseq
-	mset := o.mset
-	o.mu.Unlock()
-
-	if mset != nil {
-		mset.signalObservers()
 	}
 }
 
@@ -372,8 +371,8 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 		return
 	}
 	for i := 0; i < batchSize; i++ {
-		if subj, msg, seq, rd, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, msg, seq, rd)
+		if subj, msg, seq, dc, err := o.getNextMsg(); err == nil {
+			o.deliverMsg(reply, subj, msg, seq, dc)
 		} else {
 			o.waiting = append(o.waiting, reply)
 		}
@@ -381,35 +380,46 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 	o.mu.Unlock()
 }
 
+// Increase the delivery count for this message.
+// Only used on redelivery semantics.
+// Lock should be held.
+func (o *Observable) incDeliveryCount(sseq uint64) uint64 {
+	if o.rdc == nil {
+		o.rdc = make(map[uint64]uint64)
+	}
+	o.rdc[sseq] += 1
+	return o.rdc[sseq] + 1
+}
+
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Observable) getNextMsg() (string, []byte, uint64, bool, error) {
+func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 	if o.mset == nil {
-		return _EMPTY_, nil, 0, false, fmt.Errorf("message set not valid")
+		return _EMPTY_, nil, 0, 0, fmt.Errorf("message set not valid")
 	}
 	for {
-		seq, rd := o.sseq, false
-		if len(o.redeliver) > 0 {
-			seq = o.redeliver[0]
-			o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-			rd = true
+		seq, dc := o.sseq, uint64(1)
+		if len(o.rdq) > 0 {
+			seq = o.rdq[0]
+			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
+			dc = o.incDeliveryCount(seq)
 		}
 		subj, msg, _, err := o.mset.store.Lookup(seq)
 		if err == nil {
-			if !rd {
+			if dc == 1 {
 				o.sseq++
 				if o.config.Partition != "" && subj != o.config.Partition {
 					continue
 				}
 			}
 			// We have the msg here.
-			return subj, msg, seq, rd, nil
+			return subj, msg, seq, dc, nil
 		}
 		// We got an error here.
 		// If this was a redelivery the message may have expired so move on to next one.
-		if !rd {
-			return "", nil, 0, false, err
+		if dc == 1 {
+			return "", nil, 0, 0, err
 		}
 	}
 }
@@ -418,13 +428,13 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
-			mset      *MsgSet
-			seq       uint64
-			subj      string
-			dsubj     string
-			msg       []byte
-			err       error
-			redeliver bool
+			mset  *MsgSet
+			seq   uint64
+			dc    uint64
+			subj  string
+			dsubj string
+			msg   []byte
+			err   error
 		)
 
 		o.mu.Lock()
@@ -445,7 +455,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			goto waitForMsgs
 		}
 
-		subj, msg, seq, redeliver, err = o.getNextMsg()
+		subj, msg, seq, dc, err = o.getNextMsg()
 
 		// On error either wait or return.
 		if err != nil {
@@ -464,7 +474,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			dsubj = o.dsubj
 		}
 
-		o.deliverMsg(dsubj, subj, msg, seq, redeliver)
+		o.deliverMsg(dsubj, subj, msg, seq, dc)
 
 		o.mu.Unlock()
 		continue
@@ -476,24 +486,14 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 	}
 }
 
-const JsOriginalDelivery = "O"
-const JsReDelivery = "R"
-
-func (o *Observable) ackReply(sseq, dseq uint64, redelivery bool) string {
-	dm := JsOriginalDelivery
-	if redelivery {
-		dm = JsReDelivery
-	}
-	return fmt.Sprintf(o.ackReplyT, dm, sseq, dseq)
+func (o *Observable) ackReply(sseq, dseq, dcount uint64) string {
+	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq)
 }
-
-//func (o *Observable) ackRedeliverReply(sseq, dseq uint64) string {
-//}
 
 // Deliver a msg to the observable.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *Observable) deliverMsg(dsubj, subj string, msg []byte, seq uint64, redelivery bool) {
-	o.mset.sendq <- &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, redelivery), msg, o, o.dseq}
+func (o *Observable) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64) {
+	o.mset.sendq <- &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount), msg, o, o.dseq}
 	if o.config.AckPolicy == AckExplicit {
 		o.trackPending(seq)
 	}
@@ -565,8 +565,8 @@ func (o *Observable) didNotDeliver(seq uint64) {
 // This checks if we already have this sequence queued for redelivery.
 // FIXME(dlc) - This is O(n) but should be fast with small redeliver size.
 // Lock should be held.
-func (o *Observable) onRedeliverList(seq uint64) bool {
-	for _, rseq := range o.redeliver {
+func (o *Observable) onRedeliverQueue(seq uint64) bool {
+	for _, rseq := range o.rdq {
 		if rseq == seq {
 			return true
 		}
@@ -591,14 +591,14 @@ func (o *Observable) checkPending() {
 	// we also need to sort after.
 	var expired []uint64
 	for seq, ts := range o.pending {
-		if now-ts > aw && !o.onRedeliverList(seq) {
+		if now-ts > aw && !o.onRedeliverQueue(seq) {
 			expired = append(expired, seq)
 			shouldSignal = true
 		}
 	}
 	if len(expired) > 0 {
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
-		o.redeliver = append(o.redeliver, expired...)
+		o.rdq = append(o.rdq, expired...)
 	}
 
 	if len(o.pending) > 0 {
@@ -620,13 +620,11 @@ func (o *Observable) SeqFromReply(reply string) uint64 {
 	return seq
 }
 
-func (o *Observable) ReplyInfo(reply string) (sseq, dseq uint64, redelivered bool) {
-	var ri string
-	n, err := fmt.Sscanf(reply, o.ackReplyT, &ri, &sseq, &dseq)
+func (o *Observable) ReplyInfo(reply string) (sseq, dseq, dcount uint64) {
+	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq)
 	if err != nil || n != 3 {
-		return 0, 0, false
+		return 0, 0, 0
 	}
-	redelivered = ri == JsReDelivery
 	return
 }
 
