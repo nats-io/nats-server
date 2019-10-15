@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -26,7 +27,7 @@ import (
 type ObservableConfig struct {
 	Delivery    string        `json:"delivery_subject"`
 	Durable     string        `json:"durable_name,omitempty"`
-	StartSeq    uint64        `json:"start_seq,omitempty"`
+	MsgSetSeq   uint64        `json:"msg_set_seq,omitempty"`
 	StartTime   time.Time     `json:"start_time,omitempty"`
 	DeliverAll  bool          `json:"deliver_all,omitempty"`
 	DeliverLast bool          `json:"deliver_last,omitempty"`
@@ -62,15 +63,16 @@ var (
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
 	mu         sync.Mutex
-	name       string
 	mset       *MsgSet
+	name       string
 	sseq       uint64
 	dseq       uint64
-	aseq       uint64
+	aflr       uint64
+	soff       uint64
 	dsubj      string
 	reqSub     *subscription
 	ackSub     *subscription
-	ackReply   string
+	ackReplyT  string
 	pending    map[uint64]int64
 	ptmr       *time.Timer
 	redeliver  []uint64
@@ -110,9 +112,11 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		if config.AckPolicy != AckExplicit {
 			return nil, fmt.Errorf("observable in pull mode requires explicit ack policy")
 		}
-		if config.AckWait == time.Duration(0) {
-			config.AckWait = JsAckWaitDefault
-		}
+	}
+
+	// Setup proper default for ack wait if we are in explicit ack mode.
+	if config.AckPolicy == AckExplicit && config.AckWait == time.Duration(0) {
+		config.AckWait = JsAckWaitDefault
 	}
 
 	// Make sure any partition subject is also a literal.
@@ -128,7 +132,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 
 	// Check on start position conflicts.
 	noTime := time.Time{}
-	if config.StartSeq > 0 && (config.StartTime != noTime || config.DeliverAll || config.DeliverLast) {
+	if config.MsgSetSeq > 0 && (config.StartTime != noTime || config.DeliverAll || config.DeliverLast) {
 		return nil, fmt.Errorf("observable starting position conflict")
 	} else if config.StartTime != noTime && (config.DeliverAll || config.DeliverLast) {
 		return nil, fmt.Errorf("observable starting position conflict")
@@ -208,8 +212,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// We will remember the template to generate replaies with sequence numbers and use
 	// that to scanf them back in.
 	cn := mset.cleanName()
-	o.ackReply = fmt.Sprintf("%s.%s.%s.%%d", JsAckPre, cn, o.name)
-	ackSubj := fmt.Sprintf("%s.%s.%s.*", JsAckPre, cn, o.name)
+	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%1s.%%d.%%d", JsAckPre, cn, o.name)
+	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JsAckPre, cn, o.name)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
@@ -227,9 +231,6 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	mset.obs[o.name] = o
 	mset.mu.Unlock()
 
-	// Now start up Go routine to deliver msgs.
-	go o.loopAndDeliverMsgs(s, a)
-
 	// If push mode, start up active hb timer.
 	if o.isPushMode() {
 		o.mu.Lock()
@@ -243,6 +244,9 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		o.mu.Unlock()
 	}
 
+	// Now start up Go routine to deliver msgs.
+	go o.loopAndDeliverMsgs(s, a)
+
 	return o, nil
 }
 
@@ -252,8 +256,8 @@ func (o *Observable) updateDelivery(newDelivery string) {
 	o.dsubj = newDelivery
 	o.config.Delivery = newDelivery
 	// FIXME(dlc) - check partitions, think we need offset.
-	o.dseq = o.aseq
-	o.sseq = o.aseq
+	o.dseq = o.aflr
+	o.sseq = o.aflr
 	o.mu.Unlock()
 
 	o.checkActive()
@@ -265,31 +269,24 @@ func configsEqualSansDelivery(a, b ObservableConfig) bool {
 	return a == b
 }
 
-func (o *Observable) msgSet() *MsgSet {
-	o.mu.Lock()
-	mset := o.mset
-	o.mu.Unlock()
-	return mset
-}
-
 func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	seq := o.SeqFromReply(subject)
+	sseq, dseq, _ := o.ReplyInfo(subject)
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck):
-		o.ackMsg(seq)
+		o.ackMsg(sseq, dseq)
 	case bytes.Equal(msg, AckNext):
-		o.ackMsg(seq)
+		o.ackMsg(sseq, dseq)
 		o.processNextMsgReq(nil, nil, subject, reply, nil)
 	case bytes.Equal(msg, AckNak):
-		if o.isPushMode() {
+		if o.isPushMode() && o.config.AckPolicy != AckExplicit {
 			// Reset our observable to this sequence number.
-			o.resetToSeq(seq)
+			o.resetToSeq(sseq, dseq)
 		} else {
 			// Queue up this message for redelivery
-			o.queueForRedelivery(seq)
+			o.queueForRedelivery(sseq)
 		}
 	case bytes.Equal(msg, AckProgress):
-		o.progressUpdate(seq)
+		o.progressUpdate(sseq)
 	}
 }
 
@@ -319,28 +316,29 @@ func (o *Observable) queueForRedelivery(seq uint64) {
 }
 
 // Process an ack for a message.
-func (o *Observable) ackMsg(seq uint64) {
+func (o *Observable) ackMsg(sseq, dseq uint64) {
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckNone, AckAll:
-		o.aseq = seq
+		o.aflr = dseq
 	case AckExplicit:
-		delete(o.pending, seq)
-		if seq == o.aseq+1 {
-			o.aseq++
+		delete(o.pending, sseq)
+		if dseq == o.aflr+1 {
+			o.aflr++
 		}
 	}
 	mset := o.mset
 	o.mu.Unlock()
+
 	if mset != nil && mset.config.Retention == WorkQueuePolicy {
-		mset.ackMsg(seq)
+		mset.ackMsg(sseq)
 	}
 }
 
 // resetToSeq is used when we receive a NAK to reset a push based observable. e.g. a replay.
-func (o *Observable) resetToSeq(seq uint64) {
+func (o *Observable) resetToSeq(sseq, dseq uint64) {
 	o.mu.Lock()
-	o.sseq, o.dseq = seq, seq
+	o.sseq, o.dseq = sseq, dseq
 	mset := o.mset
 	o.mu.Unlock()
 
@@ -369,22 +367,13 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 
 	o.mu.Lock()
 	mset := o.mset
-	if mset == nil {
+	if mset == nil || o.isPushMode() {
 		o.mu.Unlock()
 		return
 	}
 	for i := 0; i < batchSize; i++ {
-		if len(o.redeliver) > 0 {
-			seq := o.redeliver[0]
-			o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-			subj, msg, _, err := mset.store.Lookup(seq)
-			if err == ErrStoreMsgNotFound {
-				continue
-			}
-			o.deliverMsgRequest(mset, reply, subj, msg, seq)
-		} else if subj, msg, err := o.getNextMsg(); err == nil {
-			o.deliverMsgRequest(o.mset, reply, subj, msg, o.dseq)
-			o.incSeqs()
+		if subj, msg, seq, rd, err := o.getNextMsg(); err == nil {
+			o.deliverMsg(reply, subj, msg, seq, rd)
 		} else {
 			o.waiting = append(o.waiting, reply)
 		}
@@ -393,127 +382,122 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 }
 
 // Get next available message from underlying store.
-// Is partition aware.
+// Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Observable) getNextMsg() (string, []byte, error) {
+func (o *Observable) getNextMsg() (string, []byte, uint64, bool, error) {
 	if o.mset == nil {
-		return "", nil, fmt.Errorf("message set not valid")
+		return _EMPTY_, nil, 0, false, fmt.Errorf("message set not valid")
 	}
 	for {
-		subj, msg, _, err := o.mset.store.Lookup(o.sseq)
+		seq, rd := o.sseq, false
+		if len(o.redeliver) > 0 {
+			seq = o.redeliver[0]
+			o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
+			rd = true
+		}
+		subj, msg, _, err := o.mset.store.Lookup(seq)
 		if err == nil {
-			if o.config.Partition != "" && subj != o.config.Partition {
+			if !rd {
 				o.sseq++
-				continue
+				if o.config.Partition != "" && subj != o.config.Partition {
+					continue
+				}
 			}
 			// We have the msg here.
-			return subj, msg, nil
+			return subj, msg, seq, rd, nil
 		}
 		// We got an error here.
-		return "", nil, err
+		// If this was a redelivery the message may have expired so move on to next one.
+		if !rd {
+			return "", nil, 0, false, err
+		}
 	}
 }
 
 func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
-	var mset *MsgSet
+	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
+		var (
+			mset      *MsgSet
+			seq       uint64
+			subj      string
+			dsubj     string
+			msg       []byte
+			err       error
+			redeliver bool
+		)
+
+		o.mu.Lock()
 		// observable is closed when mset is set to nil.
-		if mset = o.msgSet(); mset == nil {
+		if o.mset == nil {
+			o.mu.Unlock()
 			return
 		}
+		mset = o.mset
 
-		// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
-		for {
-			o.mu.Lock()
-			var seq uint64
-			var redelivery bool
-
-			// If we are in push mode and not active let's stop sending.
-			if o.isPushMode() && !o.active {
-				o.mu.Unlock()
-				break
-			}
-
-			if len(o.redeliver) > 0 {
-				seq = o.redeliver[0]
-				redelivery = true
-			} else {
-				seq = o.sseq
-			}
-
-			subj, msg, _, err := mset.store.Lookup(seq)
-
-			// On error either break or return.
-			if err != nil {
-				o.mu.Unlock()
-				if err != ErrStoreMsgNotFound {
-					s.Warnf("Jetstream internal storage error on lookup: %v", err)
-					return
-				}
-				if !redelivery {
-					break
-				} else {
-					// This was not found so can't be redelivered.
-					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-				}
-			}
-
-			// We have the message. We need to check if we are in push mode or pull mode.
-			// Also need to check if we have a partition filter.
-			if o.config.Partition != "" && subj != o.config.Partition {
-				o.sseq++
-				o.mu.Unlock()
-				continue
-			}
-
-			if o.isPushMode() {
-				if !redelivery {
-					o.deliverMsg(mset, subj, msg, o.dseq)
-					o.incSeqs()
-				} else {
-					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-					o.deliverMsg(mset, subj, msg, seq)
-				}
-			} else if len(o.waiting) > 0 {
-				reply := o.waiting[0]
-				o.waiting = append(o.waiting[:0], o.waiting[1:]...)
-				if !redelivery {
-					o.deliverMsgRequest(mset, reply, subj, msg, o.dseq)
-					o.incSeqs()
-				} else {
-					o.redeliver = append(o.redeliver[:0], o.redeliver[1:]...)
-					o.deliverMsgRequest(mset, reply, subj, msg, seq)
-				}
-			} else {
-				// No one waiting, let's break out and wait.
-				o.mu.Unlock()
-				break
-			}
-			o.mu.Unlock()
+		// If we are in push mode and not active let's stop sending.
+		if o.isPushMode() && !o.active {
+			goto waitForMsgs
 		}
+
+		// If we are in pull mode and no one is waiting already break and wait.
+		if o.isPullMode() && len(o.waiting) == 0 {
+			goto waitForMsgs
+		}
+
+		subj, msg, seq, redeliver, err = o.getNextMsg()
+
+		// On error either wait or return.
+		if err != nil {
+			if err == ErrStoreMsgNotFound {
+				goto waitForMsgs
+			} else {
+				o.mu.Unlock()
+				return
+			}
+		}
+
+		if len(o.waiting) > 0 {
+			dsubj = o.waiting[0]
+			o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+		} else {
+			dsubj = o.dsubj
+		}
+
+		o.deliverMsg(dsubj, subj, msg, seq, redeliver)
+
+		o.mu.Unlock()
+		continue
+
+	waitForMsgs:
 		// We will wait here for new messages to arrive.
+		o.mu.Unlock()
 		mset.waitForMsgs()
 	}
 }
 
-// Advance the sequence numbers.
-// Lock should be held.
-func (o *Observable) incSeqs() {
-	o.sseq++
-	o.dseq++
+const JsOriginalDelivery = "O"
+const JsReDelivery = "R"
+
+func (o *Observable) ackReply(sseq, dseq uint64, redelivery bool) string {
+	dm := JsOriginalDelivery
+	if redelivery {
+		dm = JsReDelivery
+	}
+	return fmt.Sprintf(o.ackReplyT, dm, sseq, dseq)
 }
 
-// Deliver a msg to the observable push delivery subject.
-func (o *Observable) deliverMsg(mset *MsgSet, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{o.dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
-}
+//func (o *Observable) ackRedeliverReply(sseq, dseq uint64) string {
+//}
 
-// Deliver a msg to the msg request subject.
-func (o *Observable) deliverMsgRequest(mset *MsgSet, dsubj, subj string, msg []byte, seq uint64) {
-	mset.sendq <- &jsPubMsg{dsubj, subj, fmt.Sprintf(o.ackReply, seq), msg, o, seq}
+// Deliver a msg to the observable.
+// Lock should be held and o.mset validated to be non-nil.
+func (o *Observable) deliverMsg(dsubj, subj string, msg []byte, seq uint64, redelivery bool) {
+	o.mset.sendq <- &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, redelivery), msg, o, o.dseq}
 	if o.config.AckPolicy == AckExplicit {
 		o.trackPending(seq)
 	}
+	o.dseq++
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
@@ -531,7 +515,7 @@ func (o *Observable) trackPending(seq uint64) {
 func (o *Observable) checkActive() {
 	o.mu.Lock()
 	mset := o.mset
-	if mset == nil || !o.isPushMode() {
+	if mset == nil || o.isPullMode() {
 		o.mu.Unlock()
 		return
 	}
@@ -601,16 +585,22 @@ func (o *Observable) checkPending() {
 		return
 	}
 	aw := int64(o.config.AckWait)
-	for seq := o.aseq; seq < o.dseq; seq++ {
-		if ts, ok := o.pending[seq]; ok {
-			if now-ts > aw && !o.onRedeliverList(seq) {
-				o.redeliver = append(o.redeliver, seq)
-				shouldSignal = true
-				// Since we support working updates which resets the timestamp we
-				// have to look at them all.
-			}
+
+	// Since we can update timestamps, we have to review all pending.
+	// We may want to unlock here or warn if list is big.
+	// we also need to sort after.
+	var expired []uint64
+	for seq, ts := range o.pending {
+		if now-ts > aw && !o.onRedeliverList(seq) {
+			expired = append(expired, seq)
+			shouldSignal = true
 		}
 	}
+	if len(expired) > 0 {
+		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+		o.redeliver = append(o.redeliver, expired...)
+	}
+
 	if len(o.pending) > 0 {
 		o.ptmr.Reset(o.config.AckWait)
 	} else {
@@ -625,11 +615,18 @@ func (o *Observable) checkPending() {
 }
 
 // SeqFromReply will extract a sequence number from a reply ack subject.
-func (o *Observable) SeqFromReply(reply string) (seq uint64) {
-	n, err := fmt.Sscanf(reply, o.ackReply, &seq)
-	if err != nil || n != 1 {
-		return 0
+func (o *Observable) SeqFromReply(reply string) uint64 {
+	_, seq, _ := o.ReplyInfo(reply)
+	return seq
+}
+
+func (o *Observable) ReplyInfo(reply string) (sseq, dseq uint64, redelivered bool) {
+	var ri string
+	n, err := fmt.Sscanf(reply, o.ackReplyT, &ri, &sseq, &dseq)
+	if err != nil || n != 3 {
+		return 0, 0, false
 	}
+	redelivered = ri == JsReDelivery
 	return
 }
 
@@ -641,15 +638,36 @@ func (o *Observable) NextSeq() uint64 {
 	return dseq
 }
 
+// This will select the store seq to start with based on the
+// partition subject.
+func (o *Observable) selectPartitionLast() {
+	stats := o.mset.Stats()
+	// FIXME(dlc) - this is linear and can be optimized by store layer.
+	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
+		subj, _, _, err := o.mset.store.Lookup(seq)
+		if err == ErrStoreMsgNotFound {
+			continue
+		}
+		if subj == o.config.Partition {
+			o.sseq = seq
+			return
+		}
+	}
+}
+
 // Will select the starting sequence.
 func (o *Observable) selectStartingSeqNo() {
 	stats := o.mset.Stats()
 	noTime := time.Time{}
-	if o.config.StartSeq == 0 {
+	if o.config.MsgSetSeq == 0 {
 		if o.config.DeliverAll {
 			o.sseq = stats.FirstSeq
 		} else if o.config.DeliverLast {
 			o.sseq = stats.LastSeq
+			// If we are partitioned here we may need to walk backwards.
+			if o.config.Partition != _EMPTY_ {
+				o.selectPartitionLast()
+			}
 		} else if o.config.StartTime != noTime {
 			// If we are here we are time based.
 			// TODO(dlc) - Once clustered can't rely on this.
@@ -659,7 +677,7 @@ func (o *Observable) selectStartingSeqNo() {
 			o.sseq = stats.LastSeq + 1
 		}
 	} else {
-		o.sseq = o.config.StartSeq
+		o.sseq = o.config.MsgSetSeq
 	}
 
 	if stats.FirstSeq == 0 {
@@ -669,10 +687,11 @@ func (o *Observable) selectStartingSeqNo() {
 	} else if o.sseq > stats.LastSeq {
 		o.sseq = stats.LastSeq + 1
 	}
-	// Set delivery sequence to be the same to start.
-	o.dseq = o.sseq
-	// Set pending sequence to delivery - 1
-	o.aseq = o.dseq - 1
+	// Always set delivery sequence to 1.
+	o.dseq = 1
+	o.soff = o.sseq - 1
+	// Set ack floor to delivery - 1
+	o.aflr = o.dseq - 1
 }
 
 // Test whether a config represents a durable subscriber.
@@ -687,6 +706,10 @@ func (o *Observable) isDurable() bool {
 // Are we in push mode, delivery subject, etc.
 func (o *Observable) isPushMode() bool {
 	return o.config.Delivery != _EMPTY_
+}
+
+func (o *Observable) isPullMode() bool {
+	return o.config.Delivery == _EMPTY_
 }
 
 // Name returns the name of this observable.
@@ -779,35 +802,35 @@ func (mset *MsgSet) noInterest(delivery string) bool {
 		return true
 	}
 	r := acc.sl.Match(delivery)
-	noInterest := len(r.psubs)+len(r.qsubs) == 0
+	interest := len(r.psubs)+len(r.qsubs) > 0
 
 	// Check for service imports here.
-	if acc.imports.services != nil {
+	if !interest && acc.imports.services != nil {
 		acc.mu.RLock()
 		si := acc.imports.services[delivery]
 		invalid := si != nil && si.invalid
 		acc.mu.RUnlock()
 		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
 			rr := si.acc.sl.Match(si.to)
-			noInterest = len(rr.psubs)+len(rr.qsubs) == 0 || noInterest
+			interest = len(rr.psubs)+len(rr.qsubs) > 0
 		}
 	}
 	// Process GWs here. This is not going to exact since it could be that the GW does not
 	// know, that is ok for here.
 	// TODO(@@IK) to check.
-	if c != nil && c.srv != nil && c.srv.gateway.enabled {
+	if !interest && (c != nil && c.srv != nil && c.srv.gateway.enabled) {
 		gw := c.srv.gateway
 		gw.RLock()
 		for _, gwc := range gw.outo {
 			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
 			if psi || qr != nil {
-				noInterest = false
+				interest = true
 				break
 			}
 		}
 		gw.RUnlock()
 	}
-	return noInterest
+	return !interest
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject
@@ -833,13 +856,14 @@ func (mset *MsgSet) validPartition(partitionSubject string) bool {
 // for push based observables.
 func (o *Observable) SetActiveCheckParams(achk time.Duration, thresh int) error {
 	o.mu.Lock()
-	if o.atmr == nil || !o.isPushMode() {
+	if o.atmr == nil || o.isPullMode() {
 		o.mu.Unlock()
 		return fmt.Errorf("observable not push based")
 	}
 	o.achk = achk
 	o.athresh = thresh
-	o.atmr.Reset(o.achk)
+	stopAndClearTimer(&o.atmr)
+	o.atmr = time.AfterFunc(o.achk, o.checkActive)
 	o.mu.Unlock()
 	return nil
 }
