@@ -160,7 +160,7 @@ func getCounterArrayData(counter PDH_HCOUNTER) ([]float64, error) {
 // the performance counter API.
 func getProcessImageName() (name string) {
 	name = filepath.Base(os.Args[0])
-	name = strings.TrimRight(name, ".exe")
+	name = strings.TrimSuffix(name, ".exe")
 	return
 }
 
