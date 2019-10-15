@@ -278,7 +278,7 @@ func TestJetStreamCreateObservable(t *testing.T) {
 	// StartPosition conflicts
 	if _, err := mset.AddObservable(&server.ObservableConfig{
 		Delivery:  "A",
-		StartSeq:  1,
+		MsgSetSeq: 1,
 		StartTime: time.Now(),
 	}); err == nil {
 		t.Fatalf("Expected an error on start position conflicts")
@@ -336,8 +336,9 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 
 	toSend := 100
 	sendSubj := "foo.bar"
-	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+	for i := 1; i <= toSend; i++ {
+		payload := strconv.Itoa(i)
+		resp, _ := nc.Request(sendSubj, []byte(payload), 50*time.Millisecond)
 		expectOKResponse(t, resp)
 	}
 	stats := mset.Stats()
@@ -389,8 +390,9 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	checkMsgs(1)
 
 	// Now send more and make sure delivery picks back up.
-	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+	for i := toSend + 1; i <= toSend*2; i++ {
+		payload := strconv.Itoa(i)
+		resp, _ := nc.Request(sendSubj, []byte(payload), 50*time.Millisecond)
 		expectOKResponse(t, resp)
 	}
 	stats = mset.Stats()
@@ -419,8 +421,13 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Did not get expected message, got %v", err)
 	}
-	if seq := o.SeqFromReply(m.Reply); seq != 200 {
-		t.Fatalf("Expected sequence to be 200, but got %d", seq)
+	// All Observables start with sequence #1.
+	if seq := o.SeqFromReply(m.Reply); seq != 1 {
+		t.Fatalf("Expected sequence to be 1, but got %d", seq)
+	}
+	// Check that is is the last msg we sent though.
+	if mseq, _ := strconv.Atoi(string(m.Data)); mseq != 200 {
+		t.Fatalf("Expected messag sequence to be 200, but got %d", mseq)
 	}
 
 	checkSubEmpty()
@@ -441,13 +448,13 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	o.Delete()
 
 	// Now try by sequence number.
-	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, StartSeq: 101})
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, MsgSetSeq: 101})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
 	defer o.Delete()
 
-	checkMsgs(101)
+	checkMsgs(1)
 }
 
 func workerModeConfig(name string) *server.ObservableConfig {
@@ -817,15 +824,17 @@ func TestJetStreamBasicPushNak(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	startSeq := 22
-	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, StartSeq: uint64(startSeq), AckPolicy: server.AckAll})
+	startSeq := 101
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, MsgSetSeq: uint64(startSeq), AckPolicy: server.AckAll})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
 	defer o.Delete()
 
-	if o.NextSeq() != uint64(startSeq) {
-		t.Fatalf("Expected to be starting at sequence %d, got %d", startSeq, o.NextSeq())
+	// Delivery always starts at 1.
+	if o.NextSeq() != 1 {
+		t.Fatalf("Expected to be starting at sequence %d, got %d", 1, o.NextSeq())
 	}
 
 	expected := toSend - startSeq + 1
@@ -836,27 +845,28 @@ func TestJetStreamBasicPushNak(t *testing.T) {
 		return nil
 	})
 
-	// Which one to nak.
-	nakSeq := 900
+	// Which one to nak. Will leave 10 to be redelivered.
+	nakSeq := 891
 
 	// So we have all the messages. Whip through them all and nack one.
 	// With push based, nak means restart the stream.
-	for i := 0; i < expected; i++ {
+	for i := 1; i <= expected; i++ {
 		m, err := sub.NextMsg(time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		seq := o.SeqFromReply(m.Reply)
-		if seq != uint64(i+startSeq) {
+		if seq != uint64(i) {
 			t.Fatalf("Expected sequence of %d , got %d", (i + startSeq), seq)
 		}
 		if seq == uint64(nakSeq) {
-			nc.Publish(m.Reply, server.AckNak)
+			m.Respond(server.AckNak)
 		}
 	}
 
-	// We should expect since we drained the sub above to have the replayed messages again from the nak sequence.
-	expected = toSend - nakSeq + 1
+	// What we should expect since we drained the sub above to have the replayed messages again from the nak sequence.
+	expected = expected - nakSeq + 1
+
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expected {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expected)
@@ -985,7 +995,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
 	}
 
-	ackWait := 50 * time.Millisecond
+	ackWait := 100 * time.Millisecond
 
 	o, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true, AckPolicy: server.AckExplicit, AckWait: ackWait})
 	if err != nil {
@@ -1023,8 +1033,16 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error waiting for messages: %v", err)
 		}
-		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
-			t.Fatalf("Expected sequence of %d , got %d", i, seq)
+		sseq, dseq, redelivered := o.ReplyInfo(m.Reply)
+		if sseq != uint64(i) {
+			t.Fatalf("Expected set sequence of %d , got %d", i, sseq)
+		}
+		// Delivery sequences should always increase.
+		if dseq != uint64(toSend+i) {
+			t.Fatalf("Expected delivery sequence of %d , got %d", toSend+i, dseq)
+		}
+		if !redelivered {
+			t.Fatalf("Expected these to be marked as redelivered")
 		}
 		// Ack the message here.
 		m.Respond(nil)
@@ -1076,34 +1094,38 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 
 	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
 
-	getMsg := func(seqno int) *nats.Msg {
+	getMsg := func(sseq, dseq int) *nats.Msg {
 		t.Helper()
 		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
-			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		rsseq, rdseq, _ := o.ReplyInfo(m.Reply)
+		if rdseq != uint64(dseq) {
+			t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
+		}
+		if rsseq != uint64(sseq) {
+			t.Fatalf("Expected store sequence of %d , got %d", sseq, rsseq)
 		}
 		return m
 	}
 
 	for i := 1; i <= 5; i++ {
-		m := getMsg(i)
+		m := getMsg(i, i)
 		// Ack the message here.
 		m.Respond(nil)
 	}
 
 	// Grab #6
-	m := getMsg(6)
+	m := getMsg(6, 6)
 	// NAK this one.
 	m.Respond(server.AckNak)
 
-	// When we request again should be 6 again.
-	getMsg(6)
+	// When we request again should be store sequence 6 again.
+	getMsg(6, 7)
 	// Then we should get 7, 8, etc.
-	getMsg(7)
-	getMsg(8)
+	getMsg(7, 8)
+	getMsg(8, 9)
 }
 
 func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
@@ -1141,24 +1163,28 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
 
-	getMsg := func(seqno int) *nats.Msg {
+	getMsg := func(sseq, dseq int) *nats.Msg {
 		t.Helper()
 		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
-			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
+		rsseq, rdseq, _ := o.ReplyInfo(m.Reply)
+		if rdseq != uint64(dseq) {
+			t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
+		}
+		if rsseq != uint64(sseq) {
+			t.Fatalf("Expected store sequence of %d , got %d", sseq, rsseq)
 		}
 		return m
 	}
 
-	getMsg(1)
+	getMsg(1, 1)
 	// Now wait past ackWait
 	time.Sleep(ackWait * 2)
 
 	// We should get 1 back.
-	m := getMsg(1)
+	m := getMsg(1, 2)
 	m.Respond(server.AckProgress)
 	nc.Flush()
 
@@ -1170,15 +1196,15 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	}
 
 	// We should get 2 here, not 1 since we have indicated we are working on it.
-	m2 := getMsg(2)
+	m2 := getMsg(2, 3)
 	time.Sleep(ackWait / 2)
 	m2.Respond(server.AckProgress)
 
 	// Now should get 1 back then 2.
-	m = getMsg(1)
+	m = getMsg(1, 4)
 	m.Respond(nil)
 
-	getMsg(2)
+	getMsg(2, 5)
 }
 
 func TestJetStreamEphemeralObservables(t *testing.T) {
@@ -1299,8 +1325,8 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// For test speed.
-	o.SetActiveCheckParams(100*time.Millisecond, 10)
+	// For test speed. Thresh is high to avoid us being deleted.
+	o.SetActiveCheckParams(50*time.Millisecond, 100)
 
 	if !o.Active() {
 		t.Fatalf("Expected the observable to be considered active")
@@ -1315,9 +1341,9 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 
 	getMsg := func(seqno int) *nats.Msg {
 		t.Helper()
-		m, err := sub.NextMsg(time.Second)
+		m, err := sub.NextMsg(5 * time.Second)
 		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+			t.Fatalf("Unexpected error for %d: %v", seqno, err)
 		}
 		if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
 			t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
@@ -1333,6 +1359,15 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 		}
 	}
 
+	checkForInActive := func() {
+		checkFor(t, 250*time.Millisecond, 50*time.Millisecond, func() error {
+			if o.Active() {
+				return fmt.Errorf("Observable is still active")
+			}
+			return nil
+		})
+	}
+
 	// Send and Pull first message.
 	sendMsg() // 1
 	getMsg(1)
@@ -1340,20 +1375,19 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 	sub.Unsubscribe()
 	// Re-establish new sub on same subject.
 	sub, _ = nc.SubscribeSync(delivery)
-	time.Sleep(100 * time.Millisecond)
 
 	// We should be getting 2 here.
 	sendMsg() // 2
 	getMsg(2)
 
 	sub.Unsubscribe()
-	time.Sleep(200 * time.Millisecond)
+	checkForInActive()
 
 	// send 3-10
 	for i := 0; i <= 7; i++ {
 		sendMsg()
 	}
-	// Make sure they are queued up with no interest.
+	// Make sure they are all queued up with no interest.
 	nc.Flush()
 
 	// Restablish again.
@@ -1459,5 +1493,143 @@ func TestJetStreamDurableObservableReconnect(t *testing.T) {
 	for i := toSend / 2; i <= toSend; i++ {
 		m := getMsg(i)
 		m.Respond(nil)
+	}
+}
+
+func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sendMsgs := func(toSend int) {
+		for i := 0; i < toSend; i++ {
+			var subj string
+			if i%2 == 0 {
+				subj = "foo.AA"
+			} else {
+				subj = "foo.ZZ"
+			}
+			if err := nc.Publish(subj, []byte("OK!")); err != nil {
+				return
+			}
+		}
+		nc.Flush()
+	}
+
+	// Send 50 msgs
+	toSend := 50
+	sendMsgs(toSend)
+
+	dname := "d33"
+	dsubj := nats.NewInbox()
+
+	// Now create an observable for foo.AA, only requesting the last one.
+	o, err := mset.AddObservable(&server.ObservableConfig{
+		Durable:     dname,
+		Delivery:    dsubj,
+		Partition:   "foo.AA",
+		DeliverLast: true,
+		AckPolicy:   server.AckExplicit,
+		AckWait:     100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// For test speed.
+	o.SetActiveCheckParams(50*time.Millisecond, 2)
+
+	sub, _ := nc.SubscribeSync(dsubj)
+	defer sub.Unsubscribe()
+
+	// Used to calculate difference between store seq and delivery seq.
+	storeBaseOff := 47
+
+	getMsg := func(seq int) *nats.Msg {
+		t.Helper()
+		sseq := 2*seq + storeBaseOff
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		fmt.Printf("m.Reply is %q\n", m.Reply)
+		rsseq, roseq, redelivered := o.ReplyInfo(m.Reply)
+		if roseq != uint64(seq) {
+			t.Fatalf("Expected observable sequence of %d , got %d", seq, roseq)
+		}
+		if rsseq != uint64(sseq) {
+			t.Fatalf("Expected msgset sequence of %d , got %d", sseq, rsseq)
+		}
+		if redelivered {
+			t.Fatalf("Expected message to not be marked as redelivered")
+		}
+		return m
+	}
+
+	getRedeliveredMsg := func(seq int) *nats.Msg {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		_, roseq, redelivered := o.ReplyInfo(m.Reply)
+		if roseq != uint64(seq) {
+			t.Fatalf("Expected observable sequence of %d , got %d", seq, roseq)
+		}
+		if !redelivered {
+			t.Fatalf("Expected message to be marked as redelivered")
+		}
+		// Ack this message.
+		m.Respond(nil)
+		return m
+	}
+
+	// All observables start at 1 and always have increasing sequence numbers.
+	m := getMsg(1)
+	m.Respond(nil)
+
+	// Now send 50 more, so 100 total, 26 (last + 50/2) for this observable.
+	sendMsgs(toSend)
+
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend*2) {
+		t.Fatalf("Expected %d messages, got %d", toSend*2, stats.Msgs)
+	}
+
+	// For tracking next expected.
+	nextSeq := 2
+	noAcks := 0
+	for i := 0; i < toSend/2; i++ {
+		m := getMsg(nextSeq)
+		if i%2 == 0 {
+			m.Respond(nil) // Ack evens.
+		} else {
+			noAcks++
+		}
+		nextSeq++
+	}
+
+	// We should now get those redelivered.
+	for i := 0; i < noAcks; i++ {
+		getRedeliveredMsg(nextSeq)
+		nextSeq++
+	}
+
+	// Now send 50 more.
+	sendMsgs(toSend)
+
+	storeBaseOff -= noAcks * 2
+
+	for i := 0; i < toSend/2; i++ {
+		m := getMsg(nextSeq)
+		m.Respond(nil)
+		nextSeq++
 	}
 }
