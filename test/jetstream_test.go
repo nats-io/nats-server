@@ -793,99 +793,6 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 	})
 }
 
-func TestJetStreamBasicPushNak(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
-	if err != nil {
-		t.Fatalf("Unexpected error adding message set: %v", err)
-	}
-	defer s.JetStreamDeleteMsgSet(mset)
-
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
-
-	// Now load up some messages.
-	toSend := 1000
-	sendSubj := "bar"
-	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
-	}
-	stats := mset.Stats()
-	if stats.Msgs != uint64(toSend) {
-		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
-	}
-
-	// Now create a normal push based observable.
-	sub, _ := nc.SubscribeSync(nats.NewInbox())
-	defer sub.Unsubscribe()
-	nc.Flush()
-
-	startSeq := 101
-
-	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, MsgSetSeq: uint64(startSeq), AckPolicy: server.AckAll})
-	if err != nil {
-		t.Fatalf("Expected no error with registered interest, got %v", err)
-	}
-	defer o.Delete()
-
-	// Delivery always starts at 1.
-	if o.NextSeq() != 1 {
-		t.Fatalf("Expected to be starting at sequence %d, got %d", 1, o.NextSeq())
-	}
-
-	expected := toSend - startSeq + 1
-	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expected {
-			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expected)
-		}
-		return nil
-	})
-
-	// Which one to nak. Will leave 10 to be redelivered.
-	nakSeq := 891
-
-	// So we have all the messages. Whip through them all and nack one.
-	// With push based, nak means restart the stream.
-	for i := 1; i <= expected; i++ {
-		m, err := sub.NextMsg(time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		seq := o.SeqFromReply(m.Reply)
-		if seq != uint64(i) {
-			t.Fatalf("Expected sequence of %d , got %d", (i + startSeq), seq)
-		}
-		if seq == uint64(nakSeq) {
-			m.Respond(server.AckNak)
-		}
-	}
-
-	// What we should expect since we drained the sub above to have the replayed messages again from the nak sequence.
-	expected = expected - nakSeq
-
-	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expected {
-			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expected)
-		}
-		return nil
-	})
-
-	for i := 0; i < expected; i++ {
-		m, err := sub.NextMsg(time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		seq := o.SeqFromReply(m.Reply)
-		if seq != uint64(i+nakSeq+1) {
-			t.Fatalf("Expected sequence of %d , got %d", (i + nakSeq), seq)
-		}
-	}
-}
-
 func TestJetStreamWorkQueueMsgSet(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -1033,7 +940,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error waiting for messages: %v", err)
 		}
-		sseq, dseq, redelivered := o.ReplyInfo(m.Reply)
+		sseq, dseq, dcount := o.ReplyInfo(m.Reply)
 		if sseq != uint64(i) {
 			t.Fatalf("Expected set sequence of %d , got %d", i, sseq)
 		}
@@ -1041,7 +948,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		if dseq != uint64(toSend+i) {
 			t.Fatalf("Expected delivery sequence of %d , got %d", toSend+i, dseq)
 		}
-		if !redelivered {
+		if dcount == 1 {
 			t.Fatalf("Expected these to be marked as redelivered")
 		}
 		// Ack the message here.
@@ -1559,14 +1466,14 @@ func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		rsseq, roseq, redelivered := o.ReplyInfo(m.Reply)
+		rsseq, roseq, dcount := o.ReplyInfo(m.Reply)
 		if roseq != uint64(seq) {
 			t.Fatalf("Expected observable sequence of %d , got %d", seq, roseq)
 		}
 		if rsseq != uint64(sseq) {
 			t.Fatalf("Expected msgset sequence of %d , got %d", sseq, rsseq)
 		}
-		if redelivered {
+		if dcount != 1 {
 			t.Fatalf("Expected message to not be marked as redelivered")
 		}
 		return m
@@ -1578,11 +1485,11 @@ func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		_, roseq, redelivered := o.ReplyInfo(m.Reply)
+		_, roseq, dcount := o.ReplyInfo(m.Reply)
 		if roseq != uint64(seq) {
 			t.Fatalf("Expected observable sequence of %d , got %d", seq, roseq)
 		}
-		if !redelivered {
+		if dcount < 2 {
 			t.Fatalf("Expected message to be marked as redelivered")
 		}
 		// Ack this message.
@@ -1633,11 +1540,11 @@ func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
 	}
 }
 
-func TestJetStreamObservableSeqGaps(t *testing.T) {
+func TestJetStreamRedeliverCount(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "FOO"})
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
@@ -1646,77 +1553,111 @@ func TestJetStreamObservableSeqGaps(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	// Now load up some messages.
-	toSend := 1000
-	for i := 0; i < toSend; i++ {
-		nc.Publish("FOO", []byte("Hello World!"))
+	// Send 10 msgs
+	for i := 0; i < 10; i++ {
+		nc.Publish("DC", []byte("OK!"))
 	}
 	nc.Flush()
-
-	stats := mset.Stats()
-	if stats.Msgs != uint64(toSend) {
-		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	if stats := mset.Stats(); stats.Msgs != 10 {
+		t.Fatalf("Expected %d messages, got %d", 10, stats.Msgs)
 	}
 
-	sub, _ := nc.SubscribeSync(nats.NewInbox())
-	defer sub.Unsubscribe()
-
-	maxMsgs := 100
-	sub.SetPendingLimits(maxMsgs, -1)
-	nc.Flush()
-
-	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true, AckPolicy: server.AckAll})
+	o, err := mset.AddObservable(workerModeConfig("WQ"))
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
 	defer o.Delete()
 
-	// This should quickly overrun us, but wait until we have 100.
-	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxMsgs {
-			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, maxMsgs)
-		}
-		return nil
-	})
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "WQ")
 
-	// First should give us sc
-	if _, err := sub.NextMsg(time.Second); err != nats.ErrSlowConsumer {
-		t.Fatalf("Expected slow consumer error")
-	}
-	// Now drain until we find a gap.
-	nextStart := 0
-	var lastMsg *nats.Msg
-	for i := 1; i <= toSend; i++ {
-		nextStart = i
-		m, err := sub.NextMsg(100 * time.Millisecond)
-		if err != nil {
-			break
-		}
-		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
-			break
-		}
-		lastMsg = m
-	}
-	if nextStart != maxMsgs+1 || lastMsg == nil {
-		t.Fatalf("Expected lastSeen to be %d, got %d", maxMsgs+1, nextStart)
-	}
-
-	// This is what we would expect users to do. Kill the subscription and re-establish it, send a NAK for last reply.
-	subj := sub.Subject
-	sub.Unsubscribe()
-
-	sub, _ = nc.SubscribeSync(subj)
-	defer sub.Unsubscribe()
-
-	lastMsg.Respond(server.AckNak)
-
-	for i := nextStart; i <= toSend; i++ {
-		m, err := sub.NextMsg(100 * time.Millisecond)
+	for i := uint64(1); i <= 10; i++ {
+		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
-			t.Fatalf("Expected sequence %d, got %d", i, seq)
+		sseq, dseq, dcount := o.ReplyInfo(m.Reply)
+		// Make sure we keep getting message set sequence #1
+		if sseq != 1 {
+			t.Fatalf("Expected set sequence of 1, got %d", sseq)
+		}
+		if dseq != i {
+			t.Fatalf("Expected delivery sequence of %d, got %d", i, dseq)
+		}
+		// Now make sure dcount is same as dseq (or i).
+		if dcount != i {
+			t.Fatalf("Expected delivery count to be %d, got %d", i, dcount)
+		}
+		// Make sure it keeps getting sent back.
+		m.Respond(server.AckNak)
+	}
+}
+
+func TestJetStreamCanNotNakAckd(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 10 msgs
+	for i := 0; i < 10; i++ {
+		nc.Publish("DC", []byte("OK!"))
+	}
+	nc.Flush()
+	if stats := mset.Stats(); stats.Msgs != 10 {
+		t.Fatalf("Expected %d messages, got %d", 10, stats.Msgs)
+	}
+
+	o, err := mset.AddObservable(workerModeConfig("WQ"))
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "WQ")
+
+	for i := uint64(1); i <= 10; i++ {
+		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Ack evens.
+		if i%2 == 0 {
+			m.Respond(nil)
 		}
 	}
+	nc.Flush()
+
+	// Fake these for now.
+	ackReplyT := "$JS.A.DC.WQ.1.%d.%d"
+	nak := func(seq int) {
+		t.Helper()
+		if err := nc.Publish(fmt.Sprintf(ackReplyT, seq, seq), server.AckNak); err != nil {
+			t.Fatalf("Error sending nak: %v", err)
+		}
+		nc.Flush()
+	}
+
+	checkBadNak := func(seq int) {
+		t.Helper()
+		nak(seq)
+		if _, err := nc.Request(reqNextMsgSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Did not expect new delivery on nak of %d", seq)
+		}
+	}
+
+	// If the nak took action it will deliver another message, incrementing the next delivery seq.
+	// We ack evens above, so these should fail
+	for i := 2; i <= 10; i += 2 {
+		checkBadNak(i)
+	}
+
+	// Now check we can not nak something we do not have.
+	checkBadNak(22)
 }
