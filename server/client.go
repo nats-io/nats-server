@@ -2851,14 +2851,15 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := si.acc.sl.Match(si.to)
 
+		// This gives us a notion that we have interest in this message.
+		didDeliver = len(rr.psubs)+len(rr.qsubs) > 0
+
 		// Check to see if we have no results and this is an internal serviceImport.
 		// If so we need to clean that up.
-		if len(rr.psubs)+len(rr.qsubs) == 0 && si.internal {
+		if !didDeliver && si.internal {
 			// We may also have a response entry, so go through that way.
 			si.acc.checkForRespEntry(si.to)
 		}
-
-		flags := pmrNoFlag
 
 		// This gives us a notion that we have interest in this message.
 		// We need to check if this is false but we have
@@ -2866,6 +2867,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 
 		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
+		flags := pmrNoFlag
 		if c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF {
 			flags |= pmrIgnoreEmptyQueueFilter
 		}
