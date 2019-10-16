@@ -1078,16 +1078,25 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 		return ErrStreamImportAuthorization
 	}
 
+	// Check prefix if it exists and make sure its a literal.
+	// Append token separator if not already present.
+	if prefix != "" {
+		// Make sure there are no wildcards here, this prefix needs to be a literal
+		// since it will be prepended to a publish subject.
+		if !subjectIsLiteral(prefix) {
+			return ErrStreamImportBadPrefix
+		}
+		if prefix[len(prefix)-1] != btsep {
+			prefix = prefix + string(btsep)
+		}
+	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.imports.streams == nil {
 		a.imports.streams = make(map[string]*streamImport)
 	}
-	if prefix != "" && prefix[len(prefix)-1] != btsep {
-		prefix = prefix + string(btsep)
-	}
 	// TODO(dlc) - collisions, etc.
 	a.imports.streams[from] = &streamImport{account, from, prefix, imClaim, false}
+	a.mu.Unlock()
 	return nil
 }
 

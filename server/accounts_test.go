@@ -698,6 +698,57 @@ func TestSimpleMapping(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/1159
+func TestStreamImportLengthBug(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	cbar, _, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	if err := cfoo.acc.AddStreamExport("client.>", nil); err != nil {
+		t.Fatalf("Error adding account export to client foo: %v", err)
+	}
+	if err := cbar.acc.AddStreamImport(fooAcc, "client.>", "events.>"); err == nil {
+		t.Fatalf("Expected an error when using a stream import prefix with a wildcard")
+	}
+
+	if err := cbar.acc.AddStreamImport(fooAcc, "client.>", "events"); err != nil {
+		t.Fatalf("Error adding account import to client bar: %v", err)
+	}
+
+	if err := cbar.parse([]byte("SUB events.> 1\r\n")); err != nil {
+		t.Fatalf("Error for client 'bar' from server: %v", err)
+	}
+
+	// Also make sure that we will get an error from a config version.
+	// JWT will be updated separately.
+	cf := createConfFile(t, []byte(`
+	accounts {
+	  foo {
+	    exports = [{stream: "client.>"}]
+	  }
+	  bar {
+	    imports = [{stream: {account: "foo", subject:"client.>"}, prefix:"events.>"}]
+	  }
+	}
+	`))
+	defer os.Remove(cf)
+	if _, err := ProcessConfigFile(cf); err == nil {
+		t.Fatalf("Expected an error with import with wildcard prefix")
+	}
+}
+
 func TestShadowSubsCleanupOnClientClose(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
