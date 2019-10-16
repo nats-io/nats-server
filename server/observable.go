@@ -67,8 +67,8 @@ type Observable struct {
 	name       string
 	sseq       uint64
 	dseq       uint64
-	aflr       uint64
-	soff       uint64
+	adflr      uint64
+	asflr      uint64
 	dsubj      string
 	reqSub     *subscription
 	ackSub     *subscription
@@ -128,6 +128,9 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		// Make sure this is a valid partition of the interest subjects.
 		if !mset.validPartition(config.Partition) {
 			return nil, fmt.Errorf("observable partition not a valid subset of the interest subjects")
+		}
+		if config.AckPolicy == AckAll {
+			return nil, fmt.Errorf("observable with partition can not have an ack policy of ack all")
 		}
 	}
 
@@ -257,8 +260,8 @@ func (o *Observable) updateDelivery(newDelivery string) {
 	o.dsubj = newDelivery
 	o.config.Delivery = newDelivery
 	// FIXME(dlc) - check partitions, think we need offset.
-	o.dseq = o.aflr
-	o.sseq = o.aflr
+	o.dseq = o.adflr
+	o.sseq = o.asflr
 	o.mu.Unlock()
 
 	o.checkActive()
@@ -302,7 +305,7 @@ func (o *Observable) processNak(sseq, dseq uint64) {
 	var mset *MsgSet
 	o.mu.Lock()
 	// Check for out of range.
-	if dseq <= o.aflr || dseq > o.dseq {
+	if dseq <= o.adflr || dseq > o.dseq {
 		o.mu.Unlock()
 		return
 	}
@@ -326,24 +329,61 @@ func (o *Observable) processNak(sseq, dseq uint64) {
 
 // Process an ack for a message.
 func (o *Observable) ackMsg(sseq, dseq uint64) {
+	var sagap uint64
 	o.mu.Lock()
 	switch o.config.AckPolicy {
-	case AckNone, AckAll:
-		o.aflr = dseq
-		// FIXME(dlc) - delete rdc entries?
 	case AckExplicit:
 		delete(o.pending, sseq)
-		if dseq == o.aflr+1 {
-			o.aflr++
+		if dseq == o.adflr+1 {
+			o.adflr = dseq
+			o.asflr = sseq
 		}
 		delete(o.rdc, sseq)
+	case AckAll:
+		// no-op
+		if dseq <= o.adflr || sseq <= o.asflr {
+			o.mu.Unlock()
+			return
+		}
+		sagap = sseq - o.asflr
+		o.adflr = dseq
+		o.asflr = sseq
+		// FIXME(dlc) - delete rdc entries?
+	case AckNone:
+		// FIXME(dlc) - This is error but do we care?
+		o.mu.Unlock()
+		return
 	}
 	mset := o.mset
 	o.mu.Unlock()
 
-	if mset != nil && mset.config.Retention == WorkQueuePolicy {
-		mset.ackMsg(sseq)
+	// Let the owning message set know if we are interest or workqueue retention based.
+	if mset != nil && mset.config.Retention != StreamPolicy {
+		if sagap > 1 {
+			// FIXME(dlc) - This is very inefficient, will need to fix.
+			for seq := sseq; seq > sseq-sagap; seq-- {
+				mset.ackMsg(o, seq)
+			}
+		} else {
+			mset.ackMsg(o, sseq)
+		}
 	}
+}
+
+// Check if we need an ack for this store seq.
+func (o *Observable) needAck(sseq uint64) bool {
+	var na bool
+	o.mu.Lock()
+	switch o.config.AckPolicy {
+	case AckNone, AckAll:
+		na = sseq > o.asflr
+	case AckExplicit:
+		if sseq > o.asflr && len(o.pending) > 0 {
+			_, na = o.pending[sseq]
+		}
+	}
+	o.mu.Unlock()
+	return na
 }
 
 // Default is 1 if msg is nil.
@@ -494,7 +534,10 @@ func (o *Observable) ackReply(sseq, dseq, dcount uint64) string {
 // Lock should be held and o.mset validated to be non-nil.
 func (o *Observable) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64) {
 	o.mset.sendq <- &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount), msg, o, o.dseq}
-	if o.config.AckPolicy == AckExplicit {
+	if o.config.AckPolicy == AckNone {
+		o.adflr = o.dseq
+		o.asflr = seq
+	} else if o.config.AckPolicy == AckExplicit {
 		o.trackPending(seq)
 	}
 	o.dseq++
@@ -687,9 +730,10 @@ func (o *Observable) selectStartingSeqNo() {
 	}
 	// Always set delivery sequence to 1.
 	o.dseq = 1
-	o.soff = o.sseq - 1
-	// Set ack floor to delivery - 1
-	o.aflr = o.dseq - 1
+	// Set ack delivery floor to delivery-1
+	o.adflr = o.dseq - 1
+	// Set ack store floor to store-1
+	o.asflr = o.sseq - 1
 }
 
 // Test whether a config represents a durable subscriber.
@@ -781,54 +825,6 @@ func (o *Observable) Delete() error {
 	mset.mu.Unlock()
 
 	return nil
-}
-
-// Checks to see if there is registered interest in the delivery subject.
-// Note that since we require delivery to be a literal this is just like
-// a publish match.
-func (mset *MsgSet) noInterest(delivery string) bool {
-	var c *client
-	var acc *Account
-
-	mset.mu.Lock()
-	if mset.client != nil {
-		c = mset.client
-		acc = c.acc
-	}
-	mset.mu.Unlock()
-	if acc == nil {
-		return true
-	}
-	r := acc.sl.Match(delivery)
-	interest := len(r.psubs)+len(r.qsubs) > 0
-
-	// Check for service imports here.
-	if !interest && acc.imports.services != nil {
-		acc.mu.RLock()
-		si := acc.imports.services[delivery]
-		invalid := si != nil && si.invalid
-		acc.mu.RUnlock()
-		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
-			rr := si.acc.sl.Match(si.to)
-			interest = len(rr.psubs)+len(rr.qsubs) > 0
-		}
-	}
-	// Process GWs here. This is not going to exact since it could be that the GW does not
-	// know, that is ok for here.
-	// TODO(@@IK) to check.
-	if !interest && (c != nil && c.srv != nil && c.srv.gateway.enabled) {
-		gw := c.srv.gateway
-		gw.RLock()
-		for _, gwc := range gw.outo {
-			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
-			if psi || qr != nil {
-				interest = true
-				break
-			}
-		}
-		gw.RUnlock()
-	}
-	return !interest
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject
