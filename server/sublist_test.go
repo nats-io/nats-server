@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1047,9 +1048,14 @@ func TestSublistAll(t *testing.T) {
 var benchSublistSubs []*subscription
 var benchSublistSl = NewSublistWithCache()
 
+// https://github.com/golang/go/issues/31859
+func TestMain(m *testing.M) {
+	flag.Parse()
+	os.Exit(m.Run())
+}
+
 func init() {
 	initSublist := false
-	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "test.bench" {
 			initSublist = true

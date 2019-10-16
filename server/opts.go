@@ -142,6 +142,7 @@ type RemoteLeafOpts struct {
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
 	ConfigFile       string        `json:"-"`
+	ServerName       string        `json:"server_name"`
 	Host             string        `json:"addr"`
 	Port             int           `json:"port"`
 	ClientAdvertise  string        `json:"-"`
@@ -446,6 +447,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.ClientAdvertise = v.(string)
 		case "port":
 			o.Port = int(v.(int64))
+		case "server_name":
+			o.ServerName = v.(string)
 		case "host", "net":
 			o.Host = v.(string)
 		case "debug":
