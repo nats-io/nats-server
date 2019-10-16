@@ -157,9 +157,22 @@ func (ms *memStore) expireMsgs() {
 	}
 }
 
+// Purge will remove all messages from this store.
+// Will return the number of purged messages.
+func (ms *memStore) Purge() uint64 {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	purged := uint64(len(ms.msgs))
+	ms.stats.FirstSeq = ms.stats.LastSeq + 1
+	ms.stats.Bytes = 0
+	ms.stats.Msgs = 0
+	ms.msgs = make(map[uint64]*storedMsg)
+	return purged
+}
+
 func (ms *memStore) deleteFirstMsgOrPanic() {
 	if !ms.deleteFirstMsg() {
-		panic("jetstream memstore has inconsistent state, can't find firstSeq msg")
+		panic("jetstream memstore has inconsistent state, can't find first seq msg")
 	}
 }
 
