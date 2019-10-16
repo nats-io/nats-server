@@ -304,13 +304,23 @@ func TestJetStreamCreateObservable(t *testing.T) {
 		t.Fatalf("Expected an error on unsubscribed delivery subject")
 	}
 
-	// This should work..
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 	sub, _ := nc.SubscribeSync(delivery)
 	defer sub.Unsubscribe()
 	nc.Flush()
 
+	// Partitions can not be AckAll.
+	if _, err := mset.AddObservable(&server.ObservableConfig{
+		Delivery:   delivery,
+		DeliverAll: true,
+		Partition:  "foo",
+		AckPolicy:  server.AckAll,
+	}); err == nil {
+		t.Fatalf("Expected an error on partitioned observable with ack policy of all")
+	}
+
+	// This should work..
 	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
@@ -793,7 +803,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 	})
 }
 
-func TestJetStreamWorkQueueMsgSet(t *testing.T) {
+func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
@@ -1636,17 +1646,12 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 
 	// Fake these for now.
 	ackReplyT := "$JS.A.DC.WQ.1.%d.%d"
-	nak := func(seq int) {
+	checkBadNak := func(seq int) {
 		t.Helper()
 		if err := nc.Publish(fmt.Sprintf(ackReplyT, seq, seq), server.AckNak); err != nil {
 			t.Fatalf("Error sending nak: %v", err)
 		}
 		nc.Flush()
-	}
-
-	checkBadNak := func(seq int) {
-		t.Helper()
-		nak(seq)
 		if _, err := nc.Request(reqNextMsgSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Did not expect new delivery on nak of %d", seq)
 		}
@@ -1660,4 +1665,157 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 
 	// Now check we can not nak something we do not have.
 	checkBadNak(22)
+}
+
+func TestJetStreamMsgSetPurge(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 100 msgs
+	for i := 0; i < 100; i++ {
+		nc.Publish("DC", []byte("OK!"))
+	}
+	nc.Flush()
+	if stats := mset.Stats(); stats.Msgs != 100 {
+		t.Fatalf("Expected %d messages, got %d", 100, stats.Msgs)
+	}
+	mset.Purge()
+	if stats := mset.Stats(); stats.Msgs != 0 {
+		t.Fatalf("Expected %d messages, got %d", 0, stats.Msgs)
+	}
+}
+
+func TestJetStreamInterestRetentionMsgSet(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 100 msgs
+	totalMsgs := 10
+
+	for i := 0; i < totalMsgs; i++ {
+		nc.Publish("DC", []byte("OK!"))
+	}
+	nc.Flush()
+
+	checkNumMsgs := func(numExpected int) {
+		t.Helper()
+		if stats := mset.Stats(); stats.Msgs != uint64(numExpected) {
+			t.Fatalf("Expected %d messages, got %d", numExpected, stats.Msgs)
+		}
+	}
+
+	checkNumMsgs(totalMsgs)
+
+	syncSub := func() *nats.Subscription {
+		sub, _ := nc.SubscribeSync(nats.NewInbox())
+		nc.Flush()
+		return sub
+	}
+
+	// Now create three observables.
+	// 1. AckExplicit
+	// 2. AckAll
+	// 3. AckNone
+
+	sub1 := syncSub()
+	mset.AddObservable(&server.ObservableConfig{Delivery: sub1.Subject, DeliverAll: true, AckPolicy: server.AckExplicit})
+
+	sub2 := syncSub()
+	mset.AddObservable(&server.ObservableConfig{Delivery: sub2.Subject, DeliverAll: true, AckPolicy: server.AckAll})
+
+	sub3 := syncSub()
+	mset.AddObservable(&server.ObservableConfig{Delivery: sub3.Subject, DeliverAll: true, AckPolicy: server.AckNone})
+
+	// Wait for all messsages to be pending for each sub.
+	for _, sub := range []*nats.Subscription{sub1, sub2, sub3} {
+		checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != totalMsgs {
+				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, totalMsgs)
+			}
+			return nil
+		})
+	}
+
+	getAndAck := func(sub *nats.Subscription) {
+		t.Helper()
+		if m, err := sub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else {
+			m.Respond(nil)
+		}
+		nc.Flush()
+	}
+
+	// Ack evens for the explicit ack sub.
+	var odds []*nats.Msg
+	for i := 1; i <= totalMsgs; i++ {
+		if m, err := sub1.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else if i%2 == 0 {
+			m.Respond(nil) // Ack evens.
+		} else {
+			odds = append(odds, m)
+		}
+	}
+	nc.Flush()
+
+	checkNumMsgs(totalMsgs)
+
+	// Now ack first for AckAll sub2
+	getAndAck(sub2)
+
+	// We should be at the same number since we acked 1, explicit acked 2
+	checkNumMsgs(totalMsgs)
+
+	// Now ack second for AckAll sub2
+	getAndAck(sub2)
+
+	// We should now have 1 removed.
+	checkNumMsgs(totalMsgs - 1)
+
+	// Now ack third for AckAll sub2
+	getAndAck(sub2)
+
+	// We should still only have 1 removed.
+	checkNumMsgs(totalMsgs - 1)
+
+	// Now ack odds from explicit.
+	for _, m := range odds {
+		m.Respond(nil) // Ack
+	}
+	nc.Flush()
+
+	// we should have 1, 2, 3 acks now.
+	checkNumMsgs(totalMsgs - 3)
+
+	// Now ack last ackall message. This should clear all of them.
+	for i := 4; i <= totalMsgs; i++ {
+		if m, err := sub2.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else if i == totalMsgs {
+			m.Respond(nil)
+		}
+	}
+	nc.Flush()
+
+	// Should be zero now.
+	checkNumMsgs(0)
 }
