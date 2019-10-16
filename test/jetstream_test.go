@@ -15,8 +15,10 @@ package test
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -1708,7 +1710,7 @@ func TestJetStreamInterestRetentionMsgSet(t *testing.T) {
 	defer nc.Close()
 
 	// Send 100 msgs
-	totalMsgs := 10
+	totalMsgs := 100
 
 	for i := 0; i < totalMsgs; i++ {
 		nc.Publish("DC", []byte("OK!"))
@@ -1818,4 +1820,148 @@ func TestJetStreamInterestRetentionMsgSet(t *testing.T) {
 
 	// Should be zero now.
 	checkNumMsgs(0)
+}
+
+func TestJetStreamObservableReplayRate(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 10 msgs
+	totalMsgs := 10
+
+	var gaps []time.Duration
+	lst := time.Now()
+
+	for i := 0; i < totalMsgs; i++ {
+		gaps = append(gaps, time.Since(lst))
+		nc.Request("DC", []byte("OK!"), time.Second)
+		lst = time.Now()
+		// Calculate a gap between messages.
+		gap := 10*time.Millisecond + time.Duration(rand.Intn(20))*time.Millisecond
+		time.Sleep(gap)
+	}
+
+	if stats := mset.Stats(); stats.Msgs != uint64(totalMsgs) {
+		t.Fatalf("Expected %d messages, got %d", totalMsgs, stats.Msgs)
+	}
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer o.Delete()
+
+	// Firehose/instant which is default.
+	last := time.Now()
+	for i := 0; i < totalMsgs; i++ {
+		if _, err := sub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		now := time.Now()
+		if now.Sub(last) > 5*time.Millisecond {
+			t.Fatalf("Expected firehose/instant delivery, got message gap of %v", now.Sub(last))
+		}
+		last = now
+	}
+
+	// Now do replay rate to match original.
+	o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true, ReplayPolicy: server.ReplayOriginal})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer o.Delete()
+
+	// Original rate messsages were received for push based observable.
+	for i := 0; i < totalMsgs; i++ {
+		start := time.Now()
+		if _, err := sub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		gap := time.Since(start)
+		// 10ms is high but on macs time.Sleep(delay) does not sleep only delay.
+		if gap < gaps[i] || gap > gaps[i]+10*time.Millisecond {
+			t.Fatalf("Gap is incorrect for %d, expected %v got %v", i, gaps[i], gap)
+		}
+	}
+
+	// Now create pull based.
+	oc := workerModeConfig("PM")
+	oc.ReplayPolicy = server.ReplayOriginal
+	o, err = mset.AddObservable(oc)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer o.Delete()
+
+	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "PM")
+
+	for i := 0; i < totalMsgs; i++ {
+		start := time.Now()
+		if _, err := nc.Request(reqNextMsgSubj, nil, time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		gap := time.Since(start)
+		// 10ms is high but on macs time.Sleep(delay) does not sleep only delay.
+		if gap < gaps[i] || gap > gaps[i]+10*time.Millisecond {
+			t.Fatalf("Gap is incorrect for %d, expected %v got %v", i, gaps[i], gap)
+		}
+	}
+}
+
+func TestJetStreamObservableReplayQuit(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 2 msgs
+	nc.Request("DC", []byte("OK!"), time.Second)
+	time.Sleep(100 * time.Millisecond)
+	nc.Request("DC", []byte("OK!"), time.Second)
+
+	if stats := mset.Stats(); stats.Msgs != 2 {
+		t.Fatalf("Expected %d messages, got %d", 2, stats.Msgs)
+	}
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	// Now do replay rate to match original.
+	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true, ReplayPolicy: server.ReplayOriginal})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Allow loop and deliver / replay go routine to spin up
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+	o.Delete()
+
+	checkFor(t, 100*time.Millisecond, 10*time.Millisecond, func() error {
+		if runtime.NumGoroutine() >= base {
+			return fmt.Errorf("Observable go routines still running")
+		}
+		return nil
+	})
 }
