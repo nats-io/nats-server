@@ -25,15 +25,16 @@ import (
 )
 
 type ObservableConfig struct {
-	Delivery    string        `json:"delivery_subject"`
-	Durable     string        `json:"durable_name,omitempty"`
-	MsgSetSeq   uint64        `json:"msg_set_seq,omitempty"`
-	StartTime   time.Time     `json:"start_time,omitempty"`
-	DeliverAll  bool          `json:"deliver_all,omitempty"`
-	DeliverLast bool          `json:"deliver_last,omitempty"`
-	AckPolicy   AckPolicy     `json:"ack_policy"`
-	AckWait     time.Duration `json:"ack_wait"`
-	Partition   string        `json:"partition"`
+	Delivery     string        `json:"delivery_subject"`
+	Durable      string        `json:"durable_name,omitempty"`
+	MsgSetSeq    uint64        `json:"msg_set_seq,omitempty"`
+	StartTime    time.Time     `json:"start_time,omitempty"`
+	DeliverAll   bool          `json:"deliver_all,omitempty"`
+	DeliverLast  bool          `json:"deliver_last,omitempty"`
+	AckPolicy    AckPolicy     `json:"ack_policy"`
+	AckWait      time.Duration `json:"ack_wait"`
+	Partition    string        `json:"partition"`
+	ReplayPolicy ReplayPolicy  `json:"replay_policy"`
 }
 
 // AckPolicy determines how the observable should acknowledge delivered messages.
@@ -46,6 +47,16 @@ const (
 	AckAll
 	// AckExplicit requires ack or nack for all messages.
 	AckExplicit
+)
+
+// ReplayPolicy determines how the observable should replay messages it already has queued in the message set.
+type ReplayPolicy int
+
+const (
+	// ReplayInstant will replay messages as fast as possible.
+	ReplayInstant ReplayPolicy = iota
+	// ReplayOriginal will maintain the same timing as the messages were received.
+	ReplayOriginal
 )
 
 // Ack responses. Note that a nil or no payload is same as AckAck
@@ -80,10 +91,12 @@ type Observable struct {
 	waiting    []string
 	config     ObservableConfig
 	active     bool
+	replay     bool
 	atmr       *time.Timer
 	nointerest int
 	athresh    int
 	achk       time.Duration
+	qch        chan struct{}
 }
 
 const (
@@ -149,7 +162,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
 	}
 
-	// Hold mset lock here/
+	// Hold mset lock here.
 	mset.mu.Lock()
 
 	// Check on msgset type conflicts.
@@ -176,7 +189,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true}
+	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{})}
 	if isDurableObservable(config) {
 		o.name = config.Durable
 	} else {
@@ -237,7 +250,6 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 
 	// If push mode, start up active hb timer.
 	if o.isPushMode() {
-		o.mu.Lock()
 		o.athresh = JsNotActiveThresholdDefault
 		o.achk = JsActiveCheckIntervalDefault
 		o.atmr = time.AfterFunc(o.achk, o.checkActive)
@@ -245,7 +257,11 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		if o.isDurable() && mset.noInterest(config.Delivery) {
 			o.active = false
 		}
-		o.mu.Unlock()
+	}
+
+	// If we are not in ReplayInstant mode mark us as in replay state until resolved.
+	if config.ReplayPolicy != ReplayInstant {
+		o.replay = true
 	}
 
 	// Now start up Go routine to deliver msgs.
@@ -259,7 +275,7 @@ func (o *Observable) updateDelivery(newDelivery string) {
 	o.mu.Lock()
 	o.dsubj = newDelivery
 	o.config.Delivery = newDelivery
-	// FIXME(dlc) - check partitions, think we need offset.
+	// FIXME(dlc) - check partitions, we may need offset.
 	o.dseq = o.adflr
 	o.sseq = o.asflr
 	o.mu.Unlock()
@@ -411,7 +427,10 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 		return
 	}
 	for i := 0; i < batchSize; i++ {
-		if subj, msg, seq, dc, err := o.getNextMsg(); err == nil {
+		// If we are in replay mode, defer to processReplay for delivery.
+		if o.replay {
+			o.waiting = append(o.waiting, reply)
+		} else if subj, msg, seq, dc, err := o.getNextMsg(); err == nil {
 			o.deliverMsg(reply, subj, msg, seq, dc)
 		} else {
 			o.waiting = append(o.waiting, reply)
@@ -421,7 +440,7 @@ func (o *Observable) processNextMsgReq(_ *subscription, _ *client, _, reply stri
 }
 
 // Increase the delivery count for this message.
-// Only used on redelivery semantics.
+// ONLY used on redelivery semantics.
 // Lock should be held.
 func (o *Observable) incDeliveryCount(sseq uint64) uint64 {
 	if o.rdc == nil {
@@ -436,41 +455,162 @@ func (o *Observable) incDeliveryCount(sseq uint64) uint64 {
 // Lock should be held.
 func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 	if o.mset == nil {
-		return _EMPTY_, nil, 0, 0, fmt.Errorf("message set not valid")
+		return _EMPTY_, nil, 0, 0, fmt.Errorf("observable not valid")
 	}
 	for {
-		seq, dc := o.sseq, uint64(1)
+		seq, dcount := o.sseq, uint64(1)
 		if len(o.rdq) > 0 {
 			seq = o.rdq[0]
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
-			dc = o.incDeliveryCount(seq)
+			dcount = o.incDeliveryCount(seq)
 		}
 		subj, msg, _, err := o.mset.store.Lookup(seq)
 		if err == nil {
-			if dc == 1 {
+			if dcount == 1 { // First delivery.
 				o.sseq++
 				if o.config.Partition != "" && subj != o.config.Partition {
 					continue
 				}
 			}
 			// We have the msg here.
-			return subj, msg, seq, dc, nil
+			return subj, msg, seq, dcount, nil
 		}
 		// We got an error here.
 		// If this was a redelivery the message may have expired so move on to next one.
-		if dc == 1 {
+		// Only return if first delivery.
+		if dcount == 1 {
 			return "", nil, 0, 0, err
 		}
 	}
 }
 
+// Returns if we should be doing a non-instant replay of stored messages.
+func (o *Observable) needReplay() bool {
+	o.mu.Lock()
+	doReplay := o.replay
+	o.mu.Unlock()
+	return doReplay
+}
+
+func (o *Observable) clearReplayState() {
+	o.mu.Lock()
+	o.replay = false
+	o.mu.Unlock()
+}
+
+// Wait for pull requests.
+// FIXME(dlc) - for short wait periods is ok but should single when waiting comes in.
+func (o *Observable) waitForPullRequests(wait time.Duration) {
+	o.mu.Lock()
+	qch := o.qch
+	if qch == nil || !o.isPullMode() || len(o.waiting) > 0 {
+		wait = 0
+	}
+	o.mu.Unlock()
+
+	select {
+	case <-qch:
+	case <-time.After(wait):
+	}
+}
+
+// This function is responsible for message replay that is not instant/firehose.
+func (o *Observable) processReplay() error {
+	defer o.clearReplayState()
+
+	o.mu.Lock()
+	mset := o.mset
+	partition := o.config.Partition
+	pullMode := o.isPullMode()
+	o.mu.Unlock()
+
+	if mset == nil {
+		return fmt.Errorf("observable not valid")
+	}
+
+	// Grab last queued up for us before we start.
+	lseq := mset.Stats().LastSeq
+	var lts int64 // last time stamp seen.
+
+	// If we are in pull mode, wait up to the waittime to have
+	// someone show up to start the replay.
+	if pullMode {
+		o.waitForPullRequests(time.Millisecond)
+	}
+
+	// Loop through all messages to replay.
+	for {
+		var delay time.Duration
+
+		o.mu.Lock()
+		mset = o.mset
+		if mset == nil {
+			o.mu.Unlock()
+			return fmt.Errorf("observable not valid")
+		}
+
+		subj, msg, ts, err := o.mset.store.Lookup(o.sseq)
+		if err != nil && err != ErrStoreMsgNotFound {
+			o.mu.Unlock()
+			return err
+		}
+
+		if lts > 0 {
+			if delay = time.Duration(ts - lts); delay > time.Millisecond {
+				qch := o.qch
+				o.mu.Unlock()
+				select {
+				case <-qch:
+					return fmt.Errorf("observable not valid")
+				case <-time.After(delay):
+				}
+				o.mu.Lock()
+			}
+		}
+		// We have a message to deliver here.
+		if err == nil && (partition == _EMPTY_ || subj == partition) {
+			// FIXME(dlc) - pull based.
+			if !pullMode {
+				o.deliverMsg(o.dsubj, subj, msg, o.sseq, 1)
+			} else {
+				// This is pull mode. We should have folks waiting, but if not
+				// just return and let the rest be delivered as needed.
+				if len(o.waiting) > 0 {
+					dsubj := o.waiting[0]
+					o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+					o.deliverMsg(dsubj, subj, msg, o.sseq, 1)
+				} else {
+					lseq = o.sseq
+				}
+			}
+			lts = ts
+		}
+
+		sseq := o.sseq
+		o.sseq++
+		o.mu.Unlock()
+
+		if sseq >= lseq {
+			break
+		}
+	}
+
+	return nil
+}
+
 func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
+	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
+	// Process the replay, return on error.
+	if o.needReplay() && o.processReplay() != nil {
+		return
+	}
+
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
 			mset  *MsgSet
 			seq   uint64
-			dc    uint64
+			dcnt  uint64
 			subj  string
 			dsubj string
 			msg   []byte
@@ -495,7 +635,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			goto waitForMsgs
 		}
 
-		subj, msg, seq, dc, err = o.getNextMsg()
+		subj, msg, seq, dcnt, err = o.getNextMsg()
 
 		// On error either wait or return.
 		if err != nil {
@@ -514,7 +654,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 			dsubj = o.dsubj
 		}
 
-		o.deliverMsg(dsubj, subj, msg, seq, dc)
+		o.deliverMsg(dsubj, subj, msg, seq, dcnt)
 
 		o.mu.Unlock()
 		continue
@@ -799,6 +939,11 @@ func (o *Observable) Delete() error {
 	o.mu.Lock()
 	// TODO(dlc) - Do cleanup here.
 	mset := o.mset
+	if mset == nil {
+		o.mu.Unlock()
+		return nil
+	}
+
 	o.mset = nil
 	o.active = false
 	ackSub := o.ackSub
@@ -807,11 +952,8 @@ func (o *Observable) Delete() error {
 	o.reqSub = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.atmr)
+	close(o.qch)
 	o.mu.Unlock()
-
-	if mset == nil {
-		return nil
-	}
 
 	mset.mu.Lock()
 	// Break us out of the readLoop.
