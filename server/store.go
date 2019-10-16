@@ -32,6 +32,7 @@ type MsgSetStore interface {
 	StoreMsg(subj string, msg []byte) (uint64, error)
 	Lookup(seq uint64) (subj string, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) bool
+	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
 	Stats() MsgSetStats
 }

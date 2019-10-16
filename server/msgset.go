@@ -42,7 +42,7 @@ const (
 	// StreamPolicy (default) means that messages are retained until any possible given limit is reached.
 	// This could be any one of MaxMsgs, MaxBytes, or MaxAge.
 	StreamPolicy RetentionPolicy = iota
-	// InterestPolicy specifies that when all known subscribers have acknowledged a message it can be removed.
+	// InterestPolicy specifies that when all known observables have acknowledged a message it can be removed.
 	InterestPolicy
 	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
 	WorkQueuePolicy
@@ -143,8 +143,9 @@ func (mset *MsgSet) Delete() error {
 	return mset.delete()
 }
 
-func (mset *MsgSet) Purge() error {
-	return fmt.Errorf("NO IMPL")
+// Purge will remove all messages from the message set and underlying store.
+func (mset *MsgSet) Purge() uint64 {
+	return mset.store.Purge()
 }
 
 // Will create internal subscriptions for the msgSet.
@@ -397,7 +398,72 @@ func (mset *MsgSet) partitionUnique(partition string) bool {
 	return true
 }
 
-// ackMsg is called into from an observable when we have a WorkQueue retention policy.
-func (mset *MsgSet) ackMsg(seq uint64) {
-	mset.store.RemoveMsg(seq)
+// ackMsg is called into from an observable when we have a WorkQueue or Interest retention policy.
+func (mset *MsgSet) ackMsg(obs *Observable, seq uint64) {
+	switch mset.config.Retention {
+	case StreamPolicy:
+		return
+	case WorkQueuePolicy:
+		mset.store.RemoveMsg(seq)
+	case InterestPolicy:
+		var needAck bool
+		mset.mu.Lock()
+		for _, o := range mset.obs {
+			if o != obs && o.needAck(seq) {
+				needAck = true
+				break
+			}
+		}
+		mset.mu.Unlock()
+		if !needAck {
+			mset.store.RemoveMsg(seq)
+		}
+	}
+}
+
+// Checks to see if there is registered interest in the delivery subject.
+// Note that since we require delivery to be a literal this is just like
+// a publish match.
+func (mset *MsgSet) noInterest(delivery string) bool {
+	var c *client
+	var acc *Account
+
+	mset.mu.Lock()
+	if mset.client != nil {
+		c = mset.client
+		acc = c.acc
+	}
+	mset.mu.Unlock()
+	if acc == nil {
+		return true
+	}
+	r := acc.sl.Match(delivery)
+	interest := len(r.psubs)+len(r.qsubs) > 0
+
+	// Check for service imports here.
+	if !interest && acc.imports.services != nil {
+		acc.mu.RLock()
+		si := acc.imports.services[delivery]
+		invalid := si != nil && si.invalid
+		acc.mu.RUnlock()
+		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
+			rr := si.acc.sl.Match(si.to)
+			interest = len(rr.psubs)+len(rr.qsubs) > 0
+		}
+	}
+	// Process GWs here. This is not going to exact since it could be that the GW does not
+	// know yet, but that is ok for here.
+	if !interest && (c != nil && c.srv != nil && c.srv.gateway.enabled) {
+		gw := c.srv.gateway
+		gw.RLock()
+		for _, gwc := range gw.outo {
+			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
+			if psi || qr != nil {
+				interest = true
+				break
+			}
+		}
+		gw.RUnlock()
+	}
+	return !interest
 }
