@@ -893,6 +893,7 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
 	ID                string            `json:"server_id"`
+	Name              string            `json:"server_name"`
 	Version           string            `json:"version"`
 	Proto             int               `json:"proto"`
 	GitCommit         string            `json:"git_commit,omitempty"`
@@ -1077,6 +1078,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		Proto:     info.Proto,
 		GitCommit: info.GitCommit,
 		GoVersion: info.GoVersion,
+		Name:      info.Name,
 		Host:      info.Host,
 		Port:      info.Port,
 		IP:        info.IP,

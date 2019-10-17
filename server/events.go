@@ -122,6 +122,7 @@ type accNumConnsReq struct {
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
+	Name    string    `json:"name"`
 	Host    string    `json:"host"`
 	ID      string    `json:"id"`
 	Cluster string    `json:"cluster,omitempty"`
@@ -215,6 +216,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	sendq := s.sys.sendq
 	id := s.info.ID
 	host := s.info.Host
+	servername := s.info.Name
 	seqp := &s.sys.seq
 	var cluster string
 	if s.gateway.enabled {
@@ -237,6 +239,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 		select {
 		case pm := <-sendq:
 			if pm.si != nil {
+				pm.si.Name = servername
 				pm.si.Host = host
 				pm.si.Cluster = cluster
 				pm.si.ID = id

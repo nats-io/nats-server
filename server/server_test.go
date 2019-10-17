@@ -284,6 +284,31 @@ func TestGetConnectURLs(t *testing.T) {
 	}
 }
 
+func TestInfoServerNameDefaultsToPK(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = 4222
+	opts.ClientAdvertise = "nats.example.com"
+	s := New(opts)
+	defer s.Shutdown()
+
+	if s.info.Name != s.info.ID {
+		t.Fatalf("server info hostname is incorrect, got: '%v' expected: '%v'", s.info.Name, s.info.ID)
+	}
+}
+
+func TestInfoServerNameIsSettable(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = 4222
+	opts.ClientAdvertise = "nats.example.com"
+	opts.ServerName = "test_server_name"
+	s := New(opts)
+	defer s.Shutdown()
+
+	if s.info.Name != "test_server_name" {
+		t.Fatalf("server info hostname is incorrect, got: '%v' expected: 'test_server_name'", s.info.Name)
+	}
+}
+
 func TestClientAdvertiseConnectURL(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Port = 4222

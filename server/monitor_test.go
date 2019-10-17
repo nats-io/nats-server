@@ -43,12 +43,13 @@ const CLUSTER_PORT = -1
 
 func DefaultMonitorOptions() *Options {
 	return &Options{
-		Host:     "127.0.0.1",
-		Port:     CLIENT_PORT,
-		HTTPHost: "127.0.0.1",
-		HTTPPort: MONITOR_PORT,
-		NoLog:    true,
-		NoSigs:   true,
+		Host:       "127.0.0.1",
+		Port:       CLIENT_PORT,
+		HTTPHost:   "127.0.0.1",
+		HTTPPort:   MONITOR_PORT,
+		ServerName: "monitor_server",
+		NoLog:      true,
+		NoSigs:     true,
 	}
 }
 
@@ -209,6 +210,9 @@ func TestHandleVarz(t *testing.T) {
 		}
 		if v.Subscriptions != 0 {
 			t.Fatalf("Expected Subscriptions of 0, got %v\n", v.Subscriptions)
+		}
+		if v.Name != "monitor_server" {
+			t.Fatal("Expected ServerName to be 'monitor_server'")
 		}
 	}
 

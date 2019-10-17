@@ -84,6 +84,7 @@ func TestOptions_RandomPort(t *testing.T) {
 func TestConfigFile(t *testing.T) {
 	golden := &Options{
 		ConfigFile:            "./configs/test.conf",
+		ServerName:            "testing_server",
 		Host:                  "127.0.0.1",
 		Port:                  4242,
 		Username:              "derek",
@@ -239,6 +240,7 @@ func TestTLSConfigFile(t *testing.T) {
 func TestMergeOverrides(t *testing.T) {
 	golden := &Options{
 		ConfigFile:     "./configs/test.conf",
+		ServerName:     "testing_server",
 		Host:           "127.0.0.1",
 		Port:           2222,
 		Username:       "derek",

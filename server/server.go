@@ -56,6 +56,7 @@ var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
 // to help them understand information about this server.
 type Info struct {
 	ID                string   `json:"server_id"`
+	Name              string   `json:"server_name"`
 	Version           string   `json:"version"`
 	Proto             int      `json:"proto"`
 	GitCommit         string   `json:"git_commit,omitempty"`
@@ -212,6 +213,11 @@ func NewServer(opts *Options) (*Server, error) {
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
 
+	serverName := pub
+	if opts.ServerName != "" {
+		serverName = opts.ServerName
+	}
+
 	// Validate some options. This is here because we cannot assume that
 	// server will always be started with configuration parsing (that could
 	// report issues). Its options can be (incorrectly) set by hand when
@@ -226,6 +232,7 @@ func NewServer(opts *Options) (*Server, error) {
 		Proto:        PROTO,
 		GitCommit:    gitCommit,
 		GoVersion:    runtime.Version(),
+		Name:         serverName,
 		Host:         opts.Host,
 		Port:         opts.Port,
 		AuthRequired: false,
