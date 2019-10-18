@@ -1986,7 +1986,6 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		}
 	}
 
-	// Create a new account.
 	if err := facc.EnableJetStream(limits(24, 192)); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2012,5 +2011,182 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		t.Fatalf("Unexpected error requesting jetstream reserved resources: %v", err)
 	} else if rm != 0 || rd != 0 {
 		t.Fatalf("Expected reserved memory and store to be 0, got %v and %v", server.FriendlyBytes(rm), server.FriendlyBytes(rd))
+	}
+
+	if err := facc.EnableJetStream(limits(24, 192)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Test Adjust
+	l := limits(jsconfig.MaxMemory, jsconfig.MaxStore)
+	l.MaxMsgSets = 10
+	l.MaxObservables = 10
+
+	if err := facc.UpdateJetStreamLimits(l); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+	}
+
+	var msets []*server.MsgSet
+	// Now test max message sets and max observables. Note max observables is per message set.
+	for i := 0; i < 10; i++ {
+		mname := fmt.Sprintf("foo.%d", i)
+		mset, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: mname})
+		if err != nil {
+			t.Fatalf("Unexpected error adding message set: %v", err)
+		}
+		msets = append(msets, mset)
+	}
+
+	// This one should fail since over the limit for macx number of message sets.
+	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22"}); err == nil {
+		t.Fatalf("Expected error adding message set over limit")
+	}
+
+	// Remove them all
+	for _, mset := range msets {
+		mset.Delete()
+	}
+
+	// Now try to add one with bytes limit that would exceed the account limit.
+	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22", MaxBytes: jsconfig.MaxMemory * 2}); err == nil {
+		t.Fatalf("Expected error adding message set over limit")
+	}
+
+	// Replicas can't be > 1
+	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22", Replicas: 10}); err == nil {
+		t.Fatalf("Expected error adding message set over limit")
+	}
+
+	// Test observables limit
+	mset, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		oname := fmt.Sprintf("O:%d", i)
+		_, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, AckPolicy: server.AckExplicit})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// This one should fail.
+	if _, err := mset.AddObservable(&server.ObservableConfig{Durable: "O:22", AckPolicy: server.AckExplicit}); err == nil {
+		t.Fatalf("Expected error adding observable over the limit")
+	}
+}
+
+func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	gacc := s.GlobalAccount()
+
+	al := &server.JetStreamAccountLimits{
+		MaxMemory:      8192,
+		MaxStore:       -1,
+		MaxMsgSets:     -1,
+		MaxObservables: -1,
+	}
+
+	if err := gacc.UpdateJetStreamLimits(al); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+	}
+
+	mset, err := s.JetStreamAddMsgSet(gacc, &server.MsgSetConfig{Name: "LIMITS", Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 100
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request("LIMITS", []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+
+	stats := mset.Stats()
+	usage := gacc.JetStreamUsage()
+
+	// Make sure these are working correctly.
+	if stats.Bytes != usage.Memory {
+		t.Fatalf("Expected to have message set bytes match memory usage, %d vs %d", stats.Bytes, usage.Memory)
+	}
+	if usage.MsgSets != 1 {
+		t.Fatalf("Expected to have 1 msgset, got %d", usage.MsgSets)
+	}
+
+	// Do second msgset.
+	mset2, err := s.JetStreamAddMsgSet(gacc, &server.MsgSetConfig{Name: "NUM22", Retention: server.WorkQueuePolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer s.JetStreamDeleteMsgSet(mset2)
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request("NUM22", []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+
+	stats2 := mset2.Stats()
+	usage = gacc.JetStreamUsage()
+
+	if usage.Memory != (stats.Bytes + stats2.Bytes) {
+		t.Fatalf("Expected to track both msgsets, account is %v, msgset1 is %v, msgset2 is %v", usage.Memory, stats.Bytes, stats2.Bytes)
+	}
+
+	// Make sure delete works.
+	s.JetStreamDeleteMsgSet(mset2)
+	stats2 = mset2.Stats()
+	usage = gacc.JetStreamUsage()
+
+	if usage.Memory != (stats.Bytes + stats2.Bytes) {
+		t.Fatalf("Expected to track both msgsets, account is %v, msgset1 is %v, msgset2 is %v", usage.Memory, stats.Bytes, stats2.Bytes)
+	}
+
+	// Now drain the first one by consuming the messages.
+	o, err := mset.AddObservable(workerModeConfig("WQ"))
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	for i := 0; i < toSend; i++ {
+		msg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		msg.Respond(nil)
+	}
+	nc.Flush()
+
+	stats = mset.Stats()
+	usage = gacc.JetStreamUsage()
+
+	if usage.Memory != 0 {
+		t.Fatalf("Expected usage memeory to be 0, got %d", usage.Memory)
+	}
+
+	// Now send twice the number of messages. Should receive an error at some point, and we will check usage against limits.
+	var errSeen string
+	for i := 0; i < toSend*2; i++ {
+		resp, _ := nc.Request("LIMITS", []byte("The quick brown fox jumped over the..."), 50*time.Millisecond)
+		if string(resp.Data) != server.OK {
+			errSeen = string(resp.Data)
+			break
+		}
+	}
+
+	if errSeen == "" {
+		t.Fatalf("Expected to see an error when exceeding the account limits")
+	}
+
+	stats = mset.Stats()
+	usage = gacc.JetStreamUsage()
+
+	if usage.Memory > uint64(al.MaxMemory) {
+		t.Fatalf("Expected memory to not exceed limit of %d, got %d", al.MaxMemory, usage.Memory)
 	}
 }
