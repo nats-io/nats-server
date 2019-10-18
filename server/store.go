@@ -34,6 +34,7 @@ type MsgSetStore interface {
 	RemoveMsg(seq uint64) bool
 	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
+	StorageBytesUpdate(func(int64))
 	Stats() MsgSetStats
 }
 

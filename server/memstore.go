@@ -25,6 +25,7 @@ type memStore struct {
 	mu     sync.RWMutex
 	stats  MsgSetStats
 	msgs   map[uint64]*storedMsg
+	scb    func(int64)
 	ageChk *time.Timer
 	config MsgSetConfig
 }
@@ -63,6 +64,8 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		msg = append(msg[:0:0], msg...)
 	}
 
+	startBytes := int64(ms.stats.Bytes)
+
 	ms.msgs[seq] = &storedMsg{subj, msg, seq, time.Now().UnixNano()}
 	ms.stats.Msgs++
 	ms.stats.Bytes += memStoreMsgSize(subj, msg)
@@ -76,9 +79,22 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	if ms.ageChk == nil && ms.config.MaxAge != 0 {
 		ms.startAgeChk()
 	}
+	cb := ms.scb
+	stopBytes := int64(ms.stats.Bytes)
 	ms.mu.Unlock()
 
+	if cb != nil {
+		cb(stopBytes - startBytes)
+	}
+
 	return seq, nil
+}
+
+// StorageBytesUpdate registers an async callback for updates to storage changes.
+func (ms *memStore) StorageBytesUpdate(cb func(int64)) {
+	ms.mu.Lock()
+	ms.scb = cb
+	ms.mu.Unlock()
 }
 
 // GetSeqFromTime looks for the first sequence number that has the message
@@ -109,7 +125,7 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (ms *memStore) enforceMsgLimit() {
-	if ms.config.MaxMsgs == 0 || ms.stats.Msgs <= ms.config.MaxMsgs {
+	if ms.config.MaxMsgs <= 0 || ms.stats.Msgs <= uint64(ms.config.MaxMsgs) {
 		return
 	}
 	ms.deleteFirstMsgOrPanic()
@@ -118,10 +134,10 @@ func (ms *memStore) enforceMsgLimit() {
 // Will check the bytes limit and drop msgs if needed.
 // Lock should be held.
 func (ms *memStore) enforceBytesLimit() {
-	if ms.config.MaxBytes == 0 || ms.stats.Bytes <= ms.config.MaxBytes {
+	if ms.config.MaxBytes <= 0 || ms.stats.Bytes <= uint64(ms.config.MaxBytes) {
 		return
 	}
-	for bs := ms.stats.Bytes; bs > ms.config.MaxBytes; bs = ms.stats.Bytes {
+	for bs := ms.stats.Bytes; bs > uint64(ms.config.MaxBytes); bs = ms.stats.Bytes {
 		ms.deleteFirstMsgOrPanic()
 	}
 }
@@ -161,12 +177,19 @@ func (ms *memStore) expireMsgs() {
 // Will return the number of purged messages.
 func (ms *memStore) Purge() uint64 {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 	purged := uint64(len(ms.msgs))
+	cb := ms.scb
+	bytes := int64(ms.stats.Bytes)
 	ms.stats.FirstSeq = ms.stats.LastSeq + 1
 	ms.stats.Bytes = 0
 	ms.stats.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)
+	ms.mu.Unlock()
+
+	if cb != nil {
+		cb(-bytes)
+	}
+
 	return purged
 }
 
@@ -193,23 +216,30 @@ func (ms *memStore) Lookup(seq uint64) (string, []byte, int64, error) {
 }
 
 // RemoveMsg will remove the message from this store.
+// Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) bool {
 	ms.mu.Lock()
-	ok := ms.removeMsg(seq)
+	removed := ms.removeMsg(seq)
 	ms.mu.Unlock()
-	return ok
+	return removed
 }
 
 // Removes the message referenced by seq.
 func (ms *memStore) removeMsg(seq uint64) bool {
+	var ss uint64
 	sm, ok := ms.msgs[seq]
 	if ok {
 		delete(ms.msgs, seq)
 		ms.stats.Msgs--
-		ms.stats.Bytes -= memStoreMsgSize(sm.subj, sm.msg)
+		ss = memStoreMsgSize(sm.subj, sm.msg)
+		ms.stats.Bytes -= ss
 		if seq == ms.stats.FirstSeq {
 			ms.stats.FirstSeq++
 		}
+	}
+	if ms.scb != nil {
+		delta := int64(ss)
+		ms.scb(-delta)
 	}
 	return ok
 }
