@@ -52,6 +52,14 @@ type JetStreamAccountLimits struct {
 	MaxObservables int
 }
 
+// JetStreamAccountStats returns current statistics about the account's JetStream usage.
+type JetStreamAccountStats struct {
+	Memory  uint64
+	Store   uint64
+	MsgSets int
+	Limits  JetStreamAccountLimits
+}
+
 const (
 	// OK response
 	OK = "+OK"
@@ -102,11 +110,15 @@ var allJsExports = []string{jsEnabledExport, jsInfoExport, jsCreateObservableExp
 // and internal sub for a msgSet, so we will direct link to the msgSet
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu      sync.Mutex
-	js      *jetStream
-	account *Account
-	limits  JetStreamAccountLimits
-	msgSets map[string]*MsgSet
+	mu            sync.Mutex
+	js            *jetStream
+	account       *Account
+	limits        JetStreamAccountLimits
+	memReserved   int64
+	memUsed       int64
+	storeReserved int64
+	storeUsed     int64
+	msgSets       map[string]*MsgSet
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
@@ -219,7 +231,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s := a.srv
 	a.mu.RUnlock()
 	if s == nil {
-		return fmt.Errorf("jetstream not enabled for account")
+		return fmt.Errorf("jetstream unknown account")
 	}
 	return s.JetStreamEnableAccount(a, limits)
 }
@@ -265,7 +277,7 @@ func (s *Server) JetStreamEnableAccount(a *Account, limits *JetStreamAccountLimi
 		importTo := strings.Replace(export, "*", a.Name, -1)
 		importFrom := strings.Replace(export, ".*.", tsep, -1)
 		if err := a.AddServiceImport(sys, importFrom, importTo); err != nil {
-			return fmt.Errorf("Error setting up jetstream service imports for global account: %v", err)
+			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 		}
 	}
 
@@ -276,13 +288,86 @@ func (s *Server) JetStreamEnableAccount(a *Account, limits *JetStreamAccountLimi
 	return nil
 }
 
+// UpdateJetStreamLimits will update the account limits for a JetStream enabled account.
+func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+	if s == nil {
+		return fmt.Errorf("jetstream unknown account")
+	}
+
+	js := s.getJetStream()
+	if js == nil {
+		return fmt.Errorf("jetstream not enabled")
+	}
+
+	jsa := js.lookupAccount(a)
+	if jsa == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+
+	if limits == nil {
+		limits = js.dynamicAccountLimits()
+	}
+
+	// Calculate the delta between what we have and what we want.
+	jsa.mu.Lock()
+	dl := diffCheckedLimits(&jsa.limits, limits)
+	jsaLimits := jsa.limits
+	jsa.mu.Unlock()
+
+	js.mu.Lock()
+	// Check the limits against existing reservations.
+	if err := js.sufficientResources(&dl); err != nil {
+		js.mu.Unlock()
+		return err
+	}
+	// FIXME(dlc) - If we drop and are over the max on memory or store, do we delete??
+	js.releaseResources(&jsaLimits)
+	js.reserveResources(limits)
+	js.mu.Unlock()
+
+	// Update
+	jsa.mu.Lock()
+	jsa.limits = *limits
+	jsa.mu.Unlock()
+
+	return nil
+}
+
+func diffCheckedLimits(a, b *JetStreamAccountLimits) JetStreamAccountLimits {
+	return JetStreamAccountLimits{
+		MaxMemory: b.MaxMemory - a.MaxMemory,
+		MaxStore:  b.MaxStore - a.MaxStore,
+	}
+}
+
+// JetStreamUsage reports on JetStream usage and limits for an account.
+func (a *Account) JetStreamUsage() JetStreamAccountStats {
+	a.mu.RLock()
+	jsa := a.js
+	a.mu.RUnlock()
+
+	var stats JetStreamAccountStats
+	if jsa != nil {
+		jsa.mu.Lock()
+		stats.Memory = uint64(jsa.memUsed)
+		stats.Store = uint64(jsa.storeUsed)
+		stats.MsgSets = len(jsa.msgSets)
+		stats.Limits = jsa.limits
+		jsa.mu.Unlock()
+	}
+	return stats
+}
+
 // DisableJetStream will disable JetStream for this account.
 func (a *Account) DisableJetStream() error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
 	if s == nil {
-		return fmt.Errorf("jetstream not enabled for account")
+		return fmt.Errorf("jetstream unknown account")
 	}
 	return s.JetStreamDisableAccount(a)
 }
@@ -291,6 +376,17 @@ func (s *Server) JetStreamDisableAccount(a *Account) error {
 	js := s.getJetStream()
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
+	}
+
+	jsa := js.lookupAccount(a)
+	if jsa == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+
+	// Remove service imports.
+	for _, export := range allJsExports {
+		from := strings.Replace(export, ".*.", tsep, -1)
+		a.removeServiceImport(from)
 	}
 
 	js.mu.Lock()
@@ -304,7 +400,6 @@ func (s *Server) JetStreamDisableAccount(a *Account) error {
 	js.mu.Unlock()
 
 	a.mu.Lock()
-	jsa := a.js
 	a.js = nil
 	a.mu.Unlock()
 
@@ -353,6 +448,68 @@ func (s *Server) getJetStream() *jetStream {
 	return js
 }
 
+// Updates accounting on in use memory and storage.
+func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
+	// TODO(dlc) - atomics? snapshot limits?
+	jsa.mu.Lock()
+	if storeType == MemoryStorage {
+		jsa.memUsed += delta
+	} else {
+		jsa.storeUsed += delta
+	}
+	jsa.mu.Unlock()
+}
+
+func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
+	var exceeded bool
+	jsa.mu.Lock()
+	if storeType == MemoryStorage {
+		if jsa.memUsed > jsa.limits.MaxMemory {
+			exceeded = true
+		}
+	} else {
+		if jsa.storeUsed > jsa.limits.MaxStore {
+			exceeded = true
+		}
+	}
+	jsa.mu.Unlock()
+	return exceeded
+}
+
+// Check if a new proposed msg set while exceed our account limits.
+// Lock should be held.
+func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
+	if jsa.limits.MaxMsgSets > 0 && len(jsa.msgSets) >= jsa.limits.MaxMsgSets {
+		return fmt.Errorf("maximum number of message sets reached")
+	}
+	// FIXME(dlc) - Add check here for replicas based on clustering.
+	if config.Replicas != 1 {
+		return fmt.Errorf("replicas setting of %d not allowed", config.Replicas)
+	}
+	// Check MaxObservables
+	if config.MaxObservables > 0 && config.MaxObservables > jsa.limits.MaxObservables {
+		return fmt.Errorf("maximum observables exceeds account limit")
+	} else {
+		config.MaxObservables = jsa.limits.MaxObservables
+	}
+	// Check storage, memory or disk.
+	if config.MaxBytes > 0 {
+		mb := config.MaxBytes * int64(config.Replicas)
+		switch config.Storage {
+		case MemoryStorage:
+			if jsa.memReserved+mb > jsa.limits.MaxMemory {
+				return fmt.Errorf("insufficient memory resources available")
+			}
+		case DiskStorage:
+			if jsa.storeReserved+mb > jsa.limits.MaxStore {
+				return fmt.Errorf("insufficient storage resources available")
+			}
+		}
+	}
+	return nil
+}
+
+// delete the JetStream resources.
 func (jsa *jsAccount) delete() {
 	var msgSets []*MsgSet
 	jsa.mu.Lock()
@@ -433,7 +590,7 @@ func (s *Server) isJsEnabledRequest(sub *subscription, c *client, subject, reply
 
 const (
 	// JetStreamStoreDir is the prefix we use.
-	JetStreamStoreDir = "nats-jetstream"
+	JetStreamStoreDir = "jetstream"
 	// JetStreamMaxStoreDefault is the default disk storage limit. 1TB
 	JetStreamMaxStoreDefault = 1024 * 1024 * 1024 * 1024
 	// JetStreamMaxMemDefault is only used when we can't determine system memory. 256MB
