@@ -52,25 +52,24 @@ func TestMemStoreBasics(t *testing.T) {
 }
 
 func TestMemStoreMsgLimit(t *testing.T) {
-	maxMsgs := uint64(10)
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxMsgs: maxMsgs})
+	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxMsgs: 10})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
 	subj, msg := "foo", []byte("Hello World")
-	for i := uint64(0); i < maxMsgs; i++ {
+	for i := 0; i < 10; i++ {
 		ms.StoreMsg(subj, msg)
 	}
 	stats := ms.Stats()
-	if stats.Msgs != maxMsgs {
-		t.Fatalf("Expected %d msgs, got %d", maxMsgs, stats.Msgs)
+	if stats.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
 	}
 	if _, err := ms.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	stats = ms.Stats()
-	if stats.Msgs != maxMsgs {
-		t.Fatalf("Expected %d msgs, got %d", maxMsgs, stats.Msgs)
+	if stats.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
 	}
 	if stats.LastSeq != 11 {
 		t.Fatalf("Expected the last sequence to be 11 now, but got %d", stats.LastSeq)
@@ -91,7 +90,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
 
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxBytes: maxBytes})
+	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
