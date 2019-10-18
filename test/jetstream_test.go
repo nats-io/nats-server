@@ -96,34 +96,42 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	if na := s.JetStreamNumAccounts(); na != 1 {
 		t.Fatalf("Expected 1 account, got %d", na)
 	}
-	acc, _ := s.LookupOrRegisterAccount("$FOO")
-	if err := s.JetStreamEnableAccount(acc, server.JetStreamAccountLimitsNoLimits); err != nil {
-		t.Fatalf("Did not expect error on enabling account: %v", err)
-	}
-	if na := s.JetStreamNumAccounts(); na != 2 {
-		t.Fatalf("Expected 2 accounts, got %d", na)
-	}
-	if err := s.JetStreamDisableAccount(acc); err != nil {
-		t.Fatalf("Did not expect error on disabling account: %v", err)
-	}
-	if na := s.JetStreamNumAccounts(); na != 1 {
-		t.Fatalf("Expected 1 account, got %d", na)
-	}
-	// We should get error if disabling something not enabled.
-	acc, _ = s.LookupOrRegisterAccount("$BAR")
-	if err := s.JetStreamDisableAccount(acc); err == nil {
-		t.Fatalf("Expected error on disabling account that was not enabled")
-	}
-	// Should get an error for trying to enable a non-registered account.
-	acc = server.NewAccount("$BAZ")
-	if err := s.JetStreamEnableAccount(acc, server.JetStreamAccountLimitsNoLimits); err == nil {
-		t.Fatalf("Expected error on enabling account that was not registered")
-	}
+
 	if err := s.JetStreamDisableAccount(s.GlobalAccount()); err != nil {
 		t.Fatalf("Did not expect error on disabling account: %v", err)
 	}
 	if na := s.JetStreamNumAccounts(); na != 0 {
 		t.Fatalf("Expected no accounts, got %d", na)
+	}
+	// Make sure we unreserved resources.
+	if rm, rd, err := s.JetStreamReservedResources(); err != nil {
+		t.Fatalf("Unexpected error requesting jetstream reserved resources: %v", err)
+	} else if rm != 0 || rd != 0 {
+		t.Fatalf("Expected reserved memory and store to be 0, got %v and %v", server.FriendlyBytes(rm), server.FriendlyBytes(rd))
+	}
+
+	acc, _ := s.LookupOrRegisterAccount("$FOO")
+	if err := acc.EnableJetStream(nil); err != nil {
+		t.Fatalf("Did not expect error on enabling account: %v", err)
+	}
+	if na := s.JetStreamNumAccounts(); na != 1 {
+		t.Fatalf("Expected 1 account, got %d", na)
+	}
+	if err := acc.DisableJetStream(); err != nil {
+		t.Fatalf("Did not expect error on disabling account: %v", err)
+	}
+	if na := s.JetStreamNumAccounts(); na != 0 {
+		t.Fatalf("Expected no accounts, got %d", na)
+	}
+	// We should get error if disabling something not enabled.
+	acc, _ = s.LookupOrRegisterAccount("$BAR")
+	if err := acc.DisableJetStream(); err == nil {
+		t.Fatalf("Expected error on disabling account that was not enabled")
+	}
+	// Should get an error for trying to enable a non-registered account.
+	acc = server.NewAccount("$BAZ")
+	if err := acc.EnableJetStream(nil); err == nil {
+		t.Fatalf("Expected error on enabling account that was not registered")
 	}
 }
 
@@ -176,7 +184,7 @@ func expectOKResponse(t *testing.T, m *nats.Msg) {
 	if m == nil {
 		t.Fatalf("No response, possible timeout?")
 	}
-	if string(m.Data) != server.JsOK {
+	if string(m.Data) != server.OK {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", m.Data)
 	}
 }
@@ -211,7 +219,7 @@ func TestJetStreamRequestEnabled(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	resp, _ := nc.Request(server.JsEnabled, nil, time.Second)
+	resp, _ := nc.Request(server.JetStreamEnabled, nil, time.Second)
 	expectOKResponse(t, resp)
 }
 
@@ -511,12 +519,9 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
 	}
 
-	// For normal work queue semantics, you send requests to the subject with message set and observable name.
-	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
-
 	getNext := func(seqno int) {
 		t.Helper()
-		nextMsg, err := nc.Request(reqMsgSubj, nil, time.Second)
+		nextMsg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -665,12 +670,9 @@ func TestJetStreamWorkQueuePartitioning(t *testing.T) {
 		t.Fatalf("Expected to be starting at sequence 1")
 	}
 
-	// For normal work queue semantics, you send requests to the subject with message set and observable name.
-	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
-
 	getNext := func(seqno int) {
 		t.Helper()
-		nextMsg, err := nc.Request(reqMsgSubj, nil, time.Second)
+		nextMsg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -727,15 +729,13 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
 	}
 
-	// For normal work queue semantics, you send requests to the subject with message set and observable name.
-	// We will do this to start it off then use ack+next to get other messages.
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
-
 	sub, _ := nc.SubscribeSync(nats.NewInbox())
 	defer sub.Unsubscribe()
 
 	// Kick things off.
-	nc.PublishRequest(reqNextMsgSubj, sub.Subject, nil)
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	// We will do this to start it off then use ack+next to get other messages.
+	nc.PublishRequest(o.RequestNextMsgSubject(), sub.Subject, nil)
 
 	for i := 0; i < toSend; i++ {
 		m, err := sub.NextMsg(time.Second)
@@ -785,16 +785,14 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
 	}
 
-	// For normal work queue semantics, you send requests to the subject with message set and observable name.
-	// We will do this to start it off then use ack+next to get other messages.
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
-
 	sub, _ := nc.SubscribeSync(nats.NewInbox())
 	defer sub.Unsubscribe()
 
+	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	// We will do this to start it off then use ack+next to get other messages.
 	// Kick things off with batch size of 50.
 	batchSize := 50
-	nc.PublishRequest(reqNextMsgSubj, sub.Subject, []byte(strconv.Itoa(batchSize)))
+	nc.PublishRequest(o.RequestNextMsgSubject(), sub.Subject, []byte(strconv.Itoa(batchSize)))
 
 	// We should receive batchSize with no acks or additional requests.
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
@@ -925,7 +923,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 	sub, _ := nc.SubscribeSync(nats.NewInbox())
 	defer sub.Unsubscribe()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
+	reqNextMsgSubj := o.RequestNextMsgSubject()
 
 	// Consume all the messages. But do not ack.
 	for i := 0; i < toSend; i++ {
@@ -1011,11 +1009,9 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 	}
 	defer o.Delete()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
-
 	getMsg := func(sseq, dseq int) *nats.Msg {
 		t.Helper()
-		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1080,11 +1076,9 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	}
 	defer o.Delete()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, o.Name())
-
 	getMsg := func(sseq, dseq int) *nats.Msg {
 		t.Helper()
-		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1580,10 +1574,8 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 	}
 	defer o.Delete()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "WQ")
-
 	for i := uint64(1); i <= 10; i++ {
-		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1632,10 +1624,8 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 	}
 	defer o.Delete()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "WQ")
-
 	for i := uint64(1); i <= 10; i++ {
-		m, err := nc.Request(reqNextMsgSubj, nil, time.Second)
+		m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1654,7 +1644,7 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 			t.Fatalf("Error sending nak: %v", err)
 		}
 		nc.Flush()
-		if _, err := nc.Request(reqNextMsgSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
+		if _, err := nc.Request(o.RequestNextMsgSubject(), nil, 10*time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Did not expect new delivery on nak of %d", seq)
 		}
 	}
@@ -1906,11 +1896,9 @@ func TestJetStreamObservableReplayRate(t *testing.T) {
 	}
 	defer o.Delete()
 
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, "DC", "PM")
-
 	for i := 0; i < totalMsgs; i++ {
 		start := time.Now()
-		if _, err := nc.Request(reqNextMsgSubj, nil, time.Second); err != nil {
+		if _, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		gap := time.Since(start)
@@ -1964,4 +1952,65 @@ func TestJetStreamObservableReplayQuit(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamSystemLimits(t *testing.T) {
+	s := RunRandClientPortServer()
+	defer s.Shutdown()
+
+	if _, _, err := s.JetStreamReservedResources(); err == nil {
+		t.Fatalf("Expected error requesting jetstream reserved resources when not enabled")
+	}
+	// Create some accounts.
+	facc, _ := s.LookupOrRegisterAccount("FOO")
+	bacc, _ := s.LookupOrRegisterAccount("BAR")
+	zacc, _ := s.LookupOrRegisterAccount("BAZ")
+
+	jsconfig := &server.JetStreamConfig{MaxMemory: 1024, MaxStore: 8192}
+	if err := s.EnableJetStream(jsconfig); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if rm, rd, err := s.JetStreamReservedResources(); err != nil {
+		t.Fatalf("Unexpected error requesting jetstream reserved resources: %v", err)
+	} else if rm != 0 || rd != 0 {
+		t.Fatalf("Expected reserved memory and store to be 0, got %d and %d", rm, rd)
+	}
+
+	limits := func(mem int64, store int64) *server.JetStreamAccountLimits {
+		return &server.JetStreamAccountLimits{
+			MaxMemory:      mem,
+			MaxStore:       store,
+			MaxMsgSets:     -1,
+			MaxObservables: -1,
+		}
+	}
+
+	// Create a new account.
+	if err := facc.EnableJetStream(limits(24, 192)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Use up rest of our resources in memory
+	if err := bacc.EnableJetStream(limits(1000, 0)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now ask for more memory. Should error.
+	if err := zacc.EnableJetStream(limits(1000, 0)); err == nil {
+		t.Fatalf("Expected an error when exhausting memory resource limits")
+	}
+	// Disk too.
+	if err := zacc.EnableJetStream(limits(0, 10000)); err == nil {
+		t.Fatalf("Expected an error when exhausting memory resource limits")
+	}
+	facc.DisableJetStream()
+	bacc.DisableJetStream()
+	zacc.DisableJetStream()
+
+	// Make sure we unreserved resources.
+	if rm, rd, err := s.JetStreamReservedResources(); err != nil {
+		t.Fatalf("Unexpected error requesting jetstream reserved resources: %v", err)
+	} else if rm != 0 || rd != 0 {
+		t.Fatalf("Expected reserved memory and store to be 0, got %v and %v", server.FriendlyBytes(rm), server.FriendlyBytes(rd))
+	}
 }

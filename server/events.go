@@ -1239,8 +1239,7 @@ func (s *Server) inboxReply(sub *subscription, c *client, subject, reply string,
 
 // Copied from go client.
 // We could use serviceReply here instead to save some code.
-// I prefer these semantics for the moment, when tracing you know
-// what this is.
+// I prefer these semantics for the moment, when tracing you know what this is.
 const (
 	InboxPrefix        = "$SYS._INBOX."
 	inboxPrefixLen     = len(InboxPrefix)

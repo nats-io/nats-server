@@ -1615,7 +1615,7 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 	done := make(chan bool)
 
 	batchSizeMsg := []byte(strconv.Itoa(batchSize))
-	reqNextMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+	reqNextMsgSubj := o.RequestNextMsgSubject()
 
 	for i := 0; i < numWorkers; i++ {
 		nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())

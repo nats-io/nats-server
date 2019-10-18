@@ -560,7 +560,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	defer nc.Close()
 
 	// For normal work queue semantics, you send requests to the subject with message set and observable name.
-	reqMsgSubj := fmt.Sprintf("%s.%s.%s", server.JsReqPre, mname, oname)
+	reqMsgSubj := o.RequestNextMsgSubject()
 
 	numWorkers := 25
 	counts := make([]int32, numWorkers)
@@ -612,7 +612,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	wg.Wait()
 
 	target := toSend / numWorkers
-	delta := target / 2
+	delta := target/2 + 5
 	low, high := int32(target-delta), int32(target+delta)
 
 	for i := 0; i < numWorkers; i++ {
