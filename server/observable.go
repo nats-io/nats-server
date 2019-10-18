@@ -62,7 +62,7 @@ const (
 // Ack responses. Note that a nil or no payload is same as AckAck
 var (
 	// Ack
-	AckAck = []byte(JsOK) // nil or no payload to ack subject also means ACK
+	AckAck = []byte(OK) // nil or no payload to ack subject also means ACK
 	// Nack
 	AckNak = []byte("-NAK")
 	// Progress indicator
@@ -73,30 +73,31 @@ var (
 
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
-	mu         sync.Mutex
-	mset       *MsgSet
-	name       string
-	sseq       uint64
-	dseq       uint64
-	adflr      uint64
-	asflr      uint64
-	dsubj      string
-	reqSub     *subscription
-	ackSub     *subscription
-	ackReplyT  string
-	pending    map[uint64]int64
-	ptmr       *time.Timer
-	rdq        []uint64
-	rdc        map[uint64]uint64
-	waiting    []string
-	config     ObservableConfig
-	active     bool
-	replay     bool
-	atmr       *time.Timer
-	nointerest int
-	athresh    int
-	achk       time.Duration
-	qch        chan struct{}
+	mu          sync.Mutex
+	mset        *MsgSet
+	name        string
+	sseq        uint64
+	dseq        uint64
+	adflr       uint64
+	asflr       uint64
+	dsubj       string
+	reqSub      *subscription
+	ackSub      *subscription
+	ackReplyT   string
+	nextMsgSubj string
+	pending     map[uint64]int64
+	ptmr        *time.Timer
+	rdq         []uint64
+	rdc         map[uint64]uint64
+	waiting     []string
+	config      ObservableConfig
+	active      bool
+	replay      bool
+	atmr        *time.Timer
+	nointerest  int
+	athresh     int
+	achk        time.Duration
+	qch         chan struct{}
 }
 
 const (
@@ -229,8 +230,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// We will remember the template to generate replaies with sequence numbers and use
 	// that to scanf them back in.
 	cn := mset.cleanName()
-	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JsAckPre, cn, o.name)
-	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JsAckPre, cn, o.name)
+	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JetStreamAckPre, cn, o.name)
+	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JetStreamAckPre, cn, o.name)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
@@ -238,8 +239,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 	// Setup the internal sub for next message requests.
 	if !o.isPushMode() {
-		reqSubj := fmt.Sprintf("%s.%s.%s", JsReqPre, cn, o.name)
-		if sub, err := mset.subscribeInternal(reqSubj, o.processNextMsgReq); err != nil {
+		o.nextMsgSubj = fmt.Sprintf("%s.%s.%s", JetStreamRequestNextPre, cn, o.name)
+		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			return nil, err
 		} else {
 			o.reqSub = sub
@@ -1002,4 +1003,11 @@ func (o *Observable) SetActiveCheckParams(achk time.Duration, thresh int) error 
 	o.atmr = time.AfterFunc(o.achk, o.checkActive)
 	o.mu.Unlock()
 	return nil
+}
+
+// RequestNextMsgSubject returns the subject to request the next message when in pull or worker mode.
+// Returns empty otherwise.1
+
+func (o *Observable) RequestNextMsgSubject() string {
+	return o.nextMsgSubj
 }
