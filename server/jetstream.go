@@ -35,62 +35,66 @@ type JetStreamConfig struct {
 
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
-	mu       sync.RWMutex
-	srv      *Server
-	config   JetStreamConfig
-	accounts map[*Account]*jsAccount
-	// TODO(dlc) - need to track
-	// memUsage  int64
-	// diskUsage int64
+	mu            sync.RWMutex
+	srv           *Server
+	config        JetStreamConfig
+	accounts      map[*Account]*jsAccount
+	memReserved   int64
+	storeReserved int64
 }
 
 // TODO(dlc) - decide on what these look like for single vs cluster vs supercluster.
 // TODO(dlc) - need to track and rollup against server limits, etc.
 type JetStreamAccountLimits struct {
-	MaxMemory  int64
-	MaxStore   int64
-	MaxMsgSets int
+	MaxMemory      int64
+	MaxStore       int64
+	MaxMsgSets     int
+	MaxObservables int
 }
 
 const (
 	// OK response
-	JsOK = "+OK"
+	OK = "+OK"
 
-	// JsEnabled allows a user to dynamically check if JetStream is enabled
-	// with a simple request.
-	// Will return +OK on success and will timeout if not imported.
-	JsEnabledExport = "$JS.*.ENABLED"
-	JsEnabled       = "$JS.ENABLED"
+	// JetStreamEnabled allows a user to dynamically check if JetStream is enabled for an account.
+	// Will return +OK on success, otherwise will timeout.
+	JetStreamEnabled = "$JS.ENABLED"
+	jsEnabledExport  = "$JS.*.ENABLED"
 
-	// jsInfo is for obtaining general information about JetStream for this account.
+	// JetStreamInfo is for obtaining general information about JetStream for this account.
 	// Will return JSON response.
-	JsInfoExport = "$JS.*.INFO"
-	JsInfo       = "$JS.INFO"
+	JetStreamInfo = "$JS.INFO"
+	jsInfoExport  = "$JS.*.INFO"
 
-	// JsCreatObservable is the endpoint to create observers for a message set.
+	// JetStreamCreateObservable is the endpoint to create observers for a message set.
 	// Will return +OK on success and -ERR on failure.
-	JsCreateObservableExport = "$JS.*.OBSERVABLE.CREATE"
-	JsCreateObservable       = "$JS.OBSERVABLE.CREATE"
+	JetStreamCreateObservable = "$JS.OB.CREATE"
+	jsCreateObservableExport  = "$JS.*.OBS.CREATE"
 
-	// JsCreatMsgSet is the endpoint to create message sets.
-	// Will return +OK on success and -ERR on failure.
-	JsCreateMsgSetExport = "$JS.*.MSGSET.CREATE"
-	JsCreateMsgSet       = "$JS.MSGSET.CREATE"
-
-	// JsMsgSetInfo is for obtaining general information about a named message set.
+	// JsObservableInfo is for obtaining general information about an observable.
 	// Will return JSON response.
-	JsMsgSetInfoExport = "$JS.*.MSGSET.INFO"
-	JsMsgSetInfo       = "$JS.MSGSET.INFO"
+	JetStreamObservableInfo = "$JS.OBS.INFO"
+	jsObservableInfoExport  = "$JS.*.OBS.INFO"
 
-	// JsAckPre is the prefix for the ack stream coming back to an observable.
-	JsAckPre = "$JS.A"
+	// JetStreamCreateMsgSet is the endpoint to create message sets.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamCreateMsgSet = "$JS.MSGSET.CREATE"
+	jsCreateMsgSetExport  = "$JS.*.MSGSET.CREATE"
 
-	// JsReqPre is the prefix for the request next message(s) for an observable in worker/pull mode.
-	JsReqPre = "$JS.RN"
+	// JetStreamMsgSetInfo is for obtaining general information about a named message set.
+	// Will return JSON response.
+	JetStreamMsgSetInfo = "$JS.MSGSET.INFO"
+	jsMsgSetInfoExport  = "$JS.*.MSGSET.INFO"
+
+	// JetStreamAckPre is the prefix for the ack stream coming back to an observable.
+	JetStreamAckPre = "$JS.A"
+
+	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
+	JetStreamRequestNextPre = "$JS.RN"
 )
 
 // For easier handling of exports and imports.
-var allJsExports = []string{JsEnabledExport, JsInfoExport, JsCreateObservableExport, JsCreateMsgSetExport, JsMsgSetInfoExport}
+var allJsExports = []string{jsEnabledExport, jsInfoExport, jsCreateObservableExport, jsObservableInfoExport, jsCreateMsgSetExport, jsMsgSetInfoExport}
 
 // This represents a jetstream  enabled account.
 // Worth noting that we include the js ptr, this is because
@@ -105,11 +109,9 @@ type jsAccount struct {
 	msgSets map[string]*MsgSet
 }
 
-// EnableJetStream will enable JetStream support on this server with
-// the given configuration. A nil configuration will dynamically choose
-// the limits and temporary file storage directory.
+// EnableJetStream will enable JetStream support on this server with the given configuration.
+// A nil configuration will dynamically choose the limits and temporary file storage directory.
 // If this server is part of a cluster, a system account will need to be defined.
-// This allows the server to send and receive messages.
 func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	s.mu.Lock()
 	if !s.standAloneMode() {
@@ -120,16 +122,22 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		s.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled")
 	}
-	s.Noticef("Starting jetstream")
+	s.Noticef("Starting JetStream")
 	if config == nil {
-		s.Debugf("Jetstream creating dynamic configuration - 75%% system memory, %s disk", friendlyBytes(JetStreamMaxStoreDefault))
+		s.Debugf("JetStream creating dynamic configuration - 75%% system memory, %s disk", FriendlyBytes(JetStreamMaxStoreDefault))
 		config = s.dynJetStreamConfig()
 	}
-	s.js = &jetStream{srv: s, config: *config, accounts: make(map[*Account]*jsAccount)}
+	// Copy, don't change callers.
+	cfg := *config
+	if cfg.StoreDir == "" {
+		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+	}
+
+	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[*Account]*jsAccount)}
 	s.mu.Unlock()
 
-	if stat, err := os.Stat(config.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(config.StoreDir, 0755); err != nil {
+	if stat, err := os.Stat(cfg.StoreDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(cfg.StoreDir, 0755); err != nil {
 			return fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else {
@@ -137,7 +145,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		if stat == nil || !stat.IsDir() {
 			return fmt.Errorf("storage directory is not a directory")
 		}
-		tmpfile, err := ioutil.TempFile(config.StoreDir, "_test_")
+		tmpfile, err := ioutil.TempFile(cfg.StoreDir, "_test_")
 		if err != nil {
 			return fmt.Errorf("storage directory is not writable")
 		}
@@ -152,34 +160,30 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	}
 
 	// Setup our internal subscriptions.
-	if _, err := s.sysSubscribe(JsEnabledExport, s.isJsEnabledRequest); err != nil {
+	if _, err := s.sysSubscribe(jsEnabledExport, s.isJsEnabledRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 
-	s.Noticef("----------- jetstream config -----------")
-	s.Noticef("  MaxMemory:  %s", friendlyBytes(config.MaxMemory))
-	s.Noticef("  MaxStore:   %s", friendlyBytes(config.MaxStore))
-	s.Noticef("  StoreDir:   %q", config.StoreDir)
+	s.Noticef("----------- JETSTREAM (Beta) -----------")
+	s.Noticef("  Max Memory:      %s", FriendlyBytes(cfg.MaxMemory))
+	s.Noticef("  Max Storage:     %s", FriendlyBytes(cfg.MaxStore))
+	s.Noticef("  Store Directory: %q", cfg.StoreDir)
 
-	// If not in operator mode, setup our internal system exports if needed.
-	// If we are in operator mode, the system account will need to have them
-	// added externally.
-	if !s.inOperatorMode() {
-		sacc := s.SystemAccount()
-		// FIXME(dlc) - Should we lock these down?
-		s.Debugf("  Exports:")
-		for _, export := range allJsExports {
-			s.Debugf("     %s", export)
-			if err := sacc.AddServiceExport(export, nil); err != nil {
-				return fmt.Errorf("Error setting up jetstream service exports: %v", err)
-			}
+	// Setup our internal system exports.
+	sacc := s.SystemAccount()
+	// FIXME(dlc) - Should we lock these down?
+	s.Debugf("  Exports:")
+	for _, export := range allJsExports {
+		s.Debugf("     %s", export)
+		if err := sacc.AddServiceExport(export, nil); err != nil {
+			return fmt.Errorf("Error setting up jetstream service exports: %v", err)
 		}
 	}
 	s.Noticef("----------------------------------------")
 
 	// If we have no configured accounts setup then setup imports on global account.
 	if s.globalAccountOnly() && !s.inOperatorMode() {
-		if err := s.JetStreamEnableAccount(s.GlobalAccount(), JetStreamAccountLimitsNoLimits); err != nil {
+		if err := s.GlobalAccount().EnableJetStream(nil); err != nil {
 			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
 	}
@@ -208,8 +212,17 @@ func (s *Server) JetStreamConfig() *JetStreamConfig {
 	return c
 }
 
-// JetStreamAccountLimitsNoLimits defines no limits for the given account.
-var JetStreamAccountLimitsNoLimits = &JetStreamAccountLimits{-1, -1, -1}
+// EnableJetStream will enable JetStream on this account.
+// This is a helper for JetStreamEnableAccount.
+func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+	if s == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+	return s.JetStreamEnableAccount(a, limits)
+}
 
 // JetStreamEnableAccount enables jetstream capabilties for the given account with the defined limits.
 func (s *Server) JetStreamEnableAccount(a *Account, limits *JetStreamAccountLimits) error {
@@ -221,33 +234,57 @@ func (s *Server) JetStreamEnableAccount(a *Account, limits *JetStreamAccountLimi
 		return fmt.Errorf("jetstream unknown account")
 	}
 
-	// TODO(dlc) - Should we have accounts marked to allow?
-	// TODO(dlc) - Should we check and warn if these limits are above the server? Maybe only if single server?
+	// No limits means we dynamically set up limits.
+	if limits == nil {
+		limits = js.dynamicAccountLimits()
+	}
 
 	js.mu.Lock()
+	// Check the limits against existing reservations.
+	if err := js.sufficientResources(limits); err != nil {
+		js.mu.Unlock()
+		return err
+	}
 	if _, ok := js.accounts[a]; ok {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
 	}
 	jsa := &jsAccount{js: js, account: a, limits: *limits, msgSets: make(map[string]*MsgSet)}
 	js.accounts[a] = jsa
+	js.reserveResources(limits)
 	js.mu.Unlock()
 
-	// If we are not in operator mode we should create the proper imports here.
-	if !s.inOperatorMode() {
-		sys := s.SystemAccount()
-		for _, export := range allJsExports {
-			importTo := strings.Replace(export, "*", a.Name, -1)
-			importFrom := strings.Replace(export, ".*.", tsep, -1)
-			//	fmt.Printf("export is %q %q \n", importTo, importFrom)
-			if err := a.AddServiceImport(sys, importFrom, importTo); err != nil {
-				return fmt.Errorf("Error setting up jetstream service imports for global account: %v", err)
-			}
+	// Stamp inside account as well.
+	a.mu.Lock()
+	a.js = jsa
+	a.mu.Unlock()
+
+	// Create the proper imports here.
+	sys := s.SystemAccount()
+	for _, export := range allJsExports {
+		importTo := strings.Replace(export, "*", a.Name, -1)
+		importFrom := strings.Replace(export, ".*.", tsep, -1)
+		if err := a.AddServiceImport(sys, importFrom, importTo); err != nil {
+			return fmt.Errorf("Error setting up jetstream service imports for global account: %v", err)
 		}
 	}
 
-	s.Debugf("Enabled jetstream for account: %q", a.Name)
+	s.Debugf("Enabled JetStream for %q", a.Name)
+	s.Debugf("  Max Memory:      %s", FriendlyBytes(limits.MaxMemory))
+	s.Debugf("  Max Storage:     %s", FriendlyBytes(limits.MaxStore))
+
 	return nil
+}
+
+// DisableJetStream will disable JetStream for this account.
+func (a *Account) DisableJetStream() error {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+	if s == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+	return s.JetStreamDisableAccount(a)
 }
 
 func (s *Server) JetStreamDisableAccount(a *Account) error {
@@ -257,12 +294,21 @@ func (s *Server) JetStreamDisableAccount(a *Account) error {
 	}
 
 	js.mu.Lock()
-	defer js.mu.Unlock()
-
-	if _, ok := js.accounts[a]; !ok {
+	if jsa, ok := js.accounts[a]; !ok {
+		js.mu.Unlock()
 		return fmt.Errorf("jetstream not enabled for account")
+	} else {
+		delete(js.accounts, a)
+		js.releaseResources(&jsa.limits)
 	}
-	delete(js.accounts, a)
+	js.mu.Unlock()
+
+	a.mu.Lock()
+	jsa := a.js
+	a.js = nil
+	a.mu.Unlock()
+
+	jsa.delete()
 
 	return nil
 }
@@ -273,20 +319,9 @@ func (a *Account) JetStreamEnabled() bool {
 		return false
 	}
 	a.mu.RLock()
-	s := a.srv
+	enabled := a.js != nil
 	a.mu.RUnlock()
-	if s == nil {
-		return false
-	}
-	js := s.getJetStream()
-	if js == nil {
-		return false
-	}
-	js.mu.Lock()
-	_, ok := js.accounts[a]
-	js.mu.Unlock()
-
-	return ok
+	return enabled
 }
 
 // JetStreamNumAccounts returns the number of enabled accounts this server is tracking.
@@ -300,11 +335,34 @@ func (s *Server) JetStreamNumAccounts() int {
 	return len(js.accounts)
 }
 
+// JetStreamReservedResources returns the reserved resources if JetStream is enabled.
+func (s *Server) JetStreamReservedResources() (int64, int64, error) {
+	js := s.getJetStream()
+	if js == nil {
+		return -1, -1, fmt.Errorf("jetstream not enabled")
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return js.memReserved, js.storeReserved, nil
+}
+
 func (s *Server) getJetStream() *jetStream {
 	s.mu.Lock()
 	js := s.js
 	s.mu.Unlock()
 	return js
+}
+
+func (jsa *jsAccount) delete() {
+	var msgSets []*MsgSet
+	jsa.mu.Lock()
+	for _, ms := range jsa.msgSets {
+		msgSets = append(msgSets, ms)
+	}
+	jsa.mu.Unlock()
+	for _, ms := range msgSets {
+		ms.Delete()
+	}
 }
 
 func (js *jetStream) lookupAccount(a *Account) *jsAccount {
@@ -314,10 +372,62 @@ func (js *jetStream) lookupAccount(a *Account) *jsAccount {
 	return jsa
 }
 
+// Will dynamically create limits for this account.
+func (js *jetStream) dynamicAccountLimits() *JetStreamAccountLimits {
+	js.mu.RLock()
+	// For now used all resources. Mostly meant for $G in non-account mode.
+	limits := &JetStreamAccountLimits{js.config.MaxMemory, js.config.MaxStore, -1, -1}
+	js.mu.RUnlock()
+	return limits
+}
+
+// Check to see if we have enough system resources for this account.
+// Lock should be held.
+func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
+	if limits == nil {
+		return nil
+	}
+	if js.memReserved+limits.MaxMemory > js.config.MaxMemory {
+		return fmt.Errorf("insufficient memory resources available")
+	}
+	if js.storeReserved+limits.MaxStore > js.config.MaxStore {
+		return fmt.Errorf("insufficient storage resources available")
+	}
+	return nil
+}
+
+// This will (blindly) reserve the respources requested.
+// Lock should be held.
+func (js *jetStream) reserveResources(limits *JetStreamAccountLimits) error {
+	if limits == nil {
+		return nil
+	}
+	if limits.MaxMemory > 0 {
+		js.memReserved += limits.MaxMemory
+	}
+	if limits.MaxStore > 0 {
+		js.storeReserved += limits.MaxStore
+	}
+	return nil
+}
+
+func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
+	if limits == nil {
+		return nil
+	}
+	if limits.MaxMemory > 0 {
+		js.memReserved -= limits.MaxMemory
+	}
+	if limits.MaxStore > 0 {
+		js.storeReserved -= limits.MaxStore
+	}
+	return nil
+}
+
 // Request to check if jetstream is enabled.
 func (s *Server) isJsEnabledRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c != nil && c.acc != nil && c.acc.JetStreamEnabled() {
-		s.sendInternalAccountMsg(c.acc, reply, JsOK)
+		s.sendInternalAccountMsg(c.acc, reply, OK)
 	}
 }
 
@@ -346,7 +456,7 @@ func (s *Server) dynJetStreamConfig() *JetStreamConfig {
 
 // friendlyBytes returns a string with the given bytes int64
 // represented as a size, such as 1KB, 10MB, etc...
-func friendlyBytes(bytes int64) string {
+func FriendlyBytes(bytes int64) string {
 	fbytes := float64(bytes)
 	base := 1024
 	pre := []string{"K", "M", "G", "T", "P", "E"}
