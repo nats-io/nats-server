@@ -59,6 +59,7 @@ type Account struct {
 	lleafs       []*client
 	imports      importMap
 	exports      exportMap
+	js           *jsAccount
 	limits
 	nae         int32
 	pruning     bool

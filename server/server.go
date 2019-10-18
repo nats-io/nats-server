@@ -560,9 +560,22 @@ func (s *Server) inOperatorMode() bool {
 }
 
 // Determines if we are in pre NATS 2.0 setup with no accounts.
-// Uses opts instead of server lock.
 func (s *Server) globalAccountOnly() bool {
-	return len(s.getOpts().Accounts) == 0
+	var hasOthers bool
+
+	s.mu.Lock()
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		// Ignore global and system
+		if acc == s.gacc || (s.sys != nil && acc == s.sys.account) {
+			return true
+		}
+		hasOthers = true
+		return false
+	})
+	s.mu.Unlock()
+
+	return !hasOthers
 }
 
 // Determines if this server is in standalone mode, meaning no routes or gateways or leafnodes.
