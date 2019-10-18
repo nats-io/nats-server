@@ -166,6 +166,12 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// Hold mset lock here.
 	mset.mu.Lock()
 
+	// Check for any limits.
+	if mset.config.MaxObservables > 0 && len(mset.obs) >= mset.config.MaxObservables {
+		mset.mu.Unlock()
+		return nil, fmt.Errorf("maximum observables limit reached")
+	}
+
 	// Check on msgset type conflicts.
 	switch mset.config.Retention {
 	case WorkQueuePolicy:
@@ -823,7 +829,7 @@ func (o *Observable) NextSeq() uint64 {
 // This will select the store seq to start with based on the
 // partition subject.
 func (o *Observable) selectPartitionLast() {
-	stats := o.mset.Stats()
+	stats := o.mset.store.Stats()
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
 		subj, _, _, err := o.mset.store.Lookup(seq)
@@ -839,7 +845,7 @@ func (o *Observable) selectPartitionLast() {
 
 // Will select the starting sequence.
 func (o *Observable) selectStartingSeqNo() {
-	stats := o.mset.Stats()
+	stats := o.mset.store.Stats()
 	noTime := time.Time{}
 	if o.config.MsgSetSeq == 0 {
 		if o.config.DeliverAll {
