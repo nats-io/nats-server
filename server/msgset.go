@@ -238,7 +238,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 	// Send Ack here.
 	if doAck && len(reply) > 0 {
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, []byte(JsOK), nil, 0}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, AckAck, nil, 0}
 	}
 
 	mset.signalObservers()
