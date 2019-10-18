@@ -24,15 +24,16 @@ import (
 // MsgSetConfig will determine the name, subjects and retention policy
 // for a given message set. If subjects is empty the name will be used.
 type MsgSetConfig struct {
-	Name      string
-	Subjects  []string
-	Retention RetentionPolicy
-	MaxMsgs   uint64
-	MaxBytes  uint64
-	MaxAge    time.Duration
-	Storage   StorageType
-	Replicas  int
-	NoAck     bool
+	Name           string
+	Subjects       []string
+	Retention      RetentionPolicy
+	MaxObservables int
+	MaxMsgs        int64
+	MaxBytes       int64
+	MaxAge         time.Duration
+	Storage        StorageType
+	Replicas       int
+	NoAck          bool
 }
 
 // RetentionPolicy determines how messages in a set are retained.
@@ -80,21 +81,24 @@ func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, 
 		return nil, fmt.Errorf("jetstream not enabled for account")
 	}
 
-	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.
-	if config.Replicas == 0 {
-		config.Replicas = 1
-	}
-	if config.Replicas > MsgSetMaxReplicas {
-		return nil, fmt.Errorf("maximum replicas is %d", MsgSetMaxReplicas)
+	cfg, err := checkMsgSetCfg(config)
+	if err != nil {
+		return nil, err
 	}
 
 	jsa.mu.Lock()
-	if _, ok := jsa.msgSets[config.Name]; ok {
+	if _, ok := jsa.msgSets[cfg.Name]; ok {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("message set name already taken")
+		return nil, fmt.Errorf("message set name already in use")
 	}
+	// Check for limits.
+	if err := jsa.checkLimits(&cfg); err != nil {
+		jsa.mu.Unlock()
+		return nil, err
+	}
+	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
-	mset := &MsgSet{jsa: jsa, config: *config, client: c, obs: make(map[string]*Observable)}
+	mset := &MsgSet{jsa: jsa, config: cfg, client: c, obs: make(map[string]*Observable)}
 	mset.sg = sync.NewCond(&mset.mu)
 
 	if len(mset.config.Subjects) == 0 {
@@ -121,6 +125,28 @@ func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, 
 	}
 
 	return mset, nil
+}
+
+func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
+	if config == nil || config.Name == _EMPTY_ {
+		return MsgSetConfig{}, fmt.Errorf("message set configuration invalid")
+	}
+	cfg := *config
+
+	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.
+	if cfg.Replicas == 0 {
+		cfg.Replicas = 1
+	}
+	if cfg.Replicas > MsgSetMaxReplicas {
+		return cfg, fmt.Errorf("maximum replicas is %d", MsgSetMaxReplicas)
+	}
+	if cfg.MaxMsgs == 0 {
+		cfg.MaxMsgs = -1
+	}
+	if cfg.MaxBytes == 0 {
+		cfg.MaxBytes = -1
+	}
+	return cfg, nil
 }
 
 // JetStreamDeleteMsgSet will delete a message set.
@@ -211,6 +237,8 @@ func (mset *MsgSet) setupStore() error {
 	case DiskStorage:
 		return fmt.Errorf("NO IMPL")
 	}
+	jsa, st := mset.jsa, mset.config.Storage
+	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
 	return nil
 }
 
@@ -219,29 +247,37 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	store := mset.store
 	c := mset.client
 	doAck := !mset.config.NoAck
+	jsa := mset.jsa
+	stype := mset.config.Storage
 	mset.mu.Unlock()
 
 	if c == nil {
 		return
 	}
 
-	// FIXME(dlc) - Not inline unless memory based.
-	if _, err := store.StoreMsg(subject, msg); err != nil {
+	// Response to send.
+	response := AckAck
+
+	// Check to see if we are over the account limit.
+	if seq, err := store.StoreMsg(subject, msg); err != nil {
 		mset.mu.Lock()
-		s := c.srv
 		accName := c.acc.Name
 		name := mset.config.Name
 		mset.mu.Unlock()
-		s.Errorf("Jetstream failed to store msg on account: %q message set: %q -  %v", accName, name, err)
-		// TODO(dlc) - Send err here
-		return
-	}
-	// Send Ack here.
-	if doAck && len(reply) > 0 {
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, AckAck, nil, 0}
+		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
+		response = []byte(fmt.Sprintf("-ERR %q", err.Error()))
+	} else if jsa.limitsExceeded(stype) {
+		c.Debugf("JetStream resource limits exceeded for account")
+		response = []byte("-ERR 'resource limits exceeded for account'")
+		store.RemoveMsg(seq)
+	} else {
+		mset.signalObservers()
 	}
 
-	mset.signalObservers()
+	// Send response here.
+	if doAck && len(reply) > 0 {
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+	}
 }
 
 func (mset *MsgSet) signalObservers() {
@@ -327,20 +363,25 @@ func (mset *MsgSet) internalSendLoop() {
 }
 
 func (mset *MsgSet) delete() error {
-	var obs []*Observable
-
 	mset.mu.Lock()
 	if mset.sendq != nil {
 		mset.sendq <- nil
 	}
 	c := mset.client
 	mset.client = nil
+	if c == nil {
+		mset.mu.Unlock()
+		return nil
+	}
+	var obs []*Observable
 	for _, o := range mset.obs {
 		obs = append(obs, o)
 	}
 	mset.obs = nil
 	mset.mu.Unlock()
 	c.closeConnection(ClientClosed)
+
+	mset.store.Purge()
 
 	for _, o := range obs {
 		o.Delete()
@@ -365,6 +406,12 @@ func (mset *MsgSet) NumObservables() int {
 
 // Stats will return the current stats for this message set.
 func (mset *MsgSet) Stats() MsgSetStats {
+	mset.mu.Lock()
+	c := mset.client
+	mset.mu.Unlock()
+	if c == nil {
+		return MsgSetStats{}
+	}
 	// Currently rely on store.
 	// TODO(dlc) - This will need to change with clusters.
 	return mset.store.Stats()
