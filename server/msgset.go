@@ -16,7 +16,6 @@ package server
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -69,14 +68,22 @@ const (
 	MsgSetMaxReplicas     = 8
 )
 
-// JetStreamAddMsgSet adds a message set for the given account.
-func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, error) {
+// AddMsgSet adds a JetStream message set for the given account.
+func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+	if s == nil {
+		return nil, fmt.Errorf("jetstream account not registered")
+	}
+
+	// FIXME(dlc) - Change for clustering.
 	js := s.getJetStream()
 	if js == nil {
 		return nil, fmt.Errorf("jetstream not enabled")
 	}
 
-	jsa := js.lookupAccount(a)
+	jsa := a.js
 	if jsa == nil {
 		return nil, fmt.Errorf("jetstream not enabled for account")
 	}
@@ -128,9 +135,14 @@ func (s *Server) JetStreamAddMsgSet(a *Account, config *MsgSetConfig) (*MsgSet, 
 }
 
 func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
-	if config == nil || config.Name == _EMPTY_ {
+	if config == nil {
 		return MsgSetConfig{}, fmt.Errorf("message set configuration invalid")
 	}
+
+	if !isValidName(config.Name) {
+		return MsgSetConfig{}, fmt.Errorf("message set name required, can not contain '.', '*', '>'")
+	}
+
 	cfg := *config
 
 	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.
@@ -149,12 +161,7 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 	return cfg, nil
 }
 
-// JetStreamDeleteMsgSet will delete a message set.
-func (s *Server) JetStreamDeleteMsgSet(mset *MsgSet) error {
-	return mset.Delete()
-}
-
-// Delete deletes a message set.
+// Delete deletes a message set from the owning account.
 func (mset *MsgSet) Delete() error {
 	mset.mu.Lock()
 	jsa := mset.jsa
@@ -242,6 +249,7 @@ func (mset *MsgSet) setupStore() error {
 	return nil
 }
 
+// processInboundJetStreamMsg handles processing messages bound for a message set.
 func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
@@ -390,13 +398,6 @@ func (mset *MsgSet) delete() error {
 	return nil
 }
 
-// Returns a name that can be used as a single token for subscriptions.
-// Really only need to replace token separators.
-// Lock should be held
-func (mset *MsgSet) cleanName() string {
-	return strings.Replace(mset.config.Name, tsep, "-", -1)
-}
-
 // NumObservables reports on number of active observables for this message set.
 func (mset *MsgSet) NumObservables() int {
 	mset.mu.Lock()
@@ -420,15 +421,17 @@ func (mset *MsgSet) Stats() MsgSetStats {
 // waitForMsgs will have the message set wait for the arrival of new messages.
 func (mset *MsgSet) waitForMsgs() {
 	mset.mu.Lock()
-	defer mset.mu.Unlock()
 
 	if mset.client == nil {
+		mset.mu.Unlock()
 		return
 	}
 
 	mset.sgw++
 	mset.sg.Wait()
 	mset.sgw--
+
+	mset.mu.Unlock()
 }
 
 // Determines if the new proposed partition is unique amongst all observables.

@@ -1407,11 +1407,11 @@ func Benchmark_JetStreamPubWithAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
 	if err != nil {
 		b.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc, err := nats.Connect(s.ClientURL())
 	if err != nil {
@@ -1435,11 +1435,11 @@ func Benchmark_JetStreamPubNoAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
 	if err != nil {
 		b.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc, err := nats.Connect(s.ClientURL())
 	if err != nil {
@@ -1466,11 +1466,11 @@ func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
 	if err != nil {
 		b.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
 	if err != nil {
@@ -1520,11 +1520,11 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	defer s.Shutdown()
 
 	mname := "foo"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname})
 	if err != nil {
 		b.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
 	if err != nil {
@@ -1578,11 +1578,11 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 	defer s.Shutdown()
 
 	mname := "MSET22"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname})
 	if err != nil {
 		b.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
 	if err != nil {
