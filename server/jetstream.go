@@ -194,7 +194,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	s.Noticef("----------------------------------------")
 
 	// If we have no configured accounts setup then setup imports on global account.
-	if s.globalAccountOnly() && !s.inOperatorMode() {
+	if s.globalAccountOnly() {
 		if err := s.GlobalAccount().EnableJetStream(nil); err != nil {
 			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
@@ -224,20 +224,45 @@ func (s *Server) JetStreamConfig() *JetStreamConfig {
 	return c
 }
 
-// EnableJetStream will enable JetStream on this account.
+// JetStreamNumAccounts returns the number of enabled accounts this server is tracking.
+func (s *Server) JetStreamNumAccounts() int {
+	js := s.getJetStream()
+	if js == nil {
+		return 0
+	}
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return len(js.accounts)
+}
+
+// JetStreamReservedResources returns the reserved resources if JetStream is enabled.
+func (s *Server) JetStreamReservedResources() (int64, int64, error) {
+	js := s.getJetStream()
+	if js == nil {
+		return -1, -1, fmt.Errorf("jetstream not enabled")
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return js.memReserved, js.storeReserved, nil
+}
+
+func (s *Server) getJetStream() *jetStream {
+	s.mu.Lock()
+	js := s.js
+	s.mu.Unlock()
+	return js
+}
+
+// EnableJetStream will enable JetStream on this account with the defined limits.
 // This is a helper for JetStreamEnableAccount.
 func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
 	if s == nil {
-		return fmt.Errorf("jetstream unknown account")
+		return fmt.Errorf("jetstream account not registered")
 	}
-	return s.JetStreamEnableAccount(a, limits)
-}
-
-// JetStreamEnableAccount enables jetstream capabilties for the given account with the defined limits.
-func (s *Server) JetStreamEnableAccount(a *Account, limits *JetStreamAccountLimits) error {
+	// FIXME(dlc) - cluster mode
 	js := s.getJetStream()
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
@@ -294,7 +319,7 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	s := a.srv
 	a.mu.RUnlock()
 	if s == nil {
-		return fmt.Errorf("jetstream unknown account")
+		return fmt.Errorf("jetstream account not registered")
 	}
 
 	js := s.getJetStream()
@@ -367,12 +392,9 @@ func (a *Account) DisableJetStream() error {
 	s := a.srv
 	a.mu.RUnlock()
 	if s == nil {
-		return fmt.Errorf("jetstream unknown account")
+		return fmt.Errorf("jetstream account not registered")
 	}
-	return s.JetStreamDisableAccount(a)
-}
 
-func (s *Server) JetStreamDisableAccount(a *Account) error {
 	js := s.getJetStream()
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
@@ -417,35 +439,6 @@ func (a *Account) JetStreamEnabled() bool {
 	enabled := a.js != nil
 	a.mu.RUnlock()
 	return enabled
-}
-
-// JetStreamNumAccounts returns the number of enabled accounts this server is tracking.
-func (s *Server) JetStreamNumAccounts() int {
-	js := s.getJetStream()
-	if js == nil {
-		return 0
-	}
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	return len(js.accounts)
-}
-
-// JetStreamReservedResources returns the reserved resources if JetStream is enabled.
-func (s *Server) JetStreamReservedResources() (int64, int64, error) {
-	js := s.getJetStream()
-	if js == nil {
-		return -1, -1, fmt.Errorf("jetstream not enabled")
-	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return js.memReserved, js.storeReserved, nil
-}
-
-func (s *Server) getJetStream() *jetStream {
-	s.mu.Lock()
-	js := s.js
-	s.mu.Unlock()
-	return js
 }
 
 // Updates accounting on in use memory and storage.
@@ -623,4 +616,11 @@ func FriendlyBytes(bytes int64) string {
 	exp := int(math.Log(fbytes) / math.Log(float64(base)))
 	index := exp - 1
 	return fmt.Sprintf("%.2f %sB", fbytes/math.Pow(float64(base), float64(exp)), pre[index])
+}
+
+func isValidName(name string) bool {
+	if name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, ".*>")
 }

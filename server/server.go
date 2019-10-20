@@ -553,12 +553,6 @@ func (s *Server) generateRouteInfoJSON() {
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
-// Determines if we are in operator mode.
-// Uses opts instead of server lock.
-func (s *Server) inOperatorMode() bool {
-	return len(s.getOpts().TrustedOperators) > 0
-}
-
 // Determines if we are in pre NATS 2.0 setup with no accounts.
 func (s *Server) globalAccountOnly() bool {
 	var hasOthers bool
