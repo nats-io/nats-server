@@ -418,17 +418,17 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
 	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true, AckPolicy: server.AckExplicit})
 	if err != nil {
-		t.Fatalf("Expected no error with registered interest, got %v", err)
+		t.Fatalf("Expected no error with durable, got %v", err)
 	}
 	defer o.Delete()
 
