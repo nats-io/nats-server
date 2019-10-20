@@ -97,7 +97,7 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 		t.Fatalf("Expected 1 account, got %d", na)
 	}
 
-	if err := s.JetStreamDisableAccount(s.GlobalAccount()); err != nil {
+	if err := s.GlobalAccount().DisableJetStream(); err != nil {
 		t.Fatalf("Did not expect error on disabling account: %v", err)
 	}
 	if na := s.JetStreamNumAccounts(); na != 0 {
@@ -147,7 +147,7 @@ func TestJetStreamAddMsgSet(t *testing.T) {
 		Replicas:  1,
 	}
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), mconfig)
+	mset, err := s.GlobalAccount().AddMsgSet(mconfig)
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestJetStreamAddMsgSet(t *testing.T) {
 		t.Fatalf("Expected 2 messages, got %d", stats.Msgs)
 	}
 
-	if err := s.JetStreamDeleteMsgSet(mset); err != nil {
+	if err := mset.Delete(); err != nil {
 		t.Fatalf("Got an error deleting the message set: %v", err)
 	}
 }
@@ -193,11 +193,11 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo.*"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -228,11 +228,11 @@ func TestJetStreamNoAckMsgSet(t *testing.T) {
 	defer s.Shutdown()
 
 	// We can use NoAck to suppress acks even when reply subjects are present.
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo", NoAck: true})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo", NoAck: true})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -251,11 +251,11 @@ func TestJetStreamCreateObservable(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "foo", Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo", Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	// Check for basic errors.
 	if _, err := mset.AddObservable(nil); err == nil {
@@ -345,11 +345,11 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "MSET", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "MSET", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -486,11 +486,11 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
@@ -571,11 +571,11 @@ func TestJetStreamPartitioning(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "MSET", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "MSET", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -635,11 +635,11 @@ func TestJetStreamWorkQueuePartitioning(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -696,11 +696,11 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
@@ -752,11 +752,11 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	// Create basic work queue mode observable.
 	oname := "WQ"
@@ -808,11 +808,11 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_WORK_QUEUE.*"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "MWQ", Subjects: []string{mname}, Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -892,11 +892,11 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_WQ"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -983,11 +983,11 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_WQ"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1048,11 +1048,11 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_WQ"
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1124,11 +1124,11 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1218,11 +1218,11 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "EP", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1316,11 +1316,11 @@ func TestJetStreamDurableObservableReconnect(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1413,11 +1413,11 @@ func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DT", Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1550,11 +1550,11 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC"})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1600,11 +1600,11 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC"})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1663,11 +1663,11 @@ func TestJetStreamMsgSetPurge(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC"})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC"})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1690,11 +1690,11 @@ func TestJetStreamInterestRetentionMsgSet(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1816,11 +1816,11 @@ func TestJetStreamObservableReplayRate(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -1913,11 +1913,11 @@ func TestJetStreamObservableReplayQuit(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.JetStreamAddMsgSet(s.GlobalAccount(), &server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "DC", Retention: server.InterestPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -2029,7 +2029,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	// Now test max message sets and max observables. Note max observables is per message set.
 	for i := 0; i < 10; i++ {
 		mname := fmt.Sprintf("foo.%d", i)
-		mset, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: mname})
+		mset, err := facc.AddMsgSet(&server.MsgSetConfig{Name: strconv.Itoa(i), Subjects: []string{mname}})
 		if err != nil {
 			t.Fatalf("Unexpected error adding message set: %v", err)
 		}
@@ -2037,7 +2037,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	}
 
 	// This one should fail since over the limit for macx number of message sets.
-	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22"}); err == nil {
+	if _, err := facc.AddMsgSet(&server.MsgSetConfig{Name: "22", Subjects: []string{"foo.22"}}); err == nil {
 		t.Fatalf("Expected error adding message set over limit")
 	}
 
@@ -2047,17 +2047,17 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	}
 
 	// Now try to add one with bytes limit that would exceed the account limit.
-	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22", MaxBytes: jsconfig.MaxMemory * 2}); err == nil {
+	if _, err := facc.AddMsgSet(&server.MsgSetConfig{Name: "22", MaxBytes: jsconfig.MaxMemory * 2}); err == nil {
 		t.Fatalf("Expected error adding message set over limit")
 	}
 
 	// Replicas can't be > 1
-	if _, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22", Replicas: 10}); err == nil {
+	if _, err := facc.AddMsgSet(&server.MsgSetConfig{Name: "22", Replicas: 10}); err == nil {
 		t.Fatalf("Expected error adding message set over limit")
 	}
 
 	// Test observables limit
-	mset, err := s.JetStreamAddMsgSet(facc, &server.MsgSetConfig{Name: "foo.22"})
+	mset, err := facc.AddMsgSet(&server.MsgSetConfig{Name: "22", Subjects: []string{"foo.22"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
@@ -2093,11 +2093,11 @@ func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
 		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
 	}
 
-	mset, err := s.JetStreamAddMsgSet(gacc, &server.MsgSetConfig{Name: "LIMITS", Retention: server.WorkQueuePolicy})
+	mset, err := gacc.AddMsgSet(&server.MsgSetConfig{Name: "LIMITS", Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset)
+	defer mset.Delete()
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -2120,11 +2120,12 @@ func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
 	}
 
 	// Do second msgset.
-	mset2, err := s.JetStreamAddMsgSet(gacc, &server.MsgSetConfig{Name: "NUM22", Retention: server.WorkQueuePolicy})
+	mset2, err := gacc.AddMsgSet(&server.MsgSetConfig{Name: "NUM22", Retention: server.WorkQueuePolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
-	defer s.JetStreamDeleteMsgSet(mset2)
+	defer mset2.Delete()
+
 	for i := 0; i < toSend; i++ {
 		resp, _ := nc.Request("NUM22", []byte("Hello World!"), 50*time.Millisecond)
 		expectOKResponse(t, resp)
@@ -2138,7 +2139,7 @@ func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
 	}
 
 	// Make sure delete works.
-	s.JetStreamDeleteMsgSet(mset2)
+	mset2.Delete()
 	stats2 = mset2.Stats()
 	usage = gacc.JetStreamUsage()
 
