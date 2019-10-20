@@ -203,6 +203,11 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		o.name = createObservableName()
 	}
 
+	if !isValidName(o.name) {
+		mset.mu.Unlock()
+		return nil, fmt.Errorf("durable name can not contain '.', '*', '>'")
+	}
+
 	// Select starting sequence number
 	o.selectStartingSeqNo()
 
@@ -235,9 +240,9 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// Set up the ack subscription for this observable. Will use wildcard for all acks.
 	// We will remember the template to generate replaies with sequence numbers and use
 	// that to scanf them back in.
-	cn := mset.cleanName()
-	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JetStreamAckPre, cn, o.name)
-	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JetStreamAckPre, cn, o.name)
+	mn := mset.config.Name
+	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JetStreamAckPre, mn, o.name)
+	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JetStreamAckPre, mn, o.name)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
@@ -245,7 +250,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 	// Setup the internal sub for next message requests.
 	if !o.isPushMode() {
-		o.nextMsgSubj = fmt.Sprintf("%s.%s.%s", JetStreamRequestNextPre, cn, o.name)
+		o.nextMsgSubj = fmt.Sprintf("%s.%s.%s", JetStreamRequestNextPre, mn, o.name)
 		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			return nil, err
 		} else {
@@ -615,13 +620,11 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
-			mset  *MsgSet
-			seq   uint64
-			dcnt  uint64
-			subj  string
-			dsubj string
-			msg   []byte
-			err   error
+			mset        *MsgSet
+			seq, dcnt   uint64
+			subj, dsubj string
+			msg         []byte
+			err         error
 		)
 
 		o.mu.Lock()
@@ -702,6 +705,7 @@ func (o *Observable) trackPending(seq uint64) {
 	o.pending[seq] = time.Now().UnixNano()
 }
 
+// This will check if a registered delivery subject still has interest, e.g. subscriptions.
 func (o *Observable) checkActive() {
 	o.mu.Lock()
 	mset := o.mset
