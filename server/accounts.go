@@ -474,6 +474,7 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
 	if a.exports.services == nil {
 		a.exports.services = make(map[string]*serviceExport)
 	}
@@ -1240,8 +1241,10 @@ func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 	if a == nil {
 		return ErrMissingAccount
 	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
 	if a.exports.streams == nil {
 		a.exports.streams = make(map[string]*streamExport)
 	}
