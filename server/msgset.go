@@ -241,7 +241,7 @@ func (mset *MsgSet) setupStore() error {
 			return err
 		}
 		mset.store = ms
-	case DiskStorage:
+	case FileStorage:
 		return fmt.Errorf("NO IMPL")
 	}
 	jsa, st := mset.jsa, mset.config.Storage

@@ -177,8 +177,8 @@ func TestMemStoreTimeStamps(t *testing.T) {
 	last := time.Now().UnixNano()
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		ms.StoreMsg(subj, msg)
 		time.Sleep(5 * time.Microsecond)
+		ms.StoreMsg(subj, msg)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
 		_, _, ts, err := ms.Lookup(seq)

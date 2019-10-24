@@ -43,6 +43,7 @@ type Config struct {
 	Password         string
 	Description      string
 	SidType          uint32 // one of SERVICE_SID_TYPE, the type of sid to use for the service
+	DelayedAutoStart bool   // the service is started after other auto-start services are started plus a short delay
 }
 
 func toString(p *uint16) string {
@@ -95,6 +96,16 @@ func (s *Service) Config() (Config, error) {
 	}
 	p2 := (*windows.SERVICE_DESCRIPTION)(unsafe.Pointer(&b[0]))
 
+	b, err = s.queryServiceConfig2(windows.SERVICE_CONFIG_DELAYED_AUTO_START_INFO)
+	if err != nil {
+		return Config{}, err
+	}
+	p3 := (*windows.SERVICE_DELAYED_AUTO_START_INFO)(unsafe.Pointer(&b[0]))
+	delayedStart := false
+	if p3.IsDelayedAutoStartUp != 0 {
+		delayedStart = true
+	}
+
 	return Config{
 		ServiceType:      p.ServiceType,
 		StartType:        p.StartType,
@@ -106,6 +117,7 @@ func (s *Service) Config() (Config, error) {
 		ServiceStartName: toString(p.ServiceStartName),
 		DisplayName:      toString(p.DisplayName),
 		Description:      toString(p2.Description),
+		DelayedAutoStart: delayedStart,
 	}, nil
 }
 
@@ -117,6 +129,15 @@ func updateDescription(handle windows.Handle, desc string) error {
 
 func updateSidType(handle windows.Handle, sidType uint32) error {
 	return windows.ChangeServiceConfig2(handle, windows.SERVICE_CONFIG_SERVICE_SID_INFO, (*byte)(unsafe.Pointer(&sidType)))
+}
+
+func updateStartUp(handle windows.Handle, isDelayed bool) error {
+	var d windows.SERVICE_DELAYED_AUTO_START_INFO
+	if isDelayed {
+		d.IsDelayedAutoStartUp = 1
+	}
+	return windows.ChangeServiceConfig2(handle,
+		windows.SERVICE_CONFIG_DELAYED_AUTO_START_INFO, (*byte)(unsafe.Pointer(&d)))
 }
 
 // UpdateConfig updates service s configuration parameters.
@@ -132,6 +153,12 @@ func (s *Service) UpdateConfig(c Config) error {
 	if err != nil {
 		return err
 	}
+
+	err = updateStartUp(s.Handle, c.DelayedAutoStart)
+	if err != nil {
+		return err
+	}
+
 	return updateDescription(s.Handle, c.Description)
 }
 
