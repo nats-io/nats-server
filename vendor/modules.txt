@@ -1,5 +1,7 @@
-# github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
 ## explicit
+# github.com/minio/highwayhash v1.0.0
+github.com/minio/highwayhash
+# github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
 github.com/nats-io/jwt
 # github.com/nats-io/nats.go v1.10.0
 ## explicit
@@ -18,8 +20,7 @@ golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/sys v0.0.0-20190726091711-fc99dfbffb4e
-## explicit
+# golang.org/x/sys v0.0.0-20191022100944-742c48ecaeb7
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
 golang.org/x/sys/windows/svc
@@ -27,3 +28,4 @@ golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc/mgr
 # google.golang.org/protobuf v1.22.0
 ## explicit
+golang.org/x/sys/cpu
