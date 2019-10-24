@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-#include "textflag.h"
+// +build mips mipsle
 
-TEXT ·getprocaddress(SB),NOSPLIT,$0
-	B	syscall·getprocaddress(SB)
+package cpu
 
-TEXT ·loadlibrary(SB),NOSPLIT,$0
-	B	syscall·loadlibrary(SB)
+const cacheLineSize = 32
+
+func doinit() {}
