@@ -17,8 +17,11 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"math/bits"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -514,5 +517,67 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	}
 	if stats.Bytes != 0 {
 		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
+	}
+}
+
+func TestFileStoreBitRot(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	ms, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	// Store some messages. Does not really matter how many.
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 100
+	for i := 0; i < toStore; i++ {
+		ms.StoreMsg(subj, msg)
+	}
+	stats := ms.Stats()
+	if stats.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	}
+
+	if badSeqs := len(ms.checkMsgs()); badSeqs > 0 {
+		t.Fatalf("Expected to have no corrupt msgs, got %d", badSeqs)
+	}
+
+	// Now twiddle some bits.
+	ms.mu.Lock()
+	lmb := ms.lmb
+	contents, _ := ioutil.ReadFile(lmb.mfn)
+	var index int
+	for {
+		index = rand.Intn(len(contents))
+		// Reverse one byte anywhere.
+		b := contents[index]
+		contents[index] = bits.Reverse8(b)
+		if b != contents[index] {
+			break
+		}
+	}
+	ioutil.WriteFile(lmb.mfn, contents, 0644)
+	ms.mu.Unlock()
+
+	bseqs := ms.checkMsgs()
+	if badSeqs := len(bseqs); badSeqs == 0 {
+		t.Fatalf("Expected to have corrupt msgs got none: changed [%d]", index)
+	}
+
+	// Make sure we can restore.
+	ms.Stop()
+
+	ms, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	if !reflect.DeepEqual(bseqs, ms.checkMsgs()) {
+		t.Fatalf("Different reporting on bad msgs: %+v vs %+v", bseqs, ms.checkMsgs())
 	}
 }
