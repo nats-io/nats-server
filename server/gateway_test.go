@@ -1098,6 +1098,34 @@ func TestGatewayURLsFromClusterSentInINFO(t *testing.T) {
 	}
 }
 
+func TestGatewayUseUpdatedURLs(t *testing.T) {
+	// For this test, we have cluster B with an explicit gateway to cluster A
+	// on a given URL. Then we create cluster A with a gateway to B with server B's
+	// GW url, and we expect server B to ultimately create an outbound GW connection
+	// to server A (with the URL it will get from server A connecting to it).
+
+	ob := testGatewayOptionsFromToWithURLs(t, "B", "A", []string{"nats://127.0.0.1:1234"})
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	// Add a delay before starting server A to make sure that server B start
+	// initiating the connection to A on inexistant server at :1234.
+	time.Sleep(100 * time.Millisecond)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	// sa should have no problem creating outbound connection to sb
+	waitForOutboundGateways(t, sa, 1, time.Second)
+
+	// Make sure that since sb learns about sa's GW URL, it can successfully
+	// connect to it.
+	waitForOutboundGateways(t, sb, 1, 3*time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+}
+
 func TestGatewayAutoDiscovery(t *testing.T) {
 	o4 := testDefaultOptionsForGateway("D")
 	s4 := runGatewayServer(o4)
