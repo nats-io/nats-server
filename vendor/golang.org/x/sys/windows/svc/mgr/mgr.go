@@ -137,7 +137,7 @@ func (m *Mgr) CreateService(name, exepath string, c Config, args ...string) (*Se
 		err = updateSidType(h, c.SidType)
 		if err != nil {
 			windows.DeleteService(h)
-			windows.CloseHandle(h)
+			windows.CloseServiceHandle(h)
 			return nil, err
 		}
 	}
@@ -145,7 +145,15 @@ func (m *Mgr) CreateService(name, exepath string, c Config, args ...string) (*Se
 		err = updateDescription(h, c.Description)
 		if err != nil {
 			windows.DeleteService(h)
-			windows.CloseHandle(h)
+			windows.CloseServiceHandle(h)
+			return nil, err
+		}
+	}
+	if c.DelayedAutoStart {
+		err = updateStartUp(h, c.DelayedAutoStart)
+		if err != nil {
+			windows.DeleteService(h)
+			windows.CloseServiceHandle(h)
 			return nil, err
 		}
 	}

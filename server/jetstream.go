@@ -493,7 +493,7 @@ func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
 			if jsa.memReserved+mb > jsa.limits.MaxMemory {
 				return fmt.Errorf("insufficient memory resources available")
 			}
-		case DiskStorage:
+		case FileStorage:
 			if jsa.storeReserved+mb > jsa.limits.MaxStore {
 				return fmt.Errorf("insufficient storage resources available")
 			}
