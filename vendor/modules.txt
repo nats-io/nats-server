@@ -1,3 +1,5 @@
+# github.com/minio/highwayhash v1.0.0
+github.com/minio/highwayhash
 # github.com/nats-io/jwt v0.3.0
 github.com/nats-io/jwt
 # github.com/nats-io/nats.go v1.8.2-0.20191008220554-257351c4291e
@@ -13,10 +15,11 @@ golang.org/x/crypto/bcrypt
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/sys v0.0.0-20190726091711-fc99dfbffb4e
+# golang.org/x/sys v0.0.0-20191022100944-742c48ecaeb7
 golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc
 golang.org/x/sys/windows/svc/debug
 golang.org/x/sys/windows/svc/mgr
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
+golang.org/x/sys/cpu

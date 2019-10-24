@@ -24,8 +24,8 @@ type StorageType int
 const (
 	// Memory specifies in memory only.
 	MemoryStorage StorageType = iota
-	// Disk specifies on disk, designated by the JetStream config StoreDir.
-	DiskStorage
+	// File specifies on disk, designated by the JetStream config StoreDir.
+	FileStorage
 )
 
 type MsgSetStore interface {
@@ -36,6 +36,7 @@ type MsgSetStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	StorageBytesUpdate(func(int64))
 	Stats() MsgSetStats
+	Stop()
 }
 
 // MsgSetStats are stats about this given message set.
