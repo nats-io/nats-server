@@ -580,7 +580,6 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 	var (
 		opts       = s.getOpts()
 		isImplicit = cfg.isImplicit()
-		urls       = cfg.getURLs()
 		attempts   int
 		typeStr    string
 	)
@@ -593,7 +592,11 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 	const connFmt = "Connecting to %s gateway %q (%s) at %s (attempt %v)"
 	const connErrFmt = "Error connecting to %s gateway %q (%s) at %s (attempt %v): %v"
 
-	for s.isRunning() && len(urls) > 0 {
+	for s.isRunning() {
+		urls := cfg.getURLs()
+		if len(urls) == 0 {
+			break
+		}
 		attempts++
 		report := s.shouldReportConnectErr(firstConnect, attempts)
 		// Iteration is random
