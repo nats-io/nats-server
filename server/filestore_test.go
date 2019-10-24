@@ -475,3 +475,44 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestFileStoreAgeLimitRecovery(t *testing.T) {
+	maxAge := 10 * time.Millisecond
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	ms, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	// Store some messages. Does not really matter how many.
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 100
+	for i := 0; i < toStore; i++ {
+		ms.StoreMsg(subj, msg)
+	}
+	stats := ms.Stats()
+	if stats.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	}
+	ms.Stop()
+	time.Sleep(2 * maxAge)
+
+	ms, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	stats = ms.Stats()
+	if stats.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", stats.Msgs)
+	}
+	if stats.Bytes != 0 {
+		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
+	}
+}
