@@ -39,10 +39,10 @@ type storedMsg struct {
 
 func newMemStore(cfg *MsgSetConfig) (*memStore, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("config required for MsgSetStore")
+		return nil, fmt.Errorf("config required")
 	}
 	if cfg.Storage != MemoryStorage {
-		return nil, fmt.Errorf("memStore requires memory storage type in cfg")
+		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
 	ms := &memStore{msgs: make(map[uint64]*storedMsg), config: *cfg}
 	// This only happens once, so ok to call here.
@@ -50,7 +50,6 @@ func newMemStore(cfg *MsgSetConfig) (*memStore, error) {
 }
 
 // Store stores a message.
-// both arguments should be copied.
 func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	ms.mu.Lock()
 	seq := ms.stats.LastSeq + 1
@@ -252,4 +251,14 @@ func (ms *memStore) Stats() MsgSetStats {
 
 func memStoreMsgSize(subj string, msg []byte) uint64 {
 	return uint64(len(subj) + len(msg) + 16) // 8*2 for seq + age
+}
+
+func (ms *memStore) Stop() {
+	ms.mu.Lock()
+	if ms.ageChk != nil {
+		ms.ageChk.Stop()
+		ms.ageChk = nil
+	}
+	ms.msgs = nil
+	ms.mu.Unlock()
 }
