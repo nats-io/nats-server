@@ -99,6 +99,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
+	optsA.ServerName = "A"
 	// Add in dummy gateway
 	optsA.Gateway.Name = "TEST CLUSTER 22"
 	optsA.Gateway.Host = "127.0.0.1"
@@ -108,6 +109,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	sa := RunServer(optsA)
 
 	optsB := nextServerOpts(optsA)
+	optsB.ServerName = "B"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
 	sb := RunServer(optsB)
 
@@ -1321,6 +1323,27 @@ func TestServerEventsStatsZ(t *testing.T) {
 	}
 	if lr := len(m3.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)
+	}
+	if sr := m3.Stats.Routes[0]; sr.Name != "B" {
+		t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+	}
+
+	// Now query B and check that route's name is "A"
+	subj = fmt.Sprintf(serverStatsReqSubj, sb.ID())
+	ncs.SubscribeSync(subj)
+	msg, err = ncs.Request(subj, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to request statsz: %v", err)
+	}
+	m = ServerStatsMsg{}
+	if err := json.Unmarshal(msg.Data, &m); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if lr := len(m.Stats.Routes); lr != 1 {
+		t.Fatalf("Expected a route, but got %d", lr)
+	}
+	if sr := m.Stats.Routes[0]; sr.Name != "A" {
+		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A", sr.Name)
 	}
 }
 
