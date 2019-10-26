@@ -59,7 +59,9 @@ var (
 )
 
 // Used by tests
-var testRouteProto = RouteProtoV2
+func setRouteProtoForTest(wantedProto int) int {
+	return (wantedProto + 1) * -1
+}
 
 type route struct {
 	remoteID     string
@@ -1465,9 +1467,17 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	s.mu.Lock()
+	proto := RouteProtoV2
 	// For tests, we want to be able to make this server behave
-	// as an older server so we use the variable which we can override.
-	proto := testRouteProto
+	// as an older server so check this option to see if we should override
+	if opts.routeProto < 0 {
+		// We have a private option that allows test to override the route
+		// protocol. We want this option initial value to be 0, however,
+		// since original proto is RouteProtoZero, tests call setRouteProtoForTest(),
+		// which sets as negative value the (desired proto + 1) * -1.
+		// Here we compute back the real value.
+		proto = (opts.routeProto * -1) - 1
+	}
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
