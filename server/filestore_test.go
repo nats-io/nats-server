@@ -20,6 +20,7 @@ import (
 	"math/bits"
 	"math/rand"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -409,7 +410,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 
 	stats2 := ms.Stats()
 	if stats != stats2 {
-		t.Fatalf("Expected receovered stats to be the same, got %+v vs %+v\n", stats, stats2)
+		t.Fatalf("Expected recovered stats to be the same, got %+v vs %+v\n", stats, stats2)
 	}
 }
 
@@ -580,4 +581,131 @@ func TestFileStoreBitRot(t *testing.T) {
 	if !reflect.DeepEqual(bseqs, ms.checkMsgs()) {
 		t.Fatalf("Different reporting on bad msgs: %+v vs %+v", bseqs, ms.checkMsgs())
 	}
+}
+
+func TestFileStoreEraseMsg(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	ms, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	ms.StoreMsg(subj, msg)
+	_, smsg, _, err := ms.Lookup(1)
+	if err != nil {
+		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+	if !bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	}
+	sm := ms.msgForSeq(1)
+	if !ms.EraseMsg(1) {
+		t.Fatalf("Expected erase msg to return success")
+	}
+	if bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected msg to be erased")
+	}
+
+	// Now look on disk as well.
+	rl := fileStoreMsgSize(subj, msg)
+	buf := make([]byte, rl)
+	fp, err := os.Open(path.Join(storeDir, msgDir, fmt.Sprintf(blkScan, 1)))
+	if err != nil {
+		t.Fatalf("Error opening msgs file: %v", err)
+	}
+	defer fp.Close()
+	fp.ReadAt(buf, sm.off)
+	nsubj, nmsg, seq, ts, err := msgFromBuf(buf)
+	if err != nil {
+		t.Fatalf("error reading message from block: %v", err)
+	}
+	if nsubj == subj {
+		t.Fatalf("Expected the subjects to be different")
+	}
+	if seq != 0 {
+		t.Fatalf("Expected seq to be 0, marking as deleted, got %d", seq)
+	}
+	if ts != 0 {
+		t.Fatalf("Expected timestamp to be 0, got %d", ts)
+	}
+	if bytes.Equal(nmsg, msg) {
+		t.Fatalf("Expected message body to be randomized")
+	}
+}
+
+func TestFileStorePerf(t *testing.T) {
+	// Uncomment to run, holding place for now.
+	t.SkipNow()
+
+	subj, msg := "foo", make([]byte, 4*1024)
+	for i := 0; i < len(msg); i++ {
+		msg[i] = 'D'
+	}
+	storedMsgSize := fileStoreMsgSize(subj, msg)
+
+	// 10GB
+	toStore := 10 * 1024 * 1024 * 1024 / storedMsgSize
+
+	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+	fmt.Printf("StoreDir is %q\n", storeDir)
+
+	ms, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	start := time.Now()
+	for i := 0; i < int(toStore); i++ {
+		ms.StoreMsg(subj, msg)
+	}
+	ms.Stop()
+
+	tt := time.Since(start)
+	fmt.Printf("time to store is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+
+	fmt.Printf("Filesystem cache flush, paused 5 seconds.\n\n")
+	time.Sleep(5 * time.Second)
+
+	fmt.Printf("reading %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	ms, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	start = time.Now()
+	for i := uint64(1); i <= toStore; i++ {
+		ms.Lookup(i)
+	}
+	ms.Stop()
+
+	tt = time.Since(start)
+	fmt.Printf("time to read all back messages is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 }

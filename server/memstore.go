@@ -15,6 +15,7 @@ package server
 
 import (
 	"fmt"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -199,7 +200,7 @@ func (ms *memStore) deleteFirstMsgOrPanic() {
 }
 
 func (ms *memStore) deleteFirstMsg() bool {
-	return ms.removeMsg(ms.stats.FirstSeq)
+	return ms.removeMsg(ms.stats.FirstSeq, false)
 }
 
 // Lookup will lookup the message by sequence number.
@@ -218,13 +219,21 @@ func (ms *memStore) Lookup(seq uint64) (string, []byte, int64, error) {
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) bool {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq)
+	removed := ms.removeMsg(seq, false)
+	ms.mu.Unlock()
+	return removed
+}
+
+// EraseMsg will remove the message and rewrite its contents.
+func (ms *memStore) EraseMsg(seq uint64) bool {
+	ms.mu.Lock()
+	removed := ms.removeMsg(seq, true)
 	ms.mu.Unlock()
 	return removed
 }
 
 // Removes the message referenced by seq.
-func (ms *memStore) removeMsg(seq uint64) bool {
+func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
 	if ok {
@@ -234,6 +243,10 @@ func (ms *memStore) removeMsg(seq uint64) bool {
 		ms.stats.Bytes -= ss
 		if seq == ms.stats.FirstSeq {
 			ms.stats.FirstSeq++
+		}
+		if secure {
+			rand.Read(sm.msg)
+			sm.seq = 0
 		}
 	}
 	if ms.scb != nil {
