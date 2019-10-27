@@ -22,8 +22,10 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,10 +35,8 @@ import (
 type FileStoreConfig struct {
 	// Where the parent directory for all storage will be located.
 	StoreDir string
-	// BlockSize is th essage data file block size. This also represents the maximum overhead size.
+	// BlockSize is the file block size. This also represents the maximum overhead size.
 	BlockSize uint64
-	// ReadBufferSize is how much we read from a block during lookups.
-	ReadBufferSize int
 }
 
 type fileStore struct {
@@ -58,15 +58,16 @@ type fileStore struct {
 
 // Represents a message store block and its data.
 type msgBlock struct {
-	mfd   *os.File
 	mfn   string
+	mfd   *os.File
 	ifn   string
+	ifd   *os.File
 	index uint64
 	bytes uint64
 	msgs  uint64
 	first msgId
 	last  msgId
-	cache map[uint64]*storedMsg
+	cache map[uint64]*fileStoredMsg
 	dmap  map[uint64]struct{}
 	lchk  [8]byte
 }
@@ -74,6 +75,14 @@ type msgBlock struct {
 type msgId struct {
 	seq uint64
 	ts  int64
+}
+
+type fileStoredMsg struct {
+	subj string
+	msg  []byte
+	seq  uint64
+	ts   int64 // nanoseconds
+	off  int64 // offset into block file
 }
 
 const (
@@ -91,11 +100,11 @@ const (
 
 const (
 	// Default stream block size.
-	defaultStreamBlockSize = 512 * 1024 * 1024 // 128MB
+	defaultStreamBlockSize = 128 * 1024 * 1024 // 128MB
 	// Default for workqueue or interest based.
 	defaultOtherBlockSize = 32 * 1024 * 1024 // 32MB
-	// Default ReadBuffer size
-	defaultReadBufferSize = 4 * 1024 * 1024 // 4MB
+	// max block size for now.
+	maxBlockSize = defaultStreamBlockSize
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -108,11 +117,8 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	if fcfg.BlockSize == 0 {
 		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes)
 	}
-	if fcfg.ReadBufferSize == 0 {
-		fcfg.ReadBufferSize = defaultReadBufferSize
-	}
-	if fcfg.ReadBufferSize >= int(fcfg.BlockSize) {
-		fcfg.ReadBufferSize = int(fcfg.BlockSize)
+	if fcfg.BlockSize > maxBlockSize {
+		return nil, fmt.Errorf("filestore max block size is %s", FriendlyBytes(maxBlockSize))
 	}
 
 	// Check the directory
@@ -288,7 +294,7 @@ func (ms *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	if ms.lmb != nil {
 		index = ms.lmb.index + 1
 		ms.flushToFileLocked()
-		ms.closeLastMsgBlock()
+		ms.closeLastMsgBlock(false)
 	} else {
 		index = 1
 	}
@@ -305,6 +311,11 @@ func (ms *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.mfd = mfd
 
 	mb.ifn = path.Join(ms.fcfg.StoreDir, msgDir, fmt.Sprintf(indexScan, mb.index))
+	ifd, err := os.OpenFile(mb.ifn, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("Error creating msg index file [%q]: %v", mb.mfn, err)
+	}
+	mb.ifd = ifd
 
 	return mb, nil
 }
@@ -371,7 +382,7 @@ func (ms *fileStore) enforceBytesLimit() {
 }
 
 func (ms *fileStore) deleteFirstMsg() bool {
-	return ms.removeMsg(ms.stats.FirstSeq)
+	return ms.removeMsg(ms.stats.FirstSeq, false)
 }
 
 // RemoveMsg will remove the message from this store.
@@ -379,15 +390,21 @@ func (ms *fileStore) deleteFirstMsg() bool {
 func (ms *fileStore) RemoveMsg(seq uint64) bool {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
-	return ms.removeMsg(seq)
+	return ms.removeMsg(seq, false)
 }
 
-func (ms *fileStore) removeMsg(seq uint64) bool {
+func (ms *fileStore) EraseMsg(seq uint64) bool {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	return ms.removeMsg(seq, true)
+}
+
+func (ms *fileStore) removeMsg(seq uint64, secure bool) bool {
 	mb := ms.selectMsgBlock(seq)
 	if mb == nil {
 		return false
 	}
-	var sm *storedMsg
+	var sm *fileStoredMsg
 	if mb.cache != nil {
 		sm = mb.cache[seq]
 	}
@@ -400,12 +417,12 @@ func (ms *fileStore) removeMsg(seq uint64) bool {
 		return false
 	}
 	// We have the message here, so we can delete it.
-	ms.deleteMsgFromBlock(mb, seq, sm)
+	ms.deleteMsgFromBlock(mb, seq, sm, secure)
 	return true
 }
 
 // Lock should be held.
-func (ms *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *storedMsg) {
+func (ms *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStoredMsg, secure bool) {
 	// Update global accounting.
 	msz := fileStoreMsgSize(sm.subj, sm.msg)
 	ms.stats.Msgs--
@@ -436,6 +453,9 @@ func (ms *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *storedMsg)
 		}
 		mb.dmap[seq] = struct{}{}
 		mb.writeIndexInfo()
+	}
+	if secure {
+		ms.eraseMsg(mb, sm)
 	}
 }
 
@@ -620,6 +640,59 @@ func (ms *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	return uint64(rl), nil
 }
 
+// Will rewrite the message in the underlying store.
+func (ms *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
+	if sm == nil || sm.off < 0 || uint64(sm.off) > mb.bytes {
+		return fmt.Errorf("bad stored message")
+	}
+	// erase contents and rewrite with new hash.
+	rand.Read(sm.msg)
+	sm.seq, sm.ts = 0, 0
+	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	var b strings.Builder
+	for i := 0; i < len(sm.subj); i++ {
+		b.WriteRune(chars[rand.Intn(len(chars))])
+	}
+	sm.subj = b.String()
+
+	var le = binary.LittleEndian
+	var hdr [msgHdrSize]byte
+
+	rl := fileStoreMsgSize(sm.subj, sm.msg)
+
+	le.PutUint32(hdr[0:], uint32(rl))
+	le.PutUint64(hdr[4:], 0)
+	le.PutUint64(hdr[12:], 0)
+	le.PutUint16(hdr[20:], uint16(len(sm.subj)))
+
+	// Now write to underlying buffer.
+	var wmb bytes.Buffer
+
+	wmb.Write(hdr[:])
+	wmb.WriteString(sm.subj)
+	wmb.Write(sm.msg)
+
+	// Calculate hash.
+	ms.hh.Reset()
+	ms.hh.Write(hdr[4:20])
+	ms.hh.Write([]byte(sm.subj))
+	ms.hh.Write(sm.msg)
+	checksum := ms.hh.Sum(nil)
+	// Write to msg record.
+	wmb.Write(checksum)
+
+	mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	_, err = mfd.WriteAt(wmb.Bytes(), sm.off)
+
+	mfd.Sync()
+	mfd.Close()
+
+	return err
+}
+
 // Select the message block where this message should be found.
 // Return nil if not in the set.
 // Read lock should be held.
@@ -636,7 +709,7 @@ func (ms *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 }
 
 // Read and cache message from the underlying block.
-func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *storedMsg {
+func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	// TODO(dlc) - Could reuse if already open fd. Also release locks for
 	// load in parallel. For now opt for simple approach.
 	msgFile := path.Join(ms.fcfg.StoreDir, msgDir, fmt.Sprintf(blkScan, mb.index))
@@ -651,51 +724,55 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *storedMsg {
 		ms.flushToFileLocked()
 	}
 	if mb.cache == nil {
-		mb.cache = make(map[uint64]*storedMsg)
+		mb.cache = make(map[uint64]*fileStoredMsg)
 	}
 
-	r := bufio.NewReaderSize(fd, ms.fcfg.ReadBufferSize)
+	buf, err := ioutil.ReadFile(msgFile)
+	if err != nil {
+		// FIXME(dlc) - complain somehow.
+		return nil
+	}
 
 	var le = binary.LittleEndian
-	var cachedSize int
-	var sm *storedMsg
+	var sm *fileStoredMsg
 
 	// Read until we get our message, or see a message that has higher sequence.
-	for {
-		var hdr [msgHdrSize]byte
-		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			break
-		}
+	for index, skip := 0, 0; index < len(buf); {
+		hdr := buf[index : index+msgHdrSize]
 		rl := le.Uint32(hdr[0:])
 		dlen := int(rl) - msgHdrSize
 		mseq := le.Uint64(hdr[4:])
+
 		if seq > mseq || mb.cache[mseq] != nil {
 			// Skip over
-			io.CopyN(ioutil.Discard, r, int64(dlen))
+			index += int(rl)
+			skip += int(rl)
 			continue
 		}
 		// If we have a delete map check it.
 		if mb.dmap != nil {
 			if _, ok := mb.dmap[mseq]; ok {
 				// Skip over
-				io.CopyN(ioutil.Discard, r, int64(dlen))
+				index += int(rl)
+				skip += int(rl)
 				continue
 			}
 		}
-
-		// Read in the message regardless.
+		// Read in the message.
 		ts := int64(le.Uint64(hdr[12:]))
 		slen := le.Uint16(hdr[20:])
+
 		// Do some quick sanity checks here.
 		if dlen < 0 || int(slen) > dlen || dlen > int(rl) {
 			// This means something is off.
 			ms.bad = append(ms.bad, seq)
+			index += int(rl)
+			skip += int(rl)
+			fmt.Printf("ZZZZZ\n\n")
 			continue
 		}
-		data := make([]byte, dlen)
-		if _, err := io.ReadFull(r, data); err != nil {
-			break
-		}
+		index += msgHdrSize
+		data := buf[index : index+dlen]
 		// Check the checksum here.
 		ms.hh.Reset()
 		ms.hh.Write(hdr[4:20])
@@ -703,29 +780,29 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *storedMsg {
 		ms.hh.Write(data[slen : dlen-8])
 		checksum := ms.hh.Sum(nil)
 		if !bytes.Equal(checksum, data[len(data)-8:]) {
+			index += dlen
 			ms.bad = append(ms.bad, seq)
+			fmt.Printf("ZZZZZ\n\n")
 			continue
 		}
-		msg := &storedMsg{
+		msg := &fileStoredMsg{
 			subj: string(data[:slen]),
 			msg:  data[slen : dlen-8],
 			seq:  mseq,
 			ts:   ts,
+			off:  int64(index - msgHdrSize),
 		}
 		mb.cache[mseq] = msg
 		if mseq == seq {
 			sm = msg
 		}
-		cachedSize += dlen
-		if cachedSize > ms.fcfg.ReadBufferSize {
-			break
-		}
+		index += dlen
 	}
 	return sm
 }
 
 // Will return message for the given sequence number.
-func (ms *fileStore) msgForSeq(seq uint64) *storedMsg {
+func (ms *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 	ms.mu.RLock()
 	// seq == 0 indidcates we want first msg.
 	if seq == 0 {
@@ -749,6 +826,25 @@ func (ms *fileStore) msgForSeq(seq uint64) *storedMsg {
 	sm := ms.readAndCacheMsgs(mb, seq)
 	ms.mu.Unlock()
 	return sm
+}
+
+// Internal function to return msg parts from a raw buffer.
+func msgFromBuf(buf []byte) (string, []byte, uint64, int64, error) {
+	if len(buf) < msgHdrSize {
+		return "", nil, 0, 0, fmt.Errorf("buf too small for msg")
+	}
+	var le = binary.LittleEndian
+	hdr := buf[:msgHdrSize]
+	rl := le.Uint32(hdr[0:])
+	dlen := int(rl) - msgHdrSize
+	seq := le.Uint64(hdr[4:])
+	ts := int64(le.Uint64(hdr[12:]))
+	slen := le.Uint16(hdr[20:])
+	if dlen < 0 || int(slen) > dlen || dlen > int(rl) {
+		return "", nil, 0, 0, fmt.Errorf("malformed or corrupt msg")
+	}
+	data := buf[msgHdrSize:]
+	return string(data[:slen]), data[slen : dlen-8], seq, ts, nil
 }
 
 // Lookup will lookup the message by sequence number.
@@ -779,14 +875,13 @@ func (ms *fileStore) flushToFile() {
 
 // Lock should be held.
 func (ms *fileStore) flushToFileLocked() {
-	lbb := ms.wmb.Len()
 	mb := ms.lmb
 	if mb == nil {
 		return
 	}
 
 	// Append new data to the message block file.
-	if lbb > 0 && mb.mfd != nil {
+	if lbb := ms.wmb.Len(); lbb > 0 && mb.mfd != nil {
 		n, _ := ms.wmb.WriteTo(mb.mfd)
 		if int(n) != lbb {
 			ms.wmb.Truncate(int(n))
@@ -820,7 +915,13 @@ func (mb *msgBlock) writeIndexInfo() error {
 	if len(mb.dmap) > 0 {
 		buf = append(buf, mb.genDeleteMap()...)
 	}
-	return ioutil.WriteFile(mb.ifn, buf, 0644)
+	var err error
+	if mb.ifd != nil {
+		_, err = mb.ifd.WriteAt(buf, 0)
+	} else {
+		err = ioutil.WriteFile(mb.ifn, buf, 0644)
+	}
+	return err
 }
 
 func (mb *msgBlock) readIndexInfo() error {
@@ -878,10 +979,14 @@ func (mb *msgBlock) genDeleteMap() []byte {
 	return buf[:n]
 }
 
-func syncAndClose(mfd *os.File) {
+func syncAndClose(mfd, ifd *os.File) {
 	if mfd != nil {
 		mfd.Sync()
 		mfd.Close()
+	}
+	if ifd != nil {
+		ifd.Sync()
+		ifd.Close()
 	}
 }
 
@@ -932,12 +1037,17 @@ func (ms *fileStore) numMsgBlocks() int {
 // Removes the msgBlock
 // Lock should be held.
 func (ms *fileStore) removeMsgBlock(mb *msgBlock) {
+	if mb.ifd != nil {
+		mb.ifd.Close()
+		mb.ifd = nil
+	}
 	os.Remove(mb.ifn)
 	if mb.mfd != nil {
 		mb.mfd.Close()
 		mb.mfd = nil
 	}
 	os.Remove(mb.mfn)
+
 	for i, omb := range ms.blks {
 		if mb == omb {
 			ms.blks = append(ms.blks[:i], ms.blks[i+1:]...)
@@ -954,12 +1064,17 @@ func (ms *fileStore) removeMsgBlock(mb *msgBlock) {
 	}
 }
 
-func (ms *fileStore) closeLastMsgBlock() {
+func (ms *fileStore) closeLastMsgBlock(sync bool) {
 	if ms.lmb == nil || ms.lmb.mfd == nil {
 		return
 	}
-	go syncAndClose(ms.lmb.mfd)
+	if sync {
+		syncAndClose(ms.lmb.mfd, ms.lmb.ifd)
+	} else {
+		go syncAndClose(ms.lmb.mfd, ms.lmb.ifd)
+	}
 	ms.lmb.mfd = nil
+	ms.lmb.ifd = nil
 	ms.lmb = nil
 }
 
@@ -972,7 +1087,7 @@ func (ms *fileStore) Stop() {
 	ms.closed = true
 	close(ms.qch)
 	ms.flushToFileLocked()
-	ms.closeLastMsgBlock()
+	ms.closeLastMsgBlock(true)
 	ms.wmb = &bytes.Buffer{}
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
