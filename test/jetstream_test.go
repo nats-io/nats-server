@@ -1148,7 +1148,7 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 		t.Fatalf("Expected the observable to be considered active")
 	}
 	if numo := mset.NumObservables(); numo != 1 {
-		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+		t.Fatalf("Expected number of observables to be 1, got %d", numo)
 	}
 
 	// Make sure works now.
@@ -1171,13 +1171,13 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 	// The reason for this still being 1 is that we give some time in case of a reconnect scenario.
 	// We detect right away on the publish but we wait for interest to be re-established.
 	if numo := mset.NumObservables(); numo != 1 {
-		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+		t.Fatalf("Expected number of observables to be 1, got %d", numo)
 	}
 
 	// We should delete this one after the check interval.
 	checkFor(t, time.Second, 100*time.Millisecond, func() error {
 		if numo := mset.NumObservables(); numo != 0 {
-			return fmt.Errorf("Expected number of observables to be 0, go %d", numo)
+			return fmt.Errorf("Expected number of observables to be 0, got %d", numo)
 		}
 		return nil
 	})
@@ -1198,7 +1198,7 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 		t.Fatalf("Expected the observable to be considered active")
 	}
 	if numo := mset.NumObservables(); numo != 1 {
-		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+		t.Fatalf("Expected number of observables to be 1, got %d", numo)
 	}
 	sub.Unsubscribe()
 	nc.Flush()
@@ -1210,7 +1210,7 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 		t.Fatalf("Expected the ephemeral observable to be considered inactive")
 	}
 	if numo := mset.NumObservables(); numo != 0 {
-		t.Fatalf("Expected number of observables to be 0, go %d", numo)
+		t.Fatalf("Expected number of observables to be 0, got %d", numo)
 	}
 }
 
@@ -1245,7 +1245,7 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 		t.Fatalf("Expected the observable to be considered active")
 	}
 	if numo := mset.NumObservables(); numo != 1 {
-		t.Fatalf("Expected number of observables to be 1, go %d", numo)
+		t.Fatalf("Expected number of observables to be 1, got %d", numo)
 	}
 
 	// We will simulate reconnect by unsubscribing on one connection and forming

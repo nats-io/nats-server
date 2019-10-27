@@ -192,3 +192,25 @@ func TestMemStoreTimeStamps(t *testing.T) {
 		last = ts
 	}
 }
+
+func TestMemStoreEraseMsg(t *testing.T) {
+	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+	subj, msg := "foo", []byte("Hello World")
+	ms.StoreMsg(subj, msg)
+	_, smsg, _, err := ms.Lookup(1)
+	if err != nil {
+		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+	if !bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	}
+	if !ms.EraseMsg(1) {
+		t.Fatalf("Expected erase msg to return success")
+	}
+	if bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected msg to be erased")
+	}
+}
