@@ -181,6 +181,16 @@ func (mset *MsgSet) Purge() uint64 {
 	return mset.store.Purge()
 }
 
+// RemoveMsg will remove a message from a message set.
+func (mset *MsgSet) RemoveMsg(seq uint64) bool {
+	return mset.store.RemoveMsg(seq)
+}
+
+// EraseMsg will securely remove a message and rewrite the data with random data.
+func (mset *MsgSet) EraseMsg(seq uint64) bool {
+	return mset.store.EraseMsg(seq)
+}
+
 // Will create internal subscriptions for the msgSet.
 // Lock should be held.
 func (mset *MsgSet) subscribeToMsgSet() error {
