@@ -39,23 +39,26 @@ type FileStoreConfig struct {
 	BlockSize uint64
 	// ReadCacheExpire is how long with no activity til we expire the read cache.
 	ReadCacheExpire time.Duration
+	// SyncInterval is how often we sync to disk in the background.
+	SyncInterval time.Duration
 }
 
 type fileStore struct {
-	mu     sync.RWMutex
-	stats  MsgSetStats
-	scb    func(int64)
-	ageChk *time.Timer
-	cfg    MsgSetConfig
-	fcfg   FileStoreConfig
-	blks   []*msgBlock
-	lmb    *msgBlock
-	hh     hash.Hash64
-	wmb    *bytes.Buffer
-	fch    chan struct{}
-	qch    chan struct{}
-	bad    []uint64
-	closed bool
+	mu      sync.RWMutex
+	stats   MsgSetStats
+	scb     func(int64)
+	ageChk  *time.Timer
+	syncTmr *time.Timer
+	cfg     MsgSetConfig
+	fcfg    FileStoreConfig
+	blks    []*msgBlock
+	lmb     *msgBlock
+	hh      hash.Hash64
+	wmb     *bytes.Buffer
+	fch     chan struct{}
+	qch     chan struct{}
+	bad     []uint64
+	closed  bool
 }
 
 // Represents a message store block and its data.
@@ -112,6 +115,8 @@ const (
 	maxBlockSize = defaultStreamBlockSize
 	// default cache expiration
 	defaultCacheExpiration = 2 * time.Second
+	// default sync interval
+	defaultSyncInterval = 10 * time.Second
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -121,6 +126,7 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	if cfg.Storage != FileStorage {
 		return nil, fmt.Errorf("fileStore requires file storage type in config")
 	}
+	// Default values.
 	if fcfg.BlockSize == 0 {
 		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes)
 	}
@@ -129,6 +135,9 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	}
 	if fcfg.ReadCacheExpire == 0 {
 		fcfg.ReadCacheExpire = defaultCacheExpiration
+	}
+	if fcfg.SyncInterval == 0 {
+		fcfg.SyncInterval = defaultSyncInterval
 	}
 
 	// Check the directory
@@ -173,6 +182,8 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	}
 
 	go fs.flushLoop(fs.fch, fs.qch)
+
+	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 
 	return fs, nil
 }
@@ -477,9 +488,11 @@ func (ms *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	ms.stats.Msgs--
 	ms.stats.Bytes -= msz
 
-	// Now local stats
+	// Now local updates.
 	mb.msgs--
 	mb.bytes -= msz
+	mb.cgenid++
+
 	// Delete cache entry
 	if mb.cache != nil {
 		delete(mb.cache, seq)
@@ -780,6 +793,25 @@ func (ms *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 	return err
 }
 
+// Sync msg and index files as needed. This is called from a timer.
+func (ms *fileStore) syncBlocks() {
+	ms.mu.Lock()
+	if ms.closed {
+		ms.mu.Unlock()
+		return
+	}
+	for _, mb := range ms.blks {
+		if mb.mfd != nil {
+			mb.mfd.Sync()
+		}
+		if mb.ifd != nil {
+			mb.ifd.Sync()
+		}
+	}
+	ms.syncTmr = time.AfterFunc(ms.fcfg.SyncInterval, ms.syncBlocks)
+	ms.mu.Unlock()
+}
+
 // Select the message block where this message should be found.
 // Return nil if not in the set.
 // Read lock should be held.
@@ -797,15 +829,6 @@ func (ms *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 
 // Read and cache message from the underlying block.
 func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
-	// TODO(dlc) - Could reuse if already open fd. Also release locks for
-	// load in parallel. For now opt for simple approach.
-	msgFile := path.Join(ms.fcfg.StoreDir, msgDir, fmt.Sprintf(blkScan, mb.index))
-	fd, err := os.Open(msgFile)
-	if err != nil {
-		return nil
-	}
-	defer fd.Close()
-
 	// This detects if what we may be looking for is staged in the write buffer.
 	if mb == ms.lmb && ms.wmb.Len() > 0 {
 		ms.flushPendingWritesLocked()
@@ -814,7 +837,9 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 		mb.cache = make(map[uint64]*fileStoredMsg)
 	}
 
-	buf, err := ioutil.ReadFile(msgFile)
+	// TODO(dlc) - Could reuse if already open fd. Also release locks for
+	// load in parallel. For now opt for simple approach.
+	buf, err := ioutil.ReadFile(mb.mfn)
 	if err != nil {
 		// FIXME(dlc) - complain somehow.
 		return nil
@@ -895,6 +920,22 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	return sm
 }
 
+func (ms *fileStore) checkPrefetch(seq uint64, mb *msgBlock) {
+	gap := mb.msgs/20 + 1
+	if seq < mb.last.seq-gap {
+		return
+	}
+	nseq := mb.last.seq + 1
+	if nmb := ms.selectMsgBlock(nseq); nmb != nil && nmb != mb && nmb.cache == nil {
+		nmb.cache = make(map[uint64]*fileStoredMsg)
+		go func() {
+			ms.mu.Lock()
+			ms.readAndCacheMsgs(nmb, nseq)
+			ms.mu.Unlock()
+		}()
+	}
+}
+
 // Will return message for the given sequence number.
 func (ms *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 	ms.mu.Lock()
@@ -907,6 +948,11 @@ func (ms *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 		ms.mu.Unlock()
 		return nil
 	}
+
+	// Check for prefetch
+	ms.checkPrefetch(seq, mb)
+
+	// Check cache.
 	if mb.cache != nil {
 		if sm, ok := mb.cache[seq]; ok {
 			mb.cgenid++
@@ -1011,15 +1057,20 @@ func (mb *msgBlock) writeIndexInfo() error {
 		buf = append(buf, mb.genDeleteMap()...)
 	}
 	var err error
-	if mb.ifd != nil {
-		if fi, serr := mb.ifd.Stat(); serr == nil {
-			fsz := fi.Size()
-			if n, _ := mb.ifd.WriteAt(buf, 0); n > 0 && fsz > int64(n) {
-				err = mb.ifd.Truncate(int64(n))
-			}
+	if mb.ifd == nil {
+		ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			return err
+		}
+		mb.ifd = ifd
+	}
+	if fi, serr := mb.ifd.Stat(); serr == nil {
+		fsz := fi.Size()
+		if n, _ := mb.ifd.WriteAt(buf, 0); n > 0 && fsz > int64(n) {
+			err = mb.ifd.Truncate(int64(n))
 		}
 	} else {
-		err = ioutil.WriteFile(mb.ifn, buf, 0644)
+		err = serr
 	}
 	return err
 }
@@ -1202,6 +1253,10 @@ func (mb *msgBlock) close(sync bool) {
 	if mb == nil {
 		return
 	}
+	// Close cache
+	mb.cbytes = 0
+	mb.cache = nil
+	// Quit our loops.
 	if mb.qch != nil {
 		close(mb.qch)
 		mb.qch = nil
@@ -1213,7 +1268,6 @@ func (mb *msgBlock) close(sync bool) {
 	}
 	mb.mfd = nil
 	mb.ifd = nil
-
 }
 
 func (ms *fileStore) closeAllMsgBlocks(sync bool) {
@@ -1223,10 +1277,7 @@ func (ms *fileStore) closeAllMsgBlocks(sync bool) {
 }
 
 func (ms *fileStore) closeLastMsgBlock(sync bool) {
-	if ms.lmb != nil {
-		ms.lmb.close(sync)
-	}
-	ms.lmb = nil
+	ms.lmb.close(sync)
 }
 
 func (ms *fileStore) Stop() {
@@ -1240,10 +1291,14 @@ func (ms *fileStore) Stop() {
 
 	ms.flushPendingWritesLocked()
 	ms.wmb = &bytes.Buffer{}
+	ms.lmb = nil
 
 	ms.closeAllMsgBlocks(true)
-	ms.closeLastMsgBlock(true)
 
+	if ms.syncTmr != nil {
+		ms.syncTmr.Stop()
+		ms.syncTmr = nil
+	}
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
