@@ -476,7 +476,7 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 			dcount = o.incDeliveryCount(seq)
 		}
-		subj, msg, _, err := o.mset.store.Lookup(seq)
+		subj, msg, _, err := o.mset.store.LoadMsg(seq)
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
@@ -561,7 +561,7 @@ func (o *Observable) processReplay() error {
 			return fmt.Errorf("observable not valid")
 		}
 
-		subj, msg, ts, err := o.mset.store.Lookup(o.sseq)
+		subj, msg, ts, err := o.mset.store.LoadMsg(o.sseq)
 		if err != nil && err != ErrStoreMsgNotFound {
 			o.mu.Unlock()
 			return err
@@ -836,7 +836,7 @@ func (o *Observable) selectPartitionLast() {
 	stats := o.mset.store.Stats()
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
-		subj, _, _, err := o.mset.store.Lookup(seq)
+		subj, _, _, err := o.mset.store.LoadMsg(seq)
 		if err == ErrStoreMsgNotFound {
 			continue
 		}
