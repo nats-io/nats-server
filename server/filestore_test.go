@@ -51,7 +51,7 @@ func TestFileStoreBasics(t *testing.T) {
 	if stats.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
 	}
-	nsubj, nmsg, _, err := ms.Lookup(2)
+	nsubj, nmsg, _, err := ms.LoadMsg(2)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestFileStoreBasics(t *testing.T) {
 	if !bytes.Equal(nmsg, msg) {
 		t.Fatalf("Msgs don't match, original %q vs %q", msg, nmsg)
 	}
-	_, _, _, err = ms.Lookup(3)
+	_, _, _, err = ms.LoadMsg(3)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", stats.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, err := ms.Lookup(1); err == nil {
+	if _, _, _, err := ms.LoadMsg(1); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
@@ -286,7 +286,7 @@ func TestFileStoreTimeStamps(t *testing.T) {
 		ms.StoreMsg(subj, msg)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, ts, err := ms.Lookup(seq)
+		_, _, ts, err := ms.LoadMsg(seq)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg: %v", err)
 		}
@@ -410,7 +410,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 
 	stats2 := ms.Stats()
 	if stats != stats2 {
-		t.Fatalf("Expected recovered stats to be the same, got %+v vs %+v\n", stats, stats2)
+		t.Fatalf("Expected recovered stats to be the same, got %+v vs %+v\n", stats2, stats)
 	}
 }
 
@@ -447,11 +447,11 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
 	}
 
-	if _, _, _, err := ms.Lookup(1); err != nil {
+	if _, _, _, err := ms.LoadMsg(1); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, err := ms.Lookup(uint64(i)); err == nil {
+		if _, _, _, err := ms.LoadMsg(uint64(i)); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -470,11 +470,11 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected receovered stats to be the same, got %+v vs %+v\n", stats, stats2)
 	}
 
-	if _, _, _, err := ms.Lookup(1); err != nil {
+	if _, _, _, err := ms.LoadMsg(1); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, err := ms.Lookup(uint64(i)); err == nil {
+		if _, _, _, err := ms.LoadMsg(uint64(i)); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -596,7 +596,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	ms.StoreMsg(subj, msg)
-	_, smsg, _, err := ms.Lookup(1)
+	_, smsg, _, err := ms.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -635,6 +635,61 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	}
 	if bytes.Equal(nmsg, msg) {
 		t.Fatalf("Expected message body to be randomized")
+	}
+}
+
+func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	ms, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 100
+	for i := 0; i < toStore; i++ {
+		ms.StoreMsg(subj, msg)
+	}
+	stats := ms.Stats()
+	if stats.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	}
+
+	// Erase the even messages.
+	for i := 2; i <= toStore; i += 2 {
+		if !ms.EraseMsg(uint64(i)) {
+			t.Fatalf("Expected erase msg to return true")
+		}
+	}
+	stats = ms.Stats()
+	if stats.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	}
+
+	// Stop and remove the index file.
+	ms.Stop()
+	ifn := path.Join(storeDir, msgDir, fmt.Sprintf(indexScan, 1))
+	os.Remove(ifn)
+
+	ms, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	stats = ms.Stats()
+	if stats.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	}
+
+	for i := 2; i <= toStore; i += 2 {
+		if _, _, _, err := ms.LoadMsg(uint64(i)); err == nil {
+			t.Fatalf("Expected error looking up seq %d that should be erased", i)
+		}
 	}
 }
 
@@ -700,7 +755,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		ms.Lookup(i)
+		ms.LoadMsg(i)
 	}
 	ms.Stop()
 
