@@ -65,6 +65,7 @@ func setRouteProtoForTest(wantedProto int) int {
 
 type route struct {
 	remoteID     string
+	remoteName   string
 	didSolicit   bool
 	retry        bool
 	routeType    RouteType
@@ -413,6 +414,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
+	c.route.remoteName = info.Name
 	// When sent through route INFO, if the field is set, it should be of size 1.
 	if len(info.LeafNodeURLs) == 1 {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
@@ -1482,6 +1484,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
 		ID:           s.info.ID,
+		Name:         s.info.Name,
 		Version:      s.info.Version,
 		GoVersion:    runtime.Version(),
 		AuthRequired: false,

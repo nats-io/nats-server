@@ -165,6 +165,7 @@ type ServerStats struct {
 // RouteStat holds route statistics.
 type RouteStat struct {
 	ID       uint64    `json:"rid"`
+	Name     string    `json:"name,omitempty"`
 	Sent     DataStats `json:"sent"`
 	Received DataStats `json:"received"`
 	Pending  int       `json:"pending"`
@@ -412,6 +413,9 @@ func routeStat(r *client) *RouteStat {
 			Bytes: atomic.LoadInt64(&r.inBytes),
 		},
 		Pending: int(r.out.pb),
+	}
+	if r.route != nil {
+		rs.Name = r.route.remoteName
 	}
 	r.mu.Unlock()
 	return rs
