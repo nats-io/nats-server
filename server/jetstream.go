@@ -502,7 +502,7 @@ func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
 	return nil
 }
 
-// delete the JetStream resources.
+// Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
 	var msgSets []*MsgSet
 	jsa.mu.Lock()
@@ -511,10 +511,11 @@ func (jsa *jsAccount) delete() {
 	}
 	jsa.mu.Unlock()
 	for _, ms := range msgSets {
-		ms.Delete()
+		ms.stop(false)
 	}
 }
 
+// Lookup the jetstream account for a given account.
 func (js *jetStream) lookupAccount(a *Account) *jsAccount {
 	js.mu.RLock()
 	jsa := js.accounts[a]
