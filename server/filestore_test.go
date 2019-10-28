@@ -693,6 +693,80 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	}
 }
 
+func TestFileStoreCollapseDmap(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	subj, msg := "foo", []byte("Hello World!")
+	storedMsgSize := fileStoreMsgSize(subj, msg)
+
+	ms, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
+		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		ms.StoreMsg(subj, msg)
+	}
+	stats := ms.Stats()
+	if stats.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs, got %d", stats.Msgs)
+	}
+
+	checkDmapTotal := func(total int) {
+		t.Helper()
+		if nde := ms.dmapEntries(); nde != total {
+			t.Fatalf("Expecting only %d entries, got %d", total, nde)
+		}
+	}
+
+	checkFirstSeq := func(seq uint64) {
+		t.Helper()
+		stats := ms.Stats()
+		if stats.FirstSeq != seq {
+			t.Fatalf("Expected first seq to be %d, got %d", seq, stats.FirstSeq)
+		}
+	}
+
+	// Now remove some out of order, forming gaps and entries in dmaps.
+	ms.RemoveMsg(2)
+	checkFirstSeq(1)
+	ms.RemoveMsg(4)
+	checkFirstSeq(1)
+	ms.RemoveMsg(8)
+	checkFirstSeq(1)
+
+	stats = ms.Stats()
+	if stats.Msgs != 7 {
+		t.Fatalf("Expected 7 msgs, got %d", stats.Msgs)
+	}
+
+	checkDmapTotal(3)
+
+	// Close gaps..
+	ms.RemoveMsg(1)
+	checkDmapTotal(2)
+	checkFirstSeq(3)
+
+	ms.RemoveMsg(3)
+	checkDmapTotal(1)
+	checkFirstSeq(5)
+
+	ms.RemoveMsg(5)
+	checkDmapTotal(1)
+	checkFirstSeq(6)
+
+	ms.RemoveMsg(7)
+	checkDmapTotal(2)
+
+	ms.RemoveMsg(6)
+	checkDmapTotal(0)
+}
+
 func TestFileStorePerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
@@ -763,4 +837,45 @@ func TestFileStorePerf(t *testing.T) {
 	fmt.Printf("time to read all back messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
 	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+
+	ms, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	fmt.Printf("\nremoving [in order] %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	start = time.Now()
+	for i := uint64(1); i <= toStore; i++ {
+		ms.RemoveMsg(i)
+	}
+	ms.Stop()
+
+	tt = time.Since(start)
+	fmt.Printf("time to remove all messages is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+
+	ms, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	stats := ms.Stats()
+	if stats.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", stats.Msgs)
+	}
+	if stats.Bytes != 0 {
+		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
+	}
 }
