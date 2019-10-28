@@ -37,6 +37,8 @@ type FileStoreConfig struct {
 	StoreDir string
 	// BlockSize is the file block size. This also represents the maximum overhead size.
 	BlockSize uint64
+	// ReadCacheExpire is how long with no activity til we expire the read cache.
+	ReadCacheExpire time.Duration
 }
 
 type fileStore struct {
@@ -58,20 +60,24 @@ type fileStore struct {
 
 // Represents a message store block and its data.
 type msgBlock struct {
-	mfn   string
-	mfd   *os.File
-	ifn   string
-	ifd   *os.File
-	index uint64
-	bytes uint64
-	msgs  uint64
-	first msgId
-	last  msgId
-	cache map[uint64]*fileStoredMsg
-	dmap  map[uint64]struct{}
-	dch   chan struct{}
-	qch   chan struct{}
-	lchk  [8]byte
+	mfn    string
+	mfd    *os.File
+	ifn    string
+	ifd    *os.File
+	index  uint64
+	bytes  uint64
+	msgs   uint64
+	first  msgId
+	last   msgId
+	dmap   map[uint64]struct{}
+	dch    chan struct{}
+	qch    chan struct{}
+	cache  map[uint64]*fileStoredMsg
+	ctmr   *time.Timer
+	cbytes uint64
+	cgenid uint64
+	cloads uint64
+	lchk   [8]byte
 }
 
 type msgId struct {
@@ -98,15 +104,14 @@ const (
 	obsDir = "obs"
 	// Maximum size of a write buffer we may consider for re-use.
 	maxBufReuse = 4 * 1024 * 1024
-)
-
-const (
 	// Default stream block size.
 	defaultStreamBlockSize = 128 * 1024 * 1024 // 128MB
 	// Default for workqueue or interest based.
 	defaultOtherBlockSize = 32 * 1024 * 1024 // 32MB
 	// max block size for now.
 	maxBlockSize = defaultStreamBlockSize
+	// default cache expiration
+	defaultCacheExpiration = 2 * time.Second
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -121,6 +126,9 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	}
 	if fcfg.BlockSize > maxBlockSize {
 		return nil, fmt.Errorf("filestore max block size is %s", FriendlyBytes(maxBlockSize))
+	}
+	if fcfg.ReadCacheExpire == 0 {
+		fcfg.ReadCacheExpire = defaultCacheExpiration
 	}
 
 	// Check the directory
@@ -395,14 +403,16 @@ func (ms *fileStore) deleteFirstMsg() bool {
 // Will return the number of bytes removed.
 func (ms *fileStore) RemoveMsg(seq uint64) bool {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	return ms.removeMsg(seq, false)
+	removed := ms.removeMsg(seq, false)
+	ms.mu.Unlock()
+	return removed
 }
 
 func (ms *fileStore) EraseMsg(seq uint64) bool {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	return ms.removeMsg(seq, true)
+	removed := ms.removeMsg(seq, true)
+	ms.mu.Unlock()
+	return removed
 }
 
 func (ms *fileStore) removeMsg(seq uint64, secure bool) bool {
@@ -414,18 +424,14 @@ func (ms *fileStore) removeMsg(seq uint64, secure bool) bool {
 	if mb.cache != nil {
 		sm = mb.cache[seq]
 	}
-
-	// FIXME(dlc) - We should not need this TBH.
 	if sm == nil {
 		sm = ms.readAndCacheMsgs(mb, seq)
 	}
-	// If still nothing, we don't have it.
-	if sm == nil {
-		return false
-	}
 	// We have the message here, so we can delete it.
-	ms.deleteMsgFromBlock(mb, seq, sm, secure)
-	return true
+	if sm != nil {
+		ms.deleteMsgFromBlock(mb, seq, sm, secure)
+	}
+	return sm != nil
 }
 
 // Loop on requests to write out our index file. This is used when calling
@@ -515,6 +521,29 @@ func (ms *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 			mb.kickWriteFlusher()
 		}
 	}
+}
+
+// Lock should be held.
+func (ms *fileStore) doExpireTimer(mb *msgBlock) {
+	genid := mb.cgenid
+	if mb.ctmr == nil {
+		mb.ctmr = time.AfterFunc(ms.fcfg.ReadCacheExpire, func() { ms.expireCache(mb, genid) })
+	} else {
+		mb.ctmr.Reset(ms.fcfg.ReadCacheExpire)
+	}
+}
+
+// Called to possibly expire a message block read cache.
+func (ms *fileStore) expireCache(mb *msgBlock, genid uint64) {
+	ms.mu.Lock()
+	if genid == mb.cgenid {
+		mb.cbytes = 0
+		mb.cache = nil
+	} else {
+		genid := mb.cgenid
+		mb.ctmr = time.AfterFunc(ms.fcfg.ReadCacheExpire, func() { ms.expireCache(mb, genid) })
+	}
+	ms.mu.Unlock()
 }
 
 func (ms *fileStore) startAgeChk() {
@@ -794,14 +823,15 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	var le = binary.LittleEndian
 	var sm *fileStoredMsg
 
-	// Read until we get our message, or see a message that has higher sequence.
+	// Read until we get our message, cache the rest.
 	for index, skip := 0, 0; index < len(buf); {
 		hdr := buf[index : index+msgHdrSize]
 		rl := le.Uint32(hdr[0:])
 		dlen := int(rl) - msgHdrSize
 		mseq := le.Uint64(hdr[4:])
 
-		if seq > mseq || mb.cache[mseq] != nil {
+		// Skip if we already have it in our cache.
+		if mb.cache[mseq] != nil {
 			// Skip over
 			index += int(rl)
 			skip += int(rl)
@@ -853,33 +883,42 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 			sm = msg
 		}
 		index += dlen
+		mb.cbytes += uint64(rl)
 	}
+
+	// Setup the cache expiration timer.
+	if mb.cbytes > 0 {
+		mb.cloads++
+		ms.doExpireTimer(mb)
+	}
+
 	return sm
 }
 
 // Will return message for the given sequence number.
 func (ms *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
-	ms.mu.RLock()
+	ms.mu.Lock()
 	// seq == 0 indidcates we want first msg.
 	if seq == 0 {
 		seq = ms.stats.FirstSeq
 	}
 	mb := ms.selectMsgBlock(seq)
 	if mb == nil {
-		ms.mu.RUnlock()
+		ms.mu.Unlock()
 		return nil
 	}
 	if mb.cache != nil {
 		if sm, ok := mb.cache[seq]; ok {
-			ms.mu.RUnlock()
+			mb.cgenid++
+			ms.mu.Unlock()
 			return sm
 		}
 	}
-	ms.mu.RUnlock()
-
 	// If we are here we do not have the message in our cache currently.
-	ms.mu.Lock()
 	sm := ms.readAndCacheMsgs(mb, seq)
+	if sm != nil {
+		mb.cgenid++
+	}
 	ms.mu.Unlock()
 	return sm
 }
@@ -1049,6 +1088,28 @@ func syncAndClose(mfd, ifd *os.File) {
 		ifd.Sync()
 		ifd.Close()
 	}
+}
+
+// Will return total number of cache loads.
+func (ms *fileStore) cacheLoads() uint64 {
+	var tl uint64
+	ms.mu.Lock()
+	for _, mb := range ms.blks {
+		tl += mb.cloads
+	}
+	ms.mu.Unlock()
+	return tl
+}
+
+// Will return total number of cached bytes.
+func (ms *fileStore) cacheSize() uint64 {
+	var sz uint64
+	ms.mu.Lock()
+	for _, mb := range ms.blks {
+		sz += mb.cbytes
+	}
+	ms.mu.Unlock()
+	return sz
 }
 
 // Will return total number of dmapEntries for all msg blocks.
