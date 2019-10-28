@@ -381,6 +381,10 @@ func (mset *MsgSet) internalSendLoop() {
 }
 
 func (mset *MsgSet) delete() error {
+	return mset.stop(true)
+}
+
+func (mset *MsgSet) stop(purge bool) error {
 	mset.mu.Lock()
 	if mset.sendq != nil {
 		mset.sendq <- nil
@@ -399,12 +403,15 @@ func (mset *MsgSet) delete() error {
 	mset.mu.Unlock()
 	c.closeConnection(ClientClosed)
 
-	mset.store.Purge()
-
-	for _, o := range obs {
-		o.Delete()
+	if purge {
+		mset.store.Purge()
+		for _, o := range obs {
+			o.Delete()
+		}
 	}
-	// TODO(dlc) - Clean up any storage, memory and disk
+
+	mset.store.Stop()
+
 	return nil
 }
 
