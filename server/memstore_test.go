@@ -39,7 +39,7 @@ func TestMemStoreBasics(t *testing.T) {
 	if stats.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
 	}
-	nsubj, nmsg, _, err := ms.Lookup(1)
+	nsubj, nmsg, _, err := ms.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestMemStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", stats.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, err := ms.Lookup(1); err == nil {
+	if _, _, _, err := ms.LoadMsg(1); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
@@ -181,7 +181,7 @@ func TestMemStoreTimeStamps(t *testing.T) {
 		ms.StoreMsg(subj, msg)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, ts, err := ms.Lookup(seq)
+		_, _, ts, err := ms.LoadMsg(seq)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg: %v", err)
 		}
@@ -200,7 +200,7 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	}
 	subj, msg := "foo", []byte("Hello World")
 	ms.StoreMsg(subj, msg)
-	_, smsg, _, err := ms.Lookup(1)
+	_, smsg, _, err := ms.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
