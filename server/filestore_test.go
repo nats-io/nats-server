@@ -767,6 +767,53 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	checkDmapTotal(0)
 }
 
+func TestFileStoreReadCache(t *testing.T) {
+	subj, msg := "foo.bar", make([]byte, 1024)
+	storedMsgSize := fileStoreMsgSize(subj, msg)
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	ms, err := newFileStore(FileStoreConfig{StoreDir: storeDir, ReadCacheExpire: 50 * time.Millisecond}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer ms.Stop()
+
+	toStore := 500
+	totalBytes := uint64(toStore) * storedMsgSize
+
+	for i := 0; i < toStore; i++ {
+		ms.StoreMsg(subj, msg)
+	}
+
+	ms.LoadMsg(1)
+	if csz := ms.cacheSize(); csz != totalBytes {
+		t.Fatalf("Expected all messages to be cached, got %d vs %d", csz, totalBytes)
+	}
+	// Should expire and be removed.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if csz := ms.cacheSize(); csz != 0 {
+			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
+		}
+		return nil
+	})
+	if cls := ms.cacheLoads(); cls != 1 {
+		t.Fatalf("Expected only 1 cache load, got %d", cls)
+	}
+	// Now make sure we do not reload cache if there is activity.
+	ms.LoadMsg(1)
+	timeout := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(timeout) {
+		if cls := ms.cacheLoads(); cls != 2 {
+			t.Fatalf("cache loads not 2, got %d", cls)
+		}
+		time.Sleep(5 * time.Millisecond)
+		ms.LoadMsg(1) // register activity.
+	}
+}
+
 func TestFileStorePerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
