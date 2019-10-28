@@ -217,7 +217,6 @@ func (ms *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 		mb.bytes = 0
 		mb.first.seq = 0
 	}
-
 	// Use data file itself to rebuild.
 	var hdr [msgHdrSize]byte
 	var offset int64
@@ -229,6 +228,11 @@ func (ms *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 		}
 		rl := le.Uint32(hdr[0:])
 		seq := le.Uint64(hdr[4:])
+		// This is an erased message.
+		if seq == 0 {
+			offset += int64(rl)
+			continue
+		}
 		ts := int64(le.Uint64(hdr[12:]))
 		if mb.first.seq == 0 {
 			mb.first.seq = seq
@@ -241,7 +245,7 @@ func (ms *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 		mb.bytes += uint64(rl)
 		offset += int64(rl)
 	}
-	// Rewrite this to make sure we are synched.
+	// Rewrite this to make sure we are sync'd.
 	mb.writeIndexInfo()
 	ms.blks = append(ms.blks, mb)
 	ms.lmb = mb
@@ -311,7 +315,7 @@ func (ms *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.mfd = mfd
 
 	mb.ifn = path.Join(ms.fcfg.StoreDir, msgDir, fmt.Sprintf(indexScan, mb.index))
-	ifd, err := os.OpenFile(mb.ifn, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("Error creating msg index file [%q]: %v", mb.mfn, err)
 	}
@@ -642,7 +646,7 @@ func (ms *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 
 // Will rewrite the message in the underlying store.
 func (ms *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
-	if sm == nil || sm.off < 0 || uint64(sm.off) > mb.bytes {
+	if sm == nil || sm.off < 0 {
 		return fmt.Errorf("bad stored message")
 	}
 	// erase contents and rewrite with new hash.
@@ -768,7 +772,6 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 			ms.bad = append(ms.bad, seq)
 			index += int(rl)
 			skip += int(rl)
-			fmt.Printf("ZZZZZ\n\n")
 			continue
 		}
 		index += msgHdrSize
@@ -782,7 +785,6 @@ func (ms *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 		if !bytes.Equal(checksum, data[len(data)-8:]) {
 			index += dlen
 			ms.bad = append(ms.bad, seq)
-			fmt.Printf("ZZZZZ\n\n")
 			continue
 		}
 		msg := &fileStoredMsg{
@@ -847,8 +849,8 @@ func msgFromBuf(buf []byte) (string, []byte, uint64, int64, error) {
 	return string(data[:slen]), data[slen : dlen-8], seq, ts, nil
 }
 
-// Lookup will lookup the message by sequence number.
-func (ms *fileStore) Lookup(seq uint64) (string, []byte, int64, error) {
+// LoadMsg will lookup the message by sequence number and return it if found.
+func (ms *fileStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 	if sm := ms.msgForSeq(seq); sm != nil {
 		return sm.subj, sm.msg, sm.ts, nil
 	}
@@ -909,7 +911,7 @@ func (mb *msgBlock) writeIndexInfo() error {
 	le.PutUint64(hdr[32:], mb.last.seq)
 	le.PutUint64(hdr[40:], uint64(mb.last.ts))
 	// copy last checksum
-	copy(hdr[48:], mb.lchk[0:])
+	copy(hdr[48:], mb.lchk[:])
 	buf := hdr[:]
 	// Append a delete map if needed
 	if len(mb.dmap) > 0 {
@@ -917,7 +919,9 @@ func (mb *msgBlock) writeIndexInfo() error {
 	}
 	var err error
 	if mb.ifd != nil {
-		_, err = mb.ifd.WriteAt(buf, 0)
+		if n, _ := mb.ifd.WriteAt(buf, 0); n > 0 {
+			err = mb.ifd.Truncate(int64(n))
+		}
 	} else {
 		err = ioutil.WriteFile(mb.ifn, buf, 0644)
 	}
@@ -947,7 +951,7 @@ func (mb *msgBlock) readIndexInfo() error {
 	mb.last.ts = int64(le.Uint64(hdr[40:]))
 	copy(mb.lchk[0:], hdr[48:])
 	// Now check for presence of a delete map
-	if buf, err := ioutil.ReadAll(fp); err == nil {
+	if buf, err := ioutil.ReadAll(fp); err == nil && len(buf) > 0 {
 		mb.dmap = make(map[uint64]struct{})
 		for i := 0; ; {
 			if seq, n := binary.Uvarint(buf[i:]); n <= 0 {
