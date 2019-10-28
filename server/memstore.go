@@ -203,8 +203,8 @@ func (ms *memStore) deleteFirstMsg() bool {
 	return ms.removeMsg(ms.stats.FirstSeq, false)
 }
 
-// Lookup will lookup the message by sequence number.
-func (ms *memStore) Lookup(seq uint64) (string, []byte, int64, error) {
+// LoadMsg will lookup the message by sequence number and return it if found.
+func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
 	ms.mu.RUnlock()
