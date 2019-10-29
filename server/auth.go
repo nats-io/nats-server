@@ -656,7 +656,11 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		// This is expected to be a very small array.
 		for _, u := range opts.LeafNode.Users {
 			if u.Username == c.opts.Username {
-				return isAuthorized(u.Username, u.Password, u.Account.Name)
+				var accName string
+				if u.Account != nil {
+					accName = u.Account.Name
+				}
+				return isAuthorized(u.Username, u.Password, accName)
 			}
 		}
 		return false

@@ -631,6 +631,7 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 			  users = [
 				  {user: "ln1", password: "ln1", account: "S1ACC1"}
 				  {user: "ln2", password: "ln2", account: "S1ACC2"}
+				  {user: "ln3", password: "ln3"}
 			  ]
             }
 		}
@@ -723,4 +724,18 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 	if _, err := sub1.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
 		t.Fatalf("Expected timeout error, got %v", err)
 	}
+
+	// Now check that we don't panic if no account is specified for
+	// a given user.
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes: {
+			remotes = [
+				{ url: "nats-leaf://ln3:ln3@%s:%d" }
+			]
+		}
+	`, o1.LeafNode.Host, o1.LeafNode.Port)))
+	defer os.Remove(conf)
+	s3, _ := RunServerWithConfig(conf)
+	defer s3.Shutdown()
 }
