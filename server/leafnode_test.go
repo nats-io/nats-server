@@ -739,3 +739,44 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 	s3, _ := RunServerWithConfig(conf)
 	defer s3.Shutdown()
 }
+
+func TestLeafNodeLoop(t *testing.T) {
+	// This test requires that we set the port to known value because
+	// we want A point to B and B to A.
+	oa := DefaultOptions()
+	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	oa.LeafNode.Port = 1234
+	ub, _ := url.Parse("nats://127.0.0.1:5678")
+	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ub}}}
+	oa.LeafNode.loopDelay = 50 * time.Millisecond
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	sa.SetLogger(l, false, false)
+
+	ob := DefaultOptions()
+	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	ob.LeafNode.Port = 5678
+	ua, _ := url.Parse("nats://127.0.0.1:1234")
+	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
+	ob.LeafNode.loopDelay = 50 * time.Millisecond
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, "Loop") {
+			t.Fatalf("Expected error about loop, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get any error regarding loop")
+	}
+
+	sb.Shutdown()
+	ob.LeafNode.Remotes = nil
+	sb = RunServer(ob)
+	defer sb.Shutdown()
+
+	checkLeafNodeConnected(t, sa)
+}

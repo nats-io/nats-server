@@ -163,6 +163,15 @@ func TestLeafNodeRequiresConnect(t *testing.T) {
 	expectDisconnect(t, lc)
 }
 
+func setupLeaf(t *testing.T, lc net.Conn, expectedSubs int) (sendFun, expectFun) {
+	t.Helper()
+	send, expect := setupConn(t, lc)
+	// A loop detection subscription is sent, so consume this here, along
+	// with the ones that caller expect on setup.
+	expectNumberOfProtos(t, expect, lsubRe, expectedSubs)
+	return send, expect
+}
+
 func TestLeafNodeSendsSubsAfterConnect(t *testing.T) {
 	s, opts := runLeafServer()
 	defer s.Shutdown()
@@ -182,12 +191,9 @@ func TestLeafNodeSendsSubsAfterConnect(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect := setupConn(t, lc)
-	matches := lsubRe.FindAllSubmatch(leafExpect(lsubRe), -1)
 	// This should compress down to 1 for foo, 1 for bar, and 1 for foo [baz]
-	if len(matches) != 3 {
-		t.Fatalf("Expected 3 results, got %d", len(matches))
-	}
+	// and one for the loop detection subject.
+	setupLeaf(t, lc, 4)
 }
 
 func TestLeafNodeSendsSubsOngoing(t *testing.T) {
@@ -204,7 +210,7 @@ func TestLeafNodeSendsSubsOngoing(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -246,7 +252,7 @@ func TestLeafNodeSubs(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
 
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
@@ -328,7 +334,7 @@ func TestLeafNodeMsgDelivery(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
 
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
@@ -398,7 +404,7 @@ func TestLeafNodeAndRoutes(t *testing.T) {
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -493,7 +499,7 @@ func TestLeafNodeNoEcho(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -699,9 +705,8 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
 	// This is for our global responses since we are setting up GWs above.
-	leafExpect(lsubRe)
+	leafSend, leafExpect := setupLeaf(t, lc, 2)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -784,9 +789,8 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
 	// This is for our global responses since we are setting up GWs above.
-	leafExpect(lsubRe)
+	leafSend, leafExpect := setupLeaf(t, lc, 2)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -924,6 +928,7 @@ func TestLeafNodeBasicAuth(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 	leafSend, leafExpect := setupConnWithUserPass(t, lc, "derek", "s3cr3t!")
+	leafExpect(lsubRe)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -2126,9 +2131,8 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupConn(t, lc)
 	// This is for our global responses since we are setting up GWs above.
-	leafExpect(lsubRe)
+	leafSend, leafExpect := setupLeaf(t, lc, 2)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
@@ -2234,8 +2238,7 @@ func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect := setupConn(t, lc)
-	leafExpect(lsubRe)
+	setupLeaf(t, lc, 2)
 }
 
 func TestLeafNodeServiceImportLikeNGS(t *testing.T) {

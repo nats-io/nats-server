@@ -125,6 +125,7 @@ type LeafNodeOpts struct {
 	// Not exported, for tests.
 	resolver    netResolver
 	dialTimeout time.Duration
+	loopDelay   time.Duration
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.

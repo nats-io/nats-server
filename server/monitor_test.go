@@ -3329,14 +3329,26 @@ func TestMonitorLeafz(t *testing.T) {
 			if ln.RTT == "" {
 				t.Fatalf("RTT not tracked?")
 			}
-			if ln.NumSubs != 2 {
-				t.Fatalf("Expected 2 subs, got %v", ln.NumSubs)
+			if ln.NumSubs != 3 {
+				t.Fatalf("Expected 3 subs, got %v", ln.NumSubs)
 			}
-			if len(ln.Subs) != 2 {
+			if len(ln.Subs) != 3 {
 				t.Fatalf("Expected subs to be returned, got %v", len(ln.Subs))
 			}
-			if (ln.Subs[0] != "foo" || ln.Subs[1] != "bar") && (ln.Subs[0] != "bar" || ln.Subs[1] != "foo") {
-				t.Fatalf("Unexpected subjects: %v", ln.Subs)
+			var foundFoo bool
+			var foundBar bool
+			for _, sub := range ln.Subs {
+				if sub == "foo" {
+					foundFoo = true
+				} else if sub == "bar" {
+					foundBar = true
+				}
+			}
+			if !foundFoo {
+				t.Fatal("Did not find subject foo")
+			}
+			if !foundBar {
+				t.Fatal("Did not find subject bar")
 			}
 		}
 	}
@@ -3345,8 +3357,8 @@ func TestMonitorLeafz(t *testing.T) {
 	for pollMode := 1; pollMode < 2; pollMode++ {
 		l := pollLeafz(t, sa, pollMode, pollURL, nil)
 		for _, ln := range l.Leafs {
-			if ln.NumSubs != 2 {
-				t.Fatalf("Number of subs should be 2, got %v", ln.NumSubs)
+			if ln.NumSubs != 3 {
+				t.Fatalf("Number of subs should be 3, got %v", ln.NumSubs)
 			}
 			if len(ln.Subs) != 0 {
 				t.Fatalf("Subs should not have been returned, got %v", ln.Subs)
