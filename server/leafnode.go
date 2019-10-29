@@ -41,7 +41,10 @@ import (
 const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
 
 // When a loop is detected, delay the reconnect of solicited connection.
-const leafNodeReconnectDelayAfterLoopDetected = 10 * time.Second
+const leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
+
+// Prefix for loop detection subject
+const leafNodeLoopDetectionSubjectPrefix = "lds."
 
 type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
@@ -182,6 +185,24 @@ func (cfg *leafNodeCfg) getCurrentURL() *url.URL {
 	return cfg.curURL
 }
 
+// Returns how long the server should wait before attempting
+// to solicit a remote leafnode connection following the
+// detection of a loop.
+// Returns 0 if no loop was detected.
+func (cfg *leafNodeCfg) getLoopDelay() time.Duration {
+	cfg.RLock()
+	delay := cfg.loopDelay
+	cfg.RUnlock()
+	return delay
+}
+
+// Reset the loop delay.
+func (cfg *leafNodeCfg) resetLoopDelay() {
+	cfg.Lock()
+	cfg.loopDelay = 0
+	cfg.Unlock()
+}
+
 // Ensure that non-exported options (used in tests) have
 // been properly set.
 func (s *Server) setLeafNodeNonExportedOptions() {
@@ -212,18 +233,13 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	resolver := s.leafNodeOpts.resolver
 	s.mu.Unlock()
 
-	if remote != nil {
-		remote.Lock()
-		loopDelay := remote.loopDelay
-		remote.loopDelay = 0
-		remote.Unlock()
-		if loopDelay > 0 {
-			select {
-			case <-time.After(loopDelay):
-			case <-s.quitCh:
-				return
-			}
+	if loopDelay := remote.getLoopDelay(); loopDelay > 0 {
+		select {
+		case <-time.After(loopDelay):
+		case <-s.quitCh:
+			return
 		}
+		remote.resetLoopDelay()
 	}
 
 	var conn net.Conn
@@ -956,7 +972,7 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	// Create a unique subject that will be used for loop detection.
 	lds := acc.lds
 	if lds == _EMPTY_ {
-		lds = "lds." + nuid.Next()
+		lds = leafNodeLoopDetectionSubjectPrefix + nuid.Next()
 		acc.lds = lds
 	}
 	acc.mu.Unlock()
