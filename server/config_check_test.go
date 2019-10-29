@@ -1252,7 +1252,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  20,
 		},
 		{
-			name: "dulpicate usernames in leafnode authorization",
+			name: "duplicate usernames in leafnode authorization",
 			config: `
                 leafnodes {
                    authorization {
