@@ -66,6 +66,7 @@ type Account struct {
 	expired     bool
 	signingKeys []string
 	srv         *Server // server this account is registered with (possibly nil)
+	lds         string  // loop detection subject for leaf nodes
 }
 
 // Account based limits.

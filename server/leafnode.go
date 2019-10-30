@@ -34,10 +34,17 @@ import (
 	"time"
 
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 )
 
 // Warning when user configures leafnode TLS insecure
 const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
+
+// When a loop is detected, delay the reconnect of solicited connection.
+const leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
+
+// Prefix for loop detection subject
+const leafNodeLoopDetectionSubjectPrefix = "lds."
 
 type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
@@ -52,11 +59,12 @@ type leaf struct {
 type leafNodeCfg struct {
 	sync.RWMutex
 	*RemoteLeafOpts
-	urls     []*url.URL
-	curURL   *url.URL
-	tlsName  string
-	username string
-	password string
+	urls      []*url.URL
+	curURL    *url.URL
+	tlsName   string
+	username  string
+	password  string
+	loopDelay time.Duration // A loop condition was detected
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -177,6 +185,24 @@ func (cfg *leafNodeCfg) getCurrentURL() *url.URL {
 	return cfg.curURL
 }
 
+// Returns how long the server should wait before attempting
+// to solicit a remote leafnode connection following the
+// detection of a loop.
+// Returns 0 if no loop was detected.
+func (cfg *leafNodeCfg) getLoopDelay() time.Duration {
+	cfg.RLock()
+	delay := cfg.loopDelay
+	cfg.RUnlock()
+	return delay
+}
+
+// Reset the loop delay.
+func (cfg *leafNodeCfg) resetLoopDelay() {
+	cfg.Lock()
+	cfg.loopDelay = 0
+	cfg.Unlock()
+}
+
 // Ensure that non-exported options (used in tests) have
 // been properly set.
 func (s *Server) setLeafNodeNonExportedOptions() {
@@ -206,6 +232,15 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	dialTimeout := s.leafNodeOpts.dialTimeout
 	resolver := s.leafNodeOpts.resolver
 	s.mu.Unlock()
+
+	if loopDelay := remote.getLoopDelay(); loopDelay > 0 {
+		select {
+		case <-time.After(loopDelay):
+		case <-s.quitCh:
+			return
+		}
+		remote.resetLoopDelay()
+	}
 
 	var conn net.Conn
 
@@ -921,7 +956,7 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	_subs := [32]*subscription{}
 	subs := _subs[:0]
 	ims := []string{}
-	acc.mu.RLock()
+	acc.mu.Lock()
 	accName := acc.Name
 	// If we are solicited we only send interest for local clients.
 	if c.isSolicitedLeafNode() {
@@ -934,7 +969,13 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	for isubj := range acc.imports.services {
 		ims = append(ims, isubj)
 	}
-	acc.mu.RUnlock()
+	// Create a unique subject that will be used for loop detection.
+	lds := acc.lds
+	if lds == _EMPTY_ {
+		lds = leafNodeLoopDetectionSubjectPrefix + nuid.Next()
+		acc.lds = lds
+	}
+	acc.mu.Unlock()
 
 	// Now check for gateway interest. Leafnodes will put this into
 	// the proper mode to propagate, but they are not held in the account.
@@ -973,6 +1014,11 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	// TODO(dlc) - Should we lock this down more?
 	if applyGlobalRouting {
 		c.leaf.smap[gwReplyPrefix+"*.>"]++
+	}
+	// Detect loop by subscribing to a specific subject and checking
+	// if this is coming back to us.
+	if c.leaf.remote == nil {
+		c.leaf.smap[lds]++
 	}
 	c.mu.Unlock()
 }
@@ -1154,6 +1200,13 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		return nil
 	}
 
+	// Check if we have a loop.
+	if string(sub.subject) == c.acc.lds {
+		c.mu.Unlock()
+		srv.reportLeafNodeLoop(c)
+		return nil
+	}
+
 	// Check permissions if applicable.
 	if !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
@@ -1215,6 +1268,24 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		srv.updateLeafNodes(acc, sub, 1)
 	}
 	return nil
+}
+
+func (s *Server) reportLeafNodeLoop(c *client) {
+	delay := leafNodeReconnectDelayAfterLoopDetected
+	opts := s.getOpts()
+	if opts.LeafNode.loopDelay != 0 {
+		delay = opts.LeafNode.loopDelay
+	}
+	c.mu.Lock()
+	if c.leaf.remote != nil {
+		c.leaf.remote.Lock()
+		c.leaf.remote.loopDelay = delay
+		c.leaf.remote.Unlock()
+	}
+	accName := c.acc.Name
+	c.mu.Unlock()
+	c.sendErrAndErr(fmt.Sprintf("Loop detected for leafnode account=%q. Delaying attempt to reconnect for %v",
+		accName, delay))
 }
 
 // processLeafUnsub will process an inbound unsub request for the remote leaf node.
