@@ -275,3 +275,17 @@ func (ms *memStore) Stop() {
 	ms.msgs = nil
 	ms.mu.Unlock()
 }
+
+type observableMemStore struct{}
+
+func (ms *memStore) ObservableStore(_ string) (ObservableStore, error) {
+	return &observableMemStore{}, nil
+}
+
+// No-ops.
+func (os *observableMemStore) Update(_ *ObservableState) error {
+	return nil
+}
+func (os *observableMemStore) Stop()                              {}
+func (os *observableMemStore) State() (*ObservableState, error)   { return nil, nil }
+func (os *observableMemStore) Config() (*ObservableConfig, error) { return nil, nil }
