@@ -1200,8 +1200,9 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		return nil
 	}
 
+	acc := c.acc
 	// Check if we have a loop.
-	if string(sub.subject) == c.acc.lds {
+	if string(sub.subject) == acc.getLds() {
 		c.mu.Unlock()
 		srv.reportLeafNodeLoop(c)
 		return nil
@@ -1228,7 +1229,6 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	} else {
 		sub.sid = arg
 	}
-	acc := c.acc
 	key := string(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
