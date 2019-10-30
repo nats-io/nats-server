@@ -38,6 +38,7 @@ type MsgSetStore interface {
 	StorageBytesUpdate(func(int64))
 	Stats() MsgSetStats
 	Stop()
+	ObservableStore(name string) (ObservableStore, error)
 }
 
 // MsgSetStats are stats about this given message set.
@@ -46,6 +47,33 @@ type MsgSetStats struct {
 	Bytes    uint64
 	FirstSeq uint64
 	LastSeq  uint64
+}
+
+type ObservableStore interface {
+	State() (*ObservableState, error)
+	Config() (*ObservableConfig, error)
+	Update(*ObservableState) error
+	Stop()
+}
+
+// SequencePair has both the observable and the message set sequence. This point to same message.
+type SequencePair struct {
+	ObsSeq uint64
+	SetSeq uint64
+}
+
+// ObservableState represents a stored state for an observable.
+type ObservableState struct {
+	// Delivered keep track of last delivered sequence numbers for both set and observable.
+	Delivered SequencePair
+	// AckFloor keeps track of the ack floors for both set and observable.
+	AckFloor SequencePair
+	// These are both in set sequence context.
+	// Pending is for all messages pending and the timestamp for the delivered time.
+	// This will only be present when the AckPolicy is ExplicitAck.
+	Pending map[uint64]int64
+	// This is for messages that have been redelivered, so count > 1.
+	Redelivery map[uint64]uint64
 }
 
 var (
