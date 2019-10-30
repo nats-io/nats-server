@@ -448,8 +448,8 @@ func (c *client) getRTT() string {
 	if c.rtt == 0 {
 		// If a real client, go ahead and send ping now to get a value
 		// for RTT. For tests and telnet, or if client is closing, etc skip.
-		if !c.flags.isSet(clearConnection) && c.flags.isSet(connectReceived) && c.opts.Lang != "" {
-			c.sendPing()
+		if c.opts.Lang != "" {
+			c.sendRTTPingLocked()
 		}
 		return ""
 	}

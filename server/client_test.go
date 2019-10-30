@@ -1632,3 +1632,66 @@ func TestResponsePermissions(t *testing.T) {
 		})
 	}
 }
+
+func TestPingNotSentTooSoon(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	doneCh := make(chan bool, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			s.Connz(nil)
+			select {
+			case <-doneCh:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		nc, err := nats.Connect(s.ClientURL())
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		nc.Close()
+	}
+	close(doneCh)
+	wg.Wait()
+
+	c, br, _ := newClientForServer(s)
+	connectOp := []byte("CONNECT {\"user\":\"ivan\",\"pass\":\"bar\"}\r\n")
+	c.parse(connectOp)
+
+	// Since client has not send PING, having server try to send RTT ping
+	// to client should not do anything
+	if c.sendRTTPing() {
+		t.Fatalf("RTT ping should not have been sent")
+	}
+	// Speed up detection of time elapsed by moving the c.start to more than
+	// 2 secs in the past.
+	c.mu.Lock()
+	c.start = time.Unix(0, c.start.UnixNano()-int64(maxNoRTTPingBeforeFirstPong+time.Second))
+	c.mu.Unlock()
+
+	errCh := make(chan error, 1)
+	go func() {
+		l, _ := br.ReadString('\n')
+		if l != "PING\r\n" {
+			errCh <- fmt.Errorf("expected to get PING, got %s", l)
+			return
+		}
+		errCh <- nil
+	}()
+	if !c.sendRTTPing() {
+		t.Fatalf("RTT ping should have been sent")
+	}
+	wg.Wait()
+	if e := <-errCh; e != nil {
+		t.Fatal(e.Error())
+	}
+}

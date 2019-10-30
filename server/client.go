@@ -71,6 +71,12 @@ const (
 	shortsToShrink  = 2     // Trigger to shrink dynamic buffers
 	maxFlushPending = 10    // Max fsps to have in order to wait for writeLoop
 	readLoopReport  = 2 * time.Second
+
+	// Server should not send a PING (for RTT) before the first PONG has
+	// been sent to the client. However, in case some client libs don't
+	// send CONNECT+PING, cap the maximum time before server can send
+	// the RTT PING.
+	maxNoRTTPingBeforeFirstPong = 2 * time.Second
 )
 
 var readLoopReportThreshold = readLoopReport
@@ -1524,12 +1530,29 @@ func (c *client) sendPong() {
 }
 
 // Used to kick off a RTT measurement for latency tracking.
-func (c *client) sendRTTPing() {
+func (c *client) sendRTTPing() bool {
 	c.mu.Lock()
-	if c.flags.isSet(connectReceived) {
-		c.sendPing()
-	}
+	sent := c.sendRTTPingLocked()
 	c.mu.Unlock()
+	return sent
+}
+
+// Used to kick off a RTT measurement for latency tracking.
+// This is normally called only when the caller has checked that
+// the c.rtt is 0 and wants to force an update by sending a PING.
+// Client lock held on entry.
+func (c *client) sendRTTPingLocked() bool {
+	// Most client libs send a CONNECT+PING and wait for a PONG from the
+	// server. So if firstPongSent flag is set, it is ok for server to
+	// send the PING. But in case we have client libs that don't do that,
+	// allow the send of the PING if more than 2 secs have elapsed since
+	// the client TCP connection was accepted.
+	if !c.flags.isSet(clearConnection) &&
+		(c.flags.isSet(firstPongSent) || time.Since(c.start) > maxNoRTTPingBeforeFirstPong) {
+		c.sendPing()
+		return true
+	}
+	return false
 }
 
 // Assume the lock is held upon entry.
@@ -2321,8 +2344,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	// This needs to be from a non-client (otherwise tracking happens at requestor).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
 		// If we do not have a registered RTT queue that up now.
-		if client.rtt == 0 && client.flags.isSet(connectReceived) {
-			client.sendPing()
+		if client.rtt == 0 {
+			client.sendRTTPingLocked()
 		}
 		// FIXME(dlc) - We may need to optimize this.
 		// We will have tagged this with a suffix ('.T') if we are tracking. This is
