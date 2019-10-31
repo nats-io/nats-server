@@ -201,6 +201,8 @@ type client struct {
 	rrTracking map[string]*remoteLatency
 	rrMax      int
 
+	pslms []*pendingLatency
+
 	route *route
 	gw    *gateway
 	leaf  *leaf
@@ -1660,6 +1662,10 @@ func (c *client) processPing() {
 func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
+	// If we have a zero rtt quickly check if we have any pending latency measurements.
+	if c.rtt == 0 && len(c.pslms) > 0 {
+		go c.flushPendingLatencies()
+	}
 	c.ping.out = 0
 	c.rtt = time.Since(c.rttStart)
 	srv := c.srv
@@ -2396,6 +2402,49 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	return true
 }
 
+// Will flush all of our pending latencies.
+// Should be called from a go routine (processPong), so no locks held.
+func (c *client) flushPendingLatencies() {
+	var _pslms [32]*pendingLatency
+	c.mu.Lock()
+	reqClientRTT := c.rtt
+	pslms := append(_pslms[:0], c.pslms...)
+	c.pslms = nil
+	c.mu.Unlock()
+
+	for _, pl := range pslms {
+		// Fixup the service latency with requestor rtt.
+		// Hold si account lock which protects changes to the sl itself.
+		sl, si, a := pl.sl, pl.si, pl.acc
+		if sl.NATSLatency.Responder == 0 && pl.resp != nil && pl.resp.kind == CLIENT {
+			sl.NATSLatency.Responder = pl.resp.getRTTValue()
+		}
+		si.acc.mu.Lock()
+		reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
+		sl.RequestStart = reqStart
+		sl.NATSLatency.Requestor = reqClientRTT
+		sl.TotalLatency += reqClientRTT
+		si.acc.mu.Unlock()
+
+		if a.flushTrackingLatency(sl, si, pl.resp) {
+			// Make sure we remove the entry here.
+			si.acc.removeServiceImport(si.from)
+		}
+	}
+}
+
+// This will hold a pending latency waiting for requestor RTT.
+// Lock should be held.
+func (c *client) holdPendingLatency(pl *pendingLatency) {
+	if len(c.pslms) == 0 {
+		c.rrMax = c.acc.MaxAutoExpireResponseMaps()
+	}
+	c.pslms = append(c.pslms, pl)
+	if len(c.pslms) > c.rrMax {
+		go c.flushPendingLatencies()
+	}
+}
+
 // This will track a remote reply for an exported service that has requested
 // latency tracking.
 // Lock assumed to be held.
@@ -2740,7 +2789,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			if si.rt != Singleton {
 				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
 			} else if si.latency != nil && c.rtt == 0 {
-				// We have a service import that we are tracking but have not established RTT
+				// We have a service import that we are tracking but have not established RTT.
 				c.sendRTTPing()
 			}
 			// If this is a client or leaf connection and we are in gateway mode,
@@ -2787,7 +2836,6 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		if shouldRemove {
 			acc.removeServiceImport(si.from)
 		}
-
 	}
 }
 

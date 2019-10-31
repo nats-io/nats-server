@@ -707,21 +707,25 @@ type remoteLatency struct {
 	M2      ServiceLatency `json:"m2"`
 }
 
+// Used to hold for an RTT measurement from requestor.
+type pendingLatency struct {
+	acc  *Account // Exporting/Reporting account
+	si   *serviceImport
+	sl   *ServiceLatency
+	resp *client
+}
+
 // sendTrackingMessage will send out the appropriate tracking information for the
 // service request/response latency. This is called when the requestor's server has
 // received the response.
 // TODO(dlc) - holding locks for RTTs may be too much long term. Should revisit.
 func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *client) bool {
-	now := time.Now()
-	serviceRTT := time.Duration(now.UnixNano() - si.ts)
+	ts := time.Now()
+	serviceRTT := time.Duration(ts.UnixNano() - si.ts)
 
-	var (
-		reqClientRTT  = requestor.getRTTValue()
-		respClientRTT time.Duration
-		appName       string
-	)
-
-	expectRemoteM2 := responder != nil && responder.kind != CLIENT
+	var reqClientRTT = requestor.getRTTValue()
+	var respClientRTT time.Duration
+	var appName string
 
 	if responder != nil && responder.kind == CLIENT {
 		respClientRTT = responder.getRTTValue()
@@ -742,27 +746,46 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 		},
 		TotalLatency: reqClientRTT + serviceRTT,
 	}
-	sanitizeLatencyMetric(&sl)
+	if respClientRTT > 0 {
+		sl.NATSLatency.System = time.Since(ts)
+		sl.TotalLatency += sl.NATSLatency.System
+	}
+	// If we do not have a requestor RTT at this point we will wait for it to show up.
+	if reqClientRTT == 0 {
+		requestor.mu.Lock()
+		if requestor.flags.isSet(firstPongSent) {
+			requestor.holdPendingLatency(&pendingLatency{a, si, &sl, responder})
+			requestor.mu.Unlock()
+			return false
+		}
+		requestor.mu.Unlock()
+	}
 
+	return a.flushTrackingLatency(&sl, si, responder)
+}
+
+// We can attempt to flush out the latency metric. May pause if multiple measurements needed.
+func (a *Account) flushTrackingLatency(sl *ServiceLatency, si *serviceImport, responder *client) bool {
+	sanitizeLatencyMetric(sl)
 	// If we are expecting a remote measurement, store our sl here.
 	// We need to account for the race between this and us receiving the
 	// remote measurement.
 	// FIXME(dlc) - We need to clean these up but this should happen
 	// already with the auto-expire logic.
-	if expectRemoteM2 {
+	if responder != nil && responder.kind != CLIENT {
 		si.acc.mu.Lock()
 		if si.m1 != nil {
-			m1, m2 := &sl, si.m1
+			m1, m2 := sl, si.m1
 			m1.merge(m2)
 			si.acc.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			return true
 		}
-		si.m1 = &sl
+		si.m1 = sl
 		si.acc.mu.Unlock()
 		return false
 	} else {
-		a.srv.sendInternalAccountMsg(a, si.latency.subject, &sl)
+		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
 	}
 	return true
 }
