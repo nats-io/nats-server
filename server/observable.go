@@ -91,6 +91,7 @@ type Observable struct {
 	rdc         map[uint64]uint64
 	waiting     []string
 	config      ObservableConfig
+	store       ObservableStore
 	active      bool
 	replay      bool
 	atmr        *time.Timer
@@ -202,6 +203,13 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	} else {
 		o.name = createObservableName()
 	}
+
+	store, err := mset.store.ObservableStore(o.name)
+	if err != nil {
+		mset.mu.Unlock()
+		return nil, fmt.Errorf("error creating store for observable: %v", err)
+	}
+	o.store = store
 
 	if !isValidName(o.name) {
 		mset.mu.Unlock()
@@ -355,6 +363,28 @@ func (o *Observable) processNak(sseq, dseq uint64) {
 	}
 }
 
+// Will update the underlying store.
+// Lock should be held.
+func (o *Observable) updateStore() {
+	if o.store == nil {
+		return
+	}
+	state := &ObservableState{
+		Delivered: SequencePair{
+			ObsSeq: o.dseq,
+			SetSeq: o.sseq,
+		},
+		AckFloor: SequencePair{
+			ObsSeq: o.adflr,
+			SetSeq: o.asflr,
+		},
+		Pending:    o.pending,
+		Redelivery: o.rdc,
+	}
+	// FIXME(dlc) - Hold onto any errors.
+	o.store.Update(state)
+}
+
 // Process an ack for a message.
 func (o *Observable) ackMsg(sseq, dseq uint64) {
 	var sagap uint64
@@ -382,6 +412,8 @@ func (o *Observable) ackMsg(sseq, dseq uint64) {
 		o.mu.Unlock()
 		return
 	}
+	o.updateStore()
+
 	mset := o.mset
 	o.mu.Unlock()
 
@@ -691,6 +723,7 @@ func (o *Observable) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint
 		o.trackPending(seq)
 	}
 	o.dseq++
+	o.updateStore()
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
@@ -954,7 +987,9 @@ func (o *Observable) Delete() error {
 		o.mu.Unlock()
 		return nil
 	}
-
+	if o.store != nil {
+		o.store.Stop()
+	}
 	o.mset = nil
 	o.active = false
 	ackSub := o.ackSub
