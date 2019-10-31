@@ -747,9 +747,17 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 	_, leafExpect := setupConn(t, lc)
-	buf := leafExpect(lsubRe)
-	if !strings.Contains(string(buf), "foo") {
-		t.Fatalf("Expected interest for 'foo' as 'LS+ foo\\r\\n', got %q", buf)
+	var totalBuf []byte
+	for count := 0; count != 3; {
+		buf := leafExpect(lsubRe)
+		totalBuf = append(totalBuf, buf...)
+		count += len(lsubRe.FindAllSubmatch(buf, -1))
+		if count > 3 {
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 3, count, totalBuf)
+		}
+	}
+	if !strings.Contains(string(totalBuf), "foo") {
+		t.Fatalf("Expected interest for 'foo' as 'LS+ foo\\r\\n', got %q", totalBuf)
 	}
 }
 

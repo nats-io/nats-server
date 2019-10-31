@@ -76,7 +76,7 @@ const (
 var readLoopReportThreshold = readLoopReport
 
 // Represent client booleans with a bitmask
-type clientFlag byte
+type clientFlag uint16
 
 // Some client state represented as flags
 const (
@@ -88,6 +88,7 @@ const (
 	flushOutbound                            // Marks client as having a flushOutbound call in progress.
 	noReconnect                              // Indicate that on close, this connection should not attempt a reconnect
 	closeConnection                          // Marks that closeConnection has already been called.
+	leafAllSubsSent                          // Indicates that a leaf node has sent the subscription list
 )
 
 // set the flag (would be equivalent to set the boolean to true)
