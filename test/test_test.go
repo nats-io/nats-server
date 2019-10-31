@@ -15,10 +15,14 @@ package test
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/server"
 )
 
 func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
@@ -37,6 +41,64 @@ func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
 	}
 }
 
+// Slow Proxy - really crude but works for introducing simple RTT delays.
+type slowProxy struct {
+	listener net.Listener
+	conns    []net.Conn
+}
+
+func newSlowProxy(latency time.Duration, opts *server.Options) (*slowProxy, *server.Options) {
+	saddr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
+	hp := net.JoinHostPort("127.0.0.1", "0")
+	l, e := net.Listen("tcp", hp)
+	if e != nil {
+		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	sp := &slowProxy{listener: l}
+	go func() {
+		client, err := l.Accept()
+		if err != nil {
+			return
+		}
+		server, err := net.DialTimeout("tcp", saddr, time.Second)
+		if err != nil {
+			panic("Can't connect to server")
+		}
+		sp.conns = append(sp.conns, client, server)
+		go sp.loop(latency, client, server)
+		go sp.loop(latency, server, client)
+	}()
+	sopts := &server.Options{Host: "127.0.0.1", Port: port}
+	return sp, sopts
+}
+
+func (sp *slowProxy) loop(latency time.Duration, r, w net.Conn) {
+	delay := latency / 2
+	for {
+		var buf [1024]byte
+		n, err := r.Read(buf[:])
+		if err != nil {
+			return
+		}
+		time.Sleep(delay)
+		if _, err = w.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
+func (sp *slowProxy) Stop() {
+	if sp.listener != nil {
+		sp.listener.Close()
+		sp.listener = nil
+		for _, c := range sp.conns {
+			c.Close()
+		}
+	}
+}
+
+// Dummy Logger
 type dummyLogger struct {
 	sync.Mutex
 	msg string

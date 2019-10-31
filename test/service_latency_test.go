@@ -128,7 +128,7 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	if startDelta > 5*time.Millisecond {
 		t.Fatalf("Bad start delta %v", startDelta)
 	}
-	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.9) {
+	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.8) {
 		t.Fatalf("Bad service latency: %v (%v)", sl.ServiceLatency, serviceTime)
 	}
 	if sl.TotalLatency < sl.ServiceLatency {
@@ -189,6 +189,76 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	checkServiceLatency(t, sl, start, serviceTime)
+}
+
+// If a client has a longer RTT that the effective RTT for NATS + responder
+// the requestor RTT will be marked as 0. This can happen quite often with
+// utility programs that are far away from a cluster like NGS but the service
+// response time has a shorter RTT.
+func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
+	sc := createSuperCluster(t, 2, 2)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+
+	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
+	defer nc.Close()
+
+	// The service listener. Instant response.
+	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
+		time.Sleep(time.Millisecond)
+		msg.Respond([]byte("22 msgs"))
+	})
+
+	// Listen for metrics
+	rsub, _ := nc.SubscribeSync("results")
+
+	nc.Flush()
+
+	// Requestor and processing
+	requestAndCheck := func(sopts *server.Options) {
+		rtt := 10 * time.Millisecond
+		sp, opts := newSlowProxy(rtt, sopts)
+		defer sp.Stop()
+
+		nc2 := clientConnect(t, opts, "bar")
+		defer nc2.Close()
+
+		start := time.Now()
+		nc2.Flush()
+		if d := time.Since(start); d < rtt {
+			t.Fatalf("Expected an rtt of at least %v, got %v", rtt, d)
+		}
+
+		// Send the request.
+		start = time.Now()
+		_, err := nc2.Request("ngs.usage", []byte("1h"), time.Second)
+		if err != nil {
+			t.Fatalf("Expected a response")
+		}
+
+		var sl server.ServiceLatency
+		rmsg, _ := rsub.NextMsg(time.Second)
+		json.Unmarshal(rmsg.Data, &sl)
+
+		// We want to test here that when the client requestor RTT is larger then the response time
+		// we still deliver a requestor value > 0.
+		// Now check that it is close to rtt.
+		if sl.NATSLatency.Requestor < rtt {
+			t.Fatalf("Expected requestor latency to be > %v, got %v", rtt, sl.NATSLatency.Requestor)
+		}
+		if sl.TotalLatency < rtt {
+			t.Fatalf("Expected total latency to be > %v, got %v", rtt, sl.TotalLatency)
+		}
+	}
+
+	// Check same server.
+	requestAndCheck(sc.clusters[0].opts[0])
+	// Check from remote server across GW.
+	requestAndCheck(sc.clusters[1].opts[1])
+	// Same cluster but different server
+	requestAndCheck(sc.clusters[0].opts[1])
 }
 
 func connRTT(nc *nats.Conn) time.Duration {

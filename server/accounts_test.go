@@ -1396,7 +1396,7 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 		t.Fatalf("Error adding account service import to client bar: %v", err)
 	}
 
-	// Now setup the resonder under cfoo and the listener for the results
+	// Now setup the responder under cfoo and the listener for the results
 	cfoo.parse([]byte("SUB track.service 1\r\nSUB results 2\r\n"))
 
 	readFooMsg := func() ([]byte, string) {

@@ -712,16 +712,12 @@ type remoteLatency struct {
 // received the response.
 // TODO(dlc) - holding locks for RTTs may be too much long term. Should revisit.
 func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *client) bool {
-	now := time.Now()
-	serviceRTT := time.Duration(now.UnixNano() - si.ts)
+	ts := time.Now()
+	serviceRTT := time.Duration(ts.UnixNano() - si.ts)
 
-	var (
-		reqClientRTT  = requestor.getRTTValue()
-		respClientRTT time.Duration
-		appName       string
-	)
-
-	expectRemoteM2 := responder != nil && responder.kind != CLIENT
+	var reqClientRTT = requestor.getRTTValue()
+	var respClientRTT time.Duration
+	var appName string
 
 	if responder != nil && responder.kind == CLIENT {
 		respClientRTT = responder.getRTTValue()
@@ -731,7 +727,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 	// We will estimate time when request left the requestor by time we received
 	// and the client RTT for the requestor.
 	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
-	sl := ServiceLatency{
+	sl := &ServiceLatency{
 		AppName:        appName,
 		RequestStart:   reqStart,
 		ServiceLatency: serviceRTT - respClientRTT,
@@ -742,27 +738,32 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 		},
 		TotalLatency: reqClientRTT + serviceRTT,
 	}
-	sanitizeLatencyMetric(&sl)
+	if respClientRTT > 0 {
+		sl.NATSLatency.System = time.Since(ts)
+		sl.TotalLatency += sl.NATSLatency.System
+	}
+
+	sanitizeLatencyMetric(sl)
 
 	// If we are expecting a remote measurement, store our sl here.
 	// We need to account for the race between this and us receiving the
 	// remote measurement.
 	// FIXME(dlc) - We need to clean these up but this should happen
 	// already with the auto-expire logic.
-	if expectRemoteM2 {
+	if responder != nil && responder.kind != CLIENT {
 		si.acc.mu.Lock()
 		if si.m1 != nil {
-			m1, m2 := &sl, si.m1
+			m1, m2 := sl, si.m1
 			m1.merge(m2)
 			si.acc.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			return true
 		}
-		si.m1 = &sl
+		si.m1 = sl
 		si.acc.mu.Unlock()
 		return false
 	} else {
-		a.srv.sendInternalAccountMsg(a, si.latency.subject, &sl)
+		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
 	}
 	return true
 }

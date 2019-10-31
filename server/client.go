@@ -827,7 +827,6 @@ func (c *client) readLoop() {
 	}()
 
 	// Start read buffer.
-
 	b := make([]byte, c.in.rsz)
 
 	for {
@@ -1237,7 +1236,10 @@ func (c *client) processConnect(arg []byte) error {
 		return nil
 	}
 	c.last = time.Now()
-
+	// Estimate RTT to start.
+	if c.kind == CLIENT {
+		c.rtt = c.last.Sub(c.start)
+	}
 	kind := c.kind
 	srv := c.srv
 
@@ -2740,7 +2742,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			if si.rt != Singleton {
 				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
 			} else if si.latency != nil && c.rtt == 0 {
-				// We have a service import that we are tracking but have not established RTT
+				// We have a service import that we are tracking but have not established RTT.
 				c.sendRTTPing()
 			}
 			// If this is a client or leaf connection and we are in gateway mode,
@@ -2787,7 +2789,6 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 		if shouldRemove {
 			acc.removeServiceImport(si.from)
 		}
-
 	}
 }
 
@@ -3092,20 +3093,6 @@ func (c *client) processPingTimer() {
 
 	// Reset to fire again.
 	c.setPingTimer()
-}
-
-// Lock should be held
-// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
-// This is because the clients by default are usually setting same interval
-// and we have alot of cross ping/pongs between clients and servers.
-// We will now suppress the server ping/pong if we have received a client ping.
-func (c *client) setFirstPingTimer(pingInterval time.Duration) {
-	if c.srv == nil {
-		return
-	}
-	addDelay := rand.Int63n(int64(pingInterval / 5))
-	d := pingInterval + time.Duration(addDelay)
-	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 // Lock should be held

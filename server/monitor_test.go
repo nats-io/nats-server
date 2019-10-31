@@ -328,8 +328,10 @@ func TestConnz(t *testing.T) {
 		if ci.Idle == "" {
 			t.Fatal("Expected Idle to be valid\n")
 		}
-		if ci.RTT != "" {
-			t.Fatal("Expected RTT to NOT be set for new connection\n")
+		// This is a change, we now expect them to be set for connections when the
+		// client sends a connect.
+		if ci.RTT == "" {
+			t.Fatal("Expected RTT to be set for new connection\n")
 		}
 	}
 

@@ -252,8 +252,8 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			if pm.msg != nil {
 				b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
 			}
-			// We can have an override for account here.
 			c.mu.Lock()
+			// We can have an override for account here.
 			if pm.acc != nil {
 				c.acc = pm.acc
 			} else {
@@ -1063,14 +1063,14 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 
 	// So we have not processed the response tracking measurement yet.
 	if m1 == nil {
-		acc.mu.Lock()
+		si.acc.mu.Lock()
 		// Double check since could have slipped in.
 		m1 = si.m1
 		if m1 == nil {
 			// Store our value there for them to pick up.
 			si.m1 = &m2
 		}
-		acc.mu.Unlock()
+		si.acc.mu.Unlock()
 		if m1 == nil {
 			return
 		}
