@@ -926,13 +926,16 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.opts.Pedantic = false
 
 	// Create and initialize the smap since we know our bound account now.
-	s.initLeafNodeSmap(c)
-
+	lm := s.initLeafNodeSmap(c)
 	// We are good to go, send over all the bound account subscriptions.
-	s.startGoRoutine(func() {
+	if lm <= 128 {
 		c.sendAllLeafSubs()
-		s.grWG.Done()
-	})
+	} else {
+		s.startGoRoutine(func() {
+			c.sendAllLeafSubs()
+			s.grWG.Done()
+		})
+	}
 
 	// Add in the leafnode here since we passed through auth at this point.
 	s.addLeafNodeConnection(c)
@@ -946,11 +949,11 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 // Snapshot the current subscriptions from the sublist into our smap which
 // we will keep updated from now on.
-func (s *Server) initLeafNodeSmap(c *client) {
+func (s *Server) initLeafNodeSmap(c *client) int {
 	acc := c.acc
 	if acc == nil {
 		c.Debugf("Leafnode does not have an account bound")
-		return
+		return 0
 	}
 	// Collect all account subs here.
 	_subs := [32]*subscription{}
@@ -1020,7 +1023,9 @@ func (s *Server) initLeafNodeSmap(c *client) {
 	if c.leaf.remote == nil {
 		c.leaf.smap[lds]++
 	}
+	lenMap := len(c.leaf.smap)
 	c.mu.Unlock()
+	return lenMap
 }
 
 // updateInterestForAccountOnGateway called from gateway code when processing RS+ and RS-.
@@ -1080,7 +1085,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	} else {
 		delete(c.leaf.smap, key)
 	}
-	if update {
+	if update && c.flags.isSet(leafAllSubsSent) {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
@@ -1119,6 +1124,10 @@ func (c *client) sendAllLeafSubs() {
 	var b bytes.Buffer
 
 	c.mu.Lock()
+	// Set the flag here before first call to flushOutbound() since that
+	// releases the lock and so an update could sneak in.
+	c.flags.set(leafAllSubsSent)
+
 	for key, n := range c.leaf.smap {
 		c.writeLeafSub(&b, key, n)
 	}
