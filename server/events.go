@@ -1257,7 +1257,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 		delete(s.sys.replies, replySubj)
 		s.mu.Unlock()
 		// Send the response.
-		s.sendInternalAccountMsg(c.acc, reply, nsubs)
+		s.sendInternalAccountMsg(c.acc, reply, atomic.LoadInt32(&nsubs))
 	}()
 }
 
