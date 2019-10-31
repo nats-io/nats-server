@@ -707,14 +707,6 @@ type remoteLatency struct {
 	M2      ServiceLatency `json:"m2"`
 }
 
-// Used to hold for an RTT measurement from requestor.
-type pendingLatency struct {
-	acc  *Account // Exporting/Reporting account
-	si   *serviceImport
-	sl   *ServiceLatency
-	resp *client
-}
-
 // sendTrackingMessage will send out the appropriate tracking information for the
 // service request/response latency. This is called when the requestor's server has
 // received the response.
@@ -735,7 +727,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 	// We will estimate time when request left the requestor by time we received
 	// and the client RTT for the requestor.
 	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
-	sl := ServiceLatency{
+	sl := &ServiceLatency{
 		AppName:        appName,
 		RequestStart:   reqStart,
 		ServiceLatency: serviceRTT - respClientRTT,
@@ -750,23 +742,9 @@ func (a *Account) sendTrackingLatency(si *serviceImport, requestor, responder *c
 		sl.NATSLatency.System = time.Since(ts)
 		sl.TotalLatency += sl.NATSLatency.System
 	}
-	// If we do not have a requestor RTT at this point we will wait for it to show up.
-	if reqClientRTT == 0 {
-		requestor.mu.Lock()
-		if requestor.flags.isSet(firstPongSent) {
-			requestor.holdPendingLatency(&pendingLatency{a, si, &sl, responder})
-			requestor.mu.Unlock()
-			return false
-		}
-		requestor.mu.Unlock()
-	}
 
-	return a.flushTrackingLatency(&sl, si, responder)
-}
-
-// We can attempt to flush out the latency metric. May pause if multiple measurements needed.
-func (a *Account) flushTrackingLatency(sl *ServiceLatency, si *serviceImport, responder *client) bool {
 	sanitizeLatencyMetric(sl)
+
 	// If we are expecting a remote measurement, store our sl here.
 	// We need to account for the race between this and us receiving the
 	// remote measurement.

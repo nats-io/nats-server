@@ -76,7 +76,7 @@ func newSlowProxy(latency time.Duration, opts *server.Options) (*slowProxy, *ser
 func (sp *slowProxy) loop(latency time.Duration, r, w net.Conn) {
 	delay := latency / 2
 	for {
-		var buf [64]byte
+		var buf [1024]byte
 		n, err := r.Read(buf[:])
 		if err != nil {
 			return

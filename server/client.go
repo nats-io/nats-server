@@ -201,8 +201,6 @@ type client struct {
 	rrTracking map[string]*remoteLatency
 	rrMax      int
 
-	pslms []*pendingLatency
-
 	route *route
 	gw    *gateway
 	leaf  *leaf
@@ -829,7 +827,6 @@ func (c *client) readLoop() {
 	}()
 
 	// Start read buffer.
-
 	b := make([]byte, c.in.rsz)
 
 	for {
@@ -1239,7 +1236,10 @@ func (c *client) processConnect(arg []byte) error {
 		return nil
 	}
 	c.last = time.Now()
-
+	// Estimate RTT to start.
+	if c.kind == CLIENT {
+		c.rtt = c.last.Sub(c.start)
+	}
 	kind := c.kind
 	srv := c.srv
 
@@ -1662,10 +1662,6 @@ func (c *client) processPing() {
 func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
-	// If we have a zero rtt quickly check if we have any pending latency measurements.
-	if c.rtt == 0 && len(c.pslms) > 0 {
-		go c.flushPendingLatencies()
-	}
 	c.ping.out = 0
 	c.rtt = time.Since(c.rttStart)
 	srv := c.srv
@@ -2402,49 +2398,6 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	return true
 }
 
-// Will flush all of our pending latencies.
-// Should be called from a go routine (processPong), so no locks held.
-func (c *client) flushPendingLatencies() {
-	var _pslms [32]*pendingLatency
-	c.mu.Lock()
-	reqClientRTT := c.rtt
-	pslms := append(_pslms[:0], c.pslms...)
-	c.pslms = nil
-	c.mu.Unlock()
-
-	for _, pl := range pslms {
-		// Fixup the service latency with requestor rtt.
-		// Hold si account lock which protects changes to the sl itself.
-		sl, si, a := pl.sl, pl.si, pl.acc
-		if sl.NATSLatency.Responder == 0 && pl.resp != nil && pl.resp.kind == CLIENT {
-			sl.NATSLatency.Responder = pl.resp.getRTTValue()
-		}
-		si.acc.mu.Lock()
-		reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
-		sl.RequestStart = reqStart
-		sl.NATSLatency.Requestor = reqClientRTT
-		sl.TotalLatency += reqClientRTT
-		si.acc.mu.Unlock()
-
-		if a.flushTrackingLatency(sl, si, pl.resp) {
-			// Make sure we remove the entry here.
-			si.acc.removeServiceImport(si.from)
-		}
-	}
-}
-
-// This will hold a pending latency waiting for requestor RTT.
-// Lock should be held.
-func (c *client) holdPendingLatency(pl *pendingLatency) {
-	if len(c.pslms) == 0 {
-		c.rrMax = c.acc.MaxAutoExpireResponseMaps()
-	}
-	c.pslms = append(c.pslms, pl)
-	if len(c.pslms) > c.rrMax {
-		go c.flushPendingLatencies()
-	}
-}
-
 // This will track a remote reply for an exported service that has requested
 // latency tracking.
 // Lock assumed to be held.
@@ -3140,20 +3093,6 @@ func (c *client) processPingTimer() {
 
 	// Reset to fire again.
 	c.setPingTimer()
-}
-
-// Lock should be held
-// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
-// This is because the clients by default are usually setting same interval
-// and we have alot of cross ping/pongs between clients and servers.
-// We will now suppress the server ping/pong if we have received a client ping.
-func (c *client) setFirstPingTimer(pingInterval time.Duration) {
-	if c.srv == nil {
-		return
-	}
-	addDelay := rand.Int63n(int64(pingInterval / 5))
-	d := pingInterval + time.Duration(addDelay)
-	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 
 // Lock should be held

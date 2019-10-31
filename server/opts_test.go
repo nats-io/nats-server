@@ -2382,10 +2382,8 @@ func TestExpandPath(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	cases := []struct {
-		path    string
-		home    string
-		testEnv string
-
+		path     string
+		home     string
 		wantPath string
 		wantErr  bool
 	}{

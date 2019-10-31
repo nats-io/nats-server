@@ -47,6 +47,9 @@ const (
 
 	// Interval for the first PING for non client connections.
 	firstPingInterval = time.Second
+
+	// This is for the first ping for client connections.
+	firstClientPingInterval = 2 * time.Second
 )
 
 // Make this a variable so that we can change during tests
@@ -1699,7 +1702,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Do final client initialization
 
 	// Set the First Ping timer.
-	c.setFirstPingTimer(opts.PingInterval)
+	s.setFirstPingTimer(c)
 
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })
@@ -2524,11 +2527,19 @@ func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
 // Invoked for route, leaf and gateway connections. Set the very first
 // PING to a lower interval to capture the initial RTT.
 // After that the PING interval will be set to the user defined value.
+// Client lock should be held.
 func (s *Server) setFirstPingTimer(c *client) {
 	opts := s.getOpts()
 	d := opts.PingInterval
-	if d > firstPingInterval {
-		d = firstPingInterval
+	if c.kind != CLIENT {
+		if d > firstPingInterval {
+			d = firstPingInterval
+		}
+	} else if d > firstClientPingInterval {
+		d = firstClientPingInterval
 	}
+	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
+	addDelay := rand.Int63n(int64(d / 5))
+	d += time.Duration(addDelay)
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }

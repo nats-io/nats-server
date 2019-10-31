@@ -128,7 +128,7 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	if startDelta > 5*time.Millisecond {
 		t.Fatalf("Bad start delta %v", startDelta)
 	}
-	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.9) {
+	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.8) {
 		t.Fatalf("Bad service latency: %v (%v)", sl.ServiceLatency, serviceTime)
 	}
 	if sl.TotalLatency < sl.ServiceLatency {
@@ -195,7 +195,7 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 // the requestor RTT will be marked as 0. This can happen quite often with
 // utility programs that are far away from a cluster like NGS but the service
 // response time has a shorter RTT.
-func TestServiceLatencyClientRTTSlowerThanServiceRTT(t *testing.T) {
+func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 	sc := createSuperCluster(t, 2, 2)
 	defer sc.shutdown()
 
@@ -207,11 +207,14 @@ func TestServiceLatencyClientRTTSlowerThanServiceRTT(t *testing.T) {
 
 	// The service listener. Instant response.
 	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
+		time.Sleep(time.Millisecond)
 		msg.Respond([]byte("22 msgs"))
 	})
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
+
+	nc.Flush()
 
 	// Requestor and processing
 	requestAndCheck := func(sopts *server.Options) {
