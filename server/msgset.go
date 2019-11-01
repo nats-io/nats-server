@@ -15,6 +15,7 @@ package server
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -112,13 +113,15 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 		mset.config.Subjects = append(mset.config.Subjects, mset.config.Name)
 	}
 	jsa.msgSets[config.Name] = mset
+	storeDir := path.Join(jsa.storeDir, config.Name)
 	jsa.mu.Unlock()
 
 	// Bind to the account.
 	c.registerWithAccount(a)
 
 	// Create the appropriate storage
-	if err := mset.setupStore(); err != nil {
+
+	if err := mset.setupStore(storeDir); err != nil {
 		mset.delete()
 		return nil, err
 	}
@@ -240,7 +243,7 @@ func (mset *MsgSet) unsubscribe(sub *subscription) {
 	mset.client.unsubscribe(mset.client.acc, sub, true, true)
 }
 
-func (mset *MsgSet) setupStore() error {
+func (mset *MsgSet) setupStore(storeDir string) error {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -252,7 +255,11 @@ func (mset *MsgSet) setupStore() error {
 		}
 		mset.store = ms
 	case FileStorage:
-		return fmt.Errorf("NO IMPL")
+		fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, mset.config)
+		if err != nil {
+			return err
+		}
+		mset.store = fs
 	}
 	jsa, st := mset.jsa, mset.config.Storage
 	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
@@ -384,7 +391,7 @@ func (mset *MsgSet) delete() error {
 	return mset.stop(true)
 }
 
-func (mset *MsgSet) stop(purge bool) error {
+func (mset *MsgSet) stop(delete bool) error {
 	mset.mu.Lock()
 	if mset.sendq != nil {
 		mset.sendq <- nil
@@ -403,14 +410,18 @@ func (mset *MsgSet) stop(purge bool) error {
 	mset.mu.Unlock()
 	c.closeConnection(ClientClosed)
 
-	if purge {
-		mset.store.Purge()
+	if mset.store == nil {
+		return nil
+	}
+
+	if delete {
+		mset.store.Delete()
 		for _, o := range obs {
 			o.Delete()
 		}
+	} else {
+		mset.store.Stop()
 	}
-
-	mset.store.Stop()
 
 	return nil
 }
