@@ -37,6 +37,7 @@ type MsgSetStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	StorageBytesUpdate(func(int64))
 	Stats() MsgSetStats
+	Delete()
 	Stop()
 	ObservableStore(name string) (ObservableStore, error)
 }

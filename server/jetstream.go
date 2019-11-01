@@ -18,6 +18,7 @@ import (
 	"io/ioutil"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -118,6 +119,7 @@ type jsAccount struct {
 	memUsed       int64
 	storeReserved int64
 	storeUsed     int64
+	storeDir      string
 	msgSets       map[string]*MsgSet
 }
 
@@ -287,6 +289,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		return fmt.Errorf("jetstream already enabled for account")
 	}
 	jsa := &jsAccount{js: js, account: a, limits: *limits, msgSets: make(map[string]*MsgSet)}
+	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
 	js.accounts[a] = jsa
 	js.reserveResources(limits)
 	js.mu.Unlock()
