@@ -266,6 +266,12 @@ func memStoreMsgSize(subj string, msg []byte) uint64 {
 	return uint64(len(subj) + len(msg) + 16) // 8*2 for seq + age
 }
 
+// Delete is same as Stop for memory store.
+func (ms *memStore) Delete() {
+	ms.Purge()
+	ms.Stop()
+}
+
 func (ms *memStore) Stop() {
 	ms.mu.Lock()
 	if ms.ageChk != nil {

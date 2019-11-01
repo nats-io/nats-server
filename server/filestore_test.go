@@ -77,9 +77,6 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	if _, err := newFileStore(fcfg, MsgSetConfig{Storage: FileStorage}); err == nil {
 		t.Fatalf("Expected an error with no name")
 	}
-	if _, err := newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage}); err == nil {
-		t.Fatalf("Expected an error with non-existent directory")
-	}
 
 	// Make the directories to succeed in setup.
 	os.MkdirAll(storeDir, 0755)

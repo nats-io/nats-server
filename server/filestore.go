@@ -152,7 +152,9 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 
 	// Check the directory
 	if stat, err := os.Stat(fcfg.StoreDir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("store directory does not exist")
+		if err := os.MkdirAll(fcfg.StoreDir, 0755); err != nil {
+			return nil, fmt.Errorf("could not create storage directory - %v", err)
+		}
 	} else if stat == nil || !stat.IsDir() {
 		return nil, fmt.Errorf("store directory is not a directory")
 	}
@@ -323,6 +325,20 @@ func (fs *fileStore) recoverMsgs() error {
 	}
 
 	return err
+}
+
+// GetSeqFromTime looks for the first sequence number that has the message
+// with >= timestamp.
+func (ms *fileStore) GetSeqFromTime(t time.Time) uint64 {
+	// TODO(dlc) - IMPL
+	return 0
+}
+
+// StorageBytesUpdate registers an async callback for updates to storage changes.
+func (fs *fileStore) StorageBytesUpdate(cb func(int64)) {
+	fs.mu.Lock()
+	fs.scb = cb
+	fs.mu.Unlock()
 }
 
 // This rolls to a new append msg block.
@@ -546,6 +562,10 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		} else {
 			mb.kickWriteFlusher()
 		}
+	}
+	if fs.scb != nil {
+		delta := int64(msz)
+		fs.scb(-delta)
 	}
 }
 
@@ -1329,6 +1349,12 @@ func (fs *fileStore) closeLastMsgBlock(sync bool) {
 	fs.lmb.close(sync)
 }
 
+func (fs *fileStore) Delete() {
+	fs.Purge()
+	fs.Stop()
+	os.RemoveAll(fs.fcfg.StoreDir)
+}
+
 func (fs *fileStore) Stop() {
 	fs.mu.Lock()
 	if fs.closed {
@@ -1352,7 +1378,15 @@ func (fs *fileStore) Stop() {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
 	}
+
+	var _obs [256]*observableFileStore
+	obs := append(_obs[:0], fs.obs...)
+	fs.obs = nil
 	fs.mu.Unlock()
+
+	for _, o := range obs {
+		o.Stop()
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1373,7 +1407,7 @@ type observableFileStore struct {
 	closed bool
 }
 
-func (fs *fileStore) ObservableStore(name string) (*observableFileStore, error) {
+func (fs *fileStore) ObservableStore(name string) (ObservableStore, error) {
 	if fs == nil {
 		return nil, fmt.Errorf("fileStore is nil")
 	}
