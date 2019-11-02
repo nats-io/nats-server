@@ -2535,7 +2535,7 @@ func (s *Server) setFirstPingTimer(c *client) {
 		if d > firstPingInterval {
 			d = firstPingInterval
 		}
-	} else if d > firstClientPingInterval {
+	} else if d > firstClientPingInterval && !opts.DisableShortFirstPing {
 		d = firstClientPingInterval
 	}
 	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.

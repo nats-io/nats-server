@@ -37,6 +37,7 @@ const PERF_PORT = 8422
 func runBenchServer() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = PERF_PORT
+	opts.DisableShortFirstPing = true
 	return RunServer(&opts)
 }
 
@@ -172,6 +173,7 @@ func Benchmark__AuthPub0b_Payload(b *testing.B) {
 	b.StopTimer()
 
 	srv, opts := RunServerWithConfig("./configs/authorization.conf")
+	opts.DisableShortFirstPing = true
 	defer srv.Shutdown()
 
 	c := createClientConn(b, opts.Host, opts.Port)
@@ -267,11 +269,13 @@ func benchDefaultOptionsForAccounts() *server.Options {
 	o.Port = -1
 	o.Cluster.Host = o.Host
 	o.Cluster.Port = -1
+	o.DisableShortFirstPing = true
 	fooAcc := server.NewAccount("$foo")
 	fooAcc.AddStreamExport("foo", nil)
 	barAcc := server.NewAccount("$bar")
 	barAcc.AddStreamImport(fooAcc, "foo", "")
 	o.Accounts = []*server.Account{fooAcc, barAcc}
+
 	return &o
 }
 
@@ -465,6 +469,7 @@ func Benchmark___PubEightQueueSub(b *testing.B) {
 
 func Benchmark__DenyMsgNoWCPubSub(b *testing.B) {
 	s, opts := RunServerWithConfig("./configs/authorization.conf")
+	opts.DisableShortFirstPing = true
 	defer s.Shutdown()
 
 	c := createClientConn(b, opts.Host, opts.Port)
@@ -502,6 +507,7 @@ func Benchmark__DenyMsgNoWCPubSub(b *testing.B) {
 
 func Benchmark_DenyMsgYesWCPubSub(b *testing.B) {
 	s, opts := RunServerWithConfig("./configs/authorization.conf")
+	opts.DisableShortFirstPing = true
 	defer s.Shutdown()
 
 	c := createClientConn(b, opts.Host, opts.Port)
@@ -541,8 +547,10 @@ func routePubSub(b *testing.B, size int) {
 	b.StopTimer()
 
 	s1, o1 := RunServerWithConfig("./configs/srv_a.conf")
+	o1.DisableShortFirstPing = true
 	defer s1.Shutdown()
 	s2, o2 := RunServerWithConfig("./configs/srv_b.conf")
+	o2.DisableShortFirstPing = true
 	defer s2.Shutdown()
 
 	sub := createClientConn(b, o1.Host, o1.Port)
@@ -596,8 +604,10 @@ func Benchmark__RoutedPubSub_100K(b *testing.B) {
 
 func routeQueue(b *testing.B, numQueueSubs, size int) {
 	s1, o1 := RunServerWithConfig("./configs/srv_a.conf")
+	o1.DisableShortFirstPing = true
 	defer s1.Shutdown()
 	s2, o2 := RunServerWithConfig("./configs/srv_b.conf")
+	o2.DisableShortFirstPing = true
 	defer s2.Shutdown()
 
 	sub := createClientConn(b, o1.Host, o1.Port)
@@ -663,12 +673,15 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 	switch numServers {
 	case 1:
 		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		o1.DisableShortFirstPing = true
 		defer s1.Shutdown()
 		s2, o2 = s1, o1
 	case 2:
 		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		o1.DisableShortFirstPing = true
 		defer s1.Shutdown()
 		s2, o2 = RunServerWithConfig("./configs/srv_b.conf")
+		o2.DisableShortFirstPing = true
 		defer s2.Shutdown()
 	default:
 		b.Fatalf("%d servers not supported for this test\n", numServers)
@@ -869,12 +882,15 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 	switch numServers {
 	case 1:
 		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		o1.DisableShortFirstPing = true
 		defer s1.Shutdown()
 		s2, o2 = s1, o1
 	case 2:
 		s1, o1 = RunServerWithConfig("./configs/srv_a.conf")
+		o1.DisableShortFirstPing = true
 		defer s1.Shutdown()
 		s2, o2 = RunServerWithConfig("./configs/srv_b.conf")
+		o2.DisableShortFirstPing = true
 		defer s2.Shutdown()
 	default:
 		b.Fatalf("%d servers not supported for this test\n", numServers)
@@ -974,13 +990,19 @@ func Benchmark___FanIn_128kx100x1(b *testing.B) {
 	doFanIn(b, 1, 100, 1, sub, sizedString(65536*2))
 }
 
+func testDefaultBenchOptionsForGateway(name string) *server.Options {
+	opts := testDefaultOptionsForGateway(name)
+	opts.DisableShortFirstPing = true
+	return opts
+}
+
 func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublishers int, subInterest bool) {
 	b.Helper()
 	if b.N < numPublishers {
 		return
 	}
 
-	ob := testDefaultOptionsForGateway("B")
+	ob := testDefaultBenchOptionsForGateway("B")
 	sb := RunServer(ob)
 	defer sb.Shutdown()
 
@@ -991,7 +1013,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	if err != nil {
 		b.Fatalf("Error parsing url: %v", err)
 	}
-	oa := testDefaultOptionsForGateway("A")
+	oa := testDefaultBenchOptionsForGateway("A")
 	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
 		{
 			Name: "B",
@@ -1102,109 +1124,109 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	b.StopTimer()
 }
 
-func Benchmark_Gateways_Optimistic_1kx01x0(b *testing.B) {
+func Benchmark____GWs_Opt_1kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 1, false)
 }
 
-func Benchmark_Gateways_Optimistic_2kx01x0(b *testing.B) {
+func Benchmark____GWs_Opt_2kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 1, false)
 }
 
-func Benchmark_Gateways_Optimistic_4kx01x0(b *testing.B) {
+func Benchmark____GWs_Opt_4kx01x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 1, false)
 }
 
-func Benchmark_Gateways_Optimistic_1kx10x0(b *testing.B) {
+func Benchmark____GWs_Opt_1kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 10, false)
 }
 
-func Benchmark_Gateways_Optimistic_2kx10x0(b *testing.B) {
+func Benchmark____GWs_Opt_2kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 10, false)
 }
 
-func Benchmark_Gateways_Optimistic_4kx10x0(b *testing.B) {
+func Benchmark____GWs_Opt_4kx10x0(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 10, false)
 }
 
-func Benchmark_Gateways_Optimistic_1kx01x1(b *testing.B) {
+func Benchmark____GWs_Opt_1kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 1, true)
 }
 
-func Benchmark_Gateways_Optimistic_2kx01x1(b *testing.B) {
+func Benchmark____GWs_Opt_2kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 1, true)
 }
 
-func Benchmark_Gateways_Optimistic_4kx01x1(b *testing.B) {
+func Benchmark____GWs_Opt_4kx01x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 1, true)
 }
 
-func Benchmark_Gateways_Optimistic_1kx10x1(b *testing.B) {
+func Benchmark____GWs_Opt_1kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(1024), 10, true)
 }
 
-func Benchmark_Gateways_Optimistic_2kx10x1(b *testing.B) {
+func Benchmark____GWs_Opt_2kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(2048), 10, true)
 }
 
-func Benchmark_Gateways_Optimistic_4kx10x1(b *testing.B) {
+func Benchmark____GWs_Opt_4kx10x1(b *testing.B) {
 	gatewaysBench(b, true, sizedString(4096), 10, true)
 }
 
-func Benchmark_Gateways_InterestOnly_1kx01x0(b *testing.B) {
+func Benchmark____GWs_Int_1kx01x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(1024), 1, false)
 }
 
-func Benchmark_Gateways_InterestOnly_2kx01x0(b *testing.B) {
+func Benchmark____GWs_Int_2kx01x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(2048), 1, false)
 }
 
-func Benchmark_Gateways_InterestOnly_4kx01x0(b *testing.B) {
+func Benchmark____GWs_Int_4kx01x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(4096), 1, false)
 }
 
-func Benchmark_Gateways_InterestOnly_1kx10x0(b *testing.B) {
+func Benchmark____GWs_Int_1kx10x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(1024), 10, false)
 }
 
-func Benchmark_Gateways_InterestOnly_2kx10x0(b *testing.B) {
+func Benchmark____GWs_Int_2kx10x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(2048), 10, false)
 }
 
-func Benchmark_Gateways_InterestOnly_4kx10x0(b *testing.B) {
+func Benchmark____GWs_Int_4kx10x0(b *testing.B) {
 	gatewaysBench(b, false, sizedString(4096), 10, false)
 }
 
-func Benchmark_Gateways_InterestOnly_1kx01x1(b *testing.B) {
+func Benchmark____GWs_Int_1kx01x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(1024), 1, true)
 }
 
-func Benchmark_Gateways_InterestOnly_2kx01x1(b *testing.B) {
+func Benchmark____GWs_Int_2kx01x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(2048), 1, true)
 }
 
-func Benchmark_Gateways_InterestOnly_4kx01x1(b *testing.B) {
+func Benchmark____GWs_Int_4kx01x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(4096), 1, true)
 }
 
-func Benchmark_Gateways_InterestOnly_1kx10x1(b *testing.B) {
+func Benchmark____GWs_Int_1kx10x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(1024), 10, true)
 }
 
-func Benchmark_Gateways_InterestOnly_2kx10x1(b *testing.B) {
+func Benchmark____GWs_Int_2kx10x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(2048), 10, true)
 }
 
-func Benchmark_Gateways_InterestOnly_4kx10x1(b *testing.B) {
+func Benchmark____GWs_Int_4kx10x1(b *testing.B) {
 	gatewaysBench(b, false, sizedString(4096), 10, true)
 }
 
-// This bench only sends the requests to verify impact of reply
-// reply mapping in GW code.
+// This bench only sends the requests to verify impact
+// of reply mapping in GW code.
 func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
 	defer server.ResetGatewaysSolicitDelay()
 
-	ob := testDefaultOptionsForGateway("B")
+	ob := testDefaultBenchOptionsForGateway("B")
 	sb := RunServer(ob)
 	defer sb.Shutdown()
 
@@ -1212,7 +1234,7 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	if err != nil {
 		b.Fatalf("Error parsing url: %v", err)
 	}
-	oa := testDefaultOptionsForGateway("A")
+	oa := testDefaultBenchOptionsForGateway("A")
 	oa.Gateway.Gateways = []*server.RemoteGatewayOpts{
 		{
 			Name: "B",
@@ -1283,63 +1305,15 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	<-ch
 }
 
-func Benchmark_Gateways_Requests_CreateOneSubForAll(b *testing.B) {
+func Benchmark__GWs_Reqs_1_SubAll(b *testing.B) {
 	gatewaySendRequestsBench(b, true)
 }
 
-func Benchmark_Gateways_Requests_CreateOneSubForEach(b *testing.B) {
+func Benchmark__GWs_Reqs_1SubEach(b *testing.B) {
 	gatewaySendRequestsBench(b, false)
 }
 
-// Run some benchmarks against interest churn across routes.
-// Watching for contention retrieving accounts, etc.
-func Benchmark_________________LookupAccount(b *testing.B) {
-	s := runBenchServer()
-	defer s.Shutdown()
-
-	const acc = "$foo.bar"
-
-	if _, err := s.RegisterAccount(acc); err != nil {
-		b.Fatalf("Error registering '%s' - %v", acc, err)
-	}
-	// Now create Go routines to cycle through Lookups.
-	numRoutines := 100
-	loop := b.N / numRoutines
-
-	startCh := make(chan bool)
-
-	lookupLoop := func(ready, done chan bool) {
-		// Signal we are ready
-		close(ready)
-		// Wait to start up actual unsubs.
-		<-startCh
-
-		for i := 0; i < loop; i++ {
-			if _, err := s.LookupAccount(acc); err != nil {
-				b.Errorf("Error looking up account: %v", err)
-			}
-		}
-		close(done)
-	}
-
-	da := make([]chan bool, 0, numRoutines)
-	for i := 0; i < numRoutines; i++ {
-		ready := make(chan bool)
-		done := make(chan bool)
-		go lookupLoop(ready, done)
-		da = append(da, done)
-		<-ready
-	}
-
-	b.ResetTimer()
-	close(startCh)
-	for _, ch := range da {
-		<-ch
-	}
-	b.StopTimer()
-}
-
-func Benchmark___________RoutedInterestGraph(b *testing.B) {
+func Benchmark_____RoutedIntGraph(b *testing.B) {
 	s, o := RunServerWithConfig("./configs/srv_a.conf")
 	o.AllowNewAccounts = true
 	defer s.Shutdown()
