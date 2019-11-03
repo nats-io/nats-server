@@ -284,7 +284,7 @@ func (ms *memStore) Stop() {
 
 type observableMemStore struct{}
 
-func (ms *memStore) ObservableStore(_ string) (ObservableStore, error) {
+func (ms *memStore) ObservableStore(_ string, _ *ObservableConfig) (ObservableStore, error) {
 	return &observableMemStore{}, nil
 }
 
@@ -292,6 +292,5 @@ func (ms *memStore) ObservableStore(_ string) (ObservableStore, error) {
 func (os *observableMemStore) Update(_ *ObservableState) error {
 	return nil
 }
-func (os *observableMemStore) Stop()                              {}
-func (os *observableMemStore) State() (*ObservableState, error)   { return nil, nil }
-func (os *observableMemStore) Config() (*ObservableConfig, error) { return nil, nil }
+func (os *observableMemStore) Stop()                            {}
+func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }

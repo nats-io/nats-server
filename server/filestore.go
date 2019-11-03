@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
@@ -182,14 +184,19 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
 
-	// Create highway hash for message blocks. Use 256 hash of directory as key.
+	// Create highway hash for message blocks. Use sha256 of directory as key.
 	key := sha256.Sum256([]byte(mdir))
 	fs.hh, err = highwayhash.New64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 
+	// Recover our state.
 	if err := fs.recoverState(); err != nil {
+		return nil, err
+	}
+	// Write our meta data iff new.
+	if err := fs.writeMsgSetMeta(); err != nil {
 		return nil, err
 	}
 
@@ -208,6 +215,51 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 		// TODO(dlc) - Make the blocksize relative to this if set.
 		return defaultOtherBlockSize
 	}
+}
+
+// Write out meta and the checksum.
+func (fs *fileStore) writeMsgSetMeta() error {
+	meta := path.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+		return err
+	}
+	b, err := json.MarshalIndent(fs.cfg, _EMPTY_, "  ")
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+		return err
+	}
+	fs.hh.Reset()
+	fs.hh.Write(b)
+	checksum := hex.EncodeToString(fs.hh.Sum(nil))
+	sum := path.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
+	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (obs *observableFileStore) writeObservableMeta() error {
+	meta := path.Join(obs.odir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+		return err
+	}
+	b, err := json.MarshalIndent(obs.cfg, _EMPTY_, "  ")
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+		return err
+	}
+	obs.hh.Reset()
+	obs.hh.Write(b)
+	checksum := hex.EncodeToString(obs.hh.Sum(nil))
+	sum := path.Join(obs.odir, JetStreamMetaFileSum)
+	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (fs *fileStore) recoverState() error {
@@ -1396,6 +1448,7 @@ func (fs *fileStore) Stop() {
 type observableFileStore struct {
 	mu     sync.Mutex
 	fs     *fileStore
+	cfg    *ObservableConfig
 	name   string
 	odir   string
 	ifn    string
@@ -1407,9 +1460,12 @@ type observableFileStore struct {
 	closed bool
 }
 
-func (fs *fileStore) ObservableStore(name string) (ObservableStore, error) {
+func (fs *fileStore) ObservableStore(name string, cfg *ObservableConfig) (ObservableStore, error) {
 	if fs == nil {
-		return nil, fmt.Errorf("fileStore is nil")
+		return nil, fmt.Errorf("filestore is nil")
+	}
+	if cfg == nil || name == "" {
+		return nil, fmt.Errorf("bad observable config")
 	}
 	odir := path.Join(fs.fcfg.StoreDir, obsDir, name)
 	if err := os.MkdirAll(odir, 0755); err != nil {
@@ -1417,6 +1473,7 @@ func (fs *fileStore) ObservableStore(name string) (ObservableStore, error) {
 	}
 	o := &observableFileStore{
 		fs:   fs,
+		cfg:  cfg,
 		name: name,
 		odir: odir,
 		ifn:  path.Join(odir, obsState),
@@ -1429,6 +1486,10 @@ func (fs *fileStore) ObservableStore(name string) (ObservableStore, error) {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 	o.hh = hh
+
+	if err := o.writeObservableMeta(); err != nil {
+		return nil, err
+	}
 
 	fs.mu.Lock()
 	fs.obs = append(fs.obs, o)
@@ -1660,10 +1721,6 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 		}
 	}
 	return state, nil
-}
-
-func (o *observableFileStore) Config() (*ObservableConfig, error) {
-	return nil, nil
 }
 
 func (o *observableFileStore) Stop() {
