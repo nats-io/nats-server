@@ -32,8 +32,8 @@ type ObservableConfig struct {
 	DeliverAll   bool          `json:"deliver_all,omitempty"`
 	DeliverLast  bool          `json:"deliver_last,omitempty"`
 	AckPolicy    AckPolicy     `json:"ack_policy"`
-	AckWait      time.Duration `json:"ack_wait"`
-	Partition    string        `json:"partition"`
+	AckWait      time.Duration `json:"ack_wait,omitempty"`
+	Partition    string        `json:"partition,omitempty"`
 	ReplayPolicy ReplayPolicy  `json:"replay_policy"`
 }
 
@@ -204,7 +204,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		o.name = createObservableName()
 	}
 
-	store, err := mset.store.ObservableStore(o.name)
+	store, err := mset.store.ObservableStore(o.name, config)
 	if err != nil {
 		mset.mu.Unlock()
 		return nil, fmt.Errorf("error creating store for observable: %v", err)
