@@ -15,6 +15,8 @@ package server
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/bits"
@@ -690,6 +692,103 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	}
 }
 
+func TestFileStoreMeta(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	mconfig := MsgSetConfig{Name: "ZZ-22-33", Storage: FileStorage, Subjects: []string{"foo.*"}, Replicas: 22}
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, mconfig)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	metafile := path.Join(storeDir, JetStreamMetaFile)
+	metasum := path.Join(storeDir, JetStreamMetaFileSum)
+
+	// Test to make sure meta file and checksum are present.
+	if _, err := os.Stat(metafile); os.IsNotExist(err) {
+		t.Fatalf("Expected metafile %q to exist", metafile)
+	}
+	if _, err := os.Stat(metasum); os.IsNotExist(err) {
+		t.Fatalf("Expected metafile's checksum %q to exist", metasum)
+	}
+
+	buf, err := ioutil.ReadFile(metafile)
+	if err != nil {
+		t.Fatalf("Error reading metafile: %v", err)
+	}
+	var mconfig2 MsgSetConfig
+	if err := json.Unmarshal(buf, &mconfig2); err != nil {
+		t.Fatalf("Error unmarshalling: %v", err)
+	}
+	if !reflect.DeepEqual(mconfig, mconfig2) {
+		t.Fatalf("MsgSet configs not equal, got %+v vs %+v", mconfig2, mconfig)
+	}
+	checksum, err := ioutil.ReadFile(metasum)
+	if err != nil {
+		t.Fatalf("Error reading metafile checksum: %v", err)
+	}
+	fs.hh.Reset()
+	fs.hh.Write(buf)
+	mychecksum := hex.EncodeToString(fs.hh.Sum(nil))
+	if mychecksum != string(checksum) {
+		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
+	}
+
+	// Now create an observable. Same deal for them.
+	oconfig := ObservableConfig{
+		Delivery:   "d",
+		DeliverAll: true,
+		Partition:  "foo",
+		AckPolicy:  AckAll,
+	}
+	oname := "obs22"
+	obs, err := fs.ObservableStore(oname, &oconfig)
+	if err != nil {
+		t.Fatalf("Unexepected error: %v", err)
+	}
+
+	ometafile := path.Join(storeDir, obsDir, oname, JetStreamMetaFile)
+	ometasum := path.Join(storeDir, obsDir, oname, JetStreamMetaFileSum)
+
+	// Test to make sure meta file and checksum are present.
+	if _, err := os.Stat(ometafile); os.IsNotExist(err) {
+		t.Fatalf("Expected observable metafile %q to exist", ometafile)
+	}
+	if _, err := os.Stat(ometasum); os.IsNotExist(err) {
+		t.Fatalf("Expected observable metafile's checksum %q to exist", ometasum)
+	}
+
+	buf, err = ioutil.ReadFile(ometafile)
+	if err != nil {
+		t.Fatalf("Error reading observable metafile: %v", err)
+	}
+
+	var oconfig2 ObservableConfig
+	if err := json.Unmarshal(buf, &oconfig2); err != nil {
+		t.Fatalf("Error unmarshalling: %v", err)
+	}
+	if oconfig2 != oconfig {
+		//if !reflect.DeepEqual(oconfig, oconfig2) {
+		t.Fatalf("Observable configs not equal, got %+v vs %+v", oconfig2, oconfig)
+	}
+	checksum, err = ioutil.ReadFile(ometasum)
+
+	if err != nil {
+		t.Fatalf("Error reading observable metafile checksum: %v", err)
+	}
+
+	hh := obs.(*observableFileStore).hh
+	hh.Reset()
+	hh.Write(buf)
+	mychecksum = hex.EncodeToString(hh.Sum(nil))
+	if mychecksum != string(checksum) {
+		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
+	}
+}
+
 func TestFileStoreCollapseDmap(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
@@ -822,7 +921,7 @@ func TestFileStoreObservable(t *testing.T) {
 	}
 	defer fs.Stop()
 
-	o, err := fs.ObservableStore("obs22")
+	o, err := fs.ObservableStore("obs22", &ObservableConfig{})
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
@@ -1060,7 +1159,7 @@ func TestFileStoreObservablesPerf(t *testing.T) {
 	defer fs.Stop()
 
 	// Test Observables.
-	o, err := fs.ObservableStore("obs22")
+	o, err := fs.ObservableStore("obs22", &ObservableConfig{})
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
@@ -1108,5 +1207,4 @@ func TestFileStoreObservablesPerf(t *testing.T) {
 	tt = time.Since(start)
 	fmt.Printf("time is %v\n", tt)
 	fmt.Printf("%.0f updates/sec\n", float64(toStore)/tt.Seconds())
-
 }
