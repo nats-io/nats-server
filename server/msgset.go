@@ -24,16 +24,16 @@ import (
 // MsgSetConfig will determine the name, subjects and retention policy
 // for a given message set. If subjects is empty the name will be used.
 type MsgSetConfig struct {
-	Name           string
-	Subjects       []string
-	Retention      RetentionPolicy
-	MaxObservables int
-	MaxMsgs        int64
-	MaxBytes       int64
-	MaxAge         time.Duration
-	Storage        StorageType
-	Replicas       int
-	NoAck          bool
+	Name           string          `json:"name"`
+	Subjects       []string        `json:"subjects,omitempty"`
+	Retention      RetentionPolicy `json:"retention"`
+	MaxObservables int             `json:"max_observables"`
+	MaxMsgs        int64           `json:"max_msgs"`
+	MaxBytes       int64           `json:"max_bytes"`
+	MaxAge         time.Duration   `json:"max_age"`
+	Storage        StorageType     `json:"storage"`
+	Replicas       int             `json:"num_replicas"`
+	NoAck          bool            `json:"no_ack,omitempty"`
 }
 
 // RetentionPolicy determines how messages in a set are retained.
