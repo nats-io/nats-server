@@ -100,6 +100,10 @@ const (
 
 	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
 	JetStreamRequestNextPre = "$JS.RN"
+
+	// Metafiles for message sets and observables.
+	JetStreamMetaFile    = "meta.inf"
+	JetStreamMetaFileSum = "meta.sum"
 )
 
 // For easier handling of exports and imports.
