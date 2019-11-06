@@ -164,6 +164,13 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 	return cfg, nil
 }
 
+// Config returns the message set's configuration.
+func (mset *MsgSet) Config() MsgSetConfig {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return mset.config
+}
+
 // Delete deletes a message set from the owning account.
 func (mset *MsgSet) Delete() error {
 	mset.mu.Lock()
@@ -421,6 +428,9 @@ func (mset *MsgSet) stop(delete bool) error {
 		}
 	} else {
 		mset.store.Stop()
+		for _, o := range obs {
+			o.Stop()
+		}
 	}
 
 	return nil
@@ -431,6 +441,19 @@ func (mset *MsgSet) NumObservables() int {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return len(mset.obs)
+}
+
+// LookupObservable will retrive an observable by name.
+func (mset *MsgSet) LookupObservable(name string) *Observable {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	for _, o := range mset.obs {
+		if o.name == name {
+			return o
+		}
+	}
+	return nil
 }
 
 // Stats will return the current stats for this message set.
