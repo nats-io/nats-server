@@ -1290,6 +1290,9 @@ func (s *Server) Shutdown() {
 	// eventing items associated with accounts.
 	s.shutdownEventing()
 
+	// Now check jetstream.
+	s.shutdownJetStream()
+
 	s.mu.Lock()
 	// Prevent issues with multiple calls.
 	if s.shutdown {

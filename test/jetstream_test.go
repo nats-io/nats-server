@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nuid"
 )
 
 func TestJetStreamBasicNilConfig(t *testing.T) {
@@ -2577,5 +2579,130 @@ func TestJetStreamMsgSetFileStorageTrackingAndLimits(t *testing.T) {
 
 	if usage.Memory > uint64(al.MaxMemory) {
 		t.Fatalf("Expected memory to not exceed limit of %d, got %d", al.MaxMemory, usage.Memory)
+	}
+}
+
+func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
+	base := runtime.NumGoroutine()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	acc := s.GlobalAccount()
+
+	type obsi struct {
+		cfg server.ObservableConfig
+		ack int
+	}
+	type info struct {
+		cfg   server.MsgSetConfig
+		stats server.MsgSetStats
+		obs   []obsi
+	}
+	ostate := make(map[string]info)
+
+	nid := nuid.New()
+	randomSubject := func() string {
+		nid.RandomizePrefix()
+		return fmt.Sprintf("SUBJ.%s", nid.Next())
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	numMsgSets := 10
+	for i := 1; i <= numMsgSets; i++ {
+		msetName := fmt.Sprintf("MMS-%d", i)
+		subjects := []string{randomSubject(), randomSubject(), randomSubject()}
+		msetConfig := server.MsgSetConfig{
+			Name:     msetName,
+			Storage:  server.FileStorage,
+			Subjects: subjects,
+			MaxMsgs:  100,
+		}
+		mset, err := acc.AddMsgSet(&msetConfig)
+		if err != nil {
+			t.Fatalf("Unexpected error adding message set: %v", err)
+		}
+		defer mset.Delete()
+
+		toSend := rand.Intn(100)
+		for n := 1; n <= toSend; n++ {
+			msg := []byte(fmt.Sprintf("Hello %d", n*i))
+			subj := subjects[rand.Intn(len(subjects))]
+			resp, _ := nc.Request(subj, msg, 50*time.Millisecond)
+			expectOKResponse(t, resp)
+		}
+		// Create up to 5 observables.
+		numObs := rand.Intn(5)
+		var obs []obsi
+		for n := 1; n <= numObs; n++ {
+			oname := fmt.Sprintf("WQ-%d", n)
+			o, err := mset.AddObservable(workerModeConfig(oname))
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Now grab some messages.
+			toReceive := rand.Intn(toSend)
+			for r := 0; r < toReceive; r++ {
+				resp, _ := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+				if resp != nil {
+					resp.Respond(nil)
+				}
+			}
+			obs = append(obs, obsi{o.Config(), toReceive})
+		}
+		ostate[msetName] = info{mset.Config(), mset.Stats(), obs}
+	}
+	pusage := acc.JetStreamUsage()
+
+	// Shutdown the server. Restart and make sure things come back.
+	s.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+	delta := (runtime.NumGoroutine() - base)
+	if delta > 3 {
+		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
+	}
+
+	s = RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	acc = s.GlobalAccount()
+
+	nusage := acc.JetStreamUsage()
+	if nusage != pusage {
+		t.Fatalf("Usage does not match after restore: %+v vs %+v", nusage, pusage)
+	}
+
+	for mname, info := range ostate {
+		mset, err := acc.LookupMsgSet(mname)
+		if err != nil {
+			t.Fatalf("Expected to find a msgset for %q", mname)
+		}
+		if stats := mset.Stats(); stats != info.stats {
+			t.Fatalf("Stats do not match: %+v vs %+v", stats, info.stats)
+		}
+		if cfg := mset.Config(); !reflect.DeepEqual(cfg, info.cfg) {
+			t.Fatalf("Configs do not match: %+v vs %+v", cfg, info.cfg)
+		}
+		// Observables.
+		if mset.NumObservables() != len(info.obs) {
+			t.Fatalf("Number of observables do not match: %d vs %d", mset.NumObservables(), len(info.obs))
+		}
+		for _, oi := range info.obs {
+			if o := mset.LookupObservable(oi.cfg.Durable); o != nil {
+				if uint64(oi.ack+1) != o.NextSeq() {
+					t.Fatalf("Observable next seq is not correct: %d vs %d", oi.ack+1, o.NextSeq())
+				}
+			} else {
+				t.Fatalf("Expected to get an observable")
+			}
+		}
 	}
 }
