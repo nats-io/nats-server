@@ -192,7 +192,7 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 	}
 
 	// Recover our state.
-	if err := fs.recoverState(); err != nil {
+	if err := fs.recoverMsgs(); err != nil {
 		return nil, err
 	}
 	// Write our meta data iff new.
@@ -260,11 +260,6 @@ func (obs *observableFileStore) writeObservableMeta() error {
 		return err
 	}
 	return nil
-}
-
-func (fs *fileStore) recoverState() error {
-	return fs.recoverMsgs()
-	// FIXME(dlc) - Observables
 }
 
 const msgHdrSize = 22
@@ -390,7 +385,11 @@ func (ms *fileStore) GetSeqFromTime(t time.Time) uint64 {
 func (fs *fileStore) StorageBytesUpdate(cb func(int64)) {
 	fs.mu.Lock()
 	fs.scb = cb
+	bsz := fs.stats.Bytes
 	fs.mu.Unlock()
+	if cb != nil && bsz > 0 {
+		cb(int64(bsz))
+	}
 }
 
 // This rolls to a new append msg block.
