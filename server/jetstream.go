@@ -14,6 +14,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -217,6 +218,33 @@ func (s *Server) JetStreamEnabled() bool {
 	return enabled
 }
 
+// Shutdown jetstream for this server.
+func (s *Server) shutdownJetStream() {
+	s.mu.Lock()
+	if s.js == nil {
+		s.mu.Unlock()
+		return
+	}
+	var _jsa [512]*jsAccount
+	jsas := _jsa[:0]
+	// Collect accounts.
+	for _, jsa := range s.js.accounts {
+		jsas = append(jsas, jsa)
+	}
+	s.mu.Unlock()
+
+	for _, jsa := range jsas {
+		if jsa.account != nil {
+			jsa.account.DisableJetStream()
+		}
+	}
+
+	s.mu.Lock()
+	s.js.accounts = nil
+	s.js = nil
+	s.mu.Unlock()
+}
+
 // JetStreamConfig will return the current config. Useful if the system
 // created a dynamic configuration. A copy is returned.
 func (s *Server) JetStreamConfig() *JetStreamConfig {
@@ -273,9 +301,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
 	}
-	if a, err := s.LookupAccount(a.Name); err != nil || a == nil {
-		return fmt.Errorf("jetstream unknown account")
-	}
 
 	// No limits means we dynamically set up limits.
 	if limits == nil {
@@ -317,7 +342,93 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.Debugf("  Max Memory:      %s", FriendlyBytes(limits.MaxMemory))
 	s.Debugf("  Max Storage:     %s", FriendlyBytes(limits.MaxStore))
 
+	// Restore any state here.
+	fis, _ := ioutil.ReadDir(jsa.storeDir)
+	if len(fis) > 0 {
+		s.Debugf("Recovering JetStream for %q", a.Name)
+	}
+	for _, fi := range fis {
+		metafile := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFile)
+		metasum := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFileSum)
+		if _, err := os.Stat(metafile); os.IsNotExist(err) {
+			s.Debugf("Missing MsgSet metafile for %q", metafile)
+			continue
+		}
+		buf, err := ioutil.ReadFile(metafile)
+		if err != nil {
+			s.Debugf("Error reading metafile %q: %v", metasum, err)
+			continue
+		}
+		if _, err := os.Stat(metasum); os.IsNotExist(err) {
+			s.Debugf("Missing MsgSet checksum for %q", metasum)
+			continue
+		}
+		// FIXME(dlc) - check checksum.
+		var cfg MsgSetConfig
+		if err := json.Unmarshal(buf, &cfg); err != nil {
+			s.Debugf("Error unmarshalling MsgSet metafile: %v", err)
+			continue
+		}
+		mset, err := a.AddMsgSet(&cfg)
+		if err != nil {
+			s.Debugf("Error recreating MsgSet: %v", err)
+		}
+
+		// Now do Observables.
+		odir := path.Join(jsa.storeDir, fi.Name(), obsDir)
+		ofis, _ := ioutil.ReadDir(odir)
+		if len(ofis) > 0 {
+			s.Debugf("Recovering Observable for MsgSet - %q", fi.Name())
+		}
+		for _, ofi := range ofis {
+			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
+			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			if _, err := os.Stat(metafile); os.IsNotExist(err) {
+				s.Debugf("Missing Observable Metafile for %q", metafile)
+				continue
+			}
+			buf, err := ioutil.ReadFile(metafile)
+			if err != nil {
+				s.Debugf("Error reading observable metafile %q: %v", metasum, err)
+				continue
+			}
+			if _, err := os.Stat(metasum); os.IsNotExist(err) {
+				s.Debugf("Missing Observable checksum for %q", metasum)
+				continue
+			}
+			var cfg ObservableConfig
+			if err := json.Unmarshal(buf, &cfg); err != nil {
+				s.Debugf("Error unmarshalling Observable metafile: %v", err)
+				continue
+			}
+			obs, err := mset.AddObservable(&cfg)
+			if err != nil {
+				s.Debugf("Error adding Observable: %v", err)
+				continue
+			}
+			if err := obs.readStoredState(); err != nil {
+				s.Debugf("Error restoring Observable state: %v", err)
+			}
+		}
+	}
 	return nil
+}
+
+func (a *Account) LookupMsgSet(name string) (*MsgSet, error) {
+	a.mu.RLock()
+	jsa := a.js
+	a.mu.RUnlock()
+
+	if jsa == nil {
+		return nil, fmt.Errorf("jetstream not enabled")
+	}
+	jsa.mu.Lock()
+	mset, ok := jsa.msgSets[name]
+	jsa.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("msgset not found")
+	}
+	return mset, nil
 }
 
 // UpdateJetStreamLimits will update the account limits for a JetStream enabled account.

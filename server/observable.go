@@ -290,6 +290,13 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	return o, nil
 }
 
+// Config returns the observable's configuration.
+func (o *Observable) Config() ObservableConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.config
+}
+
 func (o *Observable) updateDelivery(newDelivery string) {
 	// Update the config and the dsubj
 	o.mu.Lock()
@@ -361,6 +368,23 @@ func (o *Observable) processNak(sseq, dseq uint64) {
 	if mset != nil {
 		mset.signalObservers()
 	}
+}
+
+func (o *Observable) readStoredState() error {
+	if o.store == nil {
+		return nil
+	}
+	state, err := o.store.State()
+	if err == nil && state != nil {
+		// FIXME(dlc) - re-apply state.
+		o.dseq = state.Delivered.ObsSeq
+		o.sseq = state.Delivered.SetSeq
+		o.adflr = state.AckFloor.ObsSeq
+		o.asflr = state.AckFloor.SetSeq
+		o.pending = state.Pending
+		o.rdc = state.Redelivery
+	}
+	return err
 }
 
 // Will update the underlying store.
@@ -978,10 +1002,18 @@ func stopAndClearTimer(tp **time.Timer) {
 	*tp = nil
 }
 
+// Stop will shutdown  the observable for the associated message set.
+func (o *Observable) Stop() error {
+	return o.stop(false)
+}
+
 // Delete will delete the observable for the associated message set.
 func (o *Observable) Delete() error {
+	return o.stop(true)
+}
+
+func (o *Observable) stop(dflag bool) error {
 	o.mu.Lock()
-	// TODO(dlc) - Do cleanup here.
 	mset := o.mset
 	if mset == nil {
 		o.mu.Unlock()
