@@ -3360,14 +3360,14 @@ func TestGatewayServiceImport(t *testing.T) {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
 		}
 
-		// For B, we expect it to send on the two subjects: test.request and foo.request
-		// then send the reply (MSG + RMSG).
+		// For B, we expect it to send to gateway on the two subjects: test.request
+		// and foo.request then send the reply to the client.
 		if i == 0 {
-			expected = 4
+			expected = 3
 		} else {
 			// The second time, one of the account will be suppressed, so we will get
 			// only 2 more messages.
-			expected = 6
+			expected = 5
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3666,14 +3666,14 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
 		}
 
-		// For B, we expect it to send on the two subjects: test.request and foo.request
-		// then send the reply (MSG + RMSG).
+		// For B, we expect it to send to gateway on the two subjects: test.request
+		// and foo.request then send the reply to the client.
 		if i == 0 {
-			expected = 4
+			expected = 3
 		} else {
 			// The second time, one of the account will be suppressed, so we will get
 			// only 2 more messages.
-			expected = 6
+			expected = 5
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -4623,24 +4623,16 @@ func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
 	// Setup a replier on s2
 	nc2 := natsConnect(t, fmt.Sprintf("nats://%s:%d", o2.Host, o2.Port))
 	defer nc2.Close()
-	count := 0
 	errCh := make(chan error, 1)
 	natsSub(t, nc2, "foo", func(m *nats.Msg) {
 		// Send reply regardless..
 		nc2.Publish(m.Reply, []byte("reply"))
-		if count == 0 {
-			if strings.HasPrefix(m.Reply, nats.InboxPrefix) {
-				errCh <- fmt.Errorf("First reply expected to have a special prefix, got %v", m.Reply)
-				return
-			}
-			count++
-		} else {
-			if !strings.HasPrefix(m.Reply, nats.InboxPrefix) {
-				errCh <- fmt.Errorf("Second reply expected to have normal inbox, got %v", m.Reply)
-				return
-			}
-			errCh <- nil
+		// Check that reply given to application is not mapped.
+		if !strings.HasPrefix(m.Reply, nats.InboxPrefix) {
+			errCh <- fmt.Errorf("Reply expected to have normal inbox, got %v", m.Reply)
+			return
 		}
+		errCh <- nil
 	})
 	natsFlush(t, nc2)
 	checkExpectedSubs(t, 1, s2)
@@ -4662,6 +4654,482 @@ func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("Did not get replies")
+	}
+}
+
+type delayedWriteConn struct {
+	sync.Mutex
+	net.Conn
+	bytes [][]byte
+	delay bool
+	wg    sync.WaitGroup
+}
+
+func (c *delayedWriteConn) Write(b []byte) (int, error) {
+	c.Lock()
+	defer c.Unlock()
+	if c.delay || len(c.bytes) > 0 {
+		c.bytes = append(c.bytes, append([]byte(nil), b...))
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.Lock()
+			defer c.Unlock()
+			if c.delay {
+				c.Unlock()
+				time.Sleep(100 * time.Millisecond)
+				c.Lock()
+			}
+			if len(c.bytes) > 0 {
+				b = c.bytes[0]
+				c.bytes = c.bytes[1:]
+				c.Conn.Write(b)
+			}
+		}()
+		return len(b), nil
+	}
+	return c.Conn.Write(b)
+}
+
+// This test uses a single account and makes sure that when
+// a reply subject is prefixed with $GR it comes back to
+// the origin cluster and delivered to proper reply subject
+// there, but also to subscribers on that reply subject
+// on the other cluster.
+func TestGatewaySendReplyAcrossGateways(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	ob.Accounts = []*Account{NewAccount("ACC")}
+	ob.Users = []*User{&User{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa1.Accounts = []*Account{NewAccount("ACC")}
+	oa1.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sa1, 1, time.Second)
+
+	// Now start another server in cluster "A". This will allow us
+	// to test the reply from cluster "B" coming back directly to
+	// the server where the request originates, and indirectly through
+	// route.
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa2.Accounts = []*Account{NewAccount("ACC")}
+	oa2.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
+	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	waitForOutboundGateways(t, sa2, 1, time.Second)
+	waitForInboundGateways(t, sb, 2, time.Second)
+	checkClusterFormed(t, sa1, sa2)
+
+	replySubj := "bar"
+
+	// Setup a responder on sb
+	ncb := natsConnect(t, fmt.Sprintf("nats://user:pwd@%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	natsSub(t, ncb, "foo", func(m *nats.Msg) {
+		m.Respond([]byte("reply"))
+	})
+	// Set a subscription on the reply subject on sb
+	subSB := natsSubSync(t, ncb, replySubj)
+	natsFlush(t, ncb)
+	checkExpectedSubs(t, 2, sb)
+
+	testReqReply := func(t *testing.T, host string, port int, createSubOnA bool) {
+		t.Helper()
+		nca := natsConnect(t, fmt.Sprintf("nats://user:pwd@%s:%d", host, port))
+		defer nca.Close()
+		if createSubOnA {
+			subSA := natsSubSync(t, nca, replySubj)
+			natsPubReq(t, nca, "foo", replySubj, []byte("hello"))
+			natsNexMsg(t, subSA, time.Second)
+			// Check for duplicates
+			if _, err := subSA.NextMsg(50 * time.Millisecond); err == nil {
+				t.Fatalf("Received duplicate message on subSA!")
+			}
+		} else {
+			natsPubReq(t, nca, "foo", replySubj, []byte("hello"))
+		}
+		natsNexMsg(t, subSB, time.Second)
+		// Check for duplicates
+		if _, err := subSB.NextMsg(50 * time.Millisecond); err == nil {
+			t.Fatalf("Received duplicate message on subSB!")
+		}
+	}
+	// Create requestor on sa1 to check for direct reply from GW:
+	testReqReply(t, oa1.Host, oa1.Port, true)
+	// Wait for subscription to be gone...
+	checkExpectedSubs(t, 0, sa1)
+	// Now create requestor on sa2, it will receive reply through sa1.
+	testReqReply(t, oa2.Host, oa2.Port, true)
+	checkExpectedSubs(t, 0, sa1)
+	checkExpectedSubs(t, 0, sa2)
+
+	// Now issue requests but without any interest in the requestor's
+	// origin cluster and make sure the other cluster gets the reply.
+	testReqReply(t, oa1.Host, oa1.Port, false)
+	testReqReply(t, oa2.Host, oa2.Port, false)
+
+	// There is a possible race between sa2 sending the RS+ for the
+	// subscription on the reply subject, and the GW reply making it
+	// to sa1 before the RS+ is processed there.
+	// We are going to force this race by making the route connection
+	// block as needed.
+
+	var route *client
+	sa2.mu.Lock()
+	for _, r := range sa2.routes {
+		route = r
+		break
+	}
+	sa2.mu.Unlock()
+	route.mu.Lock()
+	routeConn := &delayedWriteConn{
+		Conn: route.nc,
+		wg:   sync.WaitGroup{},
+	}
+	route.nc = routeConn
+	route.mu.Unlock()
+
+	delayRoute := func() {
+		routeConn.Lock()
+		routeConn.delay = true
+		routeConn.Unlock()
+	}
+	stopDelayRoute := func() {
+		routeConn.Lock()
+		routeConn.delay = false
+		wg := &routeConn.wg
+		routeConn.Unlock()
+		wg.Wait()
+	}
+
+	delayRoute()
+	testReqReply(t, oa2.Host, oa2.Port, true)
+	stopDelayRoute()
+
+	// Same test but now we have a local interest on the reply subject
+	// on sa1 to make sure that interest there does not prevent sending
+	// the RMSG to sa2, which is the origin of the request.
+	checkExpectedSubs(t, 0, sa1)
+	checkExpectedSubs(t, 0, sa2)
+	nca1 := natsConnect(t, fmt.Sprintf("nats://user:pwd@%s:%d", oa1.Host, oa1.Port))
+	defer nca1.Close()
+	subSA1 := natsSubSync(t, nca1, replySubj)
+	natsFlush(t, nca1)
+	checkExpectedSubs(t, 1, sa1)
+	checkExpectedSubs(t, 1, sa2)
+
+	delayRoute()
+	testReqReply(t, oa2.Host, oa2.Port, true)
+	stopDelayRoute()
+
+	natsNexMsg(t, subSA1, time.Second)
+}
+
+// This test will have a requestor on cluster A and responder
+// on cluster B, but when the responder sends the response,
+// it will also have a reply subject to receive a response
+// for the response.
+func TestGatewayPingPongReplyAcrossGateways(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	ob.Accounts = []*Account{NewAccount("ACC")}
+	ob.Users = []*User{&User{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa1.Accounts = []*Account{NewAccount("ACC")}
+	oa1.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sa1, 1, time.Second)
+
+	// Now start another server in cluster "A". This will allow us
+	// to test the reply from cluster "B" coming back directly to
+	// the server where the request originates, and indirectly through
+	// route.
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa2.Accounts = []*Account{NewAccount("ACC")}
+	oa2.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
+	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	waitForOutboundGateways(t, sa2, 1, time.Second)
+	waitForInboundGateways(t, sb, 2, time.Second)
+	checkClusterFormed(t, sa1, sa2)
+
+	// Setup a responder on sb
+	ncb := natsConnect(t, fmt.Sprintf("nats://user:pwd@%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	sbReplySubj := "sbreply"
+	subSB := natsSubSync(t, ncb, sbReplySubj)
+	natsSub(t, ncb, "foo", func(m *nats.Msg) {
+		ncb.PublishRequest(m.Reply, sbReplySubj, []byte("sb reply"))
+	})
+	natsFlush(t, ncb)
+	checkExpectedSubs(t, 2, sb)
+
+	testReqReply := func(t *testing.T, host string, port int) {
+		t.Helper()
+		nca := natsConnect(t, fmt.Sprintf("nats://user:pwd@%s:%d", host, port))
+		defer nca.Close()
+		msg, err := nca.Request("foo", []byte("sa request"), time.Second)
+		if err != nil {
+			t.Fatalf("Did not get response: %v", err)
+		}
+		// Check response from sb, it should have content "sb reply" and
+		// reply subject should not have GW prefix
+		if string(msg.Data) != "sb reply" || msg.Reply != sbReplySubj {
+			t.Fatalf("Unexpected message from sb: %+v", msg)
+		}
+		// Now send our own reply:
+		nca.Publish(msg.Reply, []byte("sa reply"))
+		// And make sure that subS2 receives it...
+		msg = natsNexMsg(t, subSB, time.Second)
+		if string(msg.Data) != "sa reply" || msg.Reply != _EMPTY_ {
+			t.Fatalf("Unexpected message from sa: %v", msg)
+		}
+	}
+	// Create requestor on sa1 to check for direct reply from GW:
+	testReqReply(t, oa1.Host, oa1.Port)
+	// Now from sa2 to see reply coming from route (sa1)
+	testReqReply(t, oa2.Host, oa2.Port)
+}
+
+// Similar to TestGatewaySendReplyAcrossGateways, but this time
+// with service import.
+func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	setAccountUserPassInOptions(ob, "$foo", "clientBFoo", "password")
+	setAccountUserPassInOptions(ob, "$bar", "clientBBar", "password")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	setAccountUserPassInOptions(oa1, "$foo", "clientAFoo", "password")
+	setAccountUserPassInOptions(oa1, "$bar", "clientABar", "password")
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sa1, 1, time.Second)
+
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	setAccountUserPassInOptions(oa2, "$foo", "clientAFoo", "password")
+	setAccountUserPassInOptions(oa2, "$bar", "clientABar", "password")
+	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	oa3 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	setAccountUserPassInOptions(oa3, "$foo", "clientAFoo", "password")
+	setAccountUserPassInOptions(oa3, "$bar", "clientABar", "password")
+	oa3.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
+	sa3 := runGatewayServer(oa3)
+	defer sa3.Shutdown()
+
+	waitForOutboundGateways(t, sa2, 1, time.Second)
+	waitForOutboundGateways(t, sa3, 1, time.Second)
+	waitForInboundGateways(t, sb, 3, time.Second)
+	checkClusterFormed(t, sa1, sa2, sa3)
+
+	// Setup account on B
+	fooB, _ := sb.LookupAccount("$foo")
+	// Add in the service export for the requests. Make it public.
+	fooB.AddServiceExport("foo.request", nil)
+
+	// Setup accounts on sa1, sa2 and sa3
+	setupAccsOnA := func(s *Server) {
+		// Get accounts
+		fooA, _ := s.LookupAccount("$foo")
+		barA, _ := s.LookupAccount("$bar")
+		// Add in the service export for the requests. Make it public.
+		fooA.AddServiceExport("foo.request", nil)
+		// Add import abilities to server A's bar account from foo.
+		if err := barA.AddServiceImport(fooA, "bar.request", "foo.request"); err != nil {
+			t.Fatalf("Error adding service import: %v", err)
+		}
+	}
+	setupAccsOnA(sa1)
+	setupAccsOnA(sa2)
+	setupAccsOnA(sa3)
+
+	// clientB will be connected to sb and be the service endpoint and responder.
+	bURL := fmt.Sprintf("nats://clientBFoo:password@127.0.0.1:%d", ob.Port)
+	clientBFoo := natsConnect(t, bURL)
+	defer clientBFoo.Close()
+	subBFoo := natsSubSync(t, clientBFoo, "foo.request")
+	natsFlush(t, clientBFoo)
+
+	// Create another client on B for account $bar that will listen to
+	// the reply subject.
+	bURL = fmt.Sprintf("nats://clientBBar:password@127.0.0.1:%d", ob.Port)
+	clientBBar := natsConnect(t, bURL)
+	defer clientBBar.Close()
+	replySubj := "reply"
+	subBReply := natsSubSync(t, clientBBar, replySubj)
+	natsFlush(t, clientBBar)
+
+	testServiceImport := func(t *testing.T, host string, port int) {
+		t.Helper()
+		bURL := fmt.Sprintf("nats://clientABar:password@%s:%d", host, port)
+		clientABar := natsConnect(t, bURL)
+		defer clientABar.Close()
+		subAReply := natsSubSync(t, clientABar, replySubj)
+		natsFlush(t, clientABar)
+
+		// Send the request from clientA on bar.request, which
+		// will be translated to foo.request and sent over.
+		natsPubReq(t, clientABar, "bar.request", replySubj, []byte("hi"))
+		natsFlush(t, clientABar)
+
+		// Expect the request to be received on subAFoo
+		msg, err := subBFoo.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("subBFoo failed to get request: %v", err)
+		}
+		if msg.Subject != "foo.request" || string(msg.Data) != "hi" {
+			t.Fatalf("Unexpected message: %v", msg)
+		}
+		if msg.Reply == replySubj {
+			t.Fatalf("Expected randomized reply, but got original")
+		}
+
+		// Check for duplicate message
+		if msg, err := subBFoo.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected msg: %v", msg)
+		}
+
+		// Send reply
+		natsPub(t, clientBFoo, msg.Reply, []byte("ok"))
+		natsFlush(t, clientBFoo)
+
+		// Now check that the subscription on the reply receives the message...
+		checkReply := func(t *testing.T, sub *nats.Subscription) {
+			t.Helper()
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("sub failed to get reply: %v", err)
+			}
+			if msg.Subject != replySubj || string(msg.Data) != "ok" {
+				t.Fatalf("Unexpected message: %v", msg)
+			}
+		}
+		// Check subscription on A (where the request originated)
+		checkReply(t, subAReply)
+		// And the subscription on B (where the responder is located)
+		checkReply(t, subBReply)
+	}
+
+	// We check the service import with GW working ok with either
+	// direct connection between the responder's server to the
+	// requestor's server and also through routes.
+	testServiceImport(t, oa1.Host, oa1.Port)
+
+	testServiceImport(t, oa2.Host, oa2.Port)
+	// sa1 is the one receiving the reply from GW between B and A.
+	// Check that the server routes directly to the the server
+	// with the interest.
+	checkRoute := func(t *testing.T, s *Server, expected int64) {
+		t.Helper()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, r := range s.routes {
+			r.mu.Lock()
+			if r.route.remoteID != sa1.ID() {
+				r.mu.Unlock()
+				continue
+			}
+			inMsgs := atomic.LoadInt64(&r.inMsgs)
+			r.mu.Unlock()
+			if inMsgs != expected {
+				t.Fatalf("Expected %v incoming msgs, got %v", expected, inMsgs)
+			}
+		}
+	}
+	// Wait a bit to make sure that we don't have a loop that
+	// cause messages to be routed more than needed.
+	time.Sleep(100 * time.Millisecond)
+	checkRoute(t, sa2, 1)
+	checkRoute(t, sa3, 0)
+
+	testServiceImport(t, oa3.Host, oa3.Port)
+	// Wait a bit to make sure that we don't have a loop that
+	// cause messages to be routed more than needed.
+	time.Sleep(100 * time.Millisecond)
+	checkRoute(t, sa2, 1)
+	checkRoute(t, sa3, 1)
+}
+
+func TestGatewayClientsDontReceiveMsgsOnGWPrefix(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Setup a responder on sb
+	ncb := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	natsSub(t, ncb, "foo", func(m *nats.Msg) {
+		if strings.HasPrefix(m.Reply, gwReplyPrefix) {
+			m.Respond([]byte(fmt.Sprintf("-ERR: received request with mapped reply subject %q", m.Reply)))
+		} else {
+			m.Respond([]byte("+OK: reply"))
+		}
+	})
+	// And create a sub on ">" that should not get the $GR reply.
+	subSB := natsSubSync(t, ncb, ">")
+	natsFlush(t, ncb)
+	checkExpectedSubs(t, 2, sb)
+
+	nca := natsConnect(t, fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port))
+	defer nca.Close()
+	msg, err := nca.Request("foo", []byte("request"), time.Second)
+	if err != nil {
+		t.Fatalf("Did not get response: %v", err)
+	}
+	if string(msg.Data) != "+OK: reply" {
+		t.Fatalf("Error from responder: %q", msg.Data)
+	}
+
+	// subSB would have also received the request, so drop that one.
+	msg = natsNexMsg(t, subSB, time.Second)
+	if string(msg.Data) != "request" {
+		t.Fatalf("Wrong request: %q", msg.Data)
+	}
+	// Once sa gets the direct reply, it should resend the reply
+	// with normal subject. So subSB should get the message with
+	// a subject that does not start with $GNR prefix.
+	msg = natsNexMsg(t, subSB, time.Second)
+	if string(msg.Data) != "+OK: reply" || strings.HasPrefix(msg.Subject, gwReplyPrefix) {
+		t.Fatalf("Unexpected message from sa: %v", msg)
+	}
+	// Check no more message...
+	if m, err := subSB.NextMsg(100 * time.Millisecond); m != nil || err == nil {
+		t.Fatalf("Expected only 1 message, got %+v", m)
 	}
 }
 

@@ -1695,3 +1695,28 @@ func TestPingNotSentTooSoon(t *testing.T) {
 		t.Fatal(e.Error())
 	}
 }
+
+func TestClientPublishFailsOnGWReplyPrefix(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	cch := make(chan bool, 1)
+	nc, err := nats.Connect(s.ClientURL(),
+		nats.ClosedHandler(func(_ *nats.Conn) {
+			cch <- true
+		}))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Expect to fail if publish on gateway reply prefix
+	nc.Publish(gwReplyPrefix+"anything", []byte("should fail"))
+
+	// This relies on NATS GO client to close connection on -ERR
+	// that is not permission violation or auth error.
+
+	// Wait for connection to be closed.
+	waitCh(t, cch, "Connection was not closed")
+}

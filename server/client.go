@@ -160,7 +160,8 @@ const (
 const pmrNoFlag int = 0
 const (
 	pmrCollectQueueNames int = 1 << iota
-	pmrTreatGatewayAsClient
+	pmrIgnoreEmptyQueueFilter
+	pmrAllowSendFromRouteToRoute
 )
 
 type client struct {
@@ -204,6 +205,8 @@ type client struct {
 	route *route
 	gw    *gateway
 	leaf  *leaf
+
+	gwrm map[string]*gwReplyMap
 
 	debug bool
 	trace bool
@@ -2293,6 +2296,9 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 				// Due to defer, reverse the code order so that execution
 				// is consistent with other cases where we unsubscribe.
 				if shouldForward {
+					if srv.gateway.enabled {
+						defer srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
+					}
 					defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
 				}
 				defer client.unsubscribe(client.acc, sub, true, true)
@@ -2302,6 +2308,9 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 				client.unsubscribe(client.acc, sub, true, true)
 				if shouldForward {
 					srv.updateRouteSubscriptionMap(client.acc, sub, -1)
+					if srv.gateway.enabled {
+						srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
+					}
 				}
 				return false
 			}
@@ -2609,6 +2618,12 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		c.traceMsg(msg)
 	}
 
+	// Check that client is not publishing on reserved $GNR. prefix
+	if hasGWRoutedPrefix(c.pa.subject) {
+		c.sendErrAndErr(ErrReservedPublishSubject.Error())
+		return
+	}
+
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
 		c.pubPermissionViolation(c.pa.subject)
@@ -2629,6 +2644,46 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	if c.srv == nil || c.acc == nil {
 		return
 	}
+
+	c.mu.Lock()
+	if len(c.gwrm) > 0 {
+		if rm, ok := c.gwrm[string(c.pa.subject)]; ok {
+			c.pa.subject = []byte(rm.ms)
+			if c.rrTracking != nil {
+				rl := c.rrTracking[string(c.pa.subject)]
+				if rl != nil {
+					delete(c.rrTracking, string(c.pa.subject))
+				}
+				rtt := c.rtt
+				c.mu.Unlock()
+				if rl != nil {
+					sl := &rl.M2
+					// Fill this in and send it off to the other side.
+					sl.AppName = c.opts.Name
+					sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
+					sl.NATSLatency.Responder = rtt
+					sl.TotalLatency = sl.ServiceLatency + rtt
+					sanitizeLatencyMetric(sl)
+
+					lsub := remoteLatencySubjectForResponse(c.pa.subject)
+					c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
+				}
+			} else {
+				c.mu.Unlock()
+			}
+			// Check for leaf nodes
+			if c.srv.gwLeafSubs.Count() > 0 {
+				if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
+					c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+				}
+			}
+			if c.srv.gateway.enabled {
+				c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, nil)
+			}
+			return
+		}
+	}
+	c.mu.Unlock()
 
 	// Check to see if we need to map/route to another account.
 	if c.acc.imports.services != nil {
@@ -2695,13 +2750,14 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
 		flag := pmrNoFlag
-		// If we have queue subs in this cluster, then if we run in gateway
-		// mode and the remote gateways have queue subs, then we need to
-		// collect the queue groups this message was sent to so that we
-		// exclude them when sending to gateways.
+		// If there are matching queue subs and we are in gateway mode,
+		// we need to keep track of the queue names the messages are
+		// delivered to. When sending to the GWs, the RMSG will include
+		// those names so that the remote clusters do not deliver messages
+		// to their queue subs of the same names.
 		if len(r.qsubs) > 0 && c.srv.gateway.enabled &&
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
-			flag = pmrCollectQueueNames
+			flag |= pmrCollectQueueNames
 		}
 		qnames = c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, flag)
 	}
@@ -2745,12 +2801,6 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 				// We have a service import that we are tracking but have not established RTT.
 				c.sendRTTPing()
 			}
-			// If this is a client or leaf connection and we are in gateway mode,
-			// we need to send RS+ to our local cluster and possibly to inbound
-			// GW connections for which we are in interest-only mode.
-			if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == LEAF) {
-				c.srv.gatewayHandleServiceImport(si.acc, nrr, c, 1)
-			}
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := si.acc.sl.Match(si.to)
@@ -2762,19 +2812,18 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 			si.acc.checkForRespEntry(si.to)
 		}
 
+		flags := pmrNoFlag
 		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
-		if len(rr.qsubs) > 0 && c.pa.queues == nil && (c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF) {
-			c.makeQFilter(rr.qsubs)
+		if c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF {
+			flags |= pmrIgnoreEmptyQueueFilter
 		}
-
-		// If this is not a gateway connection but gateway is enabled,
-		// try to send this converted message to all gateways.
-		if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) {
-			queues := c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, pmrCollectQueueNames)
+		if c.srv.gateway.enabled {
+			flags |= pmrCollectQueueNames
+			queues := c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, flags)
 			c.sendMsgToGateways(si.acc, msg, []byte(si.to), nrr, queues)
 		} else {
-			c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, pmrNoFlag)
+			c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, flags)
 		}
 
 		shouldRemove := si.ae
@@ -2842,13 +2891,20 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		c.in.rts = c.in.rts[:0]
 	}
 
+	var removeGWPrefix bool
+	var creply = reply
+	if len(reply) > gwSubjectOffset && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
+		removeGWPrefix = true
+		creply = reply[gwSubjectOffset:]
+	}
+
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
 		// Check if this is a send to a ROUTER. We now process
 		// these after everything else.
 		switch sub.client.kind {
 		case ROUTER:
-			if c.kind != ROUTER && !c.isSolicitedLeafNode() {
+			if (c.kind != ROUTER && !c.isSolicitedLeafNode()) || (flags&pmrAllowSendFromRouteToRoute != 0) {
 				c.addSubToRouteTargets(sub)
 			}
 			continue
@@ -2875,7 +2931,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			si = len(msgh)
 		}
 		// Normal delivery
-		mh := c.msgHeader(msgh[:si], sub, reply)
+		if removeGWPrefix {
+			c.srv.trackGWReply(sub.client, string(creply), string(reply))
+		}
+		mh := c.msgHeader(msgh[:si], sub, creply)
 		c.deliverMsg(sub, subject, mh, msg)
 	}
 
@@ -2887,13 +2946,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	// For all non-client connections, we may still want to send messages to
 	// leaf nodes or routes even if there are no queue filters since we collect
 	// them above and do not process inline like normal clients.
-	if c.kind != CLIENT && qf == nil {
-		// However, if this is a gateway connection which should be treated
-		// as a client, still go and pick queue subscriptions, otherwise
-		// jump to sendToRoutesOrLeafs.
-		if !(c.kind == GATEWAY && (flags&pmrTreatGatewayAsClient != 0)) {
-			goto sendToRoutesOrLeafs
-		}
+	// However, do select queue subs if asked to ignore empty queue filter.
+	if c.kind != CLIENT && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
+		goto sendToRoutesOrLeafs
 	}
 
 	// Check to see if we have our own rand yet. Global rand
@@ -2962,7 +3017,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				si = len(msgh)
 			}
 
-			mh := c.msgHeader(msgh[:si], sub, reply)
+			rreply := reply
+			if removeGWPrefix && sub.client.kind == CLIENT {
+				c.srv.trackGWReply(sub.client, string(creply), string(reply))
+				rreply = creply
+			}
+			mh := c.msgHeader(msgh[:si], sub, rreply)
 			if c.deliverMsg(sub, subject, mh, msg) {
 				// Clear rsub
 				rsub = nil

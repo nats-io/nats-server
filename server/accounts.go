@@ -814,9 +814,6 @@ func (a *Account) removeServiceImport(subject string) {
 	}
 	delete(a.imports.services, subject)
 	a.mu.Unlock()
-	if a.srv != nil && a.srv.gateway.enabled {
-		a.srv.gatewayHandleServiceImport(a, []byte(subject), nil, -1)
-	}
 }
 
 // This tracks responses to service requests mappings. This is used for cleanup.

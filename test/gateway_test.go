@@ -516,3 +516,29 @@ func TestGatewayNoAccUnsubAfterQSub(t *testing.T) {
 
 	expectNothing(t, gA)
 }
+
+func TestGatewayErrorOnRSentFromOutbound(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	for _, test := range []struct {
+		name  string
+		proto string
+	}{
+		{"RS+", "RS+"},
+		{"RS-", "RS-"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
+			defer gA.Close()
+
+			gASend, gAExpect := setupGatewayConn(t, gA, "A", "B")
+			gASend("PING\r\n")
+			gAExpect(pongRe)
+
+			gASend(fmt.Sprintf("%s foo bar\r\n", test.proto))
+			expectDisconnect(t, gA)
+		})
+	}
+}

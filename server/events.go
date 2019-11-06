@@ -233,7 +233,7 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	for s.eventsRunning() {
 		// Setup information for next message
 		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Internal system send queue > 75%")
+			s.Warnf("Internal system send queue > 75%%")
 			last = time.Now()
 		}
 
@@ -1047,8 +1047,8 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	}
 	// Now get the request id / reply. We need to see if we have a GW prefix and if so strip that off.
 	reply := rl.ReqId
-	if subjectStartsWithGatewayReplyPrefix([]byte(reply)) {
-		reply = reply[gwReplyStart:]
+	if isGWRoutedSubject([]byte(reply)) {
+		reply = string(getSubjectFromGWRoutedReply([]byte(reply)))
 	}
 	acc.mu.RLock()
 	si := acc.imports.services[reply]

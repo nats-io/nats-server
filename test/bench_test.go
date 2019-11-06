@@ -1252,9 +1252,6 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 
 	lenMsg := len("MSG foo reply.xxxxxxxxxx 1 2\r\nok\r\n")
 	expected := b.N * lenMsg
-	if !singleReplySub {
-		expected += b.N * len("$GR.1234.")
-	}
 	ch := make(chan bool, 1)
 	go drainConnection(b, sub, ch, expected)
 
@@ -1275,9 +1272,9 @@ func gatewaySendRequestsBench(b *testing.B, singleReplySub bool) {
 	numBytes += len("RMSG $G foo reply.0123456789 2\r\nok\r\n")
 	// If mapping of reply...
 	if !singleReplySub {
-		// the mapping uses about 10 more bytes. So add them
-		// for RMSG from server to server, and MSG to sub.
-		numBytes += 20
+		// the mapping uses about 24 more bytes. So add them
+		// for RMSG from server to server.
+		numBytes += 24
 	}
 	// From server in cluster B to sub
 	numBytes += lenMsg

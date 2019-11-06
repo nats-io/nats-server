@@ -113,6 +113,8 @@ type Server struct {
 	accResolver      AccountResolver
 	clients          map[uint64]*client
 	routes           map[uint64]*client
+	routesByHash     sync.Map
+	hash             []byte
 	remotes          map[string]*client
 	leafs            map[uint64]*client
 	users            map[string]*User
@@ -185,6 +187,16 @@ type Server struct {
 	// added/removed routes. The monitoring code then check that
 	// to know if it should update the cluster's URLs array.
 	varzUpdateRouteURLs bool
+
+	// Use for gateways reply mapping expiration
+	gwrmMu sync.Mutex
+	gwrmCh chan struct{}
+	gwrm   []*gwReplyMap
+
+	// Keeps a sublist of of subscriptions attached to leafnode connections
+	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
+	// gateway reply.
+	gwLeafSubs *Sublist
 }
 
 // Make sure all are 64bits for atomic use
@@ -254,6 +266,7 @@ func NewServer(opts *Options) (*Server, error) {
 		done:       make(chan bool, 1),
 		start:      now,
 		configTime: now,
+		gwLeafSubs: NewSublistWithCache(),
 	}
 
 	// Trusted root operator keys.
@@ -273,11 +286,9 @@ func NewServer(opts *Options) (*Server, error) {
 	// Call this even if there is no gateway defined. It will
 	// initialize the structure so we don't have to check for
 	// it to be nil or not in various places in the code.
-	gws, err := newGateway(opts)
-	if err != nil {
+	if err := s.newGateway(opts); err != nil {
 		return nil, err
 	}
-	s.gateway = gws
 
 	if s.gateway.enabled {
 		s.info.Cluster = s.getGatewayName()
@@ -737,7 +748,7 @@ func (s *Server) SystemAccount() *Account {
 }
 
 // For internal sends.
-const internalSendQLen = 1024
+const internalSendQLen = 4096
 
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
@@ -1088,6 +1099,13 @@ func (s *Server) Start() {
 			return
 		}
 	}
+
+	// Start this even if this server has no gateway enabled in
+	// case it is part of a cluster and receives a message with
+	// mapped reply - note that this would still be considered
+	// misconfiguration since this server would not have any
+	// gateway connection...
+	s.startGWReplyMappingExpiration()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
