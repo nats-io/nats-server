@@ -188,11 +188,6 @@ type Server struct {
 	// to know if it should update the cluster's URLs array.
 	varzUpdateRouteURLs bool
 
-	// Use for gateways reply mapping expiration
-	gwrmMu sync.Mutex
-	gwrmCh chan struct{}
-	gwrm   []*gwReplyMap
-
 	// Keeps a sublist of of subscriptions attached to leafnode connections
 	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
 	// gateway reply.
@@ -1099,13 +1094,6 @@ func (s *Server) Start() {
 			return
 		}
 	}
-
-	// Start this even if this server has no gateway enabled in
-	// case it is part of a cluster and receives a message with
-	// mapped reply - note that this would still be considered
-	// misconfiguration since this server would not have any
-	// gateway connection...
-	s.startGWReplyMappingExpiration()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can

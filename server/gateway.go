@@ -218,6 +218,11 @@ type insie struct {
 	mode GatewayInterestMode
 }
 
+type gwReplyMap struct {
+	ms  string
+	exp int64
+}
+
 // clone returns a deep copy of the RemoteGatewayOpts object
 func (r *RemoteGatewayOpts) clone() *RemoteGatewayOpts {
 	if r == nil {
@@ -2239,19 +2244,17 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 	}
 }
 
-// Returns true if the given subject is a GW routed subject,
-// that is, starts with $GNR and is long enough to contain
-// cluster/server hash and subject.
-func isGWRoutedSubject(subj []byte) bool {
-	return len(subj) > gwSubjectOffset && subj[0] == '$' && subj[1] == 'G' &&
-		subj[2] == 'N' && subj[3] == 'R' && subj[4] == '.'
+// Returns true if the given subject is a GW routed reply subject,
+// that is, starts with $GNR and is long enough to contain cluster/server hash
+// and subject.
+func isGWRoutedReply(subj []byte) bool {
+	return len(subj) > gwSubjectOffset && string(subj[:gwReplyPrefixLen]) == gwReplyPrefix
 }
 
 // Returns true if subject starts with "$GNR.". This is to check that
 // clients can't publish on this subject.
-func hasGWRoutedPrefix(subj []byte) bool {
-	return len(subj) > gwReplyPrefixLen && subj[0] == '$' && subj[1] == 'G' &&
-		subj[2] == 'N' && subj[3] == 'R' && subj[4] == '.'
+func hasGWRoutedReplyPrefix(subj []byte) bool {
+	return len(subj) > gwReplyPrefixLen && string(subj[:gwReplyPrefixLen]) == gwReplyPrefix
 }
 
 // Evaluates if the given reply should be mapped or not.
@@ -2323,7 +2326,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 
 	// Check if the subject is on the reply prefix, if so, we
 	// need to send that message directly to the origin cluster.
-	if isGWRoutedSubject(subject) {
+	if isGWRoutedReply(subject) {
 		dstHash = subject[gwClusterOffset : gwClusterOffset+gwHashLen]
 	}
 	for i := 0; i < len(gws); i++ {
@@ -2404,7 +2407,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		c.deliverMsg(sub, subject, mh, msg)
+		c.deliverMsg(sub, subject, mh, msg, false)
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
@@ -2547,7 +2550,7 @@ func getSubjectFromGWRoutedReply(reply []byte) []byte {
 func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	// Do not handle GW prefixed messages if this server does not have
 	// gateway enabled or if the subject does not start with the previx.
-	if !c.srv.gateway.enabled || !isGWRoutedSubject(c.pa.subject) {
+	if !c.srv.gateway.enabled || !isGWRoutedReply(c.pa.subject) {
 		return false
 	}
 	// Save original subject (in case we have to forward)
@@ -2623,12 +2626,26 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	} else if c.kind == GATEWAY {
 		// Only if we are a gateway connection should we try to route
 		// to the server where the request originated.
-		header := []byte(fmt.Sprintf("RMSG %s %s %s %v", acc.Name, orgSubject, c.pa.reply, len(msg)-LEN_CR_LF))
-		proto := []byte(fmt.Sprintf("%s\r\n%s", header, msg))
+		var bufa [256]byte
+		var buf = bufa[:0]
+		buf = append(buf, msgHeadProto...)
+		buf = append(buf, acc.Name...)
+		buf = append(buf, ' ')
+		buf = append(buf, orgSubject...)
+		buf = append(buf, ' ')
+		if len(c.pa.reply) > 0 {
+			buf = append(buf, c.pa.reply...)
+			buf = append(buf, ' ')
+		}
+		buf = append(buf, c.pa.szb...)
+		mhEnd := len(buf)
+		buf = append(buf, _CRLF_...)
+		buf = append(buf, msg...)
+
 		route.mu.Lock()
-		route.sendProto(proto, true)
+		route.sendProto(buf, true)
 		if route.trace {
-			route.traceOutOp("", header)
+			route.traceOutOp("", buf[:mhEnd])
 		}
 		route.mu.Unlock()
 	}
@@ -2822,69 +2839,65 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 	})
 }
 
-type gwReplyMap struct {
-	c   *client
-	rs  string
-	ms  string
-	exp int64
+// Keeps track of the routed reply to be used when/if application
+// sends back a message on the reply without the prefix.
+// Client lock held on entry. This is a server receiver because
+// we use a timer interval that is avail in Server.gateway object.
+func (s *Server) trackGWReply(c *client, reply []byte) {
+	ttl := s.gateway.recSubExp
+	rt := c.gwrt
+	if rt == nil {
+		rt = &gwReplyTracking{m: make(map[string]*gwReplyMap)}
+		c.gwrt = rt
+	}
+	// We may set timer to nil after a bit so don't assume it is
+	// not nil if c.gwrt was not.
+	if rt.tmr == nil {
+		rt.tmr = time.AfterFunc(ttl, func() {
+			c.expireGWReplyMapping(ttl)
+		})
+	}
+	// We need to make a copy so that we don't reference the underlying
+	// read buffer.
+	ms := string(reply)
+	grm := &gwReplyMap{ms: ms, exp: time.Now().Add(ttl).UnixNano()}
+	rt.m[ms[gwSubjectOffset:]] = grm
+	if len(rt.m) == 1 {
+		atomic.StoreInt32(&c.cgwrt, 1)
+	}
 }
 
-func (s *Server) trackGWReply(c *client, rs, ms string) {
-	s.gwrmMu.Lock()
+// Remove expired GW mapped replies from the map.
+func (c *client) expireGWReplyMapping(ttl time.Duration) {
 	c.mu.Lock()
-	if c.gwrm == nil {
-		c.gwrm = make(map[string]*gwReplyMap)
-	}
-	now := time.Now()
-	grm := &gwReplyMap{c, rs, ms, now.Add(s.gateway.recSubExp).UnixNano()}
-	s.gwrm = append(s.gwrm, grm)
-	if len(s.gwrm) == 1 {
-		select {
-		case s.gwrmCh <- struct{}{}:
-		default:
-		}
-	}
-	c.gwrm[rs] = grm
-	c.mu.Unlock()
-	s.gwrmMu.Unlock()
-}
+	defer c.mu.Unlock()
 
-func (s *Server) startGWReplyMappingExpiration() {
-	s.gwrmMu.Lock()
-	s.gwrmCh = make(chan struct{}, 1)
-	s.gwrmMu.Unlock()
-	s.startGoRoutine(func() {
-		defer s.grWG.Done()
-		t := time.NewTimer(time.Hour)
-		for {
-			select {
-			case <-s.gwrmCh:
-			case <-t.C:
-			case <-s.quitCh:
-				return
-			}
-			now := time.Now().UnixNano()
-			s.gwrmMu.Lock()
-			var i int
-			for i = 0; i < len(s.gwrm); i++ {
-				grm := s.gwrm[i]
-				if grm.exp < now {
-					c := grm.c
-					c.mu.Lock()
-					delete(c.gwrm, grm.rs)
-					c.mu.Unlock()
-				} else {
-					t.Reset(time.Duration(grm.exp - now))
-					break
-				}
-			}
-			if i == len(s.gwrm) {
-				s.gwrm = nil
-				t.Reset(time.Hour)
-			} else {
-				s.gwrm = s.gwrm[i:]
-			}
-			s.gwrmMu.Unlock()
+	rt := c.gwrt
+	if rt == nil {
+		return
+	}
+	if len(rt.m) == 0 {
+		// We let the timer fire a cycle with an empty map. If there is still
+		// no entry, set the timer to nil and be done.
+		rt.tmr = nil
+		return
+	}
+	now := time.Now().UnixNano()
+	for k, grm := range rt.m {
+		if grm.exp <= now {
+			delete(rt.m, k)
 		}
-	})
+	}
+	if len(rt.m) == 0 {
+		// There is no more, so mark as such so that processInboundClientMsg()
+		// does not bother acquiring the lock to check on this map.
+		atomic.StoreInt32(&c.cgwrt, 0)
+	}
+	// We don't try to reset the timer to the next expiration timestamp because
+	// if we do and there is a fast rate of tracking, then we will constantly
+	// be reseting the timer which affects performance. So just fire at regular
+	// ttl and yes, an entry may stay ~ 2*ttl, but that's ok.
+	// If map is empty, still fire one more time so we don't set the timer to
+	// nil for every single request if requests are close to each others.
+	rt.tmr.Reset(ttl)
 }

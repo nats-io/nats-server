@@ -5455,3 +5455,90 @@ func TestGatewaySingleOutbound(t *testing.T) {
 		time.Sleep(15 * time.Millisecond)
 	}
 }
+
+func TestGatewayReplyMapTracking(t *testing.T) {
+	// Increase the recSubExp value on servers so we have time
+	// to check the replies mapping structures.
+	subExp := 400 * time.Millisecond
+	setRecSub := func(s *Server) {
+		s.gateway.pasi.Lock()
+		s.gateway.recSubExp = subExp
+		s.gateway.pasi.Unlock()
+	}
+
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+	setRecSub(sb)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+	setRecSub(sa)
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	ncb := natsConnect(t, sb.ClientURL())
+	defer ncb.Close()
+	count := 0
+	total := 100
+	ch := make(chan bool, 1)
+	natsSub(t, ncb, "foo", func(m *nats.Msg) {
+		m.Respond([]byte("reply"))
+		if count++; count == total {
+			ch <- true
+		}
+	})
+	natsFlush(t, ncb)
+
+	var bc *client
+	sb.mu.Lock()
+	for _, c := range sb.clients {
+		bc = c
+		break
+	}
+	sb.mu.Unlock()
+
+	nca := natsConnect(t, sa.ClientURL())
+	defer nca.Close()
+
+	replySub := natsSubSync(t, nca, "bar.>")
+	for i := 0; i < total; i++ {
+		nca.PublishRequest("foo", fmt.Sprintf("bar.%d", i), []byte("request"))
+	}
+
+	waitCh(t, ch, "Did not receive all requests")
+
+	check := func(t *testing.T, expectedIndicator int32, expectLenMap int) {
+		t.Helper()
+		bc.mu.Lock()
+		mapIndicator := atomic.LoadInt32(&bc.cgwrt)
+		var lenMap int
+		if bc.gwrt != nil {
+			lenMap = len(bc.gwrt.m)
+		}
+		bc.mu.Unlock()
+		if mapIndicator != expectedIndicator {
+			t.Fatalf("Client should map indicator should be %v, got %v", expectedIndicator, mapIndicator)
+		}
+		if lenMap != expectLenMap {
+			t.Fatalf("Client map should have %v entries, got %v", expectLenMap, lenMap)
+		}
+	}
+	// Check that indicator is set and that there "total" entries in the map
+	check(t, 1, total)
+
+	// Receive all replies
+	for i := 0; i < total; i++ {
+		natsNexMsg(t, replySub, time.Second)
+	}
+
+	// Wait until entries expire
+	time.Sleep(2*subExp + 100*time.Millisecond)
+
+	// Now check again.
+	check(t, 0, 0)
+}

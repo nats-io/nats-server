@@ -1696,15 +1696,15 @@ func TestPingNotSentTooSoon(t *testing.T) {
 	}
 }
 
-func TestClientPublishFailsOnGWReplyPrefix(t *testing.T) {
+func TestClientCheckUseOfGWReplyPrefix(t *testing.T) {
 	opts := DefaultOptions()
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	cch := make(chan bool, 1)
+	ech := make(chan error, 1)
 	nc, err := nats.Connect(s.ClientURL(),
-		nats.ClosedHandler(func(_ *nats.Conn) {
-			cch <- true
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+			ech <- e
 		}))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
@@ -1714,9 +1714,27 @@ func TestClientPublishFailsOnGWReplyPrefix(t *testing.T) {
 	// Expect to fail if publish on gateway reply prefix
 	nc.Publish(gwReplyPrefix+"anything", []byte("should fail"))
 
-	// This relies on NATS GO client to close connection on -ERR
-	// that is not permission violation or auth error.
+	// Wait for publish violation error
+	select {
+	case e := <-ech:
+		if e == nil || !strings.Contains(strings.ToLower(e.Error()), "violation for publish") {
+			t.Fatalf("Expected violation error, got %v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive permissions violation error")
+	}
 
-	// Wait for connection to be closed.
-	waitCh(t, cch, "Connection was not closed")
+	// Now publish a message with a reply set to the prefix,
+	// it should be rejected too.
+	nc.PublishRequest("foo", gwReplyPrefix+"anything", []byte("should fail"))
+
+	// Wait for publish violation error with reply
+	select {
+	case e := <-ech:
+		if e == nil || !strings.Contains(strings.ToLower(e.Error()), "violation for publish with reply") {
+			t.Fatalf("Expected violation error, got %v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive permissions violation error")
+	}
 }

@@ -167,6 +167,11 @@ const (
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
+	// Indicate if we should check gwrm or not. Since checking gwrm is done
+	// when processing inbound messages and requires the lock we want to
+	// check only when needed. This is set/get using atmoic, so needs to
+	// be memory aligned.
+	cgwrt   int32
 	mpay    int32
 	msubs   int32
 	mcl     int32
@@ -206,13 +211,20 @@ type client struct {
 	gw    *gateway
 	leaf  *leaf
 
-	gwrm map[string]*gwReplyMap
+	// To keep track of gateway replies mapping
+	gwrt *gwReplyTracking
 
 	debug bool
 	trace bool
 	echo  bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
+}
+
+// This is to track gateway reply subjects
+type gwReplyTracking struct {
+	m   map[string]*gwReplyMap
+	tmr *time.Timer
 }
 
 // Struct for PING initiation from the server.
@@ -2248,7 +2260,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
+func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply bool) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -2354,7 +2366,20 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte) bool {
 	// Do a fast check here to see if we should be tracking this from a latency
 	// perspective. This will be for a request being received for an exported service.
 	// This needs to be from a non-client (otherwise tracking happens at requestor).
+	//
+	// Also this check captures if the original reply (c.pa.reply) is a GW routed
+	// reply (since it is known to be > minReplyLen). If that is the case, we need to
+	// track the binding between the routed reply and the reply set in the message
+	// header (which is c.pa.reply without the GNR routing prefix).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
+
+		if gwrply {
+			// Note we keep track "in" the destination client (`client`) but the
+			// routed reply subject is in `c.pa.reply`. Should that change, we
+			// would have to pass the "reply" in deliverMsg().
+			srv.trackGWReply(client, c.pa.reply)
+		}
+
 		// If we do not have a registered RTT queue that up now.
 		if client.rtt == 0 {
 			client.sendRTTPingLocked()
@@ -2590,7 +2615,21 @@ func isTrackedReply(reply []byte) bool {
 
 // Test whether a reply subject is a service import reply.
 func isServiceReply(reply []byte) bool {
+	// This function is inlined and checking this way is actually faster
+	// than byte-by-byte comparison.
 	return len(reply) > 3 && string(reply[:4]) == replyPrefix
+}
+
+// Test whether a reply subject is a service import or a gateway routed reply.
+func isReservedReply(reply []byte) bool {
+	if isServiceReply(reply) {
+		return true
+	}
+	// Faster to check with string([:]) than byte-by-byte
+	if len(reply) > gwReplyPrefixLen && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
+		return true
+	}
+	return false
 }
 
 // This will decide to call the client code or router code.
@@ -2619,8 +2658,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	}
 
 	// Check that client is not publishing on reserved $GNR. prefix
-	if hasGWRoutedPrefix(c.pa.subject) {
-		c.sendErrAndErr(ErrReservedPublishSubject.Error())
+	if hasGWRoutedReplyPrefix(c.pa.subject) {
+		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
 
@@ -2631,7 +2670,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	}
 
 	// Now check for reserved replies. These are used for service imports.
-	if isServiceReply(c.pa.reply) {
+	if isReservedReply(c.pa.reply) {
 		c.replySubjectViolation(c.pa.reply)
 		return
 	}
@@ -2645,45 +2684,12 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		return
 	}
 
-	c.mu.Lock()
-	if len(c.gwrm) > 0 {
-		if rm, ok := c.gwrm[string(c.pa.subject)]; ok {
-			c.pa.subject = []byte(rm.ms)
-			if c.rrTracking != nil {
-				rl := c.rrTracking[string(c.pa.subject)]
-				if rl != nil {
-					delete(c.rrTracking, string(c.pa.subject))
-				}
-				rtt := c.rtt
-				c.mu.Unlock()
-				if rl != nil {
-					sl := &rl.M2
-					// Fill this in and send it off to the other side.
-					sl.AppName = c.opts.Name
-					sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
-					sl.NATSLatency.Responder = rtt
-					sl.TotalLatency = sl.ServiceLatency + rtt
-					sanitizeLatencyMetric(sl)
-
-					lsub := remoteLatencySubjectForResponse(c.pa.subject)
-					c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
-				}
-			} else {
-				c.mu.Unlock()
-			}
-			// Check for leaf nodes
-			if c.srv.gwLeafSubs.Count() > 0 {
-				if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
-					c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
-				}
-			}
-			if c.srv.gateway.enabled {
-				c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, nil)
-			}
+	// Check if this client's gateway replies map is not empty
+	if atomic.LoadInt32(&c.cgwrt) > 0 {
+		if c.handleGWReplyMap(msg) {
 			return
 		}
 	}
-	c.mu.Unlock()
 
 	// Check to see if we need to map/route to another account.
 	if c.acc.imports.services != nil {
@@ -2766,6 +2772,59 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	if c.srv.gateway.enabled {
 		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
+}
+
+// This is invoked knowing that this client has some GW replies
+// in its map. It will check if one is find for the c.pa.subject
+// and if so will process it directly (send to GWs and LEAF) and
+// return true to notify the caller that the message was handled.
+// If there is no mapping for the subject, false is returned.
+func (c *client) handleGWReplyMap(msg []byte) bool {
+	c.mu.Lock()
+	rm, ok := c.gwrt.m[string(c.pa.subject)]
+	if !ok {
+		c.mu.Unlock()
+		return false
+	}
+	// Set subject to the mapped reply subject
+	c.pa.subject = []byte(rm.ms)
+
+	var rl *remoteLatency
+	var rtt time.Duration
+
+	if c.rrTracking != nil {
+		rl = c.rrTracking[string(c.pa.subject)]
+		if rl != nil {
+			delete(c.rrTracking, string(c.pa.subject))
+		}
+		rtt = c.rtt
+	}
+	c.mu.Unlock()
+
+	if rl != nil {
+		sl := &rl.M2
+		// Fill this in and send it off to the other side.
+		sl.AppName = c.opts.Name
+		sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
+		sl.NATSLatency.Responder = rtt
+		sl.TotalLatency = sl.ServiceLatency + rtt
+		sanitizeLatencyMetric(sl)
+
+		lsub := remoteLatencySubjectForResponse(c.pa.subject)
+		c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
+	}
+
+	// Check for leaf nodes
+	if c.srv.gwLeafSubs.Count() > 0 {
+		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
+			c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+		}
+	}
+	if c.srv.gateway.enabled {
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, nil)
+	}
+
+	return true
 }
 
 // This checks and process import services by doing the mapping and sending the
@@ -2891,10 +2950,14 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		c.in.rts = c.in.rts[:0]
 	}
 
-	var removeGWPrefix bool
+	var rplyHasGWPrefix bool
 	var creply = reply
-	if len(reply) > gwSubjectOffset && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
-		removeGWPrefix = true
+
+	// If the reply subject is a GW routed reply, we will perform some
+	// tracking in deliverMsg(). We also want to send to the user the
+	// reply without the prefix. `creply` will be set to that and be
+	// used to create the message header for client connections.
+	if rplyHasGWPrefix = isGWRoutedReply(reply); rplyHasGWPrefix {
 		creply = reply[gwSubjectOffset:]
 	}
 
@@ -2931,11 +2994,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			si = len(msgh)
 		}
 		// Normal delivery
-		if removeGWPrefix {
-			c.srv.trackGWReply(sub.client, string(creply), string(reply))
-		}
 		mh := c.msgHeader(msgh[:si], sub, creply)
-		c.deliverMsg(sub, subject, mh, msg)
+		c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix)
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -3017,13 +3077,14 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 				si = len(msgh)
 			}
 
-			rreply := reply
-			if removeGWPrefix && sub.client.kind == CLIENT {
-				c.srv.trackGWReply(sub.client, string(creply), string(reply))
+			var rreply = reply
+			if rplyHasGWPrefix && sub.client.kind == CLIENT {
 				rreply = creply
 			}
+			// "rreply" will be stripped of the $GNR prefix (if present)
+			// for client connections only.
 			mh := c.msgHeader(msgh[:si], sub, rreply)
-			if c.deliverMsg(sub, subject, mh, msg) {
+			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
 				// Clear rsub
 				rsub = nil
 				if flags&pmrCollectQueueNames != 0 {
@@ -3087,7 +3148,7 @@ sendToRoutesOrLeafs:
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, _CRLF_...)
-		c.deliverMsg(rt.sub, subject, mh, msg)
+		c.deliverMsg(rt.sub, subject, mh, msg, false)
 	}
 	return queues
 }
