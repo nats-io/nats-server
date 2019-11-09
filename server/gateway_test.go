@@ -3715,6 +3715,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 		return nil
 	})
+	checkForRegisteredQSubInterest(t, sb, "A", "$foo", "test.request", 0, time.Second)
 
 	// Repeat similar test but without the small TTL and verify
 	// that if B is shutdown, the dangling subs for replies are
@@ -4015,20 +4016,30 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	subB := natsSubSync(t, clientB, "reply")
 	natsFlush(t, clientB)
 
-	// Send the request from clientB on foo.request,
-	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
-	natsFlush(t, clientB)
+	var msg *nats.Msg
+	var err error
+	for attempts := 1; attempts <= 2; attempts++ {
+		// Send the request from clientB on foo.request,
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+		natsFlush(t, clientB)
 
-	// Expect the request on A
-	msg, err := subA.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("subA failed to get request: %v", err)
-	}
-	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
-		t.Fatalf("Unexpected message: %v", msg)
-	}
-	if msg.Reply == "reply" {
-		t.Fatalf("Expected randomized reply, but got original")
+		// Expect the request on A
+		msg, err = subA.NextMsg(time.Second)
+		if err != nil {
+			if attempts == 1 {
+				// Since we are in interestOnly mode, it is possible
+				// that server B did not receive the subscription
+				// interest yet, so try again.
+				continue
+			}
+			t.Fatalf("subA failed to get request: %v", err)
+		}
+		if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+			t.Fatalf("Unexpected message: %v", msg)
+		}
+		if msg.Reply == "reply" {
+			t.Fatalf("Expected randomized reply, but got original")
+		}
 	}
 	// Make sure we don't receive a second copy
 	if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
@@ -4120,6 +4131,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	clientB2 := natsConnect(t, b2URL)
 	defer clientB2.Close()
 	natsSubSync(t, clientB2, "not.used")
+	natsFlush(t, clientB2)
 
 	// Make A2 flood B2 with subjects that B2 is not interested in.
 	for i := 0; i < 1100; i++ {
@@ -4152,20 +4164,28 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	subB = natsSubSync(t, clientB, "reply")
 	natsFlush(t, clientB)
 
-	// Send the request from clientB on foo.request,
-	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
-	natsFlush(t, clientB)
+	for attempts := 1; attempts <= 2; attempts++ {
+		// Send the request from clientB on foo.request,
+		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
+		natsFlush(t, clientB)
 
-	// Expect the request on A
-	msg, err = subA.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("subA failed to get request: %v", err)
-	}
-	if msg.Subject != "test.request" || string(msg.Data) != "hi" {
-		t.Fatalf("Unexpected message: %v", msg)
-	}
-	if msg.Reply == "reply" {
-		t.Fatalf("Expected randomized reply, but got original")
+		// Expect the request on A
+		msg, err = subA.NextMsg(time.Second)
+		if err != nil {
+			if attempts == 1 {
+				// Since we are in interestOnly mode, it is possible
+				// that server B did not receive the subscription
+				// interest yet, so try again.
+				continue
+			}
+			t.Fatalf("subA failed to get request: %v", err)
+		}
+		if msg.Subject != "test.request" || string(msg.Data) != "hi" {
+			t.Fatalf("Unexpected message: %v", msg)
+		}
+		if msg.Reply == "reply" {
+			t.Fatalf("Expected randomized reply, but got original")
+		}
 	}
 
 	// Check for duplicate message
@@ -4376,20 +4396,30 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			subB := natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
 
-			// Send the request from clientB on foo.request,
-			natsPubReq(t, clientB, "ngs.update", "reply", []byte("hi"))
-			natsFlush(t, clientB)
+			var msg *nats.Msg
+			var err error
+			for attempts := 1; attempts <= 2; attempts++ {
+				// Send the request from clientB on foo.request,
+				natsPubReq(t, clientB, "ngs.update", "reply", []byte("hi"))
+				natsFlush(t, clientB)
 
-			// Expect the request on A
-			msg, err := subA.NextMsg(time.Second)
-			if err != nil {
-				t.Fatalf("subA failed to get request: %v", err)
-			}
-			if msg.Subject != "ngs.update.$bar" || string(msg.Data) != "hi" {
-				t.Fatalf("Unexpected message: %v", msg)
-			}
-			if msg.Reply == "reply" {
-				t.Fatalf("Expected randomized reply, but got original")
+				// Expect the request on A
+				msg, err = subA.NextMsg(time.Second)
+				if err != nil {
+					if attempts == 1 {
+						// Since we are in interestOnly mode, it is possible
+						// that server B did not receive the subscription
+						// interest yet, so try again.
+						continue
+					}
+					t.Fatalf("subA failed to get request: %v", err)
+				}
+				if msg.Subject != "ngs.update.$bar" || string(msg.Data) != "hi" {
+					t.Fatalf("Unexpected message: %v", msg)
+				}
+				if msg.Reply == "reply" {
+					t.Fatalf("Expected randomized reply, but got original")
+				}
 			}
 			// Make sure we don't receive a second copy
 			if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
@@ -4515,20 +4545,28 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			subB = natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
 
-			// Send the request from clientB on foo.request,
-			natsPubReq(t, clientB, "ngs.update", "reply", []byte("hi"))
-			natsFlush(t, clientB)
+			for attempts := 1; attempts <= 2; attempts++ {
+				// Send the request from clientB on foo.request,
+				natsPubReq(t, clientB, "ngs.update", "reply", []byte("hi"))
+				natsFlush(t, clientB)
 
-			// Expect the request on A
-			msg, err = subA.NextMsg(time.Second)
-			if err != nil {
-				t.Fatalf("subA failed to get request: %v", err)
-			}
-			if msg.Subject != "ngs.update.$bar" || string(msg.Data) != "hi" {
-				t.Fatalf("Unexpected message: %v", msg)
-			}
-			if msg.Reply == "reply" {
-				t.Fatalf("Expected randomized reply, but got original")
+				// Expect the request on A
+				msg, err = subA.NextMsg(time.Second)
+				if err != nil {
+					if attempts == 1 {
+						// Since we are in interestOnly mode, it is possible
+						// that server B did not receive the subscription
+						// interest yet, so try again.
+						continue
+					}
+					t.Fatalf("subA failed to get request: %v", err)
+				}
+				if msg.Subject != "ngs.update.$bar" || string(msg.Data) != "hi" {
+					t.Fatalf("Unexpected message: %v", msg)
+				}
+				if msg.Reply == "reply" {
+					t.Fatalf("Expected randomized reply, but got original")
+				}
 			}
 
 			// Check for duplicate message
