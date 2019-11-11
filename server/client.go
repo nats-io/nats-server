@@ -212,19 +212,13 @@ type client struct {
 	leaf  *leaf
 
 	// To keep track of gateway replies mapping
-	gwrt *gwReplyTracking
+	gwrm map[string]*gwReplyMap
 
 	debug bool
 	trace bool
 	echo  bool
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
-}
-
-// This is to track gateway reply subjects
-type gwReplyTracking struct {
-	m   map[string]*gwReplyMap
-	tmr *time.Timer
 }
 
 // Struct for PING initiation from the server.
@@ -2781,7 +2775,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 // If there is no mapping for the subject, false is returned.
 func (c *client) handleGWReplyMap(msg []byte) bool {
 	c.mu.Lock()
-	rm, ok := c.gwrt.m[string(c.pa.subject)]
+	rm, ok := c.gwrm[string(c.pa.subject)]
 	if !ok {
 		c.mu.Unlock()
 		return false

@@ -5550,13 +5550,13 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 
 	waitCh(t, ch, "Did not receive all requests")
 
-	check := func(t *testing.T, expectedIndicator int32, expectLenMap int) {
+	check := func(t *testing.T, expectedIndicator int32, expectLenMap int, expectedSrvMapEmpty bool) {
 		t.Helper()
 		bc.mu.Lock()
 		mapIndicator := atomic.LoadInt32(&bc.cgwrt)
 		var lenMap int
-		if bc.gwrt != nil {
-			lenMap = len(bc.gwrt.m)
+		if bc.gwrm != nil {
+			lenMap = len(bc.gwrm)
 		}
 		bc.mu.Unlock()
 		if mapIndicator != expectedIndicator {
@@ -5565,9 +5565,18 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 		if lenMap != expectLenMap {
 			t.Fatalf("Client map should have %v entries, got %v", expectLenMap, lenMap)
 		}
+		srvMapEmpty := true
+		sb.gwrm.m.Range(func(_, _ interface{}) bool {
+			srvMapEmpty = false
+			return false
+		})
+		if srvMapEmpty != expectedSrvMapEmpty {
+			t.Fatalf("Expected server map to be empty=%v, got %v", expectedSrvMapEmpty, srvMapEmpty)
+		}
 	}
 	// Check that indicator is set and that there "total" entries in the map
-	check(t, 1, total)
+	// and that srv map is not empty
+	check(t, 1, total, false)
 
 	// Receive all replies
 	for i := 0; i < total; i++ {
@@ -5578,5 +5587,5 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 	time.Sleep(2*subExp + 100*time.Millisecond)
 
 	// Now check again.
-	check(t, 0, 0)
+	check(t, 0, 0, true)
 }

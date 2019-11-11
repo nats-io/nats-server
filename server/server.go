@@ -193,6 +193,13 @@ type Server struct {
 	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
 	// gateway reply.
 	gwLeafSubs *Sublist
+
+	// Used for expiration of mapped GW replies
+	gwrm struct {
+		w  int32
+		ch chan time.Duration
+		m  sync.Map
+	}
 }
 
 // Make sure all are 64bits for atomic use
@@ -1095,6 +1102,10 @@ func (s *Server) Start() {
 			return
 		}
 	}
+
+	// Start expiration of mapped GW replies, regardless if
+	// this server is configured with gateway or not.
+	s.startGWReplyMapExpiration()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can

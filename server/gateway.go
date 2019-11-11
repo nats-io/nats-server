@@ -2923,59 +2923,84 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 // we use a timer interval that is avail in Server.gateway object.
 func (s *Server) trackGWReply(c *client, reply []byte) {
 	ttl := s.gateway.recSubExp
-	rt := c.gwrt
-	if rt == nil {
-		rt = &gwReplyTracking{m: make(map[string]*gwReplyMap)}
-		c.gwrt = rt
-	}
-	// We may set timer to nil after a bit so don't assume it is
-	// not nil if c.gwrt was not.
-	if rt.tmr == nil {
-		rt.tmr = time.AfterFunc(ttl, func() {
-			c.expireGWReplyMapping(ttl)
-		})
+	rm := c.gwrm
+	var we bool // will be true if map was empty on entry
+	if rm == nil {
+		rm = make(map[string]*gwReplyMap)
+		c.gwrm = rm
+		we = true
+	} else {
+		we = len(rm) == 0
 	}
 	// We need to make a copy so that we don't reference the underlying
 	// read buffer.
 	ms := string(reply)
 	grm := &gwReplyMap{ms: ms, exp: time.Now().Add(ttl).UnixNano()}
-	rt.m[ms[gwSubjectOffset:]] = grm
-	if len(rt.m) == 1 {
+	// If we are here with the same key but different mapped replies
+	// (say $GNR._.A.srv1.bar and then $GNR._.B.srv2.bar), we need to
+	// store it otherwise we would take the risk of the reply not
+	// making it back.
+	rm[ms[gwSubjectOffset:]] = grm
+	if we {
 		atomic.StoreInt32(&c.cgwrt, 1)
+		s.gwrm.m.Store(c, nil)
+		if atomic.CompareAndSwapInt32(&s.gwrm.w, 0, 1) {
+			select {
+			case s.gwrm.ch <- ttl:
+			default:
+			}
+		}
 	}
 }
 
-// Remove expired GW mapped replies from the map.
-func (c *client) expireGWReplyMapping(ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// Starts a long lived go routine that is responsible to
+// remove GW reply mapping that have expired.
+func (s *Server) startGWReplyMapExpiration() {
+	s.mu.Lock()
+	s.gwrm.ch = make(chan time.Duration, 1)
+	s.mu.Unlock()
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
 
-	rt := c.gwrt
-	if rt == nil {
-		return
-	}
-	if len(rt.m) == 0 {
-		// We let the timer fire a cycle with an empty map. If there is still
-		// no entry, set the timer to nil and be done.
-		rt.tmr = nil
-		return
-	}
-	now := time.Now().UnixNano()
-	for k, grm := range rt.m {
-		if grm.exp <= now {
-			delete(rt.m, k)
+		t := time.NewTimer(time.Hour)
+		var ttl time.Duration
+		for {
+			select {
+			case <-t.C:
+				if ttl == 0 {
+					t.Reset(time.Hour)
+					continue
+				}
+				now := time.Now().UnixNano()
+				mapEmpty := true
+				s.gwrm.m.Range(func(k, _ interface{}) bool {
+					c := k.(*client)
+					c.mu.Lock()
+					for k, grm := range c.gwrm {
+						if grm.exp <= now {
+							delete(c.gwrm, k)
+							if len(c.gwrm) == 0 {
+								atomic.StoreInt32(&c.cgwrt, 0)
+								s.gwrm.m.Delete(c)
+							}
+						}
+					}
+					c.mu.Unlock()
+					mapEmpty = false
+					return true
+				})
+				if mapEmpty && atomic.CompareAndSwapInt32(&s.gwrm.w, 1, 0) {
+					ttl = 0
+					t.Reset(time.Hour)
+				} else {
+					t.Reset(ttl)
+				}
+			case cttl := <-s.gwrm.ch:
+				ttl = cttl
+				t.Reset(ttl)
+			case <-s.quitCh:
+				return
+			}
 		}
-	}
-	if len(rt.m) == 0 {
-		// There is no more, so mark as such so that processInboundClientMsg()
-		// does not bother acquiring the lock to check on this map.
-		atomic.StoreInt32(&c.cgwrt, 0)
-	}
-	// We don't try to reset the timer to the next expiration timestamp because
-	// if we do and there is a fast rate of tracking, then we will constantly
-	// be reseting the timer which affects performance. So just fire at regular
-	// ttl and yes, an entry may stay ~ 2*ttl, but that's ok.
-	// If map is empty, still fire one more time so we don't set the timer to
-	// nil for every single request if requests are close to each others.
-	rt.tmr.Reset(ttl)
+	})
 }
