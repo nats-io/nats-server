@@ -417,23 +417,6 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 	waitForInboundGateways(t, sa1, 1, time.Second)
 	checkClusterFormed(t, sb1, sb2)
 
-	// Slow down GWs connections
-	// testSlowDownGatewayConnections(t, sa1, sa2, sb1, sb2)
-
-	// For this test, since we are using qsubs on A and B, and we
-	// want to make sure that it is received only on B, make the
-	// recent sub expiration high (especially when running on
-	// Travis with GOGC=10
-	setRecentSubExpiration := func(s *Server) {
-		s.mu.Lock()
-		s.gateway.pasi.Lock()
-		s.gateway.recSubExp = 10 * time.Second
-		s.gateway.pasi.Unlock()
-		s.mu.Unlock()
-	}
-	setRecentSubExpiration(sb1)
-	setRecentSubExpiration(sb2)
-
 	a1URL := fmt.Sprintf("nats://%s:%d", oa1.Host, oa1.Port)
 	a2URL := fmt.Sprintf("nats://%s:%d", oa2.Host, oa2.Port)
 	b1URL := fmt.Sprintf("nats://%s:%d", ob1.Host, ob1.Port)
@@ -506,7 +489,7 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 	sendReqs := func(t *testing.T, subConn *nats.Conn) {
 		t.Helper()
 		responder := natsSub(t, subConn, "foo", func(m *nats.Msg) {
-			nca1.Publish(m.Reply, []byte("reply"))
+			m.Respond([]byte("reply"))
 		})
 		natsFlush(t, subConn)
 		checkExpectedSubs(t, 3, sa1, sa2)

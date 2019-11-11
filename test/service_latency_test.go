@@ -451,6 +451,7 @@ func TestServiceLatencyWithNameMultiServer(t *testing.T) {
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
+	nc.Flush()
 
 	nc2 := clientConnect(t, sc.clusters[1].opts[1], "bar")
 	defer nc2.Close()

@@ -999,6 +999,11 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	}
 
 	applyGlobalRouting := s.gateway.enabled
+	if c.isSolicitedLeafNode() {
+		// Add a fake subscription for this solicited leafnode connection
+		// so that we can send back directly for mapped GW replies.
+		c.srv.gwLeafSubs.Insert(&subscription{client: c, subject: []byte(gwReplyPrefix + "*.*.*.>")})
+	}
 
 	// Now walk the results and add them to our smap
 	c.mu.Lock()
@@ -1016,7 +1021,8 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	// that have been augmented from the original subscription.
 	// TODO(dlc) - Should we lock this down more?
 	if applyGlobalRouting {
-		c.leaf.smap[gwReplyPrefix+"*.>"]++
+		c.leaf.smap[oldGWReplyPrefix+"*.>"]++
+		c.leaf.smap[gwReplyPrefix+"*.*.*.>"]++
 	}
 	// Detect loop by subscribing to a specific subject and checking
 	// if this is coming back to us.
@@ -1482,7 +1488,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		// exclude them when sending to gateways.
 		if len(r.qsubs) > 0 && c.srv.gateway.enabled &&
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
-			flag = pmrCollectQueueNames
+			flag |= pmrCollectQueueNames
 		}
 		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flag)
 	}

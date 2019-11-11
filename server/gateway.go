@@ -33,10 +33,22 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
-	defaultGatewayRecentSubExpiration   = 5 * time.Second
+	defaultGatewayRecentSubExpiration   = 250 * time.Millisecond
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
-	gwReplyPrefix                       = "$GR."
-	gwReplyStart                        = len(gwReplyPrefix) + 5 // len of prefix above + len of hash (4) + "."
+
+	oldGWReplyPrefix    = "$GR."
+	oldGWReplyPrefixLen = len(oldGWReplyPrefix)
+	oldGWReplyStart     = oldGWReplyPrefixLen + 5 // len of prefix above + len of hash (4) + "."
+
+	// The new prefix is "$GNR.<x>.<cluster>.<server>." where <x> is 1 character
+	// reserved for service imports, <cluster> is 8 characters hash of origin
+	// cluster name and <server> is 8 characters hash of origin server pub key.
+	gwReplyPrefix    = "$GNR."
+	gwReplyPrefixLen = len(gwReplyPrefix)
+	gwHashLen        = 8
+	gwClusterOffset  = gwReplyPrefixLen + 2
+	gwServerOffset   = gwClusterOffset + gwHashLen + 1
+	gwSubjectOffset  = gwServerOffset + gwHashLen + 1
 )
 
 var (
@@ -116,7 +128,11 @@ type srvGateway struct {
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
 	runknown bool                   // Rejects unknown (not configured) gateway connections
-	replyPfx []byte                 // Will be "$GR.<this cluster name hash>."
+	replyPfx []byte                 // Will be "$GNR.<1:reserved>.<8:cluster hash>.<8:server hash>."
+
+	// For backward compatibility
+	oldReplyPfx []byte
+	oldHash     []byte
 
 	// We maintain the interest of subjects and queues per account.
 	// For a given account, entries in the map could be something like this:
@@ -152,7 +168,8 @@ type sitally struct {
 type gatewayCfg struct {
 	sync.RWMutex
 	*RemoteGatewayOpts
-	replyPfx       []byte
+	hash           []byte
+	oldHash        []byte
 	urls           map[string]*url.URL
 	connAttempts   int
 	tlsName        string
@@ -172,6 +189,8 @@ type gateway struct {
 
 	// Set/check in readLoop without lock. This is to know that an inbound has sent the CONNECT protocol first
 	connected bool
+	// Set to true if outbound is to a server that only knows about $GR, not $GNR
+	useOldPrefix bool
 }
 
 // Outbound subject interest entry.
@@ -205,6 +224,11 @@ type outsie struct {
 type insie struct {
 	ni   map[string]struct{} // Record if RS- was sent for given subject
 	mode GatewayInterestMode
+}
+
+type gwReplyMap struct {
+	ms  string
+	exp int64
 }
 
 // clone returns a deep copy of the RemoteGatewayOpts object
@@ -245,24 +269,30 @@ func validateGatewayOptions(o *Options) error {
 	return nil
 }
 
-// Computes a hash of 4 characters for the given gateway name.
+// Computes a hash of 8 characters for the name.
 // This will be used for routing of replies.
-func getReplyPrefixForGateway(name string) []byte {
+func getHash(name string) []byte {
+	sha := sha256.New()
+	sha.Write([]byte(name))
+	b := sha.Sum(nil)
+	for i := 0; i < gwHashLen; i++ {
+		b[i] = digits[int(b[i]%base)]
+	}
+	return b[:gwHashLen]
+}
+
+func getOldHash(name string) []byte {
 	sha := sha256.New()
 	sha.Write([]byte(name))
 	fullHash := []byte(fmt.Sprintf("%x", sha.Sum(nil)))
-	prefix := make([]byte, 0, len(gwReplyPrefix)+5)
-	prefix = append(prefix, gwReplyPrefix...)
-	prefix = append(prefix, fullHash[:4]...)
-	prefix = append(prefix, '.')
-	return prefix
+	return fullHash[:4]
 }
 
 // Initialize the s.gateway structure. We do this even if the server
 // does not have a gateway configured. In some part of the code, the
 // server will check the number of outbound gateways, etc.. and so
 // we don't have to check if s.gateway is nil or not.
-func newGateway(opts *Options) (*srvGateway, error) {
+func (s *Server) newGateway(opts *Options) error {
 	gateway := &srvGateway{
 		name:     opts.Gateway.Name,
 		out:      make(map[string]*client),
@@ -272,10 +302,27 @@ func newGateway(opts *Options) (*srvGateway, error) {
 		URLs:     make(map[string]struct{}),
 		resolver: opts.Gateway.resolver,
 		runknown: opts.Gateway.RejectUnknown,
-		replyPfx: getReplyPrefixForGateway(opts.Gateway.Name),
+		oldHash:  getOldHash(opts.Gateway.Name),
 	}
 	gateway.Lock()
 	defer gateway.Unlock()
+
+	s.hash = getHash(s.info.ID)
+	clusterHash := getHash(opts.Gateway.Name)
+	prefix := make([]byte, 0, gwSubjectOffset)
+	prefix = append(prefix, gwReplyPrefix...)
+	prefix = append(prefix, '_', '.')
+	prefix = append(prefix, clusterHash...)
+	prefix = append(prefix, '.')
+	prefix = append(prefix, s.hash...)
+	prefix = append(prefix, '.')
+	gateway.replyPfx = prefix
+
+	prefix = make([]byte, 0, oldGWReplyStart)
+	prefix = append(prefix, oldGWReplyPrefix...)
+	prefix = append(prefix, gateway.oldHash...)
+	prefix = append(prefix, '.')
+	gateway.oldReplyPfx = prefix
 
 	gateway.pasi.m = make(map[string]map[string]*sitally)
 
@@ -291,7 +338,8 @@ func newGateway(opts *Options) (*srvGateway, error) {
 		}
 		cfg := &gatewayCfg{
 			RemoteGatewayOpts: rgo.clone(),
-			replyPfx:          getReplyPrefixForGateway(rgo.Name),
+			hash:              getHash(rgo.Name),
+			oldHash:           getOldHash(rgo.Name),
 			urls:              make(map[string]*url.URL, len(rgo.URLs)),
 		}
 		if opts.Gateway.TLSConfig != nil && cfg.TLSConfig == nil {
@@ -315,7 +363,8 @@ func newGateway(opts *Options) (*srvGateway, error) {
 	gateway.recSubExp = defaultGatewayRecentSubExpiration
 
 	gateway.enabled = opts.Gateway.Name != "" && opts.Gateway.Port != 0
-	return gateway, nil
+	s.gateway = gateway
+	return nil
 }
 
 // Returns the Gateway's name of this server.
@@ -416,6 +465,7 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
 		Gateway:      opts.Gateway.Name,
+		GatewayNRP:   true,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -952,6 +1002,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			// Send INFO too
 			c.sendInfo(c.gw.infoJSON)
 			c.gw.infoJSON = nil
+			c.gw.useOldPrefix = !info.GatewayNRP
 			c.mu.Unlock()
 
 			// Register as an outbound gateway.. if we had a protocol to ack our connect,
@@ -1273,7 +1324,8 @@ func (s *Server) processImplicitGateway(info *Info) {
 	opts := s.getOpts()
 	cfg = &gatewayCfg{
 		RemoteGatewayOpts: &RemoteGatewayOpts{Name: gwName},
-		replyPfx:          getReplyPrefixForGateway(gwName),
+		hash:              getHash(gwName),
+		oldHash:           getOldHash(gwName),
 		urls:              make(map[string]*url.URL, len(info.GatewayURLs)),
 		implicit:          true,
 	}
@@ -1713,6 +1765,12 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 	}()
 
 	c.mu.Lock()
+	if c.gw.outsim == nil {
+		c.Errorf("Received RS- from gateway on inbound connection")
+		c.mu.Unlock()
+		c.closeConnection(ProtocolViolation)
+		return nil
+	}
 	defer c.mu.Unlock()
 
 	ei, _ := c.gw.outsim.Load(accName)
@@ -1815,6 +1873,12 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	}()
 
 	c.mu.Lock()
+	if c.gw.outsim == nil {
+		c.Errorf("Received RS+ from gateway on inbound connection")
+		c.mu.Unlock()
+		c.closeConnection(ProtocolViolation)
+		return nil
+	}
 	defer c.mu.Unlock()
 
 	ei, _ := c.gw.outsim.Load(string(accName))
@@ -2173,31 +2237,31 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 			}
 		}
 	}
-	if first || last {
-		if sub.client != nil {
-			rsubs := &s.gateway.rsubs
-			c := sub.client
-			sli, _ := rsubs.Load(c)
-			if first {
-				var sl *Sublist
-				if sli == nil {
-					sl = NewSublistNoCache()
-					rsubs.Store(c, sl)
-				} else {
-					sl = sli.(*Sublist)
-				}
-				sl.Insert(sub)
-				time.AfterFunc(s.gateway.recSubExp, func() {
-					sl.Remove(sub)
-				})
-			} else if sli != nil {
-				sl := sli.(*Sublist)
+	if sub.client != nil {
+		rsubs := &s.gateway.rsubs
+		c := sub.client
+		sli, _ := rsubs.Load(c)
+		if change > 0 {
+			var sl *Sublist
+			if sli == nil {
+				sl = NewSublistNoCache()
+				rsubs.Store(c, sl)
+			} else {
+				sl = sli.(*Sublist)
+			}
+			sl.Insert(sub)
+			time.AfterFunc(s.gateway.recSubExp, func() {
 				sl.Remove(sub)
-				if sl.Count() == 0 {
-					rsubs.Delete(c)
-				}
+			})
+		} else if sli != nil {
+			sl := sli.(*Sublist)
+			sl.Remove(sub)
+			if sl.Count() == 0 {
+				rsubs.Delete(c)
 			}
 		}
+	}
+	if first || last {
 		if entry.q {
 			s.sendQueueSubOrUnsubToGateways(accName, sub, first)
 		} else {
@@ -2206,27 +2270,52 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 	}
 }
 
-// Returns true if the given subject starts with `$GR.`
-func subjectStartsWithGatewayReplyPrefix(subj []byte) bool {
-	return len(subj) > gwReplyStart && string(subj[:len(gwReplyPrefix)]) == gwReplyPrefix
+// Returns true if the given subject is a GW routed reply subject,
+// that is, starts with $GNR and is long enough to contain cluster/server hash
+// and subject.
+func isGWRoutedReply(subj []byte) bool {
+	return len(subj) > gwSubjectOffset && string(subj[:gwReplyPrefixLen]) == gwReplyPrefix
 }
 
-// Evaluates if the given reply should be mapped (adding the origin cluster
-// hash as a prefix) or not.
-func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, reply []byte) bool {
+// Same than isGWRoutedReply but accepts the old prefix $GR and returns
+// a boolean indicating if this is the old prefix
+func isGWRoutedSubjectAndIsOldPrefix(subj []byte) (bool, bool) {
+	if isGWRoutedReply(subj) {
+		return true, false
+	}
+	if len(subj) > oldGWReplyStart && string(subj[:oldGWReplyPrefixLen]) == oldGWReplyPrefix {
+		return true, true
+	}
+	return false, false
+}
+
+// Returns true if subject starts with "$GNR.". This is to check that
+// clients can't publish on this subject.
+func hasGWRoutedReplyPrefix(subj []byte) bool {
+	return len(subj) > gwReplyPrefixLen && string(subj[:gwReplyPrefixLen]) == gwReplyPrefix
+}
+
+// Evaluates if the given reply should be mapped or not.
+func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
+	// If the reply is a service reply (_R_), we must map to make sure that
+	// it comes back to this server since the mapping back to the real reply
+	// can only be made here.
+	if isServiceReply(reply) {
+		return true
+	}
+	// If for this client there is a recent matching subscription interest
+	// then we will map.
 	sli, _ := g.rsubs.Load(c)
 	if sli == nil {
 		return false
 	}
 	sl := sli.(*Sublist)
-	if sl.Count() == 0 {
-		return false
+	if sl.Count() > 0 {
+		if r := sl.Match(string(reply)); len(r.psubs)+len(r.qsubs) > 0 {
+			return true
+		}
 	}
-	if subjectStartsWithGatewayReplyPrefix(reply) {
-		return false
-	}
-	r := sl.Match(string(reply))
-	return len(r.psubs)+len(r.qsubs) > 0
+	return false
 }
 
 var subPool = &sync.Pool{
@@ -2252,6 +2341,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		gws = append(gws, gw.outo[i])
 	}
 	thisClusterReplyPrefix := gw.replyPfx
+	thisClusterOldReplyPrefix := gw.oldReplyPfx
 	gw.RUnlock()
 	if len(gws) == 0 {
 		return
@@ -2263,7 +2353,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		accName    = acc.Name
 		mreplya    [256]byte
 		mreply     []byte
-		dstPfx     []byte
+		dstHash    []byte
 		checkReply = len(reply) > 0
 	)
 
@@ -2273,18 +2363,28 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	// Make sure we are an 'R' proto
 	c.msgb[0] = 'R'
 
-	// Check if the subject is on "$GR.<cluster hash>.",
-	// and if so, send to that GW regardless of its
-	// interest on the real subject (that is, skip the
-	// check of subject interest).
-	if subjectStartsWithGatewayReplyPrefix(subject) {
-		dstPfx = subject[:gwReplyStart]
+	// Check if the subject is on the reply prefix, if so, we
+	// need to send that message directly to the origin cluster.
+	directSend, old := isGWRoutedSubjectAndIsOldPrefix(subject)
+	if directSend {
+		if old {
+			dstHash = subject[oldGWReplyPrefixLen : oldGWReplyStart-1]
+		} else {
+			dstHash = subject[gwClusterOffset : gwClusterOffset+gwHashLen]
+		}
 	}
 	for i := 0; i < len(gws); i++ {
 		gwc := gws[i]
-		if dstPfx != nil {
+		if directSend {
 			gwc.mu.Lock()
-			ok := gwc.gw.cfg != nil && bytes.Equal(dstPfx, gwc.gw.cfg.replyPfx)
+			var ok bool
+			if gwc.gw.cfg != nil {
+				if old {
+					ok = bytes.Equal(dstHash, gwc.gw.cfg.oldHash)
+				} else {
+					ok = bytes.Equal(dstHash, gwc.gw.cfg.hash)
+				}
+			}
 			gwc.mu.Unlock()
 			if !ok {
 				continue
@@ -2325,11 +2425,17 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			checkReply = false
 			// Assume we will use original
 			mreply = reply
-			// If there was a recent matching subscription on that connection
-			// and the reply is not already mapped, then map (add prefix).
-			if gw.shouldMapReplyForGatewaySend(c, reply) {
+			// Decide if we should map.
+			if gw.shouldMapReplyForGatewaySend(c, acc, reply) {
 				mreply = mreplya[:0]
-				mreply = append(mreply, thisClusterReplyPrefix...)
+				gwc.mu.Lock()
+				useOldPrefix := gwc.gw.useOldPrefix
+				gwc.mu.Unlock()
+				if useOldPrefix {
+					mreply = append(mreply, thisClusterOldReplyPrefix...)
+				} else {
+					mreply = append(mreply, thisClusterReplyPrefix...)
+				}
 				mreply = append(mreply, reply...)
 			}
 		}
@@ -2358,44 +2464,12 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		// So set/reset important fields.
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
-		sub.subject = c.pa.subject
-		c.deliverMsg(sub, c.pa.subject, mh, msg)
+		sub.subject = subject
+		c.deliverMsg(sub, subject, mh, msg, false)
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
 	subPool.Put(sub)
-}
-
-func (s *Server) gatewayHandleServiceImport(acc *Account, subject []byte, c *client, change int32) {
-	sid := make([]byte, 0, len(acc.Name)+len(subject)+1)
-	sid = append(sid, acc.Name...)
-	sid = append(sid, ' ')
-	sid = append(sid, subject...)
-	sub := &subscription{client: c, subject: subject, sid: sid}
-
-	var rspa [1024]byte
-	rsproto := rspa[:0]
-	if change > 0 {
-		rsproto = append(rsproto, rSubBytes...)
-	} else {
-		rsproto = append(rsproto, rUnsubBytes...)
-	}
-	rsproto = append(rsproto, ' ')
-	rsproto = append(rsproto, sid...)
-	rsproto = append(rsproto, CR_LF...)
-
-	s.mu.Lock()
-	for _, r := range s.routes {
-		r.mu.Lock()
-		r.sendProto(rsproto, false)
-		if r.trace {
-			r.traceOutOp("", rsproto[:len(rsproto)-LEN_CR_LF])
-		}
-		r.mu.Unlock()
-	}
-	s.mu.Unlock()
-	// Possibly send RS+ to gateways too.
-	s.gatewayUpdateSubInterest(acc.Name, sub, change)
 }
 
 // Possibly sends an A- to the remote gateway `c`.
@@ -2501,15 +2575,159 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 	}
 }
 
-func (g *srvGateway) getReplyPrefix() []byte {
+// Returns the cluster hash from the gateway reply prefix
+func (g *srvGateway) getClusterHash() []byte {
 	g.RLock()
-	replyPfx := g.replyPfx
+	clusterHash := g.replyPfx[gwClusterOffset : gwClusterOffset+gwHashLen]
 	g.RUnlock()
-	return replyPfx
+	return clusterHash
 }
 
-func (s *Server) isGatewayReplyForThisCluster(subj []byte) bool {
-	return string(s.gateway.getReplyPrefix()) == string(subj[:gwReplyStart])
+// Returns the route with given hash or nil if not found.
+func (s *Server) getRouteByHash(srvHash []byte) *client {
+	var route *client
+	if v, ok := s.routesByHash.Load(string(srvHash)); ok {
+		route = v.(*client)
+	}
+	return route
+}
+
+// Returns the subject from the routed reply
+func getSubjectFromGWRoutedReply(reply []byte, isOldPrefix bool) []byte {
+	if isOldPrefix {
+		return reply[oldGWReplyStart:]
+	}
+	return reply[gwSubjectOffset:]
+}
+
+// This should be invoked only from processInboundGatewayMsg() or
+// processInboundRoutedMsg() and is checking if the subject
+// (c.pa.subject) has the $GNR prefix. If so, this is processed
+// as a GW reply and `true` is returned to indicate to the caller
+// that it should stop processing.
+// If gateway is not enabled on this server or if the subject
+// does not start with $GR, `false` is returned and caller should
+// process message as usual.
+func (c *client) handleGatewayReply(msg []byte) (processed bool) {
+	// Do not handle GW prefixed messages if this server does not have
+	// gateway enabled or if the subject does not start with the previx.
+	if !c.srv.gateway.enabled {
+		return false
+	}
+	isGWPrefix, oldPrefix := isGWRoutedSubjectAndIsOldPrefix(c.pa.subject)
+	if !isGWPrefix {
+		return false
+	}
+	// Save original subject (in case we have to forward)
+	orgSubject := c.pa.subject
+
+	var clusterHash []byte
+	var srvHash []byte
+	var subject []byte
+
+	if oldPrefix {
+		clusterHash = c.pa.subject[oldGWReplyPrefixLen : oldGWReplyStart-1]
+		// Check if this reply is intended for our cluster.
+		if !bytes.Equal(clusterHash, c.srv.gateway.oldHash) {
+			// We could report, for now, just drop.
+			return true
+		}
+		subject = c.pa.subject[oldGWReplyStart:]
+	} else {
+		clusterHash = c.pa.subject[gwClusterOffset : gwClusterOffset+gwHashLen]
+		// Check if this reply is intended for our cluster.
+		if !bytes.Equal(clusterHash, c.srv.gateway.getClusterHash()) {
+			// We could report, for now, just drop.
+			return true
+		}
+		srvHash = c.pa.subject[gwServerOffset : gwServerOffset+gwHashLen]
+		subject = c.pa.subject[gwSubjectOffset:]
+	}
+
+	var route *client
+
+	// If the origin is not this server, get the route this should be sent to.
+	if c.kind == GATEWAY && srvHash != nil && !bytes.Equal(srvHash, c.srv.hash) {
+		route = c.srv.getRouteByHash(srvHash)
+		// This will be possibly nil, and in this case we will try to process
+		// the interest from this server.
+	}
+
+	// Adjust the subject
+	c.pa.subject = subject
+
+	// Use a stack buffer to rewrite c.pa.cache since we only need it for
+	// getAccAndResultFromCache()
+	var _pacache [256]byte
+	pacache := _pacache[:0]
+	pacache = append(pacache, c.pa.account...)
+	pacache = append(pacache, ' ')
+	pacache = append(pacache, c.pa.subject...)
+	c.pa.pacache = pacache
+
+	acc, r := c.getAccAndResultFromCache()
+	if acc == nil {
+		typeConn := "routed"
+		if c.kind == GATEWAY {
+			typeConn = "gateway"
+		}
+		c.Debugf("Unknown account %q for %s message on subject: %q", c.pa.account, typeConn, c.pa.subject)
+		if c.kind == GATEWAY {
+			c.srv.gatewayHandleAccountNoInterest(c, c.pa.account)
+		}
+		return true
+	}
+	// If route is nil, we will process the incoming message locally.
+	if route == nil {
+		// Check if this is a service reply subject (_R_)
+		if acc.imports.services != nil && isServiceReply(c.pa.subject) {
+			// This will map the _R_ back to a real subject and get
+			// the interest for that subject and process the message.
+			c.checkForImportServices(acc, msg)
+			return true
+		}
+		var queues [][]byte
+		if len(r.psubs)+len(r.qsubs) > 0 {
+			flags := pmrCollectQueueNames | pmrIgnoreEmptyQueueFilter
+			// If this message came from a ROUTE, allow to pick queue subs
+			// only if the message was directly sent by the "gateway" server
+			// in our cluster that received it.
+			if c.kind == ROUTER {
+				flags |= pmrAllowSendFromRouteToRoute
+			}
+			queues = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flags)
+		}
+		// Since this was a reply that made it to the origin cluster,
+		// we now need to send the message with the real subject to
+		// gateways in case they have interest on that reply subject.
+		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+	} else if c.kind == GATEWAY {
+		// Only if we are a gateway connection should we try to route
+		// to the server where the request originated.
+		var bufa [256]byte
+		var buf = bufa[:0]
+		buf = append(buf, msgHeadProto...)
+		buf = append(buf, acc.Name...)
+		buf = append(buf, ' ')
+		buf = append(buf, orgSubject...)
+		buf = append(buf, ' ')
+		if len(c.pa.reply) > 0 {
+			buf = append(buf, c.pa.reply...)
+			buf = append(buf, ' ')
+		}
+		buf = append(buf, c.pa.szb...)
+		mhEnd := len(buf)
+		buf = append(buf, _CRLF_...)
+		buf = append(buf, msg...)
+
+		route.mu.Lock()
+		route.sendProto(buf, true)
+		if route.trace {
+			route.traceOutOp("", buf[:mhEnd])
+		}
+		route.mu.Unlock()
+	}
+	return true
 }
 
 // Process a message coming from a remote gateway. Send to any sub/qsub
@@ -2536,32 +2754,11 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		return
 	}
 
-	// If we receive a message on $GR.<cluster>.<subj>
-	// we will drop the prefix before processing interest
-	// in this cluster, but we also need to resend to
-	// other gateways.
-	sendBackToGateways := false
-
-	// First thing to do is to check if the subject starts
-	// with "$GR.<hash>.".
-	if subjectStartsWithGatewayReplyPrefix(c.pa.subject) {
-		// If it does, then is this server/cluster the actual
-		// destination for this message?
-		if !c.srv.isGatewayReplyForThisCluster(c.pa.subject) {
-			// We could report, for now, just drop.
-			return
-		}
-		// Adjust the subject to past the prefix
-		c.pa.subject = c.pa.subject[gwReplyStart:]
-		// Use a stack buffer to rewrite c.pa.cache since we
-		// only need it for getAccAndResultFromCache()
-		var _pacache [256]byte
-		pacache := _pacache[:0]
-		pacache = append(pacache, c.pa.account...)
-		pacache = append(pacache, ' ')
-		pacache = append(pacache, c.pa.subject...)
-		c.pa.pacache = pacache
-		sendBackToGateways = true
+	// If the subject (c.pa.subject) has the gateway prefix, this function will
+	// handle it.
+	if c.handleGatewayReply(msg) {
+		// We are done here.
+		return
 	}
 
 	acc, r := c.getAccAndResultFromCache()
@@ -2571,36 +2768,18 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		return
 	}
 
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-		// We are handling a response to a request that we mapped
-		// via service imports, so if we are here we are the
-		// origin server
-		c.checkForImportServices(acc, msg)
-	}
+	// If there is no interest on plain subs, possibly send an RS-,
+	// even if there is qsubs interest.
+	if len(r.psubs) == 0 {
+		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
 
-	if !sendBackToGateways {
-		// If there is no interest on plain subs, possibly send an RS-,
-		// even if there is qsubs interest.
-		if len(r.psubs) == 0 {
-			c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
-
-			// If there is also no queue filter, then no point in continuing
-			// (even if r.qsubs i > 0).
-			if len(c.pa.queues) == 0 {
-				return
-			}
+		// If there is also no queue filter, then no point in continuing
+		// (even if r.qsubs i > 0).
+		if len(c.pa.queues) == 0 {
+			return
 		}
-		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
-	} else {
-		// We normally would not allow sending to a queue unless the
-		// RMSG contains the queue groups, however, if the incoming
-		// message was a "$GR." then we need to act as if this was
-		// a CLIENT connection..
-		qnames := c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply,
-			pmrCollectQueueNames|pmrTreatGatewayAsClient)
-		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
+	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
 // Indicates that the remote which we are sending messages to
@@ -2735,5 +2914,93 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 
 		c.Noticef("Gateway %q: switching account %q to %s mode complete",
 			remoteGWName, accName, InterestOnly)
+	})
+}
+
+// Keeps track of the routed reply to be used when/if application
+// sends back a message on the reply without the prefix.
+// Client lock held on entry. This is a server receiver because
+// we use a timer interval that is avail in Server.gateway object.
+func (s *Server) trackGWReply(c *client, reply []byte) {
+	ttl := s.gateway.recSubExp
+	rm := c.gwrm
+	var we bool // will be true if map was empty on entry
+	if rm == nil {
+		rm = make(map[string]*gwReplyMap)
+		c.gwrm = rm
+		we = true
+	} else {
+		we = len(rm) == 0
+	}
+	// We need to make a copy so that we don't reference the underlying
+	// read buffer.
+	ms := string(reply)
+	grm := &gwReplyMap{ms: ms, exp: time.Now().Add(ttl).UnixNano()}
+	// If we are here with the same key but different mapped replies
+	// (say $GNR._.A.srv1.bar and then $GNR._.B.srv2.bar), we need to
+	// store it otherwise we would take the risk of the reply not
+	// making it back.
+	rm[ms[gwSubjectOffset:]] = grm
+	if we {
+		atomic.StoreInt32(&c.cgwrt, 1)
+		s.gwrm.m.Store(c, nil)
+		if atomic.CompareAndSwapInt32(&s.gwrm.w, 0, 1) {
+			select {
+			case s.gwrm.ch <- ttl:
+			default:
+			}
+		}
+	}
+}
+
+// Starts a long lived go routine that is responsible to
+// remove GW reply mapping that have expired.
+func (s *Server) startGWReplyMapExpiration() {
+	s.mu.Lock()
+	s.gwrm.ch = make(chan time.Duration, 1)
+	s.mu.Unlock()
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+
+		t := time.NewTimer(time.Hour)
+		var ttl time.Duration
+		for {
+			select {
+			case <-t.C:
+				if ttl == 0 {
+					t.Reset(time.Hour)
+					continue
+				}
+				now := time.Now().UnixNano()
+				mapEmpty := true
+				s.gwrm.m.Range(func(k, _ interface{}) bool {
+					c := k.(*client)
+					c.mu.Lock()
+					for k, grm := range c.gwrm {
+						if grm.exp <= now {
+							delete(c.gwrm, k)
+							if len(c.gwrm) == 0 {
+								atomic.StoreInt32(&c.cgwrt, 0)
+								s.gwrm.m.Delete(c)
+							}
+						}
+					}
+					c.mu.Unlock()
+					mapEmpty = false
+					return true
+				})
+				if mapEmpty && atomic.CompareAndSwapInt32(&s.gwrm.w, 1, 0) {
+					ttl = 0
+					t.Reset(time.Hour)
+				} else {
+					t.Reset(ttl)
+				}
+			case cttl := <-s.gwrm.ch:
+				ttl = cttl
+				t.Reset(ttl)
+			case <-s.quitCh:
+				return
+			}
+		}
 	})
 }

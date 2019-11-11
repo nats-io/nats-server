@@ -76,6 +76,7 @@ type route struct {
 	replySubs    map[*subscription]*time.Timer
 	gatewayURL   string
 	leafnodeURL  string
+	hash         string
 }
 
 type connectInfo struct {
@@ -268,6 +269,13 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
+	// If the subject (c.pa.subject) has the gateway prefix, this function will
+	// handle it.
+	if c.handleGatewayReply(msg) {
+		// We are done here.
+		return
+	}
+
 	acc, r := c.getAccAndResultFromCache()
 	if acc == nil {
 		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
@@ -308,18 +316,6 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		}
 	}
 	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
-}
-
-// Helper function for routes and gateways and leafnodes to create qfilters
-// needed for converted subs from imports, etc.
-func (c *client) makeQFilter(qsubs [][]*subscription) {
-	qs := make([][]byte, 0, len(qsubs))
-	for _, qsub := range qsubs {
-		if len(qsub) > 0 {
-			qs = append(qs, qsub[0].queue)
-		}
-	}
-	c.pa.queues = qs
 }
 
 // Lock should be held entering here.
@@ -419,6 +415,8 @@ func (c *client) processRouteInfo(info *Info) {
 	if len(info.LeafNodeURLs) == 1 {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
 	}
+	// Compute the hash of this route based on remoteID
+	c.route.hash = string(getHash(info.ID))
 
 	// If this is an update due to config reload on the remote server,
 	// need to possibly send local subs to the remote server.
@@ -1246,7 +1244,11 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
 		cid := c.cid
+		hash := string(c.route.hash)
 		c.mu.Unlock()
+
+		// Store this route using the hash as the key
+		s.routesByHash.Store(hash, c)
 
 		// Now that we have registered the route, we can remove from the temp map.
 		s.removeFromTempClients(cid)
@@ -1726,12 +1728,14 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 func (s *Server) removeRoute(c *client) {
 	var rID string
 	var lnURL string
+	var hash string
 	c.mu.Lock()
 	cid := c.cid
 	r := c.route
 	if r != nil {
 		rID = r.remoteID
 		lnURL = r.leafnodeURL
+		hash = r.hash
 	}
 	c.mu.Unlock()
 	s.mu.Lock()
@@ -1748,6 +1752,7 @@ func (s *Server) removeRoute(c *client) {
 		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
 			s.sendAsyncLeafNodeInfo()
 		}
+		s.routesByHash.Delete(hash)
 	}
 	s.removeFromTempClients(cid)
 	s.mu.Unlock()

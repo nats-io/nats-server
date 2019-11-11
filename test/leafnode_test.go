@@ -706,7 +706,7 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 2)
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -748,11 +748,11 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	defer lc.Close()
 	_, leafExpect := setupConn(t, lc)
 	var totalBuf []byte
-	for count := 0; count != 3; {
+	for count := 0; count != 4; {
 		buf := leafExpect(lsubRe)
 		totalBuf = append(totalBuf, buf...)
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 3 {
+		if count > 4 {
 			t.Fatalf("Expected %v matches, got %v (buf=%s)", 3, count, totalBuf)
 		}
 	}
@@ -798,7 +798,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 2)
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -2140,7 +2140,7 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 2)
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
@@ -2601,17 +2601,23 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 	})
 	ncl.Flush()
 
-	// Create a direct connect requestor.
-	opts := cb.opts[1]
-	url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
-	nc, err := nats.Connect(url)
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc.Close()
+	// Create a direct connect requestor. Try with all possible
+	// servers in cluster B to make sure that we also receive the
+	// reply when the accepting leafnode server does not have
+	// its outbound GW connection to the requestor's server.
+	for i := 0; i < 3; i++ {
+		opts := cb.opts[i]
+		url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
+		nc, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer nc.Close()
 
-	if _, err := nc.Request("foo", []byte("Hello"), 250*time.Millisecond); err != nil {
-		t.Fatalf("Failed to get response: %v", err)
+		if _, err := nc.Request("foo", []byte("Hello"), 250*time.Millisecond); err != nil {
+			t.Fatalf("Failed to get response: %v", err)
+		}
+		nc.Close()
 	}
 }
 
