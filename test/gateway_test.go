@@ -20,8 +20,10 @@ import (
 	"net"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
 func testDefaultOptionsForGateway(name string) *server.Options {
@@ -540,5 +542,32 @@ func TestGatewayErrorOnRSentFromOutbound(t *testing.T) {
 			gASend(fmt.Sprintf("%s foo bar\r\n", test.proto))
 			expectDisconnect(t, gA)
 		})
+	}
+}
+
+func TestGatewaySystemConnectionAllowedToPublishOnGWPrefix(t *testing.T) {
+	sc := createSuperCluster(t, 2, 2)
+	defer sc.shutdown()
+
+	o := sc.clusters[1].opts[1]
+	url := fmt.Sprintf("nats://sys:pass@%s:%d", o.Host, o.Port)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	reply := nats.NewInbox()
+	sub, err := nc.SubscribeSync(reply)
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	if err := nc.PublishRequest("$SYS.REQ.SERVER.PING", reply, nil); err != nil {
+		t.Fatalf("Failed to send request: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := sub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Expected to get a response, got %v", err)
+		}
 	}
 }
