@@ -2651,8 +2651,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 		c.traceMsg(msg)
 	}
 
-	// Check that client is not publishing on reserved $GNR. prefix
-	if hasGWRoutedReplyPrefix(c.pa.subject) {
+	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
+	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
 		return
 	}
