@@ -30,6 +30,8 @@ const (
 	FileStorage
 )
 
+var ErrStoreMsgNotFound = errors.New("no message found")
+
 type MsgSetStore interface {
 	StoreMsg(subj string, msg []byte) (uint64, error)
 	LoadMsg(seq uint64) (subj string, msg []byte, ts int64, err error)
@@ -203,7 +205,3 @@ func (rp *ReplayPolicy) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
-
-var (
-	ErrStoreMsgNotFound = errors.New("no message found")
-)
