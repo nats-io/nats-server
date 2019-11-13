@@ -1295,12 +1295,6 @@ func (nc *Conn) createConn() (err error) {
 		return err
 	}
 
-	// No clue why, but this stalls and kills performance on Mac (Mavericks).
-	// https://code.google.com/p/go/issues/detail?id=6930
-	//if ip, ok := nc.conn.(*net.TCPConn); ok {
-	//	ip.SetReadBuffer(defaultBufSize)
-	//}
-
 	if nc.pending != nil && nc.bw != nil {
 		// Move to pending buffer.
 		nc.bw.Flush()
@@ -2056,31 +2050,21 @@ func (nc *Conn) readLoop() {
 	if nc.ps == nil {
 		nc.ps = &parseState{}
 	}
+	conn := nc.conn
 	nc.mu.Unlock()
+
+	if conn == nil {
+		return
+	}
 
 	// Stack based buffer.
 	b := make([]byte, defaultBufSize)
 
 	for {
-		// ps is thread safe, so RLock is okay
-		nc.mu.RLock()
-		sb := nc.isClosed() || nc.isReconnecting()
-		if sb {
-			nc.ps = &parseState{}
-		}
-		conn := nc.conn
-		nc.mu.RUnlock()
-
-		if sb || conn == nil {
-			break
-		}
-
-		n, err := conn.Read(b)
-		if err != nil {
+		if n, err := conn.Read(b); err != nil {
 			nc.processOpErr(err)
 			break
-		}
-		if err := nc.parse(b[:n]); err != nil {
+		} else if err = nc.parse(b[:n]); err != nil {
 			nc.processOpErr(err)
 			break
 		}
