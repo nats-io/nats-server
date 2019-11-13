@@ -370,11 +370,11 @@ func TestJetStreamCreateObservable(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			// Partitions can not be AckAll.
+			// Subjects can not be AckAll.
 			if _, err := mset.AddObservable(&server.ObservableConfig{
 				Delivery:   delivery,
 				DeliverAll: true,
-				Partition:  "foo",
+				Subject:    "foo",
 				AckPolicy:  server.AckAll,
 			}); err == nil {
 				t.Fatalf("Expected an error on partitioned observable with ack policy of all")
@@ -640,7 +640,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 	}
 }
 
-func TestJetStreamPartitioning(t *testing.T) {
+func TestJetStreamSubjecting(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.MsgSetConfig
@@ -682,7 +682,7 @@ func TestJetStreamPartitioning(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, Partition: subjB, DeliverAll: true})
+			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, Subject: subjB, DeliverAll: true})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -714,7 +714,7 @@ func TestJetStreamPartitioning(t *testing.T) {
 	}
 }
 
-func TestJetStreamWorkQueuePartitioning(t *testing.T) {
+func TestJetStreamWorkQueueSubjecting(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.MsgSetConfig
@@ -752,7 +752,7 @@ func TestJetStreamWorkQueuePartitioning(t *testing.T) {
 			}
 
 			oname := "WQ"
-			o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Partition: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
+			o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Subject: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -983,7 +983,7 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 
 			// Now add in an observable that has a partition.
 			pConfig := func(pname string) *server.ObservableConfig {
-				return &server.ObservableConfig{DeliverAll: true, Partition: pname, AckPolicy: server.AckExplicit}
+				return &server.ObservableConfig{DeliverAll: true, Subject: pname, AckPolicy: server.AckExplicit}
 			}
 			o, err = mset.AddObservable(pConfig("MY_WORK_QUEUE.A"))
 			if err != nil {
@@ -1603,7 +1603,7 @@ func TestJetStreamDurableObservableReconnect(t *testing.T) {
 	}
 }
 
-func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
+func TestJetStreamDurableSubjectedObservableReconnect(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.MsgSetConfig
@@ -1651,7 +1651,7 @@ func TestJetStreamDurablePartitionedObservableReconnect(t *testing.T) {
 			o, err := mset.AddObservable(&server.ObservableConfig{
 				Durable:     dname,
 				Delivery:    dsubj,
-				Partition:   "foo.AA",
+				Subject:     "foo.AA",
 				DeliverLast: true,
 				AckPolicy:   server.AckExplicit,
 				AckWait:     100 * time.Millisecond,
@@ -2706,7 +2706,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	}
 }
 
-func TestJetStreamPerf(t *testing.T) {
+func TestJetStreamPubSubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
 

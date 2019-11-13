@@ -33,7 +33,7 @@ type ObservableConfig struct {
 	DeliverLast  bool          `json:"deliver_last,omitempty"`
 	AckPolicy    AckPolicy     `json:"ack_policy"`
 	AckWait      time.Duration `json:"ack_wait,omitempty"`
-	Partition    string        `json:"partition,omitempty"`
+	Subject      string        `json:"subject,omitempty"`
 	ReplayPolicy ReplayPolicy  `json:"replay_policy"`
 }
 
@@ -137,12 +137,12 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Make sure any partition subject is also a literal.
-	if config.Partition != "" {
-		if !subjectIsLiteral(config.Partition) {
+	if config.Subject != "" {
+		if !subjectIsLiteral(config.Subject) {
 			return nil, fmt.Errorf("observable partition subject has wildcards")
 		}
 		// Make sure this is a valid partition of the interest subjects.
-		if !mset.validPartition(config.Partition) {
+		if !mset.validSubject(config.Subject) {
 			return nil, fmt.Errorf("observable partition not a valid subset of the interest subjects")
 		}
 		if config.AckPolicy == AckAll {
@@ -182,10 +182,10 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 			return nil, fmt.Errorf("delivery subject not allowed on workqueue message set")
 		}
 		if len(mset.obs) > 0 {
-			if config.Partition == _EMPTY_ {
+			if config.Subject == _EMPTY_ {
 				mset.mu.Unlock()
 				return nil, fmt.Errorf("multiple non-partioned observables not allowed on workqueue message set")
-			} else if !mset.partitionUnique(config.Partition) {
+			} else if !mset.partitionUnique(config.Subject) {
 				// We have a partition but it is not unique amongst the others.
 				mset.mu.Unlock()
 				return nil, fmt.Errorf("partioned observable not unique on workqueue message set")
@@ -564,7 +564,7 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
-				if o.config.Partition != "" && subj != o.config.Partition {
+				if o.config.Subject != "" && subj != o.config.Subject {
 					continue
 				}
 			}
@@ -616,7 +616,7 @@ func (o *Observable) processReplay() error {
 
 	o.mu.Lock()
 	mset := o.mset
-	partition := o.config.Partition
+	partition := o.config.Subject
 	pullMode := o.isPullMode()
 	o.mu.Unlock()
 
@@ -790,7 +790,7 @@ func (o *Observable) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool
 
 	// If we are partitioned and we do not match, do not consider this a failure.
 	// Go ahead and return true.
-	if o.config.Partition != "" && subj != o.config.Partition {
+	if o.config.Subject != "" && subj != o.config.Subject {
 		o.mu.Unlock()
 		return true
 	}
@@ -965,7 +965,7 @@ func (o *Observable) NextSeq() uint64 {
 
 // This will select the store seq to start with based on the
 // partition subject.
-func (o *Observable) selectPartitionLast() {
+func (o *Observable) selectSubjectLast() {
 	stats := o.mset.store.Stats()
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
@@ -973,7 +973,7 @@ func (o *Observable) selectPartitionLast() {
 		if err == ErrStoreMsgNotFound {
 			continue
 		}
-		if subj == o.config.Partition {
+		if subj == o.config.Subject {
 			o.sseq = seq
 			return
 		}
@@ -990,8 +990,8 @@ func (o *Observable) selectStartingSeqNo() {
 		} else if o.config.DeliverLast {
 			o.sseq = stats.LastSeq
 			// If we are partitioned here we may need to walk backwards.
-			if o.config.Partition != _EMPTY_ {
-				o.selectPartitionLast()
+			if o.config.Subject != _EMPTY_ {
+				o.selectSubjectLast()
 			}
 		} else if o.config.StartTime != noTime {
 			// If we are here we are time based.
@@ -1141,7 +1141,7 @@ func (mset *MsgSet) deliveryFormsCycle(deliverySubject string) bool {
 }
 
 // This is same as check for delivery cycle.
-func (mset *MsgSet) validPartition(partitionSubject string) bool {
+func (mset *MsgSet) validSubject(partitionSubject string) bool {
 	return mset.deliveryFormsCycle(partitionSubject)
 }
 
