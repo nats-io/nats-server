@@ -504,10 +504,10 @@ func (mset *MsgSet) waitForMsgs() {
 // Lock should be held.
 func (mset *MsgSet) partitionUnique(partition string) bool {
 	for _, o := range mset.obs {
-		if o.config.Partition == _EMPTY_ {
+		if o.config.Subject == _EMPTY_ {
 			return false
 		}
-		if subjectIsSubsetMatch(partition, o.config.Partition) {
+		if subjectIsSubsetMatch(partition, o.config.Subject) {
 			return false
 		}
 	}
