@@ -98,6 +98,7 @@ type Observable struct {
 	nointerest  int
 	athresh     int
 	achk        time.Duration
+	fch         chan struct{}
 	qch         chan struct{}
 }
 
@@ -197,7 +198,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{})}
+	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{}), fch: make(chan struct{})}
 	if isDurableObservable(config) {
 		o.name = config.Durable
 	} else {
@@ -286,6 +287,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 
 	// Now start up Go routine to deliver msgs.
 	go o.loopAndDeliverMsgs(s, a)
+	// Startup our state update loop.
+	go o.updateStateLoop()
 
 	return o, nil
 }
@@ -387,26 +390,51 @@ func (o *Observable) readStoredState() error {
 	return err
 }
 
+func (o *Observable) updateStateLoop() {
+	o.mu.Lock()
+	fch := o.fch
+	qch := o.qch
+	o.mu.Unlock()
+
+	for {
+		select {
+		case <-qch:
+			return
+		case <-fch:
+			time.Sleep(25 * time.Millisecond)
+			o.mu.Lock()
+			if o.store != nil {
+				state := &ObservableState{
+					Delivered: SequencePair{
+						ObsSeq: o.dseq,
+						SetSeq: o.sseq,
+					},
+					AckFloor: SequencePair{
+						ObsSeq: o.adflr,
+						SetSeq: o.asflr,
+					},
+					Pending:    o.pending,
+					Redelivery: o.rdc,
+				}
+				// FIXME(dlc) - Hold onto any errors.
+				o.store.Update(state)
+			}
+			o.mu.Unlock()
+		}
+	}
+}
+
 // Will update the underlying store.
 // Lock should be held.
 func (o *Observable) updateStore() {
 	if o.store == nil {
 		return
 	}
-	state := &ObservableState{
-		Delivered: SequencePair{
-			ObsSeq: o.dseq,
-			SetSeq: o.sseq,
-		},
-		AckFloor: SequencePair{
-			ObsSeq: o.adflr,
-			SetSeq: o.asflr,
-		},
-		Pending:    o.pending,
-		Redelivery: o.rdc,
+	// Kick our flusher
+	select {
+	case o.fch <- struct{}{}:
+	default:
 	}
-	// FIXME(dlc) - Hold onto any errors.
-	o.store.Update(state)
 }
 
 // Process an ack for a message.
@@ -567,7 +595,7 @@ func (o *Observable) clearReplayState() {
 }
 
 // Wait for pull requests.
-// FIXME(dlc) - for short wait periods is ok but should single when waiting comes in.
+// FIXME(dlc) - for short wait periods is ok but should signal when waiting comes in.
 func (o *Observable) waitForPullRequests(wait time.Duration) {
 	o.mu.Lock()
 	qch := o.qch
@@ -734,6 +762,54 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 
 func (o *Observable) ackReply(sseq, dseq, dcount uint64) string {
 	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq)
+}
+
+// deliverCurrentMsg is the hot path to deliver a message that was just received.
+// Will return if the message was delivered or not.
+func (o *Observable) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
+	o.mu.Lock()
+	if seq != o.sseq {
+		o.mu.Unlock()
+		return false
+	}
+
+	// If we are in push mode and not active let's stop sending.
+	if o.isPushMode() && !o.active {
+		o.mu.Unlock()
+		return false
+	}
+
+	// If we are in pull mode and no one is waiting already break and wait.
+	if o.isPullMode() && len(o.waiting) == 0 {
+		o.mu.Unlock()
+		return false
+	}
+
+	// Bump store sequence here.
+	o.sseq++
+
+	// If we are partitioned and we do not match, do not consider this a failure.
+	// Go ahead and return true.
+	if o.config.Partition != "" && subj != o.config.Partition {
+		o.mu.Unlock()
+		return true
+	}
+	var dsubj string
+	if len(o.waiting) > 0 {
+		dsubj = o.waiting[0]
+		o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+	} else {
+		dsubj = o.dsubj
+	}
+
+	if len(msg) > 0 {
+		msg = append(msg[:0:0], msg...)
+	}
+
+	o.deliverMsg(dsubj, subj, msg, seq, 1)
+	o.mu.Unlock()
+
+	return true
 }
 
 // Deliver a msg to the observable.
@@ -1019,6 +1095,9 @@ func (o *Observable) stop(dflag bool) error {
 		o.mu.Unlock()
 		return nil
 	}
+
+	close(o.qch)
+
 	if o.store != nil {
 		o.store.Stop()
 	}
@@ -1030,7 +1109,7 @@ func (o *Observable) stop(dflag bool) error {
 	o.reqSub = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.atmr)
-	close(o.qch)
+
 	o.mu.Unlock()
 
 	mset.mu.Lock()
