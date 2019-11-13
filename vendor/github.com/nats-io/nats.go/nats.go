@@ -45,7 +45,7 @@ import (
 
 // Default Constants
 const (
-	Version                 = "1.8.1"
+	Version                 = "1.9.1"
 	DefaultURL              = "nats://127.0.0.1:4222"
 	DefaultPort             = 4222
 	DefaultMaxReconnect     = 60
@@ -1295,12 +1295,6 @@ func (nc *Conn) createConn() (err error) {
 		return err
 	}
 
-	// No clue why, but this stalls and kills performance on Mac (Mavericks).
-	// https://code.google.com/p/go/issues/detail?id=6930
-	//if ip, ok := nc.conn.(*net.TCPConn); ok {
-	//	ip.SetReadBuffer(defaultBufSize)
-	//}
-
 	if nc.pending != nil && nc.bw != nil {
 		// Move to pending buffer.
 		nc.bw.Flush()
@@ -2056,31 +2050,21 @@ func (nc *Conn) readLoop() {
 	if nc.ps == nil {
 		nc.ps = &parseState{}
 	}
+	conn := nc.conn
 	nc.mu.Unlock()
+
+	if conn == nil {
+		return
+	}
 
 	// Stack based buffer.
 	b := make([]byte, defaultBufSize)
 
 	for {
-		// ps is thread safe, so RLock is okay
-		nc.mu.RLock()
-		sb := nc.isClosed() || nc.isReconnecting()
-		if sb {
-			nc.ps = &parseState{}
-		}
-		conn := nc.conn
-		nc.mu.RUnlock()
-
-		if sb || conn == nil {
-			break
-		}
-
-		n, err := conn.Read(b)
-		if err != nil {
+		if n, err := conn.Read(b); err != nil {
 			nc.processOpErr(err)
 			break
-		}
-		if err := nc.parse(b[:n]); err != nil {
+		} else if err = nc.parse(b[:n]); err != nil {
 			nc.processOpErr(err)
 			break
 		}
@@ -2656,14 +2640,18 @@ func (nc *Conn) respHandler(m *Msg) {
 		return
 	}
 
+	var mch chan *Msg
+
 	// Grab mch
 	rt := nc.respToken(m.Subject)
-	mch := nc.respMap[rt]
-	// Delete the key regardless, one response only.
-	delete(nc.respMap, rt)
-	// If something went wrong and we only have one entry, use that.
-	// This can happen if the system rewrites the subject, e.g. js.
-	if mch == nil && len(nc.respMap) == 1 {
+	if rt != _EMPTY_ {
+		mch = nc.respMap[rt]
+		// Delete the key regardless, one response only.
+		delete(nc.respMap, rt)
+	} else if len(nc.respMap) == 1 {
+		// If the server has rewritten the subject, the response token (rt)
+		// will not match (could be the case with JetStream). If that is the
+		// case and there is a single entry, use that.
 		for k, v := range nc.respMap {
 			mch = v
 			delete(nc.respMap, k)
