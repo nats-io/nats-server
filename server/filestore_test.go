@@ -741,7 +741,7 @@ func TestFileStoreMeta(t *testing.T) {
 	oconfig := ObservableConfig{
 		Delivery:   "d",
 		DeliverAll: true,
-		Partition:  "foo",
+		Subject:    "foo",
 		AckPolicy:  AckAll,
 	}
 	oname := "obs22"
