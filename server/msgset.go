@@ -52,7 +52,7 @@ const (
 // MsgSet is a jetstream message set. When we receive a message internally destined
 // for a MsgSet we will direct link from the client to this MsgSet structure.
 type MsgSet struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	sg     *sync.Cond
 	sgw    int
 	jsa    *jsAccount
@@ -291,7 +291,8 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	response := AckAck
 
 	// Check to see if we are over the account limit.
-	if seq, err := store.StoreMsg(subject, msg); err != nil {
+	seq, err := store.StoreMsg(subject, msg)
+	if err != nil {
 		mset.mu.Lock()
 		accName := c.acc.Name
 		name := mset.config.Name
@@ -299,16 +300,30 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
 		response = []byte(fmt.Sprintf("-ERR %q", err.Error()))
 	} else if jsa.limitsExceeded(stype) {
-		c.Debugf("JetStream resource limits exceeded for account")
+		c.Debugf("JetStream resource limits exceeded for account: %q", c.acc.Name)
 		response = []byte("-ERR 'resource limits exceeded for account'")
 		store.RemoveMsg(seq)
-	} else {
-		mset.signalObservers()
+		seq = 0
 	}
 
 	// Send response here.
 	if doAck && len(reply) > 0 {
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+	}
+
+	if err == nil && seq > 0 {
+		var needSignal bool
+		mset.mu.Lock()
+		for _, o := range mset.obs {
+			if !o.deliverCurrentMsg(subject, msg, seq) {
+				needSignal = true
+			}
+		}
+		mset.mu.Unlock()
+
+		if needSignal {
+			mset.signalObservers()
+		}
 	}
 }
 
