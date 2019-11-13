@@ -594,7 +594,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 				t.Helper()
 				nextMsg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
+					t.Fatalf("Unexpected error for seq %d: %v", seqno, err)
 				}
 				if nextMsg.Subject != "bar" {
 					t.Fatalf("Expected subject of %q, got %q", "bar", nextMsg.Subject)
@@ -615,7 +615,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 
 			go func() {
 				time.Sleep(nextDelay)
-				nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+				nc.Request(sendSubj, []byte("Hello World!"), 100*time.Millisecond)
 			}()
 
 			start := time.Now()
@@ -975,7 +975,6 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 			if _, err := mset.AddObservable(&server.ObservableConfig{DeliverAll: true}); err == nil {
 				t.Fatalf("Expected an error on attempt for second observable for a workqueue")
 			}
-
 			o.Delete()
 
 			if numo := mset.NumObservables(); numo != 0 {
@@ -1044,7 +1043,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 			// Now load up some messages.
 			toSend := 100
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 50*time.Millisecond)
+				resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 100*time.Millisecond)
 				expectOKResponse(t, resp)
 			}
 			stats := mset.Stats()
@@ -2705,4 +2704,71 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestJetStreamPerf(t *testing.T) {
+	// Uncomment to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	acc := s.GlobalAccount()
+
+	msetConfig := server.MsgSetConfig{
+		Name:     "MSET22",
+		Storage:  server.FileStorage,
+		Subjects: []string{"foo"},
+	}
+
+	mset, err := acc.AddMsgSet(&msetConfig)
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	var toSend = 1000000
+	var received int
+	done := make(chan bool)
+
+	delivery := "d"
+	//delivery = "foo"
+
+	nc.Subscribe(delivery, func(m *nats.Msg) {
+		received++
+		if received >= toSend {
+			done <- true
+		}
+	})
+	nc.Flush()
+
+	_, err = mset.AddObservable(&server.ObservableConfig{
+		Delivery:   delivery,
+		DeliverAll: true,
+		AckPolicy:  server.AckNone,
+	})
+	if err != nil {
+		t.Fatalf("Error creating observable: %v", err)
+	}
+
+	payload := []byte("Hello World")
+
+	start := time.Now()
+
+	for i := 0; i < toSend; i++ {
+		nc.Publish("foo", payload)
+	}
+
+	<-done
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 }

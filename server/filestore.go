@@ -118,17 +118,19 @@ const (
 	// Index file for observable
 	obsState = "o.dat"
 	// Maximum size of a write buffer we may consider for re-use.
-	maxBufReuse = 4 * 1024 * 1024
+	maxBufReuse = 2 * 1024 * 1024
 	// Default stream block size.
 	defaultStreamBlockSize = 128 * 1024 * 1024 // 128MB
 	// Default for workqueue or interest based.
 	defaultOtherBlockSize = 32 * 1024 * 1024 // 32MB
 	// max block size for now.
-	maxBlockSize = defaultStreamBlockSize
+	maxBlockSize = 2 * defaultStreamBlockSize
 	// default cache expiration
 	defaultCacheExpiration = 2 * time.Second
 	// default sync interval
 	defaultSyncInterval = 10 * time.Second
+	// coalesceDelay
+	coalesceDelay = 20 * time.Millisecond
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -455,6 +457,7 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
 		fs.startAgeChk()
 	}
+
 	cb := fs.scb
 	stopBytes := int64(fs.stats.Bytes)
 	fs.mu.Unlock()
@@ -757,6 +760,7 @@ func (fs *fileStore) flushLoop(fch, qch chan struct{}) {
 	for {
 		select {
 		case <-fch:
+			time.Sleep(coalesceDelay)
 			fs.flushPendingWrites()
 		case <-qch:
 			return
@@ -1031,7 +1035,7 @@ func (fs *fileStore) checkPrefetch(seq uint64, mb *msgBlock) {
 // Will return message for the given sequence number.
 func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 	fs.mu.Lock()
-	// seq == 0 indidcates we want first msg.
+	// seq == 0 indicates we want first msg.
 	if seq == 0 {
 		seq = fs.stats.FirstSeq
 	}
@@ -1041,9 +1045,6 @@ func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 		return nil
 	}
 
-	// Check for prefetch
-	fs.checkPrefetch(seq, mb)
-
 	// Check cache.
 	if mb.cache != nil {
 		if sm, ok := mb.cache[seq]; ok {
@@ -1052,6 +1053,10 @@ func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 			return sm
 		}
 	}
+
+	// Check for prefetch
+	fs.checkPrefetch(seq, mb)
+
 	// If we are here we do not have the message in our cache currently.
 	sm := fs.readAndCacheMsgs(mb, seq)
 	if sm != nil {
@@ -1109,12 +1114,12 @@ func (fs *fileStore) flushPendingWrites() {
 // Lock should be held.
 func (fs *fileStore) flushPendingWritesLocked() {
 	mb := fs.lmb
-	if mb == nil {
+	if mb == nil || mb.mfd == nil {
 		return
 	}
 
 	// Append new data to the message block file.
-	if lbb := fs.wmb.Len(); lbb > 0 && mb.mfd != nil {
+	if lbb := fs.wmb.Len(); lbb > 0 {
 		n, _ := fs.wmb.WriteTo(mb.mfd)
 		if int(n) != lbb {
 			fs.wmb.Truncate(int(n))
@@ -1578,14 +1583,13 @@ func (o *observableFileStore) Update(state *ObservableState) error {
 
 	// Check if we have the index file open.
 	o.mu.Lock()
-	defer o.mu.Unlock()
 
-	if err := o.ensureStateFileOpen(); err != nil {
-		return err
+	err := o.ensureStateFileOpen()
+	if err == nil {
+		n, err = o.ifd.WriteAt(buf, 0)
+		o.lwsz = int64(n)
 	}
-
-	n, err := o.ifd.WriteAt(buf, 0)
-	o.lwsz = int64(n)
+	o.mu.Unlock()
 
 	return err
 }
