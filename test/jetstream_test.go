@@ -14,6 +14,7 @@
 package test
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,17 +242,6 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestJetStreamRequestEnabled(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
-
-	resp, _ := nc.Request(server.JetStreamEnabled, nil, time.Second)
-	expectOKResponse(t, resp)
 }
 
 func TestJetStreamNoAckMsgSet(t *testing.T) {
@@ -2706,6 +2697,171 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamRequestAPI(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// This will return +OK if enabled.
+	resp, _ := nc.Request(server.JetStreamEnabled, nil, time.Second)
+	expectOKResponse(t, resp)
+
+	// This will get the current information about usage and limits for this account.
+	resp, err := nc.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var info server.JetStreamAccountStats
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now create a message set.
+	msetCfg := server.MsgSetConfig{
+		Name:     "MSET22",
+		Storage:  server.FileStorage,
+		Subjects: []string{"foo", "bar", "baz"},
+		MaxMsgs:  100,
+	}
+	req, err := json.Marshal(msetCfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ = nc.Request(server.JetStreamCreateMsgSet, req, time.Second)
+	expectOKResponse(t, resp)
+
+	// Now lookup info again and see that we can see the new message set.
+	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if info.MsgSets != 1 {
+		t.Fatalf("Expected to see 1 MsgSet, got %d", info.MsgSets)
+	}
+
+	// Make sure list works.
+	resp, err = nc.Request(server.JetStreamMsgSets, nil, time.Second)
+	var names []string
+	if err = json.Unmarshal(resp.Data, &names); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(names) != 1 {
+		t.Fatalf("Expected only 1 message set but got %d", len(names))
+	}
+	if names[0] != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, names[0])
+	}
+
+	// Now send some messages, then we can poll for info on this message set.
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		nc.Request("foo", []byte("WELCOME JETSTREAM"), time.Second)
+	}
+
+	resp, err = nc.Request(server.JetStreamMsgSetInfo, []byte(msetCfg.Name), time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var mstats server.MsgSetStats
+	if err = json.Unmarshal(resp.Data, &mstats); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if mstats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected to get %d msgs, got %d", toSend, mstats.Msgs)
+	}
+
+	// Looking up on that is not there should yield an error.
+	resp, err = nc.Request(server.JetStreamMsgSetInfo, []byte("BOB"), time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if string(resp.Data) != "-ERR msgset not found" {
+		t.Fatalf("Expected to get a not found error, got %q", resp.Data)
+	}
+
+	// Now create an observable.
+	delivery := nats.NewInbox()
+	obsReq := server.CreateObservableRequest{
+		MsgSet: msetCfg.Name,
+		Config: server.ObservableConfig{Delivery: delivery, DeliverAll: true},
+	}
+	req, err = json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ = nc.Request(server.JetStreamCreateObservable, req, time.Second)
+	// Since we do not have interest this should have failed.
+	if !strings.HasPrefix(string(resp.Data), "-ERR observable requires interest") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+	// Now create subscription and make sure we get +OK
+	sub, _ := nc.SubscribeSync(delivery)
+	nc.Flush()
+
+	resp, _ = nc.Request(server.JetStreamCreateObservable, req, time.Second)
+	if string(resp.Data) != server.OK {
+		t.Fatalf("Expected OK, got %q", resp.Data)
+	}
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+		}
+		return nil
+	})
+
+	// Get the list of all of the obervables for our message set.
+	resp, _ = nc.Request(server.JetStreamObservables, []byte(msetCfg.Name), time.Second)
+	var onames []string
+	if err = json.Unmarshal(resp.Data, &onames); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(onames) != 1 {
+		t.Fatalf("Expected only 1 observable but got %d", len(onames))
+	}
+	// Now let's get info about our observable.
+	req = []byte(fmt.Sprintf("%s %s", msetCfg.Name, onames[0]))
+	resp, _ = nc.Request(server.JetStreamObservableInfo, req, time.Second)
+	var ostate server.ObservableState
+	if err = json.Unmarshal(resp.Data, &ostate); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now delete the observable.
+	resp, _ = nc.Request(server.JetStreamDeleteObservable, req, time.Second)
+	expectOKResponse(t, resp)
+
+	// Now delete the message set
+	resp, _ = nc.Request(server.JetStreamDeleteMsgSet, []byte(msetCfg.Name), time.Second)
+	expectOKResponse(t, resp)
+
+	// Now grab stats again.
+	// This will get the current information about usage and limits for this account.
+	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if info.MsgSets != 0 {
+		t.Fatalf("Expected no remaining message sets, got %d", info.MsgSets)
+	}
+}
+
 func TestJetStreamPubSubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
@@ -2740,7 +2896,6 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	done := make(chan bool)
 
 	delivery := "d"
-	//delivery = "foo"
 
 	nc.Subscribe(delivery, func(m *nats.Msg) {
 		received++
