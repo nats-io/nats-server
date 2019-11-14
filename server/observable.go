@@ -37,6 +37,11 @@ type ObservableConfig struct {
 	ReplayPolicy ReplayPolicy  `json:"replay_policy"`
 }
 
+type CreateObservableRequest struct {
+	MsgSet string           `json:"msg_set_name"`
+	Config ObservableConfig `json:"config"`
+}
+
 // AckPolicy determines how the observable should acknowledge delivered messages.
 type AckPolicy int
 
@@ -422,6 +427,37 @@ func (o *Observable) updateStateLoop() {
 			o.mu.Unlock()
 		}
 	}
+}
+
+// Returns our current observable state.
+func (o *Observable) Info() *ObservableState {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	state := &ObservableState{
+		Delivered: SequencePair{
+			ObsSeq: o.dseq,
+			SetSeq: o.sseq,
+		},
+		AckFloor: SequencePair{
+			ObsSeq: o.adflr,
+			SetSeq: o.asflr,
+		},
+	}
+	if len(o.pending) > 0 {
+		p := make(map[uint64]int64, len(o.pending))
+		for k, v := range o.pending {
+			p[k] = v
+		}
+		state.Pending = p
+	}
+	if len(o.rdc) > 0 {
+		r := make(map[uint64]uint64, len(o.rdc))
+		for k, v := range o.rdc {
+			r[k] = v
+		}
+		state.Redelivery = r
+	}
+	return state
 }
 
 // Will update the underlying store.
