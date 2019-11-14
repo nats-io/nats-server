@@ -1083,7 +1083,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	m1.merge(&m2)
 
 	// Make sure we remove the entry here.
-	si.acc.removeServiceImport(si.from)
+	acc.removeServiceImport(si.from)
 	// Send the metrics
 	s.sendInternalAccountMsg(acc, lsub, &m1)
 }

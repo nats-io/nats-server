@@ -547,6 +547,14 @@ func shutdownCluster(c *cluster) {
 	}
 }
 
+func (c *cluster) totalSubs() int {
+	totalSubs := 0
+	for _, s := range c.servers {
+		totalSubs += int(s.NumSubscriptions())
+	}
+	return totalSubs
+}
+
 // Wait for the expected number of outbound gateways, or fails.
 func waitForOutboundGateways(t *testing.T, s *server.Server, expected int, timeout time.Duration) {
 	t.Helper()

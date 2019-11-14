@@ -805,6 +805,13 @@ func (a *Account) AddServiceImport(destination *Account, from, to string) error 
 	return a.AddServiceImportWithClaim(destination, from, to, nil)
 }
 
+// NumServiceImports return number of service imports we have.
+func (a *Account) NumServiceImports() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.imports.services)
+}
+
 // removeServiceImport will remove the route by subject.
 func (a *Account) removeServiceImport(subject string) {
 	a.mu.Lock()
