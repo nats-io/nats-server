@@ -89,6 +89,7 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 		return nil, fmt.Errorf("jetstream not enabled for account")
 	}
 
+	// Sensible defaults.
 	cfg, err := checkMsgSetCfg(config)
 	if err != nil {
 		return nil, err
@@ -360,6 +361,13 @@ func (mset *MsgSet) setupSendCapabilities() {
 	go mset.internalSendLoop()
 }
 
+// Name returns the message set name.
+func (mset *MsgSet) Name() string {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return mset.config.Name
+}
+
 func (mset *MsgSet) internalSendLoop() {
 	mset.mu.Lock()
 	c := mset.client
@@ -449,6 +457,18 @@ func (mset *MsgSet) stop(delete bool) error {
 	}
 
 	return nil
+}
+
+// Observables will return all the current observables for this message set.
+func (mset *MsgSet) Observables() []*Observable {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	var obs []*Observable
+	for _, o := range mset.obs {
+		obs = append(obs, o)
+	}
+	return obs
 }
 
 // NumObservables reports on number of active observables for this message set.
