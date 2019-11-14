@@ -2549,12 +2549,15 @@ func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
 func (s *Server) setFirstPingTimer(c *client) {
 	opts := s.getOpts()
 	d := opts.PingInterval
-	if c.kind != CLIENT {
-		if d > firstPingInterval {
-			d = firstPingInterval
+
+	if !opts.DisableShortFirstPing {
+		if c.kind != CLIENT {
+			if d > firstPingInterval {
+				d = firstPingInterval
+			}
+		} else if d > firstClientPingInterval {
+			d = firstClientPingInterval
 		}
-	} else if d > firstClientPingInterval && !opts.DisableShortFirstPing {
-		d = firstClientPingInterval
 	}
 	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
 	addDelay := rand.Int63n(int64(d / 5))

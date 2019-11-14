@@ -785,6 +785,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// Ignore NoLog and NoSigs options since they are not parsed and only used in
 			// testing.
 			continue
+		case "disableshortfirstping":
+			newOpts.DisableShortFirstPing = oldValue.(bool)
+			continue
 		case "maxtracedmsglen":
 			diffOpts = append(diffOpts, &maxTracedMsgLenOption{newValue: newValue.(int)})
 		case "port":

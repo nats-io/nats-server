@@ -104,6 +104,14 @@ func (sc *supercluster) removeLatencyTracking(t *testing.T) {
 	}
 }
 
+func (sc *supercluster) totalSubs() int {
+	totalSubs := 0
+	for _, c := range sc.clusters {
+		totalSubs += c.totalSubs()
+	}
+	return totalSubs
+}
+
 func clientConnectWithName(t *testing.T, opts *server.Options, user, appname string) *nats.Conn {
 	t.Helper()
 	url := fmt.Sprintf("nats://%s:pass@%s:%d", user, opts.Host, opts.Port)
@@ -398,6 +406,53 @@ func TestServiceLatencySampling(t *testing.T) {
 	if got > mid+delta || got < mid-delta {
 		t.Fatalf("Sampling number incorrect: %d vs %d", mid, got)
 	}
+}
+
+func TestServiceLatencyNoSubsLeak(t *testing.T) {
+	sc := createSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+
+	nc := clientConnectWithName(t, sc.clusters[0].opts[1], "foo", "dlc22")
+	defer nc.Close()
+
+	// The service listener.
+	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
+		msg.Respond([]byte("22 msgs"))
+	})
+	nc.Flush()
+	// Propagation of sub through super cluster.
+	time.Sleep(100 * time.Millisecond)
+
+	startSubs := sc.totalSubs()
+
+	fooAcc, _ := sc.clusters[1].servers[1].LookupAccount("FOO")
+	startNumSis := fooAcc.NumServiceImports()
+
+	for i := 0; i < 100; i++ {
+		nc := clientConnect(t, sc.clusters[1].opts[1], "bar")
+		if _, err := nc.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
+			t.Fatalf("Error on request: %v", err)
+		}
+		nc.Close()
+	}
+
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if numSubs := sc.totalSubs(); numSubs != startSubs {
+			return fmt.Errorf("Leaked %d subs", numSubs-startSubs)
+		}
+		return nil
+	})
+
+	// Now also check to make sure the service imports created for the request go away as well.
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if numSis := fooAcc.NumServiceImports(); numSis != startNumSis {
+			return fmt.Errorf("Leaked %d service imports", numSis-startNumSis)
+		}
+		return nil
+	})
 }
 
 func TestServiceLatencyWithName(t *testing.T) {
