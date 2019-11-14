@@ -2766,7 +2766,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
-		return
+		return false
 	}
 
 	// Check pub permissions
@@ -2792,7 +2792,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 
 	// Check if this client's gateway replies map is not empty
 	if atomic.LoadInt32(&c.cgwrt) > 0 && c.handleGWReplyMap(msg) {
-		return
+		return true
 	}
 
 	// Indication if we attempted to deliver the message to anyone.
@@ -2992,10 +2992,6 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 			si.acc.checkForRespEntry(si.to)
 		}
 
-		// This gives us a notion that we have interest in this message.
-		// We need to check if this is false but we have
-		didDeliver = len(rr.psubs)+len(rr.qsubs) > 0
-
 		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 		// need to handle that since the processMsgResults will want a queue filter.
 		flags := pmrNoFlag
@@ -3005,7 +3001,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 
 		// If this is not a gateway connection but gateway is enabled,
 		// try to send this converted message to all gateways.
-		if c.srv.gateway.enabled && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) {
+		if c.srv.gateway.enabled {
 			flags |= pmrCollectQueueNames
 			queues := c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, flags)
 			didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(si.to), nrr, queues) || didDeliver
