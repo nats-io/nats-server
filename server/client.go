@@ -169,7 +169,7 @@ type client struct {
 	stats
 	// Indicate if we should check gwrm or not. Since checking gwrm is done
 	// when processing inbound messages and requires the lock we want to
-	// check only when needed. This is set/get using atmoic, so needs to
+	// check only when needed. This is set/get using atomic, so needs to
 	// be memory aligned.
 	cgwrt   int32
 	mpay    int32
@@ -214,11 +214,11 @@ type client struct {
 	// To keep track of gateway replies mapping
 	gwrm map[string]*gwReplyMap
 
+	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
+
 	debug bool
 	trace bool
 	echo  bool
-
-	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 }
 
 // Struct for PING initiation from the server.
@@ -2664,7 +2664,7 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	}
 
 	// Now check for reserved replies. These are used for service imports.
-	if isReservedReply(c.pa.reply) {
+	if len(c.pa.reply) > 0 && isReservedReply(c.pa.reply) {
 		c.replySubjectViolation(c.pa.reply)
 		return
 	}
@@ -2679,10 +2679,8 @@ func (c *client) processInboundClientMsg(msg []byte) {
 	}
 
 	// Check if this client's gateway replies map is not empty
-	if atomic.LoadInt32(&c.cgwrt) > 0 {
-		if c.handleGWReplyMap(msg) {
-			return
-		}
+	if atomic.LoadInt32(&c.cgwrt) > 0 && c.handleGWReplyMap(msg) {
+		return
 	}
 
 	// Check to see if we need to map/route to another account.
