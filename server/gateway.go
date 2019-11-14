@@ -2480,9 +2480,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		// So set/reset important fields.
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
-
-		sub.subject = c.pa.subject
-		c.deliverMsg(sub, c.pa.subject, mh, msg, false)
+		sub.subject = subject
+		c.deliverMsg(sub, subject, mh, msg, false)
 		didDeliver = true
 	}
 	// Done with subscription, put back to pool. We don't need
