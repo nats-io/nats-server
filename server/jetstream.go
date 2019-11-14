@@ -45,27 +45,37 @@ type jetStream struct {
 	storeReserved int64
 }
 
-// TODO(dlc) - decide on what these look like for single vs cluster vs supercluster.
 // TODO(dlc) - need to track and rollup against server limits, etc.
 type JetStreamAccountLimits struct {
-	MaxMemory      int64
-	MaxStore       int64
-	MaxMsgSets     int
-	MaxObservables int
+	MaxMemory      int64 `json:"max_memory"`
+	MaxStore       int64 `json:"max_storage"`
+	MaxMsgSets     int   `json:"max_msg_sets"`
+	MaxObservables int   `json:"max_observables"`
 }
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
-	Memory  uint64
-	Store   uint64
-	MsgSets int
-	Limits  JetStreamAccountLimits
+	Memory  uint64                 `json:"memory"`
+	Store   uint64                 `json:"storage"`
+	MsgSets int                    `json:"msg_sets"`
+	Limits  JetStreamAccountLimits `json:"limits"`
 }
 
+// Responses to requests sent to a server from a client.
 const (
 	// OK response
 	OK = "+OK"
+	// ERR prefix response
+	ErrPrefix = "-ERR"
 
+	// JetStreamNotEnabled is returned when JetStream is not enabled.
+	JetStreamNotEnabled = "-ERR jetstream not enabled for account"
+	// JetStreamBadRequest is returned when the request could not be properly parsed.
+	JetStreamBadRequest = "-ERR bad request"
+)
+
+// Request API for JetStream remote clients.
+const (
 	// JetStreamEnabled allows a user to dynamically check if JetStream is enabled for an account.
 	// Will return +OK on success, otherwise will timeout.
 	JetStreamEnabled = "$JS.ENABLED"
@@ -76,39 +86,73 @@ const (
 	JetStreamInfo = "$JS.INFO"
 	jsInfoExport  = "$JS.*.INFO"
 
-	// JetStreamCreateObservable is the endpoint to create observers for a message set.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateObservable = "$JS.OB.CREATE"
-	jsCreateObservableExport  = "$JS.*.OBS.CREATE"
-
-	// JsObservableInfo is for obtaining general information about an observable.
-	// Will return JSON response.
-	JetStreamObservableInfo = "$JS.OBS.INFO"
-	jsObservableInfoExport  = "$JS.*.OBS.INFO"
-
-	// JetStreamCreateMsgSet is the endpoint to create message sets.
+	// JetStreamCreateMsgSet is the endpoint to create new message sets.
 	// Will return +OK on success and -ERR on failure.
 	JetStreamCreateMsgSet = "$JS.MSGSET.CREATE"
 	jsCreateMsgSetExport  = "$JS.*.MSGSET.CREATE"
+
+	// JetStreamMsgSets is the endpoint to list all message sets for this account.
+	// Will return json list of string on success and -ERR on failure.
+	JetStreamMsgSets = "$JS.MSGSETS"
+	jsMsgSetsExport  = "$JS.*.MSGSETS"
 
 	// JetStreamMsgSetInfo is for obtaining general information about a named message set.
 	// Will return JSON response.
 	JetStreamMsgSetInfo = "$JS.MSGSET.INFO"
 	jsMsgSetInfoExport  = "$JS.*.MSGSET.INFO"
 
+	// JetStreamDeleteMsgSet is the endpoint to delete message sets.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamDeleteMsgSet = "$JS.MSGSET.DELETE"
+	jsDeleteMsgSetExport  = "$JS.*.MSGSET.DELETE"
+
+	// JetStreamCreateObservable is the endpoint to create observers for a message set.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamCreateObservable = "$JS.OBSERVABLE.CREATE"
+	jsCreateObservableExport  = "$JS.*.OBSERVABLE.CREATE"
+
+	// JetStreamMsgSets is the endpoint to list all message sets for this account.
+	// Will return json list of string on success and -ERR on failure.
+	JetStreamObservables = "$JS.OBSERVABLES"
+	jsObservablesExport  = "$JS.*.OBSERVABLES"
+
+	// JsObservableInfo is for obtaining general information about an observable.
+	// Will return JSON response.
+	JetStreamObservableInfo = "$JS.OBS.INFO"
+	jsObservableInfoExport  = "$JS.*.OBS.INFO"
+
+	// JetStreamDeleteObservable is the endpoint to delete observables.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamDeleteObservable = "$JS.OBSERVABLE.DELETE"
+	jsDeleteObservableExport  = "$JS.*.OBSERVABLE.DELETE"
+
 	// JetStreamAckPre is the prefix for the ack stream coming back to an observable.
 	JetStreamAckPre = "$JS.A"
 
 	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
 	JetStreamRequestNextPre = "$JS.RN"
+)
 
+// Metafiles
+const (
 	// Metafiles for message sets and observables.
 	JetStreamMetaFile    = "meta.inf"
 	JetStreamMetaFileSum = "meta.sum"
 )
 
 // For easier handling of exports and imports.
-var allJsExports = []string{jsEnabledExport, jsInfoExport, jsCreateObservableExport, jsObservableInfoExport, jsCreateMsgSetExport, jsMsgSetInfoExport}
+var allJsExports = []string{
+	jsEnabledExport,
+	jsInfoExport,
+	jsCreateMsgSetExport,
+	jsMsgSetsExport,
+	jsMsgSetInfoExport,
+	jsDeleteMsgSetExport,
+	jsCreateObservableExport,
+	jsObservablesExport,
+	jsObservableInfoExport,
+	jsDeleteObservableExport,
+}
 
 // This represents a jetstream  enabled account.
 // Worth noting that we include the js ptr, this is because
@@ -180,6 +224,33 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	// Setup our internal subscriptions.
 	if _, err := s.sysSubscribe(jsEnabledExport, s.isJsEnabledRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsInfoExport, s.jsAccountInfoRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsCreateMsgSetExport, s.jsCreateMsgSetRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsMsgSetsExport, s.jsMsgSetsRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsMsgSetInfoExport, s.jsMsgSetInfoRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsDeleteMsgSetExport, s.jsMsgSetDeleteRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsCreateObservableExport, s.jsCreateObservableRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsObservablesExport, s.jsObservablesRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsObservableInfoExport, s.jsObservableInfoRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsDeleteObservableExport, s.jsObservableDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 
@@ -412,6 +483,23 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 	}
 	return nil
+}
+
+// MsgSets will return all known message sets.
+func (a *Account) MsgSets() []*MsgSet {
+	a.mu.RLock()
+	jsa := a.js
+	a.mu.RUnlock()
+	if jsa == nil {
+		return nil
+	}
+	var msets []*MsgSet
+	jsa.mu.Lock()
+	for _, mset := range jsa.msgSets {
+		msets = append(msets, mset)
+	}
+	jsa.mu.Unlock()
+	return msets
 }
 
 func (a *Account) LookupMsgSet(name string) (*MsgSet, error) {
@@ -695,9 +783,257 @@ func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
 
 // Request to check if jetstream is enabled.
 func (s *Server) isJsEnabledRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c != nil && c.acc != nil && c.acc.JetStreamEnabled() {
-		s.sendInternalAccountMsg(c.acc, reply, OK)
+	if c == nil || c.acc == nil {
+		return
 	}
+	if c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, OK)
+	} else {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+	}
+}
+
+// Request for current usage and limits for this account.
+func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	stats := c.acc.JetStreamUsage()
+	b, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request to create a message set.
+func (s *Server) jsCreateMsgSetRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var cfg MsgSetConfig
+	if err := json.Unmarshal(msg, &cfg); err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	var response = OK
+	if _, err := c.acc.AddMsgSet(&cfg); err != nil {
+		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request for the list of all message sets.
+func (s *Server) jsMsgSetsRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var names []string
+	msets := c.acc.MsgSets()
+	for _, mset := range msets {
+		names = append(names, mset.Name())
+	}
+	b, err := json.MarshalIndent(names, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request for information about a message set.
+// This expects a message set name as the msg body.
+func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(string(msg))
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	stats := mset.Stats()
+	b, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request to delete a message set.
+// This expects a message set name as the msg body.
+func (s *Server) jsMsgSetDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(string(msg))
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	var response = OK
+	if err := mset.Delete(); err != nil {
+		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request to create an observable.
+func (s *Server) jsCreateObservableRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var req CreateObservableRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(string(req.MsgSet))
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	var response = OK
+	if _, err := mset.AddObservable(&req.Config); err != nil {
+		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request for the list of all observables.
+// This expects a message set name as the msg body.
+func (s *Server) jsObservablesRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(string(msg))
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	var onames []string
+	obs := mset.Observables()
+	for _, o := range obs {
+		onames = append(onames, o.Name())
+	}
+	b, err := json.MarshalIndent(onames, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request for information about an observable.
+// This expects a message set name and observable name as the msg body. e.g. "MSGSET1 OBS1"
+func (s *Server) jsObservableInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	names := strings.Split(string(msg), " ")
+	if len(names) != 2 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(names[0])
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	obs := mset.LookupObservable(names[1])
+	if obs == nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s observable not found", ErrPrefix))
+		return
+	}
+	info := obs.Info()
+	b, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request to delete an Observable.
+// This expects a message set name and observable name as the msg body. e.g. "MSGSET1 OBS1"
+func (s *Server) jsObservableDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	names := strings.Split(string(msg), " ")
+	if len(names) != 2 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(names[0])
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	obs := mset.LookupObservable(names[1])
+	if obs == nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s observable not found", ErrPrefix))
+		return
+	}
+	var response = OK
+	if err := obs.Delete(); err != nil {
+		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+
 }
 
 const (
