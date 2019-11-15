@@ -883,7 +883,13 @@ func (o *Observable) checkActive() {
 		return
 	}
 	var shouldDelete, shouldSignal bool
-	if o.mset.noInterest(o.config.Delivery) {
+	delivery := o.config.Delivery
+	o.mu.Unlock()
+
+	noInterest := o.mset.noInterest(delivery)
+
+	o.mu.Lock()
+	if noInterest {
 		o.active = false
 		o.nointerest++
 		if !o.isDurable() && o.nointerest >= o.athresh {
