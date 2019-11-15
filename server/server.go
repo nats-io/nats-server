@@ -1168,7 +1168,7 @@ func (s *Server) Shutdown() {
 		s.mu.Unlock()
 		return
 	}
-	s.Noticef("Server Exiting..")
+	s.Noticef("Initiating Shutdown...")
 
 	opts := s.getOpts()
 
@@ -1271,6 +1271,7 @@ func (s *Server) Shutdown() {
 		s.deletePortsFile(opts.PortsFileDir)
 	}
 
+	s.Noticef("Server Exiting..")
 	// Close logger if applicable. It allows tests on Windows
 	// to be able to do proper cleanup (delete log file).
 	s.logging.RLock()

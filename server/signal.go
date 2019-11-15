@@ -49,7 +49,7 @@ func (s *Server) handleSignals() {
 				s.Debugf("Trapped %q signal", sig)
 				switch sig {
 				case syscall.SIGINT:
-					s.Noticef("Server Exiting..")
+					s.Shutdown()
 					os.Exit(0)
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.

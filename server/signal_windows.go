@@ -35,7 +35,7 @@ func (s *Server) handleSignals() {
 	go func() {
 		for sig := range c {
 			s.Debugf("Trapped %q signal", sig)
-			s.Noticef("Server Exiting..")
+			s.Shutdown()
 			os.Exit(0)
 		}
 	}()
