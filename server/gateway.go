@@ -33,7 +33,7 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
-	defaultGatewayRecentSubExpiration   = 250 * time.Millisecond
+	defaultGatewayRecentSubExpiration   = 5 * time.Second
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
 
 	oldGWReplyPrefix    = "$GR."
