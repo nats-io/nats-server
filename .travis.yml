@@ -1,5 +1,6 @@
 language: go
 go:
+- 1.13.x
 - 1.12.x
 addons:
   apt:

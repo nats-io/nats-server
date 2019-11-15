@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/nats-io/nats-server/v2/server"
 )
@@ -109,4 +110,5 @@ func main() {
 	if err := server.Run(s); err != nil {
 		server.PrintAndDie(err.Error())
 	}
+	runtime.Goexit()
 }
