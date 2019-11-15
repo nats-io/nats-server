@@ -130,7 +130,9 @@ const (
 	// default sync interval
 	defaultSyncInterval = 10 * time.Second
 	// coalesceDelay
-	coalesceDelay = 20 * time.Millisecond
+	coalesceDelay = 10 * time.Millisecond
+	// coalesceMaximum
+	coalesceMaximum = 32 * 1024
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -400,7 +402,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	if fs.lmb != nil {
 		index = fs.lmb.index + 1
-		fs.flushPendingWritesLocked()
+		fs.flushPendingWrites()
 		fs.closeLastMsgBlock(false)
 	} else {
 		index = 1
@@ -720,7 +722,7 @@ func checkMsgBlockFile(fp *os.File, hh hash.Hash) []uint64 {
 func (fs *fileStore) checkMsgs() []uint64 {
 	fs.mu.Lock()
 	if fs.wmb.Len() > 0 {
-		fs.flushPendingWritesLocked()
+		fs.flushPendingWrites()
 	}
 	fs.mu.Unlock()
 
@@ -760,8 +762,15 @@ func (fs *fileStore) flushLoop(fch, qch chan struct{}) {
 	for {
 		select {
 		case <-fch:
-			time.Sleep(coalesceDelay)
+			fs.mu.Lock()
+			waiting := fs.wmb.Len()
+			if waiting < coalesceMaximum {
+				fs.mu.Unlock()
+				time.Sleep(coalesceDelay)
+				fs.mu.Lock()
+			}
 			fs.flushPendingWrites()
+			fs.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -927,7 +936,7 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 func (fs *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	// This detects if what we may be looking for is staged in the write buffer.
 	if mb == fs.lmb && fs.wmb.Len() > 0 {
-		fs.flushPendingWritesLocked()
+		fs.flushPendingWrites()
 	}
 	if mb.cache == nil {
 		mb.cache = make(map[uint64]*fileStoredMsg)
@@ -1104,15 +1113,8 @@ func fileStoreMsgSize(subj string, msg []byte) uint64 {
 	return uint64(4 + 16 + 2 + len(subj) + len(msg) + 8)
 }
 
-// Flush the write buffer to disk.
-func (fs *fileStore) flushPendingWrites() {
-	fs.mu.Lock()
-	fs.flushPendingWritesLocked()
-	fs.mu.Unlock()
-}
-
 // Lock should be held.
-func (fs *fileStore) flushPendingWritesLocked() {
+func (fs *fileStore) flushPendingWrites() {
 	mb := fs.lmb
 	if mb == nil || mb.mfd == nil {
 		return
@@ -1303,7 +1305,7 @@ func (fs *fileStore) dmapEntries() int {
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() uint64 {
 	fs.mu.Lock()
-	fs.flushPendingWritesLocked()
+	fs.flushPendingWrites()
 	purged := fs.stats.Msgs
 	cb := fs.scb
 	bytes := int64(fs.stats.Bytes)
@@ -1420,7 +1422,7 @@ func (fs *fileStore) Stop() {
 	fs.closed = true
 	close(fs.qch)
 
-	fs.flushPendingWritesLocked()
+	fs.flushPendingWrites()
 	fs.wmb = &bytes.Buffer{}
 	fs.lmb = nil
 
