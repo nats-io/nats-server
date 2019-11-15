@@ -35,16 +35,6 @@ type JetStreamConfig struct {
 	StoreDir  string
 }
 
-// This is for internal accounting for JetStream for this server.
-type jetStream struct {
-	mu            sync.RWMutex
-	srv           *Server
-	config        JetStreamConfig
-	accounts      map[*Account]*jsAccount
-	memReserved   int64
-	storeReserved int64
-}
-
 // TODO(dlc) - need to track and rollup against server limits, etc.
 type JetStreamAccountLimits struct {
 	MaxMemory      int64 `json:"max_memory"`
@@ -132,6 +122,16 @@ const (
 	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
 	JetStreamRequestNextPre = "$JS.RN"
 )
+
+// This is for internal accounting for JetStream for this server.
+type jetStream struct {
+	mu            sync.RWMutex
+	srv           *Server
+	config        JetStreamConfig
+	accounts      map[*Account]*jsAccount
+	memReserved   int64
+	storeReserved int64
+}
 
 // Metafiles
 const (
@@ -1059,7 +1059,7 @@ func (s *Server) dynJetStreamConfig() *JetStreamConfig {
 	return jsc
 }
 
-// friendlyBytes returns a string with the given bytes int64
+// FriendlyBytes returns a string with the given bytes int64
 // represented as a size, such as 1KB, 10MB, etc...
 func FriendlyBytes(bytes int64) string {
 	fbytes := float64(bytes)
