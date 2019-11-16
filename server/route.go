@@ -1285,6 +1285,8 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// would cause the leafnode URL for that remote server to be removed
 		// from our list.
 		c.route.leafnodeURL = _EMPTY_
+		// Same for the route hash otherwise it would be removed from s.routesByHash.
+		c.route.hash = _EMPTY_
 		c.mu.Unlock()
 
 		remote.mu.Lock()
