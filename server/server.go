@@ -847,10 +847,9 @@ func (s *Server) registerAccount(acc *Account) {
 	s.mu.Unlock()
 }
 
-// Place common account setup here.
-// Lock should be held on entry.
-func (s *Server) registerAccountNoLock(acc *Account) {
-	if acc.sl == nil {
+// Helper to set the sublist based on preferences.
+func (s *Server) setAccountSublist(acc *Account) {
+	if acc != nil && acc.sl == nil {
 		opts := s.getOpts()
 		if opts != nil && opts.NoSublistCache {
 			acc.sl = NewSublistNoCache()
@@ -858,6 +857,12 @@ func (s *Server) registerAccountNoLock(acc *Account) {
 			acc.sl = NewSublistWithCache()
 		}
 	}
+}
+
+// Place common account setup here.
+// Lock should be held on entry.
+func (s *Server) registerAccountNoLock(acc *Account) {
+	s.setAccountSublist(acc)
 	if acc.maxnae == 0 {
 		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
 	}
