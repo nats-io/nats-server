@@ -40,13 +40,12 @@ const (
 	oldGWReplyPrefixLen = len(oldGWReplyPrefix)
 	oldGWReplyStart     = oldGWReplyPrefixLen + 5 // len of prefix above + len of hash (4) + "."
 
-	// The new prefix is "$GNR.<x>.<cluster>.<server>." where <x> is 1 character
-	// reserved for service imports, <cluster> is 8 characters hash of origin
-	// cluster name and <server> is 8 characters hash of origin server pub key.
-	gwReplyPrefix    = "$GNR."
+	// The new prefix is "_GR_.<cluster>.<server>." where <cluster> is 8 characters
+	// hash of origin cluster name and <server> is 8 characters hash of origin server pub key.
+	gwReplyPrefix    = "_GR_."
 	gwReplyPrefixLen = len(gwReplyPrefix)
-	gwHashLen        = 8
-	gwClusterOffset  = gwReplyPrefixLen + 2
+	gwHashLen        = 6
+	gwClusterOffset  = gwReplyPrefixLen
 	gwServerOffset   = gwClusterOffset + gwHashLen + 1
 	gwSubjectOffset  = gwServerOffset + gwHashLen + 1
 )
@@ -311,7 +310,6 @@ func (s *Server) newGateway(opts *Options) error {
 	clusterHash := getHash(opts.Gateway.Name)
 	prefix := make([]byte, 0, gwSubjectOffset)
 	prefix = append(prefix, gwReplyPrefix...)
-	prefix = append(prefix, '_', '.')
 	prefix = append(prefix, clusterHash...)
 	prefix = append(prefix, '.')
 	prefix = append(prefix, s.hash...)
