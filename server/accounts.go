@@ -1403,16 +1403,15 @@ func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 	if claims.IssuerAccount == "" {
 		return true
 	}
-	// get the referenced account
-	if a.srv != nil {
-		ia, err := a.srv.lookupAccount(claims.IssuerAccount)
-		if err != nil {
-			return false
+	// If the IssuerAccount is not us, then this is considered an error.
+	if a.Name != claims.IssuerAccount {
+		if a.srv != nil {
+			a.srv.Errorf("Invalid issuer account %q in activation claim (subject: %q - type: %q) for account %q",
+				claims.IssuerAccount, claims.Activation.ImportSubject, claims.Activation.ImportType, a.Name)
 		}
-		return ia.hasIssuer(claims.Issuer)
+		return false
 	}
-	// couldn't verify
-	return false
+	return a.hasIssuerNoLock(claims.Issuer)
 }
 
 // Returns true if `a` and `b` stream imports are the same. Note that the
@@ -1469,6 +1468,7 @@ func (a *Account) checkServiceExportsEqual(b *Account) bool {
 	return true
 }
 
+// Check if another account is authorized to route requests to this service.
 func (a *Account) checkServiceImportAuthorized(account *Account, subject string, imClaim *jwt.Import) bool {
 	a.mu.RLock()
 	authorized := a.checkServiceImportAuthorizedNoLock(account, subject, imClaim)
@@ -1565,7 +1565,13 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 // issuer or it is a signing key for the account.
 func (a *Account) hasIssuer(issuer string) bool {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
+	hi := a.hasIssuerNoLock(issuer)
+	a.mu.RUnlock()
+	return hi
+}
+
+// hasIssuerNoLock is the unlocked version of hasIssuer
+func (a *Account) hasIssuerNoLock(issuer string) bool {
 	// same issuer
 	if a.Issuer == issuer {
 		return true
@@ -1746,19 +1752,26 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 	// Now check if stream exports have changed.
 	if !a.checkStreamExportsEqual(old) || signersChanged {
-		clients := make([]*client, 0, 16)
+		clients := map[*client]struct{}{}
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
+			// Move to the next if this account is actually account "a".
+			if acc.Name == a.Name {
+				return true
+			}
+			// TODO: checkStreamImportAuthorized() stack should not be trying
+			// to lock "acc". If we find that to be needed, we will need to
+			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, im := range acc.imports.streams {
 				if im != nil && im.acc.Name == a.Name {
 					// Check for if we are still authorized for an import.
-					im.invalid = !a.checkStreamImportAuthorizedNoLock(im.acc, im.from, im.claim)
+					im.invalid = !a.checkStreamImportAuthorized(acc, im.from, im.claim)
 					awcsti[acc.Name] = struct{}{}
 					for _, c := range acc.clients {
-						clients = append(clients, c)
+						clients[c] = struct{}{}
 					}
 				}
 			}
@@ -1766,7 +1779,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			return true
 		})
 		// Now walk clients.
-		for _, c := range clients {
+		for c := range clients {
 			c.processSubsOnConfigReload(awcsti)
 		}
 	}
@@ -1774,11 +1787,18 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	if !a.checkServiceExportsEqual(old) || signersChanged {
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
+			// Move to the next if this account is actually account "a".
+			if acc.Name == a.Name {
+				return true
+			}
+			// TODO: checkServiceImportAuthorized() stack should not be trying
+			// to lock "acc". If we find that to be needed, we will need to
+			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, im := range acc.imports.services {
 				if im != nil && im.acc.Name == a.Name {
 					// Check for if we are still authorized for an import.
-					im.invalid = !a.checkServiceImportAuthorizedNoLock(a, im.to, im.claim)
+					im.invalid = !a.checkServiceImportAuthorized(acc, im.to, im.claim)
 				}
 			}
 			acc.mu.Unlock()

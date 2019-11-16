@@ -1829,6 +1829,176 @@ func TestJWTAccountImportSignerRemoved(t *testing.T) {
 	checkShadow(0)
 }
 
+func TestJWTAccountImportSignerDeadlock(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Exporter keys
+	srvKP, _ := nkeys.CreateAccount()
+	srvPK, _ := srvKP.PublicKey()
+	srvSignerKP, _ := nkeys.CreateAccount()
+	srvSignerPK, _ := srvSignerKP.PublicKey()
+
+	// Importer keys
+	clientKP, _ := nkeys.CreateAccount()
+	clientPK, _ := clientKP.PublicKey()
+
+	createSrvJwt := func(signingKeys ...string) (string, *jwt.AccountClaims) {
+		ac := jwt.NewAccountClaims(srvPK)
+		ac.SigningKeys.Add(signingKeys...)
+		ac.Exports.Add(&jwt.Export{Subject: "foo", Type: jwt.Service, TokenReq: true})
+		ac.Exports.Add(&jwt.Export{Subject: "bar", Type: jwt.Stream, TokenReq: true})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating exporter JWT: %v", err)
+		}
+		return token, ac
+	}
+
+	createImportToken := func(sub string, kind jwt.ExportType) string {
+		actC := jwt.NewActivationClaims(clientPK)
+		actC.IssuerAccount = srvPK
+		actC.ImportType = kind
+		actC.ImportSubject = jwt.Subject(sub)
+		token, err := actC.Encode(srvSignerKP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+
+	createClientJwt := func() string {
+		ac := jwt.NewAccountClaims(clientPK)
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "foo", Type: jwt.Service, Token: createImportToken("foo", jwt.Service)})
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "bar", Type: jwt.Stream, Token: createImportToken("bar", jwt.Stream)})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating importer JWT: %v", err)
+		}
+		return token
+	}
+
+	srvJWT, _ := createSrvJwt(srvSignerPK)
+	addAccountToMemResolver(s, srvPK, srvJWT)
+
+	clientJWT := createClientJwt()
+	addAccountToMemResolver(s, clientPK, clientJWT)
+
+	acc, _ := s.LookupAccount(srvPK)
+	// Have a go routine that constantly gets/releases the acc's write lock.
+	// There was a bug that could cause AddServiceImportWithClaim to deadlock.
+	ch := make(chan bool, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				acc.mu.Lock()
+				acc.mu.Unlock()
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	// Create a client that will send the request
+	client, clientReader, clientCS := createClient(t, s, clientKP)
+	clientParser, clientCh := genAsyncParser(client)
+	defer func() { clientCh <- true }()
+	clientParser(clientCS)
+	expectPong(t, clientReader)
+
+	close(ch)
+	wg.Wait()
+}
+
+func TestJWTAccountImportWrongIssuerAccount(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	l := &captureErrorLogger{errCh: make(chan string, 2)}
+	s.SetLogger(l, false, false)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Exporter keys
+	srvKP, _ := nkeys.CreateAccount()
+	srvPK, _ := srvKP.PublicKey()
+	srvSignerKP, _ := nkeys.CreateAccount()
+	srvSignerPK, _ := srvSignerKP.PublicKey()
+
+	// Importer keys
+	clientKP, _ := nkeys.CreateAccount()
+	clientPK, _ := clientKP.PublicKey()
+
+	createSrvJwt := func(signingKeys ...string) (string, *jwt.AccountClaims) {
+		ac := jwt.NewAccountClaims(srvPK)
+		ac.SigningKeys.Add(signingKeys...)
+		ac.Exports.Add(&jwt.Export{Subject: "foo", Type: jwt.Service, TokenReq: true})
+		ac.Exports.Add(&jwt.Export{Subject: "bar", Type: jwt.Stream, TokenReq: true})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating exporter JWT: %v", err)
+		}
+		return token, ac
+	}
+
+	createImportToken := func(sub string, kind jwt.ExportType) string {
+		actC := jwt.NewActivationClaims(clientPK)
+		// Reference ourselves, which is wrong.
+		actC.IssuerAccount = clientPK
+		actC.ImportType = kind
+		actC.ImportSubject = jwt.Subject(sub)
+		token, err := actC.Encode(srvSignerKP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+
+	createClientJwt := func() string {
+		ac := jwt.NewAccountClaims(clientPK)
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "foo", Type: jwt.Service, Token: createImportToken("foo", jwt.Service)})
+		ac.Imports.Add(&jwt.Import{Account: srvPK, Subject: "bar", Type: jwt.Stream, Token: createImportToken("bar", jwt.Stream)})
+		token, err := ac.Encode(okp)
+		if err != nil {
+			t.Fatalf("Error generating importer JWT: %v", err)
+		}
+		return token
+	}
+
+	srvJWT, _ := createSrvJwt(srvSignerPK)
+	addAccountToMemResolver(s, srvPK, srvJWT)
+
+	clientJWT := createClientJwt()
+	addAccountToMemResolver(s, clientPK, clientJWT)
+
+	// Create a client that will send the request
+	client, clientReader, clientCS := createClient(t, s, clientKP)
+	clientParser, clientCh := genAsyncParser(client)
+	defer func() { clientCh <- true }()
+	clientParser(clientCS)
+	expectPong(t, clientReader)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case e := <-l.errCh:
+			if !strings.HasPrefix(e, fmt.Sprintf("Invalid issuer account %q in activation claim", clientPK)) {
+				t.Fatalf("Unexpected error: %v", e)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Did not get error regarding issuer account")
+		}
+	}
+}
+
 func TestJWTUserRevokedOnAccountUpdate(t *testing.T) {
 	nac := newJWTTestAccountClaims()
 	s, akp, c, cr := setupJWTTestWitAccountClaims(t, nac, "+OK")
