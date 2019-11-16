@@ -1071,7 +1071,11 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 		b[i] = digits[l%base]
 		l /= base
 	}
-	reply := append(replyPre, b[:]...)
+	// Make sure to copy.
+	reply := make([]byte, 0, len(replyPre)+len(b))
+	reply = append(reply, replyPre...)
+	reply = append(reply, b[:]...)
+
 	if tracking && s.sys != nil {
 		// Add in our tracking identifier. This allows the metrics to get back to only
 		// this server without needless SUBS/UNSUBS.
