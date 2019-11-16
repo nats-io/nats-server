@@ -108,24 +108,6 @@ const (
 // Can be changed for tests
 var routeConnectDelay = DEFAULT_ROUTE_CONNECT
 
-// This will add a timer to watch over remote reply subjects in case
-// they fail to receive a response. The duration will be taken from the
-// accounts map timeout to match.
-// Lock should be held upon entering.
-func (c *client) addReplySubTimeout(acc *Account, sub *subscription, d time.Duration) {
-	if c.route.replySubs == nil {
-		c.route.replySubs = make(map[*subscription]*time.Timer)
-	}
-	rs := c.route.replySubs
-	rs[sub] = time.AfterFunc(d, func() {
-		c.mu.Lock()
-		delete(rs, sub)
-		sub.max = 0
-		c.mu.Unlock()
-		c.unsubscribe(acc, sub, true, true)
-	})
-}
-
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
 	if sub == nil {
@@ -269,8 +251,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
-	// If the subject (c.pa.subject) has the gateway prefix, this function will
-	// handle it.
+	// If the subject (c.pa.subject) has the gateway prefix, this function will handle it.
 	if c.handleGatewayReply(msg) {
 		// We are done here.
 		return
@@ -289,33 +270,9 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
-	if len(r.psubs)+len(r.qsubs) == 0 {
-		return
+	if len(r.psubs)+len(r.qsubs) > 0 {
+		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 	}
-
-	// Check to see if we have a routed message with a service reply.
-	if isServiceReply(c.pa.reply) && acc != nil {
-		// Need to add a sub here for local interest to send a response back
-		// to the originating server/requestor where it will be re-mapped.
-		sid := make([]byte, 0, len(acc.Name)+len(c.pa.reply)+1)
-		sid = append(sid, acc.Name...)
-		sid = append(sid, ' ')
-		sid = append(sid, c.pa.reply...)
-		// Copy off the reply since otherwise we are referencing a buffer that will be reused.
-		reply := make([]byte, len(c.pa.reply))
-		copy(reply, c.pa.reply)
-		sub := &subscription{client: c, subject: reply, sid: sid, max: 1}
-		if err := acc.sl.Insert(sub); err != nil {
-			c.Errorf("Could not insert subscription: %v", err)
-		} else {
-			ttl := acc.AutoExpireTTL()
-			c.mu.Lock()
-			c.subs[string(sid)] = sub
-			c.addReplySubTimeout(acc, sub, ttl)
-			c.mu.Unlock()
-		}
-	}
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
 // Lock should be held entering here.

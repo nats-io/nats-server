@@ -1170,7 +1170,7 @@ func TestNewRouteReservedReply(t *testing.T) {
 
 func TestNewRouteServiceImport(t *testing.T) {
 	// To quickly enable trace and debug logging
-	// doLog, doTrace, doDebug = true, true, true
+	//doLog, doTrace, doDebug = true, true, true
 	srvA, srvB, optsA, optsB := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
@@ -1237,8 +1237,9 @@ func TestNewRouteServiceImport(t *testing.T) {
 	matches = expectMsgsB(1)
 	checkMsg(t, matches[0], "reply", "1", "", "2", "ok")
 
-	if ts := fooA.TotalSubs(); ts != 1 {
-		t.Fatalf("Expected one sub to be left on fooA, but got %d", ts)
+	// This will be the responder and the wildcard for all service replies.
+	if ts := fooA.TotalSubs(); ts != 2 {
+		t.Fatalf("Expected two subs to be left on fooA, but got %d", ts)
 	}
 
 	routez, _ := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
@@ -1246,8 +1247,8 @@ func TestNewRouteServiceImport(t *testing.T) {
 	if r == nil {
 		t.Fatalf("Expected 1 route, got none")
 	}
-	if r.NumSubs != 1 {
-		t.Fatalf("Expected 1 sub in the route connection, got %v", r.NumSubs)
+	if r.NumSubs != 2 {
+		t.Fatalf("Expected 2 subs in the route connection, got %v", r.NumSubs)
 	}
 }
 
@@ -1332,8 +1333,8 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			matches = expectMsgsB(1)
 			checkMsg(t, matches[0], "reply", "1", "", "2", "ok")
 
-			if ts := fooA.TotalSubs(); ts != 1 {
-				t.Fatalf("Expected one sub to be left on fooA, but got %d", ts)
+			if ts := fooA.TotalSubs(); ts != 2 {
+				t.Fatalf("Expected two subs to be left on fooA, but got %d", ts)
 			}
 
 			routez, _ := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
@@ -1341,8 +1342,8 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			if r == nil {
 				t.Fatalf("Expected 1 route, got none")
 			}
-			if r.NumSubs != 1 {
-				t.Fatalf("Expected 1 sub in the route connection, got %v", r.NumSubs)
+			if r.NumSubs != 2 {
+				t.Fatalf("Expected 2 subs in the route connection, got %v", r.NumSubs)
 			}
 		})
 	}
@@ -1407,8 +1408,8 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	matches = expectMsgsB(1)
 	checkMsg(t, matches[0], "reply", "1", "", "2", "ok")
 
-	if ts := fooA.TotalSubs(); ts != 1 {
-		t.Fatalf("Expected one sub to be left on fooA, but got %d", ts)
+	if ts := fooA.TotalSubs(); ts != 2 {
+		t.Fatalf("Expected two subs to be left on fooA, but got %d", ts)
 	}
 
 	routez, _ := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
@@ -1416,8 +1417,8 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	if r == nil {
 		t.Fatalf("Expected 1 route, got none")
 	}
-	if r.NumSubs != 1 {
-		t.Fatalf("Expected 1 sub in the route connection, got %v", r.NumSubs)
+	if r.NumSubs != 2 {
+		t.Fatalf("Expected 2 subs in the route connection, got %v", r.NumSubs)
 	}
 }
 
@@ -1490,8 +1491,8 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	expectA(pongRe)
 
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if ts := fooA.TotalSubs(); ts != 0 {
-			return fmt.Errorf("Number of subs is %d, should be zero", ts)
+		if ts := fooA.TotalSubs(); ts != 1 {
+			return fmt.Errorf("Number of subs is %d, should be only 1", ts)
 		}
 		return nil
 	})

@@ -439,6 +439,10 @@ func TestServiceLatencyNoSubsLeak(t *testing.T) {
 		nc.Close()
 	}
 
+	// We are adding 2 here for the wildcard response subject for service replies.
+	// we only have one but it will show in two places.
+	startSubs += 2
+
 	checkFor(t, time.Second, 50*time.Millisecond, func() error {
 		if numSubs := sc.totalSubs(); numSubs != startSubs {
 			return fmt.Errorf("Leaked %d subs", numSubs-startSubs)

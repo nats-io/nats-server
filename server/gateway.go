@@ -33,7 +33,7 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
-	defaultGatewayRecentSubExpiration   = 5 * time.Second
+	defaultGatewayRecentSubExpiration   = 250 * time.Millisecond
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
 
 	oldGWReplyPrefix    = "$GR."
@@ -2297,11 +2297,11 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 
 // Evaluates if the given reply should be mapped or not.
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
-	// If the reply is a service reply (_R_), we must map to make sure that
-	// it comes back to this server since the mapping back to the real reply
-	// can only be made here.
+	// If the reply is a service reply (_R_), we will use the replyClient
+	// instead of the client handed to us. This client holds the wildcard
+	// for all service replies.
 	if isServiceReply(reply) {
-		return true
+		c = acc.replyClient()
 	}
 	// If for this client there is a recent matching subscription interest
 	// then we will map.
