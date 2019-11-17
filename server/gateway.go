@@ -40,8 +40,8 @@ const (
 	oldGWReplyPrefixLen = len(oldGWReplyPrefix)
 	oldGWReplyStart     = oldGWReplyPrefixLen + 5 // len of prefix above + len of hash (4) + "."
 
-	// The new prefix is "_GR_.<cluster>.<server>." where <cluster> is 8 characters
-	// hash of origin cluster name and <server> is 8 characters hash of origin server pub key.
+	// The new prefix is "_GR_.<cluster>.<server>." where <cluster> is 6 characters
+	// hash of origin cluster name and <server> is 6 characters hash of origin server pub key.
 	gwReplyPrefix    = "_GR_."
 	gwReplyPrefixLen = len(gwReplyPrefix)
 	gwHashLen        = 6
