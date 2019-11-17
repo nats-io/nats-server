@@ -878,6 +878,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	// We are under the server lock. Lookup from map, if present
 	// return existing account.
 	if a, _ := s.accounts.Load(acc.Name); a != nil {
+		s.tmpAccounts.Delete(acc.Name)
 		return a.(*Account)
 	}
 	// Finish account setup and store.

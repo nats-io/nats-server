@@ -790,4 +790,18 @@ func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
 	if !ok {
 		t.Fatalf("B should be able to receive messages")
 	}
+
+	checkTmpAccounts := func(t *testing.T, s *Server) {
+		t.Helper()
+		empty := true
+		s.tmpAccounts.Range(func(_, _ interface{}) bool {
+			empty = false
+			return false
+		})
+		if !empty {
+			t.Fatalf("tmpAccounts is not empty")
+		}
+	}
+	checkTmpAccounts(t, sa)
+	checkTmpAccounts(t, sb)
 }
