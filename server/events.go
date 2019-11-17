@@ -1052,6 +1052,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	acc, err := s.LookupAccount(rl.Account)
 	if err != nil {
 		s.Warnf("Could not lookup account %q for latency measurement", rl.Account)
+		return
 	}
 	// Now get the request id / reply. We need to see if we have a GW prefix and if so strip that off.
 	reply := rl.ReqId

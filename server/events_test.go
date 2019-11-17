@@ -1161,6 +1161,21 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	}
 }
 
+func TestSystemAccountWithBadRemoteLatencyUpdate(t *testing.T) {
+	s, _ := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, _ := createAccount(s)
+	s.setSystemAccount(acc)
+
+	rl := remoteLatency{
+		Account: "NONSENSE",
+		ReqId:   "_INBOX.22",
+	}
+	b, _ := json.Marshal(&rl)
+	s.remoteLatencyUpdate(nil, nil, "foo", "", b)
+}
+
 func TestSystemAccountWithGateways(t *testing.T) {
 	sa, oa, sb, ob, akp := runTrustedGateways(t)
 	defer sa.Shutdown()
