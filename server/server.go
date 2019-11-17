@@ -699,6 +699,11 @@ func (s *Server) numAccounts() int {
 	return count
 }
 
+// NumLoadedAccounts returns the number of loaded accounts.
+func (s *Server) NumLoadedAccounts() int {
+	return s.numAccounts()
+}
+
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
 func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
 	s.mu.Lock()

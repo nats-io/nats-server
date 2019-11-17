@@ -427,7 +427,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	checkForMsg()
 }
 
-func TestReloadDoesUpdatesAccountsWithMemoryResolver(t *testing.T) {
+func TestReloadDoesUpdateAccountsWithMemoryResolver(t *testing.T) {
 	// We will run an operator mode server with a memory resolver.
 	// Reloading should behave similar to configured accounts.
 
@@ -576,5 +576,86 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 	}
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Got unexpected error on reload: %v", err)
+	}
+}
+
+func TestConnsRequestDoesNotLoadAccountCheckingConnLimits(t *testing.T) {
+	// Create two accounts, system and normal account.
+	sysJWT, sysKP := createAccountForConfig(t)
+	sysPub, _ := sysKP.PublicKey()
+
+	// Do this account by nad to add in connection limits
+	okp, _ := nkeys.FromSeed(oSeed)
+	accKP, _ := nkeys.CreateAccount()
+	accPub, _ := accKP.PublicKey()
+	nac := jwt.NewAccountClaims(accPub)
+	nac.Limits.Conn = 10
+	accJWT, _ := nac.Encode(okp)
+
+	cf := `
+	listen: 127.0.0.1:-1
+	cluster {
+		listen: 127.0.0.1:-1
+		authorization {
+			timeout: 2.2
+		} %s
+	}
+
+	operator = "./configs/nkeys/op.jwt"
+	system_account = "%s"
+
+	resolver = MEMORY
+	resolver_preload = {
+		%s : "%s"
+		%s : "%s"
+	}
+	`
+	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
+	conf := createConfFile(t, []byte(contents))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Create a new server and route to main one.
+	routeStr := fmt.Sprintf("\n\t\troutes = [nats-route://%s:%d]", opts.Cluster.Host, opts.Cluster.Port)
+	contents2 := strings.Replace(fmt.Sprintf(cf, routeStr, sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
+
+	conf2 := createConfFile(t, []byte(contents2))
+	defer os.Remove(conf2)
+
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s, s2)
+
+	// Make sure that we do not have the account loaded.
+	// Just SYS and $G
+	if nla := s.NumLoadedAccounts(); nla != 2 {
+		t.Fatalf("Expected only 2 loaded accounts, got %d", nla)
+	}
+	if nla := s2.NumLoadedAccounts(); nla != 2 {
+		t.Fatalf("Expected only 2 loaded accounts, got %d", nla)
+	}
+
+	// Now connect to first server on accPub.
+	nc, err := nats.Connect(s.ClientURL(), createUserCreds(t, s, accKP))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Just wait for the request for connections to move to S2 and cause a fetch.
+	// This is what we want to fix.
+	time.Sleep(100 * time.Millisecond)
+
+	// We should have 3 here for sure.
+	if nla := s.NumLoadedAccounts(); nla != 3 {
+		t.Fatalf("Expected 3 loaded accounts, got %d", nla)
+	}
+
+	// Now make sure that we still only have 2 loaded accounts on server 2.
+	if nla := s2.NumLoadedAccounts(); nla != 2 {
+		t.Fatalf("Expected only 2 loaded accounts, got %d", nla)
 	}
 }

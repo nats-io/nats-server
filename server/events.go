@@ -678,10 +678,16 @@ func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply strin
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
 		return
 	}
-	acc, _ := s.lookupAccount(m.Account)
+	// Here we really only want to lookup the account if its local. We do not want to fetch this
+	// account if we have no interest in it.
+	var acc *Account
+	if v, ok := s.accounts.Load(m.Account); ok {
+		acc = v.(*Account)
+	}
 	if acc == nil {
 		return
 	}
+	// We know this is a local connection.
 	if nlc := acc.NumLocalConnections(); nlc > 0 {
 		s.mu.Lock()
 		s.sendAccConnsUpdate(acc, reply)
@@ -733,7 +739,15 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, subject, reply 
 	}
 
 	// See if we have the account registered, if not drop it.
-	acc, _ := s.lookupAccount(m.Account)
+	// Make sure this does not force us to load this account here.
+	var acc *Account
+	if v, ok := s.accounts.Load(m.Account); ok {
+		acc = v.(*Account)
+	}
+	// Silently ignore these if we do not have local interest in the account.
+	if acc == nil {
+		return
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -742,14 +756,9 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, subject, reply 
 	if !s.running || !s.eventsEnabled() {
 		return
 	}
-
 	// Double check that this is not us, should never happen, so error if it does.
 	if m.Server.ID == s.info.ID {
 		s.sys.client.Errorf("Processing our own account connection event message: ignored")
-		return
-	}
-	if acc == nil {
-		s.sys.client.Debugf("Received account connection event for unknown account: %s", m.Account)
 		return
 	}
 	// If we are here we have interest in tracking this account. Update our accounting.
@@ -757,8 +766,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, subject, reply 
 	s.updateRemoteServer(&m.Server)
 }
 
-// Setup tracking for this account. This allows us to track globally
-// account activity.
+// Setup tracking for this account. This allows us to track global account activity.
 // Lock should be held on entry.
 func (s *Server) enableAccountTracking(a *Account) {
 	if a == nil || !s.eventsEnabled() {
