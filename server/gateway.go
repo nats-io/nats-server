@@ -2766,9 +2766,15 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		return
 	}
 
-	// If there is no interest on plain subs, possibly send an RS-,
-	// even if there is qsubs interest.
-	if len(r.psubs) == 0 {
+	// Check if this is a service reply subject (_R_)
+	checkNoInterest := true
+	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
+		c.checkForImportServices(acc, msg)
+		checkNoInterest = false
+	}
+	if checkNoInterest && len(r.psubs) == 0 {
+		// If there is no interest on plain subs, possibly send an RS-,
+		// even if there is qsubs interest.
 		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
 
 		// If there is also no queue filter, then no point in continuing
