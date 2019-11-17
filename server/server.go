@@ -701,28 +701,33 @@ func (s *Server) numAccounts() int {
 
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
 func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if v, ok := s.accounts.Load(name); ok {
 		return v.(*Account), false
 	}
 	acc := NewAccount(name)
-	s.registerAccount(acc)
+	s.registerAccountNoLock(acc)
 	return acc, true
 }
 
 // RegisterAccount will register an account. The account must be new
 // or this call will fail.
 func (s *Server) RegisterAccount(name string) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, ok := s.accounts.Load(name); ok {
 		return nil, ErrAccountExists
 	}
 	acc := NewAccount(name)
-	s.registerAccount(acc)
+	s.registerAccountNoLock(acc)
 	return acc, nil
 }
 
 // SetSystemAccount will set the internal system account.
 // If root operators are present it will also check validity.
 func (s *Server) SetSystemAccount(accName string) error {
+	// Lookup from sync.Map first.
 	if v, ok := s.accounts.Load(accName); ok {
 		return s.setSystemAccount(v.(*Account))
 	}
@@ -735,8 +740,11 @@ func (s *Server) SetSystemAccount(accName string) error {
 	}
 	acc := s.buildInternalAccount(ac)
 	acc.claimJWT = jwt
-	s.registerAccount(acc)
-
+	// Due to race, we need to make sure that we are not
+	// registering twice.
+	if racc := s.registerAccount(acc); racc != nil {
+		return nil
+	}
 	return s.setSystemAccount(acc)
 }
 
@@ -841,10 +849,12 @@ func (s *Server) shouldTrackSubscriptions() bool {
 
 // Invokes registerAccountNoLock under the protection of the server lock.
 // That is, server lock is acquired/released in this function.
-func (s *Server) registerAccount(acc *Account) {
+// See registerAccountNoLock for comment on returned value.
+func (s *Server) registerAccount(acc *Account) *Account {
 	s.mu.Lock()
-	s.registerAccountNoLock(acc)
+	racc := s.registerAccountNoLock(acc)
 	s.mu.Unlock()
+	return racc
 }
 
 // Helper to set the sublist based on preferences.
@@ -859,9 +869,19 @@ func (s *Server) setAccountSublist(acc *Account) {
 	}
 }
 
-// Place common account setup here.
+// Registers an account in the server.
+// Due to some locking considerations, we may end-up trying
+// to register the same account twice. This function will
+// then return the already registered account.
 // Lock should be held on entry.
-func (s *Server) registerAccountNoLock(acc *Account) {
+func (s *Server) registerAccountNoLock(acc *Account) *Account {
+	// We are under the server lock. Lookup from map, if present
+	// return existing account.
+	if a, _ := s.accounts.Load(acc.Name); a != nil {
+		s.tmpAccounts.Delete(acc.Name)
+		return a.(*Account)
+	}
+	// Finish account setup and store.
 	s.setAccountSublist(acc)
 	if acc.maxnae == 0 {
 		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
@@ -891,6 +911,7 @@ func (s *Server) registerAccountNoLock(acc *Account) {
 	s.accounts.Store(acc.Name, acc)
 	s.tmpAccounts.Delete(acc.Name)
 	s.enableAccountTracking(acc)
+	return nil
 }
 
 // lookupAccount is a function to return the account structure
@@ -1019,23 +1040,21 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 func (s *Server) fetchAccount(name string) (*Account, error) {
 	accClaims, claimJWT, err := s.fetchAccountClaims(name)
 	if accClaims != nil {
-		// We have released the lock during the low level fetch.
-		// Now that we are back under lock, check again if account
-		// is in the map or not. If it is, simply return it.
-		if v, ok := s.accounts.Load(name); ok {
-			acc := v.(*Account)
+		acc := s.buildInternalAccount(accClaims)
+		acc.claimJWT = claimJWT
+		// Due to possible race, if registerAccount() returns a non
+		// nil account, it means the same account was already
+		// registered and we should use this one.
+		if racc := s.registerAccount(acc); racc != nil {
 			// Update with the new claims in case they are new.
 			// Following call will return ErrAccountResolverSameClaims
 			// if claims are the same.
-			err = s.updateAccountWithClaimJWT(acc, claimJWT)
+			err = s.updateAccountWithClaimJWT(racc, claimJWT)
 			if err != nil && err != ErrAccountResolverSameClaims {
 				return nil, err
 			}
-			return acc, nil
+			return racc, nil
 		}
-		acc := s.buildInternalAccount(accClaims)
-		acc.claimJWT = claimJWT
-		s.registerAccount(acc)
 		return acc, nil
 	}
 	return nil, err

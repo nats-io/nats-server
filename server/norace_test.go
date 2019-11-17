@@ -25,7 +25,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -716,4 +718,90 @@ func TestNoRaceRouteCache(t *testing.T) {
 			checkExpected(t, prunePerAccountCacheSize+1)
 		})
 	}
+}
+
+func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
+	sa, oa, sb, ob, _ := runTrustedGateways(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	// Let's create a user account.
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	jwt, _ := nac.Encode(okp)
+	userAcc := pub
+
+	// Replace B's account resolver with one that introduces
+	// delay during the Fetch()
+	sac := &slowAccResolver{AccountResolver: sb.AccountResolver()}
+	sb.SetAccountResolver(sac)
+
+	// Add the account in sa and sb
+	addAccountToMemResolver(sa, userAcc, jwt)
+	addAccountToMemResolver(sb, userAcc, jwt)
+
+	// Tell the slow account resolver which account to slow down
+	sac.Lock()
+	sac.acc = userAcc
+	sac.Unlock()
+
+	urlA := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
+	urlB := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
+
+	nca, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+	if err != nil {
+		t.Fatalf("Error connecting to A: %v", err)
+	}
+	defer nca.Close()
+
+	// Since there is an optimistic send, this message will go to B
+	// and on processing this message, B will lookup/fetch this
+	// account, which can produce race with the fetch of this
+	// account from A's system account that sent a notification
+	// about this account, or with the client connect just after
+	// that.
+	nca.Publish("foo", []byte("hello"))
+
+	// Now connect and create a subscription on B
+	ncb, err := nats.Connect(urlB, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error connecting to A: %v", err)
+	}
+	defer ncb.Close()
+	sub, err := ncb.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	ncb.Flush()
+
+	// Now send messages from A and B should ultimately start to receive
+	// them (once the subscription has been correctly registered)
+	ok := false
+	for i := 0; i < 10; i++ {
+		nca.Publish("foo", []byte("hello"))
+		if _, err := sub.NextMsg(100 * time.Millisecond); err != nil {
+			continue
+		}
+		ok = true
+		break
+	}
+	if !ok {
+		t.Fatalf("B should be able to receive messages")
+	}
+
+	checkTmpAccounts := func(t *testing.T, s *Server) {
+		t.Helper()
+		empty := true
+		s.tmpAccounts.Range(func(_, _ interface{}) bool {
+			empty = false
+			return false
+		})
+		if !empty {
+			t.Fatalf("tmpAccounts is not empty")
+		}
+	}
+	checkTmpAccounts(t, sa)
+	checkTmpAccounts(t, sb)
 }

@@ -716,8 +716,12 @@ func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
 
-	waitForOutboundGateways(t, srvA, 1, 2*time.Second)
-	waitForOutboundGateways(t, srvB, 1, 2*time.Second)
+	// Because we need to use "localhost" in the gw URLs (to match
+	// hostname in the user/CN), the server may try to connect to
+	// a [::1], etc.. that may or may not work, so give a lot of
+	// time for that to complete ok.
+	waitForOutboundGateways(t, srvA, 1, 5*time.Second)
+	waitForOutboundGateways(t, srvB, 1, 5*time.Second)
 
 	nc1, err := nats.Connect(srvA.Addr().String(), nats.Name("A"))
 	if err != nil {
