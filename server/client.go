@@ -2565,48 +2565,6 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 	return allowed
 }
 
-// Used to mimic client like replies.
-const (
-	replyPrefix    = "_R_."
-	trackSuffix    = ".T"
-	replyPrefixLen = len(replyPrefix)
-	minReplyLen    = 15
-	digits         = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	base           = 62
-)
-
-// newServiceReply is used when rewriting replies that cross account boundaries.
-// These will look like _R_.XXXXXXXX.
-func (c *client) newServiceReply(tracking bool) []byte {
-	// Check to see if we have our own rand yet. Global rand
-	// has contention with lots of clients, etc.
-	if c.in.prand == nil {
-		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
-	var b = [minReplyLen]byte{'_', 'R', '_', '.'}
-	rn := c.in.prand.Int63()
-	for i, l := replyPrefixLen, rn; i < len(b); i++ {
-		b[i] = digits[l%base]
-		l /= base
-	}
-	reply := b[:]
-	if tracking && c.srv.sys != nil {
-		// Add in our tracking identifier. This allows the metrics to get back to only
-		// this server without needless SUBS/UNSUBS.
-		reply = append(reply, '.')
-		reply = append(reply, c.srv.sys.shash...)
-		reply = append(reply, '.', 'T')
-	}
-	return reply
-}
-
-// Test whether this is a tracked reply.
-func isTrackedReply(reply []byte) bool {
-	lreply := len(reply) - 1
-	return lreply > 3 && reply[lreply-1] == '.' && reply[lreply] == 'T'
-}
-
 // Test whether a reply subject is a service import reply.
 func isServiceReply(reply []byte) bool {
 	// This function is inlined and checking this way is actually faster
@@ -2842,7 +2800,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) {
 				latency = si.latency
 			}
 			// We want to remap this to provide anonymity.
-			nrr = c.newServiceReply(tracking)
+			nrr = si.acc.newServiceReply(tracking)
 			si.acc.addRespServiceImport(acc, string(nrr), string(c.pa.reply), si.rt, latency)
 
 			// Track our responses for cleanup if not auto-expire.

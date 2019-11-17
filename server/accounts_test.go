@@ -2169,9 +2169,9 @@ func TestAccountDuplicateServiceImportSubject(t *testing.T) {
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)
-	c, _, _ := newClientForServer(s)
+	g := s.globalAccount()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.newServiceReply(false)
+		g.newServiceReply(false)
 	}
 }

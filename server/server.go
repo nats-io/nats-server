@@ -793,9 +793,10 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	}
 	acc.mu.Unlock()
 
+	now := time.Now()
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
+		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now},
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),

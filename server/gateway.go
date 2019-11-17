@@ -33,20 +33,19 @@ const (
 	defaultSolicitGatewaysDelay         = time.Second
 	defaultGatewayConnectDelay          = time.Second
 	defaultGatewayReconnectDelay        = time.Second
-	defaultGatewayRecentSubExpiration   = 5 * time.Second
+	defaultGatewayRecentSubExpiration   = 250 * time.Millisecond
 	defaultGatewayMaxRUnsubBeforeSwitch = 1000
 
 	oldGWReplyPrefix    = "$GR."
 	oldGWReplyPrefixLen = len(oldGWReplyPrefix)
 	oldGWReplyStart     = oldGWReplyPrefixLen + 5 // len of prefix above + len of hash (4) + "."
 
-	// The new prefix is "$GNR.<x>.<cluster>.<server>." where <x> is 1 character
-	// reserved for service imports, <cluster> is 8 characters hash of origin
-	// cluster name and <server> is 8 characters hash of origin server pub key.
-	gwReplyPrefix    = "$GNR."
+	// The new prefix is "_GR_.<cluster>.<server>." where <cluster> is 6 characters
+	// hash of origin cluster name and <server> is 6 characters hash of origin server pub key.
+	gwReplyPrefix    = "_GR_."
 	gwReplyPrefixLen = len(gwReplyPrefix)
-	gwHashLen        = 8
-	gwClusterOffset  = gwReplyPrefixLen + 2
+	gwHashLen        = 6
+	gwClusterOffset  = gwReplyPrefixLen
 	gwServerOffset   = gwClusterOffset + gwHashLen + 1
 	gwSubjectOffset  = gwServerOffset + gwHashLen + 1
 )
@@ -311,7 +310,6 @@ func (s *Server) newGateway(opts *Options) error {
 	clusterHash := getHash(opts.Gateway.Name)
 	prefix := make([]byte, 0, gwSubjectOffset)
 	prefix = append(prefix, gwReplyPrefix...)
-	prefix = append(prefix, '_', '.')
 	prefix = append(prefix, clusterHash...)
 	prefix = append(prefix, '.')
 	prefix = append(prefix, s.hash...)
@@ -2297,11 +2295,11 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 
 // Evaluates if the given reply should be mapped or not.
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
-	// If the reply is a service reply (_R_), we must map to make sure that
-	// it comes back to this server since the mapping back to the real reply
-	// can only be made here.
+	// If the reply is a service reply (_R_), we will use the replyClient
+	// instead of the client handed to us. This client holds the wildcard
+	// for all service replies.
 	if isServiceReply(reply) {
-		return true
+		c = acc.replyClient()
 	}
 	// If for this client there is a recent matching subscription interest
 	// then we will map.
@@ -2768,9 +2766,15 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		return
 	}
 
-	// If there is no interest on plain subs, possibly send an RS-,
-	// even if there is qsubs interest.
-	if len(r.psubs) == 0 {
+	// Check if this is a service reply subject (_R_)
+	checkNoInterest := true
+	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
+		c.checkForImportServices(acc, msg)
+		checkNoInterest = false
+	}
+	if checkNoInterest && len(r.psubs) == 0 {
+		// If there is no interest on plain subs, possibly send an RS-,
+		// even if there is qsubs interest.
 		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
 
 		// If there is also no queue filter, then no point in continuing

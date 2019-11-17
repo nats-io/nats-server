@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -491,7 +492,7 @@ func (s *Server) startRemoteServerSweepTimer() {
 }
 
 // Length of our system hash used for server targeted messages.
-const sysHashLen = 4
+const sysHashLen = 6
 
 // This will setup our system wide tracking subs.
 // For now we will setup one wildcard subscription to
@@ -503,11 +504,10 @@ func (s *Server) initEventTracking() {
 	if !s.eventsEnabled() {
 		return
 	}
-	// Create a system hash which we use for other servers to target us
-	// specifically.
+	// Create a system hash which we use for other servers to target us specifically.
 	sha := sha256.New()
 	sha.Write([]byte(s.info.ID))
-	s.sys.shash = fmt.Sprintf("%x", sha.Sum(nil))[:sysHashLen]
+	s.sys.shash = base64.RawURLEncoding.EncodeToString(sha.Sum(nil))[:sysHashLen]
 
 	// This will be for all inbox responses.
 	subject := fmt.Sprintf(inboxRespSubj, s.sys.shash, "*")

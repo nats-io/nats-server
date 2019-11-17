@@ -4077,7 +4077,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, barA2, "A2", 0)
 	checkSubs(t, fooB1, "B1", 0)
 	checkSubs(t, barB1, "B1", 1)
-	checkSubs(t, fooB2, "B2", 0)
+	checkSubs(t, fooB2, "B2", 1)
 	checkSubs(t, barB2, "B2", 1)
 
 	// Speed up exiration
@@ -4116,7 +4116,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, fooA1, "A1", 0)
 	checkSubs(t, fooA2, "A2", 0)
 	checkSubs(t, fooB1, "B1", 0)
-	checkSubs(t, fooB2, "B2", 0)
+	checkSubs(t, fooB2, "B2", 1)
 
 	checkSubs(t, barA1, "A1", 0)
 	checkSubs(t, barA2, "A2", 0)
@@ -4457,7 +4457,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, barA2, "A2", 0)
 			checkSubs(t, fooB1, "B1", 0)
 			checkSubs(t, barB1, "B1", 1)
-			checkSubs(t, fooB2, "B2", 0)
+			checkSubs(t, fooB2, "B2", 1)
 			checkSubs(t, barB2, "B2", 1)
 
 			// Speed up exiration
@@ -4496,7 +4496,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, fooA1, "A1", 0)
 			checkSubs(t, fooA2, "A2", 0)
 			checkSubs(t, fooB1, "B1", 0)
-			checkSubs(t, fooB2, "B2", 0)
+			checkSubs(t, fooB2, "B2", 1)
 
 			checkSubs(t, barA1, "A1", 0)
 			checkSubs(t, barA2, "A2", 0)

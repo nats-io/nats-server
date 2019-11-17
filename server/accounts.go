@@ -60,13 +60,16 @@ type Account struct {
 	imports      importMap
 	exports      exportMap
 	limits
-	nae         int32
-	pruning     bool
-	rmPruning   bool
-	expired     bool
-	signingKeys []string
-	srv         *Server // server this account is registered with (possibly nil)
-	lds         string  // loop detection subject for leaf nodes
+	nae           int32
+	pruning       bool
+	rmPruning     bool
+	expired       bool
+	signingKeys   []string
+	srv           *Server // server this account is registered with (possibly nil)
+	lds           string  // loop detection subject for leaf nodes
+	siReply       []byte  // service reply prefix, will form wildcard subscription.
+	siReplyClient *client
+	prand         *rand.Rand
 }
 
 // Account based limits.
@@ -443,6 +446,9 @@ func (a *Account) removeClient(c *client) int {
 
 func (a *Account) randomClient() *client {
 	var c *client
+	if a.siReplyClient != nil {
+		return a.siReplyClient
+	}
 	for _, c = range a.clients {
 		break
 	}
@@ -987,12 +993,109 @@ func shouldSample(l *serviceLatency) bool {
 	return rand.Int31n(100) <= int32(l.sampling)
 }
 
+// Used to mimic client like replies.
+const (
+	replyPrefix    = "_R_."
+	trackSuffix    = ".T"
+	replyPrefixLen = len(replyPrefix)
+	baseServerLen  = 10
+	replyLen       = 6
+	minReplyLen    = 15
+	digits         = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	base           = 62
+)
+
+// Will create a wildcard subscription to handle interest graph propagation for all
+// service replies.
+// Lock should not be held.
+func (a *Account) createRespWildcard() []byte {
+	a.mu.Lock()
+	if a.prand == nil {
+		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
+	rn := a.prand.Int63()
+	for i, l := replyPrefixLen, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	a.siReply = append(b[:], '.')
+	s := a.srv
+	aName := a.Name
+	pre := a.siReply
+	wcsub := append(a.siReply, '>')
+	a.mu.Unlock()
+
+	// Check to see if we need to propagate interest.
+	if s != nil {
+		now := time.Now()
+		c := &client{srv: a.srv, acc: a, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
+		sub := &subscription{client: c, subject: wcsub}
+		s.updateRouteSubscriptionMap(a, sub, 1)
+		if s.gateway.enabled {
+			s.gatewayUpdateSubInterest(aName, sub, 1)
+			a.mu.Lock()
+			a.siReplyClient = c
+			a.mu.Unlock()
+		}
+	}
+
+	return pre
+}
+
+func (a *Account) replyClient() *client {
+	a.mu.RLock()
+	c := a.siReplyClient
+	a.mu.RUnlock()
+	return c
+}
+
+// Test whether this is a tracked reply.
+func isTrackedReply(reply []byte) bool {
+	lreply := len(reply) - 1
+	return lreply > 3 && reply[lreply-1] == '.' && reply[lreply] == 'T'
+}
+
+// Generate a new service reply from the wildcard prefix.
+// FIXME(dlc) - probably do not have to use rand here. about 25ns per.
+func (a *Account) newServiceReply(tracking bool) []byte {
+	a.mu.RLock()
+	replyPre := a.siReply
+	s := a.srv
+	a.mu.RUnlock()
+
+	if replyPre == nil {
+		replyPre = a.createRespWildcard()
+	}
+
+	var b [replyLen]byte
+	rn := a.prand.Int63()
+	for i, l := 0, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	// Make sure to copy.
+	reply := make([]byte, 0, len(replyPre)+len(b))
+	reply = append(reply, replyPre...)
+	reply = append(reply, b[:]...)
+
+	if tracking && s.sys != nil {
+		// Add in our tracking identifier. This allows the metrics to get back to only
+		// this server without needless SUBS/UNSUBS.
+		reply = append(reply, '.')
+		reply = append(reply, s.sys.shash...)
+		reply = append(reply, '.', 'T')
+	}
+	return reply
+}
+
 // This is for internal responses.
 func (a *Account) addRespServiceImport(dest *Account, from, to string, rt ServiceRespType, lat *serviceLatency) *serviceImport {
 	a.mu.Lock()
 	if a.imports.services == nil {
 		a.imports.services = make(map[string]*serviceImport)
 	}
+	// dest is the requestor's account. a is the service responder with the export.
 	ae := rt == Singleton
 	si := &serviceImport{dest, nil, from, to, 0, rt, nil, nil, ae, true, false, false}
 	a.imports.services[from] = si
