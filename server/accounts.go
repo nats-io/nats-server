@@ -446,6 +446,9 @@ func (a *Account) removeClient(c *client) int {
 
 func (a *Account) randomClient() *client {
 	var c *client
+	if a.siReplyClient != nil {
+		return a.siReplyClient
+	}
 	for _, c = range a.clients {
 		break
 	}
