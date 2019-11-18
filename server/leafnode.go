@@ -1075,8 +1075,9 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	c.mu.Lock()
 
-	// If we are solicited make sure this is a local client.
-	if c.isSolicitedLeafNode() && sub.client.kind != CLIENT {
+	// If we are solicited make sure this is a local client or a non-solicited leaf node
+	skind := sub.client.kind
+	if c.isSolicitedLeafNode() && !(skind == CLIENT || (skind == LEAF && !sub.client.isSolicitedLeafNode())) {
 		c.mu.Unlock()
 		return
 	}
@@ -1279,9 +1280,11 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		if updateGWs {
 			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
 		}
-		// Now check on leafnode updates for other leaf nodes.
-		srv.updateLeafNodes(acc, sub, 1)
 	}
+	// Now check on leafnode updates for other leaf nodes. We understand solicited
+	// and non-solicited state in this call so we will do the right thing.
+	srv.updateLeafNodes(acc, sub, 1)
+
 	return nil
 }
 
