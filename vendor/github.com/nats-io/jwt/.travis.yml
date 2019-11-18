@@ -1,8 +1,8 @@
 language: go
 sudo: false
 go:
+- 1.13.x
 - 1.12.x
-- 1.11.x
 
 install:
 - go get -t ./...
@@ -18,4 +18,5 @@ before_script:
 - staticcheck ./...
 
 script:
-- if [[ "$TRAVIS_GO_VERSION" == 1.10.* ]] ; then ./scripts/cov.sh TRAVIS; else go test -v -race ./...; fi
+- go test -v -race ./...
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; fi

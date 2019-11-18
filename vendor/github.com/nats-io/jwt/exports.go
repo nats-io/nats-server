@@ -158,7 +158,7 @@ func (e *Export) IsRevoked(pubKey string) bool {
 	return e.Revocations.IsRevoked(pubKey, time.Now())
 }
 
-// Exports is an array of exports
+// Exports is a slice of exports
 type Exports []*Export
 
 // Add appends exports to the list
@@ -221,4 +221,16 @@ func (e *Exports) HasExportContainingSubject(subject Subject) bool {
 		}
 	}
 	return false
+}
+
+func (e Exports) Len() int {
+	return len(e)
+}
+
+func (e Exports) Swap(i, j int) {
+	e[i], e[j] = e[j], e[i]
+}
+
+func (e Exports) Less(i, j int) bool {
+	return e[i].Subject < e[j].Subject
 }

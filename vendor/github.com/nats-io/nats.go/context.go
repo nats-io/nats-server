@@ -43,29 +43,7 @@ func (nc *Conn) RequestWithContext(ctx context.Context, subj string, data []byte
 		return nc.oldRequestWithContext(ctx, subj, data)
 	}
 
-	// Do setup for the new style.
-	if nc.respMap == nil {
-		nc.initNewResp()
-	}
-	// Create literal Inbox and map to a chan msg.
-	mch := make(chan *Msg, RequestChanLen)
-	respInbox := nc.newRespInbox()
-	token := respToken(respInbox)
-	nc.respMap[token] = mch
-	createSub := nc.respMux == nil
-	ginbox := nc.respSub
-	nc.mu.Unlock()
-
-	if createSub {
-		// Make sure scoped subscription is setup only once.
-		var err error
-		nc.respSetup.Do(func() { err = nc.createRespMux(ginbox) })
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	err := nc.PublishRequest(subj, respInbox, data)
+	mch, token, err := nc.createNewRequestAndSend(subj, data)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +118,7 @@ func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
 	select {
 	case msg, ok = <-mch:
 		if !ok {
-			return nil, ErrConnectionClosed
+			return nil, s.getNextMsgErr()
 		}
 		if err := s.processNextMsgDelivered(msg); err != nil {
 			return nil, err
@@ -153,7 +131,7 @@ func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
 	select {
 	case msg, ok = <-mch:
 		if !ok {
-			return nil, ErrConnectionClosed
+			return nil, s.getNextMsgErr()
 		}
 		if err := s.processNextMsgDelivered(msg); err != nil {
 			return nil, err

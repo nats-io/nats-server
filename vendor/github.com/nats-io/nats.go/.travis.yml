@@ -16,8 +16,8 @@ install:
 before_script:
 - $(exit $(go fmt ./... | wc -l))
 - go vet ./...
-- misspell -error -locale US .
+- find . -type f -name "*.go" | xargs misspell -error -locale US
 - staticcheck ./...
 script:
 - go test -i -race ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -race ./...; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.12 ]]; then ./scripts/cov.sh TRAVIS; else go test -race -v -p=1 ./... --failfast; fi
