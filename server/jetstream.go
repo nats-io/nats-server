@@ -1059,7 +1059,7 @@ func (s *Server) dynJetStreamConfig() *JetStreamConfig {
 	return jsc
 }
 
-// friendlyBytes returns a string with the given bytes int64
+// FriendlyBytes returns a string with the given bytes int64
 // represented as a size, such as 1KB, 10MB, etc...
 func FriendlyBytes(bytes int64) string {
 	fbytes := float64(bytes)
