@@ -32,6 +32,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 )
 
 func createLeafConn(t tLogger, host string, port int) net.Conn {
@@ -2622,8 +2623,20 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 		}
 		defer nc.Close()
 
-		if _, err := nc.Request("foo", []byte("Hello"), 250*time.Millisecond); err != nil {
+		// We don't use an INBOX here because we had a bug where
+		// leafnode would subscribe to _GR_.*.*.*.> instead of
+		// _GR_.>, and inbox masked that because of their number
+		// of tokens.
+		reply := nuid.Next()
+		sub, err := nc.SubscribeSync(reply)
+		if err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
+		}
+		if err := nc.PublishRequest("foo", reply, []byte("Hello")); err != nil {
 			t.Fatalf("Failed to get response: %v", err)
+		}
+		if _, err := sub.NextMsg(250 * time.Millisecond); err != nil {
+			t.Fatalf("Did not get reply: %v", err)
 		}
 		nc.Close()
 	}
