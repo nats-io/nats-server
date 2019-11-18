@@ -98,6 +98,41 @@ func TestLeafNodeInfo(t *testing.T) {
 	})
 }
 
+func TestLeafNodeSplitBuffer(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	nc.QueueSubscribe("foo", "bar", func(m *nats.Msg) {
+		m.Respond([]byte("ok"))
+	})
+	nc.Flush()
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+	sendProto(t, lc, "CONNECT {}\r\n")
+	checkLeafNodeConnected(t, s)
+
+	leafSend, leafExpect := setupLeaf(t, lc, 2)
+
+	leafSend("LS+ reply\r\nPING\r\n")
+	leafExpect(pongRe)
+
+	leafSend("LMSG foo ")
+	time.Sleep(time.Millisecond)
+	leafSend("+ reply bar 2\r\n")
+	time.Sleep(time.Millisecond)
+	leafSend("OK\r")
+	time.Sleep(time.Millisecond)
+	leafSend("\n")
+	leafExpect(lmsgRe)
+}
+
 func TestNumLeafNodes(t *testing.T) {
 	s, opts := runLeafServer()
 	defer s.Shutdown()
