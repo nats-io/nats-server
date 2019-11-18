@@ -515,3 +515,53 @@ func TestSplitBufferMsgOp(t *testing.T) {
 		t.Fatalf("Expected MSG_END_N state vs %d\n", c.state)
 	}
 }
+
+func TestSplitBufferLeafMsgArg(t *testing.T) {
+	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), kind: LEAF}
+	msg := []byte("LMSG foo + bar baz 11\r\n")
+	if err := c.parse(msg); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_PAYLOAD {
+		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
+	}
+	checkPA := func(t *testing.T) {
+		t.Helper()
+		if !bytes.Equal(c.pa.subject, []byte("foo")) {
+			t.Fatalf("Expected subject to be %q, got %q", "foo", c.pa.subject)
+		}
+		if !bytes.Equal(c.pa.reply, []byte("bar")) {
+			t.Fatalf("Expected reply to be %q, got %q", "bar", c.pa.reply)
+		}
+		if n := len(c.pa.queues); n != 1 {
+			t.Fatalf("Expected 1 queue, got %v", n)
+		}
+		if !bytes.Equal(c.pa.queues[0], []byte("baz")) {
+			t.Fatalf("Expected queues to be %q, got %q", "baz", c.pa.queues)
+		}
+	}
+	checkPA(t)
+
+	// overwrite msg with payload
+	n := copy(msg, []byte("fffffffffff"))
+	if err := c.parse(msg[:n]); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != MSG_END_R {
+		t.Fatalf("Expected MSG_END_R state vs %d\n", c.state)
+	}
+	checkPA(t)
+
+	// Finish processing
+	copy(msg, []byte("\r\n"))
+	if err := c.parse(msg[:2]); err != nil {
+		t.Fatalf("Unexpected parse error: %v\n", err)
+	}
+	if c.state != OP_START {
+		t.Fatalf("Expected OP_START state vs %d\n", c.state)
+	}
+	if c.pa.subject != nil || c.pa.reply != nil || c.pa.queues != nil || c.pa.size != 0 ||
+		c.pa.szb != nil || c.pa.arg != nil {
+		t.Fatalf("parser state not cleaned-up properly: %+v", c.pa)
+	}
+}

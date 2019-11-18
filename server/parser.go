@@ -282,7 +282,7 @@ func (c *client) parse(buf []byte) error {
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
 			c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
-			c.pa.reply, c.pa.szb, c.pa.queues = nil, nil, nil
+			c.pa.reply, c.pa.size, c.pa.szb, c.pa.queues = nil, 0, nil, nil
 		case OP_A:
 			switch b {
 			case '+':
