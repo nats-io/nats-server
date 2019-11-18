@@ -23,7 +23,7 @@ import (
 
 const (
 	// Version is semantic version.
-	Version = "0.3.0"
+	Version = "0.3.2"
 
 	// TokenTypeJwt is the JWT token type supported JWT tokens
 	// encoded and decoded by this library

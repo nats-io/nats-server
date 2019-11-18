@@ -63,10 +63,11 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 
 	i.Subject.Validate(vr)
 
-	if i.IsService() {
-		if i.Subject.HasWildCards() {
-			vr.AddWarning("services cannot have wildcard subject: %q", i.Subject)
-		}
+	if i.IsService() && i.Subject.HasWildCards() {
+		vr.AddError("services cannot have wildcard subject: %q", i.Subject)
+	}
+	if i.IsStream() && i.To.HasWildCards() {
+		vr.AddError("streams cannot have wildcard to subject: %q", i.Subject)
 	}
 
 	var act *ActivationClaims
@@ -135,4 +136,16 @@ func (i *Imports) Validate(acctPubKey string, vr *ValidationResults) {
 // Add is a simple way to add imports
 func (i *Imports) Add(a ...*Import) {
 	*i = append(*i, a...)
+}
+
+func (i Imports) Len() int {
+	return len(i)
+}
+
+func (i Imports) Swap(j, k int) {
+	i[j], i[k] = i[k], i[j]
+}
+
+func (i Imports) Less(j, k int) bool {
+	return i[j].Subject < i[k].Subject
 }

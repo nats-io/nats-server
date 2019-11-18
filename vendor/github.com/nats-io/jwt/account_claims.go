@@ -17,6 +17,7 @@ package jwt
 
 import (
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/nats-io/nkeys"
@@ -127,7 +128,8 @@ func (a *AccountClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(a.Subject) {
 		return "", errors.New("expected subject to be account public key")
 	}
-
+	sort.Sort(a.Exports)
+	sort.Sort(a.Imports)
 	a.ClaimsData.Type = AccountClaim
 	return a.ClaimsData.Encode(pair, a)
 }
