@@ -1002,7 +1002,7 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	if c.isSolicitedLeafNode() {
 		// Add a fake subscription for this solicited leafnode connection
 		// so that we can send back directly for mapped GW replies.
-		c.srv.gwLeafSubs.Insert(&subscription{client: c, subject: []byte(gwReplyPrefix + "*.*.*.>")})
+		c.srv.gwLeafSubs.Insert(&subscription{client: c, subject: []byte(gwReplyPrefix + ">")})
 	}
 
 	// Now walk the results and add them to our smap
@@ -1022,7 +1022,7 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	// TODO(dlc) - Should we lock this down more?
 	if applyGlobalRouting {
 		c.leaf.smap[oldGWReplyPrefix+"*.>"]++
-		c.leaf.smap[gwReplyPrefix+"*.*.*.>"]++
+		c.leaf.smap[gwReplyPrefix+">"]++
 	}
 	// Detect loop by subscribing to a specific subject and checking
 	// if this is coming back to us.
