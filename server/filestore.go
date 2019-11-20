@@ -438,8 +438,6 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		fs.stats.FirstSeq = seq
 	}
 
-	startBytes := int64(fs.stats.Bytes)
-
 	n, err := fs.writeMsgRecord(seq, subj, msg)
 	if err != nil {
 		fs.mu.Unlock()
@@ -452,6 +450,8 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	fs.stats.LastSeq = seq
 
 	// Limits checks and enforcement.
+	// If they do any deletions they will update the
+	// byte count on their own, so no need to compensate.
 	fs.enforceMsgLimit()
 	fs.enforceBytesLimit()
 
@@ -461,11 +461,10 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	}
 
 	cb := fs.scb
-	stopBytes := int64(fs.stats.Bytes)
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(stopBytes - startBytes)
+		cb(int64(n))
 	}
 
 	return seq, nil
