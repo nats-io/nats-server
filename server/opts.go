@@ -180,6 +180,7 @@ type Options struct {
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
 	LogFile               string        `json:"-"`
+	LogSizeLimit          int64         `json:"-"`
 	Syslog                bool          `json:"-"`
 	RemoteSyslog          string        `json:"-"`
 	Routes                []*url.URL    `json:"-"`
@@ -549,6 +550,8 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 		case "logfile", "log_file":
 			o.LogFile = v.(string)
+		case "logfile_size_limit", "log_size_limit":
+			o.LogSizeLimit = v.(int64)
 		case "syslog":
 			o.Syslog = v.(bool)
 			trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
@@ -2940,6 +2943,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports)")
 	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
+	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
 	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
 	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")

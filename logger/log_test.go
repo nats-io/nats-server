@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -115,6 +116,7 @@ func TestFileLogger(t *testing.T) {
 	file.Close()
 
 	logger := NewFileLogger(file.Name(), false, false, false, false)
+	defer logger.Close()
 	logger.Noticef("foo")
 
 	buf, err := ioutil.ReadFile(file.Name())
@@ -136,6 +138,7 @@ func TestFileLogger(t *testing.T) {
 	file.Close()
 
 	logger = NewFileLogger(file.Name(), true, true, true, true)
+	defer logger.Close()
 	logger.Errorf("foo")
 
 	buf, err = ioutil.ReadFile(file.Name())
@@ -170,6 +173,153 @@ func TestFileLogger(t *testing.T) {
 	if !strings.HasSuffix(str, "[ERR] foo\n") {
 		t.Fatalf("%v", errMsg)
 	}
+}
+
+func TestFileLoggerSizeLimit(t *testing.T) {
+	// Create std logger
+	logger := NewStdLogger(true, false, false, false, true)
+	if err := logger.SetSizeLimit(1000); err == nil ||
+		!strings.Contains(err.Error(), "only for file logger") {
+		t.Fatalf("Expected error about being able to use only for file logger, got %v", err)
+	}
+	logger.Close()
+
+	tmpDir, err := ioutil.TempDir("", "nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
+
+	file, err := ioutil.TempFile(tmpDir, "log_")
+	if err != nil {
+		t.Fatalf("Could not create the temp file: %v", err)
+	}
+	file.Close()
+
+	logger = NewFileLogger(file.Name(), true, false, false, true)
+	defer logger.Close()
+	logger.SetSizeLimit(1000)
+
+	for i := 0; i < 50; i++ {
+		logger.Noticef("This is a line in the log file")
+	}
+
+	files, err := ioutil.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Error reading logs dir: %v", err)
+	}
+	if len(files) == 1 {
+		t.Fatalf("Expected file to have been rotated")
+	}
+	lastBackup := files[len(files)-1]
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Error closing log: %v", err)
+	}
+	content, err := ioutil.ReadFile(file.Name())
+	if err != nil {
+		t.Fatalf("Error loading latest log: %v", err)
+	}
+	if !bytes.Contains(content, []byte("Rotated log")) ||
+		!bytes.Contains(content, []byte(lastBackup.Name())) {
+		t.Fatalf("Should be statement about rotated log and backup name, got %s", content)
+	}
+
+	// Remove all files
+	os.RemoveAll(tmpDir)
+	tmpDir, err = ioutil.TempDir("", "nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Recreate logger and don't set a limit
+	file, err = ioutil.TempFile(tmpDir, "log_")
+	if err != nil {
+		t.Fatalf("Could not create the temp file: %v", err)
+	}
+	file.Close()
+	logger = NewFileLogger(file.Name(), true, false, false, true)
+	defer logger.Close()
+	for i := 0; i < 50; i++ {
+		logger.Noticef("This is line %d in the log file", i+1)
+	}
+	files, err = ioutil.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Error reading logs dir: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("Expected file to not be rotated")
+	}
+
+	// Now set a limit that is below current size
+	logger.SetSizeLimit(1000)
+	// Should have triggered rotation
+	files, err = ioutil.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Error reading logs dir: %v", err)
+	}
+	if len(files) <= 1 {
+		t.Fatalf("Expected file to have been rotated")
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Error closing log: %v", err)
+	}
+	lastBackup = files[len(files)-1]
+	content, err = ioutil.ReadFile(file.Name())
+	if err != nil {
+		t.Fatalf("Error loading latest log: %v", err)
+	}
+	if !bytes.Contains(content, []byte("Rotated log")) ||
+		!bytes.Contains(content, []byte(lastBackup.Name())) {
+		t.Fatalf("Should be statement about rotated log and backup name, got %s", content)
+	}
+
+	logger = NewFileLogger(file.Name(), true, false, false, true)
+	defer logger.Close()
+	logger.SetSizeLimit(1000)
+
+	// Check error on rotate.
+	logger.Lock()
+	logger.fl.Lock()
+	failClose := &fileLogFailClose{logger.fl.f, true}
+	logger.fl.f = failClose
+	logger.fl.Unlock()
+	logger.Unlock()
+	// Write a big line that will force rotation.
+	// Since we fail to close the log file, we should have bumped the limit to 2000
+	logger.Noticef("This is a big line: %v", make([]byte, 1000))
+
+	// Remove the failure
+	failClose.fail = false
+	// Write a big line that makes rotation happen
+	logger.Noticef("This is a big line: %v", make([]byte, 2000))
+	// Close
+	logger.Close()
+
+	files, err = ioutil.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Error reading logs dir: %v", err)
+	}
+	lastBackup = files[len(files)-1]
+	content, err = ioutil.ReadFile(filepath.Join(tmpDir, lastBackup.Name()))
+	if err != nil {
+		t.Fatalf("Error reading backup file: %v", err)
+	}
+	if !bytes.Contains(content, []byte("on purpose")) || !bytes.Contains(content, []byte("size 2000")) {
+		t.Fatalf("Expected error that file could not rotated and max size bumped to 2000, got %s", content)
+	}
+}
+
+type fileLogFailClose struct {
+	writerAndCloser
+	fail bool
+}
+
+func (l *fileLogFailClose) Close() error {
+	if l.fail {
+		return fmt.Errorf("on purpose")
+	}
+	return l.writerAndCloser.Close()
 }
 
 func expectOutput(t *testing.T, f func(), expected string) {
