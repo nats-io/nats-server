@@ -1153,7 +1153,7 @@ func runSolicitWithCredentials(t *testing.T, opts *server.Options, creds string)
 			remotes = [
 				{
 					url: nats-leaf://127.0.0.1:%d
-					credentials: "%s"
+					credentials: '%s'
 				}
 			]
 		}

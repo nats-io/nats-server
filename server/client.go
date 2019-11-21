@@ -1226,6 +1226,17 @@ func removePassFromTrace(arg []byte) []byte {
 	return buf
 }
 
+// Returns the RTT by computing the elapsed time since now and `start`.
+// On Windows VM where I (IK) run tests, time.Since() will return 0
+// (I suspect some time granularity issues). So return at minimum 1ns.
+func computeRTT(start time.Time) time.Duration {
+	diff := time.Since(start)
+	if diff == 0 {
+		diff = time.Nanosecond
+	}
+	return diff
+}
+
 func (c *client) processConnect(arg []byte) error {
 	if c.trace {
 		c.traceInOp("CONNECT", removePassFromTrace(arg))
@@ -1247,7 +1258,7 @@ func (c *client) processConnect(arg []byte) error {
 	c.last = time.Now()
 	// Estimate RTT to start.
 	if c.kind == CLIENT {
-		c.rtt = c.last.Sub(c.start)
+		c.rtt = computeRTT(c.start)
 	}
 	kind := c.kind
 	srv := c.srv
@@ -1672,7 +1683,7 @@ func (c *client) processPong() {
 	c.traceInOp("PONG", nil)
 	c.mu.Lock()
 	c.ping.out = 0
-	c.rtt = time.Since(c.rttStart)
+	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
 	reorderGWs := c.kind == GATEWAY && c.gw.outbound
 	c.mu.Unlock()

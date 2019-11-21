@@ -457,7 +457,7 @@ func (c *client) getRTT() string {
 	if c.rtt > time.Microsecond && c.rtt < time.Millisecond {
 		rtt = c.rtt.Truncate(time.Microsecond)
 	} else {
-		rtt = c.rtt.Truncate(time.Millisecond)
+		rtt = c.rtt.Truncate(time.Nanosecond)
 	}
 	return rtt.String()
 }
