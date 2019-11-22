@@ -1426,7 +1426,7 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 			// reconnect scenarios.
 			getMsg := func(seqno int) *nats.Msg {
 				t.Helper()
-				m, err := sub.NextMsg(5 * time.Second)
+				m, err := sub.NextMsg(time.Second)
 				if err != nil {
 					t.Fatalf("Unexpected error for %d: %v", seqno, err)
 				}
@@ -2859,6 +2859,149 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	if info.MsgSets != 0 {
 		t.Fatalf("Expected no remaining message sets, got %d", info.MsgSets)
+	}
+}
+
+func TestJetStreamDeleteMsg(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.MsgSetConfig{
+				Name:      "foo",
+				Retention: server.StreamPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.MsgSetConfig{
+				Name:      "foo",
+				Retention: server.StreamPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			config := s.JetStreamConfig()
+			if config == nil {
+				t.Fatalf("Expected non-nil config")
+			}
+			defer os.RemoveAll(config.StoreDir)
+
+			cfg := &server.MsgSetConfig{Name: "foo", Storage: server.FileStorage}
+			mset, err := s.GlobalAccount().AddMsgSet(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			pubTen := func() {
+				t.Helper()
+				for i := 0; i < 10; i++ {
+					nc.Publish("foo", []byte("Hello World!"))
+				}
+				nc.Flush()
+			}
+
+			pubTen()
+
+			stats := mset.Stats()
+			if stats.Msgs != 10 {
+				t.Fatalf("Expected 10 messages, got %d", stats.Msgs)
+			}
+			bytesPerMsg := stats.Bytes / 10
+			if bytesPerMsg == 0 {
+				t.Fatalf("Expected non-zero bytes for msg size")
+			}
+
+			deleteAndCheck := func(seq, expectedFirstSeq uint64) {
+				t.Helper()
+				beforeStats := mset.Stats()
+				if !mset.DeleteMsg(seq) {
+					t.Fatalf("Expected the delete of sequence %d to succeed", seq)
+				}
+				expectedStats := beforeStats
+				expectedStats.Msgs--
+				expectedStats.Bytes -= bytesPerMsg
+				expectedStats.FirstSeq = expectedFirstSeq
+				afterStats := mset.Stats()
+				if afterStats != expectedStats {
+					t.Fatalf("Stats not what we expected. Expected %+v, got %+v\n", expectedStats, afterStats)
+				}
+			}
+
+			// Delete one from the middle
+			deleteAndCheck(5, 1)
+			// Now make sure sequences are update properly.
+			// Delete first msg.
+			deleteAndCheck(1, 2)
+			// Now last
+			deleteAndCheck(10, 2)
+			// Now gaps.
+			deleteAndCheck(3, 2)
+			deleteAndCheck(2, 4)
+
+			mset.Purge()
+			// Put ten more one.
+			pubTen()
+			deleteAndCheck(11, 12)
+			deleteAndCheck(15, 12)
+			deleteAndCheck(16, 12)
+			deleteAndCheck(20, 12)
+
+			// Shutdown the server.
+			s.Shutdown()
+
+			s = RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err = s.GlobalAccount().LookupMsgSet("foo")
+			if err != nil {
+				t.Fatalf("Expected to get the message set back")
+			}
+
+			expected := server.MsgSetStats{Msgs: 6, Bytes: 6 * bytesPerMsg, FirstSeq: 12, LastSeq: 20}
+			stats = mset.Stats()
+			if stats != expected {
+				t.Fatalf("Stats not what we expected. Expected %+v, got %+v\n", expected, stats)
+			}
+
+			// Now create an observable and make sure we get the right sequence.
+			nc = clientConnectToServer(t, s)
+			defer nc.Close()
+
+			delivery := nats.NewInbox()
+			sub, _ := nc.SubscribeSync(delivery)
+			nc.Flush()
+
+			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, DeliverAll: true, Subject: "foo"})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			expectedStoreSeq := []uint64{12, 13, 14, 17, 18, 19}
+
+			for i := 0; i < 6; i++ {
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if o.SetSeqFromReply(m.Reply) != expectedStoreSeq[i] {
+					t.Fatalf("Expected store seq of %d, got %d", expectedStoreSeq[i], o.SetSeqFromReply(m.Reply))
+				}
+			}
+		})
 	}
 }
 

@@ -193,7 +193,13 @@ func (mset *MsgSet) Purge() uint64 {
 }
 
 // RemoveMsg will remove a message from a message set.
+// FIXME(dlc) - Should pick one and be consistent.
 func (mset *MsgSet) RemoveMsg(seq uint64) bool {
+	return mset.store.RemoveMsg(seq)
+}
+
+// DeleteMsg will remove a message from a message set.
+func (mset *MsgSet) DeleteMsg(seq uint64) bool {
 	return mset.store.RemoveMsg(seq)
 }
 
@@ -347,7 +353,7 @@ type jsPubMsg struct {
 }
 
 // TODO(dlc) - Maybe look at onering instead of chan - https://github.com/pltr/onering
-const nmsSendQSize = 1024
+const msetSendQSize = 1024
 
 // This is similar to system semantics but did not want to overload the single system sendq,
 // or require system account when doing simple setup with jetstream.
@@ -357,7 +363,7 @@ func (mset *MsgSet) setupSendCapabilities() {
 	if mset.sendq != nil {
 		return
 	}
-	mset.sendq = make(chan *jsPubMsg, nmsSendQSize)
+	mset.sendq = make(chan *jsPubMsg, msetSendQSize)
 	go mset.internalSendLoop()
 }
 
@@ -381,7 +387,7 @@ func (mset *MsgSet) internalSendLoop() {
 	mset.mu.Unlock()
 
 	// Warn when internal send queue is backed up past 75%
-	warnThresh := 3 * nmsSendQSize / 4
+	warnThresh := 3 * msetSendQSize / 4
 	warnFreq := time.Second
 	last := time.Now().Add(-warnFreq)
 

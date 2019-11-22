@@ -30,7 +30,12 @@ const (
 	FileStorage
 )
 
-var ErrStoreMsgNotFound = errors.New("no message found")
+var (
+	// ErrStoreMsgNotFound when message was not found but was expected to be.
+	ErrStoreMsgNotFound = errors.New("no message found")
+	// ErrStoreEOF is returned when message seq is greater than the last sequence.
+	ErrStoreEOF = errors.New("msgset EOF")
+)
 
 type MsgSetStore interface {
 	StoreMsg(subj string, msg []byte) (uint64, error)
