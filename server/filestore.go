@@ -132,7 +132,7 @@ const (
 	// coalesceDelay
 	coalesceDelay = 10 * time.Millisecond
 	// coalesceMaximum
-	coalesceMaximum = 32 * 1024
+	coalesceMaximum = 64 * 1024
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -659,7 +659,7 @@ func (fs *fileStore) expireMsgs() {
 	minAge := now - int64(fs.cfg.MaxAge)
 
 	for {
-		if sm := fs.msgForSeq(0); sm != nil && sm.ts <= minAge {
+		if sm, _ := fs.msgForSeq(0); sm != nil && sm.ts <= minAge {
 			fs.mu.Lock()
 			fs.deleteFirstMsg()
 			fs.mu.Unlock()
@@ -1041,7 +1041,8 @@ func (fs *fileStore) checkPrefetch(seq uint64, mb *msgBlock) {
 }
 
 // Will return message for the given sequence number.
-func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
+func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
+	var err = ErrStoreEOF
 	fs.mu.Lock()
 	// seq == 0 indicates we want first msg.
 	if seq == 0 {
@@ -1049,8 +1050,11 @@ func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 	}
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
+		if seq <= fs.stats.LastSeq {
+			err = ErrStoreMsgNotFound
+		}
 		fs.mu.Unlock()
-		return nil
+		return nil, err
 	}
 
 	// Check cache.
@@ -1058,7 +1062,7 @@ func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 		if sm, ok := mb.cache[seq]; ok {
 			mb.cgenid++
 			fs.mu.Unlock()
-			return sm
+			return sm, nil
 		}
 	}
 
@@ -1069,9 +1073,11 @@ func (fs *fileStore) msgForSeq(seq uint64) *fileStoredMsg {
 	sm := fs.readAndCacheMsgs(mb, seq)
 	if sm != nil {
 		mb.cgenid++
+	} else if seq <= fs.stats.LastSeq {
+		err = ErrStoreMsgNotFound
 	}
 	fs.mu.Unlock()
-	return sm
+	return sm, err
 }
 
 // Internal function to return msg parts from a raw buffer.
@@ -1095,10 +1101,11 @@ func msgFromBuf(buf []byte) (string, []byte, uint64, int64, error) {
 
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
-	if sm := fs.msgForSeq(seq); sm != nil {
+	sm, err := fs.msgForSeq(seq)
+	if sm != nil {
 		return sm.subj, sm.msg, sm.ts, nil
 	}
-	return "", nil, 0, ErrStoreMsgNotFound
+	return "", nil, 0, err
 }
 
 func (fs *fileStore) Stats() MsgSetStats {
