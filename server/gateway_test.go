@@ -3873,6 +3873,42 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	}
 }
 
+func ensureGWConnectTo(t *testing.T, s *Server, remoteGWName string, remoteGWServer *Server) {
+	t.Helper()
+	var good bool
+	for i := 0; !good && (i < 3); i++ {
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			if s.numOutboundGateways() == 0 {
+				return fmt.Errorf("Still no gw outbound connection")
+			}
+			return nil
+		})
+		ogc := s.getOutboundGatewayConnection(remoteGWName)
+		ogc.mu.Lock()
+		name := ogc.opts.Name
+		nc := ogc.nc
+		ogc.mu.Unlock()
+		if name != remoteGWServer.ID() {
+			rg := s.getRemoteGateway(remoteGWName)
+			goodURL := remoteGWServer.getGatewayURL()
+			rg.Lock()
+			for u := range rg.urls {
+				if u != goodURL {
+					delete(rg.urls, u)
+				}
+			}
+			rg.Unlock()
+			nc.Close()
+		} else {
+			good = true
+		}
+	}
+	if !good {
+		t.Fatalf("Could not ensure that server connects to remote gateway %q at URL %q",
+			remoteGWName, remoteGWServer.getGatewayURL())
+	}
+}
+
 func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	// This test will have following setup:
 	//
@@ -3933,6 +3969,8 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	oa2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
 	sa2 := runGatewayServer(oa2)
 	defer sa2.Shutdown()
+
+	ensureGWConnectTo(t, sa2, "B", sb2)
 
 	checkClusterFormed(t, sa1, sa2)
 	checkClusterFormed(t, sb1, sb2)
@@ -4284,22 +4322,10 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			setAccountUserPassInOptions(oa2, "$foo", "clientA", "password")
 			setAccountUserPassInOptions(oa2, "$bar", "yyyyyyy", "password")
 			oa2.gatewaysSolicitDelay = time.Nanosecond // 0 would be default, so nano to connect asap
-			var sa2 *Server
-			sb2ID := sb2.ID()
-			for i := 0; i < 10; i++ {
-				sa2 = runGatewayServer(oa2)
-				ogc := sa2.getOutboundGatewayConnection("B")
-				if ogc != nil {
-					ogc.mu.Lock()
-					ok := ogc.opts.Name == sb2ID
-					ogc.mu.Unlock()
-					if ok {
-						break
-					}
-				}
-				sa2.Shutdown()
-			}
+			sa2 := runGatewayServer(oa2)
 			defer sa2.Shutdown()
+
+			ensureGWConnectTo(t, sa2, "B", sb2)
 
 			checkClusterFormed(t, sa1, sa2)
 			checkClusterFormed(t, sb1, sb2)

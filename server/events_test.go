@@ -347,7 +347,7 @@ func runSolicitWithCredentials(t *testing.T, opts *Options, creds string) (*Serv
 			remotes = [
 				{
 					url: nats-leaf://127.0.0.1:%d
-					credentials: "%s"
+					credentials: '%s'
 				}
 			]
 		}
@@ -1219,9 +1219,14 @@ func TestSystemAccountWithGateways(t *testing.T) {
 }
 func TestServerEventsStatsZ(t *testing.T) {
 	preStart := time.Now()
+	// Add little bit of delay to make sure that time check
+	// between pre-start and actual start does not fail.
+	time.Sleep(5 * time.Millisecond)
 	sa, optsA, sb, _, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
+	// Same between actual start and post start.
+	time.Sleep(5 * time.Millisecond)
 	postStart := time.Now()
 
 	url := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)

@@ -1334,9 +1334,9 @@ func TestConfigCheckIncludes(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error processing include files with configuration check enabled: %v", err)
 	}
-	expectedErr := errors.New(`configs/include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"` + "\n")
-	if err != nil && expectedErr != nil && err.Error() != expectedErr.Error() {
-		t.Errorf("Expected: \n%q, got\n: %q", expectedErr.Error(), err.Error())
+	expectedErr := `include_bad_conf_check_b.conf:10:19: unknown field "monitoring_port"` + "\n"
+	if err != nil && !strings.HasSuffix(err.Error(), expectedErr) {
+		t.Errorf("Expected: \n%q, got\n: %q", expectedErr, err.Error())
 	}
 }
 

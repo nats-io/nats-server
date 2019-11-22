@@ -811,6 +811,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 	// For this test, be explicit about listen spec.
 	opts.Host = "127.0.0.1"
 	opts.Port = 5242
+	opts.DisableShortFirstPing = true
 
 	f(opts)
 	opts.Cluster.NoAdvertise = true

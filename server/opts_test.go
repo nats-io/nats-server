@@ -2341,7 +2341,7 @@ func TestExpandPath(t *testing.T) {
 			{path: "/Foo/Bar", userProfile: `C:\Foo\Bar`, wantPath: "/Foo/Bar"},
 			{path: "Foo/Bar", userProfile: `C:\Foo\Bar`, wantPath: "Foo/Bar"},
 			{path: "~/Fizz", userProfile: `C:\Foo\Bar`, wantPath: `C:\Foo\Bar\Fizz`},
-			{path: `${HOMEDRIVE}${HOMEPATH}\Fizz`, userProfile: `C:\Foo\Bar`, wantPath: `C:\Foo\Bar\Fizz`},
+			{path: `${HOMEDRIVE}${HOMEPATH}\Fizz`, homeDrive: `C:`, homePath: `\Foo\Bar`, wantPath: `C:\Foo\Bar\Fizz`},
 
 			// Missing USERPROFILE.
 			{path: "~/Fizz", homeDrive: "X:", homePath: `\Foo\Bar`, wantPath: `X:\Foo\Bar\Fizz`},
