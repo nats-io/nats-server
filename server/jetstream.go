@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -96,6 +97,16 @@ const (
 	JetStreamDeleteMsgSet = "$JS.MSGSET.DELETE"
 	jsDeleteMsgSetExport  = "$JS.*.MSGSET.DELETE"
 
+	// JetStreamPurgeMsgSet is the endpoint to purge message sets.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamPurgeMsgSet = "$JS.MSGSET.PURGE"
+	jsPurgeMsgSetExport  = "$JS.*.MSGSET.PURGE"
+
+	// JetStreamDeleteMsg is the endpoint to delete messages from a message set.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamDeleteMsg = "$JS.MSGSET.MSG.DELETE"
+	jsDeleteMsgExport  = "$JS.*.MSGSET.MSG.DELETE"
+
 	// JetStreamCreateObservable is the endpoint to create observers for a message set.
 	// Will return +OK on success and -ERR on failure.
 	JetStreamCreateObservable = "$JS.OBSERVABLE.CREATE"
@@ -148,6 +159,8 @@ var allJsExports = []string{
 	jsMsgSetsExport,
 	jsMsgSetInfoExport,
 	jsDeleteMsgSetExport,
+	jsPurgeMsgSetExport,
+	jsDeleteMsgExport,
 	jsCreateObservableExport,
 	jsObservablesExport,
 	jsObservableInfoExport,
@@ -239,6 +252,12 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(jsDeleteMsgSetExport, s.jsMsgSetDeleteRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsPurgeMsgSetExport, s.jsMsgSetPurgeRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(jsDeleteMsgExport, s.jsMsgDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(jsCreateObservableExport, s.jsCreateObservableRequest); err != nil {
@@ -903,6 +922,60 @@ func (s *Server) jsMsgSetDeleteRequest(sub *subscription, c *client, subject, re
 		response = fmt.Sprintf("%s %v", ErrPrefix, err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request to delete a message.
+// This expects a message set name and store sequence number as the msg body.
+func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	args := strings.Split(string(msg), " ")
+	if len(args) != 2 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	name := args[0]
+	seq, _ := strconv.Atoi(args[1])
+
+	mset, err := c.acc.LookupMsgSet(name)
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+	var response = OK
+	if !mset.EraseMsg(uint64(seq)) {
+		response = fmt.Sprintf("%s sequence [%d] not found", ErrPrefix, seq)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request to purge a message set.
+// This expects a message set name as the msg body.
+func (s *Server) jsMsgSetPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) == 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	mset, err := c.acc.LookupMsgSet(string(msg))
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		return
+	}
+
+	mset.Purge()
+	s.sendInternalAccountMsg(c.acc, reply, OK)
 }
 
 // Request to create an observable.
