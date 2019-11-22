@@ -65,6 +65,11 @@ func (s *Server) ConfigureLogger() {
 
 	if opts.LogFile != "" {
 		log = srvlog.NewFileLogger(opts.LogFile, opts.Logtime, opts.Debug, opts.Trace, true)
+		if opts.LogSizeLimit > 0 {
+			if l, ok := log.(*srvlog.Logger); ok {
+				l.SetSizeLimit(opts.LogSizeLimit)
+			}
+		}
 	} else if opts.RemoteSyslog != "" {
 		log = srvlog.NewRemoteSysLogger(opts.RemoteSyslog, opts.Debug, opts.Trace)
 	} else if syslog {
