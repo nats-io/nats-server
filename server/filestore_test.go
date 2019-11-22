@@ -602,7 +602,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if !bytes.Equal(msg, smsg) {
 		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
 	}
-	sm := fs.msgForSeq(1)
+	sm, _ := fs.msgForSeq(1)
 	if !fs.EraseMsg(1) {
 		t.Fatalf("Expected erase msg to return success")
 	}
