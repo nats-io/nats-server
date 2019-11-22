@@ -207,10 +207,15 @@ func (ms *memStore) deleteFirstMsg() bool {
 func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
+	last := ms.stats.LastSeq
 	ms.mu.RUnlock()
 
 	if !ok || sm == nil {
-		return "", nil, 0, ErrStoreMsgNotFound
+		var err = ErrStoreEOF
+		if seq <= last {
+			err = ErrStoreMsgNotFound
+		}
+		return "", nil, 0, err
 	}
 	return sm.subj, sm.msg, sm.ts, nil
 }

@@ -607,12 +607,13 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 			// We have the msg here.
 			return subj, msg, seq, dcount, nil
 		}
-		// We got an error here.
-		// If this was a redelivery the message may have expired so move on to next one.
-		// Only return if first delivery.
-		if dcount == 1 {
+		// We got an error here. If this is an EOF we will return, otherwise
+		// we can continue looking.
+		if err == ErrStoreEOF {
 			return "", nil, 0, 0, err
 		}
+		// Skip since its probably deleted or expired.
+		o.sseq++
 	}
 }
 
@@ -769,7 +770,7 @@ func (o *Observable) loopAndDeliverMsgs(s *Server, a *Account) {
 
 		// On error either wait or return.
 		if err != nil {
-			if err == ErrStoreMsgNotFound {
+			if err == ErrStoreMsgNotFound || err == ErrStoreEOF {
 				goto waitForMsgs
 			} else {
 				o.mu.Unlock()
@@ -983,9 +984,15 @@ func (o *Observable) checkPending() {
 	}
 }
 
-// SeqFromReply will extract a sequence number from a reply ack subject.
+// SeqFromReply will extract a sequence number from a reply subject.
 func (o *Observable) SeqFromReply(reply string) uint64 {
 	_, seq, _ := o.ReplyInfo(reply)
+	return seq
+}
+
+// SetSeqFromReply will extract the message set sequence from the reply subject.
+func (o *Observable) SetSeqFromReply(reply string) uint64 {
+	seq, _, _ := o.ReplyInfo(reply)
 	return seq
 }
 
@@ -1205,7 +1212,6 @@ func (o *Observable) SetActiveCheckParams(achk time.Duration, thresh int) error 
 
 // RequestNextMsgSubject returns the subject to request the next message when in pull or worker mode.
 // Returns empty otherwise.1
-
 func (o *Observable) RequestNextMsgSubject() string {
 	return o.nextMsgSubj
 }
