@@ -1230,11 +1230,11 @@ func removePassFromTrace(arg []byte) []byte {
 // On Windows VM where I (IK) run tests, time.Since() will return 0
 // (I suspect some time granularity issues). So return at minimum 1ns.
 func computeRTT(start time.Time) time.Duration {
-	diff := time.Since(start)
-	if diff == 0 {
-		diff = time.Nanosecond
+	rtt := time.Since(start)
+	if rtt <= 0 {
+		rtt = time.Nanosecond
 	}
-	return diff
+	return rtt
 }
 
 func (c *client) processConnect(arg []byte) error {
