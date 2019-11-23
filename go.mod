@@ -1,6 +1,7 @@
 module github.com/nats-io/nats-server/v2
 
 require (
+	github.com/dustin/go-humanize v1.0.0
 	github.com/golang/protobuf v1.3.2 // indirect
 	github.com/minio/highwayhash v1.0.0
 	github.com/nats-io/jwt v0.3.0

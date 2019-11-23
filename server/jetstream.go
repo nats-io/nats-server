@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dustin/go-humanize"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
@@ -226,7 +227,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			return fmt.Errorf("storage directory is not writable")
 		}
 		os.Remove(tmpfile.Name())
-		// TODO(dlc) - Recover state
 	}
 
 	// JetStream is an internal service so we need to make sure we have a system account.
@@ -428,14 +428,14 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 	}
 
-	s.Debugf("Enabled JetStream for %q", a.Name)
+	s.Debugf("Enabled JetStream for account %q", a.Name)
 	s.Debugf("  Max Memory:      %s", FriendlyBytes(limits.MaxMemory))
 	s.Debugf("  Max Storage:     %s", FriendlyBytes(limits.MaxStore))
 
 	// Restore any state here.
 	fis, _ := ioutil.ReadDir(jsa.storeDir)
 	if len(fis) > 0 {
-		s.Debugf("Recovering JetStream for %q", a.Name)
+		s.Debugf("Recovering state for account %q", a.Name)
 	}
 	for _, fi := range fis {
 		metafile := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFile)
@@ -463,6 +463,9 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		if err != nil {
 			s.Debugf("Error recreating MsgSet: %v", err)
 		}
+
+		stats := mset.Stats()
+		s.Debugf("  Restored %s messages for message set %q", humanize.Comma(int64(stats.Msgs)), fi.Name())
 
 		// Now do Observables.
 		odir := path.Join(jsa.storeDir, fi.Name(), obsDir)
