@@ -2524,8 +2524,17 @@ func (s *Server) gatewayHandleSubjectNoInterest(c *client, acc *Account, accName
 	s.gateway.pasi.Lock()
 	defer s.gateway.pasi.Unlock()
 
+	// If there is no subscription for this account, we would normally
+	// send an A-, however, if this account has the internal subscription
+	// for service reply, send a specific RS- for the subject instead.
+	hasSubs := acc.sl.Count() > 0
+	if !hasSubs {
+		acc.mu.RLock()
+		hasSubs = acc.siReply != nil
+		acc.mu.RUnlock()
+	}
 	// If there is at least a subscription, possibly send RS-
-	if acc.sl.Count() != 0 {
+	if hasSubs {
 		sendProto := false
 		c.mu.Lock()
 		// Send an RS- protocol if not already done and only if

@@ -5615,3 +5615,84 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 	// Now check again.
 	check(t, 0, 0, true)
 }
+
+func TestGatewayNoAccountUnsubWhenServiceReplyInUse(t *testing.T) {
+	oa := testDefaultOptionsForGateway("A")
+	setAccountUserPassInOptions(oa, "$foo", "clientFoo", "password")
+	setAccountUserPassInOptions(oa, "$bar", "clientBar", "password")
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	ob := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	setAccountUserPassInOptions(ob, "$foo", "clientFoo", "password")
+	setAccountUserPassInOptions(ob, "$bar", "clientBar", "password")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Get accounts
+	fooA, _ := sa.LookupAccount("$foo")
+	barA, _ := sa.LookupAccount("$bar")
+	fooB, _ := sb.LookupAccount("$foo")
+	barB, _ := sb.LookupAccount("$bar")
+
+	// Add in the service export for the requests. Make it public.
+	fooA.AddServiceExport("test.request", nil)
+	fooB.AddServiceExport("test.request", nil)
+
+	// Add import abilities to server B's bar account from foo.
+	if err := barB.AddServiceImport(fooB, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	// Same on A.
+	if err := barA.AddServiceImport(fooA, "foo.request", "test.request"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// clientA will be connected to srvA and be the service endpoint and responder.
+	aURL := fmt.Sprintf("nats://clientFoo:password@127.0.0.1:%d", oa.Port)
+	clientA := natsConnect(t, aURL)
+	defer clientA.Close()
+
+	natsSub(t, clientA, "test.request", func(m *nats.Msg) {
+		m.Respond([]byte("reply"))
+	})
+	natsFlush(t, clientA)
+
+	// Now setup client B on srvB who will send the requests.
+	bURL := fmt.Sprintf("nats://clientBar:password@127.0.0.1:%d", ob.Port)
+	clientB := natsConnect(t, bURL)
+	defer clientB.Close()
+
+	if _, err := clientB.Request("foo.request", []byte("request"), time.Second); err != nil {
+		t.Fatalf("Did not get the reply: %v", err)
+	}
+
+	quitCh := make(chan bool, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case <-quitCh:
+				return
+			default:
+				clientA.Publish("any.subject", []byte("any message"))
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		if _, err := clientB.Request("foo.request", []byte("request"), time.Second); err != nil {
+			t.Fatalf("Did not get the reply: %v", err)
+		}
+	}
+	close(quitCh)
+	wg.Wait()
+}
