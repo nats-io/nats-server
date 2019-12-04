@@ -390,7 +390,7 @@ func configureSystemAccount(o *Options, m map[string]interface{}) error {
 		tk, v := unwrapValue(v)
 		sa, ok := v.(string)
 		if !ok {
-			return &configErr{tk, fmt.Sprintf("system account name must be a string")}
+			return &configErr{tk, "system account name must be a string"}
 		}
 		o.SystemAccount = sa
 		return nil
@@ -485,7 +485,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.Password = auth.pass
 			o.Authorization = auth.token
 			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				err := &configErr{tk, fmt.Sprintf("Cannot have a user/pass and token")}
+				err := &configErr{tk, "Cannot have a user/pass and token"}
 				errors = append(errors, err)
 				continue
 			}
@@ -493,12 +493,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			// Check for multiple users defined
 			if auth.users != nil {
 				if auth.user != "" {
-					err := &configErr{tk, fmt.Sprintf("Can not have a single user/pass and a users array")}
+					err := &configErr{tk, "Can not have a single user/pass and a users array"}
 					errors = append(errors, err)
 					continue
 				}
 				if auth.token != "" {
-					err := &configErr{tk, fmt.Sprintf("Can not have a token and a users array")}
+					err := &configErr{tk, "Can not have a token and a users array"}
 					errors = append(errors, err)
 					continue
 				}
@@ -692,13 +692,13 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 				}
 			}
 			if o.AccountResolver == nil {
-				err := &configErr{tk, fmt.Sprintf("error parsing account resolver, should be MEM or URL(\"url\")")}
+				err := &configErr{tk, "error parsing account resolver, should be MEM or URL(\"url\")"}
 				errors = append(errors, err)
 			}
 		case "resolver_preload":
 			mp, ok := v.(map[string]interface{})
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("preload should be a map of account_public_key:account_jwt")}
+				err := &configErr{tk, "preload should be a map of account_public_key:account_jwt"}
 				errors = append(errors, err)
 				continue
 			}
@@ -706,14 +706,14 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			for key, val := range mp {
 				tk, val = unwrapValue(val)
 				if jwtstr, ok := val.(string); !ok {
-					err := &configErr{tk, fmt.Sprintf("preload map value should be a string JWT")}
+					err := &configErr{tk, "preload map value should be a string JWT"}
 					errors = append(errors, err)
 					continue
 				} else {
 					// Make sure this is a valid account JWT, that is a config error.
 					// We will warn of expirations, etc later.
 					if _, err := jwt.DecodeAccountClaims(jwtstr); err != nil {
-						err := &configErr{tk, fmt.Sprintf("invalid account JWT")}
+						err := &configErr{tk, "invalid account JWT"}
 						errors = append(errors, err)
 						continue
 					}
@@ -849,7 +849,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				continue
 			}
 			if auth.users != nil {
-				err := &configErr{tk, fmt.Sprintf("Cluster authorization does not allow multiple users")}
+				err := &configErr{tk, "Cluster authorization does not allow multiple users"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -904,7 +904,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			}
 			// Dynamic response permissions do not make sense here.
 			if perms.Response != nil {
-				err := &configErr{tk, fmt.Sprintf("Cluster permissions do not support dynamic responses")}
+				err := &configErr{tk, "Cluster permissions do not support dynamic responses"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1978,7 +1978,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 		switch strings.ToLower(mk) {
 		case "stream":
 			if curService != nil {
-				err := &configErr{tk, fmt.Sprintf("Detected stream but already saw a service")}
+				err := &configErr{tk, "Detected stream but already saw a service"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1995,7 +1995,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				continue
 			}
 			if accountName == "" || subject == "" {
-				err := &configErr{tk, fmt.Sprintf("Expect an account name and a subject")}
+				err := &configErr{tk, "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2005,7 +2005,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			}
 		case "service":
 			if curStream != nil {
-				err := &configErr{tk, fmt.Sprintf("Detected service but already saw a stream")}
+				err := &configErr{tk, "Detected service but already saw a stream"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2022,7 +2022,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				continue
 			}
 			if accountName == "" || subject == "" {
-				err := &configErr{tk, fmt.Sprintf("Expect an account name and a subject")}
+				err := &configErr{tk, "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2198,15 +2198,15 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 
 		// Check to make sure we have at least an nkey or username <password> defined.
 		if nkey.Nkey == "" && user.Username == "" {
-			return nil, nil, &configErr{tk, fmt.Sprintf("User entry requires a user")}
+			return nil, nil, &configErr{tk, "User entry requires a user"}
 		} else if nkey.Nkey != "" {
 			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
-				return nil, nil, &configErr{tk, fmt.Sprintf("Not a valid public nkey for a user")}
+				return nil, nil, &configErr{tk, "Not a valid public nkey for a user"}
 			}
 			// If we have user or password defined here that is an error.
 			if user.Username != "" || user.Password != "" {
-				return nil, nil, &configErr{tk, fmt.Sprintf("Nkey users do not take usernames or passwords")}
+				return nil, nil, &configErr{tk, "Nkey users do not take usernames or passwords"}
 			}
 			keys = append(keys, nkey)
 		} else {
@@ -2309,7 +2309,7 @@ func parseSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
 
 			subject, ok := i.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("Subject in permissions array cannot be cast to string")}
+				return nil, &configErr{tk, "Subject in permissions array cannot be cast to string"}
 			}
 			subjects = append(subjects, subject)
 		}
@@ -2474,44 +2474,44 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 		case "cert_file":
 			certFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'cert_file' to be filename")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'cert_file' to be filename"}
 			}
 			tc.CertFile = certFile
 		case "key_file":
 			keyFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'key_file' to be filename")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'key_file' to be filename"}
 			}
 			tc.KeyFile = keyFile
 		case "ca_file":
 			caFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'ca_file' to be filename")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'ca_file' to be filename"}
 			}
 			tc.CaFile = caFile
 		case "insecure":
 			insecure, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'insecure' to be a boolean")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'insecure' to be a boolean"}
 			}
 			tc.Insecure = insecure
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'verify' to be a boolean")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean"}
 			}
 			tc.Verify = verify
 		case "verify_and_map":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'verify_and_map' to be a boolean")}
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify_and_map' to be a boolean"}
 			}
 			tc.Verify = verify
 			tc.Map = verify
 		case "cipher_suites":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'cipher_suites' cannot be empty")}
+				return nil, &configErr{tk, "error parsing tls config, 'cipher_suites' cannot be empty"}
 			}
 			tc.Ciphers = make([]uint16, 0, len(ra))
 			for _, r := range ra {
@@ -2525,7 +2525,7 @@ func parseTLS(v interface{}) (*TLSConfigOpts, error) {
 		case "curve_preferences":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'curve_preferences' cannot be empty")}
+				return nil, &configErr{tk, "error parsing tls config, 'curve_preferences' cannot be empty"}
 			}
 			tc.CurvePreferences = make([]tls.CurveID, 0, len(ra))
 			for _, r := range ra {

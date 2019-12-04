@@ -230,7 +230,7 @@ func TestClosedMaxPayload(t *testing.T) {
 	defer conn.Close()
 
 	// This should trigger it.
-	pub := fmt.Sprintf("PUB foo.bar 1024\r\n")
+	pub := "PUB foo.bar 1024\r\n"
 	conn.Write([]byte(pub))
 
 	checkClosedConns(t, s, 1, 2*time.Second)
