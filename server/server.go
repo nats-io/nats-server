@@ -890,7 +890,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	}
 	acc.mu.Unlock()
 
-	now := time.Now()
 	s.sys = &internal{
 		account: acc,
 		client:  s.createInternalSystemClient(),
