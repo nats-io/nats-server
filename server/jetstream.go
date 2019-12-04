@@ -120,8 +120,8 @@ const (
 
 	// JsObservableInfo is for obtaining general information about an observable.
 	// Will return JSON response.
-	JetStreamObservableInfo = "$JS.OBS.INFO"
-	jsObservableInfoExport  = "$JS.*.OBS.INFO"
+	JetStreamObservableInfo = "$JS.OBSERVABLE.INFO"
+	jsObservableInfoExport  = "$JS.*.OBSERVABLE.INFO"
 
 	// JetStreamDeleteObservable is the endpoint to delete observables.
 	// Will return +OK on success and -ERR on failure.
