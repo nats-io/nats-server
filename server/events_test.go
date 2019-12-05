@@ -385,7 +385,7 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 
 	acc2, akp2 := createAccount(s)
 
-	// Be explicit to only receive the event for global account.
+	// Be explicit to only receive the event for acc2 account.
 	sub, _ := ncs.SubscribeSync(fmt.Sprintf("$SYS.ACCOUNT.%s.DISCONNECT", acc2.Name))
 	defer sub.Unsubscribe()
 	ncs.Flush()
@@ -408,13 +408,19 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 
 	checkLeafNodeConnected(t, s)
 
+	// Compute the expected number of subs on "sl" based on number
+	// of existing subs before creating the sub on "s".
+	expected := int(sl.NumSubscriptions() + 1)
+
 	nc, err := nats.Connect(url, createUserCreds(t, s, akp2), nats.Name("TEST LEAFNODE EVENTS"))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer nc.Close()
-	nc.SubscribeSync("foo")
-	nc.Flush()
+	fooSub := natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
+
+	checkExpectedSubs(t, expected, sl)
 
 	surl := fmt.Sprintf("nats://%s:%d", slopts.Host, slopts.Port)
 	nc2, err := nats.Connect(surl, nats.Name("TEST LEAFNODE EVENTS"))
@@ -423,15 +429,21 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 	}
 	defer nc2.Close()
 
+	// Compute the expected number of subs on "s" based on number
+	// of existing subs before creating the sub on "sl".
+	expected = int(s.NumSubscriptions() + 1)
+
 	m := []byte("HELLO WORLD")
 
 	// Now generate some traffic
-	nc2.SubscribeSync("*")
+	starSub := natsSubSync(t, nc2, "*")
 	for i := 0; i < 10; i++ {
 		nc2.Publish("foo", m)
 		nc2.Publish("bar", m)
 	}
-	nc2.Flush()
+	natsFlush(t, nc2)
+
+	checkExpectedSubs(t, expected, s)
 
 	// Now send some from the cluster side too.
 	for i := 0; i < 10; i++ {
@@ -439,6 +451,18 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 		nc.Publish("bar", m)
 	}
 	nc.Flush()
+
+	// Make sure all messages are received
+	for i := 0; i < 20; i++ {
+		if _, err := fooSub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Did not get message: %v", err)
+		}
+	}
+	for i := 0; i < 40; i++ {
+		if _, err := starSub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Did not get message: %v", err)
+		}
+	}
 
 	// Now shutdown the leafnode server since this is where the event tracking should
 	// happen. Right now we do not track local clients to the leafnode server that
@@ -462,10 +486,10 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 		t.Fatalf("Expected 110 bytes sent, got %d", dem.Sent.Bytes)
 	}
 	if dem.Received.Msgs != 20 {
-		t.Fatalf("Expected 20 msgs received, got %d", dem.Sent.Msgs)
+		t.Fatalf("Expected 20 msgs received, got %d", dem.Received.Msgs)
 	}
 	if dem.Received.Bytes != 220 {
-		t.Fatalf("Expected 220 bytes sent, got %d", dem.Sent.Bytes)
+		t.Fatalf("Expected 220 bytes sent, got %d", dem.Received.Bytes)
 	}
 }
 
@@ -874,14 +898,16 @@ func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
 	urlB := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
 
 	for i := 0; i < 5; i++ {
-		_, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
+		nc, err := nats.Connect(urlA, nats.NoReconnect(), createUserCreds(t, sa, akp))
 		if err != nil {
 			t.Fatalf("Expected to connect, got %v", err)
 		}
-		_, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
+		defer nc.Close()
+		nc, err = nats.Connect(urlB, nats.NoReconnect(), createUserCreds(t, sb, akp))
 		if err != nil {
 			t.Fatalf("Expected to connect, got %v", err)
 		}
+		defer nc.Close()
 	}
 
 	// We are at capacity so both of these should fail.
@@ -897,10 +923,11 @@ func TestSystemAccountConnectionLimitsServerShutdownGraceful(t *testing.T) {
 
 	// Now we should be able to create more on A now.
 	for i := 0; i < 5; i++ {
-		_, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
+		nc, err := nats.Connect(urlA, createUserCreds(t, sa, akp))
 		if err != nil {
 			t.Fatalf("Expected to connect on %d, got %v", i, err)
 		}
+		defer nc.Close()
 	}
 }
 

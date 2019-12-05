@@ -3244,8 +3244,8 @@ func (c *client) clearConnection(reason ClosedState) {
 		c.out.stc = nil
 	}
 
-	// Flush any pending (do this for clients and leaf only)
-	if c.kind == CLIENT || c.kind == LEAF {
+	// Flush any pending (do this for clients, leaf and system only)
+	if c.kind == CLIENT || c.kind == LEAF || c.kind == SYSTEM {
 		c.flushOutbound()
 	}
 
