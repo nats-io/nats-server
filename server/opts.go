@@ -177,6 +177,7 @@ type Options struct {
 	Gateway               GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
 	JetStream             bool          `json:"jetstream"`
+	StoreDir              string        `json:"-"`
 	ProfPort              int           `json:"-"`
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
@@ -2968,6 +2969,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
 	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
 	fs.BoolVar(&opts.JetStream, "jetstream", false, "Enable JetStream.")
+	fs.StringVar(&opts.StoreDir, "sd", "", "Storage directory.")
+	fs.StringVar(&opts.StoreDir, "store_dir", "", "Storage directory.")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
