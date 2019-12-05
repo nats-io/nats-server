@@ -270,9 +270,14 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			// Add in NL
 			b = append(b, _CRLF_...)
 			c.processInboundClientMsg(b)
-			c.flushClients(0) // Never spend time in place.
 			// See if we are doing graceful shutdown.
-			if pm.last {
+			if !pm.last {
+				c.flushClients(0) // Never spend time in place.
+			} else {
+				// For the Shutdown event, we need to send in place otherwise
+				// there is a chance that the process will exit before the
+				// writeLoop has a chance to send it.
+				c.flushClients(time.Second)
 				return
 			}
 		case <-s.quitCh:
