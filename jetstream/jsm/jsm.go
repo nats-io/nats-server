@@ -47,6 +47,7 @@ Available Commands:
   ls-obs   [mset]        # List all observables for the message set
   rm-obs   [mset] [obs]  # Delete an observable to a message set
   info-obs [mset] [obs]  # Get information about an observable
+  next     [mset] [obs]  # Get the next message for a pull based observable
 `
 
 func usage() {
@@ -94,7 +95,11 @@ func main() {
 
 	switch strings.ToLower(cmd) {
 	case "info":
-		if len(args) > 1 {
+		if len(args) == 3 {
+			req := []byte(args[1] + " " + args[2])
+			resp, _ := nc.Request(api.JetStreamObservableInfo, req, time.Second)
+			log.Printf("Received response of %s", resp.Data)
+		} else if len(args) > 1 {
 			getMsgSetInfo(nc, args[1])
 		} else {
 			getAccountInfo(nc)
@@ -228,7 +233,7 @@ func main() {
 		scanner.Scan()
 		ans := scanner.Text()
 		if len(ans) > 0 {
-			cfg.DeliverAll, _ = strconv.ParseBool(scanner.Text())
+			cfg.DeliverAll, _ = strconv.ParseBool(ans)
 		}
 		if !cfg.DeliverAll {
 			fmt.Print("Deliver Last? (y|n): ")
@@ -240,7 +245,7 @@ func main() {
 			scanner.Scan()
 			ans := scanner.Text()
 			if len(ans) > 0 {
-				timeDelta, err := time.ParseDuration(scanner.Text())
+				timeDelta, err := time.ParseDuration(ans)
 				if err != nil {
 					log.Fatalf("Error parsing time duration: %v", err)
 				}
@@ -329,6 +334,29 @@ func main() {
 		resp, _ := nc.Request(api.JetStreamObservableInfo, req, time.Second)
 		log.Printf("Received response of %s", resp.Data)
 
+	case "next", "next-msg":
+		if len(args) < 3 {
+			showUsageAndExit(1)
+		}
+		// Create the pull subject. Default to 1. We can add in batching later.
+		subject := api.JetStreamRequestNextPre + "." + args[1] + "." + args[2]
+		resp, err := nc.Request(subject, nil, time.Second)
+		if err != nil {
+			log.Fatalf("Error requesting next from %q: %v", subject, err)
+		}
+		log.Printf("Received response of %s", resp.Data)
+		log.Printf("Reply: %s", resp.Reply)
+		scanner := bufio.NewScanner(os.Stdin)
+		shouldAck := true
+		fmt.Printf("Ack? (Y|n)")
+		scanner.Scan()
+		ans := scanner.Text()
+		if len(ans) > 0 {
+			shouldAck, _ = strconv.ParseBool(ans)
+		}
+		if shouldAck {
+			resp.Respond(api.AckAck)
+		}
 	default:
 		showUsageAndExit(1)
 	}
@@ -342,8 +370,6 @@ func getMsgSetInfo(nc *nats.Conn, name string) {
 	if strings.HasPrefix(string(resp.Data), api.ErrPrefix) {
 		log.Fatalf("%q", resp.Data)
 	}
-	log.Printf("Received response of %s", resp.Data)
-
 	var mstats api.MsgSetStats
 	if err = json.Unmarshal(resp.Data, &mstats); err != nil {
 		log.Fatalf("Unexpected error: %v", err)
@@ -445,7 +471,7 @@ func processLimits(limits string) (int64, int64, time.Duration) {
 }
 
 func processSubjects(subjects string) []string {
-	if strings.ContainsAny(subjects, " \t") {
+	if !strings.ContainsAny(subjects, " \t") {
 		return []string{strings.TrimSpace(subjects)}
 	}
 	var sa []string
