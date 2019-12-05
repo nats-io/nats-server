@@ -31,7 +31,7 @@ import (
 
 var usageStr = `
 Usage:
-  jsm [-s server] [-creds file] [command]
+  jsm [-s server] [-creds file] [-tlscert file] [-tlskey file] [-tlscacert file] [command]
 
 Available Commands:
   info                   # General account info
@@ -63,6 +63,9 @@ func main() {
 	var url = flag.String("s", nats.DefaultURL, "The NATS System URL")
 	var userCreds = flag.String("creds", "", "User Credentials File")
 	var showHelp = flag.Bool("h", false, "Show help message")
+	var tlsCert = flag.String("tlscert", "", "Client certificate file")
+	var tlsKey = flag.String("tlskey", "", "Client private key file")
+	var tlsCA = flag.String("tlscacert", "", "Client certificate CA for verification")
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -83,6 +86,14 @@ func main() {
 	// Use UserCredentials
 	if *userCreds != "" {
 		opts = append(opts, nats.UserCredentials(*userCreds))
+	}
+
+	if *tlsCert != "" && *tlsKey != "" {
+		opts = append(opts, nats.ClientCert(*tlsCert, *tlsKey))
+	}
+
+	if *tlsCA != "" {
+		opts = append(opts, nats.RootCAs(*tlsCA))
 	}
 
 	// Connect to NATS
