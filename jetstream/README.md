@@ -339,7 +339,7 @@ Listening on [d.p2]
 [#5] Received on [5]: 'hello'
 ```
 
-Creating the interest triggers delivery of the messages. Something to note here that is new with JetStream, the subscription is just a regular subscription on `d.p2` however the messages are delivered with the original subject. Also note that this observable was not affected bu the other observable we created early. Running this command will show now messages since we create the oversable above with the ack none policy, which means once the message is delivered it is considered ack'd. Use `nats-pub` to send more messages, remember the message set's interest will match any single token subject. So if in a different tab or window you do the following you will see it immediately delivered.
+Creating the interest triggers delivery of the messages. Something to note here that is new with JetStream, the subscription is just a regular subscription on `d.p2` however the messages are delivered with the original subject. Also note that this observable was not affected by the other observable we created early. Running the `nats-sub` command again will show no messages since we created the oversable above with the ack none policy. This means once the message is delivered it is considered ack'd. Use `nats-pub` to send more messages. Remember the message set's interest will match any single token subject. So if in a different tab or window you do the following you will see it immediately delivered to the subscriber.
 
 ```bash
 > nats-pub foo "hello jetsream"
@@ -348,6 +348,33 @@ Creating the interest triggers delivery of the messages. Something to note here 
 > nats-sub d.p2
 Listening on [d.p2]
 [#1] Received on [foo]: 'hello world'
+```
+
+Now lets create another observable, very similar to the one above, but this time ask the system to replay the messages at the same rate they were originally published.
+
+```bash
+> jsm add-obs
+Enter the following information
+Message Set Name: wc
+Durable Name: p3
+Push or Pull: push
+Delivery Subject: d.p3
+Deliver All? (Y|n):
+AckPolicy (None|all|explicit):
+Replay Policy (Instant|original): original
+Received response of "+OK"
+```
+
+Now when we create our subscriber, the messages will be delivered at the same interval they were received.
+
+```bash
+> nats-sub -t d.p3
+Listening on [d.p3]
+2019/12/05 14:25:23 [#1] Received on [1]: 'hello'
+2019/12/05 14:25:27 [#2] Received on [2]: 'hello'
+2019/12/05 14:25:29 [#3] Received on [3]: 'hello'
+2019/12/05 14:25:31 [#4] Received on [4]: 'hello'
+2019/12/05 14:25:34 [#5] Received on [4]: 'hello'
 ```
 
 ## Next Steps
