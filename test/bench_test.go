@@ -202,7 +202,7 @@ func Benchmark_____________PubSub(b *testing.B) {
 	doDefaultConnect(b, c)
 	sendProto(b, c, "SUB foo 1\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
@@ -239,7 +239,7 @@ func Benchmark_____PubSubTwoConns(b *testing.B) {
 	sendProto(b, c2, "SUB foo 1\r\n")
 	flushConnection(b, c2)
 
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
@@ -305,7 +305,7 @@ func Benchmark___PubSubAccsImport(b *testing.B) {
 	go drainConnection(b, sub, ch, expected)
 
 	bw := bufio.NewWriterSize(pub, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -368,7 +368,7 @@ func Benchmark_____PubTwoQueueSub(b *testing.B) {
 	sendProto(b, c, "SUB foo group1 1\r\n")
 	sendProto(b, c, "SUB foo group1 2\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
@@ -403,7 +403,7 @@ func Benchmark____PubFourQueueSub(b *testing.B) {
 	sendProto(b, c, "SUB foo group1 3\r\n")
 	sendProto(b, c, "SUB foo group1 4\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
@@ -442,7 +442,7 @@ func Benchmark___PubEightQueueSub(b *testing.B) {
 	sendProto(b, c, "SUB foo group1 7\r\n")
 	sendProto(b, c, "SUB foo group1 8\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
@@ -481,7 +481,7 @@ func Benchmark__DenyMsgNoWCPubSub(b *testing.B) {
 
 	sendProto(b, c, "SUB foo 1\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
@@ -519,7 +519,7 @@ func Benchmark_DenyMsgYesWCPubSub(b *testing.B) {
 
 	sendProto(b, c, "SUB * 1\r\n")
 	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-	sendOp := []byte(fmt.Sprintf("PUB foo 2\r\nok\r\n"))
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
 	ch := make(chan bool)
 	expected := len("MSG foo 1 2\r\nok\r\n") * b.N
 	go drainConnection(b, c, ch, expected)
