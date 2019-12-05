@@ -113,7 +113,7 @@ const (
 	JetStreamCreateObservable = "$JS.OBSERVABLE.CREATE"
 	jsCreateObservableExport  = "$JS.*.OBSERVABLE.CREATE"
 
-	// JetStreamMsgSets is the endpoint to list all message sets for this account.
+	// JetStreamObservables is the endpoint to list all observables for the message set.
 	// Will return json list of string on success and -ERR on failure.
 	JetStreamObservables = "$JS.OBSERVABLES"
 	jsObservablesExport  = "$JS.*.OBSERVABLES"
@@ -200,9 +200,13 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return fmt.Errorf("jetstream already enabled")
 	}
 	s.Noticef("Starting JetStream")
-	if config == nil {
-		s.Debugf("JetStream creating dynamic configuration - 75%% system memory, %s disk", FriendlyBytes(JetStreamMaxStoreDefault))
-		config = s.dynJetStreamConfig()
+	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
+		var storeDir string
+		s.Debugf("JetStream creating dynamic configuration - 75%% of system memory, %s disk", FriendlyBytes(JetStreamMaxStoreDefault))
+		if config != nil {
+			storeDir = config.StoreDir
+		}
+		config = s.dynJetStreamConfig(storeDir)
 	}
 	// Copy, don't change callers.
 	cfg := *config
@@ -1122,9 +1126,13 @@ const (
 )
 
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
-func (s *Server) dynJetStreamConfig() *JetStreamConfig {
+func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
 	jsc := &JetStreamConfig{}
-	jsc.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+	if storeDir != "" {
+		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
+	} else {
+		jsc.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+	}
 	jsc.MaxStore = JetStreamMaxStoreDefault
 	// Estimate to 75% of total memory if we can determine system memory.
 	if sysMem := sysmem.Memory(); sysMem > 0 {
