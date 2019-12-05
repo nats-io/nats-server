@@ -49,6 +49,7 @@ Logging Options:
 
 JetStream Options:
     -js, --jetstream                 Enable JetStream functionality.
+    -sd, --store_dir <dir>           Set the storage directory.
 
 Authorization Options:
         --user <user>                User required for connections
