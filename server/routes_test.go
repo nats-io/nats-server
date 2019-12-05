@@ -14,6 +14,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/url"
@@ -1171,4 +1172,90 @@ func TestRouteRTT(t *testing.T) {
 	checkClusterFormed(t, sa, sb)
 	checkRTT(t, sa)
 	checkRTT(t, sb)
+}
+
+func TestRouteCloseTLSConnection(t *testing.T) {
+	opts := DefaultOptions()
+	opts.DisableShortFirstPing = true
+	opts.Cluster.Host = "127.0.0.1"
+	opts.Cluster.Port = -1
+	opts.Cluster.TLSTimeout = 100
+	tc := &TLSConfigOpts{
+		CertFile: "./configs/certs/server.pem",
+		KeyFile:  "./configs/certs/key.pem",
+		Insecure: true,
+	}
+	tlsConf, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	opts.Cluster.TLSConfig = tlsConf
+	opts.NoLog = true
+	opts.NoSigs = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on dial: %v", err)
+	}
+	defer conn.Close()
+
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+	defer tlsConn.Close()
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("Unexpected error during handshake: %v", err)
+	}
+	connectOp := []byte("CONNECT {\"name\":\"route\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	if _, err := tlsConn.Write(connectOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	infoOp := []byte("INFO {\"server_id\":\"route\",\"tls_required\":true}\r\n")
+	if _, err := tlsConn.Write(infoOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	if _, err := tlsConn.Write([]byte("PING\r\n")); err != nil {
+		t.Fatalf("Unexpected error writing PING: %v", err)
+	}
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if s.NumRoutes() != 1 {
+			return fmt.Errorf("No route registered yet")
+		}
+		return nil
+	})
+
+	// Get route connection
+	var route *client
+	s.mu.Lock()
+	for _, r := range s.routes {
+		route = r
+		break
+	}
+	s.mu.Unlock()
+	// Fill the buffer. We want to timeout on write so that nc.Close()
+	// would block due to a write that cannot complete.
+	buf := make([]byte, 64*1024)
+	done := false
+	for !done {
+		route.nc.SetWriteDeadline(time.Now().Add(time.Second))
+		if _, err := route.nc.Write(buf); err != nil {
+			done = true
+		}
+		route.nc.SetWriteDeadline(time.Time{})
+	}
+	ch := make(chan bool)
+	go func() {
+		select {
+		case <-ch:
+			return
+		case <-time.After(3 * time.Second):
+			fmt.Println("!!!! closeConnection is blocked, test will hang !!!")
+			return
+		}
+	}()
+	// Close the route
+	route.closeConnection(SlowConsumerWriteDeadline)
+	ch <- true
 }

@@ -3244,8 +3244,10 @@ func (c *client) clearConnection(reason ClosedState) {
 		c.out.stc = nil
 	}
 
-	// Flush any pending.
-	c.flushOutbound()
+	// Flush any pending (do this for clients and leaf only)
+	if c.kind == CLIENT || c.kind == LEAF {
+		c.flushOutbound()
+	}
 
 	// Clear outbound here.
 	if c.out.sg != nil {
@@ -3255,9 +3257,7 @@ func (c *client) clearConnection(reason ClosedState) {
 	// With TLS, Close() is sending an alert (that is doing a write).
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
-	if c.flags.isSet(handshakeComplete) {
-		nc.SetWriteDeadline(time.Now().Add(c.out.wdl))
-	}
+	nc.SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
 	nc.Close()
 	// Do this always to also kick out any IO writes.
 	nc.SetWriteDeadline(time.Time{})

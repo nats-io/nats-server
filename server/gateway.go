@@ -789,6 +789,9 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		// Re-Grab lock
 		c.mu.Lock()
 
+		// To be consistent with client, set this flag to indicate that handshake is done
+		c.flags.set(handshakeComplete)
+
 		// Verify that the connection did not go away while we released the lock.
 		if c.nc == nil {
 			c.mu.Unlock()

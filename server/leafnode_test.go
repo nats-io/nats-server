@@ -14,8 +14,11 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -779,4 +782,90 @@ func TestLeafNodeLoop(t *testing.T) {
 	defer sb.Shutdown()
 
 	checkLeafNodeConnected(t, sa)
+}
+
+func TestLeafCloseTLSConnection(t *testing.T) {
+	opts := DefaultOptions()
+	opts.DisableShortFirstPing = true
+	opts.LeafNode.Host = "127.0.0.1"
+	opts.LeafNode.Port = -1
+	opts.LeafNode.TLSTimeout = 100
+	tc := &TLSConfigOpts{
+		CertFile: "./configs/certs/server.pem",
+		KeyFile:  "./configs/certs/key.pem",
+		Insecure: true,
+	}
+	tlsConf, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	opts.LeafNode.TLSConfig = tlsConf
+	opts.NoLog = true
+	opts.NoSigs = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	endpoint := fmt.Sprintf("%s:%d", opts.LeafNode.Host, opts.LeafNode.Port)
+	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on dial: %v", err)
+	}
+	defer conn.Close()
+
+	br := bufio.NewReaderSize(conn, 100)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("Unexpected error reading INFO: %v", err)
+	}
+
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+	defer tlsConn.Close()
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("Unexpected error during handshake: %v", err)
+	}
+	connectOp := []byte("CONNECT {\"name\":\"leaf\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	if _, err := tlsConn.Write(connectOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	infoOp := []byte("INFO {\"server_id\":\"leaf\",\"tls_required\":true}\r\n")
+	if _, err := tlsConn.Write(infoOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	if _, err := tlsConn.Write([]byte("PING\r\n")); err != nil {
+		t.Fatalf("Unexpected error writing PING: %v", err)
+	}
+
+	checkLeafNodeConnected(t, s)
+
+	// Get leaf connection
+	var leaf *client
+	s.mu.Lock()
+	for _, l := range s.leafs {
+		leaf = l
+		break
+	}
+	s.mu.Unlock()
+	// Fill the buffer. We want to timeout on write so that nc.Close()
+	// would block due to a write that cannot complete.
+	buf := make([]byte, 64*1024)
+	done := false
+	for !done {
+		leaf.nc.SetWriteDeadline(time.Now().Add(time.Second))
+		if _, err := leaf.nc.Write(buf); err != nil {
+			done = true
+		}
+		leaf.nc.SetWriteDeadline(time.Time{})
+	}
+	ch := make(chan bool)
+	go func() {
+		select {
+		case <-ch:
+			return
+		case <-time.After(3 * time.Second):
+			fmt.Println("!!!! closeConnection is blocked, test will hang !!!")
+			return
+		}
+	}()
+	// Close the route
+	leaf.closeConnection(SlowConsumerWriteDeadline)
+	ch <- true
 }

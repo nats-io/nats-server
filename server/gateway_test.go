@@ -5696,3 +5696,88 @@ func TestGatewayNoAccountUnsubWhenServiceReplyInUse(t *testing.T) {
 	close(quitCh)
 	wg.Wait()
 }
+
+func TestGatewayCloseTLSConnection(t *testing.T) {
+	oa := testGatewayOptionsWithTLS(t, "A")
+	oa.DisableShortFirstPing = true
+	oa.Gateway.TLSConfig.ClientAuth = tls.NoClientCert
+	oa.Gateway.TLSTimeout = 100
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	ob1 := testGatewayOptionsFromToWithTLS(t, "B", "A", []string{fmt.Sprintf("nats://127.0.0.1:%d", sa.GatewayAddr().Port)})
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+	waitForInboundGateways(t, sb1, 1, 2*time.Second)
+
+	endpoint := fmt.Sprintf("%s:%d", oa.Gateway.Host, oa.Gateway.Port)
+	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on dial: %v", err)
+	}
+	defer conn.Close()
+
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+	defer tlsConn.Close()
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("Unexpected error during handshake: %v", err)
+	}
+	connectOp := []byte("CONNECT {\"name\":\"serverID\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true,\"gateway\":\"B\"}\r\n")
+	if _, err := tlsConn.Write(connectOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	infoOp := []byte("INFO {\"server_id\":\"serverID\",\"tls_required\":true,\"gateway\":\"B\",\"gateway_nrp\":true}\r\n")
+	if _, err := tlsConn.Write(infoOp); err != nil {
+		t.Fatalf("Unexpected error writing CONNECT: %v", err)
+	}
+	if _, err := tlsConn.Write([]byte("PING\r\n")); err != nil {
+		t.Fatalf("Unexpected error writing PING: %v", err)
+	}
+
+	// Get gw connection
+	var gw *client
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		sa.gateway.RLock()
+		for _, g := range sa.gateway.in {
+			g.mu.Lock()
+			if g.opts.Name == "serverID" {
+				gw = g
+			}
+			g.mu.Unlock()
+			break
+		}
+		sa.gateway.RUnlock()
+		if gw == nil {
+			return fmt.Errorf("No gw registered yet")
+		}
+		return nil
+	})
+	// Fill the buffer. We want to timeout on write so that nc.Close()
+	// would block due to a write that cannot complete.
+	buf := make([]byte, 64*1024)
+	done := false
+	for !done {
+		gw.nc.SetWriteDeadline(time.Now().Add(time.Second))
+		if _, err := gw.nc.Write(buf); err != nil {
+			done = true
+		}
+		gw.nc.SetWriteDeadline(time.Time{})
+	}
+	ch := make(chan bool)
+	go func() {
+		select {
+		case <-ch:
+			return
+		case <-time.After(3 * time.Second):
+			fmt.Println("!!!! closeConnection is blocked, test will hang !!!")
+			return
+		}
+	}()
+	// Close the gateway
+	gw.closeConnection(SlowConsumerWriteDeadline)
+	ch <- true
+}
