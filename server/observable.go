@@ -682,6 +682,14 @@ func (o *Observable) processReplay() error {
 			return fmt.Errorf("observable not valid")
 		}
 
+		// If push mode but we have no interest wait for it to show up.
+		if o.isPushMode() && !o.active {
+			// We will wait here for new messages to arrive.
+			o.mu.Unlock()
+			mset.waitForMsgs()
+			continue
+		}
+
 		subj, msg, ts, err := o.mset.store.LoadMsg(o.sseq)
 		if err != nil && err != ErrStoreMsgNotFound {
 			o.mu.Unlock()
