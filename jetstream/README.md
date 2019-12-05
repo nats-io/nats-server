@@ -350,7 +350,6 @@ Listening on [d.p2]
 [#1] Received on [foo]: 'hello world'
 ```
 
-
 ## Next Steps
 
 There is plenty to more to discuss and features to describe. We will continue to add things here and feel free to post any questions on the JetStream Slack channel. For the brave, take a look at `nats-server/test/jetstream_test.go` for all that jetstream can do. And please file and issues or communicate on slack or on email.
@@ -361,20 +360,20 @@ Next up is a deep dive into the clustering implementation which will be complete
 
 There a few items we are still considering/thinking about and would love the communities input. In no particular order.
 
-###DLQ
+### DLQ
 Do we need or desire these? JetStream separates message sets (producing, retaining and ordering) from the observables (consumption). We do indiicate the amount of times a message has been delivered and at least it may make sense when creating an observable to set a maximum for number of delivery attempts. Once that is reached however it is not clear what to do with the message. If the message set is limit based retention, the message will still be there for an admin to create an overservable and take a look.
 
-###Purge or Truncate (not everything)
+### Purge or Truncate (not everything)
 We offer purge but that deletes all messages from a message set. Wondering of you may want to truncate. This is if no message or byte limits were set.
 
-###NAK w/ duration before redelivery
+### NAK w/ duration before redelivery
 Should we allow an time duration be optionally sent with a NAK to say "do not attempt a redelivery for delta time"
 
-###MsgSet Immutable?
+### MsgSet Immutable?
 Message sets are always hashed and each message is hashed with sequence number and timestamp. However we do allow the ability to securely delete messages. Should we also allow the creator of a message set to specifify the set is strictly immutable? I had this programmed before where each message hash included the hash from the previous message, making the whole set tamper proof.
 
-###DR/Mirror
+### DR/Mirror
 We will add the ability to mirror a message set from one cluster to the next. Just need to think this through.
 
-###Account template to auto-create msgSets.
+### Account template to auto-create msgSets.
 As we start to directly instrument accounts with JetStream limits etc, should we also allow a subject space that is not directly assigned to a message set but creates a template for the system to auto-create message sets. Followup is should we auto-delete them as well like STAN does.
