@@ -1113,6 +1113,9 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Re-Grab lock
 		c.mu.Lock()
 
+		// To be consistent with client, set this flag to indicate that handshake is done
+		c.flags.set(handshakeComplete)
+
 		// Verify that the connection did not go away while we released the lock.
 		if c.nc == nil {
 			c.mu.Unlock()

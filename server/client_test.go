@@ -998,7 +998,7 @@ func TestUnsubRace(t *testing.T) {
 	wg.Wait()
 }
 
-func TestTLSCloseClientConnection(t *testing.T) {
+func TestClientCloseTLSConnection(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -1065,12 +1065,13 @@ func TestTLSCloseClientConnection(t *testing.T) {
 		t.Error("RemoteAddress() returned incorrect ip " + addr.String())
 	}
 
-	// Fill the buffer. Need to send 1 byte at a time so that we timeout here
-	// the nc.Close() would block due to a write that can not complete.
+	// Fill the buffer. We want to timeout on write so that nc.Close()
+	// would block due to a write that cannot complete.
+	buf := make([]byte, 64*1024)
 	done := false
 	for !done {
 		cli.nc.SetWriteDeadline(time.Now().Add(time.Second))
-		if _, err := cli.nc.Write([]byte("a")); err != nil {
+		if _, err := cli.nc.Write(buf); err != nil {
 			done = true
 		}
 		cli.nc.SetWriteDeadline(time.Time{})
