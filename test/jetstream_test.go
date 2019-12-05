@@ -1411,7 +1411,7 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			// For test speed. Thresh is high to avoid us being deleted.
+			// For test speed. Thresh is too high to avoid us being deleted.
 			o.SetActiveCheckParams(50*time.Millisecond, 100)
 
 			if !o.Active() {
@@ -2156,6 +2156,67 @@ func TestJetStreamObservableReplayRate(t *testing.T) {
 					t.Fatalf("Gap is incorrect for %d, expected %v got %v", i, gaps[i], gap)
 				}
 			}
+		})
+	}
+}
+
+func TestJetStreamObservableReplayRateNoAck(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{"MemoryStore", &server.MsgSetConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.MsgSetConfig{Name: "DC", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddMsgSet(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Send 10 msgs
+			totalMsgs := 10
+			for i := 0; i < totalMsgs; i++ {
+				nc.Request("DC", []byte("Hello World"), time.Second)
+				time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+			}
+			if stats := mset.Stats(); stats.Msgs != uint64(totalMsgs) {
+				t.Fatalf("Expected %d messages, got %d", totalMsgs, stats.Msgs)
+			}
+			subj := "d.dc"
+			o, err := mset.AddObservable(&server.ObservableConfig{
+				Durable:      "derek",
+				Delivery:     subj,
+				DeliverAll:   true,
+				AckPolicy:    server.AckNone,
+				ReplayPolicy: server.ReplayOriginal,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer o.Delete()
+			o.SetActiveCheckParams(50*time.Millisecond, 100)
+
+			// Sleep a random amount of time.
+			time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
+
+			sub, _ := nc.SubscribeSync(subj)
+			nc.Flush()
+
+			checkFor(t, time.Second, 25*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != totalMsgs {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, totalMsgs)
+				}
+				return nil
+			})
 		})
 	}
 }
