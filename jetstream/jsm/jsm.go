@@ -60,12 +60,15 @@ func showUsageAndExit(exitcode int) {
 }
 
 func main() {
-	var url = flag.String("s", nats.DefaultURL, "The NATS System URL")
-	var userCreds = flag.String("creds", "", "User Credentials File")
-	var showHelp = flag.Bool("h", false, "Show help message")
-	var tlsCert = flag.String("tlscert", "", "Client certificate file")
-	var tlsKey = flag.String("tlskey", "", "Client private key file")
-	var tlsCA = flag.String("tlscacert", "", "Client certificate CA for verification")
+	var (
+		url       = flag.String("s", nats.DefaultURL, "The NATS System URL")
+		userCreds = flag.String("creds", "", "User Credentials File")
+		showHelp  = flag.Bool("h", false, "Show help message")
+		tlsCert   = flag.String("tlscert", "", "Client certificate file")
+		tlsKey    = flag.String("tlskey", "", "Client private key file")
+		tlsCA     = flag.String("tlscacert", "", "Client certificate CA for verification")
+		verbose   = flag.Bool("v", false, "Enable verbose settings and response data")
+	)
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -140,6 +143,15 @@ func main() {
 		scanner.Scan()
 		subjects := processSubjects(scanner.Text())
 
+		// This can be useful for broad subjects or wildcards for
+		// existing traffic that may have reply subjects etc. E.g. ">" for all traffic.
+		var noAck bool
+		if *verbose {
+			fmt.Print("Suppress Acks? (N|y): ")
+			scanner.Scan()
+			noAck = parseBool(scanner.Text())
+		}
+
 		fmt.Print("Limits (msgs, bytes, age): ")
 		scanner.Scan()
 		maxMsgs, maxBytes, maxAge := processLimits(scanner.Text())
@@ -156,6 +168,7 @@ func main() {
 			MaxMsgs:  maxMsgs,
 			MaxBytes: maxBytes,
 			MaxAge:   maxAge,
+			NoAck:    noAck,
 		}
 		req, err := json.Marshal(cfg)
 		if err != nil {
@@ -239,17 +252,18 @@ func main() {
 		}
 
 		// Default to yes
-		cfg.DeliverAll = true
+
 		fmt.Print("Deliver All? (Y|n): ")
 		scanner.Scan()
-		ans := scanner.Text()
-		if len(ans) > 0 {
-			cfg.DeliverAll, _ = strconv.ParseBool(ans)
+		if ans := scanner.Text(); len(ans) == 0 || parseBool(ans) {
+			cfg.DeliverAll = true
 		}
 		if !cfg.DeliverAll {
-			fmt.Print("Deliver Last? (y|n): ")
+			fmt.Print("Deliver Last? (Y|n): ")
 			scanner.Scan()
-			cfg.DeliverLast, _ = strconv.ParseBool(scanner.Text())
+			if ans := scanner.Text(); len(ans) == 0 || parseBool(ans) {
+				cfg.DeliverLast = true
+			}
 		}
 		if !cfg.DeliverAll && !cfg.DeliverLast {
 			fmt.Print("Start at Time Delta: ")
@@ -278,7 +292,7 @@ func main() {
 			scanner.Scan()
 			ackPolicy := scanner.Text()
 			switch strings.ToLower(ackPolicy) {
-			case "none", "no", "":
+			case "", "none", "no":
 				cfg.AckPolicy = api.AckNone
 			case "all":
 				cfg.AckPolicy = api.AckAll
@@ -358,14 +372,9 @@ func main() {
 		log.Printf("Received response of %s", resp.Data)
 		log.Printf("Reply: %s", resp.Reply)
 		scanner := bufio.NewScanner(os.Stdin)
-		shouldAck := true
 		fmt.Printf("Ack? (Y|n)")
 		scanner.Scan()
-		ans := scanner.Text()
-		if len(ans) > 0 {
-			shouldAck, _ = strconv.ParseBool(ans)
-		}
-		if shouldAck {
+		if ans := scanner.Text(); len(ans) == 0 || parseBool(ans) {
 			resp.Respond(api.AckAck)
 		}
 	default:
@@ -505,4 +514,18 @@ func unlimitedOrFriendly(n int) string {
 		return "Unlimited"
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+func parseBool(ans string) bool {
+	if len(ans) == 0 {
+		return false
+	}
+	switch strings.ToLower(ans) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	}
+	b, _ := strconv.ParseBool(ans)
+	return b
 }
