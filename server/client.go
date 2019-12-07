@@ -1984,7 +1984,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	}
 
 	// If we are routing and this is a local sub, add to the route map for the associated account.
-	if kind == CLIENT || kind == SYSTEM {
+	if kind == CLIENT || kind == SYSTEM || kind == JETSTREAM {
 		srv.updateRouteSubscriptionMap(acc, sub, 1)
 		if updateGWs {
 			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)

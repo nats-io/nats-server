@@ -987,7 +987,7 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil && (sub.client.kind == CLIENT || sub.client.kind == SYSTEM) && sub.im == nil {
+	if sub != nil && sub.client != nil && (sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM) && sub.im == nil {
 		*subs = append(*subs, sub)
 	}
 }
