@@ -221,7 +221,7 @@ func (mset *MsgSet) subscribeToMsgSet() error {
 
 // FIXME(dlc) - This only works in single server mode for the moment. Need to fix as we expand to clusters.
 func (mset *MsgSet) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
-	return mset.nmsSubscribeInternal(subject, true, cb)
+	return mset.nmsSubscribeInternal(subject, false, cb)
 }
 
 func (mset *MsgSet) nmsSubscribeInternal(subject string, internalOnly bool, cb msgHandler) (*subscription, error) {
