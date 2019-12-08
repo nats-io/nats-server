@@ -29,7 +29,7 @@ type _memoryStatusEx struct {
 }
 
 func Memory() int64 {
-	k32, err := syscall.LoadDLL("kernel32.dll")
+	kernel32, err := syscall.LoadDLL("kernel32.dll")
 	if err != nil {
 		return 0
 	}
@@ -42,5 +42,5 @@ func Memory() int64 {
 	if res == 0 {
 		return 0
 	}
-	return msx.ullTotalPhys
+	return int64(msx.ullTotalPhys)
 }
