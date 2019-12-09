@@ -384,3 +384,89 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 		}
 	}
 }
+
+// This is in response to Issue #1144
+// https://github.com/nats-io/nats-server/issues/1144
+func TestQueueDistributionAcrossRoutes(t *testing.T) {
+	srvA, srvB, _, _ := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	urlA := srvA.ClientURL()
+	urlB := srvB.ClientURL()
+
+	nc1, err := nats.Connect(urlA)
+	if err != nil {
+		t.Fatalf("Failed to create connection for nc1: %v\n", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(urlB)
+	if err != nil {
+		t.Fatalf("Failed to create connection for nc2: %v\n", err)
+	}
+	defer nc2.Close()
+
+	var qsubs []*nats.Subscription
+
+	// Connect queue subscriptions as mentioned in the issue. 2(A) - 6(B) - 4(A)
+	for i := 0; i < 2; i++ {
+		sub, _ := nc1.QueueSubscribeSync("foo", "bar")
+		qsubs = append(qsubs, sub)
+	}
+	nc1.Flush()
+	for i := 0; i < 6; i++ {
+		sub, _ := nc2.QueueSubscribeSync("foo", "bar")
+		qsubs = append(qsubs, sub)
+	}
+	nc2.Flush()
+	for i := 0; i < 4; i++ {
+		sub, _ := nc1.QueueSubscribeSync("foo", "bar")
+		qsubs = append(qsubs, sub)
+	}
+	nc1.Flush()
+
+	if err := checkExpectedSubs(7, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	send := 600
+	for i := 0; i < send; i++ {
+		nc2.Publish("foo", nil)
+	}
+	nc2.Flush()
+
+	tp := func() int {
+		var total int
+		for i := 0; i < len(qsubs); i++ {
+			pending, _, _ := qsubs[i].Pending()
+			total += pending
+		}
+		return total
+	}
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if total := tp(); total != send {
+			return fmt.Errorf("Number of total received %d", total)
+		}
+		return nil
+	})
+
+	// The bug is essentially that when we deliver across a route, we
+	// prefer locals, but if we randomize to a block of bounce backs, then
+	// we walk to the end and find the same local for all the remote options.
+	// So what you will see in this case is a large value at #9 (2+6, next one local).
+
+	avg := send / len(qsubs)
+	for i := 0; i < len(qsubs); i++ {
+		total, _, _ := qsubs[i].Pending()
+		if total > avg+(avg*3/10) {
+			if i == 8 {
+				t.Fatalf("Qsub in 8th position gets majority of the messages  (prior 6 spots) in this test")
+			}
+			t.Fatalf("Received too high, %d vs %d", total, avg)
+		}
+	}
+}

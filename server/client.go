@@ -2997,24 +2997,47 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	selectQSub:
 		// We will hold onto remote or lead qsubs when we are coming from
 		// a route or a leaf node just in case we can no longer do local delivery.
-		var rsub *subscription
+		var rsub, sub *subscription
+		var _ql [32]*subscription
 
-		// Find a subscription that is able to deliver this message
-		// starting at a random index.
-		for startIndex, i := c.in.prand.Intn(len(qsubs)), 0; i < len(qsubs); i++ {
-			index := (startIndex + i) % len(qsubs)
-			sub := qsubs[index]
+		src := c.kind
+		// If we just came from a route we want to prefer local subs.
+		// So only select from local subs but remember the first rsub
+		// in case all else fails.
+		if src == ROUTER {
+			ql := _ql[:0]
+			for i := 0; i < len(qsubs); i++ {
+				sub = qsubs[i]
+				if sub.client.kind == CLIENT {
+					ql = append(ql, sub)
+				} else if rsub == nil {
+					rsub = sub
+				}
+			}
+			qsubs = ql
+		}
+
+		sindex := 0
+		lqs := len(qsubs)
+		if lqs > 1 {
+			sindex = c.in.prand.Int() % lqs
+		}
+
+		// Find a subscription that is able to deliver this message starting at a random index.
+		for i := 0; i < lqs; i++ {
+			if sindex+i < lqs {
+				sub = qsubs[sindex+i]
+			} else {
+				sub = qsubs[(sindex+i)%lqs]
+			}
 			if sub == nil {
 				continue
 			}
 
-			// Potentially sending to a remote sub across a route or leaf node.
-			// We may want to skip this and prefer locals depending on where we
-			// were sourced from.
-			if src, dst := c.kind, sub.client.kind; dst == ROUTER || dst == LEAF {
-				if src == ROUTER || ((src == LEAF || src == CLIENT) && dst == LEAF) {
-					// We just came from a route, so skip and prefer local subs.
-					// Keep our first rsub in case all else fails.
+			// We have taken care of preferring local subs for a message from a route above.
+			// Here we just care about a client or leaf and skipping a leaf and preferring locals.
+			if dst := sub.client.kind; dst == ROUTER || dst == LEAF {
+				if (src == LEAF || src == CLIENT) && dst == LEAF {
 					if rsub == nil {
 						rsub = sub
 					}
