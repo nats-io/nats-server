@@ -321,45 +321,6 @@ func Benchmark___PubSubAccsImport(b *testing.B) {
 	b.StopTimer()
 }
 
-func Benchmark_PubSub512kTwoConns(b *testing.B) {
-	b.StopTimer()
-	s := runBenchServer()
-	c := createClientConn(b, "127.0.0.1", PERF_PORT)
-	doDefaultConnect(b, c)
-	bw := bufio.NewWriterSize(c, defaultSendBufSize)
-
-	c2 := createClientConn(b, "127.0.0.1", PERF_PORT)
-	doDefaultConnect(b, c2)
-	sendProto(b, c2, "SUB foo 1\r\n")
-	flushConnection(b, c2)
-
-	sz := 1024 * 512
-	payload := sizedString(sz)
-
-	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", sz, payload))
-	ch := make(chan bool)
-
-	expected := len(fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", sz, payload)) * b.N
-	go drainConnection(b, c2, ch, expected)
-
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		bw.Write(sendOp)
-	}
-	err := bw.Flush()
-	if err != nil {
-		b.Errorf("Received error on FLUSH write: %v\n", err)
-	}
-
-	// Wait for connection to be drained
-	<-ch
-
-	b.StopTimer()
-	c.Close()
-	c2.Close()
-	s.Shutdown()
-}
-
 func Benchmark_____PubTwoQueueSub(b *testing.B) {
 	b.StopTimer()
 	s := runBenchServer()
@@ -464,6 +425,45 @@ func Benchmark___PubEightQueueSub(b *testing.B) {
 
 	b.StopTimer()
 	c.Close()
+	s.Shutdown()
+}
+
+func Benchmark_PubSub512kTwoConns(b *testing.B) {
+	b.StopTimer()
+	s := runBenchServer()
+	c := createClientConn(b, "127.0.0.1", PERF_PORT)
+	doDefaultConnect(b, c)
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+
+	c2 := createClientConn(b, "127.0.0.1", PERF_PORT)
+	doDefaultConnect(b, c2)
+	sendProto(b, c2, "SUB foo 1\r\n")
+	flushConnection(b, c2)
+
+	sz := 1024 * 512
+	payload := sizedString(sz)
+
+	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", sz, payload))
+	ch := make(chan bool)
+
+	expected := len(fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", sz, payload)) * b.N
+	go drainConnection(b, c2, ch, expected)
+
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		bw.Write(sendOp)
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Errorf("Received error on FLUSH write: %v\n", err)
+	}
+
+	// Wait for connection to be drained
+	<-ch
+
+	b.StopTimer()
+	c.Close()
+	c2.Close()
 	s.Shutdown()
 }
 
