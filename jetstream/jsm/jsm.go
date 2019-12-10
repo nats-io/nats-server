@@ -193,7 +193,7 @@ func main() {
 		resp, _ := nc.Request(api.JetStreamPurgeMsgSet, name, time.Second)
 		log.Printf("Received response of %q", resp.Data)
 
-	case "del-msg", "delmsg", "rmmsg":
+	case "del-msg", "delmsg", "rmmsg", "rm-msg":
 		if len(args) != 3 {
 			showUsageAndExit(1)
 		}
