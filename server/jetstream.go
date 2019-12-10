@@ -133,6 +133,9 @@ const (
 
 	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
 	JetStreamRequestNextPre = "$JS.RN"
+
+	// JetStreamMsgBySeq is the prefix for direct requests for a message by message set sequence number
+	JetStreamMsgBySeqPre = "$JS.BYSEQ"
 )
 
 // This is for internal accounting for JetStream for this server.
