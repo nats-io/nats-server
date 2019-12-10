@@ -398,7 +398,7 @@ func getMsgSetInfo(nc *nats.Conn, name string) {
 	cfg := &msi.Config
 	log.Println()
 	log.Printf("Subjects:  %+v", cfg.Subjects)
-	log.Printf("Retention: %s", cfg.Retention)
+	log.Printf("Retention: %s - %s", cfg.Storage, cfg.Retention)
 	log.Printf("TTL:       %v", cfg.MaxAge)
 	log.Printf("Messages:  %s of %s",
 		humanize.Comma(int64(mstats.Msgs)),
