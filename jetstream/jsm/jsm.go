@@ -390,15 +390,24 @@ func getMsgSetInfo(nc *nats.Conn, name string) {
 	if strings.HasPrefix(string(resp.Data), api.ErrPrefix) {
 		log.Fatalf("%q", resp.Data)
 	}
-	var mstats api.MsgSetStats
-	if err = json.Unmarshal(resp.Data, &mstats); err != nil {
+	var msi api.MsgSetInfo
+	if err = json.Unmarshal(resp.Data, &msi); err != nil {
 		log.Fatalf("Unexpected error: %v", err)
 	}
+	mstats := &msi.Stats
+	cfg := &msi.Config
 	log.Println()
-	log.Printf("Messages: %s", humanize.Comma(int64(mstats.Msgs)))
-	log.Printf("Bytes:    %s", humanize.Bytes(mstats.Bytes))
-	log.Printf("FirstSeq: %s", humanize.Comma(int64(mstats.FirstSeq)))
-	log.Printf("LastSeq:  %s", humanize.Comma(int64(mstats.LastSeq)))
+	log.Printf("Subjects:  %+v", cfg.Subjects)
+	log.Printf("Retention: %s", cfg.Retention)
+	log.Printf("TTL:       %v", cfg.MaxAge)
+	log.Printf("Messages:  %s of %s",
+		humanize.Comma(int64(mstats.Msgs)),
+		unlimitedOrFriendly(int(cfg.MaxMsgs)))
+	log.Printf("Bytes:     %s of %s",
+		humanize.Bytes(mstats.Bytes),
+		unlimitedOrFriendly(int(cfg.MaxBytes)))
+	log.Printf("FirstSeq:  %s", humanize.Comma(int64(mstats.FirstSeq)))
+	log.Printf("LastSeq:   %s", humanize.Comma(int64(mstats.LastSeq)))
 	log.Println()
 }
 
