@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -139,6 +140,17 @@ const (
 	memoryStorageString = "memory"
 	fileStorageString   = "file"
 )
+
+func (st StorageType) String() string {
+	switch st {
+	case MemoryStorage:
+		return strings.Title(memoryStorageString)
+	case FileStorage:
+		return strings.Title(fileStorageString)
+	default:
+		return "Unknown Storage Type"
+	}
+}
 
 func (st StorageType) MarshalJSON() ([]byte, error) {
 	switch st {
