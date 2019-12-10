@@ -36,6 +36,11 @@ type MsgSetConfig struct {
 	NoAck          bool            `json:"no_ack,omitempty"`
 }
 
+type MsgSetInfo struct {
+	Config MsgSetConfig `json:"name"`
+	Stats  MsgSetStats  `json:"stats"`
+}
+
 // RetentionPolicy determines how messages in a set are retained.
 type RetentionPolicy int
 
