@@ -16,6 +16,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -2836,12 +2837,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var mstats server.MsgSetStats
-	if err = json.Unmarshal(resp.Data, &mstats); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	var msi server.MsgSetInfo
+	if err = json.Unmarshal(resp.Data, &msi); err != nil {
+		log.Fatalf("Unexpected error: %v", err)
 	}
-	if mstats.Msgs != uint64(toSend) {
-		t.Fatalf("Expected to get %d msgs, got %d", toSend, mstats.Msgs)
+	if msi.Stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected to get %d msgs, got %d", toSend, msi.Stats.Msgs)
 	}
 
 	// Looking up on that is not there should yield an error.

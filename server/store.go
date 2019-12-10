@@ -95,6 +95,19 @@ const (
 	workQueuePolicyString = "work_queue"
 )
 
+func (rp RetentionPolicy) String() string {
+	switch rp {
+	case StreamPolicy:
+		return "Limits"
+	case InterestPolicy:
+		return "Interest"
+	case WorkQueuePolicy:
+		return "WorkQueue"
+	default:
+		return "Unknown Retention Policy"
+	}
+}
+
 func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
 	case StreamPolicy:
