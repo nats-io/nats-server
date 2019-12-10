@@ -14,6 +14,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"strconv"
@@ -221,6 +222,11 @@ func (mset *MsgSet) subscribeToMsgSet() error {
 			return err
 		}
 	}
+	// Now subscribe for direct access
+	subj := fmt.Sprintf("%s.%s", JetStreamMsgBySeqPre, mset.config.Name)
+	if _, err := mset.subscribeInternal(subj, mset.processMsgBySeq); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -283,6 +289,49 @@ func (mset *MsgSet) setupStore(storeDir string) error {
 	jsa, st := mset.jsa, mset.config.Storage
 	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
 	return nil
+}
+
+// processMsgBySeq will return the message at the given sequence, or an -ERR if not found.
+func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply string, msg []byte) {
+	mset.mu.Lock()
+	store := mset.store
+	c := mset.client
+	name := mset.config.Name
+	mset.mu.Unlock()
+
+	if c == nil {
+		return
+	}
+	var response []byte
+
+	if len(msg) == 0 {
+		c.Debugf("JetStream request for message from message set: %q - %q no sequence arg", c.acc.Name, name)
+		response = []byte("-ERR 'sequence argument missing'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+	seq, err := strconv.ParseUint(string(msg), 10, 64)
+	if err != nil {
+		c.Debugf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
+		response = []byte("-ERR 'bad sequence argument'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+
+	subj, msg, ts, err := store.LoadMsg(seq)
+	if err != nil {
+		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
+		response = []byte("-ERR 'bad sequence argument'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+	sm := &StoredMsg{
+		Subject: subj,
+		Data:    msg,
+		Time:    time.Unix(0, ts),
+	}
+	response, _ = json.MarshalIndent(sm, "", "  ")
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a message set.
@@ -355,6 +404,12 @@ type jsPubMsg struct {
 	msg   []byte
 	o     *Observable
 	seq   uint64
+}
+
+type StoredMsg struct {
+	Subject string
+	Data    []byte
+	Time    time.Time
 }
 
 // TODO(dlc) - Maybe look at onering instead of chan - https://github.com/pltr/onering
