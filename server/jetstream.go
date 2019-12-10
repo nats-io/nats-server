@@ -897,8 +897,11 @@ func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
-	stats := mset.Stats()
-	b, err := json.MarshalIndent(stats, "", "  ")
+	msi := MsgSetInfo{
+		Stats:  mset.Stats(),
+		Config: mset.Config(),
+	}
+	b, err := json.MarshalIndent(msi, "", "  ")
 	if err != nil {
 		return
 	}
