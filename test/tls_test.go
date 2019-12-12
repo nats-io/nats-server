@@ -743,7 +743,10 @@ func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
 
 	received := make(chan *nats.Msg)
 	_, err = nc1.Subscribe("foo", func(msg *nats.Msg) {
-		received <- msg
+		select {
+		case received <- msg:
+		default:
+		}
 	})
 	if err != nil {
 		t.Error(err)
@@ -1137,6 +1140,7 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Error on dial: %v", err)
 				}
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
 				conn.Write(buf)
 				conn.Close()
 			}

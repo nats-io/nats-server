@@ -3440,7 +3440,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.mu.Unlock()
 
 	// Remove client's or leaf node subscriptions.
-	if kind == CLIENT || kind == LEAF && acc != nil {
+	if (kind == CLIENT || kind == LEAF) && acc != nil {
 		acc.sl.RemoveBatch(subs)
 	} else if kind == ROUTER {
 		go c.removeRemoteSubs()

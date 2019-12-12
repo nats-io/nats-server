@@ -524,6 +524,7 @@ func TestLeafNodeSolicit(t *testing.T) {
 	s.Shutdown()
 	// Need to restart it on the same port.
 	s, _ = runLeafServerOnPort(opts.LeafNode.Port)
+	defer s.Shutdown()
 	checkLeafNodeConnected(t, s)
 }
 
@@ -1096,7 +1097,7 @@ func TestLeafNodeTLSMixIP(t *testing.T) {
 	// This will fail but we want to make sure in the correct way, not with
 	// TLS issue because we used an IP for serverName.
 	sl, _ := RunServerWithConfig(slconf)
-	defer s.Shutdown()
+	defer sl.Shutdown()
 
 	ll := &captureLeafNodeErrLogger{ch: make(chan string, 2)}
 	sl.SetLogger(ll, false, false)
@@ -2291,6 +2292,7 @@ func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
 
 	// Need to restart it on the same port.
 	s, _ = runLeafServerOnPort(opts.LeafNode.Port)
+	defer s.Shutdown()
 	checkLeafNodeConnected(t, s)
 
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)

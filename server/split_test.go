@@ -417,6 +417,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 
 func TestSplitRoutedMsgArg(t *testing.T) {
 	_, c, _ := setupClient()
+	defer c.close()
 	// Allow parser to process RMSG
 	c.kind = ROUTER
 

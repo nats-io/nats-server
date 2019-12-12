@@ -2737,6 +2737,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	pubKey, _ := kp.PublicKey()
 
 	c, cr, l := newClientForServer(s)
+	defer c.close()
 	// Check for Nonce
 	var info nonceInfo
 	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
@@ -2753,7 +2754,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 
 	// PING needed to flush the +OK to us.
 	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
-	go c.parse([]byte(cs))
+	c.parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)
@@ -2767,6 +2768,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	pubKey, _ = kp.PublicKey()
 
 	c, cr, l = newClientForServer(s)
+	defer c.close()
 	// Check for Nonce
 	err = json.Unmarshal([]byte(l[5:]), &info)
 	if err != nil {
@@ -2783,7 +2785,7 @@ func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 
 	// PING needed to flush the +OK to us.
 	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
-	go c.parse([]byte(cs))
+	c.parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)

@@ -14,6 +14,7 @@
 package test
 
 import (
+	"fmt"
 	"net"
 	"runtime"
 	"testing"
@@ -26,11 +27,13 @@ func TestSimpleGoServerShutdown(t *testing.T) {
 	opts.Port = -1
 	s := RunServer(&opts)
 	s.Shutdown()
-	time.Sleep(100 * time.Millisecond)
-	delta := (runtime.NumGoroutine() - base)
-	if delta > 1 {
-		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
-	}
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		delta := (runtime.NumGoroutine() - base)
+		if delta > 1 {
+			return fmt.Errorf("%d go routines still exist post Shutdown()", delta)
+		}
+		return nil
+	})
 }
 
 func TestGoServerShutdownWithClients(t *testing.T) {

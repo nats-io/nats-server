@@ -54,10 +54,12 @@ func TestRegisterDuplicateAccounts(t *testing.T) {
 func TestAccountIsolation(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.close()
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error register client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.close()
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error register client with 'bar' account: %v", err)
 	}
@@ -69,7 +71,7 @@ func TestAccountIsolation(t *testing.T) {
 
 	// Now do quick test that makes sure messages do not cross over.
 	// setup bar as a foo subscriber.
-	go cbar.parse([]byte("SUB foo 1\r\nPING\r\nPING\r\n"))
+	cbar.parseAsync("SUB foo 1\r\nPING\r\nPING\r\n")
 	l, err := crBar.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
@@ -78,7 +80,7 @@ func TestAccountIsolation(t *testing.T) {
 		t.Fatalf("PONG response incorrect: %q", l)
 	}
 
-	go cfoo.parse([]byte("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n"))
+	cfoo.parseAsync("SUB foo 1\r\nPUB foo 5\r\nhello\r\nPING\r\n")
 	l, err = crFoo.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error for client 'foo' from server: %v", err)
@@ -107,6 +109,7 @@ func TestAccountFromOptions(t *testing.T) {
 	opts := defaultServerOptions
 	opts.Accounts = []*Account{NewAccount("foo"), NewAccount("bar")}
 	s := New(&opts)
+	defer s.Shutdown()
 
 	ta := s.numReservedAccounts() + 2
 	if la := s.numAccounts(); la != ta {
@@ -126,10 +129,12 @@ func TestAccountFromOptions(t *testing.T) {
 func TestNewAccountsFromClients(t *testing.T) {
 	opts := defaultServerOptions
 	s := New(&opts)
+	defer s.Shutdown()
 
 	c, cr, _ := newClientForServer(s)
-	connectOp := []byte("CONNECT {\"account\":\"foo\"}\r\n")
-	go c.parse(connectOp)
+	defer c.close()
+	connectOp := "CONNECT {\"account\":\"foo\"}\r\n"
+	c.parseAsync(connectOp)
 	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
@@ -137,13 +142,15 @@ func TestNewAccountsFromClients(t *testing.T) {
 
 	opts.AllowNewAccounts = true
 	s = New(&opts)
+	defer s.Shutdown()
 
 	c, cr, _ = newClientForServer(s)
-	err := c.parse(connectOp)
+	defer c.close()
+	err := c.parse([]byte(connectOp))
 	if err != nil {
 		t.Fatalf("Received an error trying to connect: %v", err)
 	}
-	go c.parse([]byte("PING\r\n"))
+	c.parseAsync("PING\r\n")
 	l, err = cr.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Error reading response for client from server: %v", err)
@@ -159,12 +166,13 @@ func TestActiveAccounts(t *testing.T) {
 	opts.Cluster.Port = 22
 
 	s := New(&opts)
+	defer s.Shutdown()
 
 	if s.NumActiveAccounts() != 0 {
 		t.Fatalf("Expected no active accounts, got %d", s.NumActiveAccounts())
 	}
 
-	addClientWithAccount := func(accName string) *client {
+	addClientWithAccount := func(accName string) *testAsyncClient {
 		t.Helper()
 		c, _, _ := newClientForServer(s)
 		connectOp := fmt.Sprintf("CONNECT {\"account\":\"%s\"}\r\n", accName)
@@ -177,16 +185,19 @@ func TestActiveAccounts(t *testing.T) {
 
 	// Now add some clients.
 	cf1 := addClientWithAccount("foo")
+	defer cf1.close()
 	if s.activeAccounts != 1 {
 		t.Fatalf("Expected active accounts to be 1, got %d", s.activeAccounts)
 	}
 	// Adding in same one should not change total.
 	cf2 := addClientWithAccount("foo")
+	defer cf2.close()
 	if s.activeAccounts != 1 {
 		t.Fatalf("Expected active accounts to be 1, got %d", s.activeAccounts)
 	}
 	// Add in new one.
 	cb1 := addClientWithAccount("bar")
+	defer cb1.close()
 	if s.activeAccounts != 2 {
 		t.Fatalf("Expected active accounts to be 2, got %d", s.activeAccounts)
 	}
@@ -244,8 +255,9 @@ func TestNewAccountRequireNew(t *testing.T) {
 	s, _, _ := simpleAccountServer(t)
 
 	c, cr, _ := newClientForServer(s)
-	connectOp := []byte("CONNECT {\"account\":\"foo\",\"new_account\":true}\r\n")
-	go c.parse(connectOp)
+	defer c.close()
+	connectOp := "CONNECT {\"account\":\"foo\",\"new_account\":true}\r\n"
+	c.parseAsync(connectOp)
 	l, _ := cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
@@ -257,13 +269,15 @@ func TestNewAccountRequireNew(t *testing.T) {
 	s = New(&opts)
 
 	c, _, _ = newClientForServer(s)
-	err := c.parse(connectOp)
+	defer c.close()
+	err := c.parse([]byte(connectOp))
 	if err != nil {
 		t.Fatalf("Received an error trying to create an account: %v", err)
 	}
 
 	c, cr, _ = newClientForServer(s)
-	go c.parse(connectOp)
+	defer c.close()
+	c.parseAsync(connectOp)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
@@ -610,13 +624,13 @@ func TestSimpleMapping(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -642,7 +656,7 @@ func TestSimpleMapping(t *testing.T) {
 	}
 
 	// Now publish our message.
-	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+	cfoo.parseAsync("PUB foo 5\r\nhello\r\n")
 
 	checkMsg := func(l, sid string) {
 		t.Helper()
@@ -704,13 +718,13 @@ func TestStreamImportLengthBug(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, _, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -763,7 +777,7 @@ func TestShadowSubsCleanupOnClientClose(t *testing.T) {
 	}
 
 	cbar, _, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -794,13 +808,13 @@ func TestNoPrefixWildcardMapping(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -814,14 +828,14 @@ func TestNoPrefixWildcardMapping(t *testing.T) {
 	}
 
 	// Normal Subscription on bar client for literal "foo".
-	go cbar.parse([]byte("SUB foo 1\r\nPING\r\n"))
+	cbar.parseAsync("SUB foo 1\r\nPING\r\n")
 	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
 	if err != nil {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 
 	// Now publish our message.
-	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+	cfoo.parseAsync("PUB foo 5\r\nhello\r\n")
 
 	// Now check we got the message from normal subscription.
 	l, err := crBar.ReadString('\n')
@@ -847,13 +861,13 @@ func TestPrefixWildcardMapping(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -868,14 +882,14 @@ func TestPrefixWildcardMapping(t *testing.T) {
 	}
 
 	// Normal Subscription on bar client for wildcard.
-	go cbar.parse([]byte("SUB pub.imports.* 1\r\nPING\r\n"))
+	cbar.parseAsync("SUB pub.imports.* 1\r\nPING\r\n")
 	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
 	if err != nil {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 
 	// Now publish our message.
-	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+	cfoo.parseAsync("PUB foo 5\r\nhello\r\n")
 
 	// Now check we got the messages from wildcard subscription.
 	l, err := crBar.ReadString('\n')
@@ -901,13 +915,13 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -921,14 +935,14 @@ func TestPrefixWildcardMappingWithLiteralSub(t *testing.T) {
 	}
 
 	// Normal Subscription on bar client for wildcard.
-	go cbar.parse([]byte("SUB pub.imports.foo 1\r\nPING\r\n"))
+	cbar.parseAsync("SUB pub.imports.foo 1\r\nPING\r\n")
 	_, err := crBar.ReadString('\n') // Make sure subscriptions were processed.
 	if err != nil {
 		t.Fatalf("Error for client 'bar' from server: %v", err)
 	}
 
 	// Now publish our message.
-	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\n"))
+	cfoo.parseAsync("PUB foo 5\r\nhello\r\n")
 
 	// Now check we got the messages from wildcard subscription.
 	l, err := crBar.ReadString('\n')
@@ -954,13 +968,13 @@ func TestMultipleImportsAndSingleWCSub(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -984,7 +998,7 @@ func TestMultipleImportsAndSingleWCSub(t *testing.T) {
 	cbar.parse([]byte("SUB pub.* 1\r\n"))
 
 	// Now publish a message on 'foo' and 'bar'
-	go cfoo.parseAndFlush([]byte("PUB foo 5\r\nhello\r\nPUB bar 5\r\nworld\r\n"))
+	cfoo.parseAsync("PUB foo 5\r\nhello\r\nPUB bar 5\r\nworld\r\n")
 
 	// Now check we got the messages from the wildcard subscription.
 	l, err := crBar.ReadString('\n')
@@ -1112,13 +1126,13 @@ func TestServiceExportWithWildcards(t *testing.T) {
 			}
 
 			cfoo, crFoo, _ := newClientForServer(s)
-			defer cfoo.nc.Close()
+			defer cfoo.close()
 
 			if err := cfoo.registerWithAccount(fooAcc); err != nil {
 				t.Fatalf("Error registering client with 'foo' account: %v", err)
 			}
 			cbar, crBar, _ := newClientForServer(s)
-			defer cbar.nc.Close()
+			defer cbar.close()
 
 			if err := cbar.registerWithAccount(barAcc); err != nil {
 				t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -1129,7 +1143,7 @@ func TestServiceExportWithWildcards(t *testing.T) {
 
 			// Now send the request. Remember we expect the request on our local ngs.update.
 			// We added the route with that "from" and will map it to "ngs.update.$bar"
-			go cbar.parseAndFlush([]byte("SUB reply 11\r\nPUB ngs.update reply 4\r\nhelp\r\n"))
+			cbar.parseAsync("SUB reply 11\r\nPUB ngs.update reply 4\r\nhelp\r\n")
 
 			// Now read the request from crFoo
 			l, err := crFoo.ReadString('\n')
@@ -1155,7 +1169,7 @@ func TestServiceExportWithWildcards(t *testing.T) {
 			checkPayload(crFoo, []byte("help\r\n"), t)
 
 			replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
-			go cfoo.parseAndFlush([]byte(replyOp))
+			cfoo.parseAsync(replyOp)
 
 			// Now read the response from crBar
 			l, err = crBar.ReadString('\n')
@@ -1230,14 +1244,14 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -1269,7 +1283,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 
 	// Now send the request. Remember we expect the request on our local foo. We added the route
 	// with that "from" and will map it to "test.request"
-	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n"))
+	cbar.parseAsync("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n")
 
 	// Now read the request from crFoo
 	l, err := crFoo.ReadString('\n')
@@ -1295,7 +1309,7 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	checkPayload(crFoo, []byte("help\r\n"), t)
 
 	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
-	go cfoo.parseAndFlush([]byte(replyOp))
+	cfoo.parseAsync(replyOp)
 
 	// Now read the response from crBar
 	l, err = crBar.ReadString('\n')
@@ -1337,14 +1351,14 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 	}
 
 	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -1418,7 +1432,7 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 
 	// Now send the request. Remember we expect the request on our local foo. We added the route
 	// with that "from" and will map it to "test.request"
-	go cbar.parseAndFlush([]byte("SUB resp 11\r\nPUB req resp 4\r\nhelp\r\n"))
+	cbar.parseAsync("SUB resp 11\r\nPUB req resp 4\r\nhelp\r\n")
 
 	// Now read the request from crFoo
 	_, reply := readFooMsg()
@@ -1429,7 +1443,7 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 	// We will wait a bit to check latency results
 	go func() {
 		time.Sleep(serviceTime)
-		cfoo.parseAndFlush([]byte(replyOp))
+		cfoo.parseAsync(replyOp)
 	}()
 
 	// Now read the response from crBar
@@ -1459,23 +1473,6 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 	}
 }
 
-func genAsyncFlushParser(c *client) (func(string), chan bool) {
-	pab := make(chan []byte, 16)
-	pas := func(cs string) { pab <- []byte(cs) }
-	quit := make(chan bool)
-	go func() {
-		for {
-			select {
-			case cs := <-pab:
-				c.parseAndFlush(cs)
-			case <-quit:
-				return
-			}
-		}
-	}()
-	return pas, quit
-}
-
 // This will test for leaks in the remote latency tracking via client.rrTracking
 func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
@@ -1502,9 +1499,26 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 		}
 	}
 
+	getClient := func(s *Server, name string) *client {
+		t.Helper()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, c := range s.clients {
+			c.mu.Lock()
+			n := c.opts.Name
+			c.mu.Unlock()
+			if n == name {
+				return c
+			}
+		}
+		t.Fatalf("Did not find client %q on server %q", name, s.info.ID)
+		return nil
+	}
+
 	// Test with a responder on second server, srvB. but they will not respond.
-	cfoo, crFoo, _ := newClientForServer(srvB)
-	defer cfoo.nc.Close()
+	cfooNC := natsConnect(t, srvB.ClientURL(), nats.Name("foo"))
+	defer cfooNC.Close()
+	cfoo := getClient(srvB, "foo")
 	fooAcc, _ := srvB.LookupAccount("$foo")
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
@@ -1517,37 +1531,31 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	// Now setup the resonder under cfoo and the listener for the results
 	time.Sleep(50 * time.Millisecond)
 	baseSubs := int(srvA.NumSubscriptions())
-	cfoo.parse([]byte("SUB track.service 1\r\n"))
+	fooSub := natsSubSync(t, cfooNC, "track.service")
+	natsFlush(t, cfooNC)
 	// Wait for it to propagate.
 	checkExpectedSubs(t, baseSubs+1, srvA)
 
-	cbar, _, _ := newClientForServer(srvA)
-	defer cbar.nc.Close()
+	cbarNC := natsConnect(t, srvA.ClientURL(), nats.Name("bar"))
+	defer cbarNC.Close()
+	cbar := getClient(srvA, "bar")
+
 	barAcc, _ := srvA.LookupAccount("$bar")
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
-	parseAsync, quit := genAsyncFlushParser(cbar)
-	defer func() { quit <- true }()
-
-	readFooMsg := func() ([]byte, string) {
+	readFooMsg := func() {
 		t.Helper()
-		l, err := crFoo.ReadString('\n')
-		if err != nil {
-			t.Fatalf("Error reading from client 'bar': %v", err)
+		if _, err := fooSub.NextMsg(time.Second); err != nil {
+			t.Fatalf("Did not receive foo msg: %v", err)
 		}
-		mraw := msgPat.FindAllStringSubmatch(l, -1)
-		if len(mraw) == 0 {
-			t.Fatalf("No message received")
-		}
-		msg := mraw[0]
-		msgSize, _ := strconv.Atoi(msg[LEN_INDEX])
-		return grabPayload(crFoo, msgSize), msg[REPLY_INDEX]
 	}
 
 	// Send 2 requests
-	parseAsync("SUB resp 11\r\nPUB req resp 4\r\nhelp\r\nPUB req resp 4\r\nhelp\r\n")
+	natsSubSync(t, cbarNC, "resp")
+	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
+	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 
 	readFooMsg()
 	readFooMsg()
@@ -1589,7 +1597,7 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 
 	// Test that we trigger on max.
 	for i := 0; i < 4; i++ {
-		parseAsync("PUB req resp 4\r\nhelp\r\n")
+		natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 		readFooMsg()
 	}
 
@@ -1601,7 +1609,7 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 
 	// Should trigger here
-	parseAsync("PUB req resp 4\r\nhelp\r\n")
+	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 	readFooMsg()
 
 	if numTracking = tracking(); numTracking != 1 {
@@ -1626,7 +1634,7 @@ func TestCrossAccountRequestReplyResponseMaps(t *testing.T) {
 	barAcc.SetMaxAutoExpireResponseMaps(5)
 	barAcc.SetAutoExpireTTL(ttl)
 	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
@@ -1640,7 +1648,7 @@ func TestCrossAccountRequestReplyResponseMaps(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		cfoo.parseAndFlush([]byte("PUB foo bar 4\r\nhelp\r\n"))
+		cfoo.parseAsync("PUB foo bar 4\r\nhelp\r\n")
 	}
 
 	// We should expire because of max.
@@ -1671,13 +1679,13 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	defer s.Shutdown()
 
 	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -1697,7 +1705,7 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 
 	// Now send the request. Remember we expect the request on our local foo. We added the route
 	// with that "from" and will map it to "test.request"
-	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n"))
+	cbar.parseAsync("SUB bar 11\r\nPUB foo bar 4\r\nhelp\r\n")
 
 	// Now read the request from crFoo
 	l, err := crFoo.ReadString('\n')
@@ -1716,13 +1724,13 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	}
 	crFoo.ReadString('\n')
 
-	replyOp := []byte(fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX]))
+	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
 	var mReply []byte
 	for i := 0; i < 10; i++ {
 		mReply = append(mReply, replyOp...)
 	}
 
-	go cfoo.parseAndFlush(mReply)
+	cfoo.parseAsync(string(mReply))
 
 	var b [256]byte
 	n, err := crBar.Read(b[:])
@@ -1747,14 +1755,14 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	// Now test bogus reply subjects are handled and do not accumulate the response maps.
 
 	cbar, _, _ = newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
 	// Do not create any interest in the reply subject 'bar'. Just send a request.
-	go cbar.parseAndFlush([]byte("PUB foo bar 4\r\nhelp\r\n"))
+	cbar.parseAsync("PUB foo bar 4\r\nhelp\r\n")
 
 	// Now read the request from crFoo
 	l, err = crFoo.ReadString('\n')
@@ -1772,14 +1780,14 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	}
 	crFoo.ReadString('\n')
 
-	replyOp = []byte(fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX]))
+	replyOp = fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
 
 	// Make sure we have the response map.
 	if nr := fooAcc.numServiceRoutes(); nr != 1 {
 		t.Fatalf("Expected a response map to be present, got %d", nr)
 	}
 
-	go cfoo.parseAndFlush(replyOp)
+	cfoo.parseAsync(replyOp)
 
 	// Now wait for a bit, the reply should trip a no interest condition
 	// which should clean this up.
@@ -1809,13 +1817,13 @@ func TestCrossAccountServiceResponseLeaks(t *testing.T) {
 	barAcc.SetMaxResponseMaps(99)
 
 	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
 	}
 	cbar, _, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
@@ -1838,7 +1846,7 @@ func TestCrossAccountServiceResponseLeaks(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
 	}
-	go cbar.parseAndFlush([]byte(sb.String()))
+	cbar.parseAsync(sb.String())
 
 	// Make sure requests are processed.
 	if _, err := crFoo.ReadString('\n'); err != nil {
@@ -1854,7 +1862,7 @@ func TestCrossAccountServiceResponseLeaks(t *testing.T) {
 	for i := 50; i < 100; i++ {
 		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
 	}
-	go cbar.parseAndFlush([]byte(sb.String()))
+	cbar.parseAsync(sb.String())
 
 	// Make sure requests are processed.
 	if _, err := crFoo.ReadString('\n'); err != nil {
@@ -1905,7 +1913,9 @@ func TestAccountMapsUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error parsing config file: %v", err)
 	}
+	opts.NoSigs = true
 	s := New(opts)
+	defer s.Shutdown()
 	synadia, _ := s.LookupAccount("synadia")
 	nats, _ := s.LookupAccount("nats")
 
@@ -1915,6 +1925,7 @@ func TestAccountMapsUsers(t *testing.T) {
 
 	// Make sure a normal log in maps the accounts correctly.
 	c, _, _ := newClientForServer(s)
+	defer c.close()
 	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"foo\"}\r\n")
 	c.parse(connectOp)
 	if c.acc != synadia {
@@ -1922,6 +1933,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	}
 
 	c, _, _ = newClientForServer(s)
+	defer c.close()
 	connectOp = []byte("CONNECT {\"user\":\"ivan\",\"pass\":\"bar\"}\r\n")
 	c.parse(connectOp)
 	if c.acc != nats {
@@ -1933,6 +1945,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	pubKey, _ := kp.PublicKey()
 
 	c, cr, l := newClientForServer(s)
+	defer c.close()
 	// Check for Nonce
 	var info nonceInfo
 	err = json.Unmarshal([]byte(l[5:]), &info)
@@ -1950,7 +1963,7 @@ func TestAccountMapsUsers(t *testing.T) {
 
 	// PING needed to flush the +OK to us.
 	cs := fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
-	go c.parse([]byte(cs))
+	c.parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)
@@ -1964,6 +1977,7 @@ func TestAccountMapsUsers(t *testing.T) {
 	pubKey, _ = kp.PublicKey()
 
 	c, cr, l = newClientForServer(s)
+	defer c.close()
 	// Check for Nonce
 	err = json.Unmarshal([]byte(l[5:]), &info)
 	if err != nil {
@@ -1980,7 +1994,7 @@ func TestAccountMapsUsers(t *testing.T) {
 
 	// PING needed to flush the +OK to us.
 	cs = fmt.Sprintf("CONNECT {\"nkey\":%q,\"sig\":\"%s\",\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", pubKey, sig)
-	go c.parse([]byte(cs))
+	c.parseAsync(cs)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "+OK") {
 		t.Fatalf("Expected an OK, got: %v", l)

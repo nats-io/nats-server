@@ -1425,6 +1425,7 @@ func TestHandleRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error: Got %v\n", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected a %d response, got %d\n", http.StatusOK, resp.StatusCode)
 	}
@@ -1443,7 +1444,6 @@ func TestHandleRoot(t *testing.T) {
 	if !strings.Contains(ct, "text/html") {
 		t.Fatalf("Expected text/html response, got %s\n", ct)
 	}
-	defer resp.Body.Close()
 }
 
 func TestConnzWithNamedClient(t *testing.T) {
@@ -1748,6 +1748,7 @@ func TestConcurrentMonitoring(t *testing.T) {
 					ech <- fmt.Sprintf("Expected no error: Got %v\n", err)
 					return
 				}
+				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
 					ech <- fmt.Sprintf("Expected a %v response, got %d\n", http.StatusOK, resp.StatusCode)
 					return
@@ -1757,7 +1758,6 @@ func TestConcurrentMonitoring(t *testing.T) {
 					ech <- fmt.Sprintf("Expected application/json content-type, got %s\n", ct)
 					return
 				}
-				defer resp.Body.Close()
 				if _, err := ioutil.ReadAll(resp.Body); err != nil {
 					ech <- fmt.Sprintf("Got an error reading the body: %v\n", err)
 					return
@@ -2091,6 +2091,7 @@ func Benchmark_VarzHttp(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Expected no error: Got %v\n", err)
 		}
+		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			b.Fatalf("Got an error reading the body: %v\n", err)
@@ -2665,6 +2666,7 @@ func TestMonitorGatewayz(t *testing.T) {
 	ob2 := testDefaultOptionsForGateway("B")
 	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", sb1.ClusterAddr().Port))
 	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
 
 	// Wait for sb1 and sb2 to connect
 	checkClusterFormed(t, sb1, sb2)
