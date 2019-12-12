@@ -54,10 +54,11 @@ type MsgSetStore interface {
 
 // MsgSetStats are stats about this given message set.
 type MsgSetStats struct {
-	Msgs     uint64
-	Bytes    uint64
-	FirstSeq uint64
-	LastSeq  uint64
+	Msgs        uint64
+	Bytes       uint64
+	FirstSeq    uint64
+	LastSeq     uint64
+	Observables int
 }
 
 type ObservableStore interface {

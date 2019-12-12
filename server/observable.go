@@ -24,6 +24,11 @@ import (
 	"time"
 )
 
+type ObservableInfo struct {
+	Config ObservableConfig
+	State  ObservableState
+}
+
 type ObservableConfig struct {
 	Delivery     string        `json:"delivery_subject"`
 	Durable      string        `json:"durable_name,omitempty"`
@@ -48,11 +53,22 @@ type AckPolicy int
 const (
 	// AckNone requires no acks for delivered messages.
 	AckNone AckPolicy = iota
-	// When acking a sequence number, this implicitly acks all sequences below this one as well.
+	// AckAll when acking a sequence number, this implicitly acks all sequences below this one as well.
 	AckAll
 	// AckExplicit requires ack or nack for all messages.
 	AckExplicit
 )
+
+func (a AckPolicy) String() string {
+	switch a {
+	case AckNone:
+		return "none"
+	case AckAll:
+		return "all"
+	default:
+		return "explicit"
+	}
+}
 
 // ReplayPolicy determines how the observable should replay messages it already has queued in the message set.
 type ReplayPolicy int
@@ -63,6 +79,15 @@ const (
 	// ReplayOriginal will maintain the same timing as the messages were received.
 	ReplayOriginal
 )
+
+func (r ReplayPolicy) String() string {
+	switch r {
+	case ReplayInstant:
+		return "instant"
+	default:
+		return "original"
+	}
+}
 
 // Ack responses. Note that a nil or no payload is same as AckAck
 var (
@@ -429,35 +454,41 @@ func (o *Observable) updateStateLoop() {
 	}
 }
 
-// Returns our current observable state.
-func (o *Observable) Info() *ObservableState {
+// Info returns our current observable state.
+func (o *Observable) Info() *ObservableInfo {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	state := &ObservableState{
-		Delivered: SequencePair{
-			ObsSeq: o.dseq,
-			SetSeq: o.sseq,
-		},
-		AckFloor: SequencePair{
-			ObsSeq: o.adflr,
-			SetSeq: o.asflr,
+	info := &ObservableInfo{
+		Config: o.config,
+		State: ObservableState{
+			Delivered: SequencePair{
+				ObsSeq: o.dseq,
+				SetSeq: o.sseq,
+			},
+			AckFloor: SequencePair{
+				ObsSeq: o.adflr,
+				SetSeq: o.asflr,
+			},
 		},
 	}
+
+	info.Config.Durable = o.name
 	if len(o.pending) > 0 {
 		p := make(map[uint64]int64, len(o.pending))
 		for k, v := range o.pending {
 			p[k] = v
 		}
-		state.Pending = p
+		info.State.Pending = p
 	}
 	if len(o.rdc) > 0 {
 		r := make(map[uint64]uint64, len(o.rdc))
 		for k, v := range o.rdc {
 			r[k] = v
 		}
-		state.Redelivery = r
+		info.State.Redelivery = r
 	}
-	return state
+
+	return info
 }
 
 // Will update the underlying store.

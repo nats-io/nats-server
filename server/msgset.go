@@ -321,7 +321,7 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 	subj, msg, ts, err := store.LoadMsg(seq)
 	if err != nil {
 		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
-		response = []byte("-ERR 'bad sequence argument'")
+		response = []byte("-ERR 'could not load message from storage'")
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
 	}
