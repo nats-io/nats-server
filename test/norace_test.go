@@ -16,6 +16,7 @@
 package test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nuid"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -410,4 +412,125 @@ func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
 	if updates >= maxExpected {
 		t.Fatalf("Was not expecting all %v updates to be received", maxExpected)
 	}
+}
+
+func TestNoRaceClusterLeaksSubscriptions(t *testing.T) {
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
+	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
+
+	numResponses := 100
+	repliers := make([]*nats.Conn, 0, numResponses)
+
+	// Create 100 repliers
+	for i := 0; i < 50; i++ {
+		nc1, _ := nats.Connect(urlA)
+		nc2, _ := nats.Connect(urlB)
+		repliers = append(repliers, nc1, nc2)
+		nc1.Subscribe("test.reply", func(m *nats.Msg) {
+			m.Respond([]byte("{\"sender\": 22 }"))
+		})
+		nc2.Subscribe("test.reply", func(m *nats.Msg) {
+			m.Respond([]byte("{\"sender\": 33 }"))
+		})
+		nc1.Flush()
+		nc2.Flush()
+	}
+
+	servers := fmt.Sprintf("%s, %s", urlA, urlB)
+	req := sizedBytes(8 * 1024)
+
+	// Now run a requestor in a loop, creating and tearing down each time to
+	// simulate running a modified nats-req.
+	doReq := func() {
+		msgs := make(chan *nats.Msg, 1)
+		inbox := nats.NewInbox()
+		grp := nuid.Next()
+		// Create 8 queue Subscribers for responses.
+		for i := 0; i < 8; i++ {
+			nc, _ := nats.Connect(servers)
+			nc.ChanQueueSubscribe(inbox, grp, msgs)
+			nc.Flush()
+			defer nc.Close()
+		}
+		nc, _ := nats.Connect(servers)
+		nc.PublishRequest("test.reply", inbox, req)
+		defer nc.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		var received int
+		for {
+			select {
+			case <-msgs:
+				received++
+				if received >= numResponses {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	doRequests := func(n int) {
+		for i := 0; i < n; i++ {
+			doReq()
+		}
+		wg.Done()
+	}
+
+	concurrent := 10
+	wg.Add(concurrent)
+	for i := 0; i < concurrent; i++ {
+		go doRequests(10)
+	}
+	wg.Wait()
+
+	// Close responders too, should have zero(0) subs attached to routes.
+	for _, nc := range repliers {
+		nc.Close()
+	}
+
+	// Make sure no clients remain. This is to make sure the test is correct and that
+	// we have closed all the client connections.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		v1, _ := srvA.Varz(nil)
+		v2, _ := srvB.Varz(nil)
+		if v1.Connections != 0 || v2.Connections != 0 {
+			return fmt.Errorf("We have lingering client connections %d:%d", v1.Connections, v2.Connections)
+		}
+		return nil
+	})
+
+	loadRoutez := func() (*server.Routez, *server.Routez) {
+		v1, err := srvA.Routez(&server.RoutezOptions{Subscriptions: true})
+		if err != nil {
+			t.Fatalf("Error getting Routez: %v", err)
+		}
+		v2, err := srvB.Routez(&server.RoutezOptions{Subscriptions: true})
+		if err != nil {
+			t.Fatalf("Error getting Routez: %v", err)
+		}
+		return v1, v2
+	}
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		r1, r2 := loadRoutez()
+		if r1.Routes[0].NumSubs != 0 {
+			return fmt.Errorf("Leaked %d subs: %+v", r1.Routes[0].NumSubs, r1.Routes[0].Subs)
+		}
+		if r2.Routes[0].NumSubs != 0 {
+			return fmt.Errorf("Leaked %d subs: %+v", r2.Routes[0].NumSubs, r2.Routes[0].Subs)
+		}
+		return nil
+	})
 }

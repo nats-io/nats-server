@@ -805,3 +805,53 @@ func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
 	checkTmpAccounts(t, sa)
 	checkTmpAccounts(t, sb)
 }
+
+func TestNoRaceWriteDeadline(t *testing.T) {
+	opts := DefaultOptions()
+	opts.WriteDeadline = 30 * time.Millisecond
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("CONNECT {}\r\nPING\r\nSUB foo 1\r\n")); err != nil {
+		t.Fatalf("Error sending protocols to server: %v", err)
+	}
+	// Reduce socket buffer to increase reliability of getting
+	// write deadline errors.
+	c.(*net.TCPConn).SetReadBuffer(4)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	sender, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 1000000)
+	total := 1000
+	for i := 0; i < total; i++ {
+		if err := sender.Publish("foo", payload); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+	// Flush sender connection to ensure that all data has been sent.
+	if err := sender.Flush(); err != nil {
+		t.Fatalf("Error on flush: %v", err)
+	}
+
+	// At this point server should have closed connection c.
+
+	// On certain platforms, it may take more than one call before
+	// getting the error.
+	for i := 0; i < 100; i++ {
+		if _, err := c.Write([]byte("PUB bar 5\r\nhello\r\n")); err != nil {
+			// ok
+			return
+		}
+	}
+	t.Fatal("Connection should have been closed")
+}

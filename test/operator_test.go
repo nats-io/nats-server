@@ -67,6 +67,7 @@ func TestOperatorRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
+	opts.NoSigs = true
 	if _, err := server.NewServer(opts); err != nil {
 		t.Fatalf("Expected to create a server successfully")
 	}
@@ -117,6 +118,7 @@ func TestOperatorConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
+	opts.NoSigs = true
 	// Check we have the TrustedOperators
 	if len(opts.TrustedOperators) != 1 {
 		t.Fatalf("Expected to load the operator")
@@ -135,6 +137,7 @@ func TestOperatorConfigInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
+	opts.NoSigs = true
 	// Check we have the TrustedOperators
 	if len(opts.TrustedOperators) != 1 {
 		t.Fatalf("Expected to load the operator")

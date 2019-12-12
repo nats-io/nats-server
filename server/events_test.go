@@ -1436,7 +1436,8 @@ func TestGatewayNameClientInfo(t *testing.T) {
 	defer sa.Shutdown()
 	defer sb.Shutdown()
 
-	_, _, l := newClientForServer(sa)
+	c, _, l := newClientForServer(sa)
+	defer c.close()
 
 	var info Info
 	err := json.Unmarshal([]byte(l[5:]), &info)

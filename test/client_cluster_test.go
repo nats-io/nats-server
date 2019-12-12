@@ -121,6 +121,8 @@ func TestServerRestartReSliceIssue(t *testing.T) {
 // of server restarts.
 func TestServerRestartAndQueueSubs(t *testing.T) {
 	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
 
 	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
 	urlB := fmt.Sprintf("nats://%s:%d/", optsB.Host, optsB.Port)
@@ -145,7 +147,11 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 			select {
 			case <-reconnectsDone:
 				atomic.AddInt64(&rcs, 1)
-				if rcs >= 2 {
+				// Client that is connected to srvA will reconnect
+				// to srvB when srvA is shutdown, then when srvB is
+				// shutdown, both clients will reconnect to srvA. So
+				// it is a total of 3 reconnects.
+				if rcs >= 3 {
 					return
 				}
 			case <-time.After(2 * time.Second):

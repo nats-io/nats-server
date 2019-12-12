@@ -221,6 +221,7 @@ func TestSystemServiceSubscribersLeafNodesWithoutSystem(t *testing.T) {
 	// This is so we can test when the subs on a leafnode are flushed to the connected supercluster.
 	fsubj := "__leaf.flush__"
 	fc := clientConnect(t, opts, "foo")
+	defer fc.Close()
 	fc.Subscribe(fsubj, func(m *nats.Msg) {
 		m.Respond(nil)
 	})
@@ -324,6 +325,7 @@ func TestSystemServiceSubscribersLeafNodesWithSystem(t *testing.T) {
 	// This is so we can test when the subs on a leafnode are flushed to the connected supercluster.
 	fsubj := "__leaf.flush__"
 	fc := clientConnect(t, opts, "foo")
+	defer fc.Close()
 	fc.Subscribe(fsubj, func(m *nats.Msg) {
 		m.Respond(nil)
 	})

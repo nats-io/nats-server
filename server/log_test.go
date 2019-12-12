@@ -201,6 +201,7 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 	defer s.SetLogger(nil, false, false)
 
 	c, _, _ := newClientForServer(s)
+	defer c.close()
 
 	connectOp := []byte("CONNECT {\"user\":\"derek\",\"pass\":\"s3cr3t\"}\r\n")
 	err := c.parse(connectOp)
