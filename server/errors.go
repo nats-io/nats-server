@@ -109,6 +109,9 @@ var (
 	// ErrStreamImportBadPrefix is returned when a stream import prefix contains wildcards.
 	ErrStreamImportBadPrefix = errors.New("stream import prefix can not contain wildcard tokens")
 
+	// ErrStreamImportDuplicate is returned when a stream import is a duplicate of one that already exists.
+	ErrStreamImportDuplicate = errors.New("stream import already exists")
+
 	// ErrServiceImportAuthorization is returned when a service import is not authorized.
 	ErrServiceImportAuthorization = errors.New("service import not authorized")
 
