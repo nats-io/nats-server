@@ -179,7 +179,7 @@ type exportMap struct {
 
 // importMap tracks the imported streams and services.
 type importMap struct {
-	streams  map[string]*streamImport
+	streams  []*streamImport
 	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
 }
 
@@ -642,8 +642,7 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 		a.mu.RUnlock()
 		return true
 	}
-	// FIXME(dlc) - Might want to cache this is in the hot path checking for
-	// latency tracking.
+	// FIXME(dlc) - Might want to cache this is in the hot path checking for latency tracking.
 	tokens := strings.Split(service, tsep)
 	for subj, ea := range a.exports.services {
 		if isSubsetMatch(tokens, subj) && ea != nil && ea.latency != nil {
@@ -1200,13 +1199,24 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 		}
 	}
 	a.mu.Lock()
-	if a.imports.streams == nil {
-		a.imports.streams = make(map[string]*streamImport)
+	if a.isStreamImportDuplicate(account, from) {
+		a.mu.Unlock()
+		return ErrStreamImportDuplicate
 	}
-	// TODO(dlc) - collisions, etc.
-	a.imports.streams[from] = &streamImport{account, from, prefix, imClaim, false}
+	a.imports.streams = append(a.imports.streams, &streamImport{account, from, prefix, imClaim, false})
 	a.mu.Unlock()
 	return nil
+}
+
+// isStreamImportDuplicate checks for duplicate.
+// Lock should be held.
+func (a *Account) isStreamImportDuplicate(acc *Account, from string) bool {
+	for _, si := range a.imports.streams {
+		if si.acc == acc && si.from == from {
+			return true
+		}
+	}
+	return false
 }
 
 // AddStreamImport will add in the stream import from a specific account.
@@ -1382,13 +1392,19 @@ func fetchActivation(url string) string {
 }
 
 // These are import stream specific versions for when an activation expires.
-func (a *Account) streamActivationExpired(subject string) {
+func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 	a.mu.RLock()
 	if a.expired || a.imports.streams == nil {
 		a.mu.RUnlock()
 		return
 	}
-	si := a.imports.streams[subject]
+	var si *streamImport
+	for _, si = range a.imports.streams {
+		if si.acc == exportAcc && si.from == subject {
+			break
+		}
+	}
+
 	if si == nil || si.invalid {
 		a.mu.RUnlock()
 		return
@@ -1439,17 +1455,17 @@ func (a *Account) serviceActivationExpired(subject string) {
 
 // Fires for expired activation tokens. We could track this with timers etc.
 // Instead we just re-analyze where we are and if we need to act.
-func (a *Account) activationExpired(subject string, kind jwt.ExportType) {
+func (a *Account) activationExpired(exportAcc *Account, subject string, kind jwt.ExportType) {
 	switch kind {
 	case jwt.Stream:
-		a.streamActivationExpired(subject)
+		a.streamActivationExpired(exportAcc, subject)
 	case jwt.Service:
 		a.serviceActivationExpired(subject)
 	}
 }
 
 // checkActivation will check the activation token for validity.
-func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool) bool {
+func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTimer bool) bool {
 	if claim == nil || claim.Token == "" {
 		return false
 	}
@@ -1485,7 +1501,7 @@ func (a *Account) checkActivation(acc *Account, claim *jwt.Import, expTimer bool
 		if expTimer {
 			expiresAt := time.Duration(act.Expires - tn)
 			time.AfterFunc(expiresAt*time.Second, func() {
-				acc.activationExpired(string(act.ImportSubject), claim.Type)
+				importAcc.activationExpired(a, string(act.ImportSubject), claim.Type)
 			})
 		}
 	}
@@ -1527,12 +1543,13 @@ func (a *Account) checkStreamImportsEqual(b *Account) bool {
 	if len(a.imports.streams) != len(b.imports.streams) {
 		return false
 	}
-	for subj, aim := range a.imports.streams {
-		bim := b.imports.streams[subj]
-		if bim == nil {
-			return false
-		}
-		if aim.acc.Name != bim.acc.Name || aim.from != bim.from || aim.prefix != bim.prefix {
+	// Load the b imports into a map index by what we are looking for.
+	bm := make(map[string]*streamImport, len(b.imports.streams))
+	for _, bim := range b.imports.streams {
+		bm[bim.acc.Name+bim.from+bim.prefix] = bim
+	}
+	for _, aim := range a.imports.streams {
+		if _, ok := bm[aim.acc.Name+aim.from+aim.prefix]; !ok {
 			return false
 		}
 	}
@@ -1744,14 +1761,11 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 	// Imports are checked unlocked in processInbound, so we can't change out the struct here. Need to process inline.
 	if a.imports.streams != nil {
-		old.imports.streams = make(map[string]*streamImport, len(a.imports.streams))
+		old.imports.streams = a.imports.streams
+		a.imports.streams = nil
 	}
 	if a.imports.services != nil {
 		old.imports.services = make(map[string]*serviceImport, len(a.imports.services))
-	}
-	for k, v := range a.imports.streams {
-		old.imports.streams[k] = v
-		delete(a.imports.streams, k)
 	}
 	for k, v := range a.imports.services {
 		old.imports.services[k] = v

@@ -2180,6 +2180,144 @@ func TestAccountDuplicateServiceImportSubject(t *testing.T) {
 	}
 }
 
+func TestMultipleStreamImportsWithSameSubjectDifferentPrefix(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	fooAcc, _ := s.RegisterAccount("foo")
+	fooAcc.AddStreamExport("test", nil)
+
+	barAcc, _ := s.RegisterAccount("bar")
+	barAcc.AddStreamExport("test", nil)
+
+	importAcc, _ := s.RegisterAccount("import")
+
+	if err := importAcc.AddStreamImport(fooAcc, "test", "foo"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := importAcc.AddStreamImport(barAcc, "test", "bar"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now make sure we can see messages from both.
+	cimport, crImport, _ := newClientForServer(s)
+	defer cimport.close()
+	if err := cimport.registerWithAccount(importAcc); err != nil {
+		t.Fatalf("Error registering client with 'import' account: %v", err)
+	}
+	if err := cimport.parse([]byte("SUB *.test 1\r\n")); err != nil {
+		t.Fatalf("Error for client 'import' from server: %v", err)
+	}
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.close()
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+
+	cbar, _, _ := newClientForServer(s)
+	defer cbar.close()
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	readMsg := func() {
+		t.Helper()
+		l, err := crImport.ReadString('\n')
+		if err != nil {
+			t.Fatalf("Error reading msg header from client 'import': %v", err)
+		}
+		mraw := msgPat.FindAllStringSubmatch(l, -1)
+		if len(mraw) == 0 {
+			t.Fatalf("No message received")
+		}
+		// Consume msg body too.
+		if _, err = crImport.ReadString('\n'); err != nil {
+			t.Fatalf("Error reading msg body from client 'import': %v", err)
+		}
+	}
+
+	cbar.parseAsync("PUB test 9\r\nhello-bar\r\n")
+	readMsg()
+
+	cfoo.parseAsync("PUB test 9\r\nhello-foo\r\n")
+	readMsg()
+}
+
+// This should work with prefixes that are different but we also want it to just work with same subject
+// being imported from multiple accounts.
+func TestMultipleStreamImportsWithSameSubject(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	fooAcc, _ := s.RegisterAccount("foo")
+	fooAcc.AddStreamExport("test", nil)
+
+	barAcc, _ := s.RegisterAccount("bar")
+	barAcc.AddStreamExport("test", nil)
+
+	importAcc, _ := s.RegisterAccount("import")
+
+	if err := importAcc.AddStreamImport(fooAcc, "test", ""); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Since we allow this now, make sure we do detect a duplicate import from same account etc.
+	// That should be not allowed.
+	if err := importAcc.AddStreamImport(fooAcc, "test", ""); err != ErrStreamImportDuplicate {
+		t.Fatalf("Expected ErrStreamImportDuplicate but got %v", err)
+	}
+
+	if err := importAcc.AddStreamImport(barAcc, "test", ""); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now make sure we can see messages from both.
+	cimport, crImport, _ := newClientForServer(s)
+	defer cimport.close()
+	if err := cimport.registerWithAccount(importAcc); err != nil {
+		t.Fatalf("Error registering client with 'import' account: %v", err)
+	}
+	if err := cimport.parse([]byte("SUB test 1\r\n")); err != nil {
+		t.Fatalf("Error for client 'import' from server: %v", err)
+	}
+
+	cfoo, _, _ := newClientForServer(s)
+	defer cfoo.close()
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+
+	cbar, _, _ := newClientForServer(s)
+	defer cbar.close()
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	readMsg := func() {
+		t.Helper()
+		l, err := crImport.ReadString('\n')
+		if err != nil {
+			t.Fatalf("Error reading msg header from client 'import': %v", err)
+		}
+		mraw := msgPat.FindAllStringSubmatch(l, -1)
+		if len(mraw) == 0 {
+			t.Fatalf("No message received")
+		}
+		// Consume msg body too.
+		if _, err = crImport.ReadString('\n'); err != nil {
+			t.Fatalf("Error reading msg body from client 'import': %v", err)
+		}
+	}
+
+	cbar.parseAsync("PUB test 9\r\nhello-bar\r\n")
+	readMsg()
+
+	cfoo.parseAsync("PUB test 9\r\nhello-foo\r\n")
+	readMsg()
+}
+
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)

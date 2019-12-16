@@ -1891,8 +1891,8 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 }
 
 // If the client's account has stream imports and there are matches for
-// this subscription's subject, then add shadow subscriptions in
-// other accounts that can export this subject.
+// this subscription's subject, then add shadow subscriptions in the
+// other accounts that export this subject.
 func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	if acc == nil {
 		return ErrMissingAccount
