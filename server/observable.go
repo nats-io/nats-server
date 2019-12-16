@@ -1050,6 +1050,7 @@ func (o *Observable) didNotDeliver(seq uint64) {
 		o.active = false
 		o.nointerest++
 	}
+
 	// FIXME(dlc) - Other scenarios. Pull mode, etc.
 	o.mu.Unlock()
 }
@@ -1088,6 +1089,7 @@ func (o *Observable) checkPending() {
 			shouldSignal = true
 		}
 	}
+
 	if len(expired) > 0 {
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
 		o.rdq = append(o.rdq, expired...)
