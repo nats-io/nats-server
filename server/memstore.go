@@ -23,12 +23,13 @@ import (
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
-	mu     sync.RWMutex
-	stats  MsgSetStats
-	msgs   map[uint64]*storedMsg
-	scb    func(int64)
-	ageChk *time.Timer
-	config MsgSetConfig
+	mu       sync.RWMutex
+	stats    MsgSetStats
+	msgs     map[uint64]*storedMsg
+	scb      func(int64)
+	ageChk   *time.Timer
+	config   MsgSetConfig
+	obsCount int
 }
 
 type storedMsg struct {
@@ -263,8 +264,11 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 func (ms *memStore) Stats() MsgSetStats {
 	ms.mu.RLock()
-	defer ms.mu.RUnlock()
-	return ms.stats
+	stats := ms.stats
+	stats.Observables = ms.obsCount
+	ms.mu.RUnlock()
+
+	return stats
 }
 
 func memStoreMsgSize(subj string, msg []byte) uint64 {
@@ -287,15 +291,40 @@ func (ms *memStore) Stop() {
 	ms.mu.Unlock()
 }
 
-type observableMemStore struct{}
+func (ms *memStore) incObsCount() {
+	ms.mu.Lock()
+	ms.obsCount++
+	ms.mu.Unlock()
+}
+
+func (ms *memStore) decObsCount() {
+	ms.mu.Lock()
+
+	if ms.obsCount == 0 {
+		ms.mu.RUnlock()
+		return
+	}
+
+	ms.obsCount--
+	ms.mu.Unlock()
+}
+
+type observableMemStore struct {
+	ms *memStore
+}
 
 func (ms *memStore) ObservableStore(_ string, _ *ObservableConfig) (ObservableStore, error) {
-	return &observableMemStore{}, nil
+	ms.incObsCount()
+
+	return &observableMemStore{ms}, nil
 }
 
 // No-ops.
 func (os *observableMemStore) Update(_ *ObservableState) error {
 	return nil
 }
-func (os *observableMemStore) Stop()                            {}
+func (os *observableMemStore) Stop() {
+	os.ms.decObsCount()
+}
+
 func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }

@@ -397,17 +397,18 @@ func getMsgSetInfo(nc *nats.Conn, name string) {
 	mstats := &msi.Stats
 	cfg := &msi.Config
 	log.Println()
-	log.Printf("Subjects:  %+v", cfg.Subjects)
-	log.Printf("Retention: %s - %s", cfg.Storage, cfg.Retention)
-	log.Printf("TTL:       %v", cfg.MaxAge)
-	log.Printf("Messages:  %s of %s",
+	log.Printf("Subjects:    %+v", cfg.Subjects)
+	log.Printf("Retention:   %s - %s", cfg.Storage, cfg.Retention)
+	log.Printf("TTL:         %v", cfg.MaxAge)
+	log.Printf("Messages:    %s of %s",
 		humanize.Comma(int64(mstats.Msgs)),
 		unlimitedOrFriendly(int(cfg.MaxMsgs)))
-	log.Printf("Bytes:     %s of %s",
+	log.Printf("Bytes:       %s of %s",
 		humanize.Bytes(mstats.Bytes),
 		unlimitedOrFriendly(int(cfg.MaxBytes)))
-	log.Printf("FirstSeq:  %s", humanize.Comma(int64(mstats.FirstSeq)))
-	log.Printf("LastSeq:   %s", humanize.Comma(int64(mstats.LastSeq)))
+	log.Printf("FirstSeq:    %s", humanize.Comma(int64(mstats.FirstSeq)))
+	log.Printf("LastSeq:     %s", humanize.Comma(int64(mstats.LastSeq)))
+	log.Printf("Observables: %d", mstats.Observables)
 	log.Println()
 }
 
