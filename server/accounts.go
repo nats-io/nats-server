@@ -1543,12 +1543,13 @@ func (a *Account) checkStreamImportsEqual(b *Account) bool {
 	if len(a.imports.streams) != len(b.imports.streams) {
 		return false
 	}
-	for subj, aim := range a.imports.streams {
-		bim := b.imports.streams[subj]
-		if bim == nil {
-			return false
-		}
-		if aim.acc.Name != bim.acc.Name || aim.from != bim.from || aim.prefix != bim.prefix {
+	// Load the b imports into a map index by what we are looking for.
+	bm := make(map[string]*streamImport, len(b.imports.streams))
+	for _, bim := range b.imports.streams {
+		bm[bim.acc.Name+bim.from+bim.prefix] = bim
+	}
+	for _, aim := range a.imports.streams {
+		if _, ok := bm[aim.acc.Name+aim.from+aim.prefix]; !ok {
 			return false
 		}
 	}
