@@ -1111,7 +1111,9 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 func (fs *fileStore) Stats() MsgSetStats {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	return fs.stats
+	stats := fs.stats
+	stats.Observables = len(fs.obs)
+	return stats
 }
 
 func fileStoreMsgSize(subj string, msg []byte) uint64 {
