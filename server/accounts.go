@@ -1430,7 +1430,7 @@ func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 }
 
 // These are import service specific versions for when an activation expires.
-func (a *Account) serviceActivationExpired(exportAcc *Account, subject string) {
+func (a *Account) serviceActivationExpired(subject string) {
 	a.mu.RLock()
 	if a.expired || a.imports.services == nil {
 		a.mu.RUnlock()
@@ -1460,7 +1460,7 @@ func (a *Account) activationExpired(exportAcc *Account, subject string, kind jwt
 	case jwt.Stream:
 		a.streamActivationExpired(exportAcc, subject)
 	case jwt.Service:
-		a.serviceActivationExpired(exportAcc, subject)
+		a.serviceActivationExpired(subject)
 	}
 }
 
