@@ -133,11 +133,11 @@ type Observable struct {
 }
 
 const (
-	// Default AckWait, only applicable on explicit ack policy observables.
+	// JsAckWaitDefault is the default AckWait, only applicable on explicit ack policy observables.
 	JsAckWaitDefault = 30 * time.Second
-	// JsActiveCheckInterval is default hb interval for push based observables.
+	// JsActiveCheckIntervalDefault is default hb interval for push based observables.
 	JsActiveCheckIntervalDefault = time.Second
-	// JsNotActiveThreshold is number of times we detect no interest to close an observable if ephemeral.
+	// JsNotActiveThresholdDefault is number of times we detect no interest to close an observable if ephemeral.
 	JsNotActiveThresholdDefault = 2
 )
 
@@ -978,6 +978,7 @@ func (o *Observable) didNotDeliver(seq uint64) {
 		o.active = false
 		o.nointerest++
 	}
+
 	// FIXME(dlc) - Other scenarios. Pull mode, etc.
 	o.mu.Unlock()
 }
@@ -1016,6 +1017,7 @@ func (o *Observable) checkPending() {
 			shouldSignal = true
 		}
 	}
+
 	if len(expired) > 0 {
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
 		o.rdq = append(o.rdq, expired...)
