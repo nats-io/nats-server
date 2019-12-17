@@ -989,7 +989,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	return si, nil
 }
 
-// Helper to detrmine when to sample.
+// Helper to determine when to sample.
 func shouldSample(l *serviceLatency) bool {
 	if l == nil || l.sampling <= 0 {
 		return false
