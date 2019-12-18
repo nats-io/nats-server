@@ -544,7 +544,7 @@ func (mset *MsgSet) NumObservables() int {
 	return len(mset.obs)
 }
 
-// LookupObservable will retrive an observable by name.
+// LookupObservable will retrieve an observable by name.
 func (mset *MsgSet) LookupObservable(name string) *Observable {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()

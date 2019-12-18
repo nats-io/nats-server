@@ -1272,6 +1272,92 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 		})
 	}
 }
+func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sendSubj := "MYQ"
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: sendSubj, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Now load up some messages.
+	toSend := 25
+	for i := 0; i < toSend; i++ {
+		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+		expectOKResponse(t, resp)
+	}
+	stats := mset.Stats()
+	if stats.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+	}
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.AddObservable(&server.ObservableConfig{
+		Durable:    "TO",
+		Delivery:   sub.Subject,
+		DeliverAll: true,
+		AckPolicy:  server.AckExplicit,
+		AckWait:    100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer o.Delete()
+
+	o.SetActiveCheckParams(10*time.Millisecond, 2)
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+		}
+		return nil
+	})
+
+	// Stop current server.
+	s.Shutdown()
+
+	// Restart.
+	s = RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Don't wait for reconnect from old client.
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ = nc.SubscribeSync(sub.Subject)
+	defer sub.Unsubscribe()
+
+	// This is all to reset active timer.
+	mset, err = s.GlobalAccount().LookupMsgSet(sendSubj)
+	if err != nil {
+		t.Fatalf("Could not retrieve message set")
+	}
+	obs := mset.LookupObservable("TO")
+	if obs == nil {
+		t.Fatalf("Could not retrieve the observable")
+	}
+	obs.SetActiveCheckParams(10*time.Millisecond, 2)
+
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+		}
+		return nil
+	})
+}
 
 func TestJetStreamEphemeralObservables(t *testing.T) {
 	cases := []struct {

@@ -331,9 +331,8 @@ func (s *Server) shutdownJetStream() {
 	s.mu.Unlock()
 
 	for _, jsa := range jsas {
-		if jsa.account != nil {
-			jsa.account.DisableJetStream()
-		}
+		jsa.flushState()
+		s.js.disableJetStream(jsa)
 	}
 
 	s.mu.Lock()
@@ -623,9 +622,11 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 
 // DisableJetStream will disable JetStream for this account.
 func (a *Account) DisableJetStream() error {
-	a.mu.RLock()
+	a.mu.Lock()
 	s := a.srv
-	a.mu.RUnlock()
+	a.js = nil
+	a.mu.Unlock()
+
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}
@@ -635,33 +636,49 @@ func (a *Account) DisableJetStream() error {
 		return fmt.Errorf("jetstream not enabled")
 	}
 
-	jsa := js.lookupAccount(a)
-	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled for account")
-	}
-
 	// Remove service imports.
 	for _, export := range allJsExports {
 		from := strings.Replace(export, ".*.", tsep, -1)
 		a.removeServiceImport(from)
 	}
 
-	js.mu.Lock()
-	if jsa, ok := js.accounts[a]; !ok {
-		js.mu.Unlock()
-		return fmt.Errorf("jetstream not enabled for account")
-	} else {
-		delete(js.accounts, a)
-		js.releaseResources(&jsa.limits)
-	}
-	js.mu.Unlock()
+	return js.disableJetStream(js.lookupAccount(a))
+}
 
-	a.mu.Lock()
-	a.js = nil
-	a.mu.Unlock()
+// Disable JetStream for the account.
+func (js *jetStream) disableJetStream(jsa *jsAccount) error {
+	if jsa == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+
+	js.mu.Lock()
+	delete(js.accounts, jsa.account)
+	js.releaseResources(&jsa.limits)
+	js.mu.Unlock()
 
 	jsa.delete()
 
+	return nil
+}
+
+// Flush JetStream state for the account.
+func (jsa *jsAccount) flushState() error {
+	if jsa == nil {
+		return fmt.Errorf("jetstream not enabled for account")
+	}
+
+	// Collect the message sets.
+	var _msets [64]*MsgSet
+	msets := _msets[:0]
+	jsa.mu.Lock()
+	for _, mset := range jsa.msgSets {
+		msets = append(msets, mset)
+	}
+	jsa.mu.Unlock()
+
+	for _, mset := range msets {
+		mset.store.Stop()
+	}
 	return nil
 }
 
