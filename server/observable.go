@@ -403,6 +403,7 @@ func (o *Observable) processNak(sseq, dseq uint64) {
 	}
 }
 
+// This will restore the state from disk.
 func (o *Observable) readStoredState() error {
 	if o.store == nil {
 		return nil
@@ -416,6 +417,11 @@ func (o *Observable) readStoredState() error {
 		o.asflr = state.AckFloor.SetSeq
 		o.pending = state.Pending
 		o.rdc = state.Redelivery
+	}
+
+	// Setup tracking timer if we have restored pending.
+	if len(o.pending) > 0 && o.ptmr == nil {
+		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
 	}
 	return err
 }
@@ -929,6 +935,11 @@ func (o *Observable) checkActive() {
 	noInterest := o.mset.noInterest(delivery)
 
 	o.mu.Lock()
+	if o.mset == nil {
+		o.mu.Unlock()
+		return
+	}
+
 	if noInterest {
 		o.active = false
 		o.nointerest++
