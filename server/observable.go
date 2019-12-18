@@ -51,11 +51,13 @@ type CreateObservableRequest struct {
 	Config ObservableConfig `json:"config"`
 }
 
-type ObservableSampleEvent struct {
+type ObservableAckSampleEvent struct {
 	MsgSet     string `json:"message_set"`
 	Observable string `json:"observable"`
 	ObsSeq     uint64 `json:"obs_seq"`
+	MsgSetSeq  uint64 `json:"msg_set_seq"`
 	Delay      int64  `json:"ack_delay"`
+	Deliveries uint64 `json:"delivery_count"`
 }
 
 // AckPolicy determines how the observable should acknowledge delivered messages.
@@ -114,42 +116,44 @@ var (
 
 // Observable is a jetstream observable/subscriber.
 type Observable struct {
-	mu              sync.Mutex
-	mset            *MsgSet
-	name            string
-	sseq            uint64
-	dseq            uint64
-	adflr           uint64
-	asflr           uint64
-	dsubj           string
-	reqSub          *subscription
-	ackSub          *subscription
-	ackReplyT       string
-	nextMsgSubj     string
-	pending         map[uint64]int64
-	ptmr            *time.Timer
-	rdq             []uint64
-	rdc             map[uint64]uint64
-	waiting         []string
-	config          ObservableConfig
-	store           ObservableStore
-	active          bool
-	replay          bool
-	atmr            *time.Timer
-	nointerest      int
-	athresh         int
-	achk            time.Duration
-	fch             chan struct{}
-	qch             chan struct{}
-	sampleFrequency int32
+	mu          sync.Mutex
+	mset        *MsgSet
+	name        string
+	msetName    string
+	sseq        uint64
+	dseq        uint64
+	adflr       uint64
+	asflr       uint64
+	dsubj       string
+	reqSub      *subscription
+	ackSub      *subscription
+	ackReplyT   string
+	nextMsgSubj string
+	pending     map[uint64]int64
+	ptmr        *time.Timer
+	rdq         []uint64
+	rdc         map[uint64]uint64
+	waiting     []string
+	config      ObservableConfig
+	store       ObservableStore
+	active      bool
+	replay      bool
+	atmr        *time.Timer
+	nointerest  int
+	athresh     int
+	achk        time.Duration
+	fch         chan struct{}
+	qch         chan struct{}
+	sfreq       int32
+	ackSampleT  string
 }
 
 const (
-	// Default AckWait, only applicable on explicit ack policy observables.
+	// JsAckWaitDefault is the default AckWait, only applicable on explicit ack policy observables.
 	JsAckWaitDefault = 30 * time.Second
-	// JsActiveCheckInterval is default hb interval for push based observables.
+	// JsActiveCheckIntervalDefault is default hb interval for push based observables.
 	JsActiveCheckIntervalDefault = time.Second
-	// JsNotActiveThreshold is number of times we detect no interest to close an observable if ephemeral.
+	// JsNotActiveThresholdDefault is number of times we detect no interest to close an observable if ephemeral.
 	JsNotActiveThresholdDefault = 2
 )
 
@@ -251,12 +255,16 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{}), fch: make(chan struct{}), sampleFrequency: int32(sampleFreq)}
+	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{}), fch: make(chan struct{}), sfreq: int32(sampleFreq)}
 	if isDurableObservable(config) {
 		o.name = config.Durable
 	} else {
 		o.name = createObservableName()
 	}
+
+	// already under lock, mset.Name() would deadlock
+	o.msetName = mset.config.Name
+	o.ackSampleT = JetStreamObservableAckSamplePre + "." + o.msetName + "." + o.name
 
 	store, err := mset.store.ObservableStore(o.name, config)
 	if err != nil {
@@ -374,12 +382,12 @@ func configsEqualSansDelivery(a, b ObservableConfig) bool {
 
 // Process a message for the ack reply subject delivered with a message.
 func (o *Observable) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	sseq, dseq, _ := o.ReplyInfo(subject)
+	sseq, dseq, dcount := o.ReplyInfo(subject)
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck):
-		o.ackMsg(sseq, dseq)
+		o.ackMsg(sseq, dseq, dcount)
 	case bytes.Equal(msg, AckNext):
-		o.ackMsg(sseq, dseq)
+		o.ackMsg(sseq, dseq, dcount)
 		o.processNextMsgReq(nil, nil, subject, reply, nil)
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
@@ -534,31 +542,35 @@ func (o *Observable) updateStore() {
 }
 
 func (o *Observable) shouldSample() bool {
-	if o.sampleFrequency <= 0 {
+	if o.sfreq <= 0 {
 		return false
 	}
 
-	if o.sampleFrequency >= 100 {
+	if o.sfreq >= 100 {
 		return true
 	}
 
-	if mrand.Int31n(100) <= o.sampleFrequency {
+	// TODO(ripienaar) this is a tad slow so we need to rethink here, however this will only
+	// hit for those with sampling enabled and its not the default
+	if mrand.Int31n(100) <= o.sfreq {
 		return true
 	}
 
 	return false
 }
 
-func (o *Observable) sampleAck(sseq, dseq uint64) {
+func (o *Observable) sampleAck(sseq, dseq, dcount uint64) {
 	if !o.shouldSample() {
 		return
 	}
 
-	e := &ObservableSampleEvent{
-		MsgSet:     o.mset.Name(),
+	e := &ObservableAckSampleEvent{
+		MsgSet:     o.msetName,
 		Observable: o.name,
 		ObsSeq:     dseq,
+		MsgSetSeq:  sseq,
 		Delay:      int64(time.Now().UnixNano()) - o.pending[sseq],
+		Deliveries: dcount,
 	}
 
 	j, err := json.MarshalIndent(e, "", "  ")
@@ -566,17 +578,16 @@ func (o *Observable) sampleAck(sseq, dseq uint64) {
 		return
 	}
 
-	target := JetStreamObservableSamplePre + "." + e.MsgSet + "." + e.Observable
-	o.mset.sendq <- &jsPubMsg{target, target, _EMPTY_, j, o, 0}
+	o.mset.sendq <- &jsPubMsg{o.ackSampleT, o.ackSampleT, _EMPTY_, j, o, 0}
 }
 
 // Process an ack for a message.
-func (o *Observable) ackMsg(sseq, dseq uint64) {
+func (o *Observable) ackMsg(sseq, dseq, dcount uint64) {
 	var sagap uint64
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckExplicit:
-		o.sampleAck(sseq, dseq)
+		o.sampleAck(sseq, dseq, dcount)
 		delete(o.pending, sseq)
 		if dseq == o.adflr+1 {
 			o.adflr = dseq
