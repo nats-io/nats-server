@@ -25,9 +25,9 @@ import (
 type StorageType int
 
 const (
-	// Memory specifies in memory only.
+	// MemoryStorage specifies in memory only.
 	MemoryStorage StorageType = iota
-	// File specifies on disk, designated by the JetStream config StoreDir.
+	// FileStorage specifies on disk, designated by the JetStream config StoreDir.
 	FileStorage
 )
 
