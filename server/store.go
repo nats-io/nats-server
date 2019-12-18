@@ -82,9 +82,9 @@ type ObservableState struct {
 	// These are both in set sequence context.
 	// Pending is for all messages pending and the timestamp for the delivered time.
 	// This will only be present when the AckPolicy is ExplicitAck.
-	Pending map[uint64]int64 `json:"pending_count"`
+	Pending map[uint64]int64 `json:"pending"`
 	// This is for messages that have been redelivered, so count > 1.
-	Redelivery map[uint64]uint64 `json:"redelivered_count"`
+	Redelivery map[uint64]uint64 `json:"redelivery"`
 }
 
 func jsonString(s string) string {
