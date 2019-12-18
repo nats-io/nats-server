@@ -248,7 +248,9 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 	attempts := 0
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
+		cURL := remote.getCurrentURL()
 		rURL := remote.pickNextURL()
+		leafURLChanged := cURL != rURL
 		url, err := s.getRandomIP(resolver, rURL.Host)
 		if err == nil {
 			var ipStr string
@@ -281,10 +283,12 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		// Go ahead and create our leaf node and return.
 		s.createLeafNode(conn, remote)
 
-		// We will put this in the normal log if first connect, does not force -DV mode to know
-		// that the connect worked.
+		// We will put this in the normal log if first connect or when leafnode changed,
+		// does not force -DV mode to know that the connect/reconnect worked.
 		if firstConnect {
 			s.Noticef("Connected leafnode to %q", rURL.Hostname())
+		} else if leafURLChanged {
+			s.Noticef("Reconnected leafnode to %q", rURL.Hostname())
 		}
 		return
 	}
