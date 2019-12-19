@@ -52,12 +52,12 @@ type CreateObservableRequest struct {
 }
 
 type ObservableAckSampleEvent struct {
-	MsgSet     string `json:"message_set"`
-	Observable string `json:"observable"`
+	MsgSet     string `json:"msg_set"`
+	Observable string `json:"obs"`
 	ObsSeq     uint64 `json:"obs_seq"`
 	MsgSetSeq  uint64 `json:"msg_set_seq"`
-	Delay      int64  `json:"ack_delay"`
-	Deliveries uint64 `json:"delivery_count"`
+	Delay      int64  `json:"ack_time"`
+	Deliveries uint64 `json:"delivered"`
 }
 
 // AckPolicy determines how the observable should acknowledge delivered messages.
