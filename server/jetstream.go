@@ -180,7 +180,7 @@ var allJsExports = []string{
 // and internal sub for a msgSet, so we will direct link to the msgSet
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu            sync.Mutex
+	mu            sync.RWMutex
 	js            *jetStream
 	account       *Account
 	limits        JetStreamAccountLimits
@@ -513,6 +513,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			}
 		}
 	}
+
 	return nil
 }
 
