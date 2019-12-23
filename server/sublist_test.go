@@ -1043,6 +1043,179 @@ func TestSublistAll(t *testing.T) {
 	}
 }
 
+func TestSublistRegisterInterestNotification(t *testing.T) {
+	s := NewSublistWithCache()
+	ch := make(chan bool, 1)
+
+	expectErr := func(subject string) {
+		if err := s.RegisterNotification("foo.*", ch); err != ErrInvalidSubject {
+			t.Fatalf("Expected err, got %v", err)
+		}
+	}
+
+	// Test that we require a literal subject.
+	expectErr("foo.*")
+	expectErr(">")
+
+	// Chan needs to be non-nil
+	if err := s.RegisterNotification("foo", nil); err != ErrNilChan {
+		t.Fatalf("Expected err, got %v", err)
+	}
+
+	// Clearing one that is not there will return false.
+	if s.ClearNotification("foo", ch) {
+		t.Fatalf("Expected to return false on non-existent notification entry")
+	}
+
+	// This should work.
+	if err := s.RegisterNotification("foo", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	tt := time.NewTimer(time.Second)
+	expectBool := func(b bool) {
+		t.Helper()
+		tt.Reset(time.Second)
+		defer tt.Stop()
+		select {
+		case v := <-ch:
+			if v != b {
+				t.Fatalf("Expected %v, got %v", b, v)
+			}
+		case <-tt.C:
+			t.Fatalf("Timeout waiting for expected value")
+		}
+	}
+	expectFalse := func() {
+		t.Helper()
+		expectBool(false)
+	}
+	expectTrue := func() {
+		t.Helper()
+		expectBool(true)
+	}
+	expectNone := func() {
+		t.Helper()
+		if lch := len(ch); lch != 0 {
+			t.Fatalf("Expected no notifications, had %d and first was %v", lch, <-ch)
+		}
+	}
+	expectOne := func() {
+		t.Helper()
+		if len(ch) != 1 {
+			t.Fatalf("Expected 1 notification")
+		}
+	}
+
+	expectOne()
+	expectFalse()
+	sub := newSub("foo")
+	s.Insert(sub)
+	expectTrue()
+
+	sub2 := newSub("foo")
+	s.Insert(sub2)
+	expectNone()
+
+	if err := s.RegisterNotification("bar", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	expectFalse()
+
+	sub3 := newSub("foo")
+	s.Insert(sub3)
+	expectNone()
+
+	// Now remove literals.
+	s.Remove(sub)
+	expectNone()
+	s.Remove(sub2)
+	expectNone()
+	s.Remove(sub3)
+	expectFalse()
+
+	sub4 := newSub("bar")
+	s.Insert(sub4)
+	expectTrue()
+
+	if !s.ClearNotification("bar", ch) {
+		t.Fatalf("Expected to return true")
+	}
+	s.RLock()
+	lnr := len(s.notify.remove)
+	s.RUnlock()
+	if lnr != 0 {
+		t.Fatalf("Expected zero entries for remove notify, got %d", lnr)
+	}
+	if !s.ClearNotification("foo", ch) {
+		t.Fatalf("Expected to return true")
+	}
+	s.RLock()
+	notifyMap := s.notify
+	s.RUnlock()
+	if notifyMap != nil {
+		t.Fatalf("Expected the notify map to be nil")
+	}
+
+	// Let's do some wildcard checks.
+	if err := s.RegisterNotification("foo", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	expectFalse()
+
+	subpwc := newSub("*")
+	s.Insert(subpwc)
+	expectTrue()
+
+	s.Insert(sub)
+	expectNone()
+
+	s.Remove(sub)
+	expectNone()
+
+	s.Remove(subpwc)
+	expectFalse()
+
+	subfwc := newSub(">")
+	s.Insert(subfwc)
+	expectTrue()
+
+	s.Insert(subpwc)
+	expectNone()
+
+	s.Remove(subpwc)
+	expectNone()
+
+	s.Remove(subfwc)
+	expectFalse()
+
+	// Test batch
+	subs := []*subscription{sub, sub2, sub3, sub4, subpwc, subfwc}
+	for _, sub := range subs {
+		s.Insert(sub)
+	}
+	expectTrue()
+
+	s.RemoveBatch(subs)
+	expectOne()
+	expectFalse()
+
+	// Test non-blocking notifications.
+	if err := s.RegisterNotification("bar", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if err := s.RegisterNotification("baz", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	s.Insert(newSub("baz"))
+	s.Insert(newSub("bar"))
+	s.Insert(subpwc)
+	expectOne()
+	expectFalse()
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription

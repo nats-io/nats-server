@@ -1317,8 +1317,6 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	}
 	defer o.Delete()
 
-	o.SetActiveCheckParams(10*time.Millisecond, 2)
-
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
@@ -1340,23 +1338,72 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	sub, _ = nc.SubscribeSync(sub.Subject)
 	defer sub.Unsubscribe()
 
-	// This is all to reset active timer.
-	mset, err = s.GlobalAccount().LookupMsgSet(sendSubj)
-	if err != nil {
-		t.Fatalf("Could not retrieve message set")
-	}
-	obs := mset.LookupObservable("TO")
-	if obs == nil {
-		t.Fatalf("Could not retrieve the observable")
-	}
-	obs.SetActiveCheckParams(10*time.Millisecond, 2)
-
-	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
 		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
 		}
 		return nil
 	})
+}
+
+func TestJetStreamActiveDelivery(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{"MemoryStore", &server.MsgSetConfig{Name: "ADS", Storage: server.MemoryStorage, Subjects: []string{"foo.*"}}},
+		{"FileStore", &server.MsgSetConfig{Name: "ADS", Storage: server.FileStorage, Subjects: []string{"foo.*"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddMsgSet(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Now load up some messages.
+			toSend := 100
+			sendSubj := "foo.22"
+			for i := 0; i < toSend; i++ {
+				resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
+				expectOKResponse(t, resp)
+			}
+			stats := mset.Stats()
+			if stats.Msgs != uint64(toSend) {
+				t.Fatalf("Expected %d messages, got %d", toSend, stats.Msgs)
+			}
+
+			o, err := mset.AddObservable(&server.ObservableConfig{Durable: "to", Delivery: "d", DeliverAll: true})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			// We have no active interest above. So observable will be considered inactive. Let's subscribe and make sure
+			// we get the messages instantly. This will test that we hook interest activation correctly.
+			sub, _ := nc.SubscribeSync("d")
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			checkFor(t, 100*time.Millisecond, 10*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+				}
+				return nil
+			})
+		})
+	}
 }
 
 func TestJetStreamEphemeralObservables(t *testing.T) {
@@ -1389,15 +1436,14 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			// For test speed.
-			o.SetActiveCheckParams(50*time.Millisecond, 2)
-
 			if !o.Active() {
 				t.Fatalf("Expected the observable to be considered active")
 			}
 			if numo := mset.NumObservables(); numo != 1 {
 				t.Fatalf("Expected number of observables to be 1, got %d", numo)
 			}
+			// Set our delete threshold to something low for testing purposes.
+			o.SetInActiveDeleteThreshold(100 * time.Millisecond)
 
 			// Make sure works now.
 			nc.Request("foo.22", nil, 100*time.Millisecond)
@@ -1408,9 +1454,8 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 				return nil
 			})
 
-			// Now close the subscription and send a message, this should trip active state on the ephemeral observable.
+			// Now close the subscription, this should trip active state on the ephemeral observable.
 			sub.Unsubscribe()
-			nc.Request("foo.22", nil, 100*time.Millisecond)
 			checkFor(t, time.Second, 10*time.Millisecond, func() error {
 				if o.Active() {
 					return fmt.Errorf("Expected the ephemeral observable to be considered inactive")
@@ -1418,49 +1463,19 @@ func TestJetStreamEphemeralObservables(t *testing.T) {
 				return nil
 			})
 			// The reason for this still being 1 is that we give some time in case of a reconnect scenario.
-			// We detect right away on the publish but we wait for interest to be re-established.
+			// We detect right away on the interest change but we wait for interest to be re-established.
+			// This is in case server goes away but app is fine, we do not want to recycle those observables.
 			if numo := mset.NumObservables(); numo != 1 {
 				t.Fatalf("Expected number of observables to be 1, got %d", numo)
 			}
 
-			// We should delete this one after the check interval.
+			// We should delete this one after the delete threshold.
 			checkFor(t, time.Second, 100*time.Millisecond, func() error {
 				if numo := mset.NumObservables(); numo != 0 {
 					return fmt.Errorf("Expected number of observables to be 0, got %d", numo)
 				}
 				return nil
 			})
-
-			// Now check that with no publish we still will expire the observable.
-			sub, _ = nc.SubscribeSync(nats.NewInbox())
-			defer sub.Unsubscribe()
-			nc.Flush()
-
-			o, err = mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject})
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// For test speed.
-			o.SetActiveCheckParams(10*time.Millisecond, 2)
-
-			if !o.Active() {
-				t.Fatalf("Expected the observable to be considered active")
-			}
-			if numo := mset.NumObservables(); numo != 1 {
-				t.Fatalf("Expected number of observables to be 1, got %d", numo)
-			}
-			sub.Unsubscribe()
-			nc.Flush()
-
-			// We should delete this one after the check interval.
-			time.Sleep(50 * time.Millisecond)
-
-			if o.Active() {
-				t.Fatalf("Expected the ephemeral observable to be considered inactive")
-			}
-			if numo := mset.NumObservables(); numo != 0 {
-				t.Fatalf("Expected number of observables to be 0, got %d", numo)
-			}
 		})
 	}
 }
@@ -1498,9 +1513,6 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			// For test speed. Thresh is too high to avoid us being deleted.
-			o.SetActiveCheckParams(50*time.Millisecond, 100)
-
 			if !o.Active() {
 				t.Fatalf("Expected the observable to be considered active")
 			}
@@ -1564,6 +1576,7 @@ func TestJetStreamObservableReconnect(t *testing.T) {
 
 			// Restablish again.
 			sub, _ = nc.SubscribeSync(delivery)
+			nc.Flush()
 
 			// We should be getting 3-10 here.
 			for i := 3; i <= 10; i++ {
@@ -1602,9 +1615,6 @@ func TestJetStreamDurableObservableReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			// For test speed.
-			o.SetActiveCheckParams(50*time.Millisecond, 2)
-
 			sendMsg := func() {
 				t.Helper()
 				if err := nc.Publish("foo.22", []byte("OK!")); err != nil {
@@ -1737,9 +1747,6 @@ func TestJetStreamDurableSubjectedObservableReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			// For test speed.
-			o.SetActiveCheckParams(50*time.Millisecond, 2)
-
 			sub, _ := nc.SubscribeSync(dsubj)
 			defer sub.Unsubscribe()
 
@@ -2290,8 +2297,6 @@ func TestJetStreamObservableReplayRateNoAck(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			defer o.Delete()
-			o.SetActiveCheckParams(50*time.Millisecond, 100)
-
 			// Sleep a random amount of time.
 			time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
 
@@ -2770,7 +2775,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 		}
 		defer mset.Delete()
 
-		toSend := rand.Intn(100)
+		toSend := rand.Intn(100) + 1
 		for n := 1; n <= toSend; n++ {
 			msg := []byte(fmt.Sprintf("Hello %d", n*i))
 			subj := subjects[rand.Intn(len(subjects))]
@@ -2778,7 +2783,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 			expectOKResponse(t, resp)
 		}
 		// Create up to 5 observables.
-		numObs := rand.Intn(5)
+		numObs := rand.Intn(5) + 1
 		var obs []obsi
 		for n := 1; n <= numObs; n++ {
 			oname := fmt.Sprintf("WQ-%d", n)
@@ -2787,7 +2792,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Now grab some messages.
-			toReceive := rand.Intn(toSend)
+			toReceive := rand.Intn(toSend) + 1
 			for r := 0; r < toReceive; r++ {
 				resp, _ := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 				if resp != nil {
@@ -2802,10 +2807,11 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 
 	// Shutdown the server. Restart and make sure things come back.
 	s.Shutdown()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 3 {
-		t.Fatalf("%d Go routines still exist post Shutdown()", delta)
+		fmt.Printf("%d Go routines still exist post Shutdown()", delta)
+		time.Sleep(30 * time.Second)
 	}
 
 	s = RunBasicJetStreamServer()
