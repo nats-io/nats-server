@@ -118,6 +118,7 @@ var (
 type Observable struct {
 	mu          sync.Mutex
 	mset        *MsgSet
+	acc         *Account
 	name        string
 	msetName    string
 	sseq        uint64
@@ -138,12 +139,11 @@ type Observable struct {
 	store       ObservableStore
 	active      bool
 	replay      bool
-	atmr        *time.Timer
-	nointerest  int
-	athresh     int
-	achk        time.Duration
+	dtmr        *time.Timer
+	dthresh     time.Duration
 	fch         chan struct{}
 	qch         chan struct{}
+	inch        chan bool
 	sfreq       int32
 	ackSampleT  string
 }
@@ -151,10 +151,9 @@ type Observable struct {
 const (
 	// JsAckWaitDefault is the default AckWait, only applicable on explicit ack policy observables.
 	JsAckWaitDefault = 30 * time.Second
-	// JsActiveCheckIntervalDefault is default hb interval for push based observables.
-	JsActiveCheckIntervalDefault = time.Second
-	// JsNotActiveThresholdDefault is number of times we detect no interest to close an observable if ephemeral.
-	JsNotActiveThresholdDefault = 2
+	// JsDeleteWaitTimeDefault is the default amount of time we will wait for non-durable
+	// observables to be in an inactive state before deleting them.
+	JsDeleteWaitTimeDefault = 5 * time.Second
 )
 
 func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error) {
@@ -206,11 +205,6 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		return nil, fmt.Errorf("observable starting position conflict")
 	} else if config.DeliverAll && config.DeliverLast {
 		return nil, fmt.Errorf("observable starting position conflict")
-	}
-
-	// Check if we are not durable that the delivery subject has interest.
-	if config.Delivery != _EMPTY_ && config.Durable == _EMPTY_ && mset.noInterest(config.Delivery) {
-		return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
 	}
 
 	sampleFreq := 0
@@ -288,6 +282,8 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		return nil, fmt.Errorf("message set not valid")
 	}
 	s, a := c.srv, c.acc
+	o.acc = a
+
 	// Check if we already have this one registered.
 	if eo, ok := mset.obs[o.name]; ok {
 		mset.mu.Unlock()
@@ -303,7 +299,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		if !configsEqualSansDelivery(o.config, eo.config) {
 			return nil, fmt.Errorf("observable replacement durable config not the same")
 		}
-		// Once we are here we have a replacement push based durable.
+		// Once we are here we have a replacement push-based durable.
 		eo.updateDelivery(o.config.Delivery)
 		return eo, nil
 	}
@@ -322,6 +318,7 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	if !o.isPushMode() {
 		o.nextMsgSubj = fmt.Sprintf("%s.%s.%s", JetStreamRequestNextPre, mn, o.name)
 		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
+			o.Delete()
 			return nil, err
 		} else {
 			o.reqSub = sub
@@ -330,14 +327,16 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	mset.obs[o.name] = o
 	mset.mu.Unlock()
 
-	// If push mode, start up active hb timer.
+	// If push mode, register for notifications on interest.
 	if o.isPushMode() {
-		o.athresh = JsNotActiveThresholdDefault
-		o.achk = JsActiveCheckIntervalDefault
-		o.atmr = time.AfterFunc(o.achk, o.checkActive)
-		// If durable and no interest mark as not active to start.
-		if o.isDurable() && mset.noInterest(config.Delivery) {
-			o.active = false
+		o.dthresh = JsDeleteWaitTimeDefault
+		o.inch = make(chan bool, 4)
+		a.sl.RegisterNotification(config.Delivery, o.inch)
+		o.active = o.hasDeliveryInterest(<-o.inch)
+		// Check if we are not durable that the delivery subject has interest.
+		if !o.isDurable() && !o.active {
+			o.Delete()
+			return nil, fmt.Errorf("observable requires interest for delivery subject when ephemeral")
 		}
 	}
 
@@ -354,6 +353,81 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	return o, nil
 }
 
+// This will check for extended interest in a subject. If we have local interest we just return
+// that, but in the absence of local interest and presence of gateways or service imports we need
+// to check those as well.
+func (o *Observable) hasDeliveryInterest(localInterest bool) bool {
+	o.mu.Lock()
+	mset := o.mset
+	if mset == nil {
+		o.mu.Unlock()
+		return false
+	}
+	acc := o.acc
+	delivery := o.config.Delivery
+	o.mu.Unlock()
+
+	if localInterest {
+		return true
+	}
+
+	// Check service imports.
+	if acc.imports.services != nil {
+		acc.mu.RLock()
+		si := acc.imports.services[delivery]
+		invalid := si != nil && si.invalid
+		acc.mu.RUnlock()
+		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
+			rr := si.acc.sl.Match(si.to)
+			if len(rr.psubs)+len(rr.qsubs) > 0 {
+				return true
+			}
+		}
+	}
+
+	// If we are here check gateways.
+	if acc.srv != nil && acc.srv.gateway.enabled {
+		gw := acc.srv.gateway
+		gw.RLock()
+		for _, gwc := range gw.outo {
+			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
+			if psi || qr != nil {
+				gw.RUnlock()
+				return true
+			}
+		}
+		gw.RUnlock()
+	}
+	return false
+}
+
+func (o *Observable) updateDeliveryInterest(localInterest bool) {
+	interest := o.hasDeliveryInterest(localInterest)
+
+	o.mu.Lock()
+	mset := o.mset
+	if mset == nil || o.isPullMode() {
+		o.mu.Unlock()
+		return
+	}
+	shouldSignal := interest && !o.active
+	o.active = interest
+
+	// Stop and clear the delete timer always.
+	stopAndClearTimer(&o.dtmr)
+
+	// If we do not have interest anymore and we are not durable start
+	// a timer to delete us. We wait for a bit in case of server reconnect.
+	if !o.isDurable() && !interest {
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+	}
+	o.mu.Unlock()
+
+	if shouldSignal {
+		mset.signalObservers()
+	}
+}
+
 // Config returns the observable's configuration.
 func (o *Observable) Config() ObservableConfig {
 	o.mu.Lock()
@@ -364,14 +438,23 @@ func (o *Observable) Config() ObservableConfig {
 func (o *Observable) updateDelivery(newDelivery string) {
 	// Update the config and the dsubj
 	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	mset := o.mset
+	if mset == nil {
+		return
+	}
+
+	oldDelivery := o.config.Delivery
 	o.dsubj = newDelivery
 	o.config.Delivery = newDelivery
 	// FIXME(dlc) - check partitions, we may need offset.
 	o.dseq = o.adflr
 	o.sseq = o.asflr
-	o.mu.Unlock()
 
-	o.checkActive()
+	// When we register new one it will deliver to update state loop.
+	o.acc.sl.ClearNotification(oldDelivery, o.inch)
+	o.acc.sl.RegisterNotification(newDelivery, o.inch)
 }
 
 func configsEqualSansDelivery(a, b ObservableConfig) bool {
@@ -461,12 +544,17 @@ func (o *Observable) updateStateLoop() {
 	o.mu.Lock()
 	fch := o.fch
 	qch := o.qch
+	inch := o.inch
 	o.mu.Unlock()
 
 	for {
 		select {
 		case <-qch:
 			return
+		case interest := <-inch:
+			// inch can be nil on pull-based, but then this will
+			// just block and not fire.
+			o.updateDeliveryInterest(interest)
 		case <-fch:
 			time.Sleep(25 * time.Millisecond)
 			o.mu.Lock()
@@ -992,52 +1080,6 @@ func (o *Observable) trackPending(seq uint64) {
 	o.pending[seq] = time.Now().UnixNano()
 }
 
-// This will check if a registered delivery subject still has interest, e.g. subscriptions.
-func (o *Observable) checkActive() {
-	o.mu.Lock()
-	mset := o.mset
-	if mset == nil || o.isPullMode() {
-		o.mu.Unlock()
-		return
-	}
-	var shouldDelete, shouldSignal bool
-	delivery := o.config.Delivery
-	o.mu.Unlock()
-
-	noInterest := o.mset.noInterest(delivery)
-
-	o.mu.Lock()
-	if o.mset == nil {
-		o.mu.Unlock()
-		return
-	}
-
-	if noInterest {
-		o.active = false
-		o.nointerest++
-		if !o.isDurable() && o.nointerest >= o.athresh {
-			shouldDelete = true
-		}
-	} else {
-		// reset
-		shouldSignal = !o.active
-		o.active = true
-		o.nointerest = 0
-	}
-	// Reset our timer here.
-	o.atmr.Reset(o.achk)
-	o.mu.Unlock()
-
-	if shouldSignal {
-		mset.signalObservers()
-	}
-
-	// This is for push based ephemerals.
-	if shouldDelete {
-		o.Delete()
-	}
-}
-
 // didNotDeliver is called when a delivery for an observable message failed.
 // Depending on our state, we will process the failure.
 func (o *Observable) didNotDeliver(seq uint64) {
@@ -1048,7 +1090,6 @@ func (o *Observable) didNotDeliver(seq uint64) {
 	}
 	if o.config.Delivery != _EMPTY_ {
 		o.active = false
-		o.nointerest++
 	}
 
 	// FIXME(dlc) - Other scenarios. Pull mode, etc.
@@ -1247,6 +1288,8 @@ func stopAndClearTimer(tp **time.Timer) {
 	if *tp == nil {
 		return
 	}
+	// Will get drained in normal course, do not try to
+	// drain here.
 	(*tp).Stop()
 	*tp = nil
 }
@@ -1268,7 +1311,7 @@ func (o *Observable) stop(dflag bool) error {
 		o.mu.Unlock()
 		return nil
 	}
-
+	a := o.acc
 	close(o.qch)
 
 	if o.store != nil {
@@ -1281,9 +1324,13 @@ func (o *Observable) stop(dflag bool) error {
 	o.ackSub = nil
 	o.reqSub = nil
 	stopAndClearTimer(&o.ptmr)
-	stopAndClearTimer(&o.atmr)
-
+	stopAndClearTimer(&o.dtmr)
+	delivery := o.config.Delivery
 	o.mu.Unlock()
+
+	if delivery != "" {
+		a.sl.ClearNotification(delivery, o.inch)
+	}
 
 	mset.mu.Lock()
 	// Break us out of the readLoop.
@@ -1318,19 +1365,24 @@ func (mset *MsgSet) validSubject(partitionSubject string) bool {
 	return mset.deliveryFormsCycle(partitionSubject)
 }
 
-// SetActiveCheckParams allows a server to change the active check parameters
-// for push based observables.
-func (o *Observable) SetActiveCheckParams(achk time.Duration, thresh int) error {
+// SetInActiveDeleteThreshold sets the delete threshold for how long to wait
+// before deleting an inactive ephemeral observable.
+func (o *Observable) SetInActiveDeleteThreshold(dthresh time.Duration) error {
 	o.mu.Lock()
-	if o.atmr == nil || o.isPullMode() {
-		o.mu.Unlock()
-		return fmt.Errorf("observable not push based")
+	defer o.mu.Unlock()
+
+	if o.isPullMode() {
+		return fmt.Errorf("observable is not push-based")
 	}
-	o.achk = achk
-	o.athresh = thresh
-	stopAndClearTimer(&o.atmr)
-	o.atmr = time.AfterFunc(o.achk, o.checkActive)
-	o.mu.Unlock()
+	if o.isDurable() {
+		return fmt.Errorf("observable is not durable")
+	}
+	deleteWasRunning := o.dtmr != nil
+	stopAndClearTimer(&o.dtmr)
+	o.dthresh = dthresh
+	if deleteWasRunning {
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+	}
 	return nil
 }
 
