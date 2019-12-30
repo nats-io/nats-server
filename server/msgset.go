@@ -38,7 +38,7 @@ type MsgSetConfig struct {
 }
 
 type MsgSetInfo struct {
-	Config MsgSetConfig `json:"name"`
+	Config MsgSetConfig `json:"config"`
 	Stats  MsgSetStats  `json:"stats"`
 }
 
