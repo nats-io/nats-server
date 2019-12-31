@@ -471,7 +471,10 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 		c.closeConnection(ProtocolViolation)
 		return
 	}
-	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
+	// Although this call is made before the writeLoop is created,
+	// we don't really need to send in place. The protocol will be
+	// sent out by the writeLoop.
+	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
 }
 
 // Makes a deep copy of the LeafNode Info structure.
@@ -542,7 +545,7 @@ func (s *Server) generateLeafNodeInfoJSON() {
 func (s *Server) sendAsyncLeafNodeInfo() {
 	for _, c := range s.leafs {
 		c.mu.Lock()
-		c.sendInfo(s.leafNodeInfoJSON)
+		c.enqueueProto(s.leafNodeInfoJSON)
 		c.mu.Unlock()
 	}
 }
@@ -698,7 +701,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		info.CID = c.cid
 		b, _ := json.Marshal(info)
 		pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-		c.sendInfo(bytes.Join(pcs, []byte(" ")))
+		// We have to send from this go routine because we may
+		// have to block for TLS handshake before we start our
+		// writeLoop go routine. The other side needs to receive
+		// this before it can initiate the TLS handshake..
+		c.sendProtoNow(bytes.Join(pcs, []byte(" ")))
 
 		// Check to see if we need to spin up TLS.
 		if info.TLSRequired {
@@ -731,7 +738,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// Leaf nodes will always require a CONNECT to let us know
 		// when we are properly bound to an account.
 		// The connection may have been closed
-		if c.nc != nil {
+		if !c.isClosed() {
 			c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
 		}
 	}
@@ -766,7 +773,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.leaf == nil || c.nc == nil {
+	if c.leaf == nil || c.isClosed() {
 		return
 	}
 
@@ -1092,7 +1099,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	} else {
 		delete(c.leaf.smap, key)
 	}
-	if update && c.flags.isSet(leafAllSubsSent) {
+	if update {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
@@ -1104,7 +1111,7 @@ func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 	_b := [64]byte{}
 	b := bytes.NewBuffer(_b[:0])
 	c.writeLeafSub(b, key, n)
-	c.sendProto(b.Bytes(), false)
+	c.enqueueProto(b.Bytes())
 }
 
 // Helper function to build the key.
@@ -1131,19 +1138,13 @@ func (c *client) sendAllLeafSubs() {
 	var b bytes.Buffer
 
 	c.mu.Lock()
-	// Set the flag here before first call to flushOutbound() since that
-	// releases the lock and so an update could sneak in.
-	c.flags.set(leafAllSubsSent)
-
 	for key, n := range c.leaf.smap {
 		c.writeLeafSub(&b, key, n)
 	}
-
-	// We will make sure we don't overflow here due to a max_pending.
-	chunks := protoChunks(b.Bytes(), MAX_PAYLOAD_SIZE)
-	for _, chunk := range chunks {
-		c.queueOutbound(chunk)
-		c.flushOutbound()
+	buf := b.Bytes()
+	if len(buf) > 0 {
+		c.queueOutbound(buf)
+		c.flushSignal()
 	}
 	c.mu.Unlock()
 }
@@ -1211,7 +1212,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	sub.subject = args[0]
 
 	c.mu.Lock()
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return nil
 	}
@@ -1317,7 +1318,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	srv := c.srv
 
 	c.mu.Lock()
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return nil
 	}
@@ -1500,36 +1501,4 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	if c.srv.gateway.enabled {
 		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
-}
-
-// This functional will take a larger buffer and break it into
-// chunks that are protocol correct. Reason being is that we are
-// doing this in the first place to get things in smaller sizes
-// out the door but we may allow someone to get in between us as
-// we do.
-// NOTE - currently this does not process MSG protos.
-func protoChunks(b []byte, csz int) [][]byte {
-	if b == nil {
-		return nil
-	}
-	if len(b) <= csz {
-		return [][]byte{b}
-	}
-	var (
-		chunks [][]byte
-		start  int
-	)
-	for i := csz; i < len(b); {
-		// Walk forward to find a CR_LF
-		delim := bytes.Index(b[i:], []byte(CR_LF))
-		if delim < 0 {
-			chunks = append(chunks, b[start:])
-			break
-		}
-		end := delim + LEN_CR_LF + i
-		chunks = append(chunks, b[start:end])
-		start = end
-		i = end + csz
-	}
-	return chunks
 }

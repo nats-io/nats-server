@@ -22,7 +22,6 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -90,11 +89,11 @@ const (
 	infoReceived                             // The INFO protocol has been received
 	firstPongSent                            // The first PONG has been sent
 	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
-	clearConnection                          // Marks that clearConnection has already been called.
 	flushOutbound                            // Marks client as having a flushOutbound call in progress.
 	noReconnect                              // Indicate that on close, this connection should not attempt a reconnect
 	closeConnection                          // Marks that closeConnection has already been called.
-	leafAllSubsSent                          // Indicates that a leaf node has sent the subscription list
+	writeLoopStarted                         // Marks that the writeLoop has been started.
+	skipFlushOnClose                         // Marks that flushOutbound() should not be called on connection close.
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -734,33 +733,44 @@ func (c *client) loadMsgDenyFilter() {
 // Runs in its own Go routine.
 func (c *client) writeLoop() {
 	defer c.srv.grWG.Done()
+	c.mu.Lock()
+	if c.isClosed() {
+		c.mu.Unlock()
+		return
+	}
+	c.flags.set(writeLoopStarted)
+	c.mu.Unlock()
+
+	// This will clear connection state and remove it from the server.
+	defer c.teardownConn()
 
 	// Used to check that we did flush from last wake up.
 	waitOk := true
+
+	var close bool
 
 	// Main loop. Will wait to be signaled and then will use
 	// buffered outbound structure for efficient writev to the underlying socket.
 	for {
 		c.mu.Lock()
-		owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
-		if waitOk && (c.out.pb == 0 || owtf) && !c.flags.isSet(clearConnection) {
-			// Wait on pending data.
-			c.out.sgw = true
-			c.out.sg.Wait()
-			c.out.sgw = false
+		if close = c.flags.isSet(closeConnection); !close {
+			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
+			if waitOk && (c.out.pb == 0 || owtf) {
+				// Wait on pending data.
+				c.out.sgw = true
+				c.out.sg.Wait()
+				c.out.sgw = false
+				close = c.flags.isSet(closeConnection)
+			}
 		}
-		// Flush data
-		// TODO(dlc) - This could spin if another go routine in flushOutbound waiting on a slow IO.
-		waitOk = c.flushOutbound()
-		isClosed := c.flags.isSet(clearConnection)
-		if isClosed {
-			c.out.p, c.out.s = nil, nil
-		}
-		c.mu.Unlock()
-
-		if isClosed {
+		if close {
+			c.flushAndClose(false)
+			c.mu.Unlock()
 			return
 		}
+		// Flush data
+		waitOk = c.flushOutbound()
+		c.mu.Unlock()
 	}
 }
 
@@ -784,7 +794,7 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 		cp.out.fsp--
 
 		// Just ignore if this was closed.
-		if cp.flags.isSet(clearConnection) {
+		if cp.flags.isSet(closeConnection) {
 			cp.mu.Unlock()
 			continue
 		}
@@ -806,8 +816,13 @@ func (c *client) readLoop() {
 	// Grab the connection off the client, it will be cleared on a close.
 	// We check for that after the loop, but want to avoid a nil dereference
 	c.mu.Lock()
-	nc := c.nc
 	s := c.srv
+	defer s.grWG.Done()
+	if c.isClosed() {
+		c.mu.Unlock()
+		return
+	}
+	nc := c.nc
 	c.in.rsz = startBufSize
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
@@ -818,16 +833,11 @@ func (c *client) readLoop() {
 			c.mcl = int32(opts.MaxControlLine)
 		}
 	}
-	defer s.grWG.Done()
 	// Check the per-account-cache for closed subscriptions
 	cpacc := c.kind == ROUTER || c.kind == GATEWAY
 	// Last per-account-cache check for closed subscriptions
 	lpacc := time.Now()
 	c.mu.Unlock()
-
-	if nc == nil {
-		return
-	}
 
 	defer func() {
 		// These are used only in the readloop, so we can set them to nil
@@ -858,6 +868,10 @@ func (c *client) readLoop() {
 			if dur := time.Since(start); dur >= readLoopReportThreshold {
 				c.Warnf("Readloop processing time: %v", dur)
 			}
+			// Need to call flushClients because some of the clients have been
+			// assigned messages and their "fsp" incremented, and need now to be
+			// decremented and their writeLoop signaled.
+			c.flushClients(0)
 			// handled inline
 			if err != ErrMaxPayload && err != ErrAuthentication {
 				c.Errorf("%s", err.Error())
@@ -889,7 +903,7 @@ func (c *client) readLoop() {
 
 		// Update activity, check read buffer size.
 		c.mu.Lock()
-		nc := c.nc
+		closed := c.isClosed()
 
 		// Activity based on interest changes or data/msgs.
 		if c.in.msgs > 0 || c.in.subs > 0 {
@@ -919,7 +933,7 @@ func (c *client) readLoop() {
 		}
 
 		// Check to see if we got closed, e.g. slow consumer
-		if nc == nil {
+		if closed {
 			return
 		}
 
@@ -969,13 +983,6 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 // Lock must be held
 func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
-		// Another go-routine has set this and is either
-		// doing the write or waiting to re-acquire the
-		// lock post write. Release lock to give it a
-		// chance to complete.
-		c.mu.Unlock()
-		runtime.Gosched()
-		c.mu.Lock()
 		return false
 	}
 	c.flags.set(flushOutbound)
@@ -985,9 +992,6 @@ func (c *client) flushOutbound() bool {
 	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
 		return true // true because no need to queue a signal.
 	}
-
-	// Snapshot opts
-	srv := c.srv
 
 	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
 	nb := c.collapsePtoNB()
@@ -1018,6 +1022,25 @@ func (c *client) flushOutbound() bool {
 	// Re-acquire client lock.
 	c.mu.Lock()
 
+	if err != nil {
+		// Handle timeout error (slow consumer) differently
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if closed := c.handleWriteTimeout(n, attempted, len(cnb)); closed {
+				return true
+			}
+		} else {
+			// Other errors will cause connection to be closed.
+			// For clients, report as debug but for others report as error.
+			report := c.Debugf
+			if c.kind != CLIENT {
+				report = c.Errorf
+			}
+			report("Error flushing: %v", err)
+			c.markConnAsClosed(WriteError, true)
+			return true
+		}
+	}
+
 	// Update flush time statistics.
 	c.out.lft = lft
 	c.out.lwb = int32(n)
@@ -1032,43 +1055,6 @@ func (c *client) flushOutbound() bool {
 		c.handlePartialWrite(nb)
 	} else if c.out.lwb >= c.out.sz {
 		c.out.sws = 0
-	}
-
-	if err != nil {
-		if n == 0 {
-			c.out.pb -= attempted
-		}
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			// report slow consumer error
-			sce := true
-			if tlsConn, ok := c.nc.(*tls.Conn); ok {
-				if !tlsConn.ConnectionState().HandshakeComplete {
-					// Likely a TLSTimeout error instead...
-					c.clearConnection(TLSHandshakeError)
-					// Would need to coordinate with tlstimeout()
-					// to avoid double logging, so skip logging
-					// here, and don't report a slow consumer error.
-					sce = false
-				}
-			} else if !c.flags.isSet(connectReceived) {
-				// Under some conditions, a client may hit a slow consumer write deadline
-				// before the authorization or TLS handshake timeout. If that is the case,
-				// then we handle as slow consumer though we do not increase the counter
-				// as that can be misleading.
-				c.clearConnection(SlowConsumerWriteDeadline)
-				sce = false
-			}
-			if sce {
-				atomic.AddInt64(&srv.slowConsumers, 1)
-				c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
-					c.out.wdl, len(cnb), attempted)
-				c.clearConnection(SlowConsumerWriteDeadline)
-			}
-		} else {
-			c.Debugf("Error flushing: %v", err)
-			c.clearConnection(WriteError)
-		}
-		return true
 	}
 
 	// Adjust based on what we wrote plus any pending.
@@ -1114,6 +1100,90 @@ func (c *client) flushOutbound() bool {
 	}
 
 	return true
+}
+
+// This is invoked from flushOutbound() for io/timeout error (slow consumer).
+// Returns a boolean to indicate if the connection has been closed or not.
+// Lock is held on entry.
+func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) bool {
+	if tlsConn, ok := c.nc.(*tls.Conn); ok {
+		if !tlsConn.ConnectionState().HandshakeComplete {
+			// Likely a TLSTimeout error instead...
+			c.markConnAsClosed(TLSHandshakeError, true)
+			// Would need to coordinate with tlstimeout()
+			// to avoid double logging, so skip logging
+			// here, and don't report a slow consumer error.
+			return true
+		}
+	} else if c.expectConnect() && !c.flags.isSet(connectReceived) {
+		// Under some conditions, a connection may hit a slow consumer write deadline
+		// before the authorization timeout. If that is the case, then we handle
+		// as slow consumer though we do not increase the counter as that can be
+		// misleading.
+		c.markConnAsClosed(SlowConsumerWriteDeadline, true)
+		return true
+	}
+
+	// Slow consumer here..
+	atomic.AddInt64(&c.srv.slowConsumers, 1)
+	c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
+		c.out.wdl, numChunks, attempted)
+
+	// We always close CLIENT connections, or when nothing was written at all...
+	if c.kind == CLIENT || written == 0 {
+		c.markConnAsClosed(SlowConsumerWriteDeadline, true)
+		return true
+	}
+	return false
+}
+
+// Marks this connection has closed with the given reason.
+// Sets the closeConnection flag and skipFlushOnClose flag if asked.
+// Depending on the kind of connection, the connection will be saved.
+// If a writeLoop has been started, the final flush/close/teardown will
+// be done there, otherwise flush and close of TCP connection is done here in place.
+// Returns true if closed in place, flase otherwise.
+// Lock is held on entry.
+func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
+	if c.flags.isSet(closeConnection) {
+		return false
+	}
+	c.flags.set(closeConnection)
+	if skipFlush {
+		c.flags.set(skipFlushOnClose)
+	}
+	// Save off the connection if its a client or leafnode.
+	if c.kind == CLIENT || c.kind == LEAF {
+		if nc := c.nc; nc != nil && c.srv != nil {
+			go c.srv.saveClosedClient(c, nc, reason)
+		}
+	}
+	// If writeLoop exists, let it do the final flush, close and teardown.
+	if c.flags.isSet(writeLoopStarted) {
+		c.out.sg.Broadcast()
+		return false
+	}
+	// Flush (if skipFlushOnClose is not set) and close in place. If flushing,
+	// use a small WriteDeadline.
+	c.flushAndClose(true)
+	return true
+}
+
+// Based on the kind of connection, returns if a CONNECT is expected or not.
+// Lock is held on entry.
+func (c *client) expectConnect() bool {
+	switch c.kind {
+	case CLIENT:
+		return true
+	case ROUTER:
+		return !c.route.didSolicit
+	case GATEWAY:
+		return !c.gw.outbound
+	case LEAF:
+		return c.leaf.remote == nil
+	default:
+		return false
+	}
 }
 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
@@ -1247,7 +1317,7 @@ func (c *client) processConnect(arg []byte) error {
 	if !c.clearAuthTimer() {
 		// wait for it to finish and handle sending the failure back to
 		// the client.
-		for c.nc != nil {
+		for !c.isClosed() {
 			c.mu.Unlock()
 			time.Sleep(25 * time.Millisecond)
 			c.mu.Lock()
@@ -1450,8 +1520,8 @@ func (c *client) maxPayloadViolation(sz int, max int32) {
 // should not reuse the `data` array.
 // Lock should be held.
 func (c *client) queueOutbound(data []byte) bool {
-	// Do not keep going if closed or cleared via a slow consumer
-	if c.flags.isSet(clearConnection) {
+	// Do not keep going if closed
+	if c.flags.isSet(closeConnection) {
 		return false
 	}
 
@@ -1462,10 +1532,10 @@ func (c *client) queueOutbound(data []byte) bool {
 
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
-	if c.out.pb > c.out.mp {
+	if c.kind == CLIENT && c.out.pb > c.out.mp {
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
-		c.clearConnection(SlowConsumerPendingBytes)
+		c.markConnAsClosed(SlowConsumerPendingBytes, true)
 		return referenced
 	}
 
@@ -1536,20 +1606,33 @@ func (c *client) queueOutbound(data []byte) bool {
 }
 
 // Assume the lock is held upon entry.
-func (c *client) sendProto(info []byte, doFlush bool) {
-	if c.nc == nil {
+func (c *client) enqueueProtoAndFlush(proto []byte, doFlush bool) {
+	if c.isClosed() {
 		return
 	}
-	c.queueOutbound(info)
+	c.queueOutbound(proto)
 	if !(doFlush && c.flushOutbound()) {
 		c.flushSignal()
 	}
 }
 
+// Queues and then flushes the connection. This should only be called when
+// the writeLoop cannot be started yet. Use enqueueProto() otherwise.
+// Lock is held on entry.
+func (c *client) sendProtoNow(proto []byte) {
+	c.enqueueProtoAndFlush(proto, true)
+}
+
+// Enqueues the given protocol and signal the writeLoop if necessary.
+// Lock is held on entry.
+func (c *client) enqueueProto(proto []byte) {
+	c.enqueueProtoAndFlush(proto, false)
+}
+
 // Assume the lock is held upon entry.
 func (c *client) sendPong() {
 	c.traceOutOp("PONG", nil)
-	c.sendProto([]byte("PONG\r\n"), true)
+	c.enqueueProto([]byte("PONG\r\n"))
 }
 
 // Used to kick off a RTT measurement for latency tracking.
@@ -1570,7 +1653,7 @@ func (c *client) sendRTTPingLocked() bool {
 	// send the PING. But in case we have client libs that don't do that,
 	// allow the send of the PING if more than 2 secs have elapsed since
 	// the client TCP connection was accepted.
-	if !c.flags.isSet(clearConnection) &&
+	if !c.flags.isSet(closeConnection) &&
 		(c.flags.isSet(firstPongSent) || time.Since(c.start) > maxNoRTTPingBeforeFirstPong) {
 		c.sendPing()
 		return true
@@ -1583,7 +1666,7 @@ func (c *client) sendPing() {
 	c.rttStart = time.Now()
 	c.ping.out++
 	c.traceOutOp("PING", nil)
-	c.sendProto([]byte("PING\r\n"), true)
+	c.enqueueProto([]byte("PING\r\n"))
 }
 
 // Generates the INFO to be sent to the client with the client ID included.
@@ -1598,15 +1681,10 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 	return bytes.Join(pcs, []byte(" "))
 }
 
-// Assume the lock is held upon entry.
-func (c *client) sendInfo(info []byte) {
-	c.sendProto(info, true)
-}
-
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
 	c.traceOutOp("-ERR", []byte(err))
-	c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", err)), true)
+	c.enqueueProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", err)))
 	c.mu.Unlock()
 }
 
@@ -1614,8 +1692,7 @@ func (c *client) sendOK() {
 	proto := []byte("+OK\r\n")
 	c.mu.Lock()
 	c.traceOutOp("OK", nil)
-	// Can not autoflush this one, needs to be async.
-	c.sendProto(proto, false)
+	c.enqueueProto(proto)
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
@@ -1623,7 +1700,7 @@ func (c *client) sendOK() {
 func (c *client) processPing() {
 	c.mu.Lock()
 	c.traceInOp("PING", nil)
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return
 	}
@@ -1672,7 +1749,7 @@ func (c *client) processPing() {
 		// If there was a cluster update since this client was created,
 		// send an updated INFO protocol now.
 		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) {
-			c.sendInfo(c.generateClientInfoJSON(srv.copyInfo()))
+			c.enqueueProto(c.generateClientInfoJSON(srv.copyInfo()))
 		}
 		c.mu.Unlock()
 		srv.mu.Unlock()
@@ -1807,7 +1884,8 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 
 	sid := string(sub.sid)
 
-	if c.nc == nil && kind != SYSTEM {
+	// This check does not apply to SYSTEM clients (because they don't have a `nc`...)
+	if c.isClosed() && kind != SYSTEM {
 		c.mu.Unlock()
 		return sub, nil
 	}
@@ -2249,13 +2327,20 @@ func (c *client) msgHeader(mh []byte, sub *subscription, reply []byte) []byte {
 
 func (c *client) stalledWait(producer *client) {
 	stall := c.out.stc
+	ttl := 100 * time.Millisecond
+	if c.out.pb >= c.out.mp {
+		ttl = time.Second
+	} else if hmp := c.out.mp / 2; c.out.pb > hmp {
+		bsz := hmp / 10
+		n := (c.out.pb - hmp) / bsz
+		ttl *= time.Duration(n)
+	}
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
-	// TODO(dlc) - Make the stall timeout variable based on health of consumer.
 	select {
 	case <-stall:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(ttl):
 		producer.Debugf("Timed out of fast producer stall")
 	}
 }
@@ -2363,7 +2448,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	}
 
 	// Check for closed connection
-	if client.flags.isSet(clearConnection) {
+	if client.flags.isSet(closeConnection) {
 		client.mu.Unlock()
 		return false
 	}
@@ -3164,10 +3249,10 @@ func (c *client) replySubjectViolation(reply []byte) {
 
 func (c *client) processPingTimer() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.ping.tmr = nil
 	// Check if connection is still opened
-	if c.nc == nil {
+	if c.isClosed() {
+		c.mu.Unlock()
 		return
 	}
 
@@ -3188,8 +3273,9 @@ func (c *client) processPingTimer() {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
-			c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
-			c.clearConnection(StaleConnection)
+			c.enqueueProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")))
+			c.mu.Unlock()
+			c.closeConnection(StaleConnection)
 			return
 		}
 		// Send PING
@@ -3198,6 +3284,7 @@ func (c *client) processPingTimer() {
 
 	// Reset to fire again.
 	c.setPingTimer()
+	c.mu.Unlock()
 }
 
 // Lock should be held
@@ -3248,46 +3335,29 @@ func (c *client) setExpirationTimer(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// Lock should be held
-func (c *client) clearConnection(reason ClosedState) {
-	if c.flags.isSet(clearConnection) {
-		return
-	}
-	c.flags.set(clearConnection)
+// Possibly flush the connection and then close the low level connection.
+// The boolean `minimalFlush` indicates if the flush operation should have a
+// minimal write deadline.
+// Lock is held on entry.
+func (c *client) flushAndClose(minimalFlush bool) {
+	if !c.flags.isSet(skipFlushOnClose) && c.out.pb > 0 {
+		if minimalFlush {
+			const lowWriteDeadline = 100 * time.Millisecond
 
-	nc := c.nc
-	srv := c.srv
-	if nc == nil || srv == nil {
-		return
-	}
-
-	// Unblock anyone who is potentially stalled waiting on us.
-	if c.out.stc != nil {
-		close(c.out.stc)
-		c.out.stc = nil
-	}
-
-	// Flush any pending (do this for clients, leaf and system only)
-	if c.kind == CLIENT || c.kind == LEAF || c.kind == SYSTEM {
+			// Reduce the write deadline if needed.
+			if c.out.wdl > lowWriteDeadline {
+				c.out.wdl = lowWriteDeadline
+			}
+		}
 		c.flushOutbound()
 	}
+	c.out.p, c.out.s = nil, nil
 
-	// Clear outbound here.
-	if c.out.sg != nil {
-		c.out.sg.Broadcast()
-	}
-
-	// With TLS, Close() is sending an alert (that is doing a write).
-	// Need to set a deadline otherwise the server could block there
-	// if the peer is not reading from socket.
-	nc.SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
-	nc.Close()
-	// Do this always to also kick out any IO writes.
-	nc.SetWriteDeadline(time.Time{})
-
-	// Save off the connection if its a client or leafnode.
-	if c.kind == CLIENT || c.kind == LEAF {
-		go srv.saveClosedClient(c, nc, reason)
+	// Close the low level connection. WriteDeadline need to be set
+	// in case this is a TLS connection.
+	if c.nc != nil {
+		c.nc.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		c.nc.Close()
 	}
 }
 
@@ -3383,8 +3453,24 @@ func (c *client) closeConnection(reason ClosedState) {
 		c.mu.Unlock()
 		return
 	}
-	c.flags.set(closeConnection)
+	// This will set the closeConnection flag and save the connection, etc..
+	// Will return true if no writeLoop was started and TCP connection was
+	// closed in place, in which case we need to do the teardown.
+	teardownNow := c.markConnAsClosed(reason, false)
+	c.mu.Unlock()
 
+	if teardownNow {
+		c.teardownConn()
+	}
+}
+
+// Clear the state of this connection and remove it from the server.
+// If the connection was initiated (such as ROUTE, GATEWAY, etc..) this may trigger
+// a reconnect. This function MUST be called only once per connection. It normally
+// happens when the writeLoop returns, or in closeConnection() if no writeLoop has
+// been started.
+func (c *client) teardownConn() {
+	c.mu.Lock()
 	// Be consistent with the creation: for routes and gateways,
 	// we use Noticef on create, so use that too for delete.
 	if c.kind == ROUTER || c.kind == GATEWAY {
@@ -3395,7 +3481,11 @@ func (c *client) closeConnection(reason ClosedState) {
 
 	c.clearAuthTimer()
 	c.clearPingTimer()
-	c.clearConnection(reason)
+	// Unblock anyone who is potentially stalled waiting on us.
+	if c.out.stc != nil {
+		close(c.out.stc)
+		c.out.stc = nil
+	}
 	c.nc = nil
 
 	var (
@@ -3663,6 +3753,12 @@ func (c *client) getAuthUser() string {
 	default:
 		return `User "N/A"`
 	}
+}
+
+// isClosed returns true if either closeConnection or clearConnection
+// flag have been set, or if `nc` is nil, which may happen in tests.
+func (c *client) isClosed() bool {
+	return c.flags.isSet(closeConnection) || c.nc == nil
 }
 
 // Logging functionality scoped to a client or route.

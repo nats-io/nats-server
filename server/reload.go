@@ -1125,12 +1125,10 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		// Send an update INFO, which will allow remote server to show
 		// our current route config in monitoring and resend subscriptions
 		// that we now possibly allow with a change of Export permissions.
-		route.sendInfo(infoJSON)
+		route.enqueueProto(infoJSON)
 		// Now send SUB and UNSUB protocols as needed.
-		closed := route.sendRouteSubProtos(subsNeedSUB, false, nil)
-		if !closed {
-			route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
-		}
+		route.sendRouteSubProtos(subsNeedSUB, false, nil)
+		route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
 		route.mu.Unlock()
 	}
 	// Remove as a batch all the subs that we have removed from each route.

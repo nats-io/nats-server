@@ -1464,6 +1464,7 @@ func (s *Server) StartProfiler() {
 				s.Fatalf("error starting profiler: %s", err)
 			}
 		}
+		srv.Close()
 		s.done <- true
 	}()
 }
@@ -1608,6 +1609,7 @@ func (s *Server) startMonitoring(secure bool) error {
 				s.Fatalf("Error starting monitor on %q: %v", hp, err)
 			}
 		}
+		srv.Close()
 		srv.Handler = nil
 		s.mu.Lock()
 		s.httpHandler = nil
@@ -1678,7 +1680,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.Debugf("Client connection created")
 
 	// Send our information.
-	c.sendInfo(c.generateClientInfoJSON(info))
+	// Need to be sent in place since writeLoop cannot be started until
+	// TLS handshake is done (if applicable).
+	c.sendProtoNow(c.generateClientInfoJSON(info))
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -1736,7 +1740,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 
 	// The connection may have been closed
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return c
 	}
@@ -1864,10 +1868,10 @@ func (s *Server) updateServerINFOAndSendINFOToClients(urls []string, add bool) {
 // Handle closing down a connection when the handshake has timedout.
 func tlsTimeout(c *client, conn *tls.Conn) {
 	c.mu.Lock()
-	nc := c.nc
+	closed := c.isClosed()
 	c.mu.Unlock()
 	// Check if already closed
-	if nc == nil {
+	if closed {
 		return
 	}
 	cs := conn.ConnectionState()

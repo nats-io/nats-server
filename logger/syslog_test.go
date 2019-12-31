@@ -111,6 +111,8 @@ func TestRemoteSysLogger(t *testing.T) {
 	if !logger.trace {
 		t.Fatalf("Expected %t, received %t\n", true, logger.trace)
 	}
+	logger.Noticef("foo")
+	<-done
 }
 
 func TestRemoteSysLoggerNotice(t *testing.T) {

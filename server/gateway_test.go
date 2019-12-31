@@ -2774,7 +2774,7 @@ func TestGatewayUnknownGatewayCommand(t *testing.T) {
 		GatewayCmd: 255,
 	}
 	b, _ := json.Marshal(info)
-	route.sendProto([]byte(fmt.Sprintf(InfoProto, b)), true)
+	route.enqueueProto([]byte(fmt.Sprintf(InfoProto, b)))
 	route.mu.Unlock()
 
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
@@ -3172,7 +3172,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	}
 	b, _ := json.Marshal(info)
 	c.mu.Lock()
-	c.sendProto([]byte(fmt.Sprintf("INFO %s\r\n", b)), true)
+	c.enqueueProto([]byte(fmt.Sprintf("INFO %s\r\n", b)))
 	c.mu.Unlock()
 
 	orgConn := c
@@ -3200,14 +3200,14 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	info.GatewayCmdPayload = []byte(globalAccountName)
 	b, _ = json.Marshal(info)
 	c.mu.Lock()
-	c.sendProto([]byte(fmt.Sprintf("INFO %s\r\n", b)), true)
+	c.enqueueProto([]byte(fmt.Sprintf("INFO %s\r\n", b)))
 	c.mu.Unlock()
 	// But incorrect end.
 	info.GatewayCmd = gatewayCmdAllSubsComplete
 	info.GatewayCmdPayload = nil
 	b, _ = json.Marshal(info)
 	c.mu.Lock()
-	c.sendProto([]byte(fmt.Sprintf("INFO %s\r\n", b)), true)
+	c.enqueueProto([]byte(fmt.Sprintf("INFO %s\r\n", b)))
 	c.mu.Unlock()
 
 	orgConn = c
@@ -5295,7 +5295,7 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 	// and reproduce old, wrong, behavior that would have resulted in sending an A-
 	gwA := getInboundGatewayConnection(sb, "A")
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.enqueueProto([]byte("A- $G\r\n"))
 	gwA.mu.Unlock()
 
 	// From A now, produce a message on each subject and
@@ -5331,7 +5331,7 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 
 	// Simulate B sending another A-, on A account no interest should remain same.
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.enqueueProto([]byte("A- $G\r\n"))
 	gwA.mu.Unlock()
 
 	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
@@ -5344,7 +5344,7 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 
 	// Make B send an A+ and verify that we sitll have the registered qsub interest
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.enqueueProto([]byte("A+ $G\r\n"))
 	gwA.mu.Unlock()
 
 	// Give a chance to A to possibly misbehave when receiving this proto
@@ -5358,20 +5358,20 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 
 	// Send A-, server A should set entry to nil
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A- $G\r\n"), true)
+	gwA.enqueueProto([]byte("A- $G\r\n"))
 	gwA.mu.Unlock()
 	checkForAccountNoInterest(t, gwb, globalAccountName, true, time.Second)
 
 	// Send A+ and entry should be removed since there is no longer reason to
 	// keep the entry.
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.enqueueProto([]byte("A+ $G\r\n"))
 	gwA.mu.Unlock()
 	checkForAccountNoInterest(t, gwb, globalAccountName, false, time.Second)
 
 	// Last A+ should not change because account already removed from map.
 	gwA.mu.Lock()
-	gwA.sendProto([]byte("A+ $G\r\n"), true)
+	gwA.enqueueProto([]byte("A+ $G\r\n"))
 	gwA.mu.Unlock()
 	checkForAccountNoInterest(t, gwb, globalAccountName, false, time.Second)
 }

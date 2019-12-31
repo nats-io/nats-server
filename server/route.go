@@ -298,7 +298,7 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		c.closeConnection(ProtocolViolation)
 		return
 	}
-	c.sendProto([]byte(fmt.Sprintf(ConProto, b)), true)
+	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
 }
 
 // Process the info message if we are a route.
@@ -316,7 +316,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.mu.Lock()
 	// Connection can be closed at any time (by auth timeout, etc).
 	// Does not make sense to continue here if connection is gone.
-	if c.route == nil || c.nc == nil {
+	if c.route == nil || c.isClosed() {
 		c.mu.Unlock()
 		return
 	}
@@ -506,7 +506,7 @@ func (s *Server) sendAsyncInfoToClients() {
 		if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
-			c.sendInfo(c.generateClientInfoJSON(s.copyInfo()))
+			c.enqueueProto(c.generateClientInfoJSON(s.copyInfo()))
 		}
 		c.mu.Unlock()
 	}
@@ -576,7 +576,7 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	for _, r := range s.routes {
 		r.mu.Lock()
 		if r.route.remoteID != info.ID {
-			r.sendInfo(infoJSON)
+			r.enqueueProto(infoJSON)
 		}
 		r.mu.Unlock()
 	}
@@ -705,7 +705,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	}
 
 	c.mu.Lock()
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return nil
 	}
@@ -778,7 +778,7 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	}
 
 	c.mu.Lock()
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return nil
 	}
@@ -866,7 +866,6 @@ func (s *Server) sendSubsToRoute(route *client) {
 
 	sendSubs := func(accs []*Account) {
 		var raw [32]*subscription
-		var closed bool
 
 		route.mu.Lock()
 		for _, a := range accs {
@@ -900,16 +899,10 @@ func (s *Server) sendSubsToRoute(route *client) {
 			}
 			a.mu.RUnlock()
 
-			closed = route.sendRouteSubProtos(subs, false, route.importFilter)
-			if closed {
-				route.mu.Unlock()
-				return
-			}
+			route.sendRouteSubProtos(subs, false, route.importFilter)
 		}
 		route.mu.Unlock()
-		if !closed {
-			route.Debugf("Sent local subscriptions to route")
-		}
+		route.Debugf("Sent local subscriptions to route")
 	}
 	// Decide if we call above function in go routine or in place.
 	if eSize > sendRouteSubsInGoRoutineThreshold {
@@ -927,8 +920,8 @@ func (s *Server) sendSubsToRoute(route *client) {
 // This function may release the route's lock due to flushing of outbound data. A boolean
 // is returned to indicate if the connection has been closed during this call.
 // Lock is held on entry.
-func (c *client) sendRouteSubProtos(subs []*subscription, trace bool, filter func(sub *subscription) bool) bool {
-	return c.sendRouteSubOrUnSubProtos(subs, true, trace, filter)
+func (c *client) sendRouteSubProtos(subs []*subscription, trace bool, filter func(sub *subscription) bool) {
+	c.sendRouteSubOrUnSubProtos(subs, true, trace, filter)
 }
 
 // Sends UNSUBs protocols for the given subscriptions. If a filter is specified, it is
@@ -936,25 +929,19 @@ func (c *client) sendRouteSubProtos(subs []*subscription, trace bool, filter fun
 // This function may release the route's lock due to flushing of outbound data. A boolean
 // is returned to indicate if the connection has been closed during this call.
 // Lock is held on entry.
-func (c *client) sendRouteUnSubProtos(subs []*subscription, trace bool, filter func(sub *subscription) bool) bool {
-	return c.sendRouteSubOrUnSubProtos(subs, false, trace, filter)
+func (c *client) sendRouteUnSubProtos(subs []*subscription, trace bool, filter func(sub *subscription) bool) {
+	c.sendRouteSubOrUnSubProtos(subs, false, trace, filter)
 }
 
 // Low-level function that sends RS+ or RS- protocols for the given subscriptions.
 // Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
 // Lock is held on entry.
-func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, trace bool, filter func(sub *subscription) bool) bool {
+func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, trace bool, filter func(sub *subscription) bool) {
 	var (
-		_buf   [1024]byte          // array on stack
-		buf    = _buf[:0]          // our buffer will initially point to the stack buffer
-		mbs    = maxBufSize * 2    // max size of the buffer
-		mpMax  = int(c.out.mp / 2) // 50% of max_pending
-		closed bool
+		_buf [1024]byte
+		buf  = _buf[:0]
 	)
-	// We need to make sure that we stay below the user defined max pending bytes.
-	if mbs > mpMax {
-		mbs = mpMax
-	}
+
 	for _, sub := range subs {
 		if filter != nil && !filter(sub) {
 			continue
@@ -977,34 +964,6 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 			sub.client.mu.Unlock()
 		}
 
-		// Check if proto is going to fit.
-		curSize := len(buf)
-		// "RS+/- " + account + " " + subject + " " [+ queue + " " + weight] + CRLF
-		curSize += 4 + len(accName) + 1 + len(sub.subject) + 1 + 2
-		if len(sub.queue) > 0 {
-			curSize += len(sub.queue)
-			if isSubProto {
-				// Estimate weightlen in 1000s
-				curSize += 1 + 4
-			}
-		}
-		if curSize >= mbs {
-			if c.queueOutbound(buf) {
-				// Need to allocate new array
-				buf = make([]byte, 0, mbs)
-			} else {
-				// We can reuse previous buffer
-				buf = buf[:0]
-			}
-			// Update last activity because flushOutbound() will release
-			// the lock, which could cause pingTimer to think that this
-			// connection is stale otherwise.
-			c.last = time.Now()
-			c.flushOutbound()
-			if closed = c.flags.isSet(clearConnection); closed {
-				break
-			}
-		}
 		as := len(buf)
 		if isSubProto {
 			buf = append(buf, rSubBytes...)
@@ -1034,12 +993,8 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		}
 		buf = append(buf, CR_LF...)
 	}
-	if !closed && len(buf) > 0 {
-		c.queueOutbound(buf)
-		c.flushOutbound()
-		closed = c.flags.isSet(clearConnection)
-	}
-	return closed
+	c.queueOutbound(buf)
+	c.flushSignal()
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
@@ -1117,7 +1072,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		c.flags.set(handshakeComplete)
 
 		// Verify that the connection did not go away while we released the lock.
-		if c.nc == nil {
+		if c.isClosed() {
 			c.mu.Unlock()
 			return nil
 		}
@@ -1176,7 +1131,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Send our info to the other side.
 	// Our new version requires dynamic information for accounts and a nonce.
-	c.sendInfo(infoJSON)
+	c.enqueueProto(infoJSON)
 	c.mu.Unlock()
 
 	c.Noticef("Route connection created")

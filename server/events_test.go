@@ -1120,9 +1120,7 @@ func TestAccountConnsLimitExceededAfterUpdate(t *testing.T) {
 		t.Fatalf("Expected max connections to be set to 2, got %d", acc.MaxActiveConnections())
 	}
 	// We should have closed the excess connections.
-	if total := s.NumClients(); total != acc.MaxActiveConnections() {
-		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
-	}
+	checkClientsCount(t, s, acc.MaxActiveConnections())
 }
 
 func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
@@ -1158,9 +1156,7 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	}
 
 	// We should have max here.
-	if total := s.NumClients(); total != acc.MaxActiveConnections() {
-		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
-	}
+	checkClientsCount(t, s, acc.MaxActiveConnections())
 
 	// Now change limits to make current connections over the limit.
 	nac = jwt.NewAccountClaims(pub)
@@ -1172,9 +1168,7 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 		t.Fatalf("Expected max connections to be set to 2, got %d", acc.MaxActiveConnections())
 	}
 	// We should have closed the excess connections.
-	if total := s.NumClients(); total != acc.MaxActiveConnections() {
-		t.Fatalf("Expected %d connections, got %d", acc.MaxActiveConnections(), total)
-	}
+	checkClientsCount(t, s, acc.MaxActiveConnections())
 
 	// Now make sure that only the new ones were closed.
 	var closed int
