@@ -195,7 +195,22 @@ func (mset *MsgSet) Delete() error {
 
 // Purge will remove all messages from the message set and underlying store.
 func (mset *MsgSet) Purge() uint64 {
-	return mset.store.Purge()
+	mset.mu.Lock()
+	if mset.client == nil {
+		mset.mu.Unlock()
+		return 0
+	}
+	purged := mset.store.Purge()
+	stats := mset.store.Stats()
+	var obs []*Observable
+	for _, o := range mset.obs {
+		obs = append(obs, o)
+	}
+	mset.mu.Unlock()
+	for _, o := range obs {
+		o.purge(stats.FirstSeq)
+	}
+	return purged
 }
 
 // RemoveMsg will remove a message from a message set.
