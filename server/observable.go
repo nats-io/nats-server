@@ -1108,6 +1108,7 @@ func (o *Observable) onRedeliverQueue(seq uint64) bool {
 	return false
 }
 
+// Checks the pending messages.
 func (o *Observable) checkPending() {
 	now := time.Now().UnixNano()
 	shouldSignal := false
@@ -1282,6 +1283,22 @@ func (o *Observable) Active() bool {
 	active := o.active && o.mset != nil
 	o.mu.Unlock()
 	return active
+}
+
+// This is when the underlying message set has been purged.
+func (o *Observable) purge(sseq uint64) {
+	o.mu.Lock()
+	o.sseq = sseq
+	o.asflr = sseq - 1
+	o.adflr = o.dseq - 1
+	if len(o.pending) > 0 {
+		o.pending = nil
+		if o.ptmr != nil {
+			o.ptmr.Stop()
+			o.ptmr = nil
+		}
+	}
+	o.mu.Unlock()
 }
 
 func stopAndClearTimer(tp **time.Timer) {
