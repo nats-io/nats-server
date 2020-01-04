@@ -206,7 +206,7 @@ func expectOKResponse(t *testing.T, m *nats.Msg) {
 	if m == nil {
 		t.Fatalf("No response, possible timeout?")
 	}
-	if string(m.Data) != server.OK {
+	if !strings.HasPrefix(string(m.Data), server.OK) {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", m.Data)
 	}
 }
@@ -235,7 +235,9 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 
 			for i := 0; i < 50; i++ {
 				resp, _ := nc.Request("foo.bar", []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				if string(resp.Data) != server.OK+" foo "+strconv.Itoa(i+1) {
+					t.Fatalf("Expected Ack with MsgSet and Sequence, got %q", resp.Data)
+				}
 			}
 			stats := mset.Stats()
 			if stats.Msgs != 50 {

@@ -354,9 +354,10 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
-	doAck := !mset.config.NoAck
+	ackEnabled := !mset.config.NoAck
 	jsa := mset.jsa
 	stype := mset.config.Storage
+	sname := mset.config.Name
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -365,25 +366,24 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 
 	// Response to send.
 	response := AckAck
+	shouldAck := ackEnabled && len(reply) > 0
 
 	// Check to see if we are over the account limit.
 	seq, err := store.StoreMsg(subject, msg)
 	if err != nil {
-		mset.mu.Lock()
-		accName := c.acc.Name
-		name := mset.config.Name
-		mset.mu.Unlock()
-		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
+		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", c.acc.Name, sname, err)
 		response = []byte(fmt.Sprintf("-ERR %q", err.Error()))
 	} else if jsa.limitsExceeded(stype) {
 		c.Debugf("JetStream resource limits exceeded for account: %q", c.acc.Name)
 		response = []byte("-ERR 'resource limits exceeded for account'")
 		store.RemoveMsg(seq)
 		seq = 0
+	} else if shouldAck {
+		response = []byte(OK + " " + sname + " " + strconv.Itoa(int(seq)))
 	}
 
 	// Send response here.
-	if doAck && len(reply) > 0 {
+	if shouldAck {
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 	}
 
