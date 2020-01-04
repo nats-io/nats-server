@@ -422,9 +422,9 @@ type jsPubMsg struct {
 }
 
 type StoredMsg struct {
-	Subject string
-	Data    []byte
-	Time    time.Time
+	Subject string    `json:"subject"`
+	Data    []byte    `json:"data"`
+	Time    time.Time `json:"time"`
 }
 
 // TODO(dlc) - Maybe look at onering instead of chan - https://github.com/pltr/onering
