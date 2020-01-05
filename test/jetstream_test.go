@@ -90,6 +90,14 @@ func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
 	return nc
 }
 
+func clientConnectWithOldRequest(t *testing.T, s *server.Server) *nats.Conn {
+	nc, err := nats.Connect(s.ClientURL(), nats.UseOldRequestStyle())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	return nc
+}
+
 func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -3245,6 +3253,98 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 				if o.SetSeqFromReply(m.Reply) != expectedStoreSeq[i] {
 					t.Fatalf("Expected store seq of %d, got %d", expectedStoreSeq[i], o.SetSeqFromReply(m.Reply))
 				}
+			}
+		})
+	}
+}
+
+func TestJetStreamNextMsgNoInterest(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.MsgSetConfig{
+				Name:      "foo",
+				Retention: server.StreamPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.MsgSetConfig{
+				Name:      "foo",
+				Retention: server.StreamPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			config := s.JetStreamConfig()
+			if config == nil {
+				t.Fatalf("Expected non-nil config")
+			}
+			defer os.RemoveAll(config.StoreDir)
+
+			cfg := &server.MsgSetConfig{Name: "foo", Storage: server.FileStorage}
+			mset, err := s.GlobalAccount().AddMsgSet(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+
+			nc := clientConnectWithOldRequest(t, s)
+			defer nc.Close()
+
+			// Now create an observable and make sure it functions properly.
+			o, err := mset.AddObservable(workerModeConfig("WQ"))
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			nextSubj := o.RequestNextMsgSubject()
+
+			// Queue up a worker but use a short time out.
+			if _, err := nc.Request(nextSubj, nil, time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Expected a timeout error and no response with acks suppressed")
+			}
+			// Now send a message, the worker from above will still be known but we want to make
+			// sure the system detects that so we will do a request for next msg right behind it.
+			nc.Publish("foo", []byte("OK"))
+			if msg, err := nc.Request(nextSubj, nil, 5*time.Millisecond); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			} else {
+				msg.Respond(nil) // Ack
+			}
+			// Now queue up 10 workers.
+			for i := 0; i < 10; i++ {
+				if _, err := nc.Request(nextSubj, nil, time.Microsecond); err != nats.ErrTimeout {
+					t.Fatalf("Expected a timeout error and no response with acks suppressed")
+				}
+			}
+			// Now publish ten messages.
+			for i := 0; i < 10; i++ {
+				nc.Publish("foo", []byte("OK"))
+			}
+			nc.Flush()
+			for i := 0; i < 10; i++ {
+				if msg, err := nc.Request(nextSubj, nil, 10*time.Millisecond); err != nil {
+					t.Fatalf("Unexpected error for %d: %v", i, err)
+				} else {
+					msg.Respond(nil) // Ack
+				}
+			}
+			nc.Flush()
+			ostate := o.Info().State
+			if ostate.AckFloor.SetSeq != 11 || len(ostate.Pending) > 0 {
+				t.Fatalf("Inconsistent ack state: %+v", ostate)
 			}
 		})
 	}
