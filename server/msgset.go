@@ -320,14 +320,14 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 	var response []byte
 
 	if len(msg) == 0 {
-		c.Debugf("JetStream request for message from message set: %q - %q no sequence arg", c.acc.Name, name)
+		c.Warnf("JetStream request for message from message set: %q - %q no sequence arg", c.acc.Name, name)
 		response = []byte("-ERR 'sequence argument missing'")
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
 	}
 	seq, err := strconv.ParseUint(string(msg), 10, 64)
 	if err != nil {
-		c.Debugf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
+		c.Warnf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
 		response = []byte("-ERR 'bad sequence argument'")
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
@@ -335,7 +335,7 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 
 	subj, msg, ts, err := store.LoadMsg(seq)
 	if err != nil {
-		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
+		c.Warnf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
 		response = []byte("-ERR 'could not load message from storage'")
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
@@ -376,7 +376,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
 		response = []byte(fmt.Sprintf("-ERR %q", err.Error()))
 	} else if jsa.limitsExceeded(stype) {
-		c.Debugf("JetStream resource limits exceeded for account: %q", c.acc.Name)
+		c.Warnf("JetStream resource limits exceeded for account: %q", c.acc.Name)
 		response = []byte("-ERR 'resource limits exceeded for account'")
 		store.RemoveMsg(seq)
 		seq = 0
