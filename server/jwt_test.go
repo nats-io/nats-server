@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1578,7 +1579,7 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 			return
 		}
 		// Purposely be slow on account lookup.
-		time.Sleep(2*time.Second + 200*time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		w.Write([]byte(ajwt))
 	}))
 	defer ts.Close()
@@ -1595,9 +1596,76 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 	opts.TrustedKeys = []string{pub}
 	defer s.Shutdown()
 
+	// Lower default timeout to speed-up test
+	s.AccountResolver().(*URLAccResolver).c.Timeout = 50 * time.Millisecond
+
 	acc, _ := s.LookupAccount(apub)
 	if acc != nil {
 		t.Fatalf("Expected to not receive an account due to timeout")
+	}
+}
+
+func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	confTemplate := `
+		listen: -1
+		resolver: URL("%s/ngs/v1/accounts/jwt/")
+    `
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount(apub)
+	if acc == nil {
+		t.Fatalf("Expected to receive an account")
+	}
+
+	// Reload would produce a DATA race during the DeepEqual check for the account resolver,
+	// so close the current one and we will create a new one that keeps track of fetch calls.
+	ts.Close()
+
+	fetch := int32(0)
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fetch, 1)
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+	if atomic.LoadInt32(&fetch) != 0 {
+		t.Fatalf("Fetch invoked during reload")
+	}
+
+	// Now stop the resolver and make sure that on startup, we report URL resolver failure
+	s.Shutdown()
+	s = nil
+	ts.Close()
+
+	opts := LoadConfig(conf)
+	if s, err := NewServer(opts); err == nil || !strings.Contains(err.Error(), "could not fetch") {
+		if s != nil {
+			s.Shutdown()
+		}
+		t.Fatalf("Expected error regarding account resolver, got %v", err)
 	}
 }
 

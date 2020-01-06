@@ -244,6 +244,15 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
+	// If there is an URL account resolver, do basic test to see if anyone is home
+	if ar := opts.AccountResolver; ar != nil {
+		if ur, ok := ar.(*URLAccResolver); ok {
+			if _, err := ur.Fetch(""); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	info := Info{
 		ID:           pub,
 		Version:      VERSION,
