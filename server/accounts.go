@@ -2094,10 +2094,6 @@ func NewURLAccResolver(url string) (*URLAccResolver, error) {
 		url: url,
 		c:   &http.Client{Timeout: 2 * time.Second, Transport: tr},
 	}
-	// Do basic test to see if anyone is home.
-	if _, err := ur.Fetch(""); err != nil {
-		return nil, err
-	}
 	return ur, nil
 }
 

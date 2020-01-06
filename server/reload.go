@@ -742,7 +742,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &clientAdvertiseOption{newValue: cliAdv})
 		case "accounts":
 			diffOpts = append(diffOpts, &accountsOption{})
-		case "accountresolver":
+		case "resolver", "accountresolver", "accountsresolver":
 			// We can't move from no resolver to one. So check for that.
 			if (oldValue == nil && newValue != nil) ||
 				(oldValue != nil && newValue == nil) {
