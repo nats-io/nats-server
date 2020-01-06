@@ -1047,7 +1047,7 @@ func TestTLSTimeoutNotReportSlowConsumer(t *testing.T) {
 }
 
 func TestNotReportSlowConsumerUnlessConnected(t *testing.T) {
-	oa, err := server.ProcessConfigFile("./configs/srv_a_tls.conf")
+	oa, err := server.ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
 		t.Fatalf("Unable to load config file: %v", err)
 	}

@@ -1029,6 +1029,8 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
 		r.url = rURL
+	} else {
+		c.flags.set(expectConnect)
 	}
 
 	// Check for TLS

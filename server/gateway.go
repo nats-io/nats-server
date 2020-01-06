@@ -737,6 +737,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 
 		c.Noticef("Creating outbound gateway connection to %q", cfg.Name)
 	} else {
+		c.flags.set(expectConnect)
 		// Inbound gateway connection
 		c.Noticef("Processing inbound gateway connection")
 	}

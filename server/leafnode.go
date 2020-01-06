@@ -591,6 +591,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 		c.mu.Lock()
 		c.acc = acc
+	} else {
+		c.flags.set(expectConnect)
 	}
 	c.mu.Unlock()
 

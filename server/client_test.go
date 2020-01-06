@@ -1813,3 +1813,36 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	// Now make sure that the number of clients goes to 0.
 	checkClientsCount(t, s, 0)
 }
+
+func TestClientSlowConsumerWithoutConnect(t *testing.T) {
+	opts := DefaultOptions()
+	opts.WriteDeadline = 100 * time.Millisecond
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("127.0.0.1:%d", opts.Port)
+	c, err := net.Dial("tcp", url)
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	defer c.Close()
+	c.Write([]byte("SUB foo 1\r\n"))
+
+	payload := make([]byte, 10000)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	for i := 0; i < 10000; i++ {
+		nc.Publish("foo", payload)
+	}
+	nc.Flush()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		// Expect slow consumer..
+		if n := atomic.LoadInt64(&s.slowConsumers); n != 1 {
+			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
+		}
+		return nil
+	})
+}

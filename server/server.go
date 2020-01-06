@@ -1673,6 +1673,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Grab lock
 	c.mu.Lock()
+	if info.AuthRequired || info.TLSRequired {
+		c.flags.set(expectConnect)
+	}
 
 	// Initialize
 	c.initClient()

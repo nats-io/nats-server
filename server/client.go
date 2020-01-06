@@ -53,6 +53,13 @@ const (
 	ClientProtoInfo
 )
 
+const (
+	pingProto = "PING" + _CRLF_
+	pongProto = "PONG" + _CRLF_
+	errProto  = "-ERR '%s'" + _CRLF_
+	okProto   = "+OK" + _CRLF_
+)
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
@@ -94,6 +101,7 @@ const (
 	closeConnection                          // Marks that closeConnection has already been called.
 	writeLoopStarted                         // Marks that the writeLoop has been started.
 	skipFlushOnClose                         // Marks that flushOutbound() should not be called on connection close.
+	expectConnect                            // Marks if this connection is expected to send a CONNECT
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1115,7 +1123,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 			// here, and don't report a slow consumer error.
 			return true
 		}
-	} else if c.expectConnect() && !c.flags.isSet(connectReceived) {
+	} else if c.flags.isSet(expectConnect) && !c.flags.isSet(connectReceived) {
 		// Under some conditions, a connection may hit a slow consumer write deadline
 		// before the authorization timeout. If that is the case, then we handle
 		// as slow consumer though we do not increase the counter as that can be
@@ -1155,6 +1163,8 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 	// Save off the connection if its a client or leafnode.
 	if c.kind == CLIENT || c.kind == LEAF {
 		if nc := c.nc; nc != nil && c.srv != nil {
+			// TODO: May want to send events to single go routine instead
+			// of creating a new go routine for each save.
 			go c.srv.saveClosedClient(c, nc, reason)
 		}
 	}
@@ -1167,23 +1177,6 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 	// use a small WriteDeadline.
 	c.flushAndClose(true)
 	return true
-}
-
-// Based on the kind of connection, returns if a CONNECT is expected or not.
-// Lock is held on entry.
-func (c *client) expectConnect() bool {
-	switch c.kind {
-	case CLIENT:
-		return true
-	case ROUTER:
-		return !c.route.didSolicit
-	case GATEWAY:
-		return !c.gw.outbound
-	case LEAF:
-		return c.leaf.remote == nil
-	default:
-		return false
-	}
 }
 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
@@ -1632,7 +1625,7 @@ func (c *client) enqueueProto(proto []byte) {
 // Assume the lock is held upon entry.
 func (c *client) sendPong() {
 	c.traceOutOp("PONG", nil)
-	c.enqueueProto([]byte("PONG\r\n"))
+	c.enqueueProto([]byte(pongProto))
 }
 
 // Used to kick off a RTT measurement for latency tracking.
@@ -1666,7 +1659,7 @@ func (c *client) sendPing() {
 	c.rttStart = time.Now()
 	c.ping.out++
 	c.traceOutOp("PING", nil)
-	c.enqueueProto([]byte("PING\r\n"))
+	c.enqueueProto([]byte(pingProto))
 }
 
 // Generates the INFO to be sent to the client with the client ID included.
@@ -1684,15 +1677,14 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
 	c.traceOutOp("-ERR", []byte(err))
-	c.enqueueProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", err)))
+	c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
 	c.mu.Unlock()
 }
 
 func (c *client) sendOK() {
-	proto := []byte("+OK\r\n")
 	c.mu.Lock()
 	c.traceOutOp("OK", nil)
-	c.enqueueProto(proto)
+	c.enqueueProto([]byte(okProto))
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
@@ -1885,7 +1877,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	sid := string(sub.sid)
 
 	// This check does not apply to SYSTEM clients (because they don't have a `nc`...)
-	if c.isClosed() && kind != SYSTEM {
+	if kind != SYSTEM && c.isClosed() {
 		c.mu.Unlock()
 		return sub, nil
 	}
@@ -2448,7 +2440,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	}
 
 	// Check for closed connection
-	if client.flags.isSet(closeConnection) {
+	if client.isClosed() {
 		client.mu.Unlock()
 		return false
 	}
@@ -3273,7 +3265,7 @@ func (c *client) processPingTimer() {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
-			c.enqueueProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")))
+			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
 			c.mu.Unlock()
 			c.closeConnection(StaleConnection)
 			return
