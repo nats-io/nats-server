@@ -444,75 +444,77 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// Restore any state here.
 	fis, _ := ioutil.ReadDir(jsa.storeDir)
 	if len(fis) > 0 {
-		s.Debugf("Recovering state for account %q", a.Name)
+		s.Noticef("  Recovering JetStream state for account %q", a.Name)
 	}
 	for _, fi := range fis {
 		metafile := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFile)
 		metasum := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
-			s.Debugf("Missing MsgSet metafile for %q", metafile)
+			s.Warnf("  Missing MsgSet metafile for %q", metafile)
 			continue
 		}
 		buf, err := ioutil.ReadFile(metafile)
 		if err != nil {
-			s.Debugf("Error reading metafile %q: %v", metasum, err)
+			s.Warnf("  Error reading metafile %q: %v", metasum, err)
 			continue
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			s.Debugf("Missing MsgSet checksum for %q", metasum)
+			s.Warnf("  Missing MsgSet checksum for %q", metasum)
 			continue
 		}
 		// FIXME(dlc) - check checksum.
 		var cfg MsgSetConfig
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Debugf("Error unmarshalling MsgSet metafile: %v", err)
+			s.Warnf("  Error unmarshalling MsgSet metafile: %v", err)
 			continue
 		}
 		mset, err := a.AddMsgSet(&cfg)
 		if err != nil {
-			s.Debugf("Error recreating MsgSet: %v", err)
+			s.Warnf("  Error recreating MsgSet: %v", err)
 		}
 
 		stats := mset.Stats()
-		s.Debugf("  Restored %s messages for message set %q", humanize.Comma(int64(stats.Msgs)), fi.Name())
+		s.Noticef("  Restored %s messages for MsgSet %q", humanize.Comma(int64(stats.Msgs)), fi.Name())
 
 		// Now do Observables.
 		odir := path.Join(jsa.storeDir, fi.Name(), obsDir)
 		ofis, _ := ioutil.ReadDir(odir)
 		if len(ofis) > 0 {
-			s.Debugf("Recovering Observable for MsgSet - %q", fi.Name())
+			s.Noticef("  Recovering %d Observables for MsgSet - %q", len(ofis), fi.Name())
 		}
 		for _, ofi := range ofis {
 			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
-				s.Debugf("Missing Observable Metafile for %q", metafile)
+				s.Warnf("    Missing Observable Metafile %q", metafile)
 				continue
 			}
 			buf, err := ioutil.ReadFile(metafile)
 			if err != nil {
-				s.Debugf("Error reading observable metafile %q: %v", metasum, err)
+				s.Warnf("    Error reading observable metafile %q: %v", metasum, err)
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Debugf("Missing Observable checksum for %q", metasum)
+				s.Warnf("    Missing Observable checksum for %q", metasum)
 				continue
 			}
 			var cfg ObservableConfig
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Debugf("Error unmarshalling Observable metafile: %v", err)
+				s.Warnf("    Error unmarshalling Observable metafile: %v", err)
 				continue
 			}
 			obs, err := mset.AddObservable(&cfg)
 			if err != nil {
-				s.Debugf("Error adding Observable: %v", err)
+				s.Warnf("    Error adding Observable: %v", err)
 				continue
 			}
 			if err := obs.readStoredState(); err != nil {
-				s.Debugf("Error restoring Observable state: %v", err)
+				s.Warnf("    Error restoring Observable state: %v", err)
 			}
 		}
 	}
+
+	s.Noticef("JetStream state for account %q recovered", a.Name)
 
 	return nil
 }
