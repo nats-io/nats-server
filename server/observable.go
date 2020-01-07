@@ -42,6 +42,7 @@ type ObservableConfig struct {
 	DeliverLast     bool          `json:"deliver_last,omitempty"`
 	AckPolicy       AckPolicy     `json:"ack_policy"`
 	AckWait         time.Duration `json:"ack_wait,omitempty"`
+	MaxDeliver      int           `json:"max_deliver,omitempty"`
 	Subject         string        `json:"subject,omitempty"`
 	ReplayPolicy    ReplayPolicy  `json:"replay_policy"`
 	SampleFrequency string        `json:"sample_frequency,omitempty"`
@@ -135,6 +136,7 @@ type Observable struct {
 	ptmr        *time.Timer
 	rdq         []uint64
 	rdc         map[uint64]uint64
+	maxdc       uint64
 	waiting     []string
 	config      ObservableConfig
 	store       ObservableStore
@@ -187,6 +189,10 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// Setup proper default for ack wait if we are in explicit ack mode.
 	if config.AckPolicy == AckExplicit && config.AckWait == time.Duration(0) {
 		config.AckWait = JsAckWaitDefault
+	}
+	// Setup default of -1, meaning no limit for MaxDeliver.
+	if config.MaxDeliver == 0 {
+		config.MaxDeliver = -1
 	}
 
 	// Make sure any partition subject is also a literal.
@@ -255,7 +261,15 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Observable{mset: mset, config: *config, dsubj: config.Delivery, active: true, qch: make(chan struct{}), fch: make(chan struct{}), sfreq: int32(sampleFreq)}
+	o := &Observable{mset: mset,
+		config: *config,
+		dsubj:  config.Delivery,
+		active: true,
+		qch:    make(chan struct{}),
+		fch:    make(chan struct{}),
+		sfreq:  int32(sampleFreq),
+		maxdc:  uint64(config.MaxDeliver),
+	}
 	if isDurableObservable(config) {
 		o.name = config.Durable
 	} else {
@@ -806,6 +820,9 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 			seq = o.rdq[0]
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 			dcount = o.incDeliveryCount(seq)
+			if o.maxdc > 0 && dcount > o.maxdc {
+				continue
+			}
 		}
 		subj, msg, _, err := o.mset.store.LoadMsg(seq)
 		if err == nil {

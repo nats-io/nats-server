@@ -209,6 +209,68 @@ func TestJetStreamAddMsgSet(t *testing.T) {
 	}
 }
 
+func TestJetStreamObservableMaxDeliveries(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{"MemoryStore", &server.MsgSetConfig{Name: "MY_WQ", Storage: server.MemoryStorage}},
+		{"FileStore", &server.MsgSetConfig{Name: "MY_WQ", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddMsgSet(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Queue up our work item.
+			resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 50*time.Millisecond)
+			expectOKResponse(t, resp)
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			maxDeliver := 5
+			ackWait := 10 * time.Millisecond
+
+			o, err := mset.AddObservable(&server.ObservableConfig{
+				Delivery:   sub.Subject,
+				DeliverAll: true,
+				AckPolicy:  server.AckExplicit,
+				AckWait:    ackWait,
+				MaxDeliver: maxDeliver,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			// Wait for redeliveries to pile up.
+			checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxDeliver {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, maxDeliver)
+				}
+				return nil
+			})
+
+			// Now wait a bit longer and make sure we do not have more than maxDeliveries.
+			time.Sleep(2 * ackWait)
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxDeliver {
+				t.Fatalf("Did not receive correct number of messages: %d vs %d", nmsgs, maxDeliver)
+			}
+		})
+	}
+}
+
 func TestJetStreamAddMsgSetMaxMsgSize(t *testing.T) {
 	cases := []struct {
 		name    string
