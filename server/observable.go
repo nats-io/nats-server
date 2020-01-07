@@ -1317,8 +1317,20 @@ func (o *Observable) purge(sseq uint64) {
 		o.pending = nil
 		if o.ptmr != nil {
 			o.ptmr.Stop()
-			o.ptmr = nil
+			// Do not nil this out here. This allows checkPending to fire
+			// and still be ok and not panic.
 		}
+	}
+	// We need to remove all those being queued for redelivery under o.rdq
+	if len(o.rdq) > 0 {
+		var newRDQ []uint64
+		for _, sseq := range o.rdq {
+			if sseq >= o.sseq {
+				newRDQ = append(newRDQ, sseq)
+			}
+		}
+		// Replace with new list. Most of the time this will be nil.
+		o.rdq = newRDQ
 	}
 	o.mu.Unlock()
 }
