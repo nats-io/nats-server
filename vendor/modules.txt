@@ -1,6 +1,4 @@
 ## explicit
-# github.com/dustin/go-humanize v1.0.0
-github.com/dustin/go-humanize
 # github.com/minio/highwayhash v1.0.0
 github.com/minio/highwayhash
 # github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
