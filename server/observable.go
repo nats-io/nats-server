@@ -592,9 +592,10 @@ func (o *Observable) Info() *ObservableInfo {
 		Name:   o.name,
 		Config: o.config,
 		State: ObservableState{
+			// We track these internally as next to deliver, hence the -1.
 			Delivered: SequencePair{
-				ObsSeq: o.dseq,
-				SetSeq: o.sseq,
+				ObsSeq: o.dseq - 1,
+				SetSeq: o.sseq - 1,
 			},
 			AckFloor: SequencePair{
 				ObsSeq: o.adflr,
