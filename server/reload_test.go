@@ -1318,9 +1318,7 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 		t.Fatalf("Error reloading config: %v", err)
 	}
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 0 {
-		t.Fatalf("Expected 0 routes, got %d", numRoutes)
-	}
+	checkNumRoutes(t, srvb, 0)
 
 	// Ensure messages no longer flow through the cluster.
 	for i := 0; i < 5; i++ {
@@ -1854,9 +1852,7 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 		t.Fatal("Expected to be disconnected")
 	}
 
-	if numClients := server.NumClients(); numClients != 1 {
-		t.Fatalf("Expected 1 client, got %d", numClients)
-	}
+	checkClientsCount(t, server, 1)
 
 	// Ensure new connections fail.
 	_, err = nats.Connect(addr)

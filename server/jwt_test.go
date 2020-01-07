@@ -1747,7 +1747,13 @@ func TestJWTUserSigningKey(t *testing.T) {
 		t.Fatalf("Expected a PONG, got %q", l)
 	}
 
-	if c.nc == nil {
+	isClosed := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.isClosed()
+	}
+
+	if isClosed() {
 		t.Fatal("expected client to be alive")
 	}
 	// remove the signing key should bounce client
@@ -1755,7 +1761,7 @@ func TestJWTUserSigningKey(t *testing.T) {
 	acc, _ = s.LookupAccount(apub)
 	s.updateAccountClaims(acc, nac)
 
-	if c.nc != nil {
+	if !isClosed() {
 		t.Fatal("expected client to be gone")
 	}
 }

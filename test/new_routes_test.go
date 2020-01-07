@@ -1060,6 +1060,11 @@ func TestNewRouteStreamImport(t *testing.T) {
 	sendB("SUB foo 1\r\nPING\r\n")
 	expectB(pongRe)
 
+	// The subscription on "foo" for account $bar will also become
+	// a subscription on "foo" for account $foo due to import.
+	// So total of 2 subs.
+	checkExpectedSubs(2, srvA)
+
 	// Send on clientA
 	sendA("PING\r\n")
 	expectA(pongRe)
@@ -1080,6 +1085,8 @@ func TestNewRouteStreamImport(t *testing.T) {
 
 	sendB("UNSUB 1\r\nPING\r\n")
 	expectB(pongRe)
+
+	checkExpectedSubs(0, srvA)
 
 	sendA("PUB foo 2\r\nok\r\nPING\r\n")
 	expectA(pongRe)

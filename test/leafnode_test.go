@@ -2653,6 +2653,11 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 	})
 	ncl.Flush()
 
+	// Since for leafnodes the account becomes interest-only mode,
+	// let's make sure that the interest on "foo" has time to propagate
+	// to cluster B.
+	time.Sleep(250 * time.Millisecond)
+
 	// Create a direct connect requestor. Try with all possible
 	// servers in cluster B to make sure that we also receive the
 	// reply when the accepting leafnode server does not have
@@ -2676,10 +2681,10 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 			t.Fatalf("Error on subscribe: %v", err)
 		}
 		if err := nc.PublishRequest("foo", reply, []byte("Hello")); err != nil {
-			t.Fatalf("Failed to get response: %v", err)
+			t.Fatalf("Failed to send request: %v", err)
 		}
 		if _, err := sub.NextMsg(250 * time.Millisecond); err != nil {
-			t.Fatalf("Did not get reply: %v", err)
+			t.Fatalf("Did not get reply from server %d: %v", i, err)
 		}
 		nc.Close()
 	}

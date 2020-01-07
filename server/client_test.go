@@ -150,6 +150,17 @@ func checkClientsCount(t *testing.T, s *Server, expected int) {
 	})
 }
 
+func checkAccClientsCount(t *testing.T, acc *Account, expected int) {
+	t.Helper()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if nc := acc.NumConnections(); nc != expected {
+			return fmt.Errorf("Expected account %q to have %v clients, got %v",
+				acc.Name, expected, nc)
+		}
+		return nil
+	})
+}
+
 func TestClientCreateAndInfo(t *testing.T) {
 	c, l := setUpClientWithResponse()
 	defer c.close()
@@ -562,9 +573,6 @@ func TestSplitSubjectQueue(t *testing.T) {
 }
 
 func TestQueueSubscribePermissions(t *testing.T) {
-	// TODO: (ik) skip for now until code is changed to do proper
-	// flush on connection close.
-	t.Skip("needs code to be fixed, skip for now...")
 	cases := []struct {
 		name    string
 		perms   *SubjectPermission
@@ -903,9 +911,7 @@ func TestClientRemoveSubsOnDisconnect(t *testing.T) {
 		t.Fatalf("Should have 2 subscriptions, got %d\n", s.NumSubscriptions())
 	}
 	c.closeConnection(ClientClosed)
-	if s.NumSubscriptions() != 0 {
-		t.Fatalf("Should have no subscriptions after close, got %d\n", s.NumSubscriptions())
-	}
+	checkExpectedSubs(t, 0, s)
 }
 
 func TestClientDoesNotAddSubscriptionsWhenConnectionClosed(t *testing.T) {
@@ -1479,6 +1485,7 @@ func TestReadloopWarning(t *testing.T) {
 	nc := natsConnect(t, url)
 	defer nc.Close()
 	natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
 	cid, _ := nc.GetClientID()
 
 	sender := natsConnect(t, url)
@@ -1489,8 +1496,8 @@ func TestReadloopWarning(t *testing.T) {
 	c.nc = &pauseWriteConn{Conn: c.nc}
 	c.mu.Unlock()
 
-	natsPub(t, nc, "foo", make([]byte, 100))
-	natsFlush(t, nc)
+	natsPub(t, sender, "foo", make([]byte, 100))
+	natsFlush(t, sender)
 
 	select {
 	case warn := <-l.warn:
@@ -1757,5 +1764,106 @@ func TestClientCheckUseOfGWReplyPrefix(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("Did not receive permissions violation error")
+	}
+}
+
+func TestNoClientLeakOnSlowConsumer(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error connecting: %v", err)
+	}
+	defer c.Close()
+
+	var buf [1024]byte
+	// Wait for INFO...
+	c.Read(buf[:])
+
+	// Send our connect
+	if _, err := c.Write([]byte("CONNECT {}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
+		t.Fatalf("Error sending CONNECT and SUB: %v", err)
+	}
+	// Wait for PONG
+	c.Read(buf[:])
+
+	// Get the client from server map
+	cli := s.GetClient(1)
+	if cli == nil {
+		t.Fatalf("No client registered")
+	}
+	// Change the write deadline to very low value
+	cli.mu.Lock()
+	cli.out.wdl = time.Nanosecond
+	cli.mu.Unlock()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	// Send some messages to cause write deadline error on "cli"
+	payload := make([]byte, 1000)
+	for i := 0; i < 100; i++ {
+		natsPub(t, nc, "foo", payload)
+	}
+	natsFlush(t, nc)
+	nc.Close()
+
+	// Now make sure that the number of clients goes to 0.
+	checkClientsCount(t, s, 0)
+}
+
+func TestClientSlowConsumerWithoutConnect(t *testing.T) {
+	opts := DefaultOptions()
+	opts.WriteDeadline = 100 * time.Millisecond
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("127.0.0.1:%d", opts.Port)
+	c, err := net.Dial("tcp", url)
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	defer c.Close()
+	c.Write([]byte("SUB foo 1\r\n"))
+
+	payload := make([]byte, 10000)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	for i := 0; i < 10000; i++ {
+		nc.Publish("foo", payload)
+	}
+	nc.Flush()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		// Expect slow consumer..
+		if n := atomic.LoadInt64(&s.slowConsumers); n != 1 {
+			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
+		}
+		return nil
+	})
+}
+
+func TestClientNoSlowConsumerIfConnectExpected(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Username = "ivan"
+	opts.Password = "pass"
+	// Make it very slow so that the INFO sent to client fails...
+	opts.WriteDeadline = time.Nanosecond
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Expect server to close the connection, but will bump the slow
+	// consumer count.
+	nc, err := nats.Connect(fmt.Sprintf("nats://ivan:pass@%s:%d", opts.Host, opts.Port))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected connect error")
+	}
+	if n := atomic.LoadInt64(&s.slowConsumers); n != 0 {
+		t.Fatalf("Expected 0 slow consumer, got: %v", n)
 	}
 }

@@ -229,24 +229,18 @@ func TestActiveAccounts(t *testing.T) {
 	cb1.closeConnection(ClientClosed)
 	waitTilActiveCount(1)
 
-	if nc := bar.NumConnections(); nc != 0 {
-		t.Fatalf("Expected account bar to have 0 clients, got %d", nc)
-	}
+	checkAccClientsCount(t, bar, 0)
 
 	// This should not change the count.
 	cf1.closeConnection(ClientClosed)
 	waitTilActiveCount(1)
 
-	if nc := foo.NumConnections(); nc != 1 {
-		t.Fatalf("Expected account foo to have 1 client, got %d", nc)
-	}
+	checkAccClientsCount(t, foo, 1)
 
 	cf2.closeConnection(ClientClosed)
 	waitTilActiveCount(0)
 
-	if nc := foo.NumConnections(); nc != 0 {
-		t.Fatalf("Expected account bar to have 0 clients, got %d", nc)
-	}
+	checkAccClientsCount(t, foo, 0)
 }
 
 // Clients can ask that the account be forced to be new. If it exists this is an error.
