@@ -3088,9 +3088,28 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// Now let's get info about our observable.
 	req = []byte(fmt.Sprintf("%s %s", msetCfg.Name, onames[0]))
 	resp, _ = nc.Request(server.JetStreamObservableInfo, req, time.Second)
-	var ostate server.ObservableState
-	if err = json.Unmarshal(resp.Data, &ostate); err != nil {
+	var oinfo server.ObservableInfo
+	if err = json.Unmarshal(resp.Data, &oinfo); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Do some sanity checking.
+	// Must match onservable.go
+	const randObservableNameLen = 6
+
+	if len(oinfo.Name) != randObservableNameLen {
+		t.Fatalf("Expected ephemeral name, got %q", oinfo.Name)
+	}
+	if len(oinfo.Config.Durable) != 0 {
+		t.Fatalf("Expected no durable name, but got %q", oinfo.Config.Durable)
+	}
+	if oinfo.Config.Delivery != delivery {
+		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.Delivery)
+	}
+	if oinfo.State.Delivered.ObsSeq != 11 {
+		t.Fatalf("Expected observable delivered sequence of 11, got %d", oinfo.State.Delivered.ObsSeq)
+	}
+	if oinfo.State.AckFloor.ObsSeq != 10 {
+		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.State.AckFloor.ObsSeq)
 	}
 
 	// Now delete the observable.

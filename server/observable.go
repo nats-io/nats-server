@@ -28,6 +28,7 @@ import (
 )
 
 type ObservableInfo struct {
+	Name   string           `json:"name"`
 	Config ObservableConfig `json:"configuration"`
 	State  ObservableState  `json:"state"`
 }
@@ -588,6 +589,7 @@ func (o *Observable) Info() *ObservableInfo {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	info := &ObservableInfo{
+		Name:   o.name,
 		Config: o.config,
 		State: ObservableState{
 			Delivered: SequencePair{
@@ -601,7 +603,6 @@ func (o *Observable) Info() *ObservableInfo {
 		},
 	}
 
-	info.Config.Durable = o.name
 	if len(o.pending) > 0 {
 		p := make(map[uint64]int64, len(o.pending))
 		for k, v := range o.pending {
