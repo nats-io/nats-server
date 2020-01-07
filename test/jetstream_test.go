@@ -2087,8 +2087,8 @@ func TestJetStreamMsgSetPurgeWithObservable(t *testing.T) {
 			if len(state.Pending) != 0 {
 				t.Fatalf("Expected no pending, got %d", len(state.Pending))
 			}
-			if state.Delivered.SetSeq != 101 {
-				t.Fatalf("Expected to have setseq now at next seq of 101, got %d", state.Delivered.SetSeq)
+			if state.Delivered.SetSeq != 100 {
+				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.SetSeq)
 			}
 			// Check AckFloors which should have also been adjusted.
 			if state.AckFloor.SetSeq != 100 {
@@ -2172,8 +2172,8 @@ func TestJetStreamMsgSetPurgeWithObservableAndRedelivery(t *testing.T) {
 			if len(state.Pending) != 0 {
 				t.Fatalf("Expected no pending, got %d", len(state.Pending))
 			}
-			if state.Delivered.SetSeq != 101 {
-				t.Fatalf("Expected to have setseq now at next seq of 101, got %d", state.Delivered.SetSeq)
+			if state.Delivered.SetSeq != 100 {
+				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.SetSeq)
 			}
 			// Check AckFloors which should have also been adjusted.
 			if state.AckFloor.SetSeq != 100 {
@@ -3190,8 +3190,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if oinfo.Config.Delivery != delivery {
 		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.Delivery)
 	}
-	if oinfo.State.Delivered.ObsSeq != 11 {
-		t.Fatalf("Expected observable delivered sequence of 11, got %d", oinfo.State.Delivered.ObsSeq)
+	if oinfo.State.Delivered.ObsSeq != 10 {
+		t.Fatalf("Expected observable delivered sequence of 10, got %d", oinfo.State.Delivered.ObsSeq)
 	}
 	if oinfo.State.AckFloor.ObsSeq != 10 {
 		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.State.AckFloor.ObsSeq)
