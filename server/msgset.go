@@ -32,6 +32,7 @@ type MsgSetConfig struct {
 	MaxMsgs        int64           `json:"max_msgs"`
 	MaxBytes       int64           `json:"max_bytes"`
 	MaxAge         time.Duration   `json:"max_age"`
+	MaxMsgSize     int32           `json:"max_msg_size,omitempty"`
 	Storage        StorageType     `json:"storage"`
 	Replicas       int             `json:"num_replicas"`
 	NoAck          bool            `json:"no_ack,omitempty"`
@@ -167,6 +168,9 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 	}
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = -1
+	}
+	if cfg.MaxMsgSize == 0 {
+		cfg.MaxMsgSize = -1
 	}
 	return cfg, nil
 }
@@ -354,9 +358,15 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
+	var accName string
+	if c != nil && c.acc != nil {
+		accName = c.acc.Name
+	}
 	doAck := !mset.config.NoAck
 	jsa := mset.jsa
 	stype := mset.config.Storage
+	name := mset.config.Name
+	maxMsgSize := int(mset.config.MaxMsgSize)
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -365,21 +375,23 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 
 	// Response to send.
 	response := AckAck
+	var seq uint64
+	var err error
 
-	// Check to see if we are over the account limit.
-	seq, err := store.StoreMsg(subject, msg)
-	if err != nil {
-		mset.mu.Lock()
-		accName := c.acc.Name
-		name := mset.config.Name
-		mset.mu.Unlock()
-		c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
-		response = []byte(fmt.Sprintf("-ERR %q", err.Error()))
-	} else if jsa.limitsExceeded(stype) {
-		c.Warnf("JetStream resource limits exceeded for account: %q", c.acc.Name)
-		response = []byte("-ERR 'resource limits exceeded for account'")
-		store.RemoveMsg(seq)
-		seq = 0
+	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
+		response = []byte("-ERR 'message size exceeds maximum allowed'")
+	} else {
+		// Check to see if we are over the account limit.
+		seq, err = store.StoreMsg(subject, msg)
+		if err != nil {
+			c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
+			response = []byte(fmt.Sprintf("-ERR '%s'", err.Error()))
+		} else if jsa.limitsExceeded(stype) {
+			c.Warnf("JetStream resource limits exceeded for account: %q", accName)
+			response = []byte("-ERR 'resource limits exceeded for account'")
+			store.RemoveMsg(seq)
+			seq = 0
+		}
 	}
 
 	// Send response here.

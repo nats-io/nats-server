@@ -60,9 +60,9 @@ const (
 	ErrPrefix = "-ERR"
 
 	// JetStreamNotEnabled is returned when JetStream is not enabled.
-	JetStreamNotEnabled = "-ERR jetstream not enabled for account"
+	JetStreamNotEnabled = "-ERR 'jetstream not enabled for account'"
 	// JetStreamBadRequest is returned when the request could not be properly parsed.
-	JetStreamBadRequest = "-ERR bad request"
+	JetStreamBadRequest = "-ERR 'bad request'"
 )
 
 // Request API for JetStream remote clients.
@@ -919,7 +919,7 @@ func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, repl
 	}
 	mset, err := c.acc.LookupMsgSet(string(msg))
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s '%v'", ErrPrefix, err))
 		return
 	}
 	msi := MsgSetInfo{
@@ -1034,7 +1034,7 @@ func (s *Server) jsCreateObservableRequest(sub *subscription, c *client, subject
 	}
 	var response = OK
 	if _, err := mset.AddObservable(&req.Config); err != nil {
-		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+		response = fmt.Sprintf("%s '%v'", ErrPrefix, err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
