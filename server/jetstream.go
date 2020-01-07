@@ -25,7 +25,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dustin/go-humanize"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
@@ -474,7 +473,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 
 		stats := mset.Stats()
-		s.Noticef("  Restored %s messages for MsgSet %q", humanize.Comma(int64(stats.Msgs)), fi.Name())
+		s.Noticef("  Restored %d messages for MsgSet %q", stats.Msgs, fi.Name())
 
 		// Now do Observables.
 		odir := path.Join(jsa.storeDir, fi.Name(), obsDir)
