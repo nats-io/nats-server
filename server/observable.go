@@ -177,6 +177,11 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 		if config.AckPolicy != AckExplicit {
 			return nil, fmt.Errorf("observable in pull mode requires explicit ack policy")
 		}
+		// They are also required to be durable since otherwise we will not know when to
+		// clean them up.
+		if config.Durable == _EMPTY_ {
+			return nil, fmt.Errorf("observable in pull mode requires a durable name")
+		}
 	}
 
 	// Setup proper default for ack wait if we are in explicit ack mode.
