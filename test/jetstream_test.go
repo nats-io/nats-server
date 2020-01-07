@@ -209,6 +209,60 @@ func TestJetStreamAddMsgSet(t *testing.T) {
 	}
 }
 
+func TestJetStreamAddMsgSetMaxMsgSize(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.MsgSetConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.MsgSetConfig{
+				Name:       "foo",
+				Retention:  server.StreamPolicy,
+				MaxAge:     time.Hour,
+				Storage:    server.MemoryStorage,
+				MaxMsgSize: 22,
+				Replicas:   1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.MsgSetConfig{
+				Name:       "foo",
+				Retention:  server.StreamPolicy,
+				MaxAge:     time.Hour,
+				Storage:    server.FileStorage,
+				MaxMsgSize: 22,
+				Replicas:   1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddMsgSet(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding message set: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			if _, err := nc.Request("foo", []byte("Hello World!"), time.Second); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			tooBig := []byte("1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+			resp, err := nc.Request("foo", tooBig, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if string(resp.Data) != "-ERR 'message size exceeds maximum allowed'" {
+				t.Fatalf("Expected to get an error for maximum message size, got %q", resp.Data)
+			}
+		})
+	}
+}
+
 func expectOKResponse(t *testing.T, m *nats.Msg) {
 	t.Helper()
 	if m == nil {
@@ -3138,7 +3192,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if string(resp.Data) != "-ERR msgset not found" {
+	if string(resp.Data) != "-ERR 'msgset not found'" {
 		t.Fatalf("Expected to get a not found error, got %q", resp.Data)
 	}
 
@@ -3154,7 +3208,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	resp, _ = nc.Request(server.JetStreamCreateObservable, req, time.Second)
 	// Since we do not have interest this should have failed.
-	if !strings.HasPrefix(string(resp.Data), "-ERR observable requires interest") {
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'observable requires interest for delivery subject when ephemeral'") {
 		t.Fatalf("Got wrong error response: %q", resp.Data)
 	}
 	// Now create subscription and make sure we get +OK
