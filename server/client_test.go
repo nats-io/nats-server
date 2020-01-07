@@ -1846,3 +1846,24 @@ func TestClientSlowConsumerWithoutConnect(t *testing.T) {
 		return nil
 	})
 }
+
+func TestClientNoSlowConsumerIfConnectExpected(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Username = "ivan"
+	opts.Password = "pass"
+	// Make it very slow so that the INFO sent to client fails...
+	opts.WriteDeadline = time.Nanosecond
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Expect server to close the connection, but will bump the slow
+	// consumer count.
+	nc, err := nats.Connect(fmt.Sprintf("nats://ivan:pass@%s:%d", opts.Host, opts.Port))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected connect error")
+	}
+	if n := atomic.LoadInt64(&s.slowConsumers); n != 0 {
+		t.Fatalf("Expected 0 slow consumer, got: %v", n)
+	}
+}
