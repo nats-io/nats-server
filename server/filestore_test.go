@@ -739,10 +739,10 @@ func TestFileStoreMeta(t *testing.T) {
 
 	// Now create an observable. Same deal for them.
 	oconfig := ObservableConfig{
-		Delivery:   "d",
-		DeliverAll: true,
-		Subject:    "foo",
-		AckPolicy:  AckAll,
+		Delivery:      "d",
+		DeliverAll:    true,
+		FilterSubject: "foo",
+		AckPolicy:     AckAll,
 	}
 	oname := "obs22"
 	obs, err := fs.ObservableStore(oname, &oconfig)
