@@ -43,7 +43,7 @@ type ObservableConfig struct {
 	AckPolicy       AckPolicy     `json:"ack_policy"`
 	AckWait         time.Duration `json:"ack_wait,omitempty"`
 	MaxDeliver      int           `json:"max_deliver,omitempty"`
-	Subject         string        `json:"subject,omitempty"`
+	FilterSubject   string        `json:"filter_subject,omitempty"`
 	ReplayPolicy    ReplayPolicy  `json:"replay_policy"`
 	SampleFrequency string        `json:"sample_frequency,omitempty"`
 }
@@ -196,16 +196,16 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	}
 
 	// Make sure any partition subject is also a literal.
-	if config.Subject != "" {
-		if !subjectIsLiteral(config.Subject) {
-			return nil, fmt.Errorf("observable partition subject has wildcards")
+	if config.FilterSubject != "" {
+		if !subjectIsLiteral(config.FilterSubject) {
+			return nil, fmt.Errorf("observable filter subject has wildcards")
 		}
 		// Make sure this is a valid partition of the interest subjects.
-		if !mset.validSubject(config.Subject) {
-			return nil, fmt.Errorf("observable partition not a valid subset of the interest subjects")
+		if !mset.validSubject(config.FilterSubject) {
+			return nil, fmt.Errorf("observable filter subject is not a valid subset of the interest subjects")
 		}
 		if config.AckPolicy == AckAll {
-			return nil, fmt.Errorf("observable with partition can not have an ack policy of ack all")
+			return nil, fmt.Errorf("observable with filter subject can not have an ack policy of ack all")
 		}
 	}
 
@@ -245,13 +245,13 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 			return nil, fmt.Errorf("delivery subject not allowed on workqueue message set")
 		}
 		if len(mset.obs) > 0 {
-			if config.Subject == _EMPTY_ {
+			if config.FilterSubject == _EMPTY_ {
 				mset.mu.Unlock()
-				return nil, fmt.Errorf("multiple non-partioned observables not allowed on workqueue message set")
-			} else if !mset.partitionUnique(config.Subject) {
+				return nil, fmt.Errorf("multiple non-filtered observables not allowed on workqueue message set")
+			} else if !mset.partitionUnique(config.FilterSubject) {
 				// We have a partition but it is not unique amongst the others.
 				mset.mu.Unlock()
-				return nil, fmt.Errorf("partioned observable not unique on workqueue message set")
+				return nil, fmt.Errorf("filtered observable not unique on workqueue message set")
 			}
 		}
 		if !config.DeliverAll {
@@ -828,7 +828,7 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
-				if o.config.Subject != "" && subj != o.config.Subject {
+				if o.config.FilterSubject != _EMPTY_ && subj != o.config.FilterSubject {
 					continue
 				}
 			}
@@ -881,7 +881,7 @@ func (o *Observable) processReplay() error {
 
 	o.mu.Lock()
 	mset := o.mset
-	partition := o.config.Subject
+	partition := o.config.FilterSubject
 	pullMode := o.isPullMode()
 	o.mu.Unlock()
 
@@ -1063,7 +1063,7 @@ func (o *Observable) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool
 
 	// If we are partitioned and we do not match, do not consider this a failure.
 	// Go ahead and return true.
-	if o.config.Subject != "" && subj != o.config.Subject {
+	if o.config.FilterSubject != _EMPTY_ && subj != o.config.FilterSubject {
 		o.mu.Unlock()
 		return true
 	}
@@ -1233,7 +1233,7 @@ func (o *Observable) selectSubjectLast() {
 		if err == ErrStoreMsgNotFound {
 			continue
 		}
-		if subj == o.config.Subject {
+		if subj == o.config.FilterSubject {
 			o.sseq = seq
 			return
 		}
@@ -1250,7 +1250,7 @@ func (o *Observable) selectStartingSeqNo() {
 		} else if o.config.DeliverLast {
 			o.sseq = stats.LastSeq
 			// If we are partitioned here we may need to walk backwards.
-			if o.config.Subject != _EMPTY_ {
+			if o.config.FilterSubject != _EMPTY_ {
 				o.selectSubjectLast()
 			}
 		} else if o.config.StartTime != noTime {
