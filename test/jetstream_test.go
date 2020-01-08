@@ -497,10 +497,10 @@ func TestJetStreamCreateObservable(t *testing.T) {
 
 			// Subjects can not be AckAll.
 			if _, err := mset.AddObservable(&server.ObservableConfig{
-				Delivery:   delivery,
-				DeliverAll: true,
-				Subject:    "foo",
-				AckPolicy:  server.AckAll,
+				Delivery:      delivery,
+				DeliverAll:    true,
+				FilterSubject: "foo",
+				AckPolicy:     server.AckAll,
 			}); err == nil {
 				t.Fatalf("Expected an error on partitioned observable with ack policy of all")
 			}
@@ -807,7 +807,7 @@ func TestJetStreamSubjecting(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, Subject: subjB, DeliverAll: true})
+			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, FilterSubject: subjB, DeliverAll: true})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -877,7 +877,7 @@ func TestJetStreamWorkQueueSubjecting(t *testing.T) {
 			}
 
 			oname := "WQ"
-			o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, Subject: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
+			o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, FilterSubject: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1111,7 +1111,7 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 			pConfig := func(pname string) *server.ObservableConfig {
 				dname := fmt.Sprintf("PPBO-%d", pindex)
 				pindex += 1
-				return &server.ObservableConfig{Durable: dname, DeliverAll: true, Subject: pname, AckPolicy: server.AckExplicit}
+				return &server.ObservableConfig{Durable: dname, DeliverAll: true, FilterSubject: pname, AckPolicy: server.AckExplicit}
 			}
 			o, err = mset.AddObservable(pConfig("MY_WORK_QUEUE.A"))
 			if err != nil {
@@ -1873,12 +1873,12 @@ func TestJetStreamDurableSubjectedObservableReconnect(t *testing.T) {
 
 			// Now create an observable for foo.AA, only requesting the last one.
 			o, err := mset.AddObservable(&server.ObservableConfig{
-				Durable:     dname,
-				Delivery:    dsubj,
-				Subject:     "foo.AA",
-				DeliverLast: true,
-				AckPolicy:   server.AckExplicit,
-				AckWait:     100 * time.Millisecond,
+				Durable:       dname,
+				Delivery:      dsubj,
+				FilterSubject: "foo.AA",
+				DeliverLast:   true,
+				AckPolicy:     server.AckExplicit,
+				AckWait:       100 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -3470,7 +3470,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			sub, _ := nc.SubscribeSync(delivery)
 			nc.Flush()
 
-			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, DeliverAll: true, Subject: "foo"})
+			o, err := mset.AddObservable(&server.ObservableConfig{Delivery: delivery, DeliverAll: true, FilterSubject: "foo"})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
