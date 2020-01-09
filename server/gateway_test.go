@@ -5491,6 +5491,48 @@ func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
 	}
 }
 
+func TestGatewayAccountInterestModeSwitchOnlyOncePerAccount(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	logB := &captureGWInterestSwitchLogger{}
+	sb.SetLogger(logB, true, true)
+
+	nc := natsConnect(t, sb.ClientURL())
+	defer nc.Close()
+	natsSubSync(t, nc, "foo")
+	natsQueueSubSync(t, nc, "bar", "baz")
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	wg := sync.WaitGroup{}
+	total := 20
+	wg.Add(total)
+	for i := 0; i < total; i++ {
+		go func() {
+			sb.switchAccountToInterestMode(globalAccountName)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
+	logB.Lock()
+	nl := len(logB.imss)
+	logB.Unlock()
+	// There should be a trace for switching and when switch is complete
+	if nl != 2 {
+		t.Fatalf("Attempted to switch account too many times, number lines=%v", nl)
+	}
+}
+
 func TestGatewaySingleOutbound(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

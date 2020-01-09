@@ -2847,9 +2847,11 @@ func getAccountFromGatewayCommand(c *client, info *Info, cmd string) string {
 // The client's lock is held on entry.
 // <Invoked from inbound connection's readLoop>
 func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
-	// Set this map to nil so that the no-interest is
-	// no longer checked.
+	// Set this map to nil so that the no-interest is no longer checked.
 	e.ni = nil
+	// Switch mode to transitioning to prevent switchAccountToInterestMode
+	// to possibly call this function multiple times.
+	e.mode = Transitioning
 	s := c.srv
 
 	remoteGWName := c.gw.name
