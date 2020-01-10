@@ -250,13 +250,12 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	pm  int32         // Total pending/queued messages.
 	fsp int32         // Flush signals that are pending per producer from readLoop's pcd.
-	sg  *sync.Cond    // Flusher conditional for signaling to writeLoop.
+	sch chan struct{} // To signal writeLoop that there is data to flush.
 	wdl time.Duration // Snapshot of write deadline.
 	mp  int64         // Snapshot of max pending for client.
 	lft time.Duration // Last flush time for Write.
 	stc chan struct{} // Stall chan we create to slow down producers on overrun, e.g. fan-in.
 	lwb int32         // Last byte size of Write.
-	sgw bool          // Indicate flusher is waiting on condition wait.
 }
 
 type perm struct {
@@ -441,7 +440,7 @@ func (c *client) initClient() {
 
 	// Outbound data structure setup
 	c.out.sz = startBufSize
-	c.out.sg = sync.NewCond(&c.mu)
+	c.out.sch = make(chan struct{}, 1)
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
@@ -752,6 +751,7 @@ func (c *client) writeLoop() {
 		return
 	}
 	c.flags.set(writeLoopStarted)
+	ch := c.out.sch
 	c.mu.Unlock()
 
 	// This will clear connection state and remove it from the server.
@@ -759,6 +759,10 @@ func (c *client) writeLoop() {
 
 	// Used to check that we did flush from last wake up.
 	waitOk := true
+
+	// Used to limit the wait for a signal
+	const maxWait = 3 * time.Second
+	t := time.NewTimer(maxWait)
 
 	var close bool
 
@@ -769,11 +773,25 @@ func (c *client) writeLoop() {
 		if close = c.flags.isSet(closeConnection); !close {
 			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
 			if waitOk && (c.out.pb == 0 || owtf) {
+				fspBeforeWait := c.out.fsp
+				c.mu.Unlock()
+
+				var timeout bool
+				// Reset our timer
+				t.Reset(maxWait)
+
 				// Wait on pending data.
-				c.out.sgw = true
-				c.out.sg.Wait()
-				c.out.sgw = false
+				select {
+				case <-ch:
+				case <-t.C:
+					timeout = true
+				}
+
+				c.mu.Lock()
 				close = c.flags.isSet(closeConnection)
+				if !close && timeout && fspBeforeWait > 0 {
+					c.Warnf("Entered wait with fsp=%v and was not signaled within timeout", fspBeforeWait)
+				}
 			}
 		}
 		if close {
@@ -1183,7 +1201,7 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 	}
 	// If writeLoop exists, let it do the final flush, close and teardown.
 	if c.flags.isSet(writeLoopStarted) {
-		c.out.sg.Broadcast()
+		c.flushSignal()
 		return false
 	}
 	// Flush (if skipFlushOnClose is not set) and close in place. If flushing,
@@ -1195,9 +1213,10 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
 func (c *client) flushSignal() bool {
-	if c.out.sgw {
-		c.out.sg.Signal()
+	select {
+	case c.out.sch <- struct{}{}:
 		return true
+	default:
 	}
 	return false
 }
