@@ -1867,3 +1867,29 @@ func TestClientNoSlowConsumerIfConnectExpected(t *testing.T) {
 		t.Fatalf("Expected 0 slow consumer, got: %v", n)
 	}
 }
+
+func TestClientStalledDuration(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		pb          int64
+		mp          int64
+		expectedTTL time.Duration
+	}{
+		{"pb above mp", 110, 100, stallClientMaxDuration},
+		{"pb equal mp", 100, 100, stallClientMaxDuration},
+		{"pb below mp/2", 49, 100, stallClientMinDuration},
+		{"pb equal mp/2", 50, 100, stallClientMinDuration},
+		{"pb at 55% of mp", 55, 100, stallClientMinDuration + 1*stallClientMinDuration},
+		{"pb at 60% of mp", 60, 100, stallClientMinDuration + 2*stallClientMinDuration},
+		{"pb at 70% of mp", 70, 100, stallClientMinDuration + 4*stallClientMinDuration},
+		{"pb at 80% of mp", 80, 100, stallClientMinDuration + 6*stallClientMinDuration},
+		{"pb at 90% of mp", 90, 100, stallClientMinDuration + 8*stallClientMinDuration},
+		{"pb at 99% of mp", 99, 100, stallClientMinDuration + 9*stallClientMinDuration},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if ttl := stallDuration(test.pb, test.mp); ttl != test.expectedTTL {
+				t.Fatalf("For pb=%v mp=%v, expected TTL to be %v, got %v", test.pb, test.mp, test.expectedTTL, ttl)
+			}
+		})
+	}
+}
