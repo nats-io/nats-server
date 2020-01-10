@@ -438,7 +438,7 @@ func TestQueueDistributionAcrossRoutes(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 
-	send := 600
+	send := 10000
 	for i := 0; i < send; i++ {
 		nc2.Publish("foo", nil)
 	}
@@ -470,7 +470,7 @@ func TestQueueDistributionAcrossRoutes(t *testing.T) {
 		total, _, _ := qsubs[i].Pending()
 		if total > avg+(avg*3/10) {
 			if i == 8 {
-				t.Fatalf("Qsub in 8th position gets majority of the messages  (prior 6 spots) in this test")
+				t.Fatalf("Qsub in 8th position gets majority of the messages (prior 6 spots) in this test")
 			}
 			t.Fatalf("Received too high, %d vs %d", total, avg)
 		}

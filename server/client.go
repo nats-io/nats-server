@@ -1013,6 +1013,8 @@ func (c *client) flushOutbound() bool {
 	attempted := c.out.pb
 	apm := c.out.pm
 
+	// Capture this (we change the value in some tests)
+	wdl := c.out.wdl
 	// Do NOT hold lock during actual IO.
 	c.mu.Unlock()
 
@@ -1020,7 +1022,7 @@ func (c *client) flushOutbound() bool {
 	now := time.Now()
 	// FIXME(dlc) - writev will do multiple IOs past 1024 on
 	// most platforms, need to account for that with deadline?
-	nc.SetWriteDeadline(now.Add(c.out.wdl))
+	nc.SetWriteDeadline(now.Add(wdl))
 
 	// Actual write to the socket.
 	n, err := nb.WriteTo(nc)
