@@ -492,6 +492,9 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 	// Close and then re-open
 	route.Close()
 
+	// Give some time for the route close to be processed before trying to recreate.
+	checkNumRoutes(t, s, 0)
+
 	route = createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer route.Close()
 

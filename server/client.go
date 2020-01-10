@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,6 +84,10 @@ const (
 	// send CONNECT+PING, cap the maximum time before server can send
 	// the RTT PING.
 	maxNoRTTPingBeforeFirstPong = 2 * time.Second
+
+	// For stalling fast producers
+	stallClientMinDuration = 100 * time.Millisecond
+	stallClientMaxDuration = time.Second
 )
 
 var readLoopReportThreshold = readLoopReport
@@ -991,6 +996,12 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 // Lock must be held
 func (c *client) flushOutbound() bool {
 	if c.flags.isSet(flushOutbound) {
+		// For CLIENT connections, it is possible that the readLoop calls
+		// flushOutbound(). If writeLoop and readLoop compete and we are
+		// here we should release the lock to reduce the risk of spinning.
+		c.mu.Unlock()
+		runtime.Gosched()
+		c.mu.Lock()
 		return false
 	}
 	c.flags.set(flushOutbound)
@@ -2321,22 +2332,27 @@ func (c *client) msgHeader(mh []byte, sub *subscription, reply []byte) []byte {
 
 func (c *client) stalledWait(producer *client) {
 	stall := c.out.stc
-	ttl := 100 * time.Millisecond
-	if c.out.pb >= c.out.mp {
-		ttl = time.Second
-	} else if hmp := c.out.mp / 2; c.out.pb > hmp {
-		bsz := hmp / 10
-		n := (c.out.pb - hmp) / bsz
-		ttl *= time.Duration(n)
-	}
+	ttl := stallDuration(c.out.pb, c.out.mp)
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
 	select {
 	case <-stall:
 	case <-time.After(ttl):
-		producer.Debugf("Timed out of fast producer stall")
+		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
+}
+
+func stallDuration(pb, mp int64) time.Duration {
+	ttl := stallClientMinDuration
+	if pb >= mp {
+		ttl = stallClientMaxDuration
+	} else if hmp := mp / 2; pb > hmp {
+		bsz := hmp / 10
+		additional := int64(ttl) * ((pb - hmp) / bsz)
+		ttl += time.Duration(additional)
+	}
+	return ttl
 }
 
 // Used to treat maps as efficient set
