@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -94,7 +94,6 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 
 	// Write 100 msgs
 	toStore := uint64(100)
-
 	for i := uint64(1); i <= toStore; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
 		if seq, err := fs.StoreMsg(subj, msg); err != nil {
@@ -116,6 +115,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	// Stop will flush to disk.
 	fs.Stop()
 
+	// Restart
 	fs, err = newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -128,6 +128,39 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	}
 	if stats.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
+	}
+
+	// Now write 100 more msgs
+	for i := uint64(101); i <= toStore*2; i++ {
+		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
+		if seq, err := fs.StoreMsg(subj, msg); err != nil {
+			t.Fatalf("Error storing msg: %v", err)
+		} else if seq != uint64(i) {
+			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
+		}
+	}
+	stats = fs.Stats()
+	if stats.Msgs != toStore*2 {
+		t.Fatalf("Expected %d msgs, got %d", toStore*2, stats.Msgs)
+	}
+
+	// Now cycle again and make sure that last batch was stored.
+	// Stop will flush to disk.
+	fs.Stop()
+
+	// Restart
+	fs, err = newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	stats = fs.Stats()
+	if stats.Msgs != toStore*2 {
+		t.Fatalf("Expected %d msgs, got %d", toStore*2, stats.Msgs)
+	}
+	if stats.Bytes != expectedSize*2 {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize*2, stats.Bytes)
 	}
 }
 
