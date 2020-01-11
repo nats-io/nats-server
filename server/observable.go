@@ -821,6 +821,8 @@ func (o *Observable) getNextMsg() (string, []byte, uint64, uint64, error) {
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 			dcount = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dcount > o.maxdc {
+				// Make sure to remove from pending.
+				delete(o.pending, seq)
 				continue
 			}
 		}

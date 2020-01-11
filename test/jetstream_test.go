@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -82,8 +83,15 @@ func RunBasicJetStreamServer() *server.Server {
 	return RunServer(&opts)
 }
 
+func RunJetStreamServerOnPort(port int) *server.Server {
+	opts := DefaultTestOptions
+	opts.Port = port
+	opts.JetStream = true
+	return RunServer(&opts)
+}
+
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
-	nc, err := nats.Connect(s.ClientURL())
+	nc, err := nats.Connect(s.ClientURL(), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -1408,6 +1416,121 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamObservableMaxDeliveryAndServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.Delete()
+
+	dsubj := "D.TO"
+	max := 4
+
+	o, err := mset.AddObservable(&server.ObservableConfig{
+		Durable:    "TO",
+		Delivery:   dsubj,
+		DeliverAll: true,
+		AckPolicy:  server.AckExplicit,
+		AckWait:    25 * time.Millisecond,
+		MaxDeliver: max,
+	})
+	defer o.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync(dsubj)
+	defer sub.Unsubscribe()
+
+	// Send one message.
+	resp, _ := nc.Request(mname, []byte("order-1"), 50*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	checkSubPending := func(numExpected int) {
+		t.Helper()
+		checkFor(t, 150*time.Millisecond, 10*time.Millisecond, func() error {
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+			}
+			return nil
+		})
+	}
+
+	checkNumMsgs := func(numExpected uint64) {
+		t.Helper()
+		mset, err = s.GlobalAccount().LookupMsgSet(mname)
+		if err != nil {
+			t.Fatalf("Expected to find a msgset for %q", mname)
+		}
+		stats := mset.Stats()
+		if stats.Msgs != numExpected {
+			t.Fatalf("Expected %d msgs, got %d", numExpected, stats.Msgs)
+		}
+	}
+
+	// Wait til we know we have max queue up.
+	checkSubPending(max)
+
+	// Once here we have gone over the limit for the 1st message for max deliveries.
+	// Send second
+	resp, _ = nc.Request(mname, []byte("order-2"), 50*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	// Just wait for first delivery + one redelivery.
+	checkSubPending(max + 2)
+
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+
+	restartServer := func() {
+		t.Helper()
+		// Stop current server.
+		s.Shutdown()
+		// Restart.
+		s = RunJetStreamServerOnPort(port)
+	}
+
+	// Restart.
+	restartServer()
+	defer s.Shutdown()
+
+	checkNumMsgs(2)
+
+	// Wait for client to be reconnected.
+	checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
+		if !nc.IsConnected() {
+			return fmt.Errorf("Not connected")
+		}
+		return nil
+	})
+
+	// Once we are here send third order.
+	// Send third
+	resp, _ = nc.Request(mname, []byte("order-3"), 50*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	checkNumMsgs(3)
+
+	// Restart.
+	restartServer()
+	defer s.Shutdown()
+
+	checkNumMsgs(3)
+
+	// Now we should have max times three on our sub.
+	checkSubPending(max * 3)
+}
+
 func TestJetStreamDeleteObservableAndServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
