@@ -1417,15 +1417,17 @@ func (o *Observable) stop(dflag bool) error {
 	delete(mset.obs, o.name)
 	mset.mu.Unlock()
 
+	var err error
+
 	if store != nil {
 		if dflag {
-			store.Delete()
+			err = store.Delete()
 		} else {
-			store.Stop()
+			err = store.Stop()
 		}
 	}
 
-	return nil
+	return err
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject

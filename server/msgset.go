@@ -538,17 +538,24 @@ func (mset *MsgSet) stop(delete bool) error {
 	}
 
 	if delete {
-		mset.store.Delete()
+		if err := mset.store.Delete(); err != nil {
+			return err
+		}
 		for _, o := range obs {
-			o.Delete()
+			if err := o.Delete(); err != nil {
+				return err
+			}
 		}
 	} else {
-		mset.store.Stop()
+		if err := mset.store.Stop(); err != nil {
+			return err
+		}
 		for _, o := range obs {
-			o.Stop()
+			if err := o.Stop(); err != nil {
+				return err
+			}
 		}
 	}
-
 	return nil
 }
 
