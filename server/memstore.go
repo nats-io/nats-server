@@ -327,4 +327,8 @@ func (os *observableMemStore) Stop() {
 	os.ms.decObsCount()
 }
 
+func (os *observableMemStore) Delete() {
+	os.Stop()
+}
+
 func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }
