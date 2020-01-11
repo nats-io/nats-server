@@ -240,10 +240,12 @@ func (mset *MsgSet) AddObservable(config *ObservableConfig) (*Observable, error)
 	// Check on msgset type conflicts.
 	switch mset.config.Retention {
 	case WorkQueuePolicy:
-		if config.Delivery != "" {
+		// Force explicit acks here.
+		if config.AckPolicy != AckExplicit {
 			mset.mu.Unlock()
-			return nil, fmt.Errorf("delivery subject not allowed on workqueue message set")
+			return nil, fmt.Errorf("workqueue message set requires explicit ack")
 		}
+
 		if len(mset.obs) > 0 {
 			if config.FilterSubject == _EMPTY_ {
 				mset.mu.Unlock()
@@ -1418,7 +1420,6 @@ func (o *Observable) stop(dflag bool) error {
 	mset.mu.Unlock()
 
 	var err error
-
 	if store != nil {
 		if dflag {
 			err = store.Delete()
@@ -1426,7 +1427,6 @@ func (o *Observable) stop(dflag bool) error {
 			err = store.Stop()
 		}
 	}
-
 	return err
 }
 
