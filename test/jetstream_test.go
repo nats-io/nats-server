@@ -1078,20 +1078,7 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 			}
 			defer mset.Delete()
 
-			nc := clientConnectToServer(t, s)
-			defer nc.Close()
-
-			sub, _ := nc.SubscribeSync(nats.NewInbox())
-			defer sub.Unsubscribe()
-			nc.Flush()
-
 			// This type of message set has restrictions which we will test here.
-
-			// Push based not allowed.
-			if _, err := mset.AddObservable(&server.ObservableConfig{Delivery: sub.Subject}); err == nil {
-				t.Fatalf("Expected an error on delivery subject")
-			}
-
 			// DeliverAll is only start mode allowed.
 			if _, err := mset.AddObservable(&server.ObservableConfig{DeliverLast: true}); err == nil {
 				t.Fatalf("Expected an error with anything but DeliverAll")
@@ -1149,7 +1136,44 @@ func TestJetStreamWorkQueueRetentionMsgSet(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
 			}
-			defer o3.Delete()
+
+			o.Delete()
+			o2.Delete()
+			o3.Delete()
+
+			// Push based will be allowed now, including ephemerals.
+			// They can not overlap etc meaning same rules as above apply.
+			o4, err := mset.AddObservable(&server.ObservableConfig{
+				Durable:    "DURABLE",
+				Delivery:   "SOME.SUBJ",
+				DeliverAll: true,
+				AckPolicy:  server.AckExplicit,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected Error: %v", err)
+			}
+			defer o4.Delete()
+
+			// Now try to create an ephemeral
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			// This should fail at first due to conflict above.
+			ephCfg := &server.ObservableConfig{Delivery: sub.Subject, DeliverAll: true, AckPolicy: server.AckExplicit}
+			if _, err := mset.AddObservable(ephCfg); err == nil {
+				t.Fatalf("Expected an error ")
+			}
+			// Delete of o4 should clear.
+			o4.Delete()
+			o5, err := mset.AddObservable(ephCfg)
+			if err != nil {
+				t.Fatalf("Unexpected Error: %v", err)
+			}
+			defer o5.Delete()
 		})
 	}
 }
