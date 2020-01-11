@@ -1408,6 +1408,52 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 		})
 	}
 }
+func TestJetStreamDeleteObservableAndServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sendSubj := "MYQ"
+	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: sendSubj, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.Delete()
+
+	// Create basic work queue mode observable.
+	oname := "WQ"
+	o, err := mset.AddObservable(workerModeConfig(oname))
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+
+	// Now delete and then we will restart the server.
+	o.Delete()
+
+	if numo := mset.NumObservables(); numo != 0 {
+		t.Fatalf("Expected to have zero observables, got %d", numo)
+	}
+
+	// Stop current server.
+	s.Shutdown()
+
+	// Restart.
+	s = RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mset, err = s.GlobalAccount().LookupMsgSet(sendSubj)
+	if err != nil {
+		t.Fatalf("Expected to find a msgset for %q", sendSubj)
+	}
+
+	if numo := mset.NumObservables(); numo != 0 {
+		t.Fatalf("Expected to have zero observables, got %d", numo)
+	}
+}
+
 func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

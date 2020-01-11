@@ -1146,7 +1146,7 @@ func (fs *fileStore) flushPendingWrites() {
 
 // Write index info to the appropriate file.
 func (mb *msgBlock) writeIndexInfo() error {
-	// magic ver msgs bytes fseq fts lseq lts checksum
+	// HEADER: magic version msgs bytes fseq fts lseq lts checksum
 	var hdr [indexHdrSize]byte
 
 	// Write header
@@ -1736,6 +1736,7 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 	return state, nil
 }
 
+// Stop the processing of the observable's state.
 func (o *observableFileStore) Stop() {
 	o.mu.Lock()
 	if o.closed {
@@ -1751,6 +1752,17 @@ func (o *observableFileStore) Stop() {
 	fs := o.fs
 	o.mu.Unlock()
 	fs.removeObs(o)
+}
+
+// Delete the observable.
+func (o *observableFileStore) Delete() {
+	// Call stop first. OK if already stopped.
+	o.Stop()
+	o.mu.Lock()
+	if o.odir != "" {
+		os.RemoveAll(o.odir)
+	}
+	o.mu.Unlock()
 }
 
 func (fs *fileStore) removeObs(obs *observableFileStore) {
