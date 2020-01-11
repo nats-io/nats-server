@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -281,7 +281,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 	mb.ifn = path.Join(fs.fcfg.StoreDir, msgDir, fmt.Sprintf(indexScan, index))
 
 	// Open up the message file, but we will try to recover from the index file.
-	// We will check that the last checksufs match.
+	// We will check that the last checksums match.
 	file, err := os.Open(mb.mfn)
 	if err != nil {
 		return nil
@@ -373,6 +373,8 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if len(fs.blks) == 0 {
 		_, err = fs.newMsgBlockForWrite()
+	} else {
+		err = fs.enableLastMsgBlockForWriting()
 	}
 
 	return err
@@ -427,6 +429,24 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.ifd = ifd
 
 	return mb, nil
+}
+
+// Make sure we can write to the last message block.
+// Lock should be held.
+func (fs *fileStore) enableLastMsgBlockForWriting() error {
+	mb := fs.lmb
+	if mb == nil {
+		return fmt.Errorf("No last message block assigned, can not enable for writing")
+	}
+	if mb.mfd != nil {
+		return nil
+	}
+	mfd, err := os.OpenFile(mb.mfn, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("Error opening msg block file [%q]: %v", mb.mfn, err)
+	}
+	mb.mfd = mfd
+	return nil
 }
 
 // Store stores a message.
