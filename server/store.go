@@ -65,6 +65,7 @@ type ObservableStore interface {
 	State() (*ObservableState, error)
 	Update(*ObservableState) error
 	Stop()
+	Delete()
 }
 
 // SequencePair has both the observable and the message set sequence. This point to same message.
