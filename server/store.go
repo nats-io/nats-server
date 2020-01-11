@@ -47,8 +47,8 @@ type MsgSetStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	StorageBytesUpdate(func(int64))
 	Stats() MsgSetStats
-	Delete()
-	Stop()
+	Delete() error
+	Stop() error
 	ObservableStore(name string, cfg *ObservableConfig) (ObservableStore, error)
 }
 
@@ -64,8 +64,8 @@ type MsgSetStats struct {
 type ObservableStore interface {
 	State() (*ObservableState, error)
 	Update(*ObservableState) error
-	Stop()
-	Delete()
+	Stop() error
+	Delete() error
 }
 
 // SequencePair has both the observable and the message set sequence. This point to same message.
