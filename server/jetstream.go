@@ -1141,7 +1141,6 @@ func (s *Server) jsObservableDeleteRequest(sub *subscription, c *client, subject
 		response = fmt.Sprintf("%s %v", ErrPrefix, err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
-
 }
 
 const (

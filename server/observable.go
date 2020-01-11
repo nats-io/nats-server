@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1388,9 +1388,7 @@ func (o *Observable) stop(dflag bool) error {
 	a := o.acc
 	close(o.qch)
 
-	if o.store != nil {
-		o.store.Stop()
-	}
+	store := o.store
 	o.mset = nil
 	o.active = false
 	ackSub := o.ackSub
@@ -1416,6 +1414,14 @@ func (o *Observable) stop(dflag bool) error {
 	mset.unsubscribe(reqSub)
 	delete(mset.obs, o.name)
 	mset.mu.Unlock()
+
+	if store != nil {
+		if dflag {
+			store.Delete()
+		} else {
+			store.Stop()
+		}
+	}
 
 	return nil
 }
