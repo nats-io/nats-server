@@ -276,12 +276,12 @@ func memStoreMsgSize(subj string, msg []byte) uint64 {
 }
 
 // Delete is same as Stop for memory store.
-func (ms *memStore) Delete() {
+func (ms *memStore) Delete() error {
 	ms.Purge()
-	ms.Stop()
+	return ms.Stop()
 }
 
-func (ms *memStore) Stop() {
+func (ms *memStore) Stop() error {
 	ms.mu.Lock()
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
@@ -289,6 +289,7 @@ func (ms *memStore) Stop() {
 	}
 	ms.msgs = nil
 	ms.mu.Unlock()
+	return nil
 }
 
 func (ms *memStore) incObsCount() {
@@ -323,12 +324,13 @@ func (ms *memStore) ObservableStore(_ string, _ *ObservableConfig) (ObservableSt
 func (os *observableMemStore) Update(_ *ObservableState) error {
 	return nil
 }
-func (os *observableMemStore) Stop() {
+func (os *observableMemStore) Stop() error {
 	os.ms.decObsCount()
+	return nil
 }
 
-func (os *observableMemStore) Delete() {
-	os.Stop()
+func (os *observableMemStore) Delete() error {
+	return os.Stop()
 }
 
 func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }
