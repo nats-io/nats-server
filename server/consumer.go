@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nats-io/nuid"
 )
 
 type ConsumerInfo struct {
@@ -53,13 +55,26 @@ type CreateConsumerRequest struct {
 	Config ConsumerConfig `json:"config"`
 }
 
-type ConsumerAckEvent struct {
+type ConsumerAckMetric struct {
+	Schema      string `json:"schema"`
+	ID          string `json:"id"`
+	Time        int64  `json:"timestamp"`
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
 	StreamSeq   uint64 `json:"stream_seq"`
 	Delay       int64  `json:"ack_time"`
-	Deliveries  uint64 `json:"delivered"`
+	Deliveries  uint64 `json:"deliveries"`
+}
+
+type ConsumerDeliveryExceededNotification struct {
+	Schema     string `json:"schema"`
+	ID         string `json:"id"`
+	Time       int64  `json:"timestamp"`
+	Stream     string `json:"stream"`
+	Consumer   string `json:"consumer"`
+	StreamSeq  uint64 `json:"stream_seq"`
+	Deliveries uint64 `json:"deliveries"`
 }
 
 // AckPolicy determines how the consumer should acknowledge delivered messages.
@@ -118,37 +133,38 @@ var (
 
 // Consumer is a jetstream consumer.
 type Consumer struct {
-	mu          sync.Mutex
-	mset        *Stream
-	acc         *Account
-	name        string
-	streamName  string
-	sseq        uint64
-	dseq        uint64
-	adflr       uint64
-	asflr       uint64
-	dsubj       string
-	reqSub      *subscription
-	ackSub      *subscription
-	ackReplyT   string
-	nextMsgSubj string
-	pending     map[uint64]int64
-	ptmr        *time.Timer
-	rdq         []uint64
-	rdc         map[uint64]uint64
-	maxdc       uint64
-	waiting     []string
-	config      ConsumerConfig
-	store       ConsumerStore
-	active      bool
-	replay      bool
-	dtmr        *time.Timer
-	dthresh     time.Duration
-	fch         chan struct{}
-	qch         chan struct{}
-	inch        chan bool
-	sfreq       int32
-	ackSampleT  string
+	mu                sync.Mutex
+	mset              *Stream
+	acc               *Account
+	name              string
+	streamName        string
+	sseq              uint64
+	dseq              uint64
+	adflr             uint64
+	asflr             uint64
+	dsubj             string
+	reqSub            *subscription
+	ackSub            *subscription
+	ackReplyT         string
+	nextMsgSubj       string
+	pending           map[uint64]int64
+	ptmr              *time.Timer
+	rdq               []uint64
+	rdc               map[uint64]uint64
+	maxdc             uint64
+	waiting           []string
+	config            ConsumerConfig
+	store             ConsumerStore
+	active            bool
+	replay            bool
+	dtmr              *time.Timer
+	dthresh           time.Duration
+	fch               chan struct{}
+	qch               chan struct{}
+	inch              chan bool
+	sfreq             int32
+	ackEventT         string
+	deliveryExcEventT string
 }
 
 const (
@@ -280,7 +296,8 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// already under lock, mset.Name() would deadlock
 	o.streamName = mset.config.Name
-	o.ackSampleT = JetStreamConsumerAckSamplePre + "." + o.streamName + "." + o.name
+	o.ackEventT = JetStreamMetricConsumerAckPre + "." + o.streamName + "." + o.name
+	o.deliveryExcEventT = JetStreamEventConsumerMaxDeliveryExceedPre + "." + o.streamName + "." + o.name
 
 	store, err := mset.store.ConsumerStore(o.name, config)
 	if err != nil {
@@ -675,12 +692,16 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 		return
 	}
 
-	e := &ConsumerAckEvent{
+	now := time.Now().UnixNano()
+	e := &ConsumerAckMetric{
+		Schema:      "io.nats.jetstream.metric.v1.consumer_ack",
+		ID:          nuid.Next(),
+		Time:        now,
 		Stream:      o.streamName,
 		Consumer:    o.name,
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
-		Delay:       int64(time.Now().UnixNano()) - o.pending[sseq],
+		Delay:       now - o.pending[sseq],
 		Deliveries:  dcount,
 	}
 
@@ -689,9 +710,9 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 		return
 	}
 
-	// can be nil during server Shutdown but with some ACKs in flight internally
+	// can be nil during server Shutdown but with some ACKs in flight internally, lock held in caller
 	if o.mset != nil && o.mset.sendq != nil {
-		o.mset.sendq <- &jsPubMsg{o.ackSampleT, o.ackSampleT, _EMPTY_, j, o, 0}
+		o.mset.sendq <- &jsPubMsg{o.ackEventT, o.ackEventT, _EMPTY_, j, o, 0}
 	}
 }
 
@@ -807,6 +828,28 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 	return o.rdc[sseq] + 1
 }
 
+func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
+	e := &ConsumerDeliveryExceededNotification{
+		Schema:     "io.nats.jetstream.notification.v1.max_deliver",
+		ID:         nuid.Next(),
+		Time:       time.Now().UnixNano(),
+		Stream:     o.streamName,
+		Consumer:   o.name,
+		StreamSeq:  sseq,
+		Deliveries: dcount,
+	}
+
+	j, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return
+	}
+
+	// can be nil during shutdown, locks are help in the caller
+	if o.mset != nil && o.mset.sendq != nil {
+		o.mset.sendq <- &jsPubMsg{o.deliveryExcEventT, o.deliveryExcEventT, _EMPTY_, j, o, 0}
+	}
+}
+
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
@@ -821,6 +864,10 @@ func (o *Consumer) getNextMsg() (string, []byte, uint64, uint64, error) {
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 			dcount = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dcount > o.maxdc {
+				if dcount == o.maxdc+1 {
+					o.notifyDeliveryExceeded(seq, dcount-1)
+				}
+
 				// Make sure to remove from pending.
 				delete(o.pending, seq)
 				continue
