@@ -14,6 +14,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -25,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
@@ -150,13 +153,6 @@ type jetStream struct {
 	storeReserved int64
 }
 
-// Metafiles
-const (
-	// Metafiles for message sets and observables.
-	JetStreamMetaFile    = "meta.inf"
-	JetStreamMetaFileSum = "meta.sum"
-)
-
 // For easier handling of exports and imports.
 var allJsExports = []string{
 	jsEnabledExport,
@@ -189,6 +185,8 @@ type jsAccount struct {
 	storeUsed     int64
 	storeDir      string
 	msgSets       map[string]*MsgSet
+	templates     map[string]*StreamTemplate
+	store         TemplateStore
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
@@ -440,14 +438,80 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.Debugf("  Max Memory:      %s", FriendlyBytes(limits.MaxMemory))
 	s.Debugf("  Max Storage:     %s", FriendlyBytes(limits.MaxStore))
 
-	// Restore any state here.
-	fis, _ := ioutil.ReadDir(jsa.storeDir)
-	if len(fis) > 0 {
-		s.Noticef("  Recovering JetStream state for account %q", a.Name)
+	// Do quick fixup here for new directory structure.
+	// TODO(dlc) - We can remove once we do MVP IMO.
+	sdir := path.Join(jsa.storeDir, streamsDir)
+	if _, err := os.Stat(sdir); os.IsNotExist(err) {
+		// If we are here that means this is old school directory, upgrade in place.
+		s.Noticef("  Upgrading storage directory structure for %q", a.Name)
+		omdirs, _ := ioutil.ReadDir(jsa.storeDir)
+		if err := os.MkdirAll(sdir, 0755); err != nil {
+			return fmt.Errorf("could not create storage streams directory - %v", err)
+		}
+		for _, fi := range omdirs {
+			os.Rename(path.Join(jsa.storeDir, fi.Name()), path.Join(sdir, fi.Name()))
+		}
 	}
+
+	// Restore any state here.
+	s.Noticef("  Recovering JetStream state for account %q", a.Name)
+
+	// Check templates first since messsage sets will need proper ownership.
+	tdir := path.Join(jsa.storeDir, tmplsDir)
+	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
+		key := sha256.Sum256([]byte(tdir))
+		hh, err := highwayhash.New64(key[:])
+		if err != nil {
+			return err
+		}
+		fis, _ := ioutil.ReadDir(tdir)
+		for _, fi := range fis {
+			metafile := path.Join(tdir, fi.Name(), JetStreamMetaFile)
+			metasum := path.Join(tdir, fi.Name(), JetStreamMetaFileSum)
+			buf, err := ioutil.ReadFile(metafile)
+			if err != nil {
+				s.Warnf("  Error reading StreamTemplate metafile %q: %v", metasum, err)
+				continue
+			}
+			if _, err := os.Stat(metasum); os.IsNotExist(err) {
+				s.Warnf("  Missing Template checksum for %q", metasum)
+				continue
+			}
+			sum, err := ioutil.ReadFile(metasum)
+			if err != nil {
+				s.Warnf("  Error reading StreamTemplate checksum %q: %v", metasum, err)
+				continue
+			}
+			hh.Reset()
+			hh.Write(buf)
+			checksum := hex.EncodeToString(hh.Sum(nil))
+			if checksum != string(sum) {
+				s.Warnf("  StreamTemplate checksums do not match %q vs %q", sum, checksum)
+				continue
+			}
+			var cfg StreamTemplateConfig
+			if err := json.Unmarshal(buf, &cfg); err != nil {
+				s.Warnf("  Error unmarshalling StreamTemplate metafile: %v", err)
+				continue
+			}
+			cfg.Config.Name = _EMPTY_
+			if _, err := a.AddStreamTemplate(&cfg); err != nil {
+				s.Warnf("  Error recreating StreamTemplate %q: %v", cfg.Name, err)
+				continue
+			}
+		}
+	}
+
+	fis, _ := ioutil.ReadDir(sdir)
 	for _, fi := range fis {
-		metafile := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFile)
-		metasum := path.Join(jsa.storeDir, fi.Name(), JetStreamMetaFileSum)
+		mdir := path.Join(sdir, fi.Name())
+		key := sha256.Sum256([]byte(path.Join(mdir, msgDir)))
+		hh, err := highwayhash.New64(key[:])
+		if err != nil {
+			return err
+		}
+		metafile := path.Join(mdir, JetStreamMetaFile)
+		metasum := path.Join(mdir, JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
 			s.Warnf("  Missing MsgSet metafile for %q", metafile)
 			continue
@@ -461,22 +525,39 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			s.Warnf("  Missing MsgSet checksum for %q", metasum)
 			continue
 		}
-		// FIXME(dlc) - check checksum.
+		sum, err := ioutil.ReadFile(metasum)
+		if err != nil {
+			s.Warnf("  Error reading MsgSet metafile checksum %q: %v", metasum, err)
+			continue
+		}
+		hh.Write(buf)
+		checksum := hex.EncodeToString(hh.Sum(nil))
+		if checksum != string(sum) {
+			s.Warnf("  MsgSet metafile checksums do not match %q vs %q", sum, checksum)
+			continue
+		}
+
 		var cfg MsgSetConfig
 		if err := json.Unmarshal(buf, &cfg); err != nil {
 			s.Warnf("  Error unmarshalling MsgSet metafile: %v", err)
 			continue
 		}
+		if cfg.Template != _EMPTY_ {
+			if err := jsa.addMsgSetNameToTemplate(cfg.Template, cfg.Name); err != nil {
+				s.Warnf("  Error adding MsgSet %q to Template %q: %v", cfg.Name, cfg.Template, err)
+			}
+		}
 		mset, err := a.AddMsgSet(&cfg)
 		if err != nil {
-			s.Warnf("  Error recreating MsgSet: %v", err)
+			s.Warnf("  Error recreating MsgSet %q: %v", cfg.Name, err)
+			continue
 		}
 
 		stats := mset.Stats()
 		s.Noticef("  Restored %d messages for MsgSet %q", comma(int64(stats.Msgs)), fi.Name())
 
 		// Now do Observables.
-		odir := path.Join(jsa.storeDir, fi.Name(), obsDir)
+		odir := path.Join(sdir, fi.Name(), obsDir)
 		ofis, _ := ioutil.ReadDir(odir)
 		if len(ofis) > 0 {
 			s.Noticef("  Recovering %d Observables for MsgSet - %q", len(ofis), fi.Name())
@@ -516,6 +597,20 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.Noticef("JetStream state for account %q recovered", a.Name)
 
 	return nil
+}
+
+// NumMsgSets will return how many message sets we have.
+func (a *Account) NumMsgSets() int {
+	a.mu.RLock()
+	jsa := a.js
+	a.mu.RUnlock()
+	if jsa == nil {
+		return 0
+	}
+	jsa.mu.Lock()
+	n := len(jsa.msgSets)
+	jsa.mu.Unlock()
+	return n
 }
 
 // MsgSets will return all known message sets.
@@ -762,13 +857,24 @@ func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
 // Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
 	var msgSets []*MsgSet
+	var ts []string
+
 	jsa.mu.Lock()
 	for _, ms := range jsa.msgSets {
 		msgSets = append(msgSets, ms)
 	}
+	acc := jsa.account
+	for _, t := range jsa.templates {
+		ts = append(ts, t.Name)
+	}
+	jsa.templates = nil
 	jsa.mu.Unlock()
+
 	for _, ms := range msgSets {
 		ms.stop(false)
+	}
+	for _, t := range ts {
+		acc.DeleteStreamTemplate(t)
 	}
 }
 
@@ -1168,6 +1274,309 @@ func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
 		jsc.MaxMemory = JetStreamMaxMemDefault
 	}
 	return jsc
+}
+
+// Helper function.
+func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
+	a.mu.RLock()
+	s := a.srv
+	jsa := a.js
+	a.mu.RUnlock()
+
+	if s == nil {
+		return nil, nil, fmt.Errorf("jetstream account not registered")
+	}
+
+	if jsa == nil {
+		return nil, nil, fmt.Errorf("jetstream not enabled for account")
+	}
+
+	return s, jsa, nil
+}
+
+// StreamTemplateConfig allows a configuration to auto-create message sets based on this template when a message
+// is received that matches. Each new message set will use the config as the template config to create them.
+type StreamTemplateConfig struct {
+	Name       string        `json:"name"`
+	Config     *MsgSetConfig `json:"config"`
+	MaxMsgSets uint32        `json:"max_msg_sets"`
+}
+
+// StreamTemplate
+type StreamTemplate struct {
+	mu  sync.Mutex
+	tc  *client
+	jsa *jsAccount
+	*StreamTemplateConfig
+	msgSets []string
+}
+
+func (t *StreamTemplateConfig) deepCopy() *StreamTemplateConfig {
+	copy := *t
+	cfg := *t.Config
+	copy.Config = &cfg
+	return &copy
+}
+
+func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, error) {
+	s, jsa, err := a.checkForJetStream()
+	if err != nil {
+		return nil, err
+	}
+	if tc.Config.Name != "" {
+		return nil, fmt.Errorf("template config name should be empty")
+	}
+
+	// FIXME(dlc) - Hacky
+	tcopy := tc.deepCopy()
+	tcopy.Config.Name = "_"
+	cfg, err := checkMsgSetCfg(tcopy.Config)
+	if err != nil {
+		return nil, err
+	}
+	tcopy.Config = &cfg
+	t := &StreamTemplate{
+		StreamTemplateConfig: tcopy,
+		tc:                   s.createInternalJetStreamClient(),
+		jsa:                  jsa,
+	}
+	t.tc.registerWithAccount(a)
+
+	jsa.mu.Lock()
+	if jsa.templates == nil {
+		jsa.templates = make(map[string]*StreamTemplate)
+		// Create the appropriate store
+		if cfg.Storage == FileStorage {
+			jsa.store = newTemplateFileStore(jsa.storeDir)
+		} else {
+			jsa.store = newTemplateMemStore()
+		}
+	} else if _, ok := jsa.templates[tcopy.Name]; ok {
+		jsa.mu.Unlock()
+		return nil, fmt.Errorf("template with name %q already exists", tcopy.Name)
+	}
+	jsa.templates[tcopy.Name] = t
+	jsa.mu.Unlock()
+
+	// FIXME(dlc) - we can not overlap subjects between templates. Need to have test.
+
+	// Setup the internal subscriptions to trap the messages.
+	if err := t.createTemplateSubscriptions(); err != nil {
+		return nil, err
+	}
+	if err := jsa.store.Store(t); err != nil {
+		t.Delete()
+		return nil, err
+	}
+	return t, nil
+}
+
+func (t *StreamTemplate) createTemplateSubscriptions() error {
+	if t == nil {
+		return fmt.Errorf("no template")
+	}
+	if t.tc == nil {
+		return fmt.Errorf("template not enabled")
+	}
+	c := t.tc
+	if !c.srv.eventsEnabled() {
+		return ErrNoSysAccount
+	}
+	sid := 1
+	for _, subject := range t.Config.Subjects {
+		// Now create the subscription
+		sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(sid)), false)
+		if err != nil {
+			c.acc.DeleteStreamTemplate(t.Name)
+			return err
+		}
+		c.mu.Lock()
+		sub.icb = t.processInboundTemplateMsg
+		c.mu.Unlock()
+		sid++
+	}
+	return nil
+}
+
+func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
+	if t == nil || t.jsa == nil {
+		return
+	}
+	jsa := t.jsa
+	jsa.mu.Lock()
+	// If we already are registered then we can just return here.
+	if _, ok := jsa.msgSets[subject]; ok {
+		jsa.mu.Unlock()
+		return
+	}
+	acc := jsa.account
+	jsa.mu.Unlock()
+
+	// Check if we are at the maximum and grab some variables.
+	t.mu.Lock()
+	c := t.tc
+	cfg := *t.Config
+	cfg.Template = t.Name
+	atLimit := len(t.msgSets) >= int(t.MaxMsgSets)
+	if !atLimit {
+		t.msgSets = append(t.msgSets, subject)
+	}
+	t.mu.Unlock()
+
+	if atLimit {
+		c.Warnf("JetStream could not create message set for account %q on subject %q, at limit", acc.Name, subject)
+		return
+	}
+
+	// We need to create the message set here.
+	// Change the config from the template and only use literal subject.
+	cfg.Subjects = nil
+	cfg.Name = subject
+	mset, err := acc.AddMsgSet(&cfg)
+	if err != nil {
+		// FIXME(dlc) - Remove from t.msgSets
+		c.Warnf("JetStream could not create message set for account %q on subject %q", acc.Name, subject)
+		return
+	}
+
+	// Process this message directly by invoking mset.
+	mset.processInboundJetStreamMsg(nil, nil, subject, reply, msg)
+}
+
+// LookupStreamTemplate looks up the names stream template.
+func (a *Account) LookupStreamTemplate(name string) (*StreamTemplate, error) {
+	_, jsa, err := a.checkForJetStream()
+	if err != nil {
+		return nil, err
+	}
+	jsa.mu.Lock()
+	defer jsa.mu.Unlock()
+	if jsa.templates == nil {
+		return nil, fmt.Errorf("no template with %q name found", name)
+	}
+	t, ok := jsa.templates[name]
+	if !ok {
+		return nil, fmt.Errorf("no template with %q name found", name)
+	}
+	return t, nil
+}
+
+func (t *StreamTemplate) Delete() error {
+	if t == nil {
+		return fmt.Errorf("nil stream template")
+	}
+
+	t.mu.Lock()
+	jsa := t.jsa
+	c := t.tc
+	t.tc = nil
+	defer func() {
+		if c != nil {
+			c.closeConnection(ClientClosed)
+		}
+	}()
+	t.mu.Unlock()
+
+	if jsa == nil {
+		return fmt.Errorf("jetstream not enabled")
+	}
+
+	jsa.mu.Lock()
+	if jsa.templates == nil {
+		jsa.mu.Unlock()
+		return fmt.Errorf("no template named %q found", t.Name)
+	}
+	if _, ok := jsa.templates[t.Name]; !ok {
+		jsa.mu.Unlock()
+		return fmt.Errorf("no template named %q found", t.Name)
+	}
+	delete(jsa.templates, t.Name)
+	acc := jsa.account
+	jsa.mu.Unlock()
+
+	// Remove message sets associated with this template.
+	var msgSets []*MsgSet
+	t.mu.Lock()
+	for _, name := range t.msgSets {
+		if mset, err := acc.LookupMsgSet(name); err == nil {
+			msgSets = append(msgSets, mset)
+		}
+	}
+	t.mu.Unlock()
+
+	if jsa.store != nil {
+		if err := jsa.store.Delete(t); err != nil {
+			return fmt.Errorf("error deleting template from store: %v", err)
+		}
+	}
+
+	var lastErr error
+	for _, mset := range msgSets {
+		if err := mset.Delete(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func (a *Account) DeleteStreamTemplate(name string) error {
+	t, err := a.LookupStreamTemplate(name)
+	if err != nil {
+		return err
+	}
+	return t.Delete()
+}
+
+func (a *Account) Templates() []*StreamTemplate {
+	var ts []*StreamTemplate
+	_, jsa, err := a.checkForJetStream()
+	if err != nil {
+		return nil
+	}
+
+	jsa.mu.Lock()
+	for _, t := range jsa.templates {
+		// FIXME(dlc) - Copy?
+		ts = append(ts, t)
+	}
+	jsa.mu.Unlock()
+
+	return ts
+}
+
+// Will add a message set to a template, this is for recovery.
+func (jsa *jsAccount) addMsgSetNameToTemplate(tname, mname string) error {
+	if jsa.templates == nil {
+		return fmt.Errorf("no template found")
+	}
+	t, ok := jsa.templates[tname]
+	if !ok {
+		return fmt.Errorf("no template found")
+	}
+	// We found template.
+	t.mu.Lock()
+	t.msgSets = append(t.msgSets, mname)
+	t.mu.Unlock()
+	return nil
+}
+
+// This will check if a template owns this message set.
+// jsAccount lock should be held
+func (jsa *jsAccount) checkTemplateOwnership(tname, mname string) bool {
+	if jsa.templates == nil {
+		return false
+	}
+	t, ok := jsa.templates[tname]
+	if !ok {
+		return false
+	}
+	// We found template, make sure we are in msgSets.
+	for _, msetName := range t.msgSets {
+		if mname == msetName {
+			return true
+		}
+	}
+	return false
 }
 
 // FriendlyBytes returns a string with the given bytes int64

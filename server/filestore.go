@@ -107,6 +107,8 @@ const (
 	version = uint8(1)
 	// hdrLen
 	hdrLen = 2
+	// This is where we keep the streams.
+	streamsDir = "streams"
 	// This is where we keep the message store blocks.
 	msgDir = "msgs"
 	// used to scan blk file names.
@@ -117,6 +119,8 @@ const (
 	obsDir = "obs"
 	// Index file for observable
 	obsState = "o.dat"
+	// This is where we keep state on templates.
+	tmplsDir = "templates"
 	// Maximum size of a write buffer we may consider for re-use.
 	maxBufReuse = 2 * 1024 * 1024
 	// Default stream block size.
@@ -133,6 +137,10 @@ const (
 	coalesceDelay = 10 * time.Millisecond
 	// coalesceMaximum
 	coalesceMaximum = 64 * 1024
+
+	// Metafiles for message sets and observables.
+	JetStreamMetaFile    = "meta.inf"
+	JetStreamMetaFileSum = "meta.sum"
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
@@ -1808,4 +1816,53 @@ func (fs *fileStore) removeObs(obs *observableFileStore) {
 		}
 	}
 	fs.mu.Unlock()
+}
+
+// Templates
+type templateFileStore struct {
+	dir string
+	hh  hash.Hash64
+}
+
+func newTemplateFileStore(storeDir string) *templateFileStore {
+	tdir := path.Join(storeDir, tmplsDir)
+	key := sha256.Sum256([]byte(tdir))
+	hh, err := highwayhash.New64(key[:])
+	if err != nil {
+		return nil
+	}
+	return &templateFileStore{dir: tdir, hh: hh}
+}
+
+func (ts *templateFileStore) Store(t *StreamTemplate) error {
+	dir := path.Join(ts.dir, t.Name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("could not create templates storage directory for %q- %v", t.Name, err)
+	}
+	meta := path.Join(dir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+		return err
+	}
+	t.mu.Lock()
+	b, err := json.MarshalIndent(t, _EMPTY_, "  ")
+	t.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+		return err
+	}
+	// FIXME(dlc) - Do checksum
+	ts.hh.Reset()
+	ts.hh.Write(b)
+	checksum := hex.EncodeToString(ts.hh.Sum(nil))
+	sum := path.Join(dir, JetStreamMetaFileSum)
+	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ts *templateFileStore) Delete(t *StreamTemplate) error {
+	return os.RemoveAll(path.Join(ts.dir, t.Name))
 }
