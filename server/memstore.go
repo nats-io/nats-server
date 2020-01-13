@@ -334,3 +334,14 @@ func (os *observableMemStore) Delete() error {
 }
 
 func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }
+
+// Templates
+type templateMemStore struct{}
+
+func newTemplateMemStore() *templateMemStore {
+	return &templateMemStore{}
+}
+
+// No-ops for memstore.
+func (ts *templateMemStore) Store(t *StreamTemplate) error  { return nil }
+func (ts *templateMemStore) Delete(t *StreamTemplate) error { return nil }

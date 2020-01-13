@@ -61,6 +61,7 @@ type MsgSetStats struct {
 	Observables int    `json:"observable_count"`
 }
 
+// ObservableStore stores state on observables.
 type ObservableStore interface {
 	State() (*ObservableState, error)
 	Update(*ObservableState) error
@@ -86,6 +87,12 @@ type ObservableState struct {
 	Pending map[uint64]int64 `json:"pending"`
 	// This is for messages that have been redelivered, so count > 1.
 	Redelivery map[uint64]uint64 `json:"redelivery"`
+}
+
+// TemplateStore stores templates.
+type TemplateStore interface {
+	Store(*StreamTemplate) error
+	Delete(*StreamTemplate) error
 }
 
 func jsonString(s string) string {
