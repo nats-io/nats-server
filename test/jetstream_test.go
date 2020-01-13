@@ -240,8 +240,7 @@ func TestJetStreamObservableMaxDeliveries(t *testing.T) {
 			defer nc.Close()
 
 			// Queue up our work item.
-			resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 50*time.Millisecond)
-			expectOKResponse(t, resp)
+			sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
 
 			sub, _ := nc.SubscribeSync(nats.NewInbox())
 			defer sub.Unsubscribe()
@@ -333,6 +332,17 @@ func TestJetStreamAddMsgSetMaxMsgSize(t *testing.T) {
 	}
 }
 
+func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
+	t.Helper()
+	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
+	if resp == nil {
+		t.Fatalf("No response, possible timeout?")
+	}
+	if string(resp.Data) != server.OK {
+		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	}
+}
+
 func expectOKResponse(t *testing.T, m *nats.Msg) {
 	t.Helper()
 	if m == nil {
@@ -366,8 +376,7 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 			defer nc.Close()
 
 			for i := 0; i < 50; i++ {
-				resp, _ := nc.Request("foo.bar", []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, "foo.bar", "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != 50 {
@@ -551,9 +560,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			toSend := 100
 			sendSubj := "foo.bar"
 			for i := 1; i <= toSend; i++ {
-				payload := strconv.Itoa(i)
-				resp, _ := nc.Request(sendSubj, []byte(payload), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, strconv.Itoa(i))
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -605,9 +612,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 
 			// Now send more and make sure delivery picks back up.
 			for i := toSend + 1; i <= toSend*2; i++ {
-				payload := strconv.Itoa(i)
-				resp, _ := nc.Request(sendSubj, []byte(payload), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, strconv.Itoa(i))
 			}
 			stats = mset.Stats()
 			if stats.Msgs != uint64(toSend*2) {
@@ -715,8 +720,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 			toSend := 100
 			sendSubj := "bar"
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -800,10 +804,8 @@ func TestJetStreamSubjecting(t *testing.T) {
 			subjB := "foo.B"
 
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(subjA, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
-				resp, _ = nc.Request(subjB, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, subjA, "Hello World!")
+				sendStreamMsg(t, nc, subjB, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend*2) {
@@ -874,10 +876,8 @@ func TestJetStreamWorkQueueSubjecting(t *testing.T) {
 			subjB := "foo.B"
 
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(subjA, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
-				resp, _ = nc.Request(subjB, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, subjA, "Hello World!")
+				sendStreamMsg(t, nc, subjB, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend*2) {
@@ -956,8 +956,7 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 			toSend := 100
 			sendSubj := "bar"
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -1021,8 +1020,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 			toSend := 100
 			sendSubj := "bar"
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -1203,8 +1201,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 			// Now load up some messages.
 			toSend := 100
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 100*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -1304,8 +1301,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 			// Now load up some messages.
 			toSend := 10
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -1379,8 +1375,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 			// Now load up some messages.
 			toSend := 2
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(c.mconfig.Name, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -1476,8 +1471,7 @@ func TestJetStreamObservableMaxDeliveryAndServerRestart(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Send one message.
-	resp, _ := nc.Request(mname, []byte("order-1"), 50*time.Millisecond)
-	expectOKResponse(t, resp)
+	sendStreamMsg(t, nc, mname, "order-1")
 
 	checkSubPending := func(numExpected int) {
 		t.Helper()
@@ -1506,8 +1500,7 @@ func TestJetStreamObservableMaxDeliveryAndServerRestart(t *testing.T) {
 
 	// Once here we have gone over the limit for the 1st message for max deliveries.
 	// Send second
-	resp, _ = nc.Request(mname, []byte("order-2"), 50*time.Millisecond)
-	expectOKResponse(t, resp)
+	sendStreamMsg(t, nc, mname, "order-2")
 
 	// Just wait for first delivery + one redelivery.
 	checkSubPending(max + 2)
@@ -1540,8 +1533,7 @@ func TestJetStreamObservableMaxDeliveryAndServerRestart(t *testing.T) {
 
 	// Once we are here send third order.
 	// Send third
-	resp, _ = nc.Request(mname, []byte("order-3"), 50*time.Millisecond)
-	expectOKResponse(t, resp)
+	sendStreamMsg(t, nc, mname, "order-3")
 
 	checkNumMsgs(3)
 
@@ -1622,8 +1614,7 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	// Now load up some messages.
 	toSend := 25
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, sendSubj, "Hello World!")
 	}
 	stats := mset.Stats()
 	if stats.Msgs != uint64(toSend) {
@@ -1705,8 +1696,7 @@ func TestJetStreamActiveDelivery(t *testing.T) {
 			toSend := 100
 			sendSubj := "foo.22"
 			for i := 0; i < toSend; i++ {
-				resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-				expectOKResponse(t, resp)
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
 			}
 			stats := mset.Stats()
 			if stats.Msgs != uint64(toSend) {
@@ -3024,8 +3014,7 @@ func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
 
 	toSend := 100
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request("LIMITS", []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, "LIMITS", "Hello World!")
 	}
 
 	stats := mset.Stats()
@@ -3047,8 +3036,7 @@ func TestJetStreamMsgSetStorageTrackingAndLimits(t *testing.T) {
 	defer mset2.Delete()
 
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request("NUM22", []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, "NUM22", "Hello World!")
 	}
 
 	stats2 := mset2.Stats()
@@ -3141,8 +3129,7 @@ func TestJetStreamMsgSetFileStorageTrackingAndLimits(t *testing.T) {
 
 	toSend := 100
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request("LIMITS", []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, "LIMITS", "Hello World!")
 	}
 
 	stats := mset.Stats()
@@ -3165,8 +3152,7 @@ func TestJetStreamMsgSetFileStorageTrackingAndLimits(t *testing.T) {
 	defer mset2.Delete()
 
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request("NUM22", []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, "NUM22", "Hello World!")
 	}
 
 	stats2 := mset2.Stats()
@@ -3282,10 +3268,9 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 
 		toSend := rand.Intn(100) + 1
 		for n := 1; n <= toSend; n++ {
-			msg := []byte(fmt.Sprintf("Hello %d", n*i))
+			msg := fmt.Sprintf("Hello %d", n*i)
 			subj := subjects[rand.Intn(len(subjects))]
-			resp, _ := nc.Request(subj, msg, 50*time.Millisecond)
-			expectOKResponse(t, resp)
+			sendStreamMsg(t, nc, subj, msg)
 		}
 		// Create up to 5 observables.
 		numObs := rand.Intn(5) + 1
@@ -3775,6 +3760,175 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 	}
 }
 
+func TestJetStreamTemplateBasics(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	acc := s.GlobalAccount()
+
+	mcfg := &server.MsgSetConfig{
+		Subjects:  []string{"kv.*"},
+		Retention: server.StreamPolicy,
+		MaxAge:    time.Hour,
+		MaxMsgs:   4,
+		Storage:   server.MemoryStorage,
+		Replicas:  1,
+	}
+	template := &server.StreamTemplateConfig{
+		Name:       "kv",
+		Config:     mcfg,
+		MaxMsgSets: 4,
+	}
+
+	if _, err := acc.AddStreamTemplate(template); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if templates := acc.Templates(); len(templates) != 1 {
+		t.Fatalf("Expected to get array of 1 template, got %d", len(templates))
+	}
+	if err := acc.DeleteStreamTemplate("foo"); err == nil {
+		t.Fatalf("Expected an error for non-existent template")
+	}
+	if err := acc.DeleteStreamTemplate(template.Name); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if templates := acc.Templates(); len(templates) != 0 {
+		t.Fatalf("Expected to get array of no templates, got %d", len(templates))
+	}
+	// Add it back in and test basics
+	if _, err := acc.AddStreamTemplate(template); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Connect a client and send a message which should trigger the message set creation.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sendStreamMsg(t, nc, "kv.22", "derek")
+	sendStreamMsg(t, nc, "kv.33", "cat")
+	sendStreamMsg(t, nc, "kv.44", "sam")
+	sendStreamMsg(t, nc, "kv.55", "meg")
+
+	if nms := acc.NumMsgSets(); nms != 4 {
+		t.Fatalf("Expected 4 auto-created message sets, got %d", nms)
+	}
+
+	// This one should fail due to max.
+	if resp, err := nc.Request("kv.99", nil, 100*time.Millisecond); err == nil {
+		t.Fatalf("Expected this to fail, but got %q", resp.Data)
+	}
+
+	// Now delete template and make sure the underlying message sets go away too.
+	if err := acc.DeleteStreamTemplate(template.Name); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if nms := acc.NumMsgSets(); nms != 0 {
+		t.Fatalf("Expected no auto-created message sets to remain, got %d", nms)
+	}
+}
+
+func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	acc := s.GlobalAccount()
+
+	mcfg := &server.MsgSetConfig{
+		Subjects:  []string{"kv.*"},
+		Retention: server.StreamPolicy,
+		MaxAge:    time.Hour,
+		MaxMsgs:   50,
+		Storage:   server.FileStorage,
+		Replicas:  1,
+	}
+	template := &server.StreamTemplateConfig{
+		Name:       "kv",
+		Config:     mcfg,
+		MaxMsgSets: 100,
+	}
+
+	if _, err := acc.AddStreamTemplate(template); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we can not add in a msgset on our own with a template owner.
+	badCfg := *mcfg
+	badCfg.Name = "bad"
+	badCfg.Template = "kv"
+	if _, err := acc.AddMsgSet(&badCfg); err == nil {
+		t.Fatalf("Expected error adding message set with template owner")
+	}
+
+	// Connect a client and send a message which should trigger the message set creation.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	for i := 1; i <= 100; i++ {
+		subj := fmt.Sprintf("kv.%d", i)
+		for x := 0; x < 50; x++ {
+			sendStreamMsg(t, nc, subj, "Hello")
+		}
+	}
+	nc.Flush()
+
+	if nms := acc.NumMsgSets(); nms != 100 {
+		t.Fatalf("Expected 100 auto-created message sets, got %d", nms)
+	}
+
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+
+	restartServer := func() {
+		t.Helper()
+		// Stop current server.
+		s.Shutdown()
+		// Restart.
+		s = RunJetStreamServerOnPort(port)
+	}
+
+	// Restart.
+	restartServer()
+	defer s.Shutdown()
+
+	acc = s.GlobalAccount()
+	if nms := acc.NumMsgSets(); nms != 100 {
+		t.Fatalf("Expected 100 auto-created message sets, got %d", nms)
+	}
+	tmpl, err := acc.LookupStreamTemplate(template.Name)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Make sure t.Delete() survives restart.
+	tmpl.Delete()
+
+	// Restart.
+	restartServer()
+	defer s.Shutdown()
+
+	acc = s.GlobalAccount()
+	if nms := acc.NumMsgSets(); nms != 0 {
+		t.Fatalf("Expected no auto-created message sets, got %d", nms)
+	}
+	if _, err := acc.LookupStreamTemplate(template.Name); err == nil {
+		t.Fatalf("Expected to not find the template after restart")
+	}
+}
+
+// Benchmark placeholder
 func TestJetStreamPubSubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()

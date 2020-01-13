@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +37,7 @@ type MsgSetConfig struct {
 	Storage        StorageType     `json:"storage"`
 	Replicas       int             `json:"num_replicas"`
 	NoAck          bool            `json:"no_ack,omitempty"`
+	Template       string          `json:"template_owner,omitempty"`
 }
 
 type MsgSetInfo struct {
@@ -78,22 +80,9 @@ const (
 
 // AddMsgSet adds a JetStream message set for the given account.
 func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
-	a.mu.RLock()
-	s := a.srv
-	a.mu.RUnlock()
-	if s == nil {
-		return nil, fmt.Errorf("jetstream account not registered")
-	}
-
-	// FIXME(dlc) - Change for clustering.
-	js := s.getJetStream()
-	if js == nil {
-		return nil, fmt.Errorf("jetstream not enabled")
-	}
-
-	jsa := a.js
-	if jsa == nil {
-		return nil, fmt.Errorf("jetstream not enabled for account")
+	s, jsa, err := a.checkForJetStream()
+	if err != nil {
+		return nil, err
 	}
 
 	// Sensible defaults.
@@ -112,6 +101,13 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 		jsa.mu.Unlock()
 		return nil, err
 	}
+	// Check for template ownership if present.
+	if cfg.Template != _EMPTY_ && jsa.account != nil {
+		if !jsa.checkTemplateOwnership(cfg.Template, cfg.Name) {
+			jsa.mu.Unlock()
+			return nil, fmt.Errorf("message set not owned by template")
+		}
+	}
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
 	mset := &MsgSet{jsa: jsa, config: cfg, client: c, obs: make(map[string]*Observable)}
@@ -121,14 +117,13 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 		mset.config.Subjects = append(mset.config.Subjects, mset.config.Name)
 	}
 	jsa.msgSets[config.Name] = mset
-	storeDir := path.Join(jsa.storeDir, config.Name)
+	storeDir := path.Join(jsa.storeDir, streamsDir, config.Name)
 	jsa.mu.Unlock()
 
 	// Bind to the account.
 	c.registerWithAccount(a)
 
 	// Create the appropriate storage
-
 	if err := mset.setupStore(storeDir); err != nil {
 		mset.delete()
 		return nil, err
@@ -150,8 +145,9 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 		return MsgSetConfig{}, fmt.Errorf("message set configuration invalid")
 	}
 
-	if !isValidName(config.Name) {
-		return MsgSetConfig{}, fmt.Errorf("message set name required, can not contain '.', '*', '>'")
+	if len(config.Name) == 0 || strings.ContainsAny(config.Name, "*>") {
+		//if !isValidName(config.Name) {
+		return MsgSetConfig{}, fmt.Errorf("message set name is required and can not contain '*', '>'")
 	}
 
 	cfg := *config
@@ -415,6 +411,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 }
 
+// Will signal all waiting observables.
 func (mset *MsgSet) signalObservers() {
 	mset.mu.Lock()
 	if mset.sgw > 0 {
@@ -494,8 +491,6 @@ func (mset *MsgSet) internalSendLoop() {
 			c.pa.szb = []byte(strconv.Itoa(c.pa.size))
 			c.pa.reply = []byte(pm.reply)
 			msg := append(pm.msg, _CRLF_...)
-			// FIXME(dlc) - capture if this sent to anyone and notify
-			// observer if its now zero, meaning no interest.
 			didDeliver := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
@@ -510,10 +505,12 @@ func (mset *MsgSet) internalSendLoop() {
 	}
 }
 
+// Internal function to delete a message set.
 func (mset *MsgSet) delete() error {
 	return mset.stop(true)
 }
 
+// Internal function to stop or delete the message set.
 func (mset *MsgSet) stop(delete bool) error {
 	mset.mu.Lock()
 	if mset.sendq != nil {
