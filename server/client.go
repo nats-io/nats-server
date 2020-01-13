@@ -3529,7 +3529,7 @@ type qsub struct {
 
 func (c *client) closeConnection(reason ClosedState) {
 	c.mu.Lock()
-	if c.nc == nil || c.flags.isSet(closeConnection) {
+	if c.flags.isSet(closeConnection) {
 		c.mu.Unlock()
 		return
 	}
@@ -3553,10 +3553,12 @@ func (c *client) teardownConn() {
 	c.mu.Lock()
 	// Be consistent with the creation: for routes and gateways,
 	// we use Noticef on create, so use that too for delete.
-	if c.kind == ROUTER || c.kind == GATEWAY {
-		c.Noticef("%s connection closed", c.typeString())
-	} else { // Client, System, Jetstream and Leafnode connections.
-		c.Debugf("%s connection closed", c.typeString())
+	if c.srv != nil {
+		if c.kind == ROUTER || c.kind == GATEWAY {
+			c.Noticef("%s connection closed", c.typeString())
+		} else { // Client, System, Jetstream and Leafnode connections.
+			c.Debugf("%s connection closed", c.typeString())
+		}
 	}
 
 	c.clearAuthTimer()
@@ -3584,7 +3586,7 @@ func (c *client) teardownConn() {
 	// FIXME(dlc) - we can just stub in a new one for client
 	// and reference existing one.
 	var subs []*subscription
-	if kind == CLIENT || kind == LEAF {
+	if kind == CLIENT || kind == LEAF || kind == JETSTREAM {
 		var _subs [32]*subscription
 		subs = _subs[:0]
 		for _, sub := range c.subs {
