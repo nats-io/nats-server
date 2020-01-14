@@ -108,16 +108,23 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 			return nil, fmt.Errorf("message set not owned by template")
 		}
 	}
+
+	if len(cfg.Subjects) == 0 {
+		cfg.Subjects = append(cfg.Subjects, cfg.Name)
+	}
+	// Check for overlapping subjects. These are not allowed for now.
+	if jsa.subjectsOverlap(cfg.Subjects) {
+		jsa.mu.Unlock()
+		return nil, fmt.Errorf("subjects overlap with an existing message set")
+	}
+
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
 	mset := &MsgSet{jsa: jsa, config: cfg, client: c, obs: make(map[string]*Observable)}
 	mset.sg = sync.NewCond(&mset.mu)
 
-	if len(mset.config.Subjects) == 0 {
-		mset.config.Subjects = append(mset.config.Subjects, mset.config.Name)
-	}
-	jsa.msgSets[config.Name] = mset
-	storeDir := path.Join(jsa.storeDir, streamsDir, config.Name)
+	jsa.msgSets[cfg.Name] = mset
+	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
 	jsa.mu.Unlock()
 
 	// Bind to the account.
@@ -138,6 +145,21 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 	}
 
 	return mset, nil
+}
+
+// Check to see if these subjects overlap with existing subjects.
+// Lock should be held.
+func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
+	for _, mset := range jsa.msgSets {
+		for _, subj := range mset.config.Subjects {
+			for _, tsubj := range subjects {
+				if SubjectsCollide(tsubj, subj) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
