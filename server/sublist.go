@@ -1048,7 +1048,11 @@ func IsValidSubject(subject string) bool {
 
 // IsValidLiteralSubject returns true if a subject is valid and literal (no wildcards), false otherwise
 func IsValidLiteralSubject(subject string) bool {
-	tokens := strings.Split(subject, tsep)
+	return isValidLiteralSubject(strings.Split(subject, tsep))
+}
+
+// isValidLiteralSubject returns true if the tokens are valid and literal (no wildcards), false otherwise
+func isValidLiteralSubject(tokens []string) bool {
 	for _, t := range tokens {
 		if len(t) == 0 {
 			return false
@@ -1058,6 +1062,66 @@ func IsValidLiteralSubject(subject string) bool {
 		}
 		switch t[0] {
 		case pwc, fwc:
+			return false
+		}
+	}
+	return true
+}
+
+// Will check tokens and report back if the have any partial or full wildcards.
+func analyzeTokens(tokens []string) (hasPWC, hasFWC bool) {
+	for _, t := range tokens {
+		if lt := len(t); lt == 0 || lt > 1 {
+			continue
+		}
+		switch t[0] {
+		case pwc:
+			hasPWC = true
+		case fwc:
+			hasFWC = true
+		}
+	}
+	return
+}
+
+// Check on a token basis if they could match.
+func tokensCanMatch(t1, t2 string) bool {
+	if len(t1) == 0 || len(t2) == 0 {
+		return false
+	}
+	t1c, t2c := t1[0], t2[0]
+	if t1c == pwc || t2c == pwc || t1c == fwc || t2c == fwc {
+		return true
+	}
+	return t1 == t2
+}
+
+// SubjectsCollide will determine if two subjects could both match a single literal subject.
+func SubjectsCollide(subj1, subj2 string) bool {
+	toks1 := strings.Split(subj1, tsep)
+	toks2 := strings.Split(subj2, tsep)
+	pwc1, fwc1 := analyzeTokens(toks1)
+	pwc2, fwc2 := analyzeTokens(toks2)
+	// if both literal just string compare.
+	l1, l2 := !(pwc1 || fwc1), !(pwc2 || fwc2)
+	if l1 && l2 {
+		return subj1 == subj2
+	}
+	// So one or both have wildcards. If one is literal than we can do subset matching.
+	if l1 && !l2 {
+		return isSubsetMatch(toks1, subj2)
+	} else if l2 && !l1 {
+		return isSubsetMatch(toks2, subj1)
+	}
+	// Both have wildcards.
+	stop := len(toks1)
+	if len(toks2) < stop {
+		stop = len(toks2)
+	}
+	// We look for reasons to say no.
+	for i := 0; i < stop; i++ {
+		t1, t2 := toks1[i], toks2[i]
+		if !tokensCanMatch(t1, t2) {
 			return false
 		}
 	}

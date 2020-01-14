@@ -332,6 +332,40 @@ func TestJetStreamAddMsgSetMaxMsgSize(t *testing.T) {
 	}
 }
 
+func TestJetStreamAddMsgSetOverlappingSubjects(t *testing.T) {
+	mconfig := &server.MsgSetConfig{
+		Name:     "ok",
+		Subjects: []string{"foo", "bar", "baz.*", "foo.bar.baz.>"},
+		Storage:  server.MemoryStorage,
+	}
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddMsgSet(mconfig)
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.Delete()
+
+	expectErr := func(_ *server.MsgSet, err error) {
+		t.Helper()
+		if !strings.Contains(err.Error(), "subjects overlap") {
+			t.Fatalf("Expected error but got none")
+		}
+	}
+
+	// Test that any overlapping subjects will fail.
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "foo"}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "a", Subjects: []string{"baz", "bar"}}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "b", Subjects: []string{">"}}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "c", Subjects: []string{"baz.33"}}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "d", Subjects: []string{"*.33"}}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "e", Subjects: []string{"*.>"}}))
+	expectErr(acc.AddMsgSet(&server.MsgSetConfig{Name: "f", Subjects: []string{"foo.bar", "*.bar.>"}}))
+}
+
 func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	t.Helper()
 	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
