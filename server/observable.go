@@ -694,7 +694,10 @@ func (o *Observable) sampleAck(sseq, dseq, dcount uint64) {
 		return
 	}
 
-	o.mset.sendq <- &jsPubMsg{o.ackSampleT, o.ackSampleT, _EMPTY_, j, o, 0}
+	// can be nil during server Shutdown but with some ACKs in flight internally
+	if o.mset != nil && o.mset.sendq != nil {
+		o.mset.sendq <- &jsPubMsg{o.ackSampleT, o.ackSampleT, _EMPTY_, j, o, 0}
+	}
 }
 
 // Process an ack for a message.
