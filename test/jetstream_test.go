@@ -3978,6 +3978,9 @@ func TestJetStreamKVBasics(t *testing.T) {
 		if err != nil {
 			return Value{}, err
 		}
+		if strings.HasPrefix(string(resp.Data), "-ERR ") {
+			return Value{}, fmt.Errorf("%s", resp.Data)
+		}
 		var raw server.StoredMsg
 		if err := json.Unmarshal(resp.Data, &raw); err != nil {
 			return Value{}, err
@@ -4002,6 +4005,15 @@ func TestJetStreamKVBasics(t *testing.T) {
 		}
 		return nil
 	}
+	kvDelete := func(key string) error {
+		mname := "kv." + key
+		mset, err := s.GlobalAccount().LookupMsgSet(mname)
+		if err != nil {
+			return err
+		}
+		mset.Purge()
+		return nil
+	}
 
 	// Sample of how K/V may work, with set/put, get and update.
 	kvPut("derek", []byte("22"))
@@ -4019,6 +4031,10 @@ func TestJetStreamKVBasics(t *testing.T) {
 	}
 	if v, err := kvGet("derek"); err != nil || string(v.Data) != "88" {
 		t.Fatalf("Expected %q, got %q", "88", v.Data)
+	}
+	kvDelete("derek")
+	if _, err := kvGet("derek"); err == nil {
+		t.Fatalf("Eexpected an error but got none")
 	}
 }
 
