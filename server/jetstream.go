@@ -136,8 +136,14 @@ const (
 	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
 	JetStreamRequestNextPre = "$JS.RN"
 
-	// JetStreamMsgBySeq is the prefix for direct requests for a message by message set sequence number
+	// JetStreamMsgBySeqPre is the prefix for direct requests for a message by message set sequence number.
 	JetStreamMsgBySeqPre = "$JS.BYSEQ"
+
+	// JetStreamLastMsg is used for direct access to the last message of a message set.
+	JetStreamLastMsg = "$JS.%s.LAST"
+
+	// JetStreamUpdateMsgWithRevision is used to update a message set with a new message iff revision/sequence matches last one.
+	JetStreamUpdateMsgWithRevision = "$JS.%s.UPDATE"
 
 	// JetStreamObservableAckSamplePre is the prefix for sample messages from observables
 	JetStreamObservableAckSamplePre = "$JS.OBSERVABLE.ACKSAMPLE"
