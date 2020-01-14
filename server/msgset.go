@@ -242,6 +242,18 @@ func (mset *MsgSet) subscribeToMsgSet() error {
 	if _, err := mset.subscribeInternal(subj, mset.processMsgBySeq); err != nil {
 		return err
 	}
+	// For direct access to the last message.
+	subj = fmt.Sprintf(JetStreamLastMsg, mset.config.Name)
+	if _, err := mset.subscribeInternal(subj, mset.processGetLastMsg); err != nil {
+		return err
+	}
+	// This is to update and add a new message iff the last revision/sequence number matches. The
+	// payload here should be a StoredMsg.
+	subj = fmt.Sprintf(JetStreamUpdateMsgWithRevision, mset.config.Name)
+	if _, err := mset.subscribeInternal(subj, mset.processUpdateLastMsg); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -306,6 +318,56 @@ func (mset *MsgSet) setupStore(storeDir string) error {
 	return nil
 }
 
+// processUpdateLastMsg will add a new message to a message set iff the sequence is the last sequence.
+func (mset *MsgSet) processUpdateLastMsg(_ *subscription, c *client, subject, reply string, msg []byte) {
+	var sm StoredMsg
+	if err := json.Unmarshal(msg, &sm); err != nil {
+		c.Debugf("  Error unmarshalling update for last message: %v", err)
+		response := []byte("-ERR 'could not unmarshal update request'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+	mset.mu.Lock()
+	last := mset.store.Stats().LastSeq
+	mset.mu.Unlock()
+
+	if last != sm.Sequence {
+		response := []byte("-ERR 'revision did not match last'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+	// FIXME(dlc) - This is not guaranteed. Need to rework.
+	mset.processInboundJetStreamMsg(nil, c, sm.Subject, reply, sm.Data)
+}
+
+// processGetLastMsg will return the last message, or an -ERR if not found.
+func (mset *MsgSet) processGetLastMsg(_ *subscription, _ *client, subject, reply string, _ []byte) {
+	mset.mu.Lock()
+	store := mset.store
+	c := mset.client
+	name := mset.config.Name
+	mset.mu.Unlock()
+
+	var response []byte
+
+	seq := store.Stats().LastSeq
+	subj, msg, ts, err := store.LoadMsg(seq)
+	if err != nil {
+		c.Debugf("JetStream request for last message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
+		response = []byte("-ERR 'could not load last message from storage'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		return
+	}
+	sm := &StoredMsg{
+		Subject:  subj,
+		Sequence: seq,
+		Data:     msg,
+		Time:     time.Unix(0, ts),
+	}
+	response, _ = json.MarshalIndent(sm, "", "  ")
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+}
+
 // processMsgBySeq will return the message at the given sequence, or an -ERR if not found.
 func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
@@ -318,32 +380,35 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 		return
 	}
 	var response []byte
+	var seq uint64
+	var err error
 
+	// If no sequence arg assume last sequence we have.
 	if len(msg) == 0 {
-		c.Warnf("JetStream request for message from message set: %q - %q no sequence arg", c.acc.Name, name)
-		response = []byte("-ERR 'sequence argument missing'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
-	}
-	seq, err := strconv.ParseUint(string(msg), 10, 64)
-	if err != nil {
-		c.Warnf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
-		response = []byte("-ERR 'bad sequence argument'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
+		stats := store.Stats()
+		seq = stats.LastSeq
+	} else {
+		seq, err = strconv.ParseUint(string(msg), 10, 64)
+		if err != nil {
+			c.Debugf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
+			response = []byte("-ERR 'bad sequence argument'")
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+			return
+		}
 	}
 
 	subj, msg, ts, err := store.LoadMsg(seq)
 	if err != nil {
-		c.Warnf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
+		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
 		response = []byte("-ERR 'could not load message from storage'")
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
 	}
 	sm := &StoredMsg{
-		Subject: subj,
-		Data:    msg,
-		Time:    time.Unix(0, ts),
+		Subject:  subj,
+		Sequence: seq,
+		Data:     msg,
+		Time:     time.Unix(0, ts),
 	}
 	response, _ = json.MarshalIndent(sm, "", "  ")
 	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
@@ -430,10 +495,12 @@ type jsPubMsg struct {
 	seq   uint64
 }
 
+// StoredMsg is for raw access to messages in a message set.
 type StoredMsg struct {
-	Subject string    `json:"subject"`
-	Data    []byte    `json:"data"`
-	Time    time.Time `json:"time"`
+	Subject  string    `json:"subject"`
+	Sequence uint64    `json:"seq"`
+	Data     []byte    `json:"data"`
+	Time     time.Time `json:"time"`
 }
 
 // TODO(dlc) - Maybe look at onering instead of chan - https://github.com/pltr/onering
