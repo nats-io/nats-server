@@ -5823,3 +5823,42 @@ func TestGatewayCloseTLSConnection(t *testing.T) {
 	gw.closeConnection(SlowConsumerWriteDeadline)
 	ch <- true
 }
+
+func TestGatewayNoCrashOnInvalidSubject(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	ncB := natsConnect(t, sb.ClientURL())
+	defer ncB.Close()
+
+	natsSubSync(t, ncB, "foo")
+	natsFlush(t, ncB)
+
+	ncA := natsConnect(t, sa.ClientURL())
+	defer ncA.Close()
+
+	// Send on an invalid subject. Since there is interest on B,
+	// we will receive an RS- instead of A-
+	natsPub(t, ncA, "bar..baz", []byte("bad subject"))
+	natsFlush(t, ncA)
+
+	// Now create on B a sub on a wildcard subject
+	sub := natsSubSync(t, ncB, "bar.*")
+	natsFlush(t, ncB)
+
+	// Server should not have crashed...
+	natsPub(t, ncA, "bar.baz", []byte("valid subject"))
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Error getting message: %v", err)
+	}
+}

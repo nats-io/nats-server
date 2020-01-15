@@ -883,11 +883,19 @@ func isSubsetMatch(tokens []string, test string) bool {
 		if i >= len(tokens) {
 			return false
 		}
-		if t2[0] == fwc && len(t2) == 1 {
+		l := len(t2)
+		if l == 0 {
+			return false
+		}
+		if t2[0] == fwc && l == 1 {
 			return true
 		}
 		t1 := tokens[i]
-		if t1[0] == fwc && len(t1) == 1 {
+		l = len(t1)
+		if l == 0 {
+			return false
+		}
+		if t1[0] == fwc && l == 1 {
 			return false
 		}
 		if t1[0] == pwc && len(t1) == 1 {
