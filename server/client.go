@@ -761,7 +761,7 @@ func (c *client) writeLoop() {
 	waitOk := true
 
 	// Used to limit the wait for a signal
-	const maxWait = 3 * time.Second
+	const maxWait = time.Second
 	t := time.NewTimer(maxWait)
 
 	var close bool
@@ -789,7 +789,7 @@ func (c *client) writeLoop() {
 
 				c.mu.Lock()
 				close = c.flags.isSet(closeConnection)
-				if !close && timeout && fspBeforeWait > 0 {
+				if !close && timeout && fspBeforeWait > 0 && c.out.fsp > 0 {
 					c.Warnf("Entered wait with fsp=%v and was not signaled within timeout", fspBeforeWait)
 				}
 			}
