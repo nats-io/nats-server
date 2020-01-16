@@ -23,78 +23,65 @@ import (
 	"time"
 )
 
-// MsgSetConfig will determine the name, subjects and retention policy
-// for a given message set. If subjects is empty the name will be used.
-type MsgSetConfig struct {
-	Name           string          `json:"name"`
-	Subjects       []string        `json:"subjects,omitempty"`
-	Retention      RetentionPolicy `json:"retention"`
-	MaxObservables int             `json:"max_observables"`
-	MaxMsgs        int64           `json:"max_msgs"`
-	MaxBytes       int64           `json:"max_bytes"`
-	MaxAge         time.Duration   `json:"max_age"`
-	MaxMsgSize     int32           `json:"max_msg_size,omitempty"`
-	Storage        StorageType     `json:"storage"`
-	Replicas       int             `json:"num_replicas"`
-	NoAck          bool            `json:"no_ack,omitempty"`
-	Template       string          `json:"template_owner,omitempty"`
+// StreamConfig will determine the name, subjects and retention policy
+// for a given stream. If subjects is empty the name will be used.
+type StreamConfig struct {
+	Name         string          `json:"name"`
+	Subjects     []string        `json:"subjects,omitempty"`
+	Retention    RetentionPolicy `json:"retention"`
+	MaxConsumers int             `json:"max_consumers"`
+	MaxMsgs      int64           `json:"max_msgs"`
+	MaxBytes     int64           `json:"max_bytes"`
+	MaxAge       time.Duration   `json:"max_age"`
+	MaxMsgSize   int32           `json:"max_msg_size,omitempty"`
+	Storage      StorageType     `json:"storage"`
+	Replicas     int             `json:"num_replicas"`
+	NoAck        bool            `json:"no_ack,omitempty"`
+	Template     string          `json:"template_owner,omitempty"`
 }
 
-type MsgSetInfo struct {
-	Config MsgSetConfig `json:"config"`
-	Stats  MsgSetStats  `json:"stats"`
+type StreamInfo struct {
+	Config StreamConfig `json:"config"`
+	State  StreamState  `json:"state"`
 }
 
-// RetentionPolicy determines how messages in a set are retained.
-type RetentionPolicy int
-
-const (
-	// StreamPolicy (default) means that messages are retained until any possible given limit is reached.
-	// This could be any one of MaxMsgs, MaxBytes, or MaxAge.
-	StreamPolicy RetentionPolicy = iota
-	// InterestPolicy specifies that when all known observables have acknowledged a message it can be removed.
-	InterestPolicy
-	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
-	WorkQueuePolicy
-)
-
-// MsgSet is a jetstream message set. When we receive a message internally destined
-// for a MsgSet we will direct link from the client to this MsgSet structure.
-type MsgSet struct {
-	mu     sync.RWMutex
-	sg     *sync.Cond
-	sgw    int
-	jsa    *jsAccount
-	client *client
-	sid    int
-	sendq  chan *jsPubMsg
-	store  MsgSetStore
-	obs    map[string]*Observable
-	config MsgSetConfig
+// Stream is a jetstream stream of messages. When we receive a message internally destined
+// for a Stream we will direct link from the client to this Stream structure.
+type Stream struct {
+	mu        sync.RWMutex
+	sg        *sync.Cond
+	sgw       int
+	jsa       *jsAccount
+	client    *client
+	sid       int
+	sendq     chan *jsPubMsg
+	store     StreamStore
+	consumers map[string]*Consumer
+	config    StreamConfig
 }
 
 const (
-	MsgSetDefaultReplicas = 1
-	MsgSetMaxReplicas     = 8
+	StreamDefaultReplicas = 1
+	StreamMaxReplicas     = 8
 )
 
-// AddMsgSet adds a JetStream message set for the given account.
-func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
+// AddStream adds a stream for the given account.
+func (a *Account) AddStream(config *StreamConfig) (*Stream, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
 	}
 
 	// Sensible defaults.
-	cfg, err := checkMsgSetCfg(config)
+	cfg, err := checkStreamCfg(config)
 	if err != nil {
 		return nil, err
 	}
 
 	jsa.mu.Lock()
-	if _, ok := jsa.msgSets[cfg.Name]; ok {
+	if _, ok := jsa.streams[cfg.Name]; ok {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("message set name already in use")
+		return nil, fmt.Errorf("stream name already in use")
 	}
 	// Check for limits.
 	if err := jsa.checkLimits(&cfg); err != nil {
@@ -105,7 +92,7 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 	if cfg.Template != _EMPTY_ && jsa.account != nil {
 		if !jsa.checkTemplateOwnership(cfg.Template, cfg.Name) {
 			jsa.mu.Unlock()
-			return nil, fmt.Errorf("message set not owned by template")
+			return nil, fmt.Errorf("stream not owned by template")
 		}
 	}
 
@@ -115,15 +102,15 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 	// Check for overlapping subjects. These are not allowed for now.
 	if jsa.subjectsOverlap(cfg.Subjects) {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("subjects overlap with an existing message set")
+		return nil, fmt.Errorf("subjects overlap with an existing stream")
 	}
 
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
-	mset := &MsgSet{jsa: jsa, config: cfg, client: c, obs: make(map[string]*Observable)}
+	mset := &Stream{jsa: jsa, config: cfg, client: c, consumers: make(map[string]*Consumer)}
 	mset.sg = sync.NewCond(&mset.mu)
 
-	jsa.msgSets[cfg.Name] = mset
+	jsa.streams[cfg.Name] = mset
 	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
 	jsa.mu.Unlock()
 
@@ -139,7 +126,7 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 	mset.setupSendCapabilities()
 
 	// Setup subscriptions
-	if err := mset.subscribeToMsgSet(); err != nil {
+	if err := mset.subscribeToStream(); err != nil {
 		mset.delete()
 		return nil, err
 	}
@@ -150,7 +137,7 @@ func (a *Account) AddMsgSet(config *MsgSetConfig) (*MsgSet, error) {
 // Check to see if these subjects overlap with existing subjects.
 // Lock should be held.
 func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
-	for _, mset := range jsa.msgSets {
+	for _, mset := range jsa.streams {
 		for _, subj := range mset.config.Subjects {
 			for _, tsubj := range subjects {
 				if SubjectsCollide(tsubj, subj) {
@@ -162,14 +149,14 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
 	return false
 }
 
-func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
+func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if config == nil {
-		return MsgSetConfig{}, fmt.Errorf("message set configuration invalid")
+		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
 	}
 
 	if len(config.Name) == 0 || strings.ContainsAny(config.Name, "*>") {
 		//if !isValidName(config.Name) {
-		return MsgSetConfig{}, fmt.Errorf("message set name is required and can not contain '*', '>'")
+		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '*', '>'")
 	}
 
 	cfg := *config
@@ -178,8 +165,8 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 	if cfg.Replicas == 0 {
 		cfg.Replicas = 1
 	}
-	if cfg.Replicas > MsgSetMaxReplicas {
-		return cfg, fmt.Errorf("maximum replicas is %d", MsgSetMaxReplicas)
+	if cfg.Replicas > StreamMaxReplicas {
+		return cfg, fmt.Errorf("maximum replicas is %d", StreamMaxReplicas)
 	}
 	if cfg.MaxMsgs == 0 {
 		cfg.MaxMsgs = -1
@@ -193,15 +180,15 @@ func checkMsgSetCfg(config *MsgSetConfig) (MsgSetConfig, error) {
 	return cfg, nil
 }
 
-// Config returns the message set's configuration.
-func (mset *MsgSet) Config() MsgSetConfig {
+// Config returns the stream's configuration.
+func (mset *Stream) Config() StreamConfig {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.config
 }
 
-// Delete deletes a message set from the owning account.
-func (mset *MsgSet) Delete() error {
+// Delete deletes a stream from the owning account.
+func (mset *Stream) Delete() error {
 	mset.mu.Lock()
 	jsa := mset.jsa
 	mset.mu.Unlock()
@@ -209,23 +196,23 @@ func (mset *MsgSet) Delete() error {
 		return fmt.Errorf("jetstream not enabled for account")
 	}
 	jsa.mu.Lock()
-	delete(jsa.msgSets, mset.config.Name)
+	delete(jsa.streams, mset.config.Name)
 	jsa.mu.Unlock()
 
 	return mset.delete()
 }
 
-// Purge will remove all messages from the message set and underlying store.
-func (mset *MsgSet) Purge() uint64 {
+// Purge will remove all messages from the stream and underlying store.
+func (mset *Stream) Purge() uint64 {
 	mset.mu.Lock()
 	if mset.client == nil {
 		mset.mu.Unlock()
 		return 0
 	}
 	purged := mset.store.Purge()
-	stats := mset.store.Stats()
-	var obs []*Observable
-	for _, o := range mset.obs {
+	stats := mset.store.State()
+	var obs []*Consumer
+	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
 	mset.mu.Unlock()
@@ -235,25 +222,25 @@ func (mset *MsgSet) Purge() uint64 {
 	return purged
 }
 
-// RemoveMsg will remove a message from a message set.
+// RemoveMsg will remove a message from a stream.
 // FIXME(dlc) - Should pick one and be consistent.
-func (mset *MsgSet) RemoveMsg(seq uint64) bool {
+func (mset *Stream) RemoveMsg(seq uint64) bool {
 	return mset.store.RemoveMsg(seq)
 }
 
-// DeleteMsg will remove a message from a message set.
-func (mset *MsgSet) DeleteMsg(seq uint64) bool {
+// DeleteMsg will remove a message from a stream.
+func (mset *Stream) DeleteMsg(seq uint64) bool {
 	return mset.store.RemoveMsg(seq)
 }
 
 // EraseMsg will securely remove a message and rewrite the data with random data.
-func (mset *MsgSet) EraseMsg(seq uint64) bool {
+func (mset *Stream) EraseMsg(seq uint64) bool {
 	return mset.store.EraseMsg(seq)
 }
 
 // Will create internal subscriptions for the msgSet.
 // Lock should be held.
-func (mset *MsgSet) subscribeToMsgSet() error {
+func (mset *Stream) subscribeToStream() error {
 	for _, subject := range mset.config.Subjects {
 		if _, err := mset.subscribeInternal(subject, mset.processInboundJetStreamMsg); err != nil {
 			return err
@@ -269,14 +256,14 @@ func (mset *MsgSet) subscribeToMsgSet() error {
 }
 
 // FIXME(dlc) - This only works in single server mode for the moment. Need to fix as we expand to clusters.
-func (mset *MsgSet) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
 	return mset.nmsSubscribeInternal(subject, false, cb)
 }
 
-func (mset *MsgSet) nmsSubscribeInternal(subject string, internalOnly bool, cb msgHandler) (*subscription, error) {
+func (mset *Stream) nmsSubscribeInternal(subject string, internalOnly bool, cb msgHandler) (*subscription, error) {
 	c := mset.client
 	if c == nil {
-		return nil, fmt.Errorf("invalid message set")
+		return nil, fmt.Errorf("invalid stream")
 	}
 	if !c.srv.eventsEnabled() {
 		return nil, ErrNoSysAccount
@@ -299,14 +286,14 @@ func (mset *MsgSet) nmsSubscribeInternal(subject string, internalOnly bool, cb m
 }
 
 // Lock should be held.
-func (mset *MsgSet) unsubscribe(sub *subscription) {
+func (mset *Stream) unsubscribe(sub *subscription) {
 	if sub == nil || mset.client == nil {
 		return
 	}
 	mset.client.unsubscribe(mset.client.acc, sub, true, true)
 }
 
-func (mset *MsgSet) setupStore(storeDir string) error {
+func (mset *Stream) setupStore(storeDir string) error {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -330,7 +317,7 @@ func (mset *MsgSet) setupStore(storeDir string) error {
 }
 
 // processMsgBySeq will return the message at the given sequence, or an -ERR if not found.
-func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply string, msg []byte) {
+func (mset *Stream) processMsgBySeq(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
@@ -346,7 +333,7 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 
 	// If no sequence arg assume last sequence we have.
 	if len(msg) == 0 {
-		stats := store.Stats()
+		stats := store.State()
 		seq = stats.LastSeq
 	} else {
 		seq, err = strconv.ParseUint(string(msg), 10, 64)
@@ -375,8 +362,8 @@ func (mset *MsgSet) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 }
 
-// processInboundJetStreamMsg handles processing messages bound for a message set.
-func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
+// processInboundJetStreamMsg handles processing messages bound for a stream.
+func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
@@ -406,7 +393,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		// Check to see if we are over the account limit.
 		seq, err = store.StoreMsg(subject, msg)
 		if err != nil {
-			c.Errorf("JetStream failed to store a msg on account: %q message set: %q -  %v", accName, name, err)
+			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
 			response = []byte(fmt.Sprintf("-ERR '%s'", err.Error()))
 		} else if jsa.limitsExceeded(stype) {
 			c.Warnf("JetStream resource limits exceeded for account: %q", accName)
@@ -424,7 +411,7 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	if err == nil && seq > 0 {
 		var needSignal bool
 		mset.mu.Lock()
-		for _, o := range mset.obs {
+		for _, o := range mset.consumers {
 			if !o.deliverCurrentMsg(subject, msg, seq) {
 				needSignal = true
 			}
@@ -432,13 +419,13 @@ func (mset *MsgSet) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		mset.mu.Unlock()
 
 		if needSignal {
-			mset.signalObservers()
+			mset.signalConsumers()
 		}
 	}
 }
 
-// Will signal all waiting observables.
-func (mset *MsgSet) signalObservers() {
+// Will signal all waiting consumers.
+func (mset *Stream) signalConsumers() {
 	mset.mu.Lock()
 	if mset.sgw > 0 {
 		mset.sg.Broadcast()
@@ -452,11 +439,11 @@ type jsPubMsg struct {
 	dsubj string
 	reply string
 	msg   []byte
-	o     *Observable
+	o     *Consumer
 	seq   uint64
 }
 
-// StoredMsg is for raw access to messages in a message set.
+// StoredMsg is for raw access to messages in a stream.
 type StoredMsg struct {
 	Subject  string    `json:"subject"`
 	Sequence uint64    `json:"seq"`
@@ -469,7 +456,7 @@ const msetSendQSize = 1024
 
 // This is similar to system semantics but did not want to overload the single system sendq,
 // or require system account when doing simple setup with jetstream.
-func (mset *MsgSet) setupSendCapabilities() {
+func (mset *Stream) setupSendCapabilities() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	if mset.sendq != nil {
@@ -479,14 +466,14 @@ func (mset *MsgSet) setupSendCapabilities() {
 	go mset.internalSendLoop()
 }
 
-// Name returns the message set name.
-func (mset *MsgSet) Name() string {
+// Name returns the stream name.
+func (mset *Stream) Name() string {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.config.Name
 }
 
-func (mset *MsgSet) internalSendLoop() {
+func (mset *Stream) internalSendLoop() {
 	mset.mu.Lock()
 	c := mset.client
 	if c == nil {
@@ -505,7 +492,7 @@ func (mset *MsgSet) internalSendLoop() {
 
 	for {
 		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Jetstream internal send queue > 75% for account: %q message set: %q", c.acc.Name, name)
+			s.Warnf("Jetstream internal send queue > 75% for account: %q stream: %q", c.acc.Name, name)
 			last = time.Now()
 		}
 		select {
@@ -533,13 +520,13 @@ func (mset *MsgSet) internalSendLoop() {
 	}
 }
 
-// Internal function to delete a message set.
-func (mset *MsgSet) delete() error {
+// Internal function to delete a stream.
+func (mset *Stream) delete() error {
 	return mset.stop(true)
 }
 
-// Internal function to stop or delete the message set.
-func (mset *MsgSet) stop(delete bool) error {
+// Internal function to stop or delete the stream.
+func (mset *Stream) stop(delete bool) error {
 	mset.mu.Lock()
 	if mset.sendq != nil {
 		mset.sendq <- nil
@@ -550,11 +537,11 @@ func (mset *MsgSet) stop(delete bool) error {
 		mset.mu.Unlock()
 		return nil
 	}
-	var obs []*Observable
-	for _, o := range mset.obs {
+	var obs []*Consumer
+	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
-	mset.obs = nil
+	mset.consumers = nil
 	mset.mu.Unlock()
 	c.closeConnection(ClientClosed)
 
@@ -584,31 +571,31 @@ func (mset *MsgSet) stop(delete bool) error {
 	return nil
 }
 
-// Observables will return all the current observables for this message set.
-func (mset *MsgSet) Observables() []*Observable {
+// Consunmers will return all the current consumers for this stream.
+func (mset *Stream) Consumers() []*Consumer {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
-	var obs []*Observable
-	for _, o := range mset.obs {
+	var obs []*Consumer
+	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
 	return obs
 }
 
-// NumObservables reports on number of active observables for this message set.
-func (mset *MsgSet) NumObservables() int {
+// NumConsumers reports on number of active observables for this stream.
+func (mset *Stream) NumConsumers() int {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
-	return len(mset.obs)
+	return len(mset.consumers)
 }
 
-// LookupObservable will retrieve an observable by name.
-func (mset *MsgSet) LookupObservable(name string) *Observable {
+// LookupConsumer will retrieve a consumer by name.
+func (mset *Stream) LookupConsumer(name string) *Consumer {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
-	for _, o := range mset.obs {
+	for _, o := range mset.consumers {
 		if o.name == name {
 			return o
 		}
@@ -616,21 +603,21 @@ func (mset *MsgSet) LookupObservable(name string) *Observable {
 	return nil
 }
 
-// Stats will return the current stats for this message set.
-func (mset *MsgSet) Stats() MsgSetStats {
+// State will return the current state for this stream.
+func (mset *Stream) State() StreamState {
 	mset.mu.Lock()
 	c := mset.client
 	mset.mu.Unlock()
 	if c == nil {
-		return MsgSetStats{}
+		return StreamState{}
 	}
 	// Currently rely on store.
 	// TODO(dlc) - This will need to change with clusters.
-	return mset.store.Stats()
+	return mset.store.State()
 }
 
-// waitForMsgs will have the message set wait for the arrival of new messages.
-func (mset *MsgSet) waitForMsgs() {
+// waitForMsgs will have the stream wait for the arrival of new messages.
+func (mset *Stream) waitForMsgs() {
 	mset.mu.Lock()
 
 	if mset.client == nil {
@@ -647,8 +634,8 @@ func (mset *MsgSet) waitForMsgs() {
 
 // Determines if the new proposed partition is unique amongst all observables.
 // Lock should be held.
-func (mset *MsgSet) partitionUnique(partition string) bool {
-	for _, o := range mset.obs {
+func (mset *Stream) partitionUnique(partition string) bool {
+	for _, o := range mset.consumers {
 		if o.config.FilterSubject == _EMPTY_ {
 			return false
 		}
@@ -660,16 +647,16 @@ func (mset *MsgSet) partitionUnique(partition string) bool {
 }
 
 // ackMsg is called into from an observable when we have a WorkQueue or Interest retention policy.
-func (mset *MsgSet) ackMsg(obs *Observable, seq uint64) {
+func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 	switch mset.config.Retention {
-	case StreamPolicy:
+	case LimitsPolicy:
 		return
 	case WorkQueuePolicy:
 		mset.store.RemoveMsg(seq)
 	case InterestPolicy:
 		var needAck bool
 		mset.mu.Lock()
-		for _, o := range mset.obs {
+		for _, o := range mset.consumers {
 			if o != obs && o.needAck(seq) {
 				needAck = true
 				break
