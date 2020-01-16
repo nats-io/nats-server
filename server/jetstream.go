@@ -139,8 +139,8 @@ const (
 	// JetStreamMsgBySeqPre is the prefix for direct requests for a message by its stream sequence number.
 	JetStreamMsgBySeqPre = "$JS.BYSEQ"
 
-	// JetStreamNotificationPrefix is a prefix for all JetStream notification
-	JetStreamNotificationPrefix = "$JS.EVENT.NOTIFICATION"
+	// JetStreamAdvisoryPrefix is a prefix for all JetStream advisories
+	JetStreamAdvisoryPrefix = "$JS.EVENT.ADVISORY"
 
 	// JetStreamMetricPrefix is a prefix for all JetStream metrics
 	JetStreamMetricPrefix = "$JS.EVENT.METRIC"
@@ -148,8 +148,8 @@ const (
 	// JetStreamMetricConsumerAckPre is a metric containing ack latency
 	JetStreamMetricConsumerAckPre = JetStreamMetricPrefix + ".CONSUMER_ACK"
 
-	// JetStreamEventConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold
-	JetStreamEventConsumerMaxDeliveryExceedPre = JetStreamNotificationPrefix + ".MAX_DELIVERIES"
+	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold
+	JetStreamAdvisoryConsumerMaxDeliveryExceedPre = JetStreamAdvisoryPrefix + ".MAX_DELIVERIES"
 )
 
 // This is for internal accounting for JetStream for this server.
