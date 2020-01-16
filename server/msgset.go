@@ -264,17 +264,6 @@ func (mset *MsgSet) subscribeToMsgSet() error {
 	if _, err := mset.subscribeInternal(subj, mset.processMsgBySeq); err != nil {
 		return err
 	}
-	// For direct access to the last message.
-	subj = fmt.Sprintf(JetStreamLastMsg, mset.config.Name)
-	if _, err := mset.subscribeInternal(subj, mset.processGetLastMsg); err != nil {
-		return err
-	}
-	// This is to update and add a new message iff the last revision/sequence number matches. The
-	// payload here should be a StoredMsg.
-	subj = fmt.Sprintf(JetStreamUpdateMsgWithRevision, mset.config.Name)
-	if _, err := mset.subscribeInternal(subj, mset.processUpdateLastMsg); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -338,56 +327,6 @@ func (mset *MsgSet) setupStore(storeDir string) error {
 	jsa, st := mset.jsa, mset.config.Storage
 	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
 	return nil
-}
-
-// processUpdateLastMsg will add a new message to a message set iff the sequence is the last sequence.
-func (mset *MsgSet) processUpdateLastMsg(_ *subscription, c *client, subject, reply string, msg []byte) {
-	var sm StoredMsg
-	if err := json.Unmarshal(msg, &sm); err != nil {
-		c.Debugf("  Error unmarshalling update for last message: %v", err)
-		response := []byte("-ERR 'could not unmarshal update request'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
-	}
-	mset.mu.Lock()
-	last := mset.store.Stats().LastSeq
-	mset.mu.Unlock()
-
-	if last != sm.Sequence {
-		response := []byte("-ERR 'revision did not match last'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
-	}
-	// FIXME(dlc) - This is not guaranteed. Need to rework.
-	mset.processInboundJetStreamMsg(nil, c, sm.Subject, reply, sm.Data)
-}
-
-// processGetLastMsg will return the last message, or an -ERR if not found.
-func (mset *MsgSet) processGetLastMsg(_ *subscription, _ *client, subject, reply string, _ []byte) {
-	mset.mu.Lock()
-	store := mset.store
-	c := mset.client
-	name := mset.config.Name
-	mset.mu.Unlock()
-
-	var response []byte
-
-	seq := store.Stats().LastSeq
-	subj, msg, ts, err := store.LoadMsg(seq)
-	if err != nil {
-		c.Debugf("JetStream request for last message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
-		response = []byte("-ERR 'could not load last message from storage'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
-	}
-	sm := &StoredMsg{
-		Subject:  subj,
-		Sequence: seq,
-		Data:     msg,
-		Time:     time.Unix(0, ts),
-	}
-	response, _ = json.MarshalIndent(sm, "", "  ")
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 }
 
 // processMsgBySeq will return the message at the given sequence, or an -ERR if not found.
