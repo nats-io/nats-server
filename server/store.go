@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -35,58 +35,71 @@ var (
 	// ErrStoreMsgNotFound when message was not found but was expected to be.
 	ErrStoreMsgNotFound = errors.New("no message found")
 	// ErrStoreEOF is returned when message seq is greater than the last sequence.
-	ErrStoreEOF = errors.New("msgset EOF")
+	ErrStoreEOF = errors.New("stream EOF")
 )
 
-type MsgSetStore interface {
+type StreamStore interface {
 	StoreMsg(subj string, msg []byte) (uint64, error)
 	LoadMsg(seq uint64) (subj string, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) bool
 	EraseMsg(seq uint64) bool
 	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
+	State() StreamState
 	StorageBytesUpdate(func(int64))
-	Stats() MsgSetStats
 	Delete() error
 	Stop() error
-	ObservableStore(name string, cfg *ObservableConfig) (ObservableStore, error)
+	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
 }
 
-// MsgSetStats are stats about this given message set.
-type MsgSetStats struct {
-	Msgs        uint64 `json:"messages"`
-	Bytes       uint64 `json:"bytes"`
-	FirstSeq    uint64 `json:"first_seq"`
-	LastSeq     uint64 `json:"last_seq"`
-	Observables int    `json:"observable_count"`
+// RetentionPolicy determines how messages in a set are retained.
+type RetentionPolicy int
+
+const (
+	// LimitsPolicy (default) means that messages are retained until any given limit is reached.
+	// This could be one of MaxMsgs, MaxBytes, or MaxAge.
+	LimitsPolicy RetentionPolicy = iota
+	// InterestPolicy specifies that when all known observables have acknowledged a message it can be removed.
+	InterestPolicy
+	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
+	WorkQueuePolicy
+)
+
+// StreamStats is information about the given stream.
+type StreamState struct {
+	Msgs      uint64 `json:"messages"`
+	Bytes     uint64 `json:"bytes"`
+	FirstSeq  uint64 `json:"first_seq"`
+	LastSeq   uint64 `json:"last_seq"`
+	Consumers int    `json:"consumer_count"`
 }
 
-// ObservableStore stores state on observables.
-type ObservableStore interface {
-	State() (*ObservableState, error)
-	Update(*ObservableState) error
+// ConsumerStore stores state on consumers for streams.
+type ConsumerStore interface {
+	State() (*ConsumerState, error)
+	Update(*ConsumerState) error
 	Stop() error
 	Delete() error
 }
 
-// SequencePair has both the observable and the message set sequence. This point to same message.
+// SequencePair has both the consumer and the stream sequence. They point to same message.
 type SequencePair struct {
-	ObsSeq uint64 `json:"observable_sequence"`
-	SetSeq uint64 `json:"msg_set_sequence"`
+	ConsumerSeq uint64 `json:"consumer_seq"`
+	StreamSeq   uint64 `json:"stream_seq"`
 }
 
-// ObservableState represents a stored state for an observable.
-type ObservableState struct {
-	// Delivered keep track of last delivered sequence numbers for both set and observable.
+// ConsumerState represents a stored state for a consumer.
+type ConsumerState struct {
+	// Delivered keeps track of last delivered sequence numbers for both the stream and the consumer.
 	Delivered SequencePair `json:"delivered"`
-	// AckFloor keeps track of the ack floors for both set and observable.
+	// AckFloor keeps track of the ack floors for both the stream and the consumer.
 	AckFloor SequencePair `json:"ack_floor"`
-	// These are both in set sequence context.
+	// These are both in stream sequence context.
 	// Pending is for all messages pending and the timestamp for the delivered time.
 	// This will only be present when the AckPolicy is ExplicitAck.
 	Pending map[uint64]int64 `json:"pending"`
 	// This is for messages that have been redelivered, so count > 1.
-	Redelivery map[uint64]uint64 `json:"redelivery"`
+	Redelivered map[uint64]uint64 `json:"redelivered"`
 }
 
 // TemplateStore stores templates.
@@ -100,14 +113,14 @@ func jsonString(s string) string {
 }
 
 const (
-	streamPolicyString    = "stream_limits"
-	interestPolicyString  = "interest_based"
-	workQueuePolicyString = "work_queue"
+	limitsPolicyString    = "limits"
+	interestPolicyString  = "interest"
+	workQueuePolicyString = "workqueue"
 )
 
 func (rp RetentionPolicy) String() string {
 	switch rp {
-	case StreamPolicy:
+	case LimitsPolicy:
 		return "Limits"
 	case InterestPolicy:
 		return "Interest"
@@ -120,8 +133,8 @@ func (rp RetentionPolicy) String() string {
 
 func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
-	case StreamPolicy:
-		return json.Marshal(streamPolicyString)
+	case LimitsPolicy:
+		return json.Marshal(limitsPolicyString)
 	case InterestPolicy:
 		return json.Marshal(interestPolicyString)
 	case WorkQueuePolicy:
@@ -133,8 +146,8 @@ func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 
 func (rp *RetentionPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(streamPolicyString):
-		*rp = StreamPolicy
+	case jsonString(limitsPolicyString):
+		*rp = LimitsPolicy
 	case jsonString(interestPolicyString):
 		*rp = InterestPolicy
 	case jsonString(workQueuePolicyString):

@@ -1407,9 +1407,9 @@ func Benchmark_JetStreamPubWithAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
 	if err != nil {
-		b.Fatalf("Unexpected error adding message set: %v", err)
+		b.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
 
@@ -1425,9 +1425,9 @@ func Benchmark_JetStreamPubWithAck(b *testing.B) {
 	}
 	b.StopTimer()
 
-	stats := mset.Stats()
-	if int(stats.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	state := mset.State()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
 	}
 }
 
@@ -1435,9 +1435,9 @@ func Benchmark_JetStreamPubNoAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
 	if err != nil {
-		b.Fatalf("Unexpected error adding message set: %v", err)
+		b.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
 
@@ -1456,9 +1456,9 @@ func Benchmark_JetStreamPubNoAck(b *testing.B) {
 	nc.Flush()
 	b.StopTimer()
 
-	stats := mset.Stats()
-	if int(stats.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	state := mset.State()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
 	}
 }
 
@@ -1466,9 +1466,9 @@ func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: "foo"})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
 	if err != nil {
-		b.Fatalf("Unexpected error adding message set: %v", err)
+		b.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
 
@@ -1505,9 +1505,9 @@ func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
 	nc.Flush()
 	b.StopTimer()
 
-	stats := mset.Stats()
-	if int(stats.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	state := mset.State()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
 	}
 }
 
@@ -1520,9 +1520,9 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	defer s.Shutdown()
 
 	mname := "foo"
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname})
 	if err != nil {
-		b.Fatalf("Unexpected error adding message set: %v", err)
+		b.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
 
@@ -1538,9 +1538,9 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	}
 	nc.Flush()
 
-	stats := mset.Stats()
-	if stats.Msgs != uint64(b.N) {
-		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	state := mset.State()
+	if state.Msgs != uint64(b.N) {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
 	}
 
 	total := int32(b.N)
@@ -1559,7 +1559,7 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	nc.Flush()
 
 	b.ResetTimer()
-	o, err := mset.AddObservable(&server.ObservableConfig{Delivery: deliverTo, Durable: oname, AckPolicy: server.AckNone, DeliverAll: true})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: deliverTo, Durable: oname, AckPolicy: server.AckNone, DeliverAll: true})
 	if err != nil {
 		b.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -1578,9 +1578,9 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 	defer s.Shutdown()
 
 	mname := "MSET22"
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname})
 	if err != nil {
-		b.Fatalf("Unexpected error adding message set: %v", err)
+		b.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
 
@@ -1596,14 +1596,14 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 	}
 	nc.Flush()
 
-	stats := mset.Stats()
-	if stats.Msgs != uint64(b.N) {
-		b.Fatalf("Expected %d messages, got %d", b.N, stats.Msgs)
+	state := mset.State()
+	if state.Msgs != uint64(b.N) {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
 	}
 
-	// Create basic work queue mode observable.
+	// Create basic work queue mode consumer.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, DeliverAll: true})
 	if err != nil {
 		b.Fatalf("Expected no error with registered interest, got %v", err)
 	}
