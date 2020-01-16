@@ -47,11 +47,11 @@ type FileStoreConfig struct {
 
 type fileStore struct {
 	mu      sync.RWMutex
-	stats   MsgSetStats
+	state   StreamState
 	scb     func(int64)
 	ageChk  *time.Timer
 	syncTmr *time.Timer
-	cfg     MsgSetConfig
+	cfg     StreamConfig
 	fcfg    FileStoreConfig
 	blks    []*msgBlock
 	lmb     *msgBlock
@@ -60,7 +60,7 @@ type fileStore struct {
 	fch     chan struct{}
 	qch     chan struct{}
 	bad     []uint64
-	obs     []*observableFileStore
+	cfs     []*consumerFileStore
 	closed  bool
 }
 
@@ -115,10 +115,10 @@ const (
 	blkScan = "%d.blk"
 	// used to scan index file names.
 	indexScan = "%d.idx"
-	// This is where we keep state on observers.
-	obsDir = "obs"
-	// Index file for observable
-	obsState = "o.dat"
+	// This is where we keep state on consumers.
+	consumerDir = "obs"
+	// Index file for a consumer.
+	consumerState = "o.dat"
 	// This is where we keep state on templates.
 	tmplsDir = "templates"
 	// Maximum size of a write buffer we may consider for re-use.
@@ -138,12 +138,12 @@ const (
 	// coalesceMaximum
 	coalesceMaximum = 64 * 1024
 
-	// Metafiles for message sets and observables.
+	// Metafiles for streams and consumers.
 	JetStreamMetaFile    = "meta.inf"
 	JetStreamMetaFileSum = "meta.sum"
 )
 
-func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
+func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("name required")
 	}
@@ -188,7 +188,7 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 
 	// Check if this is a new setup.
 	mdir := path.Join(fcfg.StoreDir, msgDir)
-	odir := path.Join(fcfg.StoreDir, obsDir)
+	odir := path.Join(fcfg.StoreDir, consumerDir)
 	if err := os.MkdirAll(mdir, 0755); err != nil {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
@@ -220,7 +220,7 @@ func newFileStore(fcfg FileStoreConfig, cfg MsgSetConfig) (*fileStore, error) {
 }
 
 func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
-	if retention == StreamPolicy {
+	if retention == LimitsPolicy {
 		// TODO(dlc) - Make the blocksize relative to this if set.
 		return defaultStreamBlockSize
 	} else {
@@ -252,22 +252,22 @@ func (fs *fileStore) writeMsgSetMeta() error {
 	return nil
 }
 
-func (obs *observableFileStore) writeObservableMeta() error {
-	meta := path.Join(obs.odir, JetStreamMetaFile)
+func (cfs *consumerFileStore) writeConsumerMeta() error {
+	meta := path.Join(cfs.odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
 		return err
 	}
-	b, err := json.MarshalIndent(obs.cfg, _EMPTY_, "  ")
+	b, err := json.MarshalIndent(cfs.cfg, _EMPTY_, "  ")
 	if err != nil {
 		return err
 	}
 	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
 		return err
 	}
-	obs.hh.Reset()
-	obs.hh.Write(b)
-	checksum := hex.EncodeToString(obs.hh.Sum(nil))
-	sum := path.Join(obs.odir, JetStreamMetaFileSum)
+	cfs.hh.Reset()
+	cfs.hh.Write(b)
+	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
+	sum := path.Join(cfs.odir, JetStreamMetaFileSum)
 	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
 		return err
 	}
@@ -358,14 +358,14 @@ func (fs *fileStore) recoverMsgs() error {
 		var index uint64
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
 			if mb := fs.recoverMsgBlock(fi, index); mb != nil {
-				if fs.stats.FirstSeq == 0 {
-					fs.stats.FirstSeq = mb.first.seq
+				if fs.state.FirstSeq == 0 {
+					fs.state.FirstSeq = mb.first.seq
 				}
-				if mb.last.seq > fs.stats.LastSeq {
-					fs.stats.LastSeq = mb.last.seq
+				if mb.last.seq > fs.state.LastSeq {
+					fs.state.LastSeq = mb.last.seq
 				}
-				fs.stats.Msgs += mb.msgs
-				fs.stats.Bytes += mb.bytes
+				fs.state.Msgs += mb.msgs
+				fs.state.Bytes += mb.bytes
 			}
 		}
 	}
@@ -399,7 +399,7 @@ func (ms *fileStore) GetSeqFromTime(t time.Time) uint64 {
 func (fs *fileStore) StorageBytesUpdate(cb func(int64)) {
 	fs.mu.Lock()
 	fs.scb = cb
-	bsz := fs.stats.Bytes
+	bsz := fs.state.Bytes
 	fs.mu.Unlock()
 	if cb != nil && bsz > 0 {
 		cb(int64(bsz))
@@ -460,10 +460,10 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 // Store stores a message.
 func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	fs.mu.Lock()
-	seq := fs.stats.LastSeq + 1
+	seq := fs.state.LastSeq + 1
 
-	if fs.stats.FirstSeq == 0 {
-		fs.stats.FirstSeq = seq
+	if fs.state.FirstSeq == 0 {
+		fs.state.FirstSeq = seq
 	}
 
 	n, err := fs.writeMsgRecord(seq, subj, msg)
@@ -473,9 +473,9 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	}
 	fs.kickFlusher()
 
-	fs.stats.Msgs++
-	fs.stats.Bytes += n
-	fs.stats.LastSeq = seq
+	fs.state.Msgs++
+	fs.state.Bytes += n
+	fs.state.LastSeq = seq
 
 	// Limits checks and enforcement.
 	// If they do any deletions they will update the
@@ -501,7 +501,7 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (fs *fileStore) enforceMsgLimit() {
-	if fs.cfg.MaxMsgs <= 0 || fs.stats.Msgs <= uint64(fs.cfg.MaxMsgs) {
+	if fs.cfg.MaxMsgs <= 0 || fs.state.Msgs <= uint64(fs.cfg.MaxMsgs) {
 		return
 	}
 	fs.deleteFirstMsg()
@@ -510,16 +510,16 @@ func (fs *fileStore) enforceMsgLimit() {
 // Will check the bytes limit and drop msgs if needed.
 // Lock should be held.
 func (fs *fileStore) enforceBytesLimit() {
-	if fs.cfg.MaxBytes <= 0 || fs.stats.Bytes <= uint64(fs.cfg.MaxBytes) {
+	if fs.cfg.MaxBytes <= 0 || fs.state.Bytes <= uint64(fs.cfg.MaxBytes) {
 		return
 	}
-	for bs := fs.stats.Bytes; bs > uint64(fs.cfg.MaxBytes); bs = fs.stats.Bytes {
+	for bs := fs.state.Bytes; bs > uint64(fs.cfg.MaxBytes); bs = fs.state.Bytes {
 		fs.deleteFirstMsg()
 	}
 }
 
 func (fs *fileStore) deleteFirstMsg() bool {
-	return fs.removeMsg(fs.stats.FirstSeq, false)
+	return fs.removeMsg(fs.state.FirstSeq, false)
 }
 
 // RemoveMsg will remove the message from this store.
@@ -597,8 +597,8 @@ func (mb *msgBlock) selectNextFirst() {
 func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStoredMsg, secure bool) {
 	// Update global accounting.
 	msz := fileStoreMsgSize(sm.subj, sm.msg)
-	fs.stats.Msgs--
-	fs.stats.Bytes -= msz
+	fs.state.Msgs--
+	fs.state.Bytes -= msz
 
 	// Now local updates.
 	mb.msgs--
@@ -615,8 +615,8 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	// Optimize for FIFO case.
 	if seq == mb.first.seq {
 		mb.selectNextFirst()
-		if seq == fs.stats.FirstSeq {
-			fs.stats.FirstSeq = mb.first.seq
+		if seq == fs.state.FirstSeq {
+			fs.state.FirstSeq = mb.first.seq
 		}
 		if mb.first.seq > mb.last.seq {
 			fs.removeMsgBlock(mb)
@@ -933,13 +933,13 @@ func (fs *fileStore) syncBlocks() {
 			mb.ifd.Truncate(mb.liwsz)
 		}
 	}
-	var _obs [256]*observableFileStore
-	obs := append(_obs[:0], fs.obs...)
+	var _cfs [256]*consumerFileStore
+	cfs := append(_cfs[:0], fs.cfs...)
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 	fs.mu.Unlock()
 
-	// Do observables.
-	for _, o := range obs {
+	// Do consumers.
+	for _, o := range cfs {
 		o.syncStateFile()
 	}
 }
@@ -948,7 +948,7 @@ func (fs *fileStore) syncBlocks() {
 // Return nil if not in the set.
 // Read lock should be held.
 func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
-	if seq < fs.stats.FirstSeq || seq > fs.stats.LastSeq {
+	if seq < fs.state.FirstSeq || seq > fs.state.LastSeq {
 		return nil
 	}
 	for _, mb := range fs.blks {
@@ -1074,11 +1074,11 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	fs.mu.Lock()
 	// seq == 0 indicates we want first msg.
 	if seq == 0 {
-		seq = fs.stats.FirstSeq
+		seq = fs.state.FirstSeq
 	}
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
-		if seq <= fs.stats.LastSeq {
+		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
 		fs.mu.Unlock()
@@ -1101,7 +1101,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	sm := fs.readAndCacheMsgs(mb, seq)
 	if sm != nil {
 		mb.cgenid++
-	} else if seq <= fs.stats.LastSeq {
+	} else if seq <= fs.state.LastSeq {
 		err = ErrStoreMsgNotFound
 	}
 	fs.mu.Unlock()
@@ -1136,12 +1136,12 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 	return "", nil, 0, err
 }
 
-func (fs *fileStore) Stats() MsgSetStats {
+func (fs *fileStore) State() StreamState {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	stats := fs.stats
-	stats.Observables = len(fs.obs)
-	return stats
+	state := fs.state
+	state.Consumers = len(fs.cfs)
+	return state
 }
 
 func fileStoreMsgSize(subj string, msg []byte) uint64 {
@@ -1345,12 +1345,12 @@ func (fs *fileStore) dmapEntries() int {
 func (fs *fileStore) Purge() uint64 {
 	fs.mu.Lock()
 	fs.flushPendingWrites()
-	purged := fs.stats.Msgs
+	purged := fs.state.Msgs
 	cb := fs.scb
-	bytes := int64(fs.stats.Bytes)
-	fs.stats.FirstSeq = fs.stats.LastSeq + 1
-	fs.stats.Bytes = 0
-	fs.stats.Msgs = 0
+	bytes := int64(fs.state.Bytes)
+	fs.state.FirstSeq = fs.state.LastSeq + 1
+	fs.state.Bytes = 0
+	fs.state.Msgs = 0
 
 	blks := fs.blks
 	lmb := fs.lmb
@@ -1483,25 +1483,25 @@ func (fs *fileStore) Stop() error {
 		fs.ageChk = nil
 	}
 
-	var _obs [256]*observableFileStore
-	obs := append(_obs[:0], fs.obs...)
-	fs.obs = nil
+	var _cfs [256]*consumerFileStore
+	cfs := append(_cfs[:0], fs.cfs...)
+	fs.cfs = nil
 	fs.mu.Unlock()
 
-	for _, o := range obs {
+	for _, o := range cfs {
 		o.Stop()
 	}
 	return err
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Observable state
+// Consumers
 ////////////////////////////////////////////////////////////////////////////////
 
-type observableFileStore struct {
+type consumerFileStore struct {
 	mu     sync.Mutex
 	fs     *fileStore
-	cfg    *ObservableConfig
+	cfg    *ConsumerConfig
 	name   string
 	odir   string
 	ifn    string
@@ -1513,23 +1513,23 @@ type observableFileStore struct {
 	closed bool
 }
 
-func (fs *fileStore) ObservableStore(name string, cfg *ObservableConfig) (ObservableStore, error) {
+func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if fs == nil {
 		return nil, fmt.Errorf("filestore is nil")
 	}
 	if cfg == nil || name == "" {
-		return nil, fmt.Errorf("bad observable config")
+		return nil, fmt.Errorf("bad consumer config")
 	}
-	odir := path.Join(fs.fcfg.StoreDir, obsDir, name)
+	odir := path.Join(fs.fcfg.StoreDir, consumerDir, name)
 	if err := os.MkdirAll(odir, 0755); err != nil {
-		return nil, fmt.Errorf("could not create observable  directory - %v", err)
+		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
-	o := &observableFileStore{
+	o := &consumerFileStore{
 		fs:   fs,
 		cfg:  cfg,
 		name: name,
 		odir: odir,
-		ifn:  path.Join(odir, obsState),
+		ifn:  path.Join(odir, consumerState),
 		fch:  make(chan struct{}),
 		qch:  make(chan struct{}),
 	}
@@ -1540,12 +1540,12 @@ func (fs *fileStore) ObservableStore(name string, cfg *ObservableConfig) (Observ
 	}
 	o.hh = hh
 
-	if err := o.writeObservableMeta(); err != nil {
+	if err := o.writeConsumerMeta(); err != nil {
 		return nil, err
 	}
 
 	fs.mu.Lock()
-	fs.obs = append(fs.obs, o)
+	fs.cfs = append(fs.cfs, o)
 	fs.mu.Unlock()
 
 	return o, nil
@@ -1553,16 +1553,16 @@ func (fs *fileStore) ObservableStore(name string, cfg *ObservableConfig) (Observ
 
 const seqsHdrSize = 6*binary.MaxVarintLen64 + hdrLen
 
-func (o *observableFileStore) Update(state *ObservableState) error {
+func (o *consumerFileStore) Update(state *ConsumerState) error {
 	// Sanity checks.
-	if state.Delivered.ObsSeq < 1 || state.Delivered.SetSeq < 1 {
+	if state.Delivered.ConsumerSeq < 1 || state.Delivered.StreamSeq < 1 {
 		return fmt.Errorf("bad delivered sequences")
 	}
-	if state.AckFloor.ObsSeq > state.Delivered.ObsSeq {
-		return fmt.Errorf("bad ack floor for observable")
+	if state.AckFloor.ConsumerSeq > state.Delivered.ConsumerSeq {
+		return fmt.Errorf("bad ack floor for consumer")
 	}
-	if state.AckFloor.SetSeq > state.Delivered.SetSeq {
-		return fmt.Errorf("bad ack floor for set")
+	if state.AckFloor.StreamSeq > state.Delivered.StreamSeq {
+		return fmt.Errorf("bad ack floor for stream")
 	}
 
 	var hdr [seqsHdrSize]byte
@@ -1572,10 +1572,10 @@ func (o *observableFileStore) Update(state *ObservableState) error {
 	hdr[1] = version
 
 	n := hdrLen
-	n += binary.PutUvarint(hdr[n:], state.AckFloor.ObsSeq)
-	n += binary.PutUvarint(hdr[n:], state.AckFloor.SetSeq)
-	n += binary.PutUvarint(hdr[n:], state.Delivered.ObsSeq-state.AckFloor.ObsSeq)
-	n += binary.PutUvarint(hdr[n:], state.Delivered.SetSeq-state.AckFloor.SetSeq)
+	n += binary.PutUvarint(hdr[n:], state.AckFloor.ConsumerSeq)
+	n += binary.PutUvarint(hdr[n:], state.AckFloor.StreamSeq)
+	n += binary.PutUvarint(hdr[n:], state.Delivered.ConsumerSeq-state.AckFloor.ConsumerSeq)
+	n += binary.PutUvarint(hdr[n:], state.Delivered.StreamSeq-state.AckFloor.StreamSeq)
 	n += binary.PutUvarint(hdr[n:], uint64(len(state.Pending)))
 	buf := hdr[:n]
 
@@ -1584,8 +1584,8 @@ func (o *observableFileStore) Update(state *ObservableState) error {
 
 	if len(state.Pending) > 0 {
 		mbuf := make([]byte, len(state.Pending)*(2*binary.MaxVarintLen64)+binary.MaxVarintLen64)
-		aflr := state.AckFloor.SetSeq
-		maxd := state.Delivered.SetSeq
+		aflr := state.AckFloor.StreamSeq
+		maxd := state.Delivered.StreamSeq
 
 		// To save space we select the smallest timestamp.
 		var mints int64
@@ -1614,16 +1614,16 @@ func (o *observableFileStore) Update(state *ObservableState) error {
 	}
 
 	var lenbuf [binary.MaxVarintLen64]byte
-	n = binary.PutUvarint(lenbuf[0:], uint64(len(state.Redelivery)))
+	n = binary.PutUvarint(lenbuf[0:], uint64(len(state.Redelivered)))
 	buf = append(buf, lenbuf[:n]...)
 
 	// We expect these to be small so will not do anything too crazy here to
 	// keep the size small. Trick could be to offset sequence like above, but
 	// we would need to know low sequence number for redelivery, can't depend on ackfloor etc.
-	if len(state.Redelivery) > 0 {
-		mbuf := make([]byte, len(state.Redelivery)*(2*binary.MaxVarintLen64))
+	if len(state.Redelivered) > 0 {
+		mbuf := make([]byte, len(state.Redelivered)*(2*binary.MaxVarintLen64))
 		var n int
-		for k, v := range state.Redelivery {
+		for k, v := range state.Redelivered {
 			n += binary.PutUvarint(mbuf[n:], k)
 			n += binary.PutUvarint(mbuf[n:], v)
 		}
@@ -1643,7 +1643,7 @@ func (o *observableFileStore) Update(state *ObservableState) error {
 	return err
 }
 
-func (o *observableFileStore) syncStateFile() {
+func (o *consumerFileStore) syncStateFile() {
 	// FIXME(dlc) - Hold last error?
 	o.mu.Lock()
 	if o.ifd != nil {
@@ -1654,7 +1654,7 @@ func (o *observableFileStore) syncStateFile() {
 }
 
 // Lock should be held.
-func (o *observableFileStore) ensureStateFileOpen() error {
+func (o *consumerFileStore) ensureStateFileOpen() error {
 	if o.ifd == nil {
 		ifd, err := os.OpenFile(o.ifn, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
@@ -1674,7 +1674,7 @@ func checkHeader(hdr []byte) error {
 
 // State retrieves the state from the state file.
 // This is not expected to be called in high performance code, only on startup.
-func (o *observableFileStore) State() (*ObservableState, error) {
+func (o *consumerFileStore) State() (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -1683,7 +1683,7 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 		return nil, err
 	}
 
-	var state *ObservableState
+	var state *ConsumerState
 
 	if len(buf) == 0 {
 		return state, nil
@@ -1724,18 +1724,18 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 	readLen := readSeq
 	readCount := readSeq
 
-	state = &ObservableState{}
-	state.AckFloor.ObsSeq = readSeq()
-	state.AckFloor.SetSeq = readSeq()
-	state.Delivered.ObsSeq = readSeq()
-	state.Delivered.SetSeq = readSeq()
+	state = &ConsumerState{}
+	state.AckFloor.ConsumerSeq = readSeq()
+	state.AckFloor.StreamSeq = readSeq()
+	state.Delivered.ConsumerSeq = readSeq()
+	state.Delivered.StreamSeq = readSeq()
 
 	if bi == -1 {
 		return nil, fmt.Errorf("corrupt state file")
 	}
 	// Adjust back.
-	state.Delivered.ObsSeq += state.AckFloor.ObsSeq
-	state.Delivered.SetSeq += state.AckFloor.SetSeq
+	state.Delivered.ConsumerSeq += state.AckFloor.ConsumerSeq
+	state.Delivered.StreamSeq += state.AckFloor.StreamSeq
 
 	numPending := readLen()
 
@@ -1750,7 +1750,7 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 				return nil, fmt.Errorf("corrupt state file")
 			}
 			// Adjust seq back.
-			seq += state.AckFloor.SetSeq
+			seq += state.AckFloor.StreamSeq
 			// Adjust the timestamp back.
 			ts = (ts + mints) * int64(time.Second)
 			// Store in pending.
@@ -1760,23 +1760,23 @@ func (o *observableFileStore) State() (*ObservableState, error) {
 
 	numRedelivered := readLen()
 
-	// We have redelivery entries here.
+	// We have redelivered entries here.
 	if numRedelivered > 0 {
-		state.Redelivery = make(map[uint64]uint64, numRedelivered)
+		state.Redelivered = make(map[uint64]uint64, numRedelivered)
 		for i := 0; i < int(numRedelivered); i++ {
 			seq := readSeq()
 			n := readCount()
 			if seq == 0 || n == 0 {
 				return nil, fmt.Errorf("corrupt state file")
 			}
-			state.Redelivery[seq] = n
+			state.Redelivered[seq] = n
 		}
 	}
 	return state, nil
 }
 
-// Stop the processing of the observable's state.
-func (o *observableFileStore) Stop() error {
+// Stop the processing of the consumers's state.
+func (o *consumerFileStore) Stop() error {
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -1790,12 +1790,12 @@ func (o *observableFileStore) Stop() error {
 	}
 	fs := o.fs
 	o.mu.Unlock()
-	fs.removeObs(o)
+	fs.removeConsumer(o)
 	return nil
 }
 
-// Delete the observable.
-func (o *observableFileStore) Delete() error {
+// Delete the consumer.
+func (o *consumerFileStore) Delete() error {
 	// Call stop first. OK if already stopped.
 	o.Stop()
 	o.mu.Lock()
@@ -1807,11 +1807,11 @@ func (o *observableFileStore) Delete() error {
 	return err
 }
 
-func (fs *fileStore) removeObs(obs *observableFileStore) {
+func (fs *fileStore) removeConsumer(cfs *consumerFileStore) {
 	fs.mu.Lock()
-	for i, o := range fs.obs {
-		if o == obs {
-			fs.obs = append(fs.obs[:i], fs.obs[i+1:]...)
+	for i, o := range fs.cfs {
+		if o == cfs {
+			fs.cfs = append(fs.cfs[:i], fs.cfs[i+1:]...)
 			break
 		}
 	}

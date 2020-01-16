@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -443,8 +443,8 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if ea == nil {
 		t.Fatalf("Expected to get a non-nil exportAuth for service")
 	}
-	if ea.respType != Stream {
-		t.Fatalf("Expected to get a Stream response type, got %q", ea.respType)
+	if ea.respType != Streamed {
+		t.Fatalf("Expected to get a Streamed response type, got %q", ea.respType)
 	}
 	ea = natsAcc.exports.services["nats.photo"]
 	if ea == nil {
@@ -1686,7 +1686,7 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	}
 
 	// Add in the service export for the requests. Make it public.
-	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Stream, nil); err != nil {
+	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Streamed, nil); err != nil {
 		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 	// Now add in the route mapping for request to be routed to the foo account.
@@ -1824,7 +1824,7 @@ func TestCrossAccountServiceResponseLeaks(t *testing.T) {
 	}
 
 	// Add in the service export for the requests. Make it public.
-	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Stream, nil); err != nil {
+	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Streamed, nil); err != nil {
 		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 	// Now add in the route mapping for request to be routed to the foo account.
