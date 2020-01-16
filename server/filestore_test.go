@@ -31,7 +31,7 @@ import (
 
 func TestFileStoreBasics(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -45,13 +45,13 @@ func TestFileStoreBasics(t *testing.T) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
 		}
 	}
-	stats := fs.Stats()
-	if stats.Msgs != 5 {
-		t.Fatalf("Expected 5 msgs, got %d", stats.Msgs)
+	state := fs.State()
+	if state.Msgs != 5 {
+		t.Fatalf("Expected 5 msgs, got %d", state.Msgs)
 	}
 	expectedSize := 5 * fileStoreMsgSize(subj, msg)
-	if stats.Bytes != expectedSize {
-		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
+	if state.Bytes != expectedSize {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
 	nsubj, nmsg, _, err := fs.LoadMsg(2)
 	if err != nil {
@@ -73,10 +73,10 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	storeDir := filepath.Join("", JetStreamStoreDir)
 	fcfg := FileStoreConfig{StoreDir: storeDir}
 
-	if _, err := newFileStore(fcfg, MsgSetConfig{Storage: MemoryStorage}); err == nil {
+	if _, err := newFileStore(fcfg, StreamConfig{Storage: MemoryStorage}); err == nil {
 		t.Fatalf("Expected an error with wrong type")
 	}
-	if _, err := newFileStore(fcfg, MsgSetConfig{Storage: FileStorage}); err == nil {
+	if _, err := newFileStore(fcfg, StreamConfig{Storage: FileStorage}); err == nil {
 		t.Fatalf("Expected an error with no name")
 	}
 
@@ -84,7 +84,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage})
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -102,32 +102,32 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
 		}
 	}
-	stats := fs.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	msg22 := []byte(fmt.Sprintf("[%08d] Hello World!", 22))
 	expectedSize := toStore * fileStoreMsgSize(subj, msg22)
 
-	if stats.Bytes != expectedSize {
-		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
+	if state.Bytes != expectedSize {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
 	// Stop will flush to disk.
 	fs.Stop()
 
 	// Restart
-	fs, err = newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage})
+	fs, err = newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats = fs.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != expectedSize {
-		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
+	if state.Bytes != expectedSize {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
 
 	// Now write 100 more msgs
@@ -139,9 +139,9 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
 		}
 	}
-	stats = fs.Stats()
-	if stats.Msgs != toStore*2 {
-		t.Fatalf("Expected %d msgs, got %d", toStore*2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != toStore*2 {
+		t.Fatalf("Expected %d msgs, got %d", toStore*2, state.Msgs)
 	}
 
 	// Now cycle again and make sure that last batch was stored.
@@ -149,18 +149,18 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	fs.Stop()
 
 	// Restart
-	fs, err = newFileStore(fcfg, MsgSetConfig{Name: "dlc", Storage: FileStorage})
+	fs, err = newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats = fs.Stats()
-	if stats.Msgs != toStore*2 {
-		t.Fatalf("Expected %d msgs, got %d", toStore*2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != toStore*2 {
+		t.Fatalf("Expected %d msgs, got %d", toStore*2, state.Msgs)
 	}
-	if stats.Bytes != expectedSize*2 {
-		t.Fatalf("Expected %d bytes, got %d", expectedSize*2, stats.Bytes)
+	if state.Bytes != expectedSize*2 {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize*2, state.Bytes)
 	}
 }
 
@@ -169,7 +169,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 10})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 10})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -179,22 +179,22 @@ func TestFileStoreMsgLimit(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != 10 {
-		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
 	if _, err := fs.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
-	stats = fs.Stats()
-	if stats.Msgs != 10 {
-		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if stats.LastSeq != 11 {
-		t.Fatalf("Expected the last sequence to be 11 now, but got %d", stats.LastSeq)
+	if state.LastSeq != 11 {
+		t.Fatalf("Expected the last sequence to be 11 now, but got %d", state.LastSeq)
 	}
-	if stats.FirstSeq != 2 {
-		t.Fatalf("Expected the first sequence to be 2 now, but got %d", stats.FirstSeq)
+	if state.FirstSeq != 2 {
+		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
 	if _, _, _, err := fs.LoadMsg(1); err == nil {
@@ -213,7 +213,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxBytes: int64(maxBytes)})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxBytes: int64(maxBytes)})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -222,12 +222,12 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	for i := uint64(0); i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, stats.Bytes)
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
 
 	// Now send 10 more and check that bytes limit enforced.
@@ -236,18 +236,18 @@ func TestFileStoreBytesLimit(t *testing.T) {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
-	stats = fs.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, stats.Bytes)
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
-	if stats.FirstSeq != 11 {
-		t.Fatalf("Expected first sequence to be 11, got %d", stats.FirstSeq)
+	if state.FirstSeq != 11 {
+		t.Fatalf("Expected first sequence to be 11, got %d", state.FirstSeq)
 	}
-	if stats.LastSeq != toStore+10 {
-		t.Fatalf("Expected last sequence to be %d, got %d", toStore+10, stats.LastSeq)
+	if state.LastSeq != toStore+10 {
+		t.Fatalf("Expected last sequence to be %d, got %d", toStore+10, state.LastSeq)
 	}
 }
 
@@ -258,7 +258,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -270,19 +270,19 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	checkExpired := func(t *testing.T) {
 		t.Helper()
 		checkFor(t, time.Second, maxAge, func() error {
-			stats = fs.Stats()
-			if stats.Msgs != 0 {
-				return fmt.Errorf("Expected no msgs, got %d", stats.Msgs)
+			state = fs.State()
+			if state.Msgs != 0 {
+				return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
 			}
-			if stats.Bytes != 0 {
-				return fmt.Errorf("Expected no bytes, got %d", stats.Bytes)
+			if state.Bytes != 0 {
+				return fmt.Errorf("Expected no bytes, got %d", state.Bytes)
 			}
 			return nil
 		})
@@ -293,9 +293,9 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats = fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	checkExpired(t)
 }
@@ -305,7 +305,7 @@ func TestFileStoreTimeStamps(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestFileStorePurge(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -348,12 +348,12 @@ func TestFileStorePurge(t *testing.T) {
 	for i := uint64(0); i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, stats.Bytes)
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
 
 	if numBlocks := fs.numMsgBlocks(); numBlocks <= 1 {
@@ -366,28 +366,28 @@ func TestFileStorePurge(t *testing.T) {
 		t.Fatalf("Expected to have exactly 1 empty msg block, got %d", numBlocks)
 	}
 
-	checkPurgeStats := func() {
+	checkPurgeState := func() {
 		t.Helper()
-		stats = fs.Stats()
-		if stats.Msgs != 0 {
-			t.Fatalf("Expected 0 msgs after purge, got %d", stats.Msgs)
+		state = fs.State()
+		if state.Msgs != 0 {
+			t.Fatalf("Expected 0 msgs after purge, got %d", state.Msgs)
 		}
-		if stats.Bytes != 0 {
-			t.Fatalf("Expected 0 bytes after purge, got %d", stats.Bytes)
+		if state.Bytes != 0 {
+			t.Fatalf("Expected 0 bytes after purge, got %d", state.Bytes)
 		}
-		if stats.LastSeq != toStore {
-			t.Fatalf("Expected LastSeq to be %d., got %d", toStore, stats.LastSeq)
+		if state.LastSeq != toStore {
+			t.Fatalf("Expected LastSeq to be %d., got %d", toStore, state.LastSeq)
 		}
-		if stats.FirstSeq != toStore+1 {
-			t.Fatalf("Expected FirstSeq to be %d., got %d", toStore+1, stats.FirstSeq)
+		if state.FirstSeq != toStore+1 {
+			t.Fatalf("Expected FirstSeq to be %d., got %d", toStore+1, state.FirstSeq)
 		}
 	}
-	checkPurgeStats()
+	checkPurgeState()
 
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestFileStorePurge(t *testing.T) {
 		t.Fatalf("Expected to have exactly 1 empty msg block, got %d", numBlocks)
 	}
 
-	checkPurgeStats()
+	checkPurgeState()
 }
 
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
@@ -405,7 +405,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -416,9 +416,9 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
 	// Remove half
@@ -426,23 +426,23 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 		fs.RemoveMsg(uint64(i))
 	}
 
-	stats = fs.Stats()
-	if stats.Msgs != uint64(toStore/2) {
-		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats2 := fs.Stats()
-	if stats != stats2 {
-		t.Fatalf("Expected recovered stats to be the same, got %+v vs %+v\n", stats2, stats)
+	state2 := fs.State()
+	if state != state2 {
+		t.Fatalf("Expected recovered state to be the same, got %+v vs %+v\n", state2, state)
 	}
 }
 
@@ -451,7 +451,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -462,9 +462,9 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
 	// Remove evens
@@ -474,9 +474,9 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		}
 	}
 
-	stats = fs.Stats()
-	if stats.Msgs != uint64(toStore/2) {
-		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
 	if _, _, _, err := fs.LoadMsg(1); err != nil {
@@ -491,15 +491,15 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats2 := fs.Stats()
-	if stats != stats2 {
-		t.Fatalf("Expected receovered stats to be the same, got %+v vs %+v\n", stats, stats2)
+	state2 := fs.State()
+	if state != state2 {
+		t.Fatalf("Expected receovered states to be the same, got %+v vs %+v\n", state, state2)
 	}
 
 	if _, _, _, err := fs.LoadMsg(1); err != nil {
@@ -519,7 +519,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -531,25 +531,25 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	fs.Stop()
 	time.Sleep(2 * maxAge)
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats = fs.Stats()
-	if stats.Msgs != 0 {
-		t.Fatalf("Expected no msgs, got %d", stats.Msgs)
+	state = fs.State()
+	if state.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", state.Msgs)
 	}
-	if stats.Bytes != 0 {
-		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
+	if state.Bytes != 0 {
+		t.Fatalf("Expected no bytes, got %d", state.Bytes)
 	}
 }
 
@@ -558,7 +558,7 @@ func TestFileStoreBitRot(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -570,9 +570,9 @@ func TestFileStoreBitRot(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
 	if badSeqs := len(fs.checkMsgs()); badSeqs > 0 {
@@ -604,7 +604,7 @@ func TestFileStoreBitRot(t *testing.T) {
 	// Make sure we can restore.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -675,7 +675,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -686,9 +686,9 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := fs.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
 	// Erase the even messages.
@@ -697,9 +697,9 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 			t.Fatalf("Expected erase msg to return true")
 		}
 	}
-	stats = fs.Stats()
-	if stats.Msgs != uint64(toStore/2) {
-		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
 	// Stop and remove the index file.
@@ -707,15 +707,15 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	ifn := path.Join(storeDir, msgDir, fmt.Sprintf(indexScan, 1))
 	os.Remove(ifn)
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats = fs.Stats()
-	if stats.Msgs != uint64(toStore/2) {
-		t.Fatalf("Expected %d msgs, got %d", toStore/2, stats.Msgs)
+	state = fs.State()
+	if state.Msgs != uint64(toStore/2) {
+		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
 	for i := 2; i <= toStore; i += 2 {
@@ -730,7 +730,7 @@ func TestFileStoreMeta(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	mconfig := MsgSetConfig{Name: "ZZ-22-33", Storage: FileStorage, Subjects: []string{"foo.*"}, Replicas: 22}
+	mconfig := StreamConfig{Name: "ZZ-22-33", Storage: FileStorage, Subjects: []string{"foo.*"}, Replicas: 22}
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, mconfig)
 	if err != nil {
@@ -752,12 +752,12 @@ func TestFileStoreMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error reading metafile: %v", err)
 	}
-	var mconfig2 MsgSetConfig
+	var mconfig2 StreamConfig
 	if err := json.Unmarshal(buf, &mconfig2); err != nil {
 		t.Fatalf("Error unmarshalling: %v", err)
 	}
 	if !reflect.DeepEqual(mconfig, mconfig2) {
-		t.Fatalf("MsgSet configs not equal, got %+v vs %+v", mconfig2, mconfig)
+		t.Fatalf("Stream configs not equal, got %+v vs %+v", mconfig2, mconfig)
 	}
 	checksum, err := ioutil.ReadFile(metasum)
 	if err != nil {
@@ -771,49 +771,48 @@ func TestFileStoreMeta(t *testing.T) {
 	}
 
 	// Now create an observable. Same deal for them.
-	oconfig := ObservableConfig{
+	oconfig := ConsumerConfig{
 		Delivery:      "d",
 		DeliverAll:    true,
 		FilterSubject: "foo",
 		AckPolicy:     AckAll,
 	}
 	oname := "obs22"
-	obs, err := fs.ObservableStore(oname, &oconfig)
+	obs, err := fs.ConsumerStore(oname, &oconfig)
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
 
-	ometafile := path.Join(storeDir, obsDir, oname, JetStreamMetaFile)
-	ometasum := path.Join(storeDir, obsDir, oname, JetStreamMetaFileSum)
+	ometafile := path.Join(storeDir, consumerDir, oname, JetStreamMetaFile)
+	ometasum := path.Join(storeDir, consumerDir, oname, JetStreamMetaFileSum)
 
 	// Test to make sure meta file and checksum are present.
 	if _, err := os.Stat(ometafile); os.IsNotExist(err) {
-		t.Fatalf("Expected observable metafile %q to exist", ometafile)
+		t.Fatalf("Expected consumer metafile %q to exist", ometafile)
 	}
 	if _, err := os.Stat(ometasum); os.IsNotExist(err) {
-		t.Fatalf("Expected observable metafile's checksum %q to exist", ometasum)
+		t.Fatalf("Expected consumer metafile's checksum %q to exist", ometasum)
 	}
 
 	buf, err = ioutil.ReadFile(ometafile)
 	if err != nil {
-		t.Fatalf("Error reading observable metafile: %v", err)
+		t.Fatalf("Error reading consumer metafile: %v", err)
 	}
 
-	var oconfig2 ObservableConfig
+	var oconfig2 ConsumerConfig
 	if err := json.Unmarshal(buf, &oconfig2); err != nil {
 		t.Fatalf("Error unmarshalling: %v", err)
 	}
 	if oconfig2 != oconfig {
-		//if !reflect.DeepEqual(oconfig, oconfig2) {
-		t.Fatalf("Observable configs not equal, got %+v vs %+v", oconfig2, oconfig)
+		t.Fatalf("Consumer configs not equal, got %+v vs %+v", oconfig2, oconfig)
 	}
 	checksum, err = ioutil.ReadFile(ometasum)
 
 	if err != nil {
-		t.Fatalf("Error reading observable metafile checksum: %v", err)
+		t.Fatalf("Error reading consumer metafile checksum: %v", err)
 	}
 
-	hh := obs.(*observableFileStore).hh
+	hh := obs.(*consumerFileStore).hh
 	hh.Reset()
 	hh.Write(buf)
 	mychecksum = hex.EncodeToString(hh.Sum(nil))
@@ -832,7 +831,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
-		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -841,9 +840,9 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		fs.StoreMsg(subj, msg)
 	}
-	stats := fs.Stats()
-	if stats.Msgs != 10 {
-		t.Fatalf("Expected 10 msgs, got %d", stats.Msgs)
+	state := fs.State()
+	if state.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
 	}
 
 	checkDmapTotal := func(total int) {
@@ -855,9 +854,9 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 	checkFirstSeq := func(seq uint64) {
 		t.Helper()
-		stats := fs.Stats()
-		if stats.FirstSeq != seq {
-			t.Fatalf("Expected first seq to be %d, got %d", seq, stats.FirstSeq)
+		state := fs.State()
+		if state.FirstSeq != seq {
+			t.Fatalf("Expected first seq to be %d, got %d", seq, state.FirstSeq)
 		}
 	}
 
@@ -869,9 +868,9 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	fs.RemoveMsg(8)
 	checkFirstSeq(1)
 
-	stats = fs.Stats()
-	if stats.Msgs != 7 {
-		t.Fatalf("Expected 7 msgs, got %d", stats.Msgs)
+	state = fs.State()
+	if state.Msgs != 7 {
+		t.Fatalf("Expected 7 msgs, got %d", state.Msgs)
 	}
 
 	checkDmapTotal(3)
@@ -904,7 +903,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, ReadCacheExpire: 50 * time.Millisecond}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, ReadCacheExpire: 50 * time.Millisecond}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -943,25 +942,25 @@ func TestFileStoreReadCache(t *testing.T) {
 	}
 }
 
-func TestFileStoreObservable(t *testing.T) {
+func TestFileStoreConsumer(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	o, err := fs.ObservableStore("obs22", &ObservableConfig{})
+	o, err := fs.ConsumerStore("obs22", &ConsumerConfig{})
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
 	if state, err := o.State(); state != nil || err != nil {
 		t.Fatalf("Unexpected state or error: %v", err)
 	}
-	state := &ObservableState{}
+	state := &ConsumerState{}
 	if err := o.Update(state); err == nil {
 		t.Fatalf("Exepected an error and got none")
 	}
@@ -987,24 +986,24 @@ func TestFileStoreObservable(t *testing.T) {
 		}
 	}
 
-	state.Delivered.ObsSeq = 1
-	state.Delivered.SetSeq = 22
+	state.Delivered.ConsumerSeq = 1
+	state.Delivered.StreamSeq = 22
 	updateAndCheck()
 
-	state.Delivered.ObsSeq = 100
-	state.Delivered.SetSeq = 122
-	state.AckFloor.ObsSeq = 50
-	state.AckFloor.SetSeq = 123
+	state.Delivered.ConsumerSeq = 100
+	state.Delivered.StreamSeq = 122
+	state.AckFloor.ConsumerSeq = 50
+	state.AckFloor.StreamSeq = 123
 	// This should fail, bad state.
 	shouldFail()
 	// So should this.
-	state.AckFloor.ObsSeq = 200
-	state.AckFloor.SetSeq = 100
+	state.AckFloor.ConsumerSeq = 200
+	state.AckFloor.StreamSeq = 100
 	shouldFail()
 
 	// Should succeed
-	state.AckFloor.ObsSeq = 50
-	state.AckFloor.SetSeq = 72
+	state.AckFloor.ConsumerSeq = 50
+	state.AckFloor.StreamSeq = 72
 	updateAndCheck()
 
 	tn := time.Now().UnixNano()
@@ -1032,7 +1031,7 @@ func TestFileStoreObservable(t *testing.T) {
 
 	// Now do redlivery, but first with no pending.
 	state.Pending = nil
-	state.Redelivery = map[uint64]uint64{22: 3, 44: 8}
+	state.Redelivered = map[uint64]uint64{22: 3, 44: 8}
 	updateAndCheck()
 
 	// All together.
@@ -1040,10 +1039,10 @@ func TestFileStoreObservable(t *testing.T) {
 	updateAndCheck()
 
 	// Large one
-	state.Delivered.ObsSeq = 10000
-	state.Delivered.SetSeq = 10000
-	state.AckFloor.ObsSeq = 100
-	state.AckFloor.SetSeq = 100
+	state.Delivered.ConsumerSeq = 10000
+	state.Delivered.StreamSeq = 10000
+	state.AckFloor.ConsumerSeq = 100
+	state.AckFloor.StreamSeq = 100
 	// Generate 8k pending.
 	state.Pending = make(map[uint64]int64)
 	for len(state.Pending) < 8192 {
@@ -1055,8 +1054,8 @@ func TestFileStoreObservable(t *testing.T) {
 	updateAndCheck()
 
 	state.Pending = nil
-	state.AckFloor.ObsSeq = 10000
-	state.AckFloor.SetSeq = 10000
+	state.AckFloor.ConsumerSeq = 10000
+	state.AckFloor.StreamSeq = 10000
 	updateAndCheck()
 }
 
@@ -1086,7 +1085,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
-		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -1114,7 +1113,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	fs, err = newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
-		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -1133,7 +1132,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	fs, err = newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
-		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -1160,23 +1159,23 @@ func TestFileStorePerf(t *testing.T) {
 
 	fs, err = newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
-		MsgSetConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	stats := fs.Stats()
-	if stats.Msgs != 0 {
-		t.Fatalf("Expected no msgs, got %d", stats.Msgs)
+	state := fs.State()
+	if state.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", state.Msgs)
 	}
-	if stats.Bytes != 0 {
-		t.Fatalf("Expected no bytes, got %d", stats.Bytes)
+	if state.Bytes != 0 {
+		t.Fatalf("Expected no bytes, got %d", state.Bytes)
 	}
 }
 
-func TestFileStoreObservablesPerf(t *testing.T) {
+func TestFileStoreConsumerPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
 
@@ -1185,27 +1184,27 @@ func TestFileStoreObservablesPerf(t *testing.T) {
 	defer os.RemoveAll(storeDir)
 	fmt.Printf("StoreDir is %q\n", storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, MsgSetConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fs.Stop()
 
-	// Test Observables.
-	o, err := fs.ObservableStore("obs22", &ObservableConfig{})
+	// Test Consumers.
+	o, err := fs.ConsumerStore("obs22", &ConsumerConfig{})
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
-	state := &ObservableState{}
+	state := &ConsumerState{}
 	toStore := uint64(1000000)
-	fmt.Printf("observable of %d msgs for ACK NONE\n", toStore)
+	fmt.Printf("consumer of %d msgs for ACK NONE\n", toStore)
 
 	start := time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		state.Delivered.ObsSeq = i
-		state.Delivered.SetSeq = i
-		state.AckFloor.ObsSeq = i
-		state.AckFloor.SetSeq = i
+		state.Delivered.ConsumerSeq = i
+		state.Delivered.StreamSeq = i
+		state.AckFloor.ConsumerSeq = i
+		state.AckFloor.StreamSeq = i
 		if err := o.Update(state); err != nil {
 			t.Fatalf("Unexepected error updating state: %v", err)
 		}
@@ -1217,20 +1216,20 @@ func TestFileStoreObservablesPerf(t *testing.T) {
 	// We will lag behind with pending.
 	state.Pending = make(map[uint64]int64)
 	lag := uint64(100)
-	state.AckFloor.ObsSeq = 0
-	state.AckFloor.SetSeq = 0
+	state.AckFloor.ConsumerSeq = 0
+	state.AckFloor.StreamSeq = 0
 
-	fmt.Printf("\nobservable of %d msgs for ACK EXPLICIT with pending lag of %d\n", toStore, lag)
+	fmt.Printf("\nconsumer of %d msgs for ACK EXPLICIT with pending lag of %d\n", toStore, lag)
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		state.Delivered.ObsSeq = i
-		state.Delivered.SetSeq = i
+		state.Delivered.ConsumerSeq = i
+		state.Delivered.StreamSeq = i
 		state.Pending[i] = time.Now().UnixNano()
 		if i > lag {
 			ackseq := i - lag
-			state.AckFloor.ObsSeq = ackseq
-			state.AckFloor.SetSeq = ackseq
+			state.AckFloor.ConsumerSeq = ackseq
+			state.AckFloor.StreamSeq = ackseq
 			delete(state.Pending, ackseq)
 		}
 		if err := o.Update(state); err != nil {

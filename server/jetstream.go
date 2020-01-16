@@ -41,17 +41,17 @@ type JetStreamConfig struct {
 
 // TODO(dlc) - need to track and rollup against server limits, etc.
 type JetStreamAccountLimits struct {
-	MaxMemory      int64 `json:"max_memory"`
-	MaxStore       int64 `json:"max_storage"`
-	MaxMsgSets     int   `json:"max_msg_sets"`
-	MaxObservables int   `json:"max_observables"`
+	MaxMemory    int64 `json:"max_memory"`
+	MaxStore     int64 `json:"max_storage"`
+	MaxStreams   int   `json:"max_streams"`
+	MaxConsumers int   `json:"max_consumers"`
 }
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
 	Memory  uint64                 `json:"memory"`
 	Store   uint64                 `json:"storage"`
-	MsgSets int                    `json:"msg_sets"`
+	Streams int                    `json:"streams"`
 	Limits  JetStreamAccountLimits `json:"limits"`
 }
 
@@ -80,67 +80,67 @@ const (
 	JetStreamInfo = "$JS.INFO"
 	jsInfoExport  = "$JS.*.INFO"
 
-	// JetStreamCreateMsgSet is the endpoint to create new message sets.
+	// JetStreamCreateStream is the endpoint to create new streams.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateMsgSet = "$JS.MSGSET.CREATE"
-	jsCreateMsgSetExport  = "$JS.*.MSGSET.CREATE"
+	JetStreamCreateStream = "$JS.STREAM.CREATE"
+	jsCreateStreamExport  = "$JS.*.STREAM.CREATE"
 
-	// JetStreamMsgSets is the endpoint to list all message sets for this account.
+	// JetStreamStreams is the endpoint to list all streams for this account.
 	// Will return json list of string on success and -ERR on failure.
-	JetStreamMsgSets = "$JS.MSGSETS"
-	jsMsgSetsExport  = "$JS.*.MSGSETS"
+	JetStreamStreams = "$JS.STREAMS"
+	jsStreamsExport  = "$JS.*.STREAMS"
 
-	// JetStreamMsgSetInfo is for obtaining general information about a named message set.
+	// JetStreamStreamInfo is for obtaining general information about a named stream.
 	// Will return JSON response.
-	JetStreamMsgSetInfo = "$JS.MSGSET.INFO"
-	jsMsgSetInfoExport  = "$JS.*.MSGSET.INFO"
+	JetStreamStreamInfo = "$JS.STREAM.INFO"
+	jsStreamInfoExport  = "$JS.*.STREAM.INFO"
 
-	// JetStreamDeleteMsgSet is the endpoint to delete message sets.
+	// JetStreamDeleteStream is the endpoint to delete streams.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteMsgSet = "$JS.MSGSET.DELETE"
-	jsDeleteMsgSetExport  = "$JS.*.MSGSET.DELETE"
+	JetStreamDeleteStream = "$JS.STREAM.DELETE"
+	jsDeleteStreamExport  = "$JS.*.STREAM.DELETE"
 
-	// JetStreamPurgeMsgSet is the endpoint to purge message sets.
+	// JetStreamPurgeStream is the endpoint to purge streams.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamPurgeMsgSet = "$JS.MSGSET.PURGE"
-	jsPurgeMsgSetExport  = "$JS.*.MSGSET.PURGE"
+	JetStreamPurgeStream = "$JS.STREAM.PURGE"
+	jsPurgeStreamExport  = "$JS.*.MSGSET.PURGE"
 
 	// JetStreamDeleteMsg is the endpoint to delete messages from a message set.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteMsg = "$JS.MSGSET.MSG.DELETE"
-	jsDeleteMsgExport  = "$JS.*.MSGSET.MSG.DELETE"
+	JetStreamDeleteMsg = "$JS.STREAM.MSG.DELETE"
+	jsDeleteMsgExport  = "$JS.*.STREAM.MSG.DELETE"
 
-	// JetStreamCreateObservable is the endpoint to create observers for a message set.
+	// JetStreamCreateConsumer is the endpoint to create consumers for streams.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateObservable = "$JS.OBSERVABLE.CREATE"
-	jsCreateObservableExport  = "$JS.*.OBSERVABLE.CREATE"
+	JetStreamCreateConsumer = "$JS.CONSUMER.CREATE"
+	jsCreateConsumerExport  = "$JS.*.CONSUMER.CREATE"
 
-	// JetStreamObservables is the endpoint to list all observables for the message set.
+	// JetStreamConsumers is the endpoint to list all consumers for the stream.
 	// Will return json list of string on success and -ERR on failure.
-	JetStreamObservables = "$JS.OBSERVABLES"
-	jsObservablesExport  = "$JS.*.OBSERVABLES"
+	JetStreamConsumers = "$JS.CONSUMERS"
+	jsConsumersExport  = "$JS.*.CONSUMERS"
 
-	// JsObservableInfo is for obtaining general information about an observable.
+	// JetStreamConsumerInfo is for obtaining general information about a consumer.
 	// Will return JSON response.
-	JetStreamObservableInfo = "$JS.OBSERVABLE.INFO"
-	jsObservableInfoExport  = "$JS.*.OBSERVABLE.INFO"
+	JetStreamConsumerInfo = "$JS.CONSUMER.INFO"
+	jsConsumerInfoExport  = "$JS.*.CONSUMER.INFO"
 
-	// JetStreamDeleteObservable is the endpoint to delete observables.
+	// JetStreamDeleteConsumer is the endpoint to delete consumers.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteObservable = "$JS.OBSERVABLE.DELETE"
-	jsDeleteObservableExport  = "$JS.*.OBSERVABLE.DELETE"
+	JetStreamDeleteConsumer = "$JS.CONSUMER.DELETE"
+	jsDeleteConsumerExport  = "$JS.*.CONSUMER.DELETE"
 
-	// JetStreamAckPre is the prefix for the ack stream coming back to an observable.
+	// JetStreamAckPre is the prefix for the ack stream coming back to an consumer.
 	JetStreamAckPre = "$JS.A"
 
-	// JetStreamRequestNextPre is the prefix for the request next message(s) for an observable in worker/pull mode.
-	JetStreamRequestNextPre = "$JS.RN"
+	// JetStreamRequestNextPre is the prefix for the request next message(s) for a consumer in worker/pull mode.
+	JetStreamRequestNextPre = "$JS.NEXT"
 
-	// JetStreamMsgBySeqPre is the prefix for direct requests for a message by message set sequence number.
+	// JetStreamMsgBySeqPre is the prefix for direct requests for a message by its stream sequence number.
 	JetStreamMsgBySeqPre = "$JS.BYSEQ"
 
-	// JetStreamObservableAckSamplePre is the prefix for sample messages from observables
-	JetStreamObservableAckSamplePre = "$JS.OBSERVABLE.ACKSAMPLE"
+	// JetStreamConsumerAckSamplePre is the prefix for sampling metric messages for consumers.
+	JetStreamConsumerAckSamplePre = "$JS.CONSUMER.ACKSAMPLE"
 )
 
 // This is for internal accounting for JetStream for this server.
@@ -157,16 +157,16 @@ type jetStream struct {
 var allJsExports = []string{
 	jsEnabledExport,
 	jsInfoExport,
-	jsCreateMsgSetExport,
-	jsMsgSetsExport,
-	jsMsgSetInfoExport,
-	jsDeleteMsgSetExport,
-	jsPurgeMsgSetExport,
+	jsCreateStreamExport,
+	jsStreamsExport,
+	jsStreamInfoExport,
+	jsDeleteStreamExport,
+	jsPurgeStreamExport,
 	jsDeleteMsgExport,
-	jsCreateObservableExport,
-	jsObservablesExport,
-	jsObservableInfoExport,
-	jsDeleteObservableExport,
+	jsCreateConsumerExport,
+	jsConsumersExport,
+	jsConsumerInfoExport,
+	jsDeleteConsumerExport,
 }
 
 // This represents a jetstream  enabled account.
@@ -184,7 +184,7 @@ type jsAccount struct {
 	storeReserved int64
 	storeUsed     int64
 	storeDir      string
-	msgSets       map[string]*MsgSet
+	streams       map[string]*Stream
 	templates     map[string]*StreamTemplate
 	store         TemplateStore
 }
@@ -249,34 +249,34 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	if _, err := s.sysSubscribe(jsInfoExport, s.jsAccountInfoRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsCreateMsgSetExport, s.jsCreateMsgSetRequest); err != nil {
+	if _, err := s.sysSubscribe(jsCreateStreamExport, s.jsCreateStreamRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsMsgSetsExport, s.jsMsgSetsRequest); err != nil {
+	if _, err := s.sysSubscribe(jsStreamsExport, s.jsStreamsRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsMsgSetInfoExport, s.jsMsgSetInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(jsStreamInfoExport, s.jsStreamInfoRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsDeleteMsgSetExport, s.jsMsgSetDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(jsDeleteStreamExport, s.jsStreamDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsPurgeMsgSetExport, s.jsMsgSetPurgeRequest); err != nil {
+	if _, err := s.sysSubscribe(jsPurgeStreamExport, s.jsStreamPurgeRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(jsDeleteMsgExport, s.jsMsgDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsCreateObservableExport, s.jsCreateObservableRequest); err != nil {
+	if _, err := s.sysSubscribe(jsCreateConsumerExport, s.jsCreateConsumerRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsObservablesExport, s.jsObservablesRequest); err != nil {
+	if _, err := s.sysSubscribe(jsConsumersExport, s.jsConsumersRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsObservableInfoExport, s.jsObservableInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(jsConsumerInfoExport, s.jsConsumerInfoRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(jsDeleteObservableExport, s.jsObservableDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(jsDeleteConsumerExport, s.jsConsumerDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 
@@ -413,7 +413,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
 	}
-	jsa := &jsAccount{js: js, account: a, limits: *limits, msgSets: make(map[string]*MsgSet)}
+	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*Stream)}
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
 	js.accounts[a] = jsa
 	js.reserveResources(limits)
@@ -513,7 +513,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		metafile := path.Join(mdir, JetStreamMetaFile)
 		metasum := path.Join(mdir, JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
-			s.Warnf("  Missing MsgSet metafile for %q", metafile)
+			s.Warnf("  Missing Stream metafile for %q", metafile)
 			continue
 		}
 		buf, err := ioutil.ReadFile(metafile)
@@ -522,51 +522,51 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			continue
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			s.Warnf("  Missing MsgSet checksum for %q", metasum)
+			s.Warnf("  Missing Stream checksum for %q", metasum)
 			continue
 		}
 		sum, err := ioutil.ReadFile(metasum)
 		if err != nil {
-			s.Warnf("  Error reading MsgSet metafile checksum %q: %v", metasum, err)
+			s.Warnf("  Error reading Stream metafile checksum %q: %v", metasum, err)
 			continue
 		}
 		hh.Write(buf)
 		checksum := hex.EncodeToString(hh.Sum(nil))
 		if checksum != string(sum) {
-			s.Warnf("  MsgSet metafile checksums do not match %q vs %q", sum, checksum)
+			s.Warnf("  Stream metafile checksums do not match %q vs %q", sum, checksum)
 			continue
 		}
 
-		var cfg MsgSetConfig
+		var cfg StreamConfig
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling MsgSet metafile: %v", err)
+			s.Warnf("  Error unmarshalling Stream metafile: %v", err)
 			continue
 		}
 		if cfg.Template != _EMPTY_ {
-			if err := jsa.addMsgSetNameToTemplate(cfg.Template, cfg.Name); err != nil {
-				s.Warnf("  Error adding MsgSet %q to Template %q: %v", cfg.Name, cfg.Template, err)
+			if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
+				s.Warnf("  Error adding Stream %q to Template %q: %v", cfg.Name, cfg.Template, err)
 			}
 		}
-		mset, err := a.AddMsgSet(&cfg)
+		mset, err := a.AddStream(&cfg)
 		if err != nil {
-			s.Warnf("  Error recreating MsgSet %q: %v", cfg.Name, err)
+			s.Warnf("  Error recreating Stream %q: %v", cfg.Name, err)
 			continue
 		}
 
-		stats := mset.Stats()
-		s.Noticef("  Restored %d messages for MsgSet %q", comma(int64(stats.Msgs)), fi.Name())
+		stats := mset.State()
+		s.Noticef("  Restored %d messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
 
-		// Now do Observables.
-		odir := path.Join(sdir, fi.Name(), obsDir)
+		// Now do Consumers.
+		odir := path.Join(sdir, fi.Name(), consumerDir)
 		ofis, _ := ioutil.ReadDir(odir)
 		if len(ofis) > 0 {
-			s.Noticef("  Recovering %d Observables for MsgSet - %q", len(ofis), fi.Name())
+			s.Noticef("  Recovering %d Consumers for Stream - %q", len(ofis), fi.Name())
 		}
 		for _, ofi := range ofis {
 			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
-				s.Warnf("    Missing Observable Metafile %q", metafile)
+				s.Warnf("    Missing Consumer Metafile %q", metafile)
 				continue
 			}
 			buf, err := ioutil.ReadFile(metafile)
@@ -575,21 +575,21 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("    Missing Observable checksum for %q", metasum)
+				s.Warnf("    Missing Consumer checksum for %q", metasum)
 				continue
 			}
-			var cfg ObservableConfig
+			var cfg ConsumerConfig
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling Observable metafile: %v", err)
+				s.Warnf("    Error unmarshalling Consumer metafile: %v", err)
 				continue
 			}
-			obs, err := mset.AddObservable(&cfg)
+			obs, err := mset.AddConsumer(&cfg)
 			if err != nil {
-				s.Warnf("    Error adding Observable: %v", err)
+				s.Warnf("    Error adding Consumer: %v", err)
 				continue
 			}
 			if err := obs.readStoredState(); err != nil {
-				s.Warnf("    Error restoring Observable state: %v", err)
+				s.Warnf("    Error restoring Consumer state: %v", err)
 			}
 		}
 	}
@@ -599,8 +599,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	return nil
 }
 
-// NumMsgSets will return how many message sets we have.
-func (a *Account) NumMsgSets() int {
+// NumStreams will return how many streams we have.
+func (a *Account) NumStreams() int {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
@@ -608,29 +608,29 @@ func (a *Account) NumMsgSets() int {
 		return 0
 	}
 	jsa.mu.Lock()
-	n := len(jsa.msgSets)
+	n := len(jsa.streams)
 	jsa.mu.Unlock()
 	return n
 }
 
-// MsgSets will return all known message sets.
-func (a *Account) MsgSets() []*MsgSet {
+// Streams will return all known streams.
+func (a *Account) Streams() []*Stream {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
 	if jsa == nil {
 		return nil
 	}
-	var msets []*MsgSet
+	var msets []*Stream
 	jsa.mu.Lock()
-	for _, mset := range jsa.msgSets {
+	for _, mset := range jsa.streams {
 		msets = append(msets, mset)
 	}
 	jsa.mu.Unlock()
 	return msets
 }
 
-func (a *Account) LookupMsgSet(name string) (*MsgSet, error) {
+func (a *Account) LookupStream(name string) (*Stream, error) {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
@@ -639,10 +639,10 @@ func (a *Account) LookupMsgSet(name string) (*MsgSet, error) {
 		return nil, fmt.Errorf("jetstream not enabled")
 	}
 	jsa.mu.Lock()
-	mset, ok := jsa.msgSets[name]
+	mset, ok := jsa.streams[name]
 	jsa.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("msgset not found")
+		return nil, fmt.Errorf("stream not found")
 	}
 	return mset, nil
 }
@@ -713,7 +713,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		jsa.mu.Lock()
 		stats.Memory = uint64(jsa.memUsed)
 		stats.Store = uint64(jsa.storeUsed)
-		stats.MsgSets = len(jsa.msgSets)
+		stats.Streams = len(jsa.streams)
 		stats.Limits = jsa.limits
 		jsa.mu.Unlock()
 	}
@@ -768,10 +768,10 @@ func (jsa *jsAccount) flushState() error {
 	}
 
 	// Collect the message sets.
-	var _msets [64]*MsgSet
+	var _msets [64]*Stream
 	msets := _msets[:0]
 	jsa.mu.Lock()
-	for _, mset := range jsa.msgSets {
+	for _, mset := range jsa.streams {
 		msets = append(msets, mset)
 	}
 	jsa.mu.Unlock()
@@ -823,19 +823,19 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
 
 // Check if a new proposed msg set while exceed our account limits.
 // Lock should be held.
-func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
-	if jsa.limits.MaxMsgSets > 0 && len(jsa.msgSets) >= jsa.limits.MaxMsgSets {
-		return fmt.Errorf("maximum number of message sets reached")
+func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
+	if jsa.limits.MaxStreams > 0 && len(jsa.streams) >= jsa.limits.MaxStreams {
+		return fmt.Errorf("maximum number of streams reached")
 	}
 	// FIXME(dlc) - Add check here for replicas based on clustering.
 	if config.Replicas != 1 {
 		return fmt.Errorf("replicas setting of %d not allowed", config.Replicas)
 	}
-	// Check MaxObservables
-	if config.MaxObservables > 0 && config.MaxObservables > jsa.limits.MaxObservables {
-		return fmt.Errorf("maximum observables exceeds account limit")
+	// Check MaxConsumers
+	if config.MaxConsumers > 0 && config.MaxConsumers > jsa.limits.MaxConsumers {
+		return fmt.Errorf("maximum consumers exceeds account limit")
 	} else {
-		config.MaxObservables = jsa.limits.MaxObservables
+		config.MaxConsumers = jsa.limits.MaxConsumers
 	}
 	// Check storage, memory or disk.
 	if config.MaxBytes > 0 {
@@ -856,12 +856,12 @@ func (jsa *jsAccount) checkLimits(config *MsgSetConfig) error {
 
 // Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
-	var msgSets []*MsgSet
+	var streams []*Stream
 	var ts []string
 
 	jsa.mu.Lock()
-	for _, ms := range jsa.msgSets {
-		msgSets = append(msgSets, ms)
+	for _, ms := range jsa.streams {
+		streams = append(streams, ms)
 	}
 	acc := jsa.account
 	for _, t := range jsa.templates {
@@ -870,7 +870,7 @@ func (jsa *jsAccount) delete() {
 	jsa.templates = nil
 	jsa.mu.Unlock()
 
-	for _, ms := range msgSets {
+	for _, ms := range streams {
 		ms.stop(false)
 	}
 	for _, t := range ts {
@@ -968,7 +968,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 }
 
 // Request to create a message set.
-func (s *Server) jsCreateMsgSetRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -976,20 +976,20 @@ func (s *Server) jsCreateMsgSetRequest(sub *subscription, c *client, subject, re
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
 		return
 	}
-	var cfg MsgSetConfig
+	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
 	var response = OK
-	if _, err := c.acc.AddMsgSet(&cfg); err != nil {
+	if _, err := c.acc.AddStream(&cfg); err != nil {
 		response = fmt.Sprintf("%s %v", ErrPrefix, err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
 
-// Request for the list of all message sets.
-func (s *Server) jsMsgSetsRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+// Request for the list of all streams.
+func (s *Server) jsStreamsRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -998,7 +998,7 @@ func (s *Server) jsMsgSetsRequest(sub *subscription, c *client, subject, reply s
 		return
 	}
 	var names []string
-	msets := c.acc.MsgSets()
+	msets := c.acc.Streams()
 	for _, mset := range msets {
 		names = append(names, mset.Name())
 	}
@@ -1011,7 +1011,7 @@ func (s *Server) jsMsgSetsRequest(sub *subscription, c *client, subject, reply s
 
 // Request for information about a message set.
 // This expects a message set name as the msg body.
-func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1023,13 +1023,13 @@ func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(string(msg))
+	mset, err := c.acc.LookupStream(string(msg))
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s '%v'", ErrPrefix, err))
 		return
 	}
-	msi := MsgSetInfo{
-		Stats:  mset.Stats(),
+	msi := StreamInfo{
+		State:  mset.State(),
 		Config: mset.Config(),
 	}
 	b, err := json.MarshalIndent(msi, "", "  ")
@@ -1041,7 +1041,7 @@ func (s *Server) jsMsgSetInfoRequest(sub *subscription, c *client, subject, repl
 
 // Request to delete a message set.
 // This expects a message set name as the msg body.
-func (s *Server) jsMsgSetDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1053,7 +1053,7 @@ func (s *Server) jsMsgSetDeleteRequest(sub *subscription, c *client, subject, re
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(string(msg))
+	mset, err := c.acc.LookupStream(string(msg))
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
@@ -1083,7 +1083,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	name := args[0]
 	seq, _ := strconv.Atoi(args[1])
 
-	mset, err := c.acc.LookupMsgSet(name)
+	mset, err := c.acc.LookupStream(name)
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
@@ -1097,7 +1097,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 // Request to purge a message set.
 // This expects a message set name as the msg body.
-func (s *Server) jsMsgSetPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1109,7 +1109,7 @@ func (s *Server) jsMsgSetPurgeRequest(sub *subscription, c *client, subject, rep
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(string(msg))
+	mset, err := c.acc.LookupStream(string(msg))
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
@@ -1120,7 +1120,7 @@ func (s *Server) jsMsgSetPurgeRequest(sub *subscription, c *client, subject, rep
 }
 
 // Request to create an observable.
-func (s *Server) jsCreateObservableRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1128,26 +1128,29 @@ func (s *Server) jsCreateObservableRequest(sub *subscription, c *client, subject
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
 		return
 	}
-	var req CreateObservableRequest
+	var req CreateConsumerRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(string(req.MsgSet))
+	mset, err := c.acc.LookupStream(string(req.Stream))
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
 	var response = OK
-	if _, err := mset.AddObservable(&req.Config); err != nil {
+	if o, err := mset.AddConsumer(&req.Config); err != nil {
 		response = fmt.Sprintf("%s '%v'", ErrPrefix, err)
+	} else if !o.isDurable() {
+		// If the consumer is ephemeral add in the name
+		response = OK + " " + o.Name()
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
 
 // Request for the list of all observables.
 // This expects a message set name as the msg body.
-func (s *Server) jsObservablesRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1159,13 +1162,13 @@ func (s *Server) jsObservablesRequest(sub *subscription, c *client, subject, rep
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(string(msg))
+	mset, err := c.acc.LookupStream(string(msg))
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
 	var onames []string
-	obs := mset.Observables()
+	obs := mset.Consumers()
 	for _, o := range obs {
 		onames = append(onames, o.Name())
 	}
@@ -1178,7 +1181,7 @@ func (s *Server) jsObservablesRequest(sub *subscription, c *client, subject, rep
 
 // Request for information about an observable.
 // This expects a message set name and observable name as the msg body. e.g. "MSGSET1 OBS1"
-func (s *Server) jsObservableInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1195,12 +1198,12 @@ func (s *Server) jsObservableInfoRequest(sub *subscription, c *client, subject, 
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(names[0])
+	mset, err := c.acc.LookupStream(names[0])
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
-	obs := mset.LookupObservable(names[1])
+	obs := mset.LookupConsumer(names[1])
 	if obs == nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s observable not found", ErrPrefix))
 		return
@@ -1213,9 +1216,9 @@ func (s *Server) jsObservableInfoRequest(sub *subscription, c *client, subject, 
 	s.sendInternalAccountMsg(c.acc, reply, b)
 }
 
-// Request to delete an Observable.
+// Request to delete an Consumer.
 // This expects a message set name and observable name as the msg body. e.g. "MSGSET1 OBS1"
-func (s *Server) jsObservableDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -1232,12 +1235,12 @@ func (s *Server) jsObservableDeleteRequest(sub *subscription, c *client, subject
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
-	mset, err := c.acc.LookupMsgSet(names[0])
+	mset, err := c.acc.LookupStream(names[0])
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
-	obs := mset.LookupObservable(names[1])
+	obs := mset.LookupConsumer(names[1])
 	if obs == nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s observable not found", ErrPrefix))
 		return
@@ -1298,8 +1301,8 @@ func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
 // is received that matches. Each new message set will use the config as the template config to create them.
 type StreamTemplateConfig struct {
 	Name       string        `json:"name"`
-	Config     *MsgSetConfig `json:"config"`
-	MaxMsgSets uint32        `json:"max_msg_sets"`
+	Config     *StreamConfig `json:"config"`
+	MaxStreams uint32        `json:"max_streams"`
 }
 
 // StreamTemplate
@@ -1330,7 +1333,7 @@ func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, 
 	// FIXME(dlc) - Hacky
 	tcopy := tc.deepCopy()
 	tcopy.Config.Name = "_"
-	cfg, err := checkMsgSetCfg(tcopy.Config)
+	cfg, err := checkStreamCfg(tcopy.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -1405,7 +1408,7 @@ func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, _ *client, s
 	jsa := t.jsa
 	jsa.mu.Lock()
 	// If we already are registered then we can just return here.
-	if _, ok := jsa.msgSets[subject]; ok {
+	if _, ok := jsa.streams[subject]; ok {
 		jsa.mu.Unlock()
 		return
 	}
@@ -1417,7 +1420,7 @@ func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, _ *client, s
 	c := t.tc
 	cfg := *t.Config
 	cfg.Template = t.Name
-	atLimit := len(t.msgSets) >= int(t.MaxMsgSets)
+	atLimit := len(t.msgSets) >= int(t.MaxStreams)
 	if !atLimit {
 		t.msgSets = append(t.msgSets, subject)
 	}
@@ -1432,7 +1435,7 @@ func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, _ *client, s
 	// Change the config from the template and only use literal subject.
 	cfg.Subjects = nil
 	cfg.Name = subject
-	mset, err := acc.AddMsgSet(&cfg)
+	mset, err := acc.AddStream(&cfg)
 	if err != nil {
 		// FIXME(dlc) - Remove from t.msgSets
 		c.Warnf("JetStream could not create message set for account %q on subject %q", acc.Name, subject)
@@ -1495,10 +1498,10 @@ func (t *StreamTemplate) Delete() error {
 	jsa.mu.Unlock()
 
 	// Remove message sets associated with this template.
-	var msgSets []*MsgSet
+	var msgSets []*Stream
 	t.mu.Lock()
 	for _, name := range t.msgSets {
-		if mset, err := acc.LookupMsgSet(name); err == nil {
+		if mset, err := acc.LookupStream(name); err == nil {
 			msgSets = append(msgSets, mset)
 		}
 	}
@@ -1545,7 +1548,7 @@ func (a *Account) Templates() []*StreamTemplate {
 }
 
 // Will add a message set to a template, this is for recovery.
-func (jsa *jsAccount) addMsgSetNameToTemplate(tname, mname string) error {
+func (jsa *jsAccount) addStreamNameToTemplate(tname, mname string) error {
 	if jsa.templates == nil {
 		return fmt.Errorf("no template found")
 	}

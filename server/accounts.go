@@ -130,7 +130,7 @@ type ServiceRespType uint8
 // Service response types. Defaults to a singleton.
 const (
 	Singleton ServiceRespType = iota
-	Stream
+	Streamed
 	Chunked
 )
 
@@ -139,8 +139,8 @@ func (rt ServiceRespType) String() string {
 	switch rt {
 	case Singleton:
 		return "Singleton"
-	case Stream:
-		return "Stream"
+	case Streamed:
+		return "Streamed"
 	case Chunked:
 		return "Chunked"
 	}
@@ -1818,7 +1818,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			rt := Singleton
 			switch e.ResponseType {
 			case jwt.ResponseTypeStream:
-				rt = Stream
+				rt = Streamed
 			case jwt.ResponseTypeChunked:
 				rt = Chunked
 			}
