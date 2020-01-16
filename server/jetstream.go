@@ -103,7 +103,7 @@ const (
 	// JetStreamPurgeStream is the endpoint to purge streams.
 	// Will return +OK on success and -ERR on failure.
 	JetStreamPurgeStream = "$JS.STREAM.PURGE"
-	jsPurgeStreamExport  = "$JS.*.MSGSET.PURGE"
+	jsPurgeStreamExport  = "$JS.*.STREAM.PURGE"
 
 	// JetStreamDeleteMsg is the endpoint to delete messages from a message set.
 	// Will return +OK on success and -ERR on failure.
