@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,13 +23,13 @@ import (
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
-	mu       sync.RWMutex
-	stats    MsgSetStats
-	msgs     map[uint64]*storedMsg
-	scb      func(int64)
-	ageChk   *time.Timer
-	config   MsgSetConfig
-	obsCount int
+	mu        sync.RWMutex
+	state     StreamState
+	msgs      map[uint64]*storedMsg
+	scb       func(int64)
+	ageChk    *time.Timer
+	config    StreamConfig
+	consumers int
 }
 
 type storedMsg struct {
@@ -39,24 +39,22 @@ type storedMsg struct {
 	ts   int64 // nanoseconds
 }
 
-func newMemStore(cfg *MsgSetConfig) (*memStore, error) {
+func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config required")
 	}
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
-	ms := &memStore{msgs: make(map[uint64]*storedMsg), config: *cfg}
-	// This only happens once, so ok to call here.
-	return ms, nil
+	return &memStore{msgs: make(map[uint64]*storedMsg), config: *cfg}, nil
 }
 
 // Store stores a message.
 func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	ms.mu.Lock()
-	seq := ms.stats.LastSeq + 1
-	if ms.stats.FirstSeq == 0 {
-		ms.stats.FirstSeq = seq
+	seq := ms.state.LastSeq + 1
+	if ms.state.FirstSeq == 0 {
+		ms.state.FirstSeq = seq
 	}
 
 	// Make copies - https://github.com/go101/go101/wiki
@@ -65,12 +63,12 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		msg = append(msg[:0:0], msg...)
 	}
 
-	startBytes := int64(ms.stats.Bytes)
+	startBytes := int64(ms.state.Bytes)
 
 	ms.msgs[seq] = &storedMsg{subj, msg, seq, time.Now().UnixNano()}
-	ms.stats.Msgs++
-	ms.stats.Bytes += memStoreMsgSize(subj, msg)
-	ms.stats.LastSeq = seq
+	ms.state.Msgs++
+	ms.state.Bytes += memStoreMsgSize(subj, msg)
+	ms.state.LastSeq = seq
 
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
@@ -81,7 +79,7 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		ms.startAgeChk()
 	}
 	cb := ms.scb
-	stopBytes := int64(ms.stats.Bytes)
+	stopBytes := int64(ms.state.Bytes)
 	ms.mu.Unlock()
 
 	if cb != nil {
@@ -105,28 +103,28 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	if len(ms.msgs) == 0 {
-		return ms.stats.LastSeq + 1
+		return ms.state.LastSeq + 1
 	}
-	if ts <= ms.msgs[ms.stats.FirstSeq].ts {
-		return ms.stats.FirstSeq
+	if ts <= ms.msgs[ms.state.FirstSeq].ts {
+		return ms.state.FirstSeq
 	}
-	last := ms.msgs[ms.stats.LastSeq].ts
+	last := ms.msgs[ms.state.LastSeq].ts
 	if ts == last {
-		return ms.stats.LastSeq
+		return ms.state.LastSeq
 	}
 	if ts > last {
-		return ms.stats.LastSeq + 1
+		return ms.state.LastSeq + 1
 	}
 	index := sort.Search(len(ms.msgs), func(i int) bool {
-		return ms.msgs[uint64(i)+ms.stats.FirstSeq].ts >= ts
+		return ms.msgs[uint64(i)+ms.state.FirstSeq].ts >= ts
 	})
-	return uint64(index) + ms.stats.FirstSeq
+	return uint64(index) + ms.state.FirstSeq
 }
 
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (ms *memStore) enforceMsgLimit() {
-	if ms.config.MaxMsgs <= 0 || ms.stats.Msgs <= uint64(ms.config.MaxMsgs) {
+	if ms.config.MaxMsgs <= 0 || ms.state.Msgs <= uint64(ms.config.MaxMsgs) {
 		return
 	}
 	ms.deleteFirstMsgOrPanic()
@@ -135,10 +133,10 @@ func (ms *memStore) enforceMsgLimit() {
 // Will check the bytes limit and drop msgs if needed.
 // Lock should be held.
 func (ms *memStore) enforceBytesLimit() {
-	if ms.config.MaxBytes <= 0 || ms.stats.Bytes <= uint64(ms.config.MaxBytes) {
+	if ms.config.MaxBytes <= 0 || ms.state.Bytes <= uint64(ms.config.MaxBytes) {
 		return
 	}
-	for bs := ms.stats.Bytes; bs > uint64(ms.config.MaxBytes); bs = ms.stats.Bytes {
+	for bs := ms.state.Bytes; bs > uint64(ms.config.MaxBytes); bs = ms.state.Bytes {
 		ms.deleteFirstMsgOrPanic()
 	}
 }
@@ -159,7 +157,7 @@ func (ms *memStore) expireMsgs() {
 	now := time.Now().UnixNano()
 	minAge := now - int64(ms.config.MaxAge)
 	for {
-		if sm, ok := ms.msgs[ms.stats.FirstSeq]; ok && sm.ts <= minAge {
+		if sm, ok := ms.msgs[ms.state.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
 		} else {
 			if !ok {
@@ -180,10 +178,10 @@ func (ms *memStore) Purge() uint64 {
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
-	bytes := int64(ms.stats.Bytes)
-	ms.stats.FirstSeq = ms.stats.LastSeq + 1
-	ms.stats.Bytes = 0
-	ms.stats.Msgs = 0
+	bytes := int64(ms.state.Bytes)
+	ms.state.FirstSeq = ms.state.LastSeq + 1
+	ms.state.Bytes = 0
+	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)
 	ms.mu.Unlock()
 
@@ -201,14 +199,14 @@ func (ms *memStore) deleteFirstMsgOrPanic() {
 }
 
 func (ms *memStore) deleteFirstMsg() bool {
-	return ms.removeMsg(ms.stats.FirstSeq, false)
+	return ms.removeMsg(ms.state.FirstSeq, false)
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
-	last := ms.stats.LastSeq
+	last := ms.state.LastSeq
 	ms.mu.RUnlock()
 
 	if !ok || sm == nil {
@@ -244,11 +242,11 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	sm, ok := ms.msgs[seq]
 	if ok {
 		delete(ms.msgs, seq)
-		ms.stats.Msgs--
+		ms.state.Msgs--
 		ss = memStoreMsgSize(sm.subj, sm.msg)
-		ms.stats.Bytes -= ss
-		if seq == ms.stats.FirstSeq {
-			ms.stats.FirstSeq++
+		ms.state.Bytes -= ss
+		if seq == ms.state.FirstSeq {
+			ms.state.FirstSeq++
 		}
 		if secure {
 			rand.Read(sm.msg)
@@ -262,13 +260,12 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	return ok
 }
 
-func (ms *memStore) Stats() MsgSetStats {
+func (ms *memStore) State() StreamState {
 	ms.mu.RLock()
-	stats := ms.stats
-	stats.Observables = ms.obsCount
+	state := ms.state
+	state.Consumers = ms.consumers
 	ms.mu.RUnlock()
-
-	return stats
+	return state
 }
 
 func memStoreMsgSize(subj string, msg []byte) uint64 {
@@ -292,48 +289,43 @@ func (ms *memStore) Stop() error {
 	return nil
 }
 
-func (ms *memStore) incObsCount() {
+func (ms *memStore) incConsumers() {
 	ms.mu.Lock()
-	ms.obsCount++
+	ms.consumers++
 	ms.mu.Unlock()
 }
 
-func (ms *memStore) decObsCount() {
+func (ms *memStore) decConsumers() {
 	ms.mu.Lock()
-
-	if ms.obsCount == 0 {
-		ms.mu.RUnlock()
-		return
+	if ms.consumers > 0 {
+		ms.consumers--
 	}
-
-	ms.obsCount--
 	ms.mu.Unlock()
 }
 
-type observableMemStore struct {
+type consumerMemStore struct {
 	ms *memStore
 }
 
-func (ms *memStore) ObservableStore(_ string, _ *ObservableConfig) (ObservableStore, error) {
-	ms.incObsCount()
-
-	return &observableMemStore{ms}, nil
+func (ms *memStore) ConsumerStore(_ string, _ *ConsumerConfig) (ConsumerStore, error) {
+	ms.incConsumers()
+	return &consumerMemStore{ms}, nil
 }
 
 // No-ops.
-func (os *observableMemStore) Update(_ *ObservableState) error {
+func (os *consumerMemStore) Update(_ *ConsumerState) error {
 	return nil
 }
-func (os *observableMemStore) Stop() error {
-	os.ms.decObsCount()
+func (os *consumerMemStore) Stop() error {
+	os.ms.decConsumers()
 	return nil
 }
 
-func (os *observableMemStore) Delete() error {
+func (os *consumerMemStore) Delete() error {
 	return os.Stop()
 }
 
-func (os *observableMemStore) State() (*ObservableState, error) { return nil, nil }
+func (os *consumerMemStore) State() (*ConsumerState, error) { return nil, nil }
 
 // Templates
 type templateMemStore struct{}

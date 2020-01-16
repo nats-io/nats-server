@@ -418,15 +418,15 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
-	mset, err := s.GlobalAccount().AddMsgSet(&server.MsgSetConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Subjects: []string{"foo", "bar"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding message set: %v", err)
 	}
 	defer mset.Delete()
 
-	// Create basic work queue mode observable.
+	// Create basic work queue mode consumer.
 	oname := "WQ"
-	o, err := mset.AddObservable(&server.ObservableConfig{Durable: oname, DeliverAll: true, AckPolicy: server.AckExplicit})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, DeliverAll: true, AckPolicy: server.AckExplicit})
 	if err != nil {
 		t.Fatalf("Expected no error with durable, got %v", err)
 	}
@@ -436,7 +436,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	// For normal work queue semantics, you send requests to the subject with message set and observable name.
+	// For normal work queue semantics, you send requests to the subject with stream and consumer name.
 	reqMsgSubj := o.RequestNextMsgSubject()
 
 	numWorkers := 25
