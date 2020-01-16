@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,7 +21,7 @@ import (
 )
 
 func TestMemStoreBasics(t *testing.T) {
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
@@ -31,13 +31,13 @@ func TestMemStoreBasics(t *testing.T) {
 	} else if seq != 1 {
 		t.Fatalf("Expected sequence to be 1, got %d", seq)
 	}
-	stats := ms.Stats()
-	if stats.Msgs != 1 {
-		t.Fatalf("Expected 1 msg, got %d", stats.Msgs)
+	state := ms.State()
+	if state.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", state.Msgs)
 	}
 	expectedSize := memStoreMsgSize(subj, msg)
-	if stats.Bytes != expectedSize {
-		t.Fatalf("Expected %d bytes, got %d", expectedSize, stats.Bytes)
+	if state.Bytes != expectedSize {
+		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
 	nsubj, nmsg, _, err := ms.LoadMsg(1)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestMemStoreBasics(t *testing.T) {
 }
 
 func TestMemStoreMsgLimit(t *testing.T) {
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxMsgs: 10})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxMsgs: 10})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
@@ -60,22 +60,22 @@ func TestMemStoreMsgLimit(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		ms.StoreMsg(subj, msg)
 	}
-	stats := ms.Stats()
-	if stats.Msgs != 10 {
-		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
+	state := ms.State()
+	if state.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
 	if _, err := ms.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
-	stats = ms.Stats()
-	if stats.Msgs != 10 {
-		t.Fatalf("Expected %d msgs, got %d", 10, stats.Msgs)
+	state = ms.State()
+	if state.Msgs != 10 {
+		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if stats.LastSeq != 11 {
-		t.Fatalf("Expected the last sequence to be 11 now, but got %d", stats.LastSeq)
+	if state.LastSeq != 11 {
+		t.Fatalf("Expected the last sequence to be 11 now, but got %d", state.LastSeq)
 	}
-	if stats.FirstSeq != 2 {
-		t.Fatalf("Expected the first sequence to be 2 now, but got %d", stats.FirstSeq)
+	if state.FirstSeq != 2 {
+		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
 	if _, _, _, err := ms.LoadMsg(1); err == nil {
@@ -90,7 +90,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
 
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
@@ -98,12 +98,12 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	for i := uint64(0); i < toStore; i++ {
 		ms.StoreMsg(subj, msg)
 	}
-	stats := ms.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := ms.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, stats.Bytes)
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
 
 	// Now send 10 more and check that bytes limit enforced.
@@ -112,24 +112,24 @@ func TestMemStoreBytesLimit(t *testing.T) {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
-	stats = ms.Stats()
-	if stats.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state = ms.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
-	if stats.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, stats.Bytes)
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
-	if stats.FirstSeq != 11 {
-		t.Fatalf("Expected first sequence to be 11, got %d", stats.FirstSeq)
+	if state.FirstSeq != 11 {
+		t.Fatalf("Expected first sequence to be 11, got %d", state.FirstSeq)
 	}
-	if stats.LastSeq != toStore+10 {
-		t.Fatalf("Expected last sequence to be %d, got %d", toStore+10, stats.LastSeq)
+	if state.LastSeq != toStore+10 {
+		t.Fatalf("Expected last sequence to be %d, got %d", toStore+10, state.LastSeq)
 	}
 }
 
 func TestMemStoreAgeLimit(t *testing.T) {
 	maxAge := 10 * time.Millisecond
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage, MaxAge: maxAge})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxAge: maxAge})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
@@ -139,19 +139,19 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		ms.StoreMsg(subj, msg)
 	}
-	stats := ms.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state := ms.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	checkExpired := func(t *testing.T) {
 		t.Helper()
 		checkFor(t, time.Second, maxAge, func() error {
-			stats = ms.Stats()
-			if stats.Msgs != 0 {
-				return fmt.Errorf("Expected no msgs, got %d", stats.Msgs)
+			state = ms.State()
+			if state.Msgs != 0 {
+				return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
 			}
-			if stats.Bytes != 0 {
-				return fmt.Errorf("Expected no bytes, got %d", stats.Bytes)
+			if state.Bytes != 0 {
+				return fmt.Errorf("Expected no bytes, got %d", state.Bytes)
 			}
 			return nil
 		})
@@ -162,15 +162,15 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	for i := 0; i < toStore; i++ {
 		ms.StoreMsg(subj, msg)
 	}
-	stats = ms.Stats()
-	if stats.Msgs != uint64(toStore) {
-		t.Fatalf("Expected %d msgs, got %d", toStore, stats.Msgs)
+	state = ms.State()
+	if state.Msgs != uint64(toStore) {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	checkExpired(t)
 }
 
 func TestMemStoreTimeStamps(t *testing.T) {
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestMemStoreTimeStamps(t *testing.T) {
 }
 
 func TestMemStoreEraseMsg(t *testing.T) {
-	ms, err := newMemStore(&MsgSetConfig{Storage: MemoryStorage})
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}

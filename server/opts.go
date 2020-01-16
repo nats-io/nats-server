@@ -1945,7 +1945,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			case "single", "singleton":
 				rt = Singleton
 			case "stream":
-				rt = Stream
+				rt = Streamed
 			case "chunk", "chunked":
 				rt = Chunked
 			default:
