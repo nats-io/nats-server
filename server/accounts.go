@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -182,6 +182,7 @@ type exportMap struct {
 type importMap struct {
 	streams  []*streamImport
 	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
+	hasWC    bool                      // This is for service import wildcards.
 }
 
 // NewAccount creates a new unlimited account with the given name.
@@ -831,12 +832,14 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 	if destination == nil {
 		return ErrMissingAccount
 	}
+	// Empty means use from. Also means we can use wildcards since we are not doing remapping.
+	if !IsValidSubject(from) || (to != "" && (!IsValidLiteralSubject(from) || !IsValidLiteralSubject(to))) {
+		return ErrInvalidSubject
+	}
+
 	// Empty means use from.
 	if to == "" {
 		to = from
-	}
-	if !IsValidLiteralSubject(from) || !IsValidLiteralSubject(to) {
-		return ErrInvalidSubject
 	}
 	// First check to see if the account has authorized us to route to the "to" subject.
 	if !destination.checkServiceImportAuthorized(a, to, imClaim) {
@@ -865,11 +868,25 @@ func (a *Account) NumServiceImports() int {
 // removeServiceImport will remove the route by subject.
 func (a *Account) removeServiceImport(subject string) {
 	a.mu.Lock()
+
 	si, ok := a.imports.services[subject]
-	if ok && si != nil && si.ae {
-		a.nae--
-	}
 	delete(a.imports.services, subject)
+
+	if ok && si != nil {
+		if si.ae {
+			a.nae--
+		}
+		if a.imports.hasWC && subjectHasWildcard(subject) {
+			// Need to still make sure we have a wildcard entry.
+			a.imports.hasWC = false
+			for subject, _ := range a.imports.services {
+				if subjectHasWildcard(subject) {
+					a.imports.hasWC = true
+					break
+				}
+			}
+		}
+	}
 	a.mu.Unlock()
 }
 
@@ -997,7 +1014,7 @@ func (a *Account) SetMaxResponseMaps(max int) {
 	a.maxnrm = int32(max)
 }
 
-// Add a route to connect from an implicit route created for a response to a request.
+// Add a service import to connect from an implicit import created for a response to a request.
 // This does no checks and should be only called by the msg processing code. Use
 // AddServiceImport from above if responding to user input or config changes, etc.
 func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) (*serviceImport, error) {
@@ -1018,6 +1035,12 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		a.mu.Unlock()
 		return nil, fmt.Errorf("duplicate service import subject %q, previously used in import for account %q, subject %q",
 			from, dup.acc.Name, dup.to)
+	}
+	if subjectHasWildcard(from) {
+		a.imports.hasWC = true
+	}
+	if to == "" {
+		to = from
 	}
 	si := &serviceImport{dest, claim, from, to, 0, rt, lat, nil, false, false, false, false}
 	a.imports.services[from] = si
@@ -1414,8 +1437,8 @@ func (a *Account) getServiceExport(subj string) *serviceExport {
 // This helper is used when trying to match a serviceExport record that is
 // represented by a wildcard.
 // Lock should be held on entry.
-func (a *Account) getWildcardServiceExport(to string) *serviceExport {
-	tokens := strings.Split(to, tsep)
+func (a *Account) getWildcardServiceExport(from string) *serviceExport {
+	tokens := strings.Split(from, tsep)
 	for subj, ea := range a.exports.services {
 		if isSubsetMatch(tokens, subj) {
 			return ea
@@ -1648,7 +1671,7 @@ func (a *Account) checkServiceImportAuthorized(account *Account, subject string,
 // Check if another account is authorized to route requests to this service.
 func (a *Account) checkServiceImportAuthorizedNoLock(account *Account, subject string, imClaim *jwt.Import) bool {
 	// Find the subject in the services list.
-	if a.exports.services == nil || !IsValidLiteralSubject(subject) {
+	if a.exports.services == nil {
 		return false
 	}
 	return a.checkServiceExportApproved(account, subject, imClaim)
