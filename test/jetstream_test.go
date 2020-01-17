@@ -3439,6 +3439,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, msetCfg.Name), req, time.Second)
 	expectOKResponse(t, resp)
 
+	// Check that the name in config has to match the name in the subject
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, "BOB"), req, time.Second)
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'stream name in subject does not match request'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+
 	// Now lookup info again and see that we can see the new stream.
 	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
 	if err != nil {
