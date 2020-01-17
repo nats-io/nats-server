@@ -1128,6 +1128,24 @@ func SubjectsCollide(subj1, subj2 string) bool {
 	return true
 }
 
+// Fast way to return an indexed token.
+func subjectToken(subject string, index uint8) string {
+	ti, start := uint8(0), 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			if ti == index {
+				return subject[start:i]
+			}
+			start = i + 1
+			ti++
+		}
+	}
+	if ti == index {
+		return subject[start:]
+	}
+	return _EMPTY_
+}
+
 // Calls into the function isSubsetMatch()
 func subjectIsSubsetMatch(subject, test string) bool {
 	tsa := [32]string{}

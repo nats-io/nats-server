@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"path"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -154,9 +153,8 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
 	}
 
-	if len(config.Name) == 0 || strings.ContainsAny(config.Name, "*>") {
-		//if !isValidName(config.Name) {
-		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '*', '>'")
+	if !isValidName(config.Name) {
+		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '.', '*', '>'")
 	}
 
 	cfg := *config
@@ -394,7 +392,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		seq, err = store.StoreMsg(subject, msg)
 		if err != nil {
 			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
-			response = []byte(fmt.Sprintf("-ERR '%s'", err.Error()))
+			response = []byte(fmt.Sprintf("-ERR '%v'", err))
 		} else if jsa.limitsExceeded(stype) {
 			c.Warnf("JetStream resource limits exceeded for account: %q", accName)
 			response = []byte("-ERR 'resource limits exceeded for account'")
