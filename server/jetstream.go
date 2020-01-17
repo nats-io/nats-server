@@ -80,7 +80,8 @@ const (
 
 	// JetStreamCreateStream is the endpoint to create new streams.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateStream = "$JS.STREAM.CREATE"
+	JetStreamCreateStream  = "$JS.STREAM.*.CREATE"
+	JetStreamCreateStreamT = "$JS.STREAM.%s.CREATE"
 
 	// JetStreamListStreams is the endpoint to list all streams for this account.
 	// Will return json list of string on success and -ERR on failure.
@@ -558,7 +559,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 
 		stats := mset.State()
-		s.Noticef("  Restored %d messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
+		s.Noticef("  Restored %s messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
 
 		// Now do Consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
