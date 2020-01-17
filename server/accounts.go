@@ -844,7 +844,7 @@ func (a *Account) removeServiceImport(subject string) {
 		if a.imports.hasWC && subjectHasWildcard(subject) {
 			// Need to still make sure we have a wildcard entry.
 			a.imports.hasWC = false
-			for subject, _ := range a.imports.services {
+			for subject := range a.imports.services {
 				if subjectHasWildcard(subject) {
 					a.imports.hasWC = true
 					break
