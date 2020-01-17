@@ -187,6 +187,7 @@ func TestJetStreamAddStream(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
 			}
+			defer mset.Delete()
 
 			nc := clientConnectToServer(t, s)
 			defer nc.Close()
