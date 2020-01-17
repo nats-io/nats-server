@@ -3436,7 +3436,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ = nc.Request(server.JetStreamCreateStream, req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, msetCfg.Name), req, time.Second)
 	expectOKResponse(t, resp)
 
 	// Now lookup info again and see that we can see the new stream.
