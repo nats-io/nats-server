@@ -78,6 +78,25 @@ const (
 	// Will return JSON response.
 	JetStreamInfo = "$JS.INFO"
 
+	// JetStreamCreateTemplate is the endpoint to create new stream templates.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamCreateTemplate  = "$JS.TEMPLATE.*.CREATE"
+	JetStreamCreateTemplateT = "$JS.TEMPLATE.%s.CREATE"
+
+	// JetStreamListTemplates is the endpoint to list all stream templates for this account.
+	// Will return json list of string on success and -ERR on failure.
+	JetStreamListTemplates = "$JS.TEMPLATES.LIST"
+
+	// JetStreamTemplateInfo is for obtaining general information about a named stream template.
+	// Will return JSON response.
+	JetStreamTemplateInfo  = "$JS.TEMPLATE.*.INFO"
+	JetStreamTemplateInfoT = "$JS.TEMPLATE.%s.INFO"
+
+	// JetStreamDeleteTemplate is the endpoint to delete stream templates.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamDeleteTemplate  = "$JS.TEMPLATE.*.DELETE"
+	JetStreamDeleteTemplateT = "$JS.TEMPLATE.%s.DELETE"
+
 	// JetStreamCreateStream is the endpoint to create new streams.
 	// Will return +OK on success and -ERR on failure.
 	JetStreamCreateStream  = "$JS.STREAM.*.CREATE"
@@ -175,6 +194,10 @@ type jsAccount struct {
 var allJsExports = []string{
 	JetStreamEnabled,
 	JetStreamInfo,
+	JetStreamCreateTemplate,
+	JetStreamListTemplates,
+	JetStreamTemplateInfo,
+	JetStreamDeleteTemplate,
 	JetStreamCreateStream,
 	JetStreamListStreams,
 	JetStreamStreamInfo,
@@ -246,6 +269,18 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(JetStreamInfo, s.jsAccountInfoRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(JetStreamCreateTemplate, s.jsCreateTemplateRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(JetStreamListTemplates, s.jsTemplateListRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(JetStreamTemplateInfo, s.jsTemplateInfoRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(JetStreamDeleteTemplate, s.jsTemplateDeleteRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(JetStreamCreateStream, s.jsCreateStreamRequest); err != nil {
@@ -963,6 +998,113 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	s.sendInternalAccountMsg(c.acc, reply, b)
 }
 
+// Request to create a new template.
+func (s *Server) jsCreateTemplateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var cfg StreamTemplateConfig
+	if err := json.Unmarshal(msg, &cfg); err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	templateName := subjectToken(subject, 2)
+	if templateName != cfg.Name {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("template name in subject does not match request"))
+		return
+	}
+
+	var response = OK
+	if _, err := c.acc.AddStreamTemplate(&cfg); err != nil {
+		response = protoErr(err)
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request for the list of all templates.
+func (s *Server) jsTemplateListRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var names []string
+	ts := c.acc.Templates()
+	for _, t := range ts {
+		t.mu.Lock()
+		name := t.Name
+		t.mu.Unlock()
+		names = append(names, name)
+	}
+	b, err := json.MarshalIndent(names, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request for information about a stream template.
+func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) != 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	name := subjectToken(subject, 2)
+	t, err := c.acc.LookupStreamTemplate(name)
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
+		return
+	}
+	t.mu.Lock()
+	cfg := t.StreamTemplateConfig.deepCopy()
+	streams := t.streams
+	t.mu.Unlock()
+	si := &StreamTemplateInfo{
+		Config:  cfg,
+		Streams: streams,
+	}
+	b, err := json.MarshalIndent(si, "", "  ")
+	if err != nil {
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, b)
+}
+
+// Request to delete a stream template.
+func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	if len(msg) != 0 {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	name := subjectToken(subject, 2)
+	err := c.acc.DeleteStreamTemplate(name)
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
+		return
+	}
+	s.sendInternalAccountMsg(c.acc, reply, OK)
+}
+
 // Request to create a stream.
 func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
@@ -979,13 +1121,13 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 	}
 	streamName := subjectToken(subject, 2)
 	if streamName != cfg.Name {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s 'stream name in subject does not match request'", ErrPrefix))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
 		return
 	}
 
 	var response = OK
 	if _, err := c.acc.AddStream(&cfg); err != nil {
-		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+		response = protoErr(err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
@@ -1012,7 +1154,6 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 }
 
 // Request for information about a stream.
-// This expects a stream name as the msg body.
 func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1028,7 +1169,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	name := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s '%v'", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	msi := StreamInfo{
@@ -1043,7 +1184,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 }
 
 // Request to delete a stream.
-// This expects a stream name as the msg body.
 func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1059,18 +1199,18 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	name := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	var response = OK
 	if err := mset.Delete(); err != nil {
-		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+		response = protoErr(err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
 
 // Request to delete a message.
-// This expects a stream name and store sequence number as the msg body.
+// This expects a stream sequence number as the msg body.
 func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1086,19 +1226,18 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	name := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	var response = OK
 	seq, _ := strconv.Atoi(string(msg))
 	if !mset.EraseMsg(uint64(seq)) {
-		response = fmt.Sprintf("%s sequence [%d] not found", ErrPrefix, seq)
+		response = protoErr(fmt.Sprintf("sequence [%d] not found", seq))
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
 
 // Request to purge a stream.
-// This expects a stream name as the msg body.
 func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1114,7 +1253,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	name := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 
@@ -1138,17 +1277,17 @@ func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, 
 	}
 	streamName := subjectToken(subject, 2)
 	if streamName != req.Stream {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s 'stream name in subject does not match request'", ErrPrefix))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
 		return
 	}
 	stream, err := c.acc.LookupStream(req.Stream)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	var response = OK
 	if o, err := stream.AddConsumer(&req.Config); err != nil {
-		response = fmt.Sprintf("%s '%v'", ErrPrefix, err)
+		response = protoErr(err)
 	} else if !o.isDurable() {
 		// If the consumer is ephemeral add in the name
 		response = OK + " " + o.Name()
@@ -1157,7 +1296,6 @@ func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, 
 }
 
 // Request for the list of all consumers.
-// This expects a stream name as the msg body.
 func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1173,7 +1311,7 @@ func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply
 	name := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	var onames []string
@@ -1189,7 +1327,6 @@ func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply
 }
 
 // Request for information about an consumer.
-// This expects a stream name and consumer name as the msg body. e.g. "STREAM-1 CONSUMER-1"
 func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1205,13 +1342,13 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 	stream := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	consumer := subjectToken(subject, 4)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s consumer not found", ErrPrefix))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("consumer not found"))
 		return
 	}
 	info := obs.Info()
@@ -1223,7 +1360,6 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 }
 
 // Request to delete an Consumer.
-// This expects a stream name and consumer name as the msg body. e.g. "MSGSET1 OBS1"
 func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1239,18 +1375,18 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	stream := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
 		return
 	}
 	consumer := subjectToken(subject, 4)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s consumer not found", ErrPrefix))
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("consumer not found"))
 		return
 	}
 	var response = OK
 	if err := obs.Delete(); err != nil {
-		response = fmt.Sprintf("%s %v", ErrPrefix, err)
+		response = protoErr(err)
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
@@ -1306,6 +1442,12 @@ type StreamTemplateConfig struct {
 	Name       string        `json:"name"`
 	Config     *StreamConfig `json:"config"`
 	MaxStreams uint32        `json:"max_streams"`
+}
+
+// StreamTemplateInfo
+type StreamTemplateInfo struct {
+	Config  *StreamTemplateConfig `json:"config"`
+	Streams []string              `json:"streams"`
 }
 
 // StreamTemplate
@@ -1461,11 +1603,11 @@ func (a *Account) LookupStreamTemplate(name string) (*StreamTemplate, error) {
 	jsa.mu.Lock()
 	defer jsa.mu.Unlock()
 	if jsa.templates == nil {
-		return nil, fmt.Errorf("no template with %q name found", name)
+		return nil, fmt.Errorf("no template found")
 	}
 	t, ok := jsa.templates[name]
 	if !ok {
-		return nil, fmt.Errorf("no template with %q name found", name)
+		return nil, fmt.Errorf("no template found")
 	}
 	return t, nil
 }
@@ -1506,11 +1648,11 @@ func (t *StreamTemplate) Delete() error {
 	jsa.mu.Lock()
 	if jsa.templates == nil {
 		jsa.mu.Unlock()
-		return fmt.Errorf("no template named %q found", t.Name)
+		return fmt.Errorf("no template found")
 	}
 	if _, ok := jsa.templates[t.Name]; !ok {
 		jsa.mu.Unlock()
-		return fmt.Errorf("no template named %q found", t.Name)
+		return fmt.Errorf("no template found")
 	}
 	delete(jsa.templates, t.Name)
 	acc := jsa.account
@@ -1626,4 +1768,8 @@ func isValidName(name string) bool {
 // This can be used when naming streams or consumers with multi-token subjects.
 func CanonicalName(name string) string {
 	return strings.ReplaceAll(name, ".", "_")
+}
+
+func protoErr(err interface{}) string {
+	return fmt.Sprintf("%s '%v'", ErrPrefix, err)
 }
