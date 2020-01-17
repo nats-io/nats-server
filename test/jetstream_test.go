@@ -1532,7 +1532,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 
 	checkSubPending := func(numExpected int) {
 		t.Helper()
-		checkFor(t, 150*time.Millisecond, 10*time.Millisecond, func() error {
+		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
 			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
 				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 			}
@@ -1552,7 +1552,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 		}
 	}
 
-	// Wait til we know we have max queue up.
+	// Wait til we know we have max queued up.
 	checkSubPending(max)
 
 	// Once here we have gone over the limit for the 1st message for max deliveries.
