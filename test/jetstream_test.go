@@ -332,6 +332,27 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 	}
 }
 
+func TestJetStreamAddStreamCanonicalNames(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+
+	expectErr := func(_ *server.Stream, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "can not contain") {
+			t.Fatalf("Expected error but got none")
+		}
+	}
+
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.bar"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.*"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.>"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "*"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: ">"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "*>"}))
+}
+
 func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	mconfig := &server.StreamConfig{
 		Name:     "ok",
@@ -351,7 +372,7 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 
 	expectErr := func(_ *server.Stream, err error) {
 		t.Helper()
-		if !strings.Contains(err.Error(), "subjects overlap") {
+		if err == nil || !strings.Contains(err.Error(), "subjects overlap") {
 			t.Fatalf("Expected error but got none")
 		}
 	}
@@ -3431,7 +3452,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Make sure list works.
-	resp, err = nc.Request(server.JetStreamStreams, nil, time.Second)
+	resp, err = nc.Request(server.JetStreamListStreams, nil, time.Second)
 	var names []string
 	if err = json.Unmarshal(resp.Data, &names); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3449,7 +3470,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		nc.Request("foo", []byte("WELCOME JETSTREAM"), time.Second)
 	}
 
-	resp, err = nc.Request(server.JetStreamStreamInfo, []byte(msetCfg.Name), time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamStreamInfoT, msetCfg.Name), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3461,8 +3482,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected to get %d msgs, got %d", toSend, msi.State.Msgs)
 	}
 
-	// Looking up on that is not there should yield an error.
-	resp, err = nc.Request(server.JetStreamStreamInfo, []byte("BOB"), time.Second)
+	// Looking up one that is not there should yield an error.
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamStreamInfoT, "BOB"), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3480,7 +3501,10 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ = nc.Request(server.JetStreamCreateConsumer, req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	// Since we do not have interest this should have failed.
 	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer requires interest for delivery subject when ephemeral'") {
 		t.Fatalf("Got wrong error response: %q", resp.Data)
@@ -3489,7 +3513,10 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	sub, _ := nc.SubscribeSync(delivery)
 	nc.Flush()
 
-	resp, _ = nc.Request(server.JetStreamCreateConsumer, req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	if !strings.HasPrefix(string(resp.Data), server.OK) {
 		t.Fatalf("Expected OK, got %q", resp.Data)
 	}
@@ -3501,8 +3528,21 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		return nil
 	})
 
+	// Check that we get an error if the stream name in the subject does not match the config.
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, "BOB"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Since we do not have interest this should have failed.
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'stream name in subject does not match request'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+
 	// Get the list of all of the obervables for our stream.
-	resp, _ = nc.Request(server.JetStreamConsumers, []byte(msetCfg.Name), time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumersT, msetCfg.Name), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var onames []string
 	if err = json.Unmarshal(resp.Data, &onames); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3511,14 +3551,16 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected only 1 consumer but got %d", len(onames))
 	}
 	// Now let's get info about our consumer.
-	req = []byte(fmt.Sprintf("%s %s", msetCfg.Name, onames[0]))
-	resp, _ = nc.Request(server.JetStreamConsumerInfo, req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumerInfoT, msetCfg.Name, onames[0]), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var oinfo server.ConsumerInfo
 	if err = json.Unmarshal(resp.Data, &oinfo); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Do some sanity checking.
-	// Must match onservable.go
+	// Must match consumer.go
 	const randConsumerNameLen = 6
 
 	if len(oinfo.Name) != randConsumerNameLen {
@@ -3538,11 +3580,19 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now delete the consumer.
-	resp, _ = nc.Request(server.JetStreamDeleteConsumer, req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteConsumerT, msetCfg.Name, onames[0]), nil, time.Second)
 	expectOKResponse(t, resp)
 
-	// Now delete the stream
-	resp, _ = nc.Request(server.JetStreamDeleteStream, []byte(msetCfg.Name), time.Second)
+	// Now delete a msg.
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), []byte("2"), time.Second)
+	expectOKResponse(t, resp)
+
+	// Now purge the stream.
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamPurgeStreamT, msetCfg.Name), nil, time.Second)
+	expectOKResponse(t, resp)
+
+	// Now delete the stream.
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteStreamT, msetCfg.Name), nil, time.Second)
 	expectOKResponse(t, resp)
 
 	// Now grab stats again.
@@ -3903,7 +3953,7 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 	badCfg.Name = "bad"
 	badCfg.Template = "kv"
 	if _, err := acc.AddStream(&badCfg); err == nil {
-		t.Fatalf("Expected error adding stream with template owner")
+		t.Fatalf("Expected error adding stream with direct template owner")
 	}
 
 	// Connect a client and send a message which should trigger the stream creation.
