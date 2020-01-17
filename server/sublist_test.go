@@ -666,6 +666,20 @@ func TestSubjectIsLiteral(t *testing.T) {
 	checkBool(subjectIsLiteral("foo.bar.>"), false, t)
 }
 
+func TestSubjectToken(t *testing.T) {
+	checkToken := func(token, expected string) {
+		t.Helper()
+		if token != expected {
+			t.Fatalf("Expected token of %q, got %q", expected, token)
+		}
+	}
+	checkToken(subjectToken("foo.bar.baz.*", 0), "foo")
+	checkToken(subjectToken("foo.bar.baz.*", 1), "bar")
+	checkToken(subjectToken("foo.bar.baz.*", 2), "baz")
+	checkToken(subjectToken("foo.bar.baz.*", 3), "*")
+	checkToken(subjectToken("foo.bar.baz.*", 4), "")
+}
+
 func TestSublistBadSubjectOnRemove(t *testing.T) {
 	testSublistBadSubjectOnRemove(t, NewSublistWithCache())
 }
