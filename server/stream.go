@@ -509,7 +509,7 @@ func (mset *Stream) internalSendLoop() {
 			c.flushClients(0)
 			// Check to see if this is a delivery for an observable and
 			// we failed to deliver the message. If so alert the observable.
-			if pm.o != nil && !didDeliver {
+			if pm.o != nil && pm.seq > 0 && !didDeliver {
 				pm.o.didNotDeliver(pm.seq)
 			}
 		case <-s.quitCh:
