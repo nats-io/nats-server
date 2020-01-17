@@ -127,14 +127,15 @@ const (
 	JetStreamDeleteConsumer  = "$JS.STREAM.*.CONSUMER.*.DELETE"
 	JetStreamDeleteConsumerT = "$JS.STREAM.%s.CONSUMER.%s.DELETE"
 
-	// JetStreamAckPre is the prefix for the ack stream coming back to an consumer.
-	JetStreamAckPre = "$JS.A"
+	// JetStreamAckT is the template for the ack message stream coming back from an consumer
+	// when they ACK/NAK, etc a message.
+	JetStreamAckT = "$JS.STREAM.%s.CONSUMER.%s.ACK"
 
-	// JetStreamRequestNextPre is the prefix for the request next message(s) for a consumer in worker/pull mode.
-	JetStreamRequestNextPre = "$JS.NEXT"
+	// JetStreamRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
+	JetStreamRequestNextT = "$JS.STREAM.%s.CONSUMER.%s.NEXT"
 
-	// JetStreamMsgBySeqPre is the prefix for direct requests for a message by its stream sequence number.
-	JetStreamMsgBySeqPre = "$JS.BYSEQ"
+	// JetStreamMsgBySeqT is the template for direct requests for a message by its stream sequence number.
+	JetStreamMsgBySeqT = "$JS.STREAM.%s.MSG.BYSEQ"
 
 	// JetStreamConsumerAckSamplePre is the prefix for sampling metric messages for consumers.
 	JetStreamConsumerAckSamplePre = "$JS.CONSUMER.ACKSAMPLE"

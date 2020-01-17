@@ -329,8 +329,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// We will remember the template to generate replies with sequence numbers and use
 	// that to scanf them back in.
 	mn := mset.config.Name
-	o.ackReplyT = fmt.Sprintf("%s.%s.%s.%%d.%%d.%%d", JetStreamAckPre, mn, o.name)
-	ackSubj := fmt.Sprintf("%s.%s.%s.*.*.*", JetStreamAckPre, mn, o.name)
+	pre := fmt.Sprintf(JetStreamAckT, mn, o.name)
+	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d", pre)
+	ackSubj := fmt.Sprintf("%s.*.*.*", pre)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
@@ -338,7 +339,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 	// Setup the internal sub for next message requests.
 	if !o.isPushMode() {
-		o.nextMsgSubj = fmt.Sprintf("%s.%s.%s", JetStreamRequestNextPre, mn, o.name)
+		o.nextMsgSubj = fmt.Sprintf(JetStreamRequestNextT, mn, o.name)
 		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			o.Delete()
 			return nil, err
