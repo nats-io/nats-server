@@ -131,7 +131,7 @@ var (
 	AckNak = []byte("-NAK")
 	// Progress indicator
 	AckProgress = []byte("+WPI")
-	// Ack + deliver next.
+	// Ack + Deliver the next message(s).
 	AckNext = []byte("+NXT")
 )
 
@@ -717,7 +717,7 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 
 	// can be nil during server Shutdown but with some ACKs in flight internally, lock held in caller
 	if o.mset != nil && o.mset.sendq != nil {
-		o.mset.sendq <- &jsPubMsg{o.ackEventT, o.ackEventT, _EMPTY_, j, o, 0}
+		o.mset.sendq <- &jsPubMsg{o.ackEventT, o.ackEventT, _EMPTY_, j, nil, 0}
 	}
 }
 
@@ -851,7 +851,7 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 
 	// can be nil during shutdown, locks are help in the caller
 	if o.mset != nil && o.mset.sendq != nil {
-		o.mset.sendq <- &jsPubMsg{o.deliveryExcEventT, o.deliveryExcEventT, _EMPTY_, j, o, 0}
+		o.mset.sendq <- &jsPubMsg{o.deliveryExcEventT, o.deliveryExcEventT, _EMPTY_, j, nil, 0}
 	}
 }
 
@@ -869,10 +869,10 @@ func (o *Consumer) getNextMsg() (string, []byte, uint64, uint64, error) {
 			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 			dcount = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dcount > o.maxdc {
+				// Only send once
 				if dcount == o.maxdc+1 {
 					o.notifyDeliveryExceeded(seq, dcount-1)
 				}
-
 				// Make sure to remove from pending.
 				delete(o.pending, seq)
 				continue
