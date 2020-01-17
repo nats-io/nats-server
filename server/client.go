@@ -2928,12 +2928,21 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		return false
 	}
 
+	var didDeliver, matchedWC bool
+
 	acc.mu.RLock()
 	si := acc.imports.services[string(c.pa.subject)]
+	if si == nil && acc.imports.hasWC {
+		// TODO(dlc) - this will be slow with large number of service imports, may need to revisit and optimize.
+		for subject, tsi := range acc.imports.services {
+			if subjectHasWildcard(subject) && subjectIsSubsetMatch(string(c.pa.subject), subject) {
+				si, matchedWC = tsi, true
+				break
+			}
+		}
+	}
 	invalid := si != nil && si.invalid
 	acc.mu.RUnlock()
-
-	var didDeliver bool
 
 	// Get the results from the other account for the mapped "to" subject.
 	// If we have been marked invalid simply return here.
@@ -2957,8 +2966,14 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 				c.sendRTTPing()
 			}
 		}
+
+		// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
+		to := si.to
+		if matchedWC {
+			to = string(c.pa.subject)
+		}
 		// FIXME(dlc) - Do L1 cache trick from above.
-		rr := si.acc.sl.Match(si.to)
+		rr := si.acc.sl.Match(to)
 
 		// This gives us a notion that we have interest in this message.
 		didDeliver = len(rr.psubs)+len(rr.qsubs) > 0
@@ -2967,7 +2982,7 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		// If so we need to clean that up.
 		if !didDeliver && si.internal {
 			// We may also have a response entry, so go through that way.
-			si.acc.checkForRespEntry(si.to)
+			si.acc.checkForRespEntry(to)
 		}
 
 		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
@@ -2981,10 +2996,10 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		// try to send this converted message to all gateways.
 		if c.srv.gateway.enabled {
 			flags |= pmrCollectQueueNames
-			queues := c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, flags)
-			didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(si.to), nrr, queues) || didDeliver
+			queues := c.processMsgResults(si.acc, rr, msg, []byte(to), nrr, flags)
+			didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
 		} else {
-			c.processMsgResults(si.acc, rr, msg, []byte(si.to), nrr, flags)
+			c.processMsgResults(si.acc, rr, msg, []byte(to), nrr, flags)
 		}
 
 		shouldRemove := si.ae
