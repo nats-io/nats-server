@@ -156,8 +156,17 @@ const (
 	// JetStreamMsgBySeqT is the template for direct requests for a message by its stream sequence number.
 	JetStreamMsgBySeqT = "$JS.STREAM.%s.MSG.BYSEQ"
 
-	// JetStreamConsumerAckSamplePre is the prefix for sampling metric messages for consumers.
-	JetStreamConsumerAckSamplePre = "$JS.CONSUMER.ACKSAMPLE"
+	// JetStreamAdvisoryPrefix is a prefix for all JetStream advisories
+	JetStreamAdvisoryPrefix = "$JS.EVENT.ADVISORY"
+
+	// JetStreamMetricPrefix is a prefix for all JetStream metrics
+	JetStreamMetricPrefix = "$JS.EVENT.METRIC"
+
+	// JetStreamMetricConsumerAckPre is a metric containing ack latency
+	JetStreamMetricConsumerAckPre = JetStreamMetricPrefix + ".CONSUMER_ACK"
+
+	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold
+	JetStreamAdvisoryConsumerMaxDeliveryExceedPre = JetStreamAdvisoryPrefix + ".MAX_DELIVERIES"
 )
 
 // This is for internal accounting for JetStream for this server.
