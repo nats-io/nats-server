@@ -773,10 +773,8 @@ func (c *client) writeLoop() {
 		if close = c.flags.isSet(closeConnection); !close {
 			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
 			if waitOk && (c.out.pb == 0 || owtf) {
-				fspBeforeWait := c.out.fsp
 				c.mu.Unlock()
 
-				var timeout bool
 				// Reset our timer
 				t.Reset(maxWait)
 
@@ -784,14 +782,10 @@ func (c *client) writeLoop() {
 				select {
 				case <-ch:
 				case <-t.C:
-					timeout = true
 				}
 
 				c.mu.Lock()
 				close = c.flags.isSet(closeConnection)
-				if !close && timeout && fspBeforeWait > 0 && c.out.fsp > 0 {
-					c.Warnf("Entered wait with fsp=%v and was not signaled within timeout", fspBeforeWait)
-				}
 			}
 		}
 		if close {
