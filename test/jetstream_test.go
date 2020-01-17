@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -3356,7 +3357,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 3 {
-		fmt.Printf("%d Go routines still exist post Shutdown()", delta)
+		t.Logf("%d Go routines still exist post Shutdown()", delta)
 		time.Sleep(30 * time.Second)
 	}
 
@@ -3613,6 +3614,98 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	if info.Streams != 0 {
 		t.Fatalf("Expected no remaining streams, got %d", info.Streams)
+	}
+
+	// Now do templates.
+	mcfg := &server.StreamConfig{
+		Subjects:  []string{"kv.*"},
+		Retention: server.LimitsPolicy,
+		MaxAge:    time.Hour,
+		MaxMsgs:   4,
+		Storage:   server.MemoryStorage,
+		Replicas:  1,
+	}
+	template := &server.StreamTemplateConfig{
+		Name:       "kv",
+		Config:     mcfg,
+		MaxStreams: 4,
+	}
+	req, err = json.Marshal(template)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Check that the name in config has to match the name in the subject
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, "BOB"), req, time.Second)
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'template name in subject does not match request'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
+	expectOKResponse(t, resp)
+
+	// Create a second one.
+	template.Name = "ss"
+	template.Config.Subjects = []string{"foo", "bar"}
+
+	req, err = json.Marshal(template)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
+	expectOKResponse(t, resp)
+
+	// Now grab the list of templates
+	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	if err = json.Unmarshal(resp.Data, &names); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("Expected 2 templates but got %d", len(names))
+	}
+	sort.Strings(names)
+	if names[0] != "kv" {
+		t.Fatalf("Expected to get %q, but got %q", "kv", names[0])
+	}
+	if names[1] != "ss" {
+		t.Fatalf("Expected to get %q, but got %q", "ss", names[0])
+	}
+
+	// Now delete one.
+	// Test bad name.
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "bob"), nil, time.Second)
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'no template found'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "ss"), nil, time.Second)
+	expectOKResponse(t, resp)
+	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	if err = json.Unmarshal(resp.Data, &names); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(names) != 1 {
+		t.Fatalf("Expected 1 template but got %d", len(names))
+	}
+	if names[0] != "kv" {
+		t.Fatalf("Expected to get %q, but got %q", "kv", names[0])
+	}
+
+	// First create a stream
+	sendStreamMsg(t, nc, "kv.22", "derek")
+	// Last do info
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamTemplateInfoT, "kv"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ti server.StreamTemplateInfo
+	if err = json.Unmarshal(resp.Data, &ti); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(ti.Streams) != 1 {
+		t.Fatalf("Expected 1 stream, got %d", len(ti.Streams))
+	}
+	if ti.Streams[0] != server.CanonicalName("kv.22") {
+		t.Fatalf("Expected stream with name %q, but got %q", server.CanonicalName("kv.22"), ti.Streams[0])
 	}
 }
 
