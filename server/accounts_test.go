@@ -1195,6 +1195,106 @@ func TestServiceExportWithWildcards(t *testing.T) {
 	}
 }
 
+func TestServiceImportWithWildcards(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	if err := fooAcc.AddServiceExport("test.*", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+	// We can not map wildcards atm, so if we supply a to mapping and a wildcard we should fail.
+	if err := barAcc.AddServiceImport(fooAcc, "test.*", "foo"); err == nil {
+		t.Fatalf("Expected error adding account service import with wildcard and mapping, got none")
+	}
+	if err := barAcc.AddServiceImport(fooAcc, "test.>", ""); err == nil {
+		t.Fatalf("Expected error adding account service import with broader wildcard, got none")
+	}
+	// This should work.
+	if err := barAcc.AddServiceImport(fooAcc, "test.*", ""); err != nil {
+		t.Fatalf("Error adding account service import: %v", err)
+	}
+	// Make sure we can send and receive.
+	cfoo, crFoo, _ := newClientForServer(s)
+	defer cfoo.nc.Close()
+
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+
+	// Now setup the resonder under cfoo
+	cfoo.parse([]byte("SUB test.* 1\r\n"))
+
+	cbar, crBar, _ := newClientForServer(s)
+	defer cbar.nc.Close()
+
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	// Now send the request.
+	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB test.22 bar 4\r\nhelp\r\n"))
+
+	// Now read the request from crFoo
+	l, err := crFoo.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+
+	mraw := msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches := mraw[0]
+	if matches[SUB_INDEX] != "test.22" {
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+	}
+	// Make sure this looks like _INBOX
+	if !strings.HasPrefix(matches[REPLY_INDEX], "_R_.") {
+		t.Fatalf("Expected an _R_.* like reply, got '%s'", matches[REPLY_INDEX])
+	}
+	checkPayload(crFoo, []byte("help\r\n"), t)
+
+	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
+	go cfoo.parseAndFlush([]byte(replyOp))
+
+	// Now read the response from crBar
+	l, err = crBar.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error reading from client 'bar': %v", err)
+	}
+	mraw = msgPat.FindAllStringSubmatch(l, -1)
+	if len(mraw) == 0 {
+		t.Fatalf("No message received")
+	}
+	matches = mraw[0]
+	if matches[SUB_INDEX] != "bar" {
+		t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "11" {
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+	}
+	if matches[REPLY_INDEX] != "" {
+		t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])
+	}
+	checkPayload(crBar, []byte("22\r\n"), t)
+
+	// Remove the service import with the wildcard and make sure hasWC is cleared.
+	barAcc.removeServiceImport("test.*")
+
+	barAcc.mu.Lock()
+	defer barAcc.mu.Unlock()
+
+	if len(barAcc.imports.services) != 0 {
+		t.Fatalf("Expected no imported services, got %d", len(barAcc.imports.services))
+	}
+	if barAcc.imports.hasWC {
+		t.Fatalf("Expected the hasWC flag to be cleared")
+	}
+}
+
 // Make sure the AddStreamExport function is additive if called multiple times.
 func TestAddStreamExport(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
