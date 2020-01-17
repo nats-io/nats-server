@@ -2946,7 +2946,13 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 	var didDeliver, matchedWC bool
 
 	acc.mu.RLock()
+	// Make sure this does not have a wildcard in it, with pedantic == false these can sneak through.
+	if acc.imports.hasWC && subjectHasWildcard(string(c.pa.subject)) {
+		acc.mu.RUnlock()
+		return false
+	}
 	si := acc.imports.services[string(c.pa.subject)]
+	// If we did not match but we have wildcards, check for them here.
 	if si == nil && acc.imports.hasWC {
 		// TODO(dlc) - this will be slow with large number of service imports, may need to revisit and optimize.
 		for subject, tsi := range acc.imports.services {
