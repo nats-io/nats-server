@@ -985,6 +985,12 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
 		return
 	}
+	streamName := subjectToken(subject, 2)
+	if streamName != cfg.Name {
+		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s 'stream name in subject does not match request'", ErrPrefix))
+		return
+	}
+
 	var response = OK
 	if _, err := c.acc.AddStream(&cfg); err != nil {
 		response = fmt.Sprintf("%s %v", ErrPrefix, err)
@@ -1143,13 +1149,13 @@ func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, 
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s 'stream name in subject does not match request'", ErrPrefix))
 		return
 	}
-	mset, err := c.acc.LookupStream(req.Stream)
+	stream, err := c.acc.LookupStream(req.Stream)
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, fmt.Sprintf("%s %v", ErrPrefix, err))
 		return
 	}
 	var response = OK
-	if o, err := mset.AddConsumer(&req.Config); err != nil {
+	if o, err := stream.AddConsumer(&req.Config); err != nil {
 		response = fmt.Sprintf("%s '%v'", ErrPrefix, err)
 	} else if !o.isDurable() {
 		// If the consumer is ephemeral add in the name
