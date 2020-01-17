@@ -245,7 +245,7 @@ func (mset *Stream) subscribeToStream() error {
 		}
 	}
 	// Now subscribe for direct access
-	subj := fmt.Sprintf("%s.%s", JetStreamMsgBySeqPre, mset.config.Name)
+	subj := fmt.Sprintf(JetStreamMsgBySeqT, mset.config.Name)
 	if _, err := mset.subscribeInternal(subj, mset.processMsgBySeq); err != nil {
 		return err
 	}
