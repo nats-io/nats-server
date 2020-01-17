@@ -148,7 +148,7 @@ const (
 
 	// JetStreamAckT is the template for the ack message stream coming back from an consumer
 	// when they ACK/NAK, etc a message.
-	JetStreamAckT = "$JS.STREAM.%s.CONSUMER.%s.ACK"
+	JetStreamAckT = "$JS.ACK.%s.%s"
 
 	// JetStreamRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JetStreamRequestNextT = "$JS.STREAM.%s.CONSUMER.%s.NEXT"
