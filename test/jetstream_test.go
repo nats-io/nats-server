@@ -3509,7 +3509,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3521,7 +3521,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	sub, _ := nc.SubscribeSync(delivery)
 	nc.Flush()
 
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3537,7 +3537,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	})
 
 	// Check that we get an error if the stream name in the subject does not match the config.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, "BOB"), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, "BOB"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3590,6 +3590,53 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// Now delete the consumer.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteConsumerT, msetCfg.Name, onames[0]), nil, time.Second)
 	expectOKResponse(t, resp)
+
+	// Make sure we can't create a durable using the ephemeral API endpoint.
+	obsReq = server.CreateConsumerRequest{
+		Stream: msetCfg.Name,
+		Config: server.ConsumerConfig{Durable: "myd", Delivery: delivery, DeliverAll: true},
+	}
+	req, err = json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Since we are using the ephemeral endpoint we can not configure a durable name.
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer expected to be ephemeral but a durable name was set'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+
+	// Now make sure we can create a durable on the subject with the proper name.
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, obsReq.Config.Durable), req, time.Second)
+	expectOKResponse(t, resp)
+
+	// Make sure empty in cfg does not work
+	obsReq2 := server.CreateConsumerRequest{
+		Stream: msetCfg.Name,
+		Config: server.ConsumerConfig{Delivery: delivery, DeliverAll: true},
+	}
+	req2, err := json.Marshal(obsReq2)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, obsReq.Config.Durable), req2, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer expected to be durable but a durable name was not set'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
+	// Now make sure we can't fake the consumer name.
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, "WRONG_CONSUMER_NAME"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer name in subject does not match durable name in request'") {
+		t.Fatalf("Got wrong error response: %q", resp.Data)
+	}
 
 	// Now delete a msg.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), []byte("2"), time.Second)
