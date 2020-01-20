@@ -26,8 +26,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nuid"
+
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
@@ -167,6 +170,9 @@ const (
 
 	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold
 	JetStreamAdvisoryConsumerMaxDeliveryExceedPre = JetStreamAdvisoryPrefix + ".MAX_DELIVERIES"
+
+	// JetStreamAPIAuditAdvisory is a notification about admin API access
+	JetStreamAPIAuditAdvisory = JetStreamAdvisoryPrefix + ".API"
 )
 
 // This is for internal accounting for JetStream for this server.
@@ -197,6 +203,40 @@ type jsAccount struct {
 	streams       map[string]*Stream
 	templates     map[string]*StreamTemplate
 	store         TemplateStore
+}
+
+// JetStreamAPIAudit is an advisory about administrative actions taken on JetStream
+type JetStreamAPIAudit struct {
+	Schema  string `json:"schema"`
+	ID      string `json:"id"`
+	Time    int64  `json:"timestamp"`
+	Account string `json:"account"`
+	User    string `json:"user"`
+	Client  string `json:"client"`
+	Request string `json:"request"`
+	Subject string `json:"subject"`
+}
+
+func (s *Server) jsAuditAPIAction(next msgHandler) msgHandler {
+	return func(sub *subscription, client *client, subject, reply string, msg []byte) {
+		e := &JetStreamAPIAudit{
+			Schema:  "io.nats.jetstream.advisory.v1.api_audit",
+			ID:      nuid.Next(),
+			Time:    time.Now().UnixNano(),
+			Subject: subject,
+			Request: string(msg),
+			Account: client.Account().Name,
+			Client:  client.String(),
+			User:    client.getAuthUser(),
+		}
+
+		ej, err := json.MarshalIndent(e, "", "  ")
+		if err == nil {
+			s.sendInternalAccountMsg(client.Account(), JetStreamAPIAuditAdvisory, ej)
+		}
+
+		next(sub, client, subject, reply, msg)
+	}
 }
 
 // For easier handling of exports and imports.
@@ -277,49 +317,49 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	if _, err := s.sysSubscribe(JetStreamEnabled, s.isJsEnabledRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamInfo, s.jsAccountInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamInfo, s.jsAuditAPIAction(s.jsAccountInfoRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamCreateTemplate, s.jsCreateTemplateRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamCreateTemplate, s.jsAuditAPIAction(s.jsCreateTemplateRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamListTemplates, s.jsTemplateListRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamListTemplates, s.jsAuditAPIAction(s.jsTemplateListRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamTemplateInfo, s.jsTemplateInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamTemplateInfo, s.jsAuditAPIAction(s.jsTemplateInfoRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamDeleteTemplate, s.jsTemplateDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamDeleteTemplate, s.jsAuditAPIAction(s.jsTemplateDeleteRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamCreateStream, s.jsCreateStreamRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamCreateStream, s.jsAuditAPIAction(s.jsCreateStreamRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamListStreams, s.jsStreamListRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamListStreams, s.jsAuditAPIAction(s.jsStreamListRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamStreamInfo, s.jsStreamInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamStreamInfo, s.jsAuditAPIAction(s.jsStreamInfoRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamDeleteStream, s.jsStreamDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamDeleteStream, s.jsAuditAPIAction(s.jsStreamDeleteRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamPurgeStream, s.jsStreamPurgeRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamPurgeStream, s.jsAuditAPIAction(s.jsStreamPurgeRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamDeleteMsg, s.jsMsgDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamDeleteMsg, s.jsAuditAPIAction(s.jsMsgDeleteRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamCreateConsumer, s.jsCreateConsumerRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamCreateConsumer, s.jsAuditAPIAction(s.jsCreateConsumerRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamConsumers, s.jsConsumersRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamConsumers, s.jsAuditAPIAction(s.jsConsumersRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamConsumerInfo, s.jsConsumerInfoRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamConsumerInfo, s.jsAuditAPIAction(s.jsConsumerInfoRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
-	if _, err := s.sysSubscribe(JetStreamDeleteConsumer, s.jsConsumerDeleteRequest); err != nil {
+	if _, err := s.sysSubscribe(JetStreamDeleteConsumer, s.jsAuditAPIAction(s.jsConsumerDeleteRequest)); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 
