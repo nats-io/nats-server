@@ -126,10 +126,16 @@ const (
 	JetStreamDeleteMsg  = "$JS.STREAM.*.MSG.DELETE"
 	JetStreamDeleteMsgT = "$JS.STREAM.%s.MSG.DELETE"
 
-	// JetStreamCreateConsumer is the endpoint to create consumers for streams.
+	// JetStreamCreateConsumer is the endpoint to create durable consumers for streams.
+	// You need to include the stream and consumer name in the subject.
 	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateConsumer  = "$JS.STREAM.*.CONSUMER.CREATE"
-	JetStreamCreateConsumerT = "$JS.STREAM.%s.CONSUMER.CREATE"
+	JetStreamCreateConsumer  = "$JS.STREAM.*.CONSUMER.*.CREATE"
+	JetStreamCreateConsumerT = "$JS.STREAM.%s.CONSUMER.%s.CREATE"
+
+	// JetStreamCreateEphemeralConsumer is the endpoint to create ephemeral consumers for streams.
+	// Will return +OK <consumer name> on success and -ERR on failure.
+	JetStreamCreateEphemeralConsumer  = "$JS.STREAM.*.EPHEMERAL.CONSUMER.CREATE"
+	JetStreamCreateEphemeralConsumerT = "$JS.STREAM.%s.EPHEMERAL.CONSUMER.CREATE"
 
 	// JetStreamConsumers is the endpoint to list all consumers for the stream.
 	// Will return json list of string on success and -ERR on failure.
@@ -214,6 +220,7 @@ var allJsExports = []string{
 	JetStreamPurgeStream,
 	JetStreamDeleteMsg,
 	JetStreamCreateConsumer,
+	JetStreamCreateEphemeralConsumer,
 	JetStreamConsumers,
 	JetStreamConsumerInfo,
 	JetStreamDeleteConsumer,
@@ -311,6 +318,9 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(JetStreamCreateConsumer, s.jsCreateConsumerRequest); err != nil {
+		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+	}
+	if _, err := s.sysSubscribe(JetStreamCreateEphemeralConsumer, s.jsCreateEphemeralConsumerRequest); err != nil {
 		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
 	}
 	if _, err := s.sysSubscribe(JetStreamConsumers, s.jsConsumersRequest); err != nil {
@@ -1270,7 +1280,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	s.sendInternalAccountMsg(c.acc, reply, OK)
 }
 
-// Request to create an consumer.
+// Request to create a durable consumer.
 func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
@@ -1292,6 +1302,55 @@ func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, 
 	stream, err := c.acc.LookupStream(req.Stream)
 	if err != nil {
 		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
+		return
+	}
+	// Now check we do not have a durable.
+	if req.Config.Durable == _EMPTY_ {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("consumer expected to be durable but a durable name was not set"))
+		return
+	}
+	consumerName := subjectToken(subject, 4)
+	if consumerName != req.Config.Durable {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("consumer name in subject does not match durable name in request"))
+		return
+	}
+	var response = OK
+	if o, err := stream.AddConsumer(&req.Config); err != nil {
+		response = protoErr(err)
+	} else if !o.isDurable() {
+		// If the consumer is ephemeral add in the name
+		response = OK + " " + o.Name()
+	}
+	s.sendInternalAccountMsg(c.acc, reply, response)
+}
+
+// Request to create an ephemeral consumer.
+func (s *Server) jsCreateEphemeralConsumerRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamNotEnabled)
+		return
+	}
+	var req CreateConsumerRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	streamName := subjectToken(subject, 2)
+	if streamName != req.Stream {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
+		return
+	}
+	stream, err := c.acc.LookupStream(req.Stream)
+	if err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr(err))
+		return
+	}
+	// Now check we do not have a durable.
+	if req.Config.Durable != _EMPTY_ {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("consumer expected to be ephemeral but a durable name was set"))
 		return
 	}
 	var response = OK
