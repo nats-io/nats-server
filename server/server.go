@@ -2208,6 +2208,13 @@ func (s *Server) ID() string {
 	return s.info.ID
 }
 
+// Name returns the server's name. This will be the same as the ID if it was not set.
+func (s *Server) Name() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info.Name
+}
+
 func (s *Server) startGoRoutine(f func()) {
 	s.grMu.Lock()
 	if s.grRunning {
