@@ -23,6 +23,7 @@ import (
 	"net"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -457,10 +458,10 @@ func (c *client) initClient() {
 	// snapshot the string version of the connection
 	var conn string
 	if ip, ok := c.nc.(*net.TCPConn); ok {
-		addr := ip.RemoteAddr().(*net.TCPAddr)
-		c.host = addr.IP.String()
-		c.port = uint16(addr.Port)
-		conn = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
+		conn = ip.RemoteAddr().String()
+		host, port, _ := net.SplitHostPort(conn)
+		iPort, _ := strconv.Atoi(port)
+		c.host, c.port = host, uint16(iPort)
 	}
 
 	switch c.kind {
