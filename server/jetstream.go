@@ -1315,11 +1315,8 @@ func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	var response = OK
-	if o, err := stream.AddConsumer(&req.Config); err != nil {
+	if _, err := stream.AddConsumer(&req.Config); err != nil {
 		response = protoErr(err)
-	} else if !o.isDurable() {
-		// If the consumer is ephemeral add in the name
-		response = OK + " " + o.Name()
 	}
 	s.sendInternalAccountMsg(c.acc, reply, response)
 }
