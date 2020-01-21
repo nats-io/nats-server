@@ -92,7 +92,7 @@ func RunJetStreamServerOnPort(port int) *server.Server {
 }
 
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
-	nc, err := nats.Connect(s.ClientURL(), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
+	nc, err := nats.Connect(s.ClientURL(), nats.Name("JS-TEST"), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
