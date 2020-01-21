@@ -693,7 +693,7 @@ type ClientAPIAudit struct {
 type JetStreamAPIAudit struct {
 	Schema   string         `json:"schema"`
 	ID       string         `json:"id"`
-	Time     time.Time      `json:"time"`
+	Time     string         `json:"timestamp"`
 	Server   string         `json:"server"`
 	Client   ClientAPIAudit `json:"client"`
 	Subject  string         `json:"subject"`
@@ -717,7 +717,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 	e := &JetStreamAPIAudit{
 		Schema: auditSchema,
 		ID:     nuid.Next(),
-		Time:   time.Now(),
+		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Server: s.Name(),
 		Client: ClientAPIAudit{
 			Host:     h,
