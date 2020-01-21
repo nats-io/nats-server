@@ -16,6 +16,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -678,7 +679,8 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 
 // ClientAPIAudit is for identifying a client who initiated an API call to the system.
 type ClientAPIAudit struct {
-	Addr     string `json:"addr"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
 	CID      uint64 `json:"cid"`
 	Account  string `json:"account"`
 	User     string `json:"user,omitempty"`
@@ -705,7 +707,7 @@ const auditSchema = "io.nats.jetstream.advisory.v1.api_audit"
 func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
 	c.mu.Lock()
 	auditUser := c.auditUser()
-	auditClient := c.auditClient()
+	h, p := c.auditClient()
 	appName := c.opts.Name
 	lang := c.opts.Lang
 	version := c.opts.Version
@@ -718,7 +720,8 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 		Time:   time.Now(),
 		Server: s.Name(),
 		Client: ClientAPIAudit{
-			Addr:     auditClient,
+			Host:     h,
+			Port:     p,
 			CID:      cid,
 			Account:  c.Account().Name,
 			User:     auditUser,
@@ -752,7 +755,9 @@ func (c *client) auditUser() string {
 }
 
 // Returns the audit client name, which will just be IP:Port
-func (c *client) auditClient() string {
+func (c *client) auditClient() (string, int) {
 	parts := strings.Split(c.ncs, " ")
-	return parts[0]
+	h, p, _ := net.SplitHostPort(parts[0])
+	port, _ := strconv.Atoi(p)
+	return h, port
 }
