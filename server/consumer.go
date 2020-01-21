@@ -60,7 +60,7 @@ type CreateConsumerRequest struct {
 type ConsumerAckMetric struct {
 	Schema      string `json:"schema"`
 	ID          string `json:"id"`
-	Time        int64  `json:"timestamp"`
+	Time        string `json:"timestamp"`
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
@@ -74,7 +74,7 @@ type ConsumerAckMetric struct {
 type ConsumerDeliveryExceededAdvisory struct {
 	Schema     string `json:"schema"`
 	ID         string `json:"id"`
-	Time       int64  `json:"timestamp"`
+	Time       string `json:"timestamp"`
 	Stream     string `json:"stream"`
 	Consumer   string `json:"consumer"`
 	StreamSeq  uint64 `json:"stream_seq"`
@@ -697,16 +697,17 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 		return
 	}
 
-	now := time.Now().UnixNano()
+	now := time.Now().UTC()
+	unow := now.UnixNano()
 	e := &ConsumerAckMetric{
 		Schema:      "io.nats.jetstream.metric.v1.consumer_ack",
 		ID:          nuid.Next(),
-		Time:        now,
+		Time:        now.Format(time.RFC3339Nano),
 		Stream:      o.streamName,
 		Consumer:    o.name,
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
-		Delay:       now - o.pending[sseq],
+		Delay:       unow - o.pending[sseq],
 		Deliveries:  dcount,
 	}
 
@@ -837,7 +838,7 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 	e := &ConsumerDeliveryExceededAdvisory{
 		Schema:     "io.nats.jetstream.advisory.v1.max_deliver",
 		ID:         nuid.Next(),
-		Time:       time.Now().UnixNano(),
+		Time:       time.Now().UTC().Format(time.RFC3339Nano),
 		Stream:     o.streamName,
 		Consumer:   o.name,
 		StreamSeq:  sseq,
