@@ -15,8 +15,10 @@ package test
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/url"
@@ -3015,4 +3017,82 @@ func TestLeafNodeDaisyChain(t *testing.T) {
 	if _, err = nc2.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
 		t.Fatalf("Expected a response")
 	}
+}
+
+// This will test failover to a server with a cert with only an IP after successfully connecting
+// to a server with a cert with both.
+func TestClusterTLSMixedIPAndDNS(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "./configs/certs/server-iponly.pem"
+				key_file:  "./configs/certs/server-key-iponly.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+		cluster {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	bConfigTemplate := `
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "localhost:-1"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+		cluster {
+			listen: "127.0.0.1:-1"
+			routes [
+				"nats://%s:%d"
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate,
+		optsA.Cluster.Host, optsA.Cluster.Port)))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Solicit a leafnode server here. Don't use the helper since we need verification etc.
+	o := DefaultTestOptions
+	o.Port = -1
+	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", optsB.LeafNode.Host, optsB.LeafNode.Port))
+	o.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	remote := &server.RemoteLeafOpts{URLs: []*url.URL{rurl}}
+	remote.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	pool := x509.NewCertPool()
+	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	if err != nil || rootPEM == nil {
+		t.Fatalf("Error loading or parsing rootCA file: %v", err)
+	}
+	ok := pool.AppendCertsFromPEM(rootPEM)
+	if !ok {
+		t.Fatalf("Failed to parse root certificate from %q", "./configs/certs/ca.pem")
+	}
+	remote.TLSConfig.RootCAs = pool
+	host, _, _ := net.SplitHostPort(optsB.LeafNode.Host)
+	remote.TLSConfig.ServerName = host
+	o.LeafNode.Remotes = []*server.RemoteLeafOpts{remote}
+	sl, _ := RunServer(&o), &o
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, srvB)
+
+	// Now kill off srvB and force client to connect to srvA.
+	srvB.Shutdown()
+
+	// Make sure this works.
+	checkLeafNodeConnected(t, srvA)
 }
