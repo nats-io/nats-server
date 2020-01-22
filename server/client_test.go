@@ -1893,3 +1893,25 @@ func TestClientStalledDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestClientIPv6Address(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Host = "0.0.0.0"
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://[::1]:%v", opts.Port))
+	// Travis may not accept IPv6, in that case, skip the test.
+	if err != nil {
+		t.Skipf("Skipping test because could not connect: %v", err)
+	}
+	defer nc.Close()
+
+	c := s.GetClient(1)
+	c.mu.Lock()
+	ncs := c.ncs
+	c.mu.Unlock()
+	if !strings.HasPrefix(ncs, "[::1]") {
+		t.Fatalf("Wrong string representation of an IPv6 address: %q", ncs)
+	}
+}
