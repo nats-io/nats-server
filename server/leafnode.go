@@ -652,7 +652,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			url := c.leaf.remote.getCurrentURL()
 			host, _, _ := net.SplitHostPort(url.Host)
 			// We need to check if this host is an IP. If so, we probably
-			// had this advertised to us an should use the configured host
+			// had this advertised to us and should use the configured host
 			// name for the TLS server name.
 			if net.ParseIP(host) != nil {
 				if c.leaf.remote.tlsName != "" {
@@ -679,9 +679,18 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 			// Force handshake
 			c.mu.Unlock()
-			if err := conn.Handshake(); err != nil {
+			if err = conn.Handshake(); err != nil {
 				c.Errorf("TLS handshake error: %v", err)
 				c.closeConnection(TLSHandshakeError)
+				// If we overrode and used the saved tlsName but that failed
+				// we will clear that here. This is for the case that another server
+				// does not have the same tlsName, maybe only IPs.
+				// https://github.com/nats-io/nats-server/issues/1256
+				c.mu.Lock()
+				if host == c.leaf.remote.tlsName {
+					c.leaf.remote.tlsName = ""
+				}
+				c.mu.Unlock()
 				return nil
 			}
 			// Reset the read deadline
