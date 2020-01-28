@@ -869,3 +869,66 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 	leaf.closeConnection(SlowConsumerWriteDeadline)
 	ch <- true
 }
+
+type captureDebugErrorLogger struct {
+	DummyLogger
+	errCh chan string
+}
+
+func (l *captureDebugErrorLogger) Debugf(format string, v ...interface{}) {
+	select {
+	case l.errCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func TestLeafNodeRemoteWrongPort(t *testing.T) {
+	port := 8786
+
+	// Server with the wrong config against other server client's port.
+	leafURL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", port))
+	oa := DefaultOptions()
+	oa.Port = -1
+	oa.PingInterval = 15 * time.Millisecond
+	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+	l := &captureDebugErrorLogger{errCh: make(chan string, 10)}
+	sa.SetLogger(l, true, true)
+
+	// Make a cluster so that connect_urls is gossiped to clients.
+	ob := DefaultOptions()
+	ob.PingInterval = 15 * time.Millisecond
+	ob.Host = "127.0.0.1"
+	ob.Port = -1
+	ob.Cluster = ClusterOpts{
+		Host: "127.0.0.1",
+		Port: -1,
+	}
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oc := DefaultOptions()
+	oc.PingInterval = 15 * time.Millisecond
+	oc.Host = "127.0.0.1"
+	oc.Port = port
+	oc.Cluster = ClusterOpts{
+		Host: "127.0.0.1",
+		Port: -1,
+	}
+	routeURL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.Cluster.Port))
+	oc.Routes = []*url.URL{routeURL}
+	sc := RunServer(oc)
+	defer sc.Shutdown()
+
+	for {
+		select {
+		case e := <-l.errCh:
+			if strings.Contains(e, `attempted to connect to client port`) {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Did not get any error about connecting to client port")
+		}
+	}
+}

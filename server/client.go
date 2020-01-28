@@ -1264,7 +1264,7 @@ func (c *client) processInfo(arg []byte) error {
 	case GATEWAY:
 		c.processGatewayInfo(&info)
 	case LEAF:
-		c.processLeafnodeInfo(&info)
+		return c.processLeafnodeInfo(&info)
 	}
 	return nil
 }

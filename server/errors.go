@@ -66,6 +66,10 @@ var (
 	// attempted to connect to the leaf node listen port.
 	ErrClientConnectedToLeafNodePort = errors.New("attempted to connect to leaf node port")
 
+	// ErrLeafConnectedToClientPort represents an error condition when a client
+	// attempted to connect to the leaf node listen port.
+	ErrLeafConnectedToClientPort = errors.New("attempted to connect to client port")
+
 	// ErrAccountExists is returned when an account is attempted to be registered
 	// but already exists.
 	ErrAccountExists = errors.New("account exists")

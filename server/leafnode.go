@@ -628,7 +628,12 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		c.mu.Unlock()
 		// Error will be handled below, so ignore here.
-		c.parse([]byte(info))
+		err = c.parse([]byte(info))
+		if err != nil {
+			c.Debugf("Error reading remote leafnode's INFO: %s", err)
+			c.closeConnection(ReadError)
+			return nil
+		}
 		c.mu.Lock()
 
 		if !c.flags.isSet(infoReceived) {
@@ -785,12 +790,17 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	return c
 }
 
-func (c *client) processLeafnodeInfo(info *Info) {
+func (c *client) processLeafnodeInfo(info *Info) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.leaf == nil || c.isClosed() {
-		return
+		return nil
+	}
+
+	// Prevent connecting to client port.
+	if info.ClientConnectURLs != nil {
+		return ErrLeafConnectedToClientPort
 	}
 
 	// Mark that the INFO protocol has been received.
@@ -810,6 +820,8 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// representation of the remote cluster's list of URLs.
 		c.updateLeafNodeURLs(info)
 	}
+
+	return nil
 }
 
 // When getting a leaf node INFO protocol, use the provided
