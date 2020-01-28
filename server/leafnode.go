@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -638,30 +639,30 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 
 		// Do TLS here as needed.
-		tlsRequired := c.leaf.remote.TLS || c.leaf.remote.TLSConfig != nil
+		tlsRequired := remote.TLS || remote.TLSConfig != nil
 		if tlsRequired {
 			c.Debugf("Starting TLS leafnode client handshake")
 			// Specify the ServerName we are expecting.
 			var tlsConfig *tls.Config
-			if c.leaf.remote.TLSConfig != nil {
-				tlsConfig = c.leaf.remote.TLSConfig.Clone()
+			if remote.TLSConfig != nil {
+				tlsConfig = remote.TLSConfig.Clone()
 			} else {
 				tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 			}
 
-			url := c.leaf.remote.getCurrentURL()
-			host, _, _ := net.SplitHostPort(url.Host)
-			// We need to check if this host is an IP. If so, we probably
-			// had this advertised to us and should use the configured host
-			// name for the TLS server name.
-			if net.ParseIP(host) != nil {
-				if c.leaf.remote.tlsName != "" {
-					host = c.leaf.remote.tlsName
-				} else {
-					host, _, _ = net.SplitHostPort(c.leaf.remote.curURL.Host)
+			var host string
+			// If ServerName was given to us from the option, use that, always.
+			if tlsConfig.ServerName == "" {
+				url := remote.getCurrentURL()
+				host = url.Hostname()
+				// We need to check if this host is an IP. If so, we probably
+				// had this advertised to us and should use the configured host
+				// name for the TLS server name.
+				if remote.tlsName != "" && net.ParseIP(host) != nil {
+					host = remote.tlsName
 				}
+				tlsConfig.ServerName = host
 			}
-			tlsConfig.ServerName = host
 
 			c.nc = tls.Client(c.nc, tlsConfig)
 
@@ -669,10 +670,10 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 			// Setup the timeout
 			var wait time.Duration
-			if c.leaf.remote.TLSTimeout == 0 {
+			if remote.TLSTimeout == 0 {
 				wait = TLS_TIMEOUT
 			} else {
-				wait = secondsToDuration(c.leaf.remote.TLSTimeout)
+				wait = secondsToDuration(remote.TLSTimeout)
 			}
 			time.AfterFunc(wait, func() { tlsTimeout(c, conn) })
 			conn.SetReadDeadline(time.Now().Add(wait))
@@ -680,17 +681,21 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			// Force handshake
 			c.mu.Unlock()
 			if err = conn.Handshake(); err != nil {
+				if solicited {
+					// If we overrode and used the saved tlsName but that failed
+					// we will clear that here. This is for the case that another server
+					// does not have the same tlsName, maybe only IPs.
+					// https://github.com/nats-io/nats-server/issues/1256
+					if _, ok := err.(x509.HostnameError); ok {
+						remote.Lock()
+						if host == remote.tlsName {
+							remote.tlsName = ""
+						}
+						remote.Unlock()
+					}
+				}
 				c.Errorf("TLS handshake error: %v", err)
 				c.closeConnection(TLSHandshakeError)
-				// If we overrode and used the saved tlsName but that failed
-				// we will clear that here. This is for the case that another server
-				// does not have the same tlsName, maybe only IPs.
-				// https://github.com/nats-io/nats-server/issues/1256
-				c.mu.Lock()
-				if host == c.leaf.remote.tlsName {
-					c.leaf.remote.tlsName = ""
-				}
-				c.mu.Unlock()
 				return nil
 			}
 			// Reset the read deadline

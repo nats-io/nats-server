@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -744,20 +745,21 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 
 	// Check for TLS
 	if tlsRequired {
+		var host string
 		var timeout float64
 		// If we solicited, we will act like the client, otherwise the server.
 		if solicit {
 			c.Debugf("Starting TLS gateway client handshake")
 			cfg.RLock()
 			tlsName := cfg.tlsName
-			tlsConfig := cfg.TLSConfig
+			tlsConfig := cfg.TLSConfig.Clone()
 			timeout = cfg.TLSTimeout
 			cfg.RUnlock()
 			if tlsConfig.ServerName == "" {
 				// If the given url is a hostname, use this hostname for the
 				// ServerName. If it is an IP, use the cfg's tlsName. If none
 				// is available, resort to current IP.
-				host := url.Hostname()
+				host = url.Hostname()
 				if tlsName != "" && net.ParseIP(host) != nil {
 					host = tlsName
 				}
@@ -779,6 +781,17 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 
 		c.mu.Unlock()
 		if err := conn.Handshake(); err != nil {
+			if solicit {
+				// Based on type of error, possibly clear the saved tlsName
+				// See: https://github.com/nats-io/nats-server/issues/1256
+				if _, ok := err.(x509.HostnameError); ok {
+					cfg.Lock()
+					if host == cfg.tlsName {
+						cfg.tlsName = ""
+					}
+					cfg.Unlock()
+				}
+			}
 			c.Errorf("TLS gateway handshake error: %v", err)
 			c.sendErr("Secure Connection - TLS Required")
 			c.closeConnection(TLSHandshakeError)
