@@ -41,7 +41,7 @@ const (
 
 	// JetStreamListTemplates is the endpoint to list all stream templates for this account.
 	// Will return json list of string on success and -ERR on failure.
-	JetStreamListTemplates = "$JS.TEMPLATES.LIST"
+	JetStreamListTemplates = "$JS.TEMPLATE.LIST"
 
 	// JetStreamTemplateInfo is for obtaining general information about a named stream template.
 	// Will return JSON response.
