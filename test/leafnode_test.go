@@ -3082,8 +3082,6 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 		t.Fatalf("Failed to parse root certificate from %q", "./configs/certs/ca.pem")
 	}
 	remote.TLSConfig.RootCAs = pool
-	host, _, _ := net.SplitHostPort(optsB.LeafNode.Host)
-	remote.TLSConfig.ServerName = host
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{remote}
 	sl, _ := RunServer(&o), &o
 	defer sl.Shutdown()
