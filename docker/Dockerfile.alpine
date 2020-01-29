@@ -1,4 +1,4 @@
-FROM golang:1.12-alpine3.10 AS builder
+FROM golang:1.13.7-alpine3.11 AS builder
 
 WORKDIR $GOPATH/src/github.com/nats-io/nats-server
 
