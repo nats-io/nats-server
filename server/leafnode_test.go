@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -868,4 +868,84 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 	// Close the route
 	leaf.closeConnection(SlowConsumerWriteDeadline)
 	ch <- true
+}
+
+func TestLeafNodeRemoteWrongPort(t *testing.T) {
+	for _, test1 := range []struct {
+		name              string
+		clusterAdvertise  bool
+		leafnodeAdvertise bool
+	}{
+		{"advertise_on", false, false},
+		{"cluster_no_advertise", true, false},
+		{"leafnode_no_advertise", false, true},
+	} {
+		t.Run(test1.name, func(t *testing.T) {
+			oa := DefaultOptions()
+			// Make sure we have all ports (client, route, gateway) and we will try
+			// to create a leafnode to connection to each and make sure we get the error.
+			oa.Cluster.NoAdvertise = test1.clusterAdvertise
+			oa.Cluster.Host = "127.0.0.1"
+			oa.Cluster.Port = -1
+			oa.Gateway.Host = "127.0.0.1"
+			oa.Gateway.Port = -1
+			oa.Gateway.Name = "A"
+			oa.LeafNode.Host = "127.0.0.1"
+			oa.LeafNode.Port = -1
+			oa.LeafNode.NoAdvertise = test1.leafnodeAdvertise
+			oa.Accounts = []*Account{NewAccount("sys")}
+			oa.SystemAccount = "sys"
+			sa := RunServer(oa)
+			defer sa.Shutdown()
+
+			ob := DefaultOptions()
+			ob.Cluster.NoAdvertise = test1.clusterAdvertise
+			ob.Cluster.Host = "127.0.0.1"
+			ob.Cluster.Port = -1
+			ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
+			ob.Gateway.Host = "127.0.0.1"
+			ob.Gateway.Port = -1
+			ob.Gateway.Name = "A"
+			ob.LeafNode.Host = "127.0.0.1"
+			ob.LeafNode.Port = -1
+			ob.LeafNode.NoAdvertise = test1.leafnodeAdvertise
+			ob.Accounts = []*Account{NewAccount("sys")}
+			ob.SystemAccount = "sys"
+			sb := RunServer(ob)
+			defer sb.Shutdown()
+
+			checkClusterFormed(t, sa, sb)
+
+			for _, test := range []struct {
+				name string
+				port int
+			}{
+				{"client", oa.Port},
+				{"cluster", oa.Cluster.Port},
+				{"gateway", oa.Gateway.Port},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					oc := DefaultOptions()
+					// Server with the wrong config against non leafnode port.
+					leafURL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", test.port))
+					oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+					oc.LeafNode.ReconnectInterval = 5 * time.Millisecond
+					sc := RunServer(oc)
+					defer sc.Shutdown()
+					l := &captureErrorLogger{errCh: make(chan string, 10)}
+					sc.SetLogger(l, true, true)
+
+					select {
+					case e := <-l.errCh:
+						if strings.Contains(e, ErrConnectedToWrongPort.Error()) {
+							return
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatalf("Did not get any error about connecting to wrong port for %q - %q",
+							test1.name, test.name)
+					}
+				})
+			}
+		})
+	}
 }

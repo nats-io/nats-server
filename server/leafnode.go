@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -627,13 +627,17 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		c.nc.SetReadDeadline(time.Time{})
 
 		c.mu.Unlock()
-		// Error will be handled below, so ignore here.
-		c.parse([]byte(info))
+		// Handle only connection to wrong port here, others will be handled below.
+		if err := c.parse([]byte(info)); err == ErrConnectedToWrongPort {
+			c.Errorf(err.Error())
+			c.closeConnection(WrongPort)
+			return nil
+		}
 		c.mu.Lock()
 
 		if !c.flags.isSet(infoReceived) {
 			c.mu.Unlock()
-			c.Debugf("Did not get the remote leafnode's INFO, timed-out")
+			c.Errorf("Did not get the remote leafnode's INFO, timed-out")
 			c.closeConnection(ReadError)
 			return nil
 		}
@@ -785,18 +789,40 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	return c
 }
 
-func (c *client) processLeafnodeInfo(info *Info) {
+func (c *client) processLeafnodeInfo(info *Info) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.leaf == nil || c.isClosed() {
-		return
+		return nil
 	}
 
 	// Mark that the INFO protocol has been received.
 	// Note: For now, only the initial INFO has a nonce. We
 	// will probably do auto key rotation at some point.
 	if c.flags.setIfNotSet(infoReceived) {
+		// Prevent connecting to non leafnode port. Need to do this only for
+		// the first INFO, not for async INFO updates...
+		//
+		// Content of INFO sent by the server when accepting a tcp connection.
+		// -------------------------------------------------------------------
+		// Listen Port Of | CID | ClientConnectURLs | LeafNodeURLs | Gateway |
+		// -------------------------------------------------------------------
+		//      CLIENT    |  X* |        X**        |              |         |
+		//      ROUTE     |     |        X**        |      X***    |         |
+		//     GATEWAY    |     |                   |              |    X    |
+		//     LEAFNODE   |  X  |                   |       X      |         |
+		// -------------------------------------------------------------------
+		// *   Not on older servers.
+		// **  Not if "no advertise" is enabled.
+		// *** Not if leafnode's "no advertise" is enabled.
+		//
+		// As seen from above, a solicited LeafNode connection should receive
+		// from the remote server an INFO with CID and LeafNodeURLs. Anything
+		// else should be considered an attempt to connect to a wrong port.
+		if c.leaf.remote != nil && (info.CID == 0 || info.LeafNodeURLs == nil) {
+			return ErrConnectedToWrongPort
+		}
 		// Capture a nonce here.
 		c.nonce = []byte(info.Nonce)
 		if info.TLSRequired && c.leaf.remote != nil {
@@ -810,6 +836,8 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// representation of the remote cluster's list of URLs.
 		c.updateLeafNodeURLs(info)
 	}
+
+	return nil
 }
 
 // When getting a leaf node INFO protocol, use the provided

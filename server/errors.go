@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -65,6 +65,10 @@ var (
 	// ErrClientConnectedToLeafNodePort represents an error condition when a client
 	// attempted to connect to the leaf node listen port.
 	ErrClientConnectedToLeafNodePort = errors.New("attempted to connect to leaf node port")
+
+	// ErrConnectedToWrongPort represents an error condition when a connection is attempted
+	// to the wrong listen port (for instance a LeafNode to a client port, etc...)
+	ErrConnectedToWrongPort = errors.New("attempted to connect to wrong port")
 
 	// ErrAccountExists is returned when an account is attempted to be registered
 	// but already exists.
