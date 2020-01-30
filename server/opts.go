@@ -33,8 +33,9 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/v2/conf"
 	"github.com/nats-io/nkeys"
+
+	"github.com/nats-io/nats-server/v2/conf"
 )
 
 var allowUnknownTopLevelField = int32(0)
@@ -177,7 +178,7 @@ type Options struct {
 	Gateway               GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
 	JetStream             bool          `json:"jetstream"`
-	StoreDir              string        `json:"-"`
+	StoreDir              string        `json:"store_dir"`
 	ProfPort              int           `json:"-"`
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
@@ -548,6 +549,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			}
 		case "leaf", "leafnodes":
 			err := parseLeafNodes(tk, o, &errors, &warnings)
+			if err != nil {
+				errors = append(errors, err)
+				continue
+			}
+		case "jetstream":
+			err := parseJetStream(tk, o, &errors, &warnings)
 			if err != nil {
 				errors = append(errors, err)
 				continue
@@ -1039,6 +1046,37 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			}
 		}
 	}
+	return nil
+}
+
+func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+	tk, v := unwrapValue(v)
+	cm, ok := v.(map[string]interface{})
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected map to define JetStream, got %T", v)}
+	}
+
+	opts.JetStream = true
+
+	for mk, mv := range cm {
+		tk, mv = unwrapValue(mv)
+		switch strings.ToLower(mk) {
+		case "store_dir", "storedir":
+			opts.StoreDir = mv.(string)
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+	}
+
 	return nil
 }
 
