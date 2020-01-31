@@ -179,7 +179,9 @@ type Options struct {
 	Gateway               GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
 	JetStream             bool          `json:"jetstream"`
-	StoreDir              string        `json:"store_dir"`
+	JetStreamMaxMemory    int64         `json:"-"`
+	JetStreamMaxStore     int64         `json:"-"`
+	StoreDir              string        `json:"-"`
 	ProfPort              int           `json:"-"`
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
@@ -1119,6 +1121,10 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		switch strings.ToLower(mk) {
 		case "store_dir", "storedir":
 			opts.StoreDir = mv.(string)
+		case "max_memory_store", "max_mem_store":
+			opts.JetStreamMaxMemory = mv.(int64)
+		case "max_file_store":
+			opts.JetStreamMaxStore = mv.(int64)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
