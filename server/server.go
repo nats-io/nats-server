@@ -24,6 +24,8 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	// Allow dynamic profiling.
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,12 +35,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	// Allow dynamic profiling.
-	_ "net/http/pprof"
-
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nkeys"
+
+	"github.com/nats-io/nats-server/v2/logger"
 )
 
 const (
@@ -1224,7 +1224,11 @@ func (s *Server) Start() {
 	if opts.JetStream {
 		var cfg *JetStreamConfig
 		if opts.StoreDir != "" {
-			cfg = &JetStreamConfig{StoreDir: opts.StoreDir}
+			cfg = &JetStreamConfig{
+				StoreDir:  opts.StoreDir,
+				MaxMemory: opts.JetStreamMaxMemory,
+				MaxStore:  opts.JetStreamMaxStore,
+			}
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start jetstream: %v", err)
