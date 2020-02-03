@@ -1526,38 +1526,57 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 }
 
 func TestAccountURLResolver(t *testing.T) {
-	kp, _ := nkeys.FromSeed(oSeed)
-	akp, _ := nkeys.CreateAccount()
-	apub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(apub)
-	ajwt, err := nac.Encode(kp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
+	for _, test := range []struct {
+		name   string
+		useTLS bool
+	}{
+		{"plain", false},
+		{"tls", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			kp, _ := nkeys.FromSeed(oSeed)
+			akp, _ := nkeys.CreateAccount()
+			apub, _ := akp.PublicKey()
+			nac := jwt.NewAccountClaims(apub)
+			ajwt, err := nac.Encode(kp)
+			if err != nil {
+				t.Fatalf("Error generating account JWT: %v", err)
+			}
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(ajwt))
-	}))
-	defer ts.Close()
+			hf := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(ajwt))
+			})
+			var ts *httptest.Server
+			if test.useTLS {
+				ts = httptest.NewTLSServer(hf)
+			} else {
+				ts = httptest.NewServer(hf)
+			}
+			defer ts.Close()
 
-	confTemplate := `
-		listen: -1
-		resolver: URL("%s/ngs/v1/accounts/jwt/")
-    `
-	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
-	defer os.Remove(conf)
+			confTemplate := `
+				listen: -1
+				resolver: URL("%s/ngs/v1/accounts/jwt/")
+				resolver_tls {
+					insecure: true
+				}
+			`
+			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+			defer os.Remove(conf)
 
-	s, opts := RunServerWithConfig(conf)
-	pub, _ := kp.PublicKey()
-	opts.TrustedKeys = []string{pub}
-	defer s.Shutdown()
+			s, opts := RunServerWithConfig(conf)
+			pub, _ := kp.PublicKey()
+			opts.TrustedKeys = []string{pub}
+			defer s.Shutdown()
 
-	acc, _ := s.LookupAccount(apub)
-	if acc == nil {
-		t.Fatalf("Expected to receive an account")
-	}
-	if acc.Name != apub {
-		t.Fatalf("Account name did not match claim key")
+			acc, _ := s.LookupAccount(apub)
+			if acc == nil {
+				t.Fatalf("Expected to receive an account")
+			}
+			if acc.Name != apub {
+				t.Fatalf("Account name did not match claim key")
+			}
+		})
 	}
 }
 

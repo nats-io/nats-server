@@ -200,10 +200,11 @@ type Options struct {
 	MaxTracedMsgLen int `json:"-"`
 
 	// Operating a trusted NATS server
-	TrustedKeys      []string              `json:"-"`
-	TrustedOperators []*jwt.OperatorClaims `json:"-"`
-	AccountResolver  AccountResolver       `json:"-"`
-	resolverPreloads map[string]string
+	TrustedKeys              []string              `json:"-"`
+	TrustedOperators         []*jwt.OperatorClaims `json:"-"`
+	AccountResolver          AccountResolver       `json:"-"`
+	AccountResolverTLSConfig *tls.Config           `json:"-"`
+	resolverPreloads         map[string]string
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -692,6 +693,17 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			if o.AccountResolver == nil {
 				err := &configErr{tk, "error parsing account resolver, should be MEM or URL(\"url\")"}
 				errors = append(errors, err)
+			}
+		case "resolver_tls":
+			tc, err := parseTLS(tk)
+			if err != nil {
+				errors = append(errors, err)
+				continue
+			}
+			if o.AccountResolverTLSConfig, err = GenTLSConfig(tc); err != nil {
+				err := &configErr{tk, err.Error()}
+				errors = append(errors, err)
+				continue
 			}
 		case "resolver_preload":
 			mp, ok := v.(map[string]interface{})

@@ -749,6 +749,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload does not support moving to or from an account resolver")
 			}
 			diffOpts = append(diffOpts, &accountsOption{})
+		case "accountresolvertlsconfig":
+			diffOpts = append(diffOpts, &accountsOption{})
 		case "gateway":
 			// Not supported for now, but report warning if configuration of gateway
 			// is actually changed so that user knows that it won't take effect.

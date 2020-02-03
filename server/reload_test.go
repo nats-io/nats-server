@@ -14,13 +14,18 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nats-io/jwt"
 	"io/ioutil"
+	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -3899,4 +3904,68 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 	// Check that we can still send messages.
 	nc2.Publish("foo", nil)
 	checkForMsg()
+}
+
+func TestConfigReloadAccountResolverTLSConfig(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(kp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	pub, _ := kp.PublicKey()
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+	// Set a dummy logger to prevent tls bad certificate output to stderr.
+	ts.Config.ErrorLog = log.New(&bytes.Buffer{}, "", 0)
+
+	confTemplate := `
+				listen: -1
+				trusted_keys: %s
+				resolver: URL("%s/ngs/v1/accounts/jwt/")
+				%s
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, pub, ts.URL, `
+		resolver_tls {
+			insecure: true
+		}
+	`)))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, pub, ts.URL, "")))
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	if _, err := s.LookupAccount(apub); err == nil {
+		t.Fatal("Expected error during lookup, did not get one")
+	}
+
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, pub, ts.URL, `
+		resolver_tls {
+			insecure: true
+		}
+	`)))
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+
+	acc, err := s.LookupAccount(apub)
+	if err != nil {
+		t.Fatalf("Error during lookup: %v", err)
+	}
+	if acc == nil {
+		t.Fatalf("Expected to receive an account")
+	}
+	if acc.Name != apub {
+		t.Fatalf("Account name did not match claim key")
+	}
 }
