@@ -244,15 +244,6 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
-	// If there is an URL account resolver, do basic test to see if anyone is home
-	if ar := opts.AccountResolver; ar != nil {
-		if ur, ok := ar.(*URLAccResolver); ok {
-			if _, err := ur.Fetch(""); err != nil {
-				return nil, err
-			}
-		}
-	}
-
 	info := Info{
 		ID:           pub,
 		Version:      VERSION,
@@ -336,6 +327,17 @@ func NewServer(opts *Options) (*Server, error) {
 	// For tracking accounts
 	if err := s.configureAccounts(); err != nil {
 		return nil, err
+	}
+
+	// If there is an URL account resolver, do basic test to see if anyone is home.
+	// Do this after configureAccounts() which calls configureResolver(), which will
+	// set TLSConfig if specified.
+	if ar := opts.AccountResolver; ar != nil {
+		if ur, ok := ar.(*URLAccResolver); ok {
+			if _, err := ur.Fetch(""); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// In local config mode, check that leafnode configuration
@@ -505,21 +507,32 @@ func (s *Server) configureAccounts() error {
 	return nil
 }
 
-// Setup the memory resolver, make sure the JWTs are properly formed but do not
-// enforce expiration etc.
+// Setup the account resolver. For memory resolver, make sure the JWTs are
+// properly formed but do not enforce expiration etc.
 func (s *Server) configureResolver() error {
-	opts := s.opts
+	opts := s.getOpts()
 	s.accResolver = opts.AccountResolver
-	if opts.AccountResolver != nil && len(opts.resolverPreloads) > 0 {
-		if _, ok := s.accResolver.(*MemAccResolver); !ok {
-			return fmt.Errorf("resolver preloads only available for resolver type MEM")
-		}
-		for k, v := range opts.resolverPreloads {
-			_, err := jwt.DecodeAccountClaims(v)
-			if err != nil {
-				return fmt.Errorf("preload account error for %q: %v", k, err)
+	if opts.AccountResolver != nil {
+		// For URL resolver, set the TLSConfig if specified.
+		if opts.AccountResolverTLSConfig != nil {
+			if ar, ok := opts.AccountResolver.(*URLAccResolver); ok {
+				if t, ok := ar.c.Transport.(*http.Transport); ok {
+					t.CloseIdleConnections()
+					t.TLSClientConfig = opts.AccountResolverTLSConfig.Clone()
+				}
 			}
-			s.accResolver.Store(k, v)
+		}
+		if len(opts.resolverPreloads) > 0 {
+			if _, ok := s.accResolver.(*MemAccResolver); !ok {
+				return fmt.Errorf("resolver preloads only available for resolver type MEM")
+			}
+			for k, v := range opts.resolverPreloads {
+				_, err := jwt.DecodeAccountClaims(v)
+				if err != nil {
+					return fmt.Errorf("preload account error for %q: %v", k, err)
+				}
+				s.accResolver.Store(k, v)
+			}
 		}
 	}
 	return nil
