@@ -38,7 +38,7 @@ type ValidationResults struct {
 
 // CreateValidationResults creates an empty list of validation issues
 func CreateValidationResults() *ValidationResults {
-	issues := []*ValidationIssue{}
+	var issues []*ValidationIssue
 	return &ValidationResults{
 		Issues: issues,
 	}

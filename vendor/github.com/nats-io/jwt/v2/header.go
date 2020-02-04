@@ -31,7 +31,8 @@ const (
 
 	// AlgorithmNkey is the algorithm supported by JWT tokens
 	// encoded and decoded by this library
-	AlgorithmNkey = "ed25519"
+	AlgorithmNkeyOld = "ed25519"
+	AlgorithmNkey    = AlgorithmNkeyOld + "-nkey"
 )
 
 // Header is a JWT Jose Header
@@ -64,7 +65,11 @@ func (h *Header) Valid() error {
 		return fmt.Errorf("not supported type %q", h.Type)
 	}
 
-	if AlgorithmNkey != strings.ToLower(h.Algorithm) {
+	alg := strings.ToLower(h.Algorithm)
+	if !strings.HasPrefix(alg, AlgorithmNkeyOld) {
+		return fmt.Errorf("unexpected %q algorithm", h.Algorithm)
+	}
+	if AlgorithmNkeyOld != alg && AlgorithmNkey != alg {
 		return fmt.Errorf("unexpected %q algorithm", h.Algorithm)
 	}
 	return nil

@@ -74,9 +74,9 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 
 	if i.Token != "" {
 		// Check to see if its an embedded JWT or a URL.
-		if url, err := url.Parse(i.Token); err == nil && url.Scheme != "" {
+		if u, err := url.Parse(i.Token); err == nil && u.Scheme != "" {
 			c := &http.Client{Timeout: 5 * time.Second}
-			resp, err := c.Get(url.String())
+			resp, err := c.Get(u.String())
 			if err != nil {
 				vr.AddWarning("import %s contains an unreachable token URL %q", i.Subject, i.Token)
 			}
@@ -89,7 +89,7 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 				} else {
 					act, err = DecodeActivationClaims(string(body))
 					if err != nil {
-						vr.AddWarning("import %s contains a url %q with an invalid activation token", i.Subject, i.Token)
+						vr.AddWarning("import %s contains a URL %q with an invalid activation token", i.Subject, i.Token)
 					}
 				}
 			}

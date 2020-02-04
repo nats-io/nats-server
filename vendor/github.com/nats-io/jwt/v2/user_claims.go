@@ -26,6 +26,10 @@ type User struct {
 	Permissions
 	Limits
 	BearerToken bool `json:"bearer_token,omitempty"`
+	// IssuerAccount stores the public key for the account the issuer represents.
+	// When set, the claim was issued by a signing key.
+	IssuerAccount string `json:"issuer_account,omitempty"`
+	GenericFields
 }
 
 // Validate checks the permissions and limits in a User jwt
@@ -39,9 +43,6 @@ func (u *User) Validate(vr *ValidationResults) {
 type UserClaims struct {
 	ClaimsData
 	User `json:"nats,omitempty"`
-	// IssuerAccount stores the public key for the account the issuer represents.
-	// When set, the claim was issued by a signing key.
-	IssuerAccount string `json:"issuer_account,omitempty"`
 }
 
 // NewUserClaims creates a user JWT with the specific subject/public key
@@ -59,17 +60,25 @@ func (u *UserClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if !nkeys.IsValidPublicUserKey(u.Subject) {
 		return "", errors.New("expected subject to be user public key")
 	}
-	u.ClaimsData.Type = UserClaim
+	u.Type = UserClaim
 	return u.ClaimsData.Encode(pair, u)
 }
 
 // DecodeUserClaims tries to parse a user claims from a JWT string
 func DecodeUserClaims(token string) (*UserClaims, error) {
-	v := UserClaims{}
-	if err := Decode(token, &v); err != nil {
+	claims, err := Decode(token)
+	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	ac, ok := claims.(*UserClaims)
+	if !ok {
+		return nil, errors.New("not user claim")
+	}
+	return ac, nil
+}
+
+func (u *UserClaims) ClaimType() ClaimType {
+	return u.Type
 }
 
 // Validate checks the generic and specific parts of the user jwt
@@ -98,6 +107,10 @@ func (u *UserClaims) Payload() interface{} {
 
 func (u *UserClaims) String() string {
 	return u.ClaimsData.String(u)
+}
+
+func (u *UserClaims) updateVersion() {
+	u.GenericFields.Version = libVersion
 }
 
 // IsBearerToken returns true if nonce-signing requirements should be skipped

@@ -91,7 +91,7 @@ func (e *Export) IsStream() bool {
 }
 
 // IsSingleResponse returns true if an export has a single response
-// or no resopnse type is set, also checks that the type is service
+// or no response type is set, also checks that the type is service
 func (e *Export) IsSingleResponse() bool {
 	return e.Type == Service && (e.ResponseType == ResponseTypeSingleton || e.ResponseType == "")
 }

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/nats-io/nkeys"
@@ -42,6 +43,29 @@ type Operator struct {
 	OperatorServiceURLs StringList `json:"operator_service_urls,omitempty"`
 	// Identity of the system account
 	SystemAccount string `json:"system_account,omitempty"`
+	// Min Server version
+	AssertServerVersion string `json:"assert_server_version,omitempty"`
+	GenericFields
+}
+
+func ParseServerVersion(version string) (int, int, int, error) {
+	if version == "" {
+		return 0, 0, 0, nil
+	}
+	split := strings.Split(version, ".")
+	if len(split) != 3 {
+		return 0, 0, 0, fmt.Errorf("asserted server version must be of the form <major>.<minor>.<update>")
+	} else if major, err := strconv.Atoi(split[0]); err != nil {
+		return 0, 0, 0, fmt.Errorf("asserted server version cant parse %s to int", split[0])
+	} else if minor, err := strconv.Atoi(split[1]); err != nil {
+		return 0, 0, 0, fmt.Errorf("asserted server version cant parse %s to int", split[1])
+	} else if update, err := strconv.Atoi(split[2]); err != nil {
+		return 0, 0, 0, fmt.Errorf("asserted server version cant parse %s to int", split[2])
+	} else if major < 0 || minor < 0 || update < 0 {
+		return 0, 0, 0, fmt.Errorf("asserted server version can'b contain negative values: %s", version)
+	} else {
+		return major, minor, update, nil
+	}
 }
 
 // Validate checks the validity of the operators contents
@@ -65,11 +89,13 @@ func (o *Operator) Validate(vr *ValidationResults) {
 			vr.AddError("%s is not an operator public key", k)
 		}
 	}
-
 	if o.SystemAccount != "" {
 		if !nkeys.IsValidPublicAccountKey(o.SystemAccount) {
 			vr.AddError("%s is not an account public key", o.SystemAccount)
 		}
+	}
+	if _, _, _, err := ParseServerVersion(o.AssertServerVersion); err != nil {
+		vr.AddError("assert server version error: %s", err)
 	}
 }
 
@@ -120,15 +146,15 @@ func ValidateOperatorServiceURL(v string) error {
 }
 
 func (o *Operator) validateOperatorServiceURLs() []error {
-	var errors []error
+	var errs []error
 	for _, v := range o.OperatorServiceURLs {
 		if v != "" {
 			if err := ValidateOperatorServiceURL(v); err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 			}
 		}
 	}
-	return errors
+	return errs
 }
 
 // OperatorClaims define the data for an operator JWT
@@ -159,11 +185,6 @@ func (oc *OperatorClaims) DidSign(op Claims) bool {
 	return oc.SigningKeys.Contains(issuer)
 }
 
-// Deprecated: AddSigningKey, use claim.SigningKeys.Add()
-func (oc *OperatorClaims) AddSigningKey(pk string) {
-	oc.SigningKeys.Add(pk)
-}
-
 // Encode the claims into a JWT string
 func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if !nkeys.IsValidPublicOperatorKey(oc.Subject) {
@@ -173,17 +194,25 @@ func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	oc.ClaimsData.Type = OperatorClaim
+	oc.Type = OperatorClaim
 	return oc.ClaimsData.Encode(pair, oc)
+}
+
+func (oc *OperatorClaims) ClaimType() ClaimType {
+	return oc.Type
 }
 
 // DecodeOperatorClaims tries to create an operator claims from a JWt string
 func DecodeOperatorClaims(token string) (*OperatorClaims, error) {
-	v := OperatorClaims{}
-	if err := Decode(token, &v); err != nil {
+	claims, err := Decode(token)
+	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	oc, ok := claims.(*OperatorClaims)
+	if !ok {
+		return nil, errors.New("not operator claim")
+	}
+	return oc, nil
 }
 
 func (oc *OperatorClaims) String() string {
@@ -209,4 +238,8 @@ func (oc *OperatorClaims) ExpectedPrefixes() []nkeys.PrefixByte {
 // Claims returns the generic claims data
 func (oc *OperatorClaims) Claims() *ClaimsData {
 	return &oc.ClaimsData
+}
+
+func (oc *OperatorClaims) updateVersion() {
+	oc.GenericFields.Version = libVersion
 }
