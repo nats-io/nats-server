@@ -255,10 +255,6 @@ func (mset *Stream) subscribeToStream() error {
 
 // FIXME(dlc) - This only works in single server mode for the moment. Need to fix as we expand to clusters.
 func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
-	return mset.nmsSubscribeInternal(subject, false, cb)
-}
-
-func (mset *Stream) nmsSubscribeInternal(subject string, internalOnly bool, cb msgHandler) (*subscription, error) {
 	c := mset.client
 	if c == nil {
 		return nil, fmt.Errorf("invalid stream")
@@ -273,7 +269,7 @@ func (mset *Stream) nmsSubscribeInternal(subject string, internalOnly bool, cb m
 	mset.sid++
 
 	// Now create the subscription
-	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(mset.sid)), internalOnly)
+	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(mset.sid)), false)
 	if err != nil {
 		return nil, err
 	}
