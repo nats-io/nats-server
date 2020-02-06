@@ -1129,7 +1129,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	// If we are solicited make sure this is a local client or a non-solicited leaf node
 	skind := sub.client.kind
-	if c.isSolicitedLeafNode() && !(skind == CLIENT || (skind == LEAF && !sub.client.isSolicitedLeafNode())) {
+	if c.isSolicitedLeafNode() && !(skind == CLIENT || skind == JETSTREAM || (skind == LEAF && !sub.client.isSolicitedLeafNode())) {
 		c.mu.Unlock()
 		return
 	}
