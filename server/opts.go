@@ -439,346 +439,9 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 
 	for k, v := range m {
 		tk, v := unwrapValue(v)
-		switch strings.ToLower(k) {
-		case "listen":
-			hp, err := parseListen(v)
-			if err != nil {
-				errors = append(errors, &configErr{tk, err.Error()})
-				continue
-			}
-			o.Host = hp.host
-			o.Port = hp.port
-		case "client_advertise":
-			o.ClientAdvertise = v.(string)
-		case "port":
-			o.Port = int(v.(int64))
-		case "server_name":
-			o.ServerName = v.(string)
-		case "host", "net":
-			o.Host = v.(string)
-		case "debug":
-			o.Debug = v.(bool)
-			trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
-		case "trace":
-			o.Trace = v.(bool)
-			trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
-		case "logtime":
-			o.Logtime = v.(bool)
-			trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
-		case "disable_sublist_cache", "no_sublist_cache":
-			o.NoSublistCache = v.(bool)
-		case "accounts":
-			err := parseAccounts(tk, o, &errors, &warnings)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-		case "authorization":
-			auth, err := parseAuthorization(tk, o, &errors, &warnings)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-
-			o.Username = auth.user
-			o.Password = auth.pass
-			o.Authorization = auth.token
-			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				err := &configErr{tk, "Cannot have a user/pass and token"}
-				errors = append(errors, err)
-				continue
-			}
-			o.AuthTimeout = auth.timeout
-			// Check for multiple users defined
-			if auth.users != nil {
-				if auth.user != "" {
-					err := &configErr{tk, "Can not have a single user/pass and a users array"}
-					errors = append(errors, err)
-					continue
-				}
-				if auth.token != "" {
-					err := &configErr{tk, "Can not have a token and a users array"}
-					errors = append(errors, err)
-					continue
-				}
-				// Users may have been added from Accounts parsing, so do an append here
-				o.Users = append(o.Users, auth.users...)
-			}
-
-			// Check for nkeys
-			if auth.nkeys != nil {
-				// NKeys may have been added from Accounts parsing, so do an append here
-				o.Nkeys = append(o.Nkeys, auth.nkeys...)
-			}
-		case "http":
-			hp, err := parseListen(v)
-			if err != nil {
-				err := &configErr{tk, err.Error()}
-				errors = append(errors, err)
-				continue
-			}
-			o.HTTPHost = hp.host
-			o.HTTPPort = hp.port
-		case "https":
-			hp, err := parseListen(v)
-			if err != nil {
-				err := &configErr{tk, err.Error()}
-				errors = append(errors, err)
-				continue
-			}
-			o.HTTPHost = hp.host
-			o.HTTPSPort = hp.port
-		case "http_port", "monitor_port":
-			o.HTTPPort = int(v.(int64))
-		case "https_port":
-			o.HTTPSPort = int(v.(int64))
-		case "cluster":
-			err := parseCluster(tk, o, &errors, &warnings)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-		case "gateway":
-			if err := parseGateway(tk, o, &errors, &warnings); err != nil {
-				errors = append(errors, err)
-				continue
-			}
-		case "leaf", "leafnodes":
-			err := parseLeafNodes(tk, o, &errors, &warnings)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-		case "logfile", "log_file":
-			o.LogFile = v.(string)
-		case "logfile_size_limit", "log_size_limit":
-			o.LogSizeLimit = v.(int64)
-		case "syslog":
-			o.Syslog = v.(bool)
-			trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
-		case "remote_syslog":
-			o.RemoteSyslog = v.(string)
-		case "pidfile", "pid_file":
-			o.PidFile = v.(string)
-		case "ports_file_dir":
-			o.PortsFileDir = v.(string)
-		case "prof_port":
-			o.ProfPort = int(v.(int64))
-		case "max_control_line":
-			if v.(int64) > 1<<31-1 {
-				err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
-				errors = append(errors, err)
-				continue
-			}
-			o.MaxControlLine = int32(v.(int64))
-		case "max_payload":
-			if v.(int64) > 1<<31-1 {
-				err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
-				errors = append(errors, err)
-				continue
-			}
-			o.MaxPayload = int32(v.(int64))
-		case "max_pending":
-			o.MaxPending = v.(int64)
-		case "max_connections", "max_conn":
-			o.MaxConn = int(v.(int64))
-		case "max_traced_msg_len":
-			o.MaxTracedMsgLen = int(v.(int64))
-		case "max_subscriptions", "max_subs":
-			o.MaxSubs = int(v.(int64))
-		case "ping_interval":
-			o.PingInterval = time.Duration(int(v.(int64))) * time.Second
-		case "ping_max":
-			o.MaxPingsOut = int(v.(int64))
-		case "tls":
-			tc, err := parseTLS(tk)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-			if o.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
-				errors = append(errors, err)
-				continue
-			}
-			o.TLSTimeout = tc.Timeout
-			o.TLSMap = tc.Map
-		case "write_deadline":
-			wd, ok := v.(string)
-			if ok {
-				dur, err := time.ParseDuration(wd)
-				if err != nil {
-					err := &configErr{tk, fmt.Sprintf("error parsing write_deadline: %v", err)}
-					errors = append(errors, err)
-					continue
-				}
-				o.WriteDeadline = dur
-			} else {
-				// Backward compatible with old type, assume this is the
-				// number of seconds.
-				o.WriteDeadline = time.Duration(v.(int64)) * time.Second
-				err := &configWarningErr{
-					field: k,
-					configErr: configErr{
-						token:  tk,
-						reason: "write_deadline should be converted to a duration",
-					},
-				}
-				warnings = append(warnings, err)
-			}
-		case "lame_duck_duration":
-			dur, err := time.ParseDuration(v.(string))
-			if err != nil {
-				err := &configErr{tk, fmt.Sprintf("error parsing lame_duck_duration: %v", err)}
-				errors = append(errors, err)
-				continue
-			}
-			if dur < 30*time.Second {
-				err := &configErr{tk, fmt.Sprintf("invalid lame_duck_duration of %v, minimum is 30 seconds", dur)}
-				errors = append(errors, err)
-				continue
-			}
-			o.LameDuckDuration = dur
-		case "operator", "operators", "roots", "root", "root_operators", "root_operator":
-			opFiles := []string{}
-			switch v := v.(type) {
-			case string:
-				opFiles = append(opFiles, v)
-			case []string:
-				opFiles = append(opFiles, v...)
-			default:
-				err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
-				errors = append(errors, err)
-			}
-			// Assume for now these are file names, but they can also be the JWT itself inline.
-			o.TrustedOperators = make([]*jwt.OperatorClaims, 0, len(opFiles))
-			for _, fname := range opFiles {
-				opc, err := ReadOperatorJWT(fname)
-				if err != nil {
-					err := &configErr{tk, fmt.Sprintf("error parsing operator JWT: %v", err)}
-					errors = append(errors, err)
-					continue
-				}
-				o.TrustedOperators = append(o.TrustedOperators, opc)
-			}
-		case "resolver", "account_resolver", "accounts_resolver":
-			var memResolverRe = regexp.MustCompile(`(MEM|MEMORY|mem|memory)\s*`)
-			var resolverRe = regexp.MustCompile(`(?:URL|url){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
-			str, ok := v.(string)
-			if !ok {
-				err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
-				errors = append(errors, err)
-				continue
-			}
-			if memResolverRe.MatchString(str) {
-				o.AccountResolver = &MemAccResolver{}
-			} else {
-				items := resolverRe.FindStringSubmatch(str)
-				if len(items) == 2 {
-					url := items[1]
-					_, err := parseURL(url, "account resolver")
-					if err != nil {
-						errors = append(errors, &configErr{tk, err.Error()})
-						continue
-					}
-					if ur, err := NewURLAccResolver(url); err != nil {
-						err := &configErr{tk, err.Error()}
-						errors = append(errors, err)
-						continue
-					} else {
-						o.AccountResolver = ur
-					}
-				}
-			}
-			if o.AccountResolver == nil {
-				err := &configErr{tk, "error parsing account resolver, should be MEM or URL(\"url\")"}
-				errors = append(errors, err)
-			}
-		case "resolver_tls":
-			tc, err := parseTLS(tk)
-			if err != nil {
-				errors = append(errors, err)
-				continue
-			}
-			if o.AccountResolverTLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
-				errors = append(errors, err)
-				continue
-			}
-		case "resolver_preload":
-			mp, ok := v.(map[string]interface{})
-			if !ok {
-				err := &configErr{tk, "preload should be a map of account_public_key:account_jwt"}
-				errors = append(errors, err)
-				continue
-			}
-			o.resolverPreloads = make(map[string]string)
-			for key, val := range mp {
-				tk, val = unwrapValue(val)
-				if jwtstr, ok := val.(string); !ok {
-					err := &configErr{tk, "preload map value should be a string JWT"}
-					errors = append(errors, err)
-					continue
-				} else {
-					// Make sure this is a valid account JWT, that is a config error.
-					// We will warn of expirations, etc later.
-					if _, err := jwt.DecodeAccountClaims(jwtstr); err != nil {
-						err := &configErr{tk, "invalid account JWT"}
-						errors = append(errors, err)
-						continue
-					}
-					o.resolverPreloads[key] = jwtstr
-				}
-			}
-		case "system_account", "system":
-			// Already processed at the beginning so we just skip them
-			// to not treat them as unknown values.
-			continue
-		case "trusted", "trusted_keys":
-			switch v := v.(type) {
-			case string:
-				o.TrustedKeys = []string{v}
-			case []string:
-				o.TrustedKeys = v
-			case []interface{}:
-				keys := make([]string, 0, len(v))
-				for _, mv := range v {
-					tk, mv = unwrapValue(mv)
-					if key, ok := mv.(string); ok {
-						keys = append(keys, key)
-					} else {
-						err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type in array %T", mv)}
-						errors = append(errors, err)
-						continue
-					}
-				}
-				o.TrustedKeys = keys
-			default:
-				err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
-				errors = append(errors, err)
-			}
-			// Do a quick sanity check on keys
-			for _, key := range o.TrustedKeys {
-				if !nkeys.IsValidPublicOperatorKey(key) {
-					err := &configErr{tk, fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
-					errors = append(errors, err)
-				}
-			}
-		case "connect_error_reports":
-			o.ConnectErrorReports = int(v.(int64))
-		case "reconnect_error_reports":
-			o.ReconnectErrorReports = int(v.(int64))
-		default:
-			if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
-				err := &unknownConfigFieldErr{
-					field: k,
-					configErr: configErr{
-						token: tk,
-					},
-				}
-				errors = append(errors, err)
-			}
-		}
+		e, w := o.processConfigItem(k, tk, v)
+		warnings = append(warnings, w...)
+		errors = append(errors, e...)
 	}
 
 	if len(errors) > 0 || len(warnings) > 0 {
@@ -789,6 +452,326 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	}
 
 	return nil
+}
+
+func (o *Options) processConfigItem(k string, tk token, v interface{}) (errors []error, warnings []error) {
+	// turn issues during parsing into an error or reload would cause a crash
+	defer func() {
+		if err := recover(); err != nil {
+			errors = append(errors,  &configErr{tk, fmt.Sprint(err)})
+		}
+	}()
+
+	switch strings.ToLower(k) {
+	case "listen":
+		hp, err := parseListen(v)
+		if err != nil {
+			return append(errors, &configErr{tk, err.Error()}), warnings
+		}
+		o.Host = hp.host
+		o.Port = hp.port
+	case "client_advertise":
+		o.ClientAdvertise = v.(string)
+	case "port":
+		o.Port = int(v.(int64))
+	case "server_name":
+		o.ServerName = v.(string)
+	case "host", "net":
+		o.Host = v.(string)
+	case "debug":
+		o.Debug = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
+	case "trace":
+		o.Trace = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
+	case "logtime":
+		o.Logtime = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
+	case "disable_sublist_cache", "no_sublist_cache":
+		o.NoSublistCache = v.(bool)
+	case "accounts":
+		err := parseAccounts(tk, o, &errors, &warnings)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+	case "authorization":
+		auth, err := parseAuthorization(tk, o, &errors, &warnings)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+
+		o.Username = auth.user
+		o.Password = auth.pass
+		o.Authorization = auth.token
+		if (auth.user != "" || auth.pass != "") && auth.token != "" {
+			return append(errors, &configErr{tk,
+				"Cannot have a user/pass and token"}), warnings
+		}
+		o.AuthTimeout = auth.timeout
+		// Check for multiple users defined
+		if auth.users != nil {
+			if auth.user != "" {
+				return append(errors, &configErr{tk,
+					"Can not have a single user/pass and a users array"}), warnings
+			}
+			if auth.token != "" {
+				return append(errors, &configErr{tk,
+					"Can not have a token and a users array"}), warnings
+			}
+			// Users may have been added from Accounts parsing, so do an append here
+			o.Users = append(o.Users, auth.users...)
+		}
+
+		// Check for nkeys
+		if auth.nkeys != nil {
+			// NKeys may have been added from Accounts parsing, so do an append here
+			o.Nkeys = append(o.Nkeys, auth.nkeys...)
+		}
+	case "http":
+		hp, err := parseListen(v)
+		if err != nil {
+			return append(errors, &configErr{tk, err.Error()}), warnings
+		}
+		o.HTTPHost = hp.host
+		o.HTTPPort = hp.port
+	case "https":
+		hp, err := parseListen(v)
+		if err != nil {
+			return append(errors, &configErr{tk, err.Error()}), warnings
+		}
+		o.HTTPHost = hp.host
+		o.HTTPSPort = hp.port
+	case "http_port", "monitor_port":
+		o.HTTPPort = int(v.(int64))
+	case "https_port":
+		o.HTTPSPort = int(v.(int64))
+	case "cluster":
+		err := parseCluster(tk, o, &errors, &warnings)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+	case "gateway":
+		if err := parseGateway(tk, o, &errors, &warnings); err != nil {
+			return append(errors, err), warnings
+		}
+	case "leaf", "leafnodes":
+		err := parseLeafNodes(tk, o, &errors, &warnings)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+	case "logfile", "log_file":
+		o.LogFile = v.(string)
+	case "logfile_size_limit", "log_size_limit":
+		o.LogSizeLimit = v.(int64)
+	case "syslog":
+		o.Syslog = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
+	case "remote_syslog":
+		o.RemoteSyslog = v.(string)
+	case "pidfile", "pid_file":
+		o.PidFile = v.(string)
+	case "ports_file_dir":
+		o.PortsFileDir = v.(string)
+	case "prof_port":
+		o.ProfPort = int(v.(int64))
+	case "max_control_line":
+		if v.(int64) > 1<<31-1 {
+			return append(errors, &configErr{tk,
+				fmt.Sprintf("%s value is too big", k)}), warnings
+		}
+		o.MaxControlLine = int32(v.(int64))
+	case "max_payload":
+		if v.(int64) > 1<<31-1 {
+			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+			return append(errors, err), warnings
+		}
+		o.MaxPayload = int32(v.(int64))
+	case "max_pending":
+		o.MaxPending = v.(int64)
+	case "max_connections", "max_conn":
+		o.MaxConn = int(v.(int64))
+	case "max_traced_msg_len":
+		o.MaxTracedMsgLen = int(v.(int64))
+	case "max_subscriptions", "max_subs":
+		o.MaxSubs = int(v.(int64))
+	case "ping_interval":
+		o.PingInterval = time.Duration(int(v.(int64))) * time.Second
+	case "ping_max":
+		o.MaxPingsOut = int(v.(int64))
+	case "tls":
+		tc, err := parseTLS(tk)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+		if o.TLSConfig, err = GenTLSConfig(tc); err != nil {
+			err := &configErr{tk, err.Error()}
+			return append(errors, err), warnings
+		}
+		o.TLSTimeout = tc.Timeout
+		o.TLSMap = tc.Map
+	case "write_deadline":
+		wd, ok := v.(string)
+		if ok {
+			dur, err := time.ParseDuration(wd)
+			if err != nil {
+				return append(errors, &configErr{tk,
+					fmt.Sprintf("error parsing write_deadline: %v", err)}), warnings
+			}
+			o.WriteDeadline = dur
+		} else {
+			// Backward compatible with old type, assume this is the
+			// number of seconds.
+			o.WriteDeadline = time.Duration(v.(int64)) * time.Second
+			return errors, append(warnings, &configWarningErr{
+				field: k,
+				configErr: configErr{
+					token:  tk,
+					reason: "write_deadline should be converted to a duration",
+				},
+			})
+		}
+	case "lame_duck_duration":
+		dur, err := time.ParseDuration(v.(string))
+		if err != nil {
+			return append(errors, &configErr{tk,
+				fmt.Sprintf("error parsing lame_duck_duration: %v", err)}), warnings
+		}
+		if dur < 30*time.Second {
+			return append(errors, &configErr{tk,
+				fmt.Sprintf("invalid lame_duck_duration of %v, minimum is 30 seconds", dur)}), warnings
+		}
+		o.LameDuckDuration = dur
+	case "operator", "operators", "roots", "root", "root_operators", "root_operator":
+		opFiles := []string{}
+		switch v := v.(type) {
+		case string:
+			opFiles = append(opFiles, v)
+		case []string:
+			opFiles = append(opFiles, v...)
+		default:
+			return append(errors, &configErr{tk,
+				fmt.Sprintf("error parsing operators: unsupported type %T", v)}), warnings
+		}
+		// Assume for now these are file names, but they can also be the JWT itself inline.
+		o.TrustedOperators = make([]*jwt.OperatorClaims, 0, len(opFiles))
+		for _, fname := range opFiles {
+			opc, err := ReadOperatorJWT(fname)
+			if err != nil {
+				return append(errors, &configErr{tk,
+					fmt.Sprintf("error parsing operator JWT: %v", err)}), warnings
+			}
+			o.TrustedOperators = append(o.TrustedOperators, opc)
+		}
+	case "resolver", "account_resolver", "accounts_resolver":
+		var memResolverRe = regexp.MustCompile(`(MEM|MEMORY|mem|memory)\s*`)
+		var resolverRe = regexp.MustCompile(`(?:URL|url){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
+		str, ok := v.(string)
+		if !ok {
+			return append(errors, &configErr{tk,
+				fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}), warnings
+		}
+		if memResolverRe.MatchString(str) {
+			o.AccountResolver = &MemAccResolver{}
+		} else {
+			items := resolverRe.FindStringSubmatch(str)
+			if len(items) == 2 {
+				url := items[1]
+				_, err := parseURL(url, "account resolver")
+				if err != nil {
+					return append(errors, &configErr{tk, err.Error()}), warnings
+				}
+				if ur, err := NewURLAccResolver(url); err != nil {
+					err := &configErr{tk, err.Error()}
+					return append(errors, err), warnings
+				} else {
+					o.AccountResolver = ur
+				}
+			}
+		}
+		if o.AccountResolver == nil {
+			return append(errors, &configErr{tk,
+				"error parsing account resolver, should be MEM or URL(\"url\")"}), warnings
+		}
+	case "resolver_tls":
+		tc, err := parseTLS(tk)
+		if err != nil {
+			return append(errors, err), warnings
+		}
+		if o.AccountResolverTLSConfig, err = GenTLSConfig(tc); err != nil {
+			err := &configErr{tk, err.Error()}
+			return append(errors, err), warnings
+		}
+	case "resolver_preload":
+		mp, ok := v.(map[string]interface{})
+		if !ok {
+			return append(errors, &configErr{tk,
+				"preload should be a map of account_public_key:account_jwt"}), warnings
+		}
+		o.resolverPreloads = make(map[string]string)
+		for key, val := range mp {
+			tk, val = unwrapValue(val)
+			if jwtstr, ok := val.(string); !ok {
+				err := &configErr{tk, "preload map value should be a string JWT"}
+				errors = append(errors, err)
+				continue
+			} else {
+				// Make sure this is a valid account JWT, that is a config error.
+				// We will warn of expirations, etc later.
+				if _, err := jwt.DecodeAccountClaims(jwtstr); err != nil {
+					errors = append(errors, &configErr{tk, "invalid account JWT"})
+					continue
+				}
+				o.resolverPreloads[key] = jwtstr
+			}
+		}
+	case "system_account", "system":
+		// Already processed at the beginning so we just skip them
+		// to not treat them as unknown values.
+		return
+	case "trusted", "trusted_keys":
+		switch v := v.(type) {
+		case string:
+			o.TrustedKeys = []string{v}
+		case []string:
+			o.TrustedKeys = v
+		case []interface{}:
+			keys := make([]string, 0, len(v))
+			for _, mv := range v {
+				tk, mv = unwrapValue(mv)
+				if key, ok := mv.(string); ok {
+					keys = append(keys, key)
+				} else {
+					return append(errors, &configErr{tk,
+						fmt.Sprintf("error parsing trusted: unsupported type in array %T", mv)}), warnings
+				}
+			}
+			o.TrustedKeys = keys
+		default:
+			err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
+			errors = append(errors, err)
+		}
+		// Do a quick sanity check on keys
+		for _, key := range o.TrustedKeys {
+			if !nkeys.IsValidPublicOperatorKey(key) {
+				errors = append(errors, &configErr{tk,
+					fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)})
+			}
+		}
+	case "connect_error_reports":
+		o.ConnectErrorReports = int(v.(int64))
+	case "reconnect_error_reports":
+		o.ReconnectErrorReports = int(v.(int64))
+	default:
+		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
+			errors = append(errors, &unknownConfigFieldErr{
+				field: k,
+				configErr: configErr{
+					token: tk,
+				},
+			})
+		}
+	}
+	return
 }
 
 func trackExplicitVal(opts *Options, pm *map[string]bool, name string, val bool) {
