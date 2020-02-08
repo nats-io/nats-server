@@ -1143,11 +1143,13 @@ func TestMalformedClusterAddress(t *testing.T) {
 }
 
 func TestPanic(t *testing.T) {
-	opts, err := ProcessConfigFile("./configs/panic.conf")
+	conf := createConfFile(t, []byte(`port: "this_string_trips_a_panic"`))
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
 	if err == nil {
 		t.Fatalf("Expected an error reading config file: got %+v", opts)
 	} else {
-		if !strings.Contains(err.Error(), "panic.conf:1:0: interface conversion:") {
+		if !strings.Contains(err.Error(), ":1:0: interface conversion:") {
 			t.Fatalf("This was supposed to trip a panic on interface conversion right at the beginning")
 		}
 	}
