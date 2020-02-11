@@ -139,7 +139,8 @@ type Server struct {
 		dialTimeout time.Duration
 	}
 
-	quitCh chan struct{}
+	quitCh           chan struct{}
+	shutdownComplete chan struct{}
 
 	// Tracking Go routines
 	grMu         sync.Mutex
@@ -323,6 +324,9 @@ func NewServer(opts *Options) (*Server, error) {
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
 	s.quitCh = make(chan struct{})
+	// Closed when Shutdown() is complete. Allows WaitForShutdown() to block
+	// waiting for complete shutdown.
+	s.shutdownComplete = make(chan struct{})
 
 	// For tracking accounts
 	if err := s.configureAccounts(); err != nil {
@@ -1334,6 +1338,13 @@ func (s *Server) Shutdown() {
 			l.Close()
 		}
 	}
+	// Notify that the shutdown is complete
+	close(s.shutdownComplete)
+}
+
+// WaitForShutdown will block until the server has been fully shutdown.
+func (s *Server) WaitForShutdown() {
+	<-s.shutdownComplete
 }
 
 // AcceptLoop is exported for easier testing.
