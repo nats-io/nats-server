@@ -700,7 +700,11 @@ func (fs *fileStore) expireMsgs() {
 				}
 			} else {
 				fireIn := time.Duration(sm.ts-now) + fs.cfg.MaxAge
-				fs.ageChk.Reset(fireIn)
+				if fs.ageChk != nil {
+					fs.ageChk.Reset(fireIn)
+				} else {
+					fs.ageChk = time.AfterFunc(fireIn, fs.expireMsgs)
+				}
 			}
 			fs.mu.Unlock()
 			return
