@@ -1162,13 +1162,15 @@ func TestPingIntervalOld(t *testing.T) {
 	err := opts.ProcessConfigFile(conf)
 	if err == nil {
 		t.Fatalf("expected an error")
-	} else if err, ok := err.(*processConfigErr); !ok {
+	}
+	if err, ok := err.(*processConfigErr); !ok {
 		t.Fatalf("expected an error of type processConfigErr")
 	} else if len(err.warnings) != 1 {
 		t.Fatalf("expected processConfigErr to have one warning")
 	} else if len(err.errors) != 0 {
 		t.Fatalf("expected processConfigErr to have no error")
-	} else if opts.PingInterval != 5*time.Second {
+	}
+	if opts.PingInterval != 5*time.Second {
 		t.Fatalf("expected ping interval to be 5 seconds")
 	}
 }
@@ -1180,7 +1182,8 @@ func TestPingIntervalNew(t *testing.T) {
 	err := opts.ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("expected no error")
-	} else if opts.PingInterval != 5*time.Minute {
+	}
+	if opts.PingInterval != 5*time.Minute {
 		t.Fatalf("expected ping interval to be 5 minutes")
 	}
 }
