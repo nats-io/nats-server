@@ -1155,6 +1155,36 @@ func TestPanic(t *testing.T) {
 	}
 }
 
+func TestPingIntervalOld(t *testing.T) {
+	conf := createConfFile(t, []byte(`ping_interval: 5`))
+	defer os.Remove(conf)
+	opts := &Options{}
+	err := opts.ProcessConfigFile(conf)
+	if err == nil {
+		t.Fatalf("expected an error")
+	} else if err, ok := err.(*processConfigErr); !ok {
+		t.Fatalf("expected an error of type processConfigErr")
+	} else if len(err.warnings) != 1 {
+		t.Fatalf("expected processConfigErr to have one warning")
+	} else if len(err.errors) != 0 {
+		t.Fatalf("expected processConfigErr to have no error")
+	} else if opts.PingInterval != 5*time.Second {
+		t.Fatalf("expected ping interval to be 5 seconds")
+	}
+}
+
+func TestPingIntervalNew(t *testing.T) {
+	conf := createConfFile(t, []byte(`ping_interval: "5m"`))
+	defer os.Remove(conf)
+	opts := &Options{}
+	err := opts.ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("expected no error")
+	} else if opts.PingInterval != 5*time.Minute {
+		t.Fatalf("expected ping interval to be 5 minutes")
+	}
+}
+
 func TestOptionsProcessConfigFile(t *testing.T) {
 	// Create options with default values of Debug and Trace
 	// that are the opposite of what is in the config file.
