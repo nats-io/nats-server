@@ -1215,7 +1215,7 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	}
 	// Make sure we can send and receive.
 	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.nc.Close()
+	defer cfoo.close()
 
 	if err := cfoo.registerWithAccount(fooAcc); err != nil {
 		t.Fatalf("Error registering client with 'foo' account: %v", err)
@@ -1225,14 +1225,14 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	cfoo.parse([]byte("SUB test.* 1\r\n"))
 
 	cbar, crBar, _ := newClientForServer(s)
-	defer cbar.nc.Close()
+	defer cbar.close()
 
 	if err := cbar.registerWithAccount(barAcc); err != nil {
 		t.Fatalf("Error registering client with 'bar' account: %v", err)
 	}
 
 	// Now send the request.
-	go cbar.parseAndFlush([]byte("SUB bar 11\r\nPUB test.22 bar 4\r\nhelp\r\n"))
+	go cbar.parse([]byte("SUB bar 11\r\nPUB test.22 bar 4\r\nhelp\r\n"))
 
 	// Now read the request from crFoo
 	l, err := crFoo.ReadString('\n')
@@ -1258,7 +1258,7 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	checkPayload(crFoo, []byte("help\r\n"), t)
 
 	replyOp := fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
-	go cfoo.parseAndFlush([]byte(replyOp))
+	go cfoo.parse([]byte(replyOp))
 
 	// Now read the response from crBar
 	l, err = crBar.ReadString('\n')
@@ -1286,13 +1286,13 @@ func TestServiceImportWithWildcards(t *testing.T) {
 
 	barAcc.mu.Lock()
 	defer barAcc.mu.Unlock()
-
 	if len(barAcc.imports.services) != 0 {
 		t.Fatalf("Expected no imported services, got %d", len(barAcc.imports.services))
 	}
 	if barAcc.imports.hasWC {
 		t.Fatalf("Expected the hasWC flag to be cleared")
 	}
+
 }
 
 // Make sure the AddStreamExport function is additive if called multiple times.
