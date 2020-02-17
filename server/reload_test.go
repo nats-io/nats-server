@@ -1571,6 +1571,9 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 	if err := srvaConn.Flush(); err != nil {
 		t.Fatalf("Error flushing: %v", err)
 	}
+	if err := srvaConn.Flush(); err != nil {
+		t.Fatalf("Error flushing: %v", err)
+	}
 
 	srvbAddr := fmt.Sprintf("nats://%s:%d", srvbOpts.Host, srvbOpts.Port)
 	srvbConn, err := nats.Connect(srvbAddr)
