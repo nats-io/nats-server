@@ -4159,6 +4159,104 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 	}
 }
 
+// This will be testing our ability to conditionally rewrite subjects for last mile
+// when working with JetStream. Consumers receive messages that have their subjects
+// rewritten to match the original subject. NATS routing is all subject based except
+// for the last mile to the client.
+func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
+	ca := createClusterWithName(t, "A", 1)
+	defer shutdownCluster(ca)
+	cb := createClusterWithName(t, "B", 1, ca)
+	defer shutdownCluster(cb)
+
+	// Connect our leafnode server to cluster B.
+	opts := cb.opts[rand.Intn(len(cb.opts))]
+	s, _ := runSolicitLeafServer(opts)
+	defer s.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	if err := s.EnableJetStream(nil); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo", Storage: server.MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, "foo", "Hello World!")
+	}
+
+	// Now create a push based consumer. Connected to the non-jetstream server via a random server on cluster A.
+	sl := ca.servers[rand.Intn(len(ca.servers))]
+	nc2 := clientConnectToServer(t, sl)
+	defer nc2.Close()
+
+	sub, _ := nc2.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+
+	// Need to wait for interest to propagate across GW.
+	nc2.Flush()
+	time.Sleep(25 * time.Millisecond)
+
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	checkSubPending := func(numExpected int) {
+		t.Helper()
+		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+			}
+			return nil
+		})
+	}
+	checkSubPending(toSend)
+
+	checkMsg := func(m *nats.Msg, err error, i int) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("Got an error checking message: %v", err)
+		}
+		if m.Subject != "foo" {
+			t.Fatalf("Expected original subject of %q, but got %q", "foo", m.Subject)
+		}
+		// Now check that reply subject exists and has a sequence as the last token.
+		if seq := o.SeqFromReply(m.Reply); seq != uint64(i) {
+			t.Fatalf("Expected sequence of %d , got %d", i, seq)
+		}
+	}
+
+	// Now check the subject to make sure its the original one.
+	for i := 1; i <= toSend; i++ {
+		m, err := sub.NextMsg(time.Second)
+		checkMsg(m, err, i)
+	}
+
+	// Now do a pull based consumer.
+	o, err = mset.AddConsumer(workerModeConfig("p"))
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	nextMsg := o.RequestNextMsgSubject()
+	for i := 1; i <= toSend; i++ {
+		m, err := nc.Request(nextMsg, nil, time.Second)
+		checkMsg(m, err, i)
+	}
+}
+
 // Benchmark placeholder
 func TestJetStreamPubSubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.

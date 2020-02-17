@@ -2722,7 +2722,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 			if c.kind == ROUTER {
 				flags |= pmrAllowSendFromRouteToRoute
 			}
-			queues = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flags)
+			queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags)
 		}
 		// Since this was a reply that made it to the origin cluster,
 		// we now need to send the message with the real subject to
@@ -2808,7 +2808,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			return
 		}
 	}
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+	c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
 // Indicates that the remote which we are sending messages to
