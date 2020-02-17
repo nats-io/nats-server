@@ -28,6 +28,7 @@ import (
 	"sync"
 
 	"github.com/minio/highwayhash"
+
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
@@ -247,6 +248,25 @@ func (s *Server) getJetStream() *jetStream {
 	return js
 }
 
+func (a *Account) sendJSError(s *Server, event JSError) {
+	s.Warnf("  " + event.LogLine())
+
+	if event.ShouldRateLimit() && !errorEventLimit.Allow() {
+		return
+	}
+
+	advisory := event.Advisory()
+	advisory.Server = s.Name()
+
+	ej, err := json.MarshalIndent(advisory, "", "  ")
+	if err == nil {
+		s.sendInternalAccountMsg(a, JetStreamErrorAdvisory, ej)
+	} else {
+		s.Warnf("JetStream could not marshal error event: %v", a.Name, err)
+	}
+
+}
+
 // EnableJetStream will enable JetStream on this account with the defined limits.
 // This is a helper for JetStreamEnableAccount.
 func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
@@ -318,7 +338,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// Restore any state here.
 	s.Noticef("  Recovering JetStream state for account %q", a.Name)
 
-	// Check templates first since messsage sets will need proper ownership.
+	// Check templates first since streams will need proper ownership.
 	tdir := path.Join(jsa.storeDir, tmplsDir)
 	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
 		key := sha256.Sum256([]byte(tdir))
@@ -331,34 +351,35 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			metafile := path.Join(tdir, fi.Name(), JetStreamMetaFile)
 			metasum := path.Join(tdir, fi.Name(), JetStreamMetaFileSum)
 			buf, err := ioutil.ReadFile(metafile)
+			errEvent := jsStartUpError.Detail(JSErrorDetail{"metafile": metafile, "metasum": metasum})
 			if err != nil {
-				s.Warnf("  Error reading StreamTemplate metafile %q: %v", metasum, err)
+				a.sendJSError(s, errEvent.UserMessage("Error reading StreamTemplate metafile").Wrap(err))
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("  Missing StreamTemplate checksum for %q", metasum)
+				a.sendJSError(s, errEvent.UserMessage("Missing StreamTemplate checksum"))
 				continue
 			}
 			sum, err := ioutil.ReadFile(metasum)
 			if err != nil {
-				s.Warnf("  Error reading StreamTemplate checksum %q: %v", metasum, err)
+				a.sendJSError(s, errEvent.UserMessage("Error reading StreamTemplate checksum").Wrap(err))
 				continue
 			}
 			hh.Reset()
 			hh.Write(buf)
 			checksum := hex.EncodeToString(hh.Sum(nil))
 			if checksum != string(sum) {
-				s.Warnf("  StreamTemplate checksums do not match %q vs %q", sum, checksum)
+				a.sendJSError(s, errEvent.UserMessage("StreamTemplate checksums do not match").Detail(JSErrorDetail{"sum": string(sum), "checksum": string(checksum)}))
 				continue
 			}
 			var cfg StreamTemplateConfig
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("  Error unmarshalling StreamTemplate metafile: %v", err)
+				a.sendJSError(s, errEvent.UserMessage("Error unmarshalling StreamTemplate metafile").Wrap(err))
 				continue
 			}
 			cfg.Config.Name = _EMPTY_
 			if _, err := a.AddStreamTemplate(&cfg); err != nil {
-				s.Warnf("  Error recreating StreamTemplate %q: %v", cfg.Name, err)
+				a.sendJSError(s, errEvent.UserMessage("Error recreating StreamTemplate").Wrap(err).Detail(JSErrorDetail{"name": cfg.Name}))
 				continue
 			}
 		}
@@ -374,44 +395,45 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 		metafile := path.Join(mdir, JetStreamMetaFile)
 		metasum := path.Join(mdir, JetStreamMetaFileSum)
+		errEvent := jsStartUpError.Detail(JSErrorDetail{"metafile": metafile, "metasum": metasum})
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
-			s.Warnf("  Missing Stream metafile for %q", metafile)
+			a.sendJSError(s, errEvent.UserMessage("Missing Stream metafile").Wrap(err))
 			continue
 		}
 		buf, err := ioutil.ReadFile(metafile)
 		if err != nil {
-			s.Warnf("  Error reading metafile %q: %v", metasum, err)
+			a.sendJSError(s, errEvent.UserMessage("Error reading metafile").Wrap(err))
 			continue
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			s.Warnf("  Missing Stream checksum for %q", metasum)
+			a.sendJSError(s, errEvent.UserMessage("Missing Stream checksum").Wrap(err))
 			continue
 		}
 		sum, err := ioutil.ReadFile(metasum)
 		if err != nil {
-			s.Warnf("  Error reading Stream metafile checksum %q: %v", metasum, err)
+			a.sendJSError(s, errEvent.UserMessage("Error reading Stream metafile checksum").Wrap(err))
 			continue
 		}
 		hh.Write(buf)
 		checksum := hex.EncodeToString(hh.Sum(nil))
 		if checksum != string(sum) {
-			s.Warnf("  Stream metafile checksums do not match %q vs %q", sum, checksum)
+			a.sendJSError(s, errEvent.UserMessage("Stream metafile checksums do not match").Wrap(err).Detail(JSErrorDetail{"sum": string(sum), "checksum": checksum}))
 			continue
 		}
 
 		var cfg StreamConfig
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling Stream metafile: %v", err)
+			a.sendJSError(s, errEvent.UserMessage("Error unmarshalling Stream metafile").Wrap(err))
 			continue
 		}
 		if cfg.Template != _EMPTY_ {
 			if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
-				s.Warnf("  Error adding Stream %q to Template %q: %v", cfg.Name, cfg.Template, err)
+				a.sendJSError(s, errEvent.UserMessage("Error adding Stream to template").Wrap(err).Detail(JSErrorDetail{"stream": cfg.Name, "template": cfg.Template}))
 			}
 		}
 		mset, err := a.AddStream(&cfg)
 		if err != nil {
-			s.Warnf("  Error recreating Stream %q: %v", cfg.Name, err)
+			a.sendJSError(s, errEvent.UserMessage("Error recreating Stream").Wrap(err).Detail(JSErrorDetail{"stream": cfg.Name}))
 			continue
 		}
 
@@ -427,31 +449,33 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		for _, ofi := range ofis {
 			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			errEvent := jsStartUpError.Detail(JSErrorDetail{"metafile": metafile, "metasum": metasum})
+
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
-				s.Warnf("    Missing Consumer Metafile %q", metafile)
+				a.sendJSError(s, errEvent.UserMessage("Missing Consumer Metafile").Wrap(err))
 				continue
 			}
 			buf, err := ioutil.ReadFile(metafile)
 			if err != nil {
-				s.Warnf("    Error reading consumer metafile %q: %v", metasum, err)
+				a.sendJSError(s, errEvent.UserMessage("Error reading consumer metafile").Wrap(err))
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("    Missing Consumer checksum for %q", metasum)
+				a.sendJSError(s, errEvent.UserMessage("Missing Consumer checksum").Wrap(err))
 				continue
 			}
 			var cfg ConsumerConfig
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling Consumer metafile: %v", err)
+				a.sendJSError(s, errEvent.UserMessage("Error unmarshalling Consumer metafile").Wrap(err))
 				continue
 			}
-			obs, err := mset.AddConsumer(&cfg)
+			consumer, err := mset.AddConsumer(&cfg)
 			if err != nil {
-				s.Warnf("    Error adding Consumer: %v", err)
+				a.sendJSError(s, errEvent.UserMessage("Error adding Consumer").Wrap(err))
 				continue
 			}
-			if err := obs.readStoredState(); err != nil {
-				s.Warnf("    Error restoring Consumer state: %v", err)
+			if err := consumer.readStoredState(); err != nil {
+				a.sendJSError(s, errEvent.UserMessage("Error restoring Consumer state").Wrap(err))
 			}
 		}
 	}

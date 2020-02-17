@@ -133,9 +133,6 @@ const (
 
 	// JetStreamAPIAuditAdvisory is a notification about JetStream API access.
 	JetStreamAPIAuditAdvisory = JetStreamAdvisoryPrefix + ".API"
-
-	// JetStreamErrorAdvisory is a notification about an error processing an API request
-	JetStreamErrorAdvisory = JetStreamAdvisoryPrefix + ".ERROR"
 )
 
 // Responses to requests sent to a server from a client.
@@ -206,7 +203,7 @@ func (s *Server) setJetStreamExportSubs() error {
 
 func (s *Server) sendAPIResponse(c *client, subject, reply, request, response string) {
 	s.sendInternalAccountMsg(c.acc, reply, response)
-	s.sendJSAPIAuditAdvisory(c, subject, request, response)
+	s.sendJetStreamAPIAuditAdvisory(c, subject, request, response)
 }
 
 // Request to check if jetstream is enabled.
@@ -705,20 +702,34 @@ type JetStreamAPIAudit struct {
 	Response string         `json:"response"`
 }
 
-const auditAdvisorySchema = "io.nats.jetstream.advisory.v1.api_audit"
+const auditSchema = "io.nats.jetstream.advisory.v1.api_audit"
 
-// sendJSAPIAuditAdvisory will send the audit event for a given event.
-func (s *Server) sendJSAPIAuditAdvisory(c *client, subject, request, response string) {
+// sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
+func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
 	c.mu.Lock()
-	cinfo := c.auditInfo()
+	auditUser := c.auditUser()
+	h, p := c.auditClient()
+	appName := c.opts.Name
+	lang := c.opts.Lang
+	version := c.opts.Version
+	cid := c.cid
 	c.mu.Unlock()
 
 	e := &JetStreamAPIAudit{
-		Schema:   auditAdvisorySchema,
-		ID:       nuid.Next(),
-		Time:     time.Now().UTC().Format(time.RFC3339Nano),
-		Server:   s.Name(),
-		Client:   *cinfo,
+		Schema: auditSchema,
+		ID:     nuid.Next(),
+		Time:   time.Now().UTC().Format(time.RFC3339Nano),
+		Server: s.Name(),
+		Client: ClientAPIAudit{
+			Host:     h,
+			Port:     p,
+			CID:      cid,
+			Account:  c.Account().Name,
+			User:     auditUser,
+			Name:     appName,
+			Language: lang,
+			Version:  version,
+		},
 		Subject:  subject,
 		Request:  request,
 		Response: response,

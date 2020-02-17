@@ -9,6 +9,7 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4
 	golang.org/x/sys v0.0.0-20191022100944-742c48ecaeb7
+	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
 )
 
 go 1.13

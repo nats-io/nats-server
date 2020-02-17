@@ -349,24 +349,6 @@ type perAccountCache struct {
 	genid   uint64
 }
 
-// auditInfo retrieves client info for audit purposes, caller should lock client
-func (c *client) auditInfo() *ClientAPIAudit {
-	h, p := c.auditClient()
-
-	info := ClientAPIAudit{
-		Host:     h,
-		Port:     p,
-		CID:      c.cid,
-		Account:  c.acc.Name,
-		User:     c.auditUser(),
-		Name:     c.opts.Name,
-		Language: c.opts.Lang,
-		Version:  c.opts.Version,
-	}
-
-	return &info
-}
-
 func (c *client) String() (id string) {
 	return c.ncs
 }

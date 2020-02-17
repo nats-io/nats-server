@@ -315,6 +315,7 @@ func (mset *Stream) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
+	name := mset.config.Name
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -331,18 +332,18 @@ func (mset *Stream) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 	} else {
 		seq, err = strconv.ParseUint(string(msg), 10, 64)
 		if err != nil {
-			event := jsBadSequenceError.Wrap(err).Detail(JSErrorDetail{"account": c.acc.Name, "msg": msg})
-			c.Debugf(event.LogLine())
-			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, event.UserResponse(), nil, 0}
+			c.Debugf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
+			response = []byte("-ERR 'bad sequence argument'")
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 			return
 		}
 	}
 
 	subj, msg, ts, err := store.LoadMsg(seq)
 	if err != nil {
-		event := jsStorageReadError.Wrap(err).Detail(JSErrorDetail{"account": c.acc.Name, "seq": seq})
-		c.Debugf(event.LogLine())
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, event.UserResponse(), nil, 0}
+		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
+		response = []byte("-ERR 'could not load message from storage'")
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 		return
 	}
 	sm := &StoredMsg{
@@ -356,7 +357,7 @@ func (mset *Stream) processMsgBySeq(_ *subscription, _ *client, subject, reply s
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *Stream) processInboundJetStreamMsg(_ *subscription, caller *client, subject, reply string, msg []byte) {
+func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
@@ -367,6 +368,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, caller *client, 
 	doAck := !mset.config.NoAck
 	jsa := mset.jsa
 	stype := mset.config.Storage
+	name := mset.config.Name
 	maxMsgSize := int(mset.config.MaxMsgSize)
 	mset.mu.Unlock()
 
@@ -380,24 +382,18 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, caller *client, 
 	var err error
 
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
-		event := jsLimitsExceededError.Detail(JSErrorDetail{"account": accName, "user": c.auditUser(), "size": len(msg)})
-		response = event.UserResponse()
-		mset.sendJSError(c, caller, event)
+		response = []byte("-ERR 'message size exceeds maximum allowed'")
 	} else {
 		// Check to see if we are over the account limit.
 		seq, err = store.StoreMsg(subject, msg)
 		if err != nil {
-			event := jsStorageWriteError.Detail(JSErrorDetail{"account": accName, "user": c.auditUser()}).Wrap(err)
-			mset.sendJSError(c, caller, event)
-			response = event.UserResponse()
-
+			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+			response = []byte(fmt.Sprintf("-ERR '%v'", err))
 		} else if jsa.limitsExceeded(stype) {
+			c.Warnf("JetStream resource limits exceeded for account: %q", accName)
+			response = []byte("-ERR 'resource limits exceeded for account'")
 			store.RemoveMsg(seq)
 			seq = 0
-
-			event := jsLimitsExceededError.UserMessage("resource limits exceeded for account").Detail(JSErrorDetail{"account": accName, "user": c.auditUser()})
-			mset.sendJSError(c, caller, event)
-			response = event.UserResponse()
 		}
 	}
 
@@ -664,35 +660,5 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 		if !needAck {
 			mset.store.RemoveMsg(seq)
 		}
-	}
-}
-
-func (mset *Stream) sendJSError(c *client, caller *client, event JSError) {
-	if event.err != nil {
-		c.Errorf(event.LogLine())
-	} else {
-		c.Warnf(event.LogLine())
-	}
-
-	if event.ShouldRateLimit() && !errorEventLimit.Allow() {
-		return
-	}
-
-	e := event.Advisory()
-
-	mset.mu.Lock()
-	e.Stream = mset.config.Name
-	c.mu.Lock()
-	e.Server = mset.client.srv.Name()
-	c.mu.Unlock()
-	mset.mu.Unlock()
-
-	caller.mu.Lock()
-	e.Client = caller.auditInfo()
-	caller.mu.Unlock()
-
-	ej, err := json.MarshalIndent(e, "", "  ")
-	if err == nil && mset.sendq != nil {
-		mset.sendq <- &jsPubMsg{JetStreamErrorAdvisory, _EMPTY_, _EMPTY_, ej, nil, 0}
 	}
 }
