@@ -1558,7 +1558,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flag)
+		qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
