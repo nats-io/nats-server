@@ -47,6 +47,7 @@ type StreamStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
 	StorageBytesUpdate(func(int64))
+	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
