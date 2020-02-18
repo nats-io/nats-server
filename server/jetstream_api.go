@@ -58,6 +58,11 @@ const (
 	JetStreamCreateStream  = "$JS.STREAM.*.CREATE"
 	JetStreamCreateStreamT = "$JS.STREAM.%s.CREATE"
 
+	// JetStreamUpdateStream is the endpoint to update existing streams.
+	// Will return +OK on success and -ERR on failure.
+	JetStreamUpdateStream  = "$JS.STREAM.*.UPDATE"
+	JetStreamUpdateStreamT = "$JS.STREAM.%s.UPDATE"
+
 	// JetStreamListStreams is the endpoint to list all streams for this account.
 	// Will return json list of string on success and -ERR on failure.
 	JetStreamListStreams = "$JS.STREAM.LIST"
@@ -157,6 +162,7 @@ var allJsExports = []string{
 	JetStreamTemplateInfo,
 	JetStreamDeleteTemplate,
 	JetStreamCreateStream,
+	JetStreamUpdateStream,
 	JetStreamListStreams,
 	JetStreamStreamInfo,
 	JetStreamDeleteStream,
@@ -181,6 +187,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JetStreamTemplateInfo, s.jsTemplateInfoRequest},
 		{JetStreamDeleteTemplate, s.jsTemplateDeleteRequest},
 		{JetStreamCreateStream, s.jsCreateStreamRequest},
+		{JetStreamUpdateStream, s.jsStreamUpdateRequest},
 		{JetStreamListStreams, s.jsStreamListRequest},
 		{JetStreamStreamInfo, s.jsStreamInfoRequest},
 		{JetStreamDeleteStream, s.jsStreamDeleteRequest},
@@ -365,6 +372,38 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 
 	var response = OK
 	if _, err := c.acc.AddStream(&cfg); err != nil {
+		response = protoErr(err)
+	}
+	s.sendAPIResponse(c, subject, reply, string(msg), response)
+}
+
+// Request to update a stream.
+func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	if !c.acc.JetStreamEnabled() {
+		s.sendAPIResponse(c, subject, reply, string(msg), JetStreamNotEnabled)
+		return
+	}
+	var cfg StreamConfig
+	if err := json.Unmarshal(msg, &cfg); err != nil {
+		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		return
+	}
+	streamName := subjectToken(subject, 2)
+	if streamName != cfg.Name {
+		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
+		return
+	}
+	mset, err := c.acc.LookupStream(streamName)
+	if err != nil {
+		s.sendAPIResponse(c, subject, reply, string(msg), protoErr(err))
+		return
+	}
+
+	var response = OK
+	if err := mset.Update(&cfg); err != nil {
 		response = protoErr(err)
 	}
 	s.sendAPIResponse(c, subject, reply, string(msg), response)
