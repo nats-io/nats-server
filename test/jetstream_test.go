@@ -834,7 +834,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 	}
 }
 
-func TestJetStreamSubjecting(t *testing.T) {
+func TestJetStreamSubjectFiltering(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.StreamConfig
@@ -906,7 +906,7 @@ func TestJetStreamSubjecting(t *testing.T) {
 	}
 }
 
-func TestJetStreamWorkQueueSubjecting(t *testing.T) {
+func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.StreamConfig
@@ -2067,7 +2067,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 	}
 }
 
-func TestJetStreamDurableSubjectedConsumerReconnect(t *testing.T) {
+func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.StreamConfig
@@ -3447,6 +3447,16 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Got wrong error response: %q", resp.Data)
 	}
 
+	// Check that update works.
+	msetCfg.Subjects = []string{"foo", "bar", "baz"}
+	msetCfg.MaxBytes = 2222222
+	req, err = json.Marshal(msetCfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamUpdateStreamT, msetCfg.Name), req, time.Second)
+	expectOKResponse(t, resp)
+
 	// Now lookup info again and see that we can see the new stream.
 	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
 	if err != nil {
@@ -3753,6 +3763,228 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	if ti.Streams[0] != server.CanonicalName("kv.22") {
 		t.Fatalf("Expected stream with name %q, but got %q", server.CanonicalName("kv.22"), ti.Streams[0])
+	}
+}
+
+func TestJetStreamUpdateStream(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			// Test basic updates. We allow changing the subjects, limits, and no_ack along with replicas(TBD w/ cluster)
+			cfg := *c.mconfig
+
+			// Can't change name.
+			cfg.Name = "bar"
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "name must match") {
+				t.Fatalf("Expected error trying to update name")
+			}
+			// Can't change max consumers for now.
+			cfg = *c.mconfig
+			cfg.MaxConsumers = 10
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+				t.Fatalf("Expected error trying to change MaxConsumers")
+			}
+			// Can't change storage types.
+			cfg = *c.mconfig
+			if cfg.Storage == server.FileStorage {
+				cfg.Storage = server.MemoryStorage
+			} else {
+				cfg.Storage = server.FileStorage
+			}
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+				t.Fatalf("Expected error trying to change Storage")
+			}
+			// Can't change replicas > 1 for now.
+			cfg = *c.mconfig
+			cfg.Replicas = 10
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "maximum replicas") {
+				t.Fatalf("Expected error trying to change Replicas")
+			}
+			// Can't have a template set for now.
+			cfg = *c.mconfig
+			cfg.Template = "baz"
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "template") {
+				t.Fatalf("Expected error trying to change Template owner")
+			}
+			// Can't change limits policy.
+			cfg = *c.mconfig
+			cfg.Retention = server.WorkQueuePolicy
+			if err := mset.Update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+				t.Fatalf("Expected error trying to change Retention")
+			}
+
+			// Now test changing limits.
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			pending := uint64(100)
+			for i := uint64(0); i < pending; i++ {
+				sendStreamMsg(t, nc, "foo", "0123456789")
+			}
+			pendingBytes := mset.State().Bytes
+
+			checkPending := func(msgs, bts uint64) {
+				t.Helper()
+				state := mset.State()
+				if state.Msgs != msgs {
+					t.Fatalf("Expected %d messages, got %d", msgs, state.Msgs)
+				}
+				if state.Bytes != bts {
+					t.Fatalf("Expected %d bytes, got %d", bts, state.Bytes)
+				}
+			}
+			checkPending(pending, pendingBytes)
+
+			// Update msgs to higher.
+			cfg = *c.mconfig
+			cfg.MaxMsgs = int64(pending * 2)
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			if mset.Config().MaxMsgs != cfg.MaxMsgs {
+				t.Fatalf("Expected the change to take effect, %d vs %d", mset.Config().MaxMsgs, cfg.MaxMsgs)
+			}
+			checkPending(pending, pendingBytes)
+
+			// Update msgs to lower.
+			cfg = *c.mconfig
+			cfg.MaxMsgs = int64(pending / 2)
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			if mset.Config().MaxMsgs != cfg.MaxMsgs {
+				t.Fatalf("Expected the change to take effect, %d vs %d", mset.Config().MaxMsgs, cfg.MaxMsgs)
+			}
+			checkPending(pending/2, pendingBytes/2)
+			// Now do bytes.
+			cfg = *c.mconfig
+			cfg.MaxBytes = int64(pendingBytes / 4)
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			if mset.Config().MaxBytes != cfg.MaxBytes {
+				t.Fatalf("Expected the change to take effect, %d vs %d", mset.Config().MaxBytes, cfg.MaxBytes)
+			}
+			checkPending(pending/4, pendingBytes/4)
+
+			// Now do age.
+			cfg = *c.mconfig
+			cfg.MaxAge = time.Millisecond
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			// Just wait a bit for expiration.
+			time.Sleep(5 * time.Millisecond)
+			if mset.Config().MaxAge != cfg.MaxAge {
+				t.Fatalf("Expected the change to take effect, %d vs %d", mset.Config().MaxAge, cfg.MaxAge)
+			}
+			checkPending(0, 0)
+
+			// Now put back to original.
+			cfg = *c.mconfig
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			for i := uint64(0); i < pending; i++ {
+				sendStreamMsg(t, nc, "foo", "0123456789")
+			}
+
+			// subject changes.
+			// Add in a subject first.
+			cfg = *c.mconfig
+			cfg.Subjects = []string{"foo", "bar"}
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			// Make sure we can still send to foo.
+			sendStreamMsg(t, nc, "foo", "0123456789")
+			// And we can now send to bar.
+			sendStreamMsg(t, nc, "bar", "0123456789")
+			// Now delete both and change to baz only.
+			cfg.Subjects = []string{"baz"}
+			if err := mset.Update(&cfg); err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+			// Make sure we do not get response acks for "foo" or "bar".
+			if resp, err := nc.Request("foo", nil, 25*time.Millisecond); err == nil || resp != nil {
+				t.Fatalf("Expected no response from jetstream for deleted subject: %q", "foo")
+			}
+			if resp, err := nc.Request("bar", nil, 25*time.Millisecond); err == nil || resp != nil {
+				t.Fatalf("Expected no response from jetstream for deleted subject: %q", "bar")
+			}
+			// Make sure we can send to "baz"
+			sendStreamMsg(t, nc, "baz", "0123456789")
+			if nmsgs := mset.State().Msgs; nmsgs != pending+3 {
+				t.Fatalf("Expected %d msgs, got %d", pending+3, nmsgs)
+			}
+
+			// FileStore restarts for config save.
+			cfg = *c.mconfig
+			if cfg.Storage == server.FileStorage {
+				cfg.Subjects = []string{"foo", "bar"}
+				cfg.MaxMsgs = 2222
+				cfg.MaxBytes = 3333333
+				cfg.MaxAge = 22 * time.Hour
+				if err := mset.Update(&cfg); err != nil {
+					t.Fatalf("Unexpected error %v", err)
+				}
+				// Pull since certain defaults etc are set in processing.
+				cfg = mset.Config()
+
+				// Restart the server.
+				// Capture port since it was dynamic.
+				u, _ := url.Parse(s.ClientURL())
+				port, _ := strconv.Atoi(u.Port())
+
+				// Stop current server.
+				s.Shutdown()
+				// Restart.
+				s = RunJetStreamServerOnPort(port)
+				defer s.Shutdown()
+
+				mset, err = s.GlobalAccount().LookupStream(cfg.Name)
+				if err != nil {
+					t.Fatalf("Expected to find a stream for %q", cfg.Name)
+				}
+				restored_cfg := mset.Config()
+				if !reflect.DeepEqual(cfg, restored_cfg) {
+					t.Fatalf("restored configuration does not match: \n%+v\n vs \n%+v", restored_cfg, cfg)
+				}
+			}
+		})
 	}
 }
 

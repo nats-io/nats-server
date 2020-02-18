@@ -700,16 +700,23 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 	}
 	// Check storage, memory or disk.
 	if config.MaxBytes > 0 {
-		mb := config.MaxBytes * int64(config.Replicas)
-		switch config.Storage {
-		case MemoryStorage:
-			if jsa.memReserved+mb > jsa.limits.MaxMemory {
-				return fmt.Errorf("insufficient memory resources available")
-			}
-		case FileStorage:
-			if jsa.storeReserved+mb > jsa.limits.MaxStore {
-				return fmt.Errorf("insufficient storage resources available")
-			}
+		return jsa.checkBytesLimits(config.MaxBytes*int64(config.Replicas), config.Storage)
+	}
+	return nil
+}
+
+// Check if additional bytes will exceed our account limits.
+// This should account for replicas.
+// Lock should be held.
+func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType) error {
+	switch storage {
+	case MemoryStorage:
+		if jsa.memReserved+addBytes > jsa.limits.MaxMemory {
+			return fmt.Errorf("insufficient memory resources available")
+		}
+	case FileStorage:
+		if jsa.storeReserved+addBytes > jsa.limits.MaxStore {
+			return fmt.Errorf("insufficient storage resources available")
 		}
 	}
 	return nil

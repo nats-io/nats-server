@@ -95,9 +95,6 @@ func (a *Account) AddStream(config *StreamConfig) (*Stream, error) {
 		}
 	}
 
-	if len(cfg.Subjects) == 0 {
-		cfg.Subjects = append(cfg.Subjects, cfg.Name)
-	}
 	// Check for overlapping subjects. These are not allowed for now.
 	if jsa.subjectsOverlap(cfg.Subjects) {
 		jsa.mu.Unlock()
@@ -152,16 +149,18 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if config == nil {
 		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
 	}
-
 	if !isValidName(config.Name) {
 		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '.', '*', '>'")
 	}
-
 	cfg := *config
 
 	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.
 	if cfg.Replicas == 0 {
 		cfg.Replicas = 1
+	}
+	// TODO(dlc) - Remove when clustering happens.
+	if cfg.Replicas > 1 {
+		return StreamConfig{}, fmt.Errorf("maximum replicas is 1")
 	}
 	if cfg.Replicas > StreamMaxReplicas {
 		return cfg, fmt.Errorf("maximum replicas is %d", StreamMaxReplicas)
@@ -174,6 +173,21 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	}
 	if cfg.MaxMsgSize == 0 {
 		cfg.MaxMsgSize = -1
+	}
+	if cfg.MaxConsumers == 0 {
+		cfg.MaxConsumers = -1
+	}
+	if len(cfg.Subjects) == 0 {
+		cfg.Subjects = append(cfg.Subjects, cfg.Name)
+	} else {
+		// We can allow overlaps, but don't allow direct duplicates.
+		dset := make(map[string]struct{}, len(cfg.Subjects))
+		for _, subj := range cfg.Subjects {
+			if _, ok := dset[subj]; ok {
+				return StreamConfig{}, fmt.Errorf("duplicate subjects detected")
+			}
+			dset[subj] = struct{}{}
+		}
 	}
 	return cfg, nil
 }
@@ -198,6 +212,89 @@ func (mset *Stream) Delete() error {
 	jsa.mu.Unlock()
 
 	return mset.delete()
+}
+
+// Update will allow certain configuration properties of an existing stream to be updated.
+func (mset *Stream) Update(config *StreamConfig) error {
+	cfg, err := checkStreamCfg(config)
+	if err != nil {
+		return err
+	}
+	o_cfg := mset.Config()
+
+	// Name must match.
+	if cfg.Name != o_cfg.Name {
+		return fmt.Errorf("stream configuration name must match original")
+	}
+	// Can't change MaxConsumers for now.
+	if cfg.MaxConsumers != o_cfg.MaxConsumers {
+		return fmt.Errorf("stream configuration update can not change MaxConsumers")
+	}
+	// Can't change storage types.
+	if cfg.Storage != o_cfg.Storage {
+		return fmt.Errorf("stream configuration update can not change storage type")
+	}
+	// Can't change retention.
+	if cfg.Retention != o_cfg.Retention {
+		return fmt.Errorf("stream configuration update can not change retention policy")
+	}
+	// Can not have a template owner for now.
+	if o_cfg.Template != "" {
+		return fmt.Errorf("stream configuration update not allowed on template owned stream")
+	}
+	if cfg.Template != "" {
+		return fmt.Errorf("stream configuration update can not be owned by a template")
+	}
+
+	// Check limits.
+	mset.mu.Lock()
+	jsa := mset.jsa
+	mset.mu.Unlock()
+
+	jsa.mu.Lock()
+	if cfg.MaxConsumers > 0 && cfg.MaxConsumers > jsa.limits.MaxConsumers {
+		jsa.mu.Unlock()
+		return fmt.Errorf("stream configuration maximum consumers exceeds account limit")
+	}
+	if cfg.MaxBytes > 0 && cfg.MaxBytes > o_cfg.MaxBytes {
+		if err := jsa.checkBytesLimits(cfg.MaxBytes*int64(cfg.Replicas), cfg.Storage); err != nil {
+			jsa.mu.Unlock()
+			return err
+		}
+	}
+	jsa.mu.Unlock()
+
+	// Now check for subject interest differences.
+	current := make(map[string]struct{}, len(o_cfg.Subjects))
+	for _, s := range o_cfg.Subjects {
+		current[s] = struct{}{}
+	}
+	// Update config with new values. The store update will enforce any stricter limits.
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	// Now walk new subjects. All of these need to be added, but we will check
+	// the originals first, since if it is in there we can skip, already added.
+	for _, s := range cfg.Subjects {
+		if _, ok := current[s]; !ok {
+			if _, err := mset.subscribeInternal(s, mset.processInboundJetStreamMsg); err != nil {
+				return err
+			}
+		}
+		delete(current, s)
+	}
+	// What is left in current needs to be deleted.
+	for s := range current {
+		if err := mset.unsubscribeInternal(s); err != nil {
+			return err
+		}
+	}
+
+	// Now update config and store's version of our config.
+	mset.config = cfg
+	mset.store.UpdateConfig(&cfg)
+
+	return nil
 }
 
 // Purge will remove all messages from the stream and underlying store.
@@ -254,6 +351,7 @@ func (mset *Stream) subscribeToStream() error {
 }
 
 // FIXME(dlc) - This only works in single server mode for the moment. Need to fix as we expand to clusters.
+// Lock should be held.
 func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
 	c := mset.client
 	if c == nil {
@@ -277,6 +375,36 @@ func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	sub.icb = cb
 	c.mu.Unlock()
 	return sub, nil
+}
+
+// This will unsubscribe us from the exact subject given.
+// We do not currently track the subs so do not have the sid.
+// This should be called only on an update.
+// Lock should be held.
+func (mset *Stream) unsubscribeInternal(subject string) error {
+	c := mset.client
+	if c == nil {
+		return fmt.Errorf("invalid stream")
+	}
+	if !c.srv.eventsEnabled() {
+		return ErrNoSysAccount
+	}
+
+	var sid []byte
+
+	c.mu.Lock()
+	for _, sub := range c.subs {
+		if subject == string(sub.subject) {
+			sid = sub.sid
+			break
+		}
+	}
+	c.mu.Unlock()
+
+	if sid != nil {
+		return c.processUnsub(sid)
+	}
+	return nil
 }
 
 // Lock should be held.
