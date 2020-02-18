@@ -699,13 +699,22 @@ func TestLameDuckMode(t *testing.T) {
 	checkClientsCount(t, srvB, total)
 
 	// Check closed status on server A
-	cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
-	if n := len(cz.Conns); n != total {
-		t.Fatalf("Expected %v closed connections, got %v", total, n)
-	}
-	for _, c := range cz.Conns {
-		checkReason(t, c.Reason, ServerShutdown)
-	}
+	// Connections are saved in go routines, so although we have evaluated the number
+	// of connections in the server A to be 0, the polling of connection closed may
+	// need a bit more time.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+		if n := len(cz.Conns); n != total {
+			return fmt.Errorf("expected %v closed connections, got %v", total, n)
+		}
+		for _, c := range cz.Conns {
+			if !strings.Contains(c.Reason, ServerShutdown.String()) {
+				return fmt.Errorf("expected closed connection with `%s` state, got `%s`",
+					ServerShutdown.String(), c.Reason)
+			}
+		}
+		return nil
+	})
 
 	stopClientsAndSrvB(ncs)
 
