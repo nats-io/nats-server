@@ -638,7 +638,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "max_subscriptions", "max_subs":
 		o.MaxSubs = int(v.(int64))
 	case "ping_interval":
-		o.PingInterval = time.Duration(int(v.(int64))) * time.Second
+		o.PingInterval = parseDuration("ping_interval", tk, v, errors, warnings)
 	case "ping_max":
 		o.MaxPingsOut = int(v.(int64))
 	case "tls":
@@ -655,28 +655,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.TLSTimeout = tc.Timeout
 		o.TLSMap = tc.Map
 	case "write_deadline":
-		wd, ok := v.(string)
-		if ok {
-			dur, err := time.ParseDuration(wd)
-			if err != nil {
-				err := &configErr{tk, fmt.Sprintf("error parsing write_deadline: %v", err)}
-				*errors = append(*errors, err)
-				return
-			}
-			o.WriteDeadline = dur
-		} else {
-			// Backward compatible with old type, assume this is the
-			// number of seconds.
-			o.WriteDeadline = time.Duration(v.(int64)) * time.Second
-			err := &configWarningErr{
-				field: k,
-				configErr: configErr{
-					token:  tk,
-					reason: "write_deadline should be converted to a duration",
-				},
-			}
-			*warnings = append(*warnings, err)
-		}
+		o.WriteDeadline = parseDuration("write_deadline", tk, v, errors, warnings)
 	case "lame_duck_duration":
 		dur, err := time.ParseDuration(v.(string))
 		if err != nil {
@@ -829,6 +808,30 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 			*errors = append(*errors, err)
 		}
+	}
+}
+
+func parseDuration(field string, tk token, v interface{}, errors *[]error, warnings *[]error) time.Duration {
+	if wd, ok := v.(string); ok {
+		if dur, err := time.ParseDuration(wd); err != nil {
+			err := &configErr{tk, fmt.Sprintf("error parsing %s: %v", field, err)}
+			*errors = append(*errors, err)
+			return 0
+		} else {
+			return dur
+		}
+	} else {
+		// Backward compatible with old type, assume this is the
+		// number of seconds.
+		err := &configWarningErr{
+			field: field,
+			configErr: configErr{
+				token:  tk,
+				reason: field + " should be converted to a duration",
+			},
+		}
+		*warnings = append(*warnings, err)
+		return time.Duration(v.(int64)) * time.Second
 	}
 }
 
