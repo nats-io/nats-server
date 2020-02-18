@@ -49,6 +49,35 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	return &memStore{msgs: make(map[uint64]*storedMsg), config: *cfg}, nil
 }
 
+func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("config required")
+	}
+	if cfg.Storage != MemoryStorage {
+		return fmt.Errorf("memStore requires memory storage type in config")
+	}
+
+	ms.mu.Lock()
+	ms.config = *cfg
+	// Limits checks and enforcement.
+	ms.enforceMsgLimit()
+	ms.enforceBytesLimit()
+	// Do age timers.
+	if ms.ageChk == nil && ms.config.MaxAge != 0 {
+		ms.startAgeChk()
+	}
+	if ms.ageChk != nil && ms.config.MaxAge == 0 {
+		ms.ageChk.Stop()
+		ms.ageChk = nil
+	}
+	ms.mu.Unlock()
+
+	if cfg.MaxAge != 0 {
+		ms.expireMsgs()
+	}
+	return nil
+}
+
 // Store stores a message.
 func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	ms.mu.Lock()
@@ -74,7 +103,7 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	ms.enforceMsgLimit()
 	ms.enforceBytesLimit()
 
-	// Check it we have and need age expiration timer running.
+	// Check if we have and need the age expiration timer running.
 	if ms.ageChk == nil && ms.config.MaxAge != 0 {
 		ms.startAgeChk()
 	}
@@ -127,7 +156,9 @@ func (ms *memStore) enforceMsgLimit() {
 	if ms.config.MaxMsgs <= 0 || ms.state.Msgs <= uint64(ms.config.MaxMsgs) {
 		return
 	}
-	ms.deleteFirstMsgOrPanic()
+	for nmsgs := ms.state.Msgs; nmsgs > uint64(ms.config.MaxMsgs); nmsgs = ms.state.Msgs {
+		ms.deleteFirstMsgOrPanic()
+	}
 }
 
 // Will check the bytes limit and drop msgs if needed.

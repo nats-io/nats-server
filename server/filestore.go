@@ -207,7 +207,7 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 	if err := fs.recoverMsgs(); err != nil {
 		return nil, err
 	}
-	// Write our meta data iff new.
+	// Write our meta data.
 	if err := fs.writeMsgSetMeta(); err != nil {
 		return nil, err
 	}
@@ -217,6 +217,41 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 
 	return fs, nil
+}
+
+func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
+	if cfg.Name == "" {
+		return fmt.Errorf("name required")
+	}
+	if cfg.Storage != FileStorage {
+		return fmt.Errorf("fileStore requires file storage type in config")
+	}
+
+	fs.mu.Lock()
+	old_cfg := fs.cfg
+	fs.cfg = *cfg
+	if err := fs.writeMsgSetMeta(); err != nil {
+		fs.cfg = old_cfg
+		fs.mu.Unlock()
+		return err
+	}
+	// Limits checks and enforcement.
+	fs.enforceMsgLimit()
+	fs.enforceBytesLimit()
+	// Do age timers.
+	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
+		fs.startAgeChk()
+	}
+	if fs.ageChk != nil && fs.cfg.MaxAge == 0 {
+		fs.ageChk.Stop()
+		fs.ageChk = nil
+	}
+	fs.mu.Unlock()
+
+	if cfg.MaxAge != 0 {
+		fs.expireMsgs()
+	}
+	return nil
 }
 
 func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
@@ -232,7 +267,7 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 // Write out meta and the checksum.
 func (fs *fileStore) writeMsgSetMeta() error {
 	meta := path.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	b, err := json.MarshalIndent(fs.cfg, _EMPTY_, "  ")
@@ -504,7 +539,9 @@ func (fs *fileStore) enforceMsgLimit() {
 	if fs.cfg.MaxMsgs <= 0 || fs.state.Msgs <= uint64(fs.cfg.MaxMsgs) {
 		return
 	}
-	fs.deleteFirstMsg()
+	for nmsgs := fs.state.Msgs; nmsgs > uint64(fs.cfg.MaxMsgs); nmsgs = fs.state.Msgs {
+		fs.deleteFirstMsg()
+	}
 }
 
 // Will check the bytes limit and drop msgs if needed.
