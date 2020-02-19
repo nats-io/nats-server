@@ -707,14 +707,15 @@ func TestLameDuckMode(t *testing.T) {
 		if n := len(cz.Conns); n != total {
 			return fmt.Errorf("expected %v closed connections, got %v", total, n)
 		}
-		for _, c := range cz.Conns {
-			if !strings.Contains(c.Reason, ServerShutdown.String()) {
-				return fmt.Errorf("expected closed connection with `%s` state, got `%s`",
-					ServerShutdown.String(), c.Reason)
-			}
-		}
 		return nil
 	})
+	cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+	if n := len(cz.Conns); n != total {
+		t.Fatalf("Expected %v closed connections, got %v", total, n)
+	}
+	for _, c := range cz.Conns {
+		checkReason(t, c.Reason, ServerShutdown)
+	}
 
 	stopClientsAndSrvB(ncs)
 

@@ -816,7 +816,7 @@ func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
 
 		// The account's connection count is exchanged between servers
 		// so that the local count on each server reflects the total count.
-		// Pause a bit to give a change for each server to process the update.
+		// Pause a bit to give a chance to each server to process the update.
 		time.Sleep(15 * time.Millisecond)
 	}
 	if tc != 10 {
