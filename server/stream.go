@@ -66,6 +66,11 @@ const (
 
 // AddStream adds a stream for the given account.
 func (a *Account) AddStream(config *StreamConfig) (*Stream, error) {
+	return a.AddStreamWithStore(config, nil)
+}
+
+// AddStreamWithStore adds a stream for the given account with custome store config options.
+func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreConfig) (*Stream, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -114,7 +119,12 @@ func (a *Account) AddStream(config *StreamConfig) (*Stream, error) {
 	c.registerWithAccount(a)
 
 	// Create the appropriate storage
-	if err := mset.setupStore(storeDir); err != nil {
+	fsCfg := fsConfig
+	if fsCfg == nil {
+		fsCfg = &FileStoreConfig{}
+	}
+	fsCfg.StoreDir = storeDir
+	if err := mset.setupStore(fsCfg); err != nil {
 		mset.delete()
 		return nil, err
 	}
@@ -415,7 +425,8 @@ func (mset *Stream) unsubscribe(sub *subscription) {
 	mset.client.unsubscribe(mset.client.acc, sub, true, true)
 }
 
-func (mset *Stream) setupStore(storeDir string) error {
+func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
+
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -427,7 +438,7 @@ func (mset *Stream) setupStore(storeDir string) error {
 		}
 		mset.store = ms
 	case FileStorage:
-		fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, mset.config)
+		fs, err := newFileStore(*fsCfg, mset.config)
 		if err != nil {
 			return err
 		}
