@@ -219,6 +219,74 @@ func TestJetStreamAddStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerWithStartTime(t *testing.T) {
+	subj := "my_stream"
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: subj, Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: subj, Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			fsCfg := &server.FileStoreConfig{BlockSize: 100}
+			mset, err := s.GlobalAccount().AddStreamWithStore(c.mconfig, fsCfg)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			toSend := 250
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, subj, fmt.Sprintf("MSG: %d", i+1))
+			}
+
+			time.Sleep(10 * time.Millisecond)
+			startTime := time.Now()
+
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, subj, fmt.Sprintf("MSG: %d", i+1))
+			}
+
+			if msgs := mset.State().Msgs; msgs != uint64(toSend*2) {
+				t.Fatalf("Expected %d messages, got %d", toSend*2, msgs)
+			}
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:   "d",
+				StartTime: startTime,
+				AckPolicy: server.AckExplicit,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			msg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			sseq, dseq, _ := o.ReplyInfo(msg.Reply)
+			if dseq != 1 {
+				t.Fatalf("Expected delivered seq of 1, got %d", dseq)
+			}
+			if sseq != uint64(toSend+1) {
+				t.Fatalf("Expected to get store seq of %d, got %d", toSend+1, sseq)
+			}
+		})
+	}
+}
+
 func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 	cases := []struct {
 		name    string

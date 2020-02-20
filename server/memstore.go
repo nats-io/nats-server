@@ -127,6 +127,7 @@ func (ms *memStore) StorageBytesUpdate(cb func(int64)) {
 
 // GetSeqFromTime looks for the first sequence number that has the message
 // with >= timestamp.
+// FIXME(dlc) - inefficient.
 func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	ts := t.UnixNano()
 	ms.mu.RLock()
