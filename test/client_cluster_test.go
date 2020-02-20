@@ -142,32 +142,22 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 	// Helper to wait on a reconnect.
 	waitOnReconnect := func() {
-		var rcs int64
-		for {
-			select {
-			case <-reconnectsDone:
-				atomic.AddInt64(&rcs, 1)
-				// Client that is connected to srvA will reconnect
-				// to srvB when srvA is shutdown, then when srvB is
-				// shutdown, both clients will reconnect to srvA. So
-				// it is a total of 3 reconnects.
-				if rcs >= 3 {
-					return
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatalf("Expected a reconnect, timedout!\n")
-			}
+		t.Helper()
+		select {
+		case <-reconnectsDone:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Expected a reconnect, timedout!\n")
 		}
 	}
 
 	// Create two clients..
-	opts.Servers = []string{urlA}
+	opts.Servers = []string{urlA, urlB}
 	nc1, err := opts.Connect()
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc1: %v\n", err)
 	}
 
-	opts.Servers = []string{urlB}
+	opts.Servers = []string{urlB, urlA}
 	nc2, err := opts.Connect()
 	if err != nil {
 		t.Fatalf("Failed to create connection for nc2: %v\n", err)
@@ -260,14 +250,19 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	////////////////////////////////////////////////////////////////////////////
 
 	srvA.Shutdown()
+	// Wait for client on A to reconnect to B.
+	waitOnReconnect()
+
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
 	srvB.Shutdown()
+	// Now both clients should reconnect to A.
+	waitOnReconnect()
+	waitOnReconnect()
+
 	srvB = RunServer(optsB)
 	defer srvB.Shutdown()
-
-	waitOnReconnect()
 
 	// Make sure the cluster is reformed
 	checkClusterFormed(t, srvA, srvB)
@@ -325,7 +320,9 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
-	checkExpectedSubs(1, srvA, srvB)
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf(err.Error())
+	}
 
 	var resp string
 
@@ -374,7 +371,9 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 		nc2.Publish(m.Reply, response)
 	})
 
-	checkExpectedSubs(2, srvA, srvB)
+	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+		t.Fatalf(err.Error())
+	}
 
 	var resp string
 

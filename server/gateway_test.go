@@ -1344,8 +1344,7 @@ func setAccountUserPassInOptions(o *Options, accName, username, password string)
 
 func TestGatewayAccountInterest(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
-	// Add users to cause s2 to require auth. Will add an account with user
-	// later.
+	// Add users to cause s2 to require auth. Will add an account with user later.
 	o2.Users = append([]*User(nil), &User{Username: "test", Password: "pwd"})
 	s2 := runGatewayServer(o2)
 	defer s2.Shutdown()
@@ -1387,19 +1386,13 @@ func TestGatewayAccountInterest(t *testing.T) {
 	gwcc := s1.getOutboundGatewayConnection("C")
 	checkCount(t, gwcc, 1)
 
-	// S2 should have sent a protocol indicating no account interest.
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		if e, inMap := gwcb.gw.outsim.Load("$foo"); !inMap || e != nil {
-			return fmt.Errorf("Did not receive account no interest")
-		}
-		return nil
-	})
+	// S2 and S3 should have sent a protocol indicating no account interest.
+	checkForAccountNoInterest(t, gwcb, "$foo", true, 2*time.Second)
+	checkForAccountNoInterest(t, gwcc, "$foo", true, 2*time.Second)
 	// Second send should not go through to B
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 1)
-	// it won't go to C, not because there is no account interest,
-	// but because there is no interest on the subject.
 	checkCount(t, gwcc, 1)
 
 	// Add account to S2 and a client, this should clear the no-interest
@@ -1433,12 +1426,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// account will disappear and since S2 sent an A+, it will send
 	// an A-.
 	ncS2.Close()
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		if _, inMap := gwcb.gw.outsim.Load("$foo"); !inMap {
-			return fmt.Errorf("NoInterest should be set")
-		}
-		return nil
-	})
+	checkForSubjectNoInterest(t, gwcb, "$foo", "foo", true, 2*time.Second)
 
 	// Restart C and that should reset the no-interest
 	s3.Shutdown()

@@ -1495,6 +1495,9 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 		t.Fatalf("Expected 1 route, got %d", numRoutes)
 	}
 
+	// Ensure consumer on srvA is propagated to srvB
+	checkExpectedSubs(t, 1, srvb)
+
 	// Ensure messages flow through the cluster as a sanity check.
 	if err := srvbConn.Publish("foo", []byte("hello")); err != nil {
 		t.Fatalf("Error publishing: %v", err)

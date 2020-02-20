@@ -813,6 +813,11 @@ func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
 		}
 		defer ncb1.Close()
 		tc++
+
+		// The account's connection count is exchanged between servers
+		// so that the local count on each server reflects the total count.
+		// Pause a bit to give a chance to each server to process the update.
+		time.Sleep(15 * time.Millisecond)
 	}
 	if tc != 10 {
 		t.Fatalf("Expected to get 10 external connections, got %d", tc)
