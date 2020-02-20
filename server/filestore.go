@@ -39,7 +39,7 @@ type FileStoreConfig struct {
 	StoreDir string
 	// BlockSize is the file block size. This also represents the maximum overhead size.
 	BlockSize uint64
-	// ReadCacheExpire is how long with no activity til we expire the read cache.
+	// ReadCacheExpire is how long with no activity until we expire the read cache.
 	ReadCacheExpire time.Duration
 	// SyncInterval is how often we sync to disk in the background.
 	SyncInterval time.Duration
@@ -423,10 +423,29 @@ func (fs *fileStore) recoverMsgs() error {
 	return err
 }
 
-// GetSeqFromTime looks for the first sequence number that has the message
-// with >= timestamp.
-func (ms *fileStore) GetSeqFromTime(t time.Time) uint64 {
-	// TODO(dlc) - IMPL
+// GetSeqFromTime looks for the first sequence number that has
+// the message with >= timestamp.
+// FIXME(dlc) - inefficient, and dumb really. Make this better.
+func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	mb := fs.selectMsgBlockForStart(t)
+	if mb == nil {
+		return fs.state.LastSeq + 1
+	}
+	// Load in if we need to.
+	if mb.cache == nil {
+		fs.readAndCacheMsgs(mb, mb.last.seq)
+	}
+	// Linear search, hence the dumb part..
+	ts := t.UnixNano()
+	for seq := mb.first.seq; seq <= mb.last.seq; seq++ {
+		sm := mb.cache[seq]
+		if sm != nil && sm.ts >= ts {
+			return sm.seq
+		}
+	}
 	return 0
 }
 
@@ -1000,7 +1019,20 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 	return nil
 }
 
-// Read and cache message from the underlying block.
+// Select the message block where this message should be found.
+// Return nil if not in the set.
+// Read lock should be held.
+func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
+	t := minTime.UnixNano()
+	for _, mb := range fs.blks {
+		if t <= mb.last.ts {
+			return mb
+		}
+	}
+	return nil
+}
+
+// Read and cache messages from the underlying block.
 func (fs *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	// This detects if what we may be looking for is staged in the write buffer.
 	if mb == fs.lmb && fs.wmb.Len() > 0 {
@@ -1021,7 +1053,7 @@ func (fs *fileStore) readAndCacheMsgs(mb *msgBlock, seq uint64) *fileStoredMsg {
 	var le = binary.LittleEndian
 	var sm *fileStoredMsg
 
-	// Read until we get our message, cache the rest.
+	// Read in all messages and cache them remembering the one we are looking for.
 	for index, skip := 0, 0; index < len(buf); {
 		hdr := buf[index : index+msgHdrSize]
 		rl := le.Uint32(hdr[0:])
