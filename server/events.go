@@ -124,13 +124,14 @@ type accNumConnsReq struct {
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name    string    `json:"name"`
-	Host    string    `json:"host"`
-	ID      string    `json:"id"`
-	Cluster string    `json:"cluster,omitempty"`
-	Version string    `json:"ver"`
-	Seq     uint64    `json:"seq"`
-	Time    time.Time `json:"time"`
+	Name      string    `json:"name"`
+	Host      string    `json:"host"`
+	ID        string    `json:"id"`
+	Cluster   string    `json:"cluster,omitempty"`
+	Version   string    `json:"ver"`
+	Seq       uint64    `json:"seq"`
+	JetStream bool      `json:"jetstream"`
+	Time      time.Time `json:"time"`
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -223,6 +224,7 @@ RESET:
 	host := s.info.Host
 	servername := s.info.Name
 	seqp := &s.sys.seq
+	js := s.js != nil
 	var cluster string
 	if s.gateway.enabled {
 		cluster = s.getGatewayName()
@@ -251,6 +253,7 @@ RESET:
 				pm.si.Seq = atomic.AddUint64(seqp, 1)
 				pm.si.Version = VERSION
 				pm.si.Time = time.Now()
+				pm.si.JetStream = js
 			}
 			var b []byte
 			if pm.msg != nil {
