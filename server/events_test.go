@@ -231,7 +231,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 		t.Fatalf("Error unmarshalling connect event message: %v", err)
 	}
 	if cem.Server.ID != s.ID() {
-		t.Fatalf("Expected server to be %q, got %q", s.ID(), cem.Server)
+		t.Fatalf("Expected server to be %q, got %q", s.ID(), cem.Server.ID)
 	}
 	if cem.Server.Seq == 0 {
 		t.Fatalf("Expected sequence to be non-zero")
@@ -279,7 +279,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 
 	if dem.Server.ID != s.ID() {
-		t.Fatalf("Expected server to be %q, got %q", s.ID(), dem.Server)
+		t.Fatalf("Expected server to be %q, got %q", s.ID(), dem.Server.ID)
 	}
 	if dem.Server.Seq == 0 {
 		t.Fatalf("Expected sequence to be non-zero")
