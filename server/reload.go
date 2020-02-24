@@ -643,7 +643,7 @@ func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
 	if err != nil {
 		return err
 	}
-	// Create a context that is used to pass special info that we may need
+	// Create a ctx that is used to pass special info that we may need
 	// while applying the new options.
 	ctx := reloadContext{oldClusterPerms: curOpts.Cluster.Permissions}
 	s.setOpts(newOpts)

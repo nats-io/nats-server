@@ -208,3 +208,41 @@ func (e *processConfigErr) Warnings() []error {
 func (e *processConfigErr) Errors() []error {
 	return e.errors
 }
+
+// errCtx wraps an error and stores additional ctx information for tracing.
+// Does not print or return it unless explicitly requested.
+type errCtx struct {
+	error
+	ctx string
+}
+
+func NewErrorCtx(err error, format string, args ...interface{}) error {
+	return &errCtx{err, fmt.Sprintf(format, args...)}
+}
+
+// implement to work with errors.Is and errors.As
+func (e *errCtx) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.error
+}
+
+// Context for error
+func (e *errCtx) Context() string {
+	if e == nil {
+		return ""
+	}
+	return e.ctx
+}
+
+// Return Error or, if type is right error and context
+func UnpackIfErrorCtx(err error) string {
+	if e, ok := err.(*errCtx); ok {
+		if _, ok := e.error.(*errCtx); ok {
+			return fmt.Sprint(UnpackIfErrorCtx(e.error), ": ", e.Context())
+		}
+		return fmt.Sprint(e.Error(), ": ", e.Context())
+	}
+	return err.Error()
+}

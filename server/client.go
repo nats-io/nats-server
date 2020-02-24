@@ -900,7 +900,7 @@ func (c *client) readLoop() {
 			c.flushClients(0)
 			// handled inline
 			if err != ErrMaxPayload && err != ErrAuthentication {
-				c.Errorf("%s", err.Error())
+				c.Error(err)
 				c.closeConnection(ProtocolViolation)
 			}
 			return
@@ -3786,6 +3786,9 @@ func (c *client) isClosed() bool {
 }
 
 // Logging functionality scoped to a client or route.
+func (c *client) Error(err error) {
+	c.srv.Errorc(c, err)
+}
 
 func (c *client) Errorf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)

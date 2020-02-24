@@ -156,6 +156,25 @@ func (s *Server) Errorf(format string, v ...interface{}) {
 	}, format, v...)
 }
 
+// Error logs an error with a scope
+func (s *Server) Errors(scope interface{}, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s", scope, UnpackIfErrorCtx(e))
+}
+
+func (s *Server) Errorc(ctx interface{}, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
+}
+
+func (s *Server) Errorsc(scope interface{}, ctx interface{}, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
+}
+
 // Warnf logs a warning error
 func (s *Server) Warnf(format string, v ...interface{}) {
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
