@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -40,7 +40,7 @@ func TestErrCtx(t *testing.T) {
 		t.Fatalf("original error needs to remain")
 	}
 	if !strings.HasSuffix(trace, ctx) {
-		t.Fatalf("ctx nneds to be added")
+		t.Fatalf("ctx needs to be added")
 	}
 }
 
@@ -67,7 +67,7 @@ func TestErrCtxWrapped(t *testing.T) {
 		t.Fatalf("original error needs to remain")
 	}
 	if !strings.HasSuffix(trace, ctx) {
-		t.Fatalf("ctx nneds to be added")
+		t.Fatalf("ctx needs to be added")
 	}
 	if !strings.Contains(trace, ctxO) {
 		t.Fatalf("Needs to contain every context")

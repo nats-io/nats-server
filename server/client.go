@@ -3787,7 +3787,7 @@ func (c *client) isClosed() bool {
 
 // Logging functionality scoped to a client or route.
 func (c *client) Error(err error) {
-	c.srv.Errorc(c, err)
+	c.srv.Errors(c, err)
 }
 
 func (c *client) Errorf(format string, v ...interface{}) {
