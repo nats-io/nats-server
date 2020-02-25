@@ -16,6 +16,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/gobackcomp"
 )
 
 var (
@@ -245,4 +246,8 @@ func UnpackIfErrorCtx(err error) string {
 		return fmt.Sprint(e.Error(), ": ", e.Context())
 	}
 	return err.Error()
+}
+
+func IsErr(err, target error) bool {
+	return gobackcomp.ErrorsIs(err, target)
 }

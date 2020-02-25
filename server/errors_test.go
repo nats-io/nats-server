@@ -14,7 +14,6 @@
 package server
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -29,7 +28,7 @@ func TestErrCtx(t *testing.T) {
 	if e == ErrWrongGateway {
 		t.Fatalf("%v and %v can't be compared this way", e, ErrWrongGateway)
 	}
-	if !errors.Is(e, ErrWrongGateway) {
+	if !IsErr(e, ErrWrongGateway) {
 		t.Fatalf("%s and %s ", e, ErrWrongGateway)
 	}
 	if UnpackIfErrorCtx(ErrWrongGateway) != ErrWrongGateway.Error() {
@@ -56,7 +55,7 @@ func TestErrCtxWrapped(t *testing.T) {
 	if e == ErrWrongGateway {
 		t.Fatalf("%v and %v can't be compared this way", e, ErrWrongGateway)
 	}
-	if !errors.Is(e, ErrWrongGateway) {
+	if !IsErr(e, ErrWrongGateway) {
 		t.Fatalf("%s and %s ", e, ErrWrongGateway)
 	}
 	if UnpackIfErrorCtx(ErrWrongGateway) != ErrWrongGateway.Error() {
