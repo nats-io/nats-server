@@ -582,7 +582,7 @@ func TestMaxControlLine(t *testing.T) {
 
 	pub := []byte("PUB foo.bar 11\r")
 	err := c.parse(pub)
-	if !IsErr(err, ErrMaxControlLine) {
+	if !ErrorIs(err, ErrMaxControlLine) {
 		t.Fatalf("Expected an error parsing longer than expected control line")
 	}
 }

@@ -261,7 +261,7 @@ func errorsUnwrap(err error) error {
 
 // implements: go 1.13 errors.Is(err, target error) bool
 // TODO replace with native code once we no longer support go1.12
-func IsErr(err, target error) bool {
+func ErrorIs(err, target error) bool {
 	// this is an outright copy of go 1.13 errors.Is(err, target error) bool
 	// removed isComparable
 	if err == nil || target == nil {
