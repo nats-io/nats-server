@@ -872,10 +872,6 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 		b.Fatalf("numSubscribers should be <= 10")
 	}
 
-	if b.N%numPublishers != 0 {
-		b.Fatalf("b.N (%d) / numPublishers (%d) has a remainder", b.N, numPublishers)
-	}
-
 	var s1, s2 *server.Server
 	var o1, o2 *server.Options
 
@@ -897,7 +893,8 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 	}
 
 	msgOp := fmt.Sprintf("MSG %s %d %d\r\n%s\r\n", subject, 9, len(payload), payload)
-	expected := len(msgOp) * b.N
+	l := b.N / numPublishers
+	expected := len(msgOp) * l * numPublishers
 
 	// Client connections and subscriptions. For fan in these are smaller then numPublishers.
 	clients := make([]chan bool, 0, numSubscribers)
@@ -917,7 +914,6 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 
 	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
 	startCh := make(chan bool)
-	l := b.N / numPublishers
 
 	pubLoop := func(c net.Conn, ch chan bool) {
 		bw := bufio.NewWriterSize(c, defaultSendBufSize)
@@ -1048,9 +1044,10 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	ch := make(chan bool)
 	var msgOp string
 	var expected int
+	l := b.N / numPublishers
 	if subInterest {
 		msgOp = fmt.Sprintf("MSG foo 2 %d\r\n%s\r\n", len(payload), payload)
-		expected = len(msgOp) * b.N
+		expected = len(msgOp) * l * numPublishers
 	}
 	// Last message sent to end.test
 	lastMsg := "MSG end.test 1 2\r\nok\r\n"
@@ -1059,7 +1056,6 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 
 	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", len(payload), payload))
 	startCh := make(chan bool)
-	l := b.N / numPublishers
 
 	lastMsgSendOp := []byte("PUB end.test 2\r\nok\r\n")
 
