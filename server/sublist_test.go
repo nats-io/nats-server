@@ -1077,10 +1077,6 @@ var benchSublistSl = NewSublistWithCache()
 // https://github.com/golang/go/issues/31859
 func TestMain(m *testing.M) {
 	flag.Parse()
-	os.Exit(m.Run())
-}
-
-func init() {
 	initSublist := false
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "test.bench" {
@@ -1096,6 +1092,7 @@ func init() {
 		}
 		addWildcards()
 	}
+	os.Exit(m.Run())
 }
 
 func subsInit(pre string, toks []string) {
