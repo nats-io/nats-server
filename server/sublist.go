@@ -262,7 +262,7 @@ func (s *Sublist) chkForInsertNotification(subject string, isLiteral bool) {
 	// We are not a literal, so we may match any subject that we want.
 	// Note we could be smarter here and try to make the list smaller, but probably not worth it TBH.
 	for target, chs := range s.notify.insert {
-		r := s.Match(target)
+		r := s.matchNoLock(target)
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			for _, ch := range chs {
 				sendNotification(ch, true)
