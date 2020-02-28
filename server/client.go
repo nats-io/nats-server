@@ -1287,6 +1287,8 @@ func (c *client) processErr(errStr string) {
 		c.Errorf("Gateway Error %s", errStr)
 	case LEAF:
 		c.Errorf("Leafnode Error %s", errStr)
+	case JETSTREAM:
+		c.Errorf("JetStream Error %s", errStr)
 	}
 	c.closeConnection(ParseError)
 }
@@ -3473,6 +3475,8 @@ func (c *client) typeString() string {
 		return "Gateway"
 	case LEAF:
 		return "LeafNode"
+	case JETSTREAM:
+		return "JetStream"
 	}
 	return "Unknown Type"
 }
