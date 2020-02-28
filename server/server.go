@@ -1792,8 +1792,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Do final client initialization
 
-	// Set the First Ping timer.
-	s.setFirstPingTimer(c)
+	// Set the Ping timer. Will be reset once connect was received.
+	c.setPingTimer()
 
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })

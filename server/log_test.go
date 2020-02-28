@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats-server/v2/logger"
 )
@@ -189,7 +190,7 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 	opts.Trace = true
 	opts.Username = "derek"
 	opts.Password = "s3cr3t"
-
+	opts.PingInterval = 2 * time.Minute
 	s := &Server{opts: opts}
 	dl := &DummyLogger{}
 	s.SetLogger(dl, false, true)

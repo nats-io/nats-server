@@ -1353,6 +1353,11 @@ func (c *client) processConnect(arg []byte) error {
 	// Estimate RTT to start.
 	if c.kind == CLIENT {
 		c.rtt = computeRTT(c.start)
+
+		if c.srv != nil {
+			c.clearPingTimer()
+			c.srv.setFirstPingTimer(c)
+		}
 	}
 	kind := c.kind
 	srv := c.srv
