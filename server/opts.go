@@ -3185,14 +3185,11 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			if opts.CheckConfig {
 				return nil, err
 			}
-
-			// If only warnings then can still continue.
-			if cerr, ok := err.(*processConfigErr); ok && len(cerr.Errors()) == 0 {
-				fmt.Fprint(os.Stderr, err)
-				return opts, nil
+			if cerr, ok := err.(*processConfigErr); !ok || len(cerr.Errors()) != 0 {
+				return nil, err
 			}
-
-			return nil, err
+			// If we get here we only have warnings and can still continue
+			fmt.Fprint(os.Stderr, err)
 		} else if opts.CheckConfig {
 			// Report configuration file syntax test was successful and exit.
 			return opts, nil
