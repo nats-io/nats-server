@@ -1694,6 +1694,7 @@ func (c *client) sendPing() {
 // Assume lock is held.
 func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
+	info.ClientHost = c.host
 	info.MaxPayload = c.mpay
 	// Generate the info json
 	b, _ := json.Marshal(info)
