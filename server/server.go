@@ -72,6 +72,7 @@ type Info struct {
 	MaxPayload        int32    `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
+	ClientIP          string   `json:"client_ip,omitempty"`
 	Nonce             string   `json:"nonce,omitempty"`
 	Cluster           string   `json:"cluster,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
