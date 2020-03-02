@@ -149,6 +149,7 @@ type Options struct {
 	ClientAdvertise       string        `json:"-"`
 	Trace                 bool          `json:"-"`
 	Debug                 bool          `json:"-"`
+	TraceVerbose          bool          `json:"-"`
 	NoLog                 bool          `json:"-"`
 	NoSigs                bool          `json:"-"`
 	NoSublistCache        bool          `json:"-"`
@@ -512,6 +513,11 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
 	case "trace":
 		o.Trace = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
+	case "trace_verbose":
+		o.TraceVerbose = v.(bool)
+		o.Trace = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "TraceVerbose", o.TraceVerbose)
 		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
 	case "logtime":
 		o.Logtime = v.(bool)
@@ -3020,13 +3026,15 @@ func setBaselineOptions(opts *Options) {
 func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
-		showVersion bool
-		showHelp    bool
-		showTLSHelp bool
-		signal      string
-		configFile  string
-		dbgAndTrace bool
-		err         error
+		showVersion            bool
+		showHelp               bool
+		showTLSHelp            bool
+		signal                 string
+		configFile             string
+		dbgAndTrace            bool
+		trcAndVerboseTrc       bool
+		dbgAndTrcAndVerboseTrc bool
+		err                    error
 	)
 
 	fs.BoolVar(&showHelp, "h", false, "Show this message.")
@@ -3040,8 +3048,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
+	fs.BoolVar(&trcAndVerboseTrc, "VV", false, "Enable Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
 	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
+	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -3129,6 +3139,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	// Keep track of the boolean flags that were explicitly set with their value.
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "DVV":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", dbgAndTrcAndVerboseTrc)
 		case "DV":
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
@@ -3136,6 +3150,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			fallthrough
 		case "debug":
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
+		case "VV":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", trcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", trcAndVerboseTrc)
 		case "V":
 			fallthrough
 		case "trace":
@@ -3216,6 +3233,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			}
 		} else {
 			switch f.Name {
+			case "VV":
+				opts.Trace, opts.TraceVerbose = trcAndVerboseTrc, trcAndVerboseTrc
+			case "DVV":
+				opts.Trace, opts.Debug, opts.TraceVerbose = dbgAndTrcAndVerboseTrc, dbgAndTrcAndVerboseTrc, dbgAndTrcAndVerboseTrc
 			case "DV":
 				// Check value to support -DV=false
 				opts.Trace, opts.Debug = dbgAndTrace, dbgAndTrace

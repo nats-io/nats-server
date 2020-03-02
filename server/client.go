@@ -453,6 +453,10 @@ func (c *client) initClient() {
 	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
 	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
 
+	if c.kind == SYSTEM && !c.srv.logging.traceSysAcc {
+		c.trace = false
+	}
+
 	// This is a scratch buffer used for processMsg()
 	// The msg header starts with "RMSG ", which can be used
 	// for both local and routes.

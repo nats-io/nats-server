@@ -154,9 +154,10 @@ type Server struct {
 
 	logging struct {
 		sync.RWMutex
-		logger Logger
-		trace  int32
-		debug  int32
+		logger      Logger
+		trace       int32
+		debug       int32
+		traceSysAcc bool
 	}
 
 	clientConnectURLs []string

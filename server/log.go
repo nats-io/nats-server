@@ -86,6 +86,8 @@ func (s *Server) ConfigureLogger() {
 	}
 
 	s.SetLogger(log, opts.Debug, opts.Trace)
+
+	s.logging.traceSysAcc = opts.TraceVerbose
 }
 
 // SetLogger sets the logger of the server
