@@ -267,6 +267,11 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			c.pa.reply = []byte(pm.rply)
 			c.mu.Unlock()
 
+			if c.trace {
+				c.traceInOp(fmt.Sprintf(
+					"PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
+			}
+
 			// Add in NL
 			b = append(b, _CRLF_...)
 			c.processInboundClientMsg(b)

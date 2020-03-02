@@ -149,6 +149,7 @@ type Options struct {
 	ClientAdvertise       string        `json:"-"`
 	Trace                 bool          `json:"-"`
 	Debug                 bool          `json:"-"`
+	SysTrace              bool          `json:"-"`
 	NoLog                 bool          `json:"-"`
 	NoSigs                bool          `json:"-"`
 	NoSublistCache        bool          `json:"-"`
@@ -513,6 +514,9 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "trace":
 		o.Trace = v.(bool)
 		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
+	case "sys_trace":
+		o.SysTrace = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "SysTrace", o.SysTrace)
 	case "logtime":
 		o.Logtime = v.(bool)
 		trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
@@ -3042,6 +3046,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
 	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
 	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
+	fs.BoolVar(&opts.SysTrace, "sys_trace", false, "Trace the system account.")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -3142,6 +3147,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", FlagSnapshot.Trace)
 		case "T":
 			fallthrough
+		case "sys_trace":
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "SysTrace", FlagSnapshot.SysTrace)
 		case "logtime":
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Logtime", FlagSnapshot.Logtime)
 		case "s":

@@ -44,6 +44,7 @@ Logging Options:
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
     -DV                              Debug and trace
+    --sys_trace                      Trace the system account (default: false)
 
 Authorization Options:
         --user <user>                User required for connections
