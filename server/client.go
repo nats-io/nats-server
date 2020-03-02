@@ -451,11 +451,10 @@ func (c *client) initClient() {
 	c.echo = true
 
 	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
+	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
 
-	if c.kind == SYSTEM {
-		c.trace = c.srv.logging.traceSystemAcc
-	} else {
-		c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
+	if c.kind == SYSTEM && !c.srv.logging.traceSysAcc {
+		c.trace = false
 	}
 
 	// This is a scratch buffer used for processMsg()
