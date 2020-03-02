@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/nats-io/jwt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -34,6 +33,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/jwt"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -3569,6 +3570,30 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			false,
 			func() bool { return opts.Debug && opts.Trace },
 		},
+		{
+			"trace_verbose_true_in_config_override_true",
+			`trace_verbose: true
+			`,
+			nil,
+			true,
+			func() bool { return opts.Trace && opts.TraceVerbose },
+		},
+		{
+			"trace_verbose_true_in_config_override_false",
+			`trace_verbose: true
+			`,
+			[]string{"--VV=false"},
+			true,
+			func() bool { return !opts.TraceVerbose },
+		},
+		{
+			"trace_verbose_true_in_config_override_false",
+			`trace_verbose: false
+			`,
+			[]string{"--VV=true"},
+			true,
+			func() bool { return opts.TraceVerbose },
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(template, test.content)))
@@ -3972,4 +3997,127 @@ func TestConfigReloadAccountResolverTLSConfig(t *testing.T) {
 	if acc.Name != apub {
 		t.Fatalf("Account name did not match claim key")
 	}
+}
+
+func TestLoggingReload(t *testing.T) {
+	// This test basically starts a server and causes it's configuration to be reloaded 3 times.
+	// Each time, a new log file is created and trace levels are turned, off - on - off.
+
+	// At the end of the test, all 3 log files are inspected for certain traces.
+	countMatches := func(log []byte, stmts ...string) int {
+		matchCnt := 0
+		for _, stmt := range stmts {
+			if strings.Contains(string(log), stmt) {
+				matchCnt++
+			}
+		}
+		return matchCnt
+	}
+
+	traces := []string{"[TRC]", "[DBG]", "SYSTEM", "MSG_PAYLOAD", "$SYS.SERVER.ACCOUNT"}
+
+	didTrace := func(log []byte) bool {
+		return countMatches(log, "[INF] Reloaded server configuration") == 1
+	}
+
+	tracingAbsent := func(log []byte) bool {
+		return countMatches(log, traces...) == 0 && didTrace(log)
+	}
+
+	tracingPresent := func(log []byte) bool {
+		return len(traces) == countMatches(log, traces...) && didTrace(log)
+	}
+
+	check := func(filename string, valid func([]byte) bool) {
+		log, err := ioutil.ReadFile(filename)
+		if err != nil {
+			t.Fatalf("Error reading log file %s: %v\n", filename, err)
+		}
+		if !valid(log) {
+			t.Fatalf("%s is not valid: %s", filename, log)
+		}
+		//t.Logf("%s contains: %s\n", filename, log)
+	}
+
+	// common configuration setting up system accounts. trace_verbose needs this to cause traces
+	commonCfg := `
+		port: -1
+		system_account: sys
+		accounts {
+		  sys { users = [ {user: sys, pass: "" } ] }
+		  nats.io: { users = [ { user : bar, pass: "pwd" } ] }
+		}
+	`
+
+	conf := createConfFile(t, []byte(commonCfg))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	reload := func(change string) {
+		changeCurrentConfigContentWithNewContent(t, conf, []byte(commonCfg+`
+			`+change+`
+		`))
+
+		if err := s.Reload(); err != nil {
+			t.Fatalf("Error during reload: %v", err)
+		}
+	}
+
+	traffic := func(cnt int) {
+		// Create client and sub interest on server and create traffic
+		urlSeed := fmt.Sprintf("nats://bar:pwd@%s:%d/", opts.Host, opts.Port)
+		nc, err := nats.Connect(urlSeed)
+		if err != nil {
+			t.Fatalf("Error creating client: %v\n", err)
+		}
+
+		msgs := make(chan *nats.Msg)
+		defer close(msgs)
+
+		sub, err := nc.ChanSubscribe("foo", msgs)
+		if err != nil {
+			t.Fatalf("Error creating subscriber: %v\n", err)
+		}
+
+		nc.Flush()
+
+		for i := 0; i < cnt; i++ {
+			if err := nc.Publish("foo", []byte("bar")); err == nil {
+				<-msgs
+			}
+		}
+
+		sub.Unsubscribe()
+		nc.Close()
+	}
+
+	defer os.Remove("off-pre.log")
+	reload("log_file: off-pre.log")
+
+	traffic(10) // generate NO trace/debug entries in off-pre.log
+
+	defer os.Remove("on.log")
+	reload(`
+		log_file: on.log
+		debug: true
+		trace_verbose: true
+	`)
+
+	traffic(10) // generate trace/debug entries in on.log
+
+	defer os.Remove("off-post.log")
+	reload(`
+		log_file: off-post.log
+		debug: false
+		trace_verbose: false
+	`)
+
+	traffic(10) // generate trace/debug entries in off-post.log
+
+	// check resulting log files for expected content
+	check("off-pre.log", tracingAbsent)
+	check("on.log", tracingPresent)
+	check("off-post.log", tracingAbsent)
 }

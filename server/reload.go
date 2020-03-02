@@ -40,6 +40,10 @@ type option interface {
 	// IsLoggingChange indicates if this option requires reloading the logger.
 	IsLoggingChange() bool
 
+	// IsTraceLevelChange indicates if this option requires reloading cached trace level.
+	// Clients store trace level separately.
+	IsTraceLevelChange() bool
+
 	// IsAuthChange indicates if this option requires reloading authorization.
 	IsAuthChange() bool
 
@@ -52,6 +56,10 @@ type option interface {
 type noopOption struct{}
 
 func (n noopOption) IsLoggingChange() bool {
+	return false
+}
+
+func (n noopOption) IsTraceLevelChange() bool {
 	return false
 }
 
@@ -73,15 +81,36 @@ func (l loggingOption) IsLoggingChange() bool {
 	return true
 }
 
+// traceLevelOption is a base struct that provides default option behaviors for
+// tracelevel-related options.
+type traceLevelOption struct {
+	loggingOption
+}
+
+func (l traceLevelOption) IsTraceLevelChange() bool {
+	return true
+}
+
 // traceOption implements the option interface for the `trace` setting.
 type traceOption struct {
-	loggingOption
+	traceLevelOption
 	newValue bool
 }
 
 // Apply is a no-op because logging will be reloaded after options are applied.
 func (t *traceOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace = %v", t.newValue)
+}
+
+// traceOption implements the option interface for the `trace` setting.
+type traceVerboseOption struct {
+	traceLevelOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (t *traceVerboseOption) Apply(server *Server) {
+	server.Noticef("Reloaded: trace_verbose = %v", t.newValue)
 }
 
 // debugOption implements the option interface for the `debug` setting.
@@ -676,6 +705,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			continue
 		}
 		switch strings.ToLower(field.Name) {
+		case "traceverbose":
+			diffOpts = append(diffOpts, &traceVerboseOption{newValue: newValue.(bool)})
 		case "trace":
 			diffOpts = append(diffOpts, &traceOption{newValue: newValue.(bool)})
 		case "debug":
@@ -819,11 +850,15 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadLogging      = false
 		reloadAuth         = false
 		reloadClusterPerms = false
+		reloadClientTrcLvl = false
 	)
 	for _, opt := range opts {
 		opt.Apply(s)
 		if opt.IsLoggingChange() {
 			reloadLogging = true
+		}
+		if opt.IsTraceLevelChange() {
+			reloadClientTrcLvl = true
 		}
 		if opt.IsAuthChange() {
 			reloadAuth = true
@@ -836,6 +871,9 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	if reloadLogging {
 		s.ConfigureLogger()
 	}
+	if reloadClientTrcLvl {
+		s.reloadClientTraceLevel()
+	}
 	if reloadAuth {
 		s.reloadAuthorization()
 	}
@@ -844,6 +882,49 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	}
 
 	s.Noticef("Reloaded server configuration")
+}
+
+// Update all cached debug and trace settings for every client
+func (s *Server) reloadClientTraceLevel() {
+	opts := s.getOpts()
+
+	if opts.NoLog {
+		return
+	}
+
+	update := func(c *client) {
+		// client.trace is commonly read while holding the lock
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.setTraceLevel()
+	}
+
+	// Iterate over every client and update
+	// If this is not timely AND unexpected during a reload (with changes in trace level):
+	// Consider storing clients in a list, ten iterate without holding locks
+	// Or usage of sync.Map to store clients in the first place
+
+	if s.eventsEnabled() {
+		update(s.sys.client)
+	}
+
+	s.mu.Lock()
+	cMaps := []map[uint64]*client{s.clients, s.grTmpClients, s.routes, s.leafs}
+	for _, m := range cMaps {
+		for _, c := range m {
+			update(c)
+		}
+	}
+	s.mu.Unlock()
+
+	s.gateway.RLock()
+	for _, c := range s.gateway.in {
+		update(c)
+	}
+	for _, c := range s.gateway.outo {
+		update(c)
+	}
+	s.gateway.RUnlock()
 }
 
 // reloadAuthorization reconfigures the server authorization settings,

@@ -1722,8 +1722,8 @@ func (c *client) processGatewayAccountSub(accName string) error {
 // If in modeInterestOnly or for a queue sub, remove from
 // the sublist if present.
 // <Invoked from outbound connection's readLoop>
-func (c *client) processGatewayRUnsub(arg []byte) error {
-	accName, subject, queue, err := c.parseUnsubProto(arg)
+func (c *client) processGatewayRUnsub(arg []byte, trace bool) error {
+	accName, subject, queue, err := c.parseUnsubProto(trace, arg)
 	if err != nil {
 		return fmt.Errorf("processGatewaySubjectUnsub %s", err.Error())
 	}
@@ -1813,8 +1813,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 // For queue subs, or if in modeInterestOnly, register interest
 // from remote gateway.
 // <Invoked from outbound connection's readLoop>
-func (c *client) processGatewayRSub(arg []byte) error {
-	c.traceInOp("RS+", arg)
+func (c *client) processGatewayRSub(arg []byte, trace bool) error {
+	if trace {
+		c.traceInOp("RS+", arg)
+	}
 
 	// Indicate activity.
 	c.in.subs++
@@ -2725,13 +2727,13 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 // account or subject for which there is no interest in this cluster
 // an A-/RS- protocol may be send back.
 // <Invoked from inbound connection's readLoop>
-func (c *client) processInboundGatewayMsg(msg []byte) {
+func (c *client) processInboundGatewayMsg(msg []byte, trace bool) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
-	if c.trace {
+	if trace {
 		c.traceMsg(msg)
 	}
 

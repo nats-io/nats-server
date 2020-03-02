@@ -157,7 +157,7 @@ type Server struct {
 		logger      Logger
 		trace       int32
 		debug       int32
-		traceSysAcc bool
+		traceSysAcc int32
 	}
 
 	clientConnectURLs []string

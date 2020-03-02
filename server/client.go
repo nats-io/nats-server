@@ -229,7 +229,6 @@ type client struct {
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 
-	debug bool
 	trace bool
 	echo  bool
 }
@@ -434,6 +433,14 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+func (c *client) setTraceLevel() {
+	if c.kind == SYSTEM && !(atomic.LoadInt32(&c.srv.logging.traceSysAcc) != 0) {
+		c.trace = false
+	} else {
+		c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
+	}
+}
+
 // Lock should be held
 func (c *client) initClient() {
 	s := c.srv
@@ -450,12 +457,7 @@ func (c *client) initClient() {
 	c.subs = make(map[string]*subscription)
 	c.echo = true
 
-	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
-	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
-
-	if c.kind == SYSTEM && !c.srv.logging.traceSysAcc {
-		c.trace = false
-	}
+	c.setTraceLevel()
 
 	// This is a scratch buffer used for processMsg()
 	// The msg header starts with "RMSG ", which can be used
@@ -1220,11 +1222,9 @@ func (c *client) flushSignal() bool {
 	return false
 }
 
+// Traces a message.
+// Will NOT check if tracing is enabled, does NOT need the client lock.
 func (c *client) traceMsg(msg []byte) {
-	if !c.trace {
-		return
-	}
-
 	maxTrace := c.srv.getOpts().MaxTracedMsgLen
 	if maxTrace > 0 && (len(msg)-LEN_CR_LF) > maxTrace {
 		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", msg[:maxTrace])
@@ -1233,19 +1233,27 @@ func (c *client) traceMsg(msg []byte) {
 	}
 }
 
+// Traces an incoming operation.
+// Will NOT check if tracing is enabled, does NOT need the client lock.
 func (c *client) traceInOp(op string, arg []byte) {
 	c.traceOp("<<- %s", op, arg)
 }
 
+// Traces an outgoing operation.
+// Will check if tracing is enabled, DOES need the client lock.
+func (c *client) traceOutOpIfOk(op string, arg []byte) {
+	if c.trace {
+		c.traceOutOp(op, arg)
+	}
+}
+
+// Traces an outgoing operation.
+// Will NOT check if tracing is enabled, does NOT need the client lock.
 func (c *client) traceOutOp(op string, arg []byte) {
 	c.traceOp("->> %s", op, arg)
 }
 
 func (c *client) traceOp(format, op string, arg []byte) {
-	if !c.trace {
-		return
-	}
-
 	opa := []interface{}{}
 	if op != "" {
 		opa = append(opa, op)
@@ -1331,8 +1339,8 @@ func computeRTT(start time.Time) time.Duration {
 	return rtt
 }
 
-func (c *client) processConnect(arg []byte) error {
-	if c.trace {
+func (c *client) processConnect(arg []byte, trace bool) error {
+	if trace {
 		c.traceInOp("CONNECT", removePassFromTrace(arg))
 	}
 
@@ -1655,7 +1663,7 @@ func (c *client) enqueueProto(proto []byte) {
 
 // Assume the lock is held upon entry.
 func (c *client) sendPong() {
-	c.traceOutOp("PONG", nil)
+	c.traceOutOpIfOk("PONG", nil)
 	c.enqueueProto([]byte(pongProto))
 }
 
@@ -1689,7 +1697,7 @@ func (c *client) sendRTTPingLocked() bool {
 func (c *client) sendPing() {
 	c.rttStart = time.Now()
 	c.ping.out++
-	c.traceOutOp("PING", nil)
+	c.traceOutOpIfOk("PING", nil)
 	c.enqueueProto([]byte(pingProto))
 }
 
@@ -1708,14 +1716,14 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	c.traceOutOp("-ERR", []byte(err))
+	c.traceOutOpIfOk("-ERR", []byte(err))
 	c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
 	c.mu.Unlock()
 }
 
 func (c *client) sendOK() {
 	c.mu.Lock()
-	c.traceOutOp("OK", nil)
+	c.traceOutOpIfOk("OK", nil)
 	c.enqueueProto([]byte(okProto))
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
@@ -1723,7 +1731,10 @@ func (c *client) sendOK() {
 
 func (c *client) processPing() {
 	c.mu.Lock()
-	c.traceInOp("PING", nil)
+	if c.trace {
+		c.traceInOp("PING", nil)
+	}
+
 	if c.isClosed() {
 		c.mu.Unlock()
 		return
@@ -1781,8 +1792,10 @@ func (c *client) processPing() {
 }
 
 func (c *client) processPong() {
-	c.traceInOp("PONG", nil)
 	c.mu.Lock()
+	if c.trace {
+		c.traceInOp("PONG", nil)
+	}
 	c.ping.out = 0
 	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
@@ -1793,7 +1806,7 @@ func (c *client) processPong() {
 	}
 }
 
-func (c *client) processPub(trace bool, arg []byte) error {
+func (c *client) processPub(arg []byte, trace bool) error {
 	if trace {
 		c.traceInOp("PUB", arg)
 	}
@@ -1874,8 +1887,10 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) {
-	c.traceInOp("SUB", argo)
+func (c *client) processSub(argo []byte, noForward bool, trace bool) (*subscription, error) {
+	if trace {
+		c.traceInOp("SUB", argo)
+	}
 
 	// Indicate activity.
 	c.in.subs++
@@ -2213,7 +2228,10 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 		c.mu.Unlock()
 		return
 	}
-	c.traceOp("<-> %s", "DELSUB", sub.sid)
+
+	if c.trace {
+		c.traceOp("<-> %s", "DELSUB", sub.sid)
+	}
 
 	if c.kind != CLIENT && c.kind != SYSTEM {
 		c.removeReplySubTimeout(sub)
@@ -2255,8 +2273,10 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	}
 }
 
-func (c *client) processUnsub(arg []byte) error {
-	c.traceInOp("UNSUB", arg)
+func (c *client) processUnsub(arg []byte, trace bool) error {
+	if trace {
+		c.traceInOp("UNSUB", arg)
+	}
 	args := splitArg(arg)
 	var sid []byte
 	max := -1
@@ -2710,27 +2730,27 @@ func isReservedReply(reply []byte) bool {
 }
 
 // This will decide to call the client code or router code.
-func (c *client) processInboundMsg(msg []byte) {
+func (c *client) processInboundMsg(msg []byte, trace bool) {
 	switch c.kind {
 	case CLIENT:
-		c.processInboundClientMsg(msg)
+		c.processInboundClientMsg(msg, trace)
 	case ROUTER:
-		c.processInboundRoutedMsg(msg)
+		c.processInboundRoutedMsg(msg, trace)
 	case GATEWAY:
-		c.processInboundGatewayMsg(msg)
+		c.processInboundGatewayMsg(msg, trace)
 	case LEAF:
-		c.processInboundLeafMsg(msg)
+		c.processInboundLeafMsg(msg, trace)
 	}
 }
 
 // processInboundClientMsg is called to process an inbound msg from a client.
-func (c *client) processInboundClientMsg(msg []byte) {
+func (c *client) processInboundClientMsg(msg []byte, trace bool) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
-	if c.trace {
+	if trace {
 		c.traceMsg(msg)
 	}
 

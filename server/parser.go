@@ -119,6 +119,7 @@ func (c *client) parse(buf []byte) error {
 	authSet := c.awaitingAuth()
 	// Snapshot max control line as well.
 	mcl := c.mcl
+	trace := c.trace
 	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
@@ -220,7 +221,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processPub(c.trace, arg); err != nil {
+				if err := c.processPub(arg, trace); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
@@ -277,7 +278,7 @@ func (c *client) parse(buf []byte) error {
 			} else {
 				c.msgBuf = buf[c.as : i+1]
 			}
-			c.processInboundMsg(c.msgBuf)
+			c.processInboundMsg(c.msgBuf, trace)
 			c.argBuf, c.msgBuf = nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
@@ -319,7 +320,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processAccountSub(arg); err != nil {
+				if err := c.processAccountSub(arg, trace); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, OP_START
@@ -407,13 +408,13 @@ func (c *client) parse(buf []byte) error {
 
 				switch c.kind {
 				case CLIENT:
-					_, err = c.processSub(arg, false)
+					_, err = c.processSub(arg, false, trace)
 				case ROUTER:
-					err = c.processRemoteSub(arg)
+					err = c.processRemoteSub(arg, trace)
 				case GATEWAY:
-					err = c.processGatewayRSub(arg)
+					err = c.processGatewayRSub(arg, trace)
 				case LEAF:
-					err = c.processLeafSub(arg)
+					err = c.processLeafSub(arg, trace)
 				}
 				if err != nil {
 					return err
@@ -519,13 +520,13 @@ func (c *client) parse(buf []byte) error {
 
 				switch c.kind {
 				case CLIENT:
-					err = c.processUnsub(arg)
+					err = c.processUnsub(arg, trace)
 				case ROUTER:
-					err = c.processRemoteUnsub(arg)
+					err = c.processRemoteUnsub(arg, trace)
 				case GATEWAY:
-					err = c.processGatewayRUnsub(arg)
+					err = c.processGatewayRUnsub(arg, trace)
 				case LEAF:
-					err = c.processLeafUnsub(arg)
+					err = c.processLeafUnsub(arg, trace)
 				}
 				if err != nil {
 					return err
@@ -638,7 +639,7 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processConnect(arg); err != nil {
+				if err := c.processConnect(arg, trace); err != nil {
 					return err
 				}
 				c.drop, c.state = 0, OP_START
@@ -694,9 +695,9 @@ func (c *client) parse(buf []byte) error {
 				}
 				var err error
 				if c.kind == ROUTER || c.kind == GATEWAY {
-					err = c.processRoutedMsgArgs(c.trace, arg)
+					err = c.processRoutedMsgArgs(arg, trace)
 				} else if c.kind == LEAF {
-					err = c.processLeafMsgArgs(c.trace, arg)
+					err = c.processLeafMsgArgs(arg, trace)
 				}
 				if err != nil {
 					return err
@@ -869,7 +870,7 @@ func (c *client) parse(buf []byte) error {
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
 			// Works also for MSG_ARG, when message comes from ROUTE.
-			if err := c.clonePubArg(); err != nil {
+			if err := c.clonePubArg(trace); err != nil {
 				goto parseErr
 			}
 		}
@@ -921,17 +922,17 @@ func protoSnippet(start int, buf []byte) string {
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
-func (c *client) clonePubArg() error {
+func (c *client) clonePubArg(trace bool) error {
 	// Just copy and re-process original arg buffer.
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
-		return c.processRoutedMsgArgs(false, c.argBuf)
+		return c.processRoutedMsgArgs(c.argBuf, trace)
 	case LEAF:
-		return c.processLeafMsgArgs(false, c.argBuf)
+		return c.processLeafMsgArgs(c.argBuf, trace)
 	default:
-		return c.processPub(false, c.argBuf)
+		return c.processPub(c.argBuf, trace)
 	}
 }
