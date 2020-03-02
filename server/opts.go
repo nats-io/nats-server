@@ -3026,15 +3026,15 @@ func setBaselineOptions(opts *Options) {
 func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
-		showVersion       bool
-		showHelp          bool
-		showTLSHelp       bool
-		signal            string
-		configFile        string
-		dbgAndTrace       bool
-		traceAndSys       bool
-		dbgAndTraceAndSys bool
-		err               error
+		showVersion            bool
+		showHelp               bool
+		showTLSHelp            bool
+		signal                 string
+		configFile             string
+		dbgAndTrace            bool
+		trcAndVerboseTrc       bool
+		dbgAndTrcAndVerboseTrc bool
+		err                    error
 	)
 
 	fs.BoolVar(&showHelp, "h", false, "Show this message.")
@@ -3048,10 +3048,10 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
-	fs.BoolVar(&traceAndSys, "VV", false, "Enable Trace and system account logging.")
+	fs.BoolVar(&trcAndVerboseTrc, "VV", false, "Enable Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
 	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
-	fs.BoolVar(&dbgAndTraceAndSys, "DVV", false, "Enable Debug, Trace and system account logging.")
+	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
@@ -3140,9 +3140,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "DVV":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTraceAndSys)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTraceAndSys)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Syslog", dbgAndTraceAndSys)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", dbgAndTrcAndVerboseTrc)
 		case "DV":
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
@@ -3151,8 +3151,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		case "debug":
 			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
 		case "VV":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", traceAndSys)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Syslog", traceAndSys)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", trcAndVerboseTrc)
+			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", trcAndVerboseTrc)
 		case "V":
 			fallthrough
 		case "trace":
@@ -3234,9 +3234,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		} else {
 			switch f.Name {
 			case "VV":
-				opts.Trace, opts.TraceVerbose = traceAndSys, traceAndSys
+				opts.Trace, opts.TraceVerbose = trcAndVerboseTrc, trcAndVerboseTrc
 			case "DVV":
-				opts.Trace, opts.Debug, opts.TraceVerbose = dbgAndTraceAndSys, dbgAndTraceAndSys, dbgAndTraceAndSys
+				opts.Trace, opts.Debug, opts.TraceVerbose = dbgAndTrcAndVerboseTrc, dbgAndTrcAndVerboseTrc, dbgAndTrcAndVerboseTrc
 			case "DV":
 				// Check value to support -DV=false
 				opts.Trace, opts.Debug = dbgAndTrace, dbgAndTrace
