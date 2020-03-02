@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -582,7 +582,7 @@ func TestMaxControlLine(t *testing.T) {
 
 	pub := []byte("PUB foo.bar 11\r")
 	err := c.parse(pub)
-	if err != ErrMaxControlLine {
+	if !ErrorIs(err, ErrMaxControlLine) {
 		t.Fatalf("Expected an error parsing longer than expected control line")
 	}
 }

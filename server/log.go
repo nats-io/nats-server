@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -154,6 +154,27 @@ func (s *Server) Errorf(format string, v ...interface{}) {
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
 		logger.Errorf(format, v...)
 	}, format, v...)
+}
+
+// Error logs an error with a scope
+func (s *Server) Errors(scope interface{}, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s", scope, UnpackIfErrorCtx(e))
+}
+
+// Error logs an error with a context
+func (s *Server) Errorc(ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
+}
+
+// Error logs an error with a scope and context
+func (s *Server) Errorsc(scope interface{}, ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
 }
 
 // Warnf logs a warning error

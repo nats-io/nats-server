@@ -208,3 +208,78 @@ func (e *processConfigErr) Warnings() []error {
 func (e *processConfigErr) Errors() []error {
 	return e.errors
 }
+
+// errCtx wraps an error and stores additional ctx information for tracing.
+// Does not print or return it unless explicitly requested.
+type errCtx struct {
+	error
+	ctx string
+}
+
+func NewErrorCtx(err error, format string, args ...interface{}) error {
+	return &errCtx{err, fmt.Sprintf(format, args...)}
+}
+
+// implement to work with errors.Is and errors.As
+func (e *errCtx) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.error
+}
+
+// Context for error
+func (e *errCtx) Context() string {
+	if e == nil {
+		return ""
+	}
+	return e.ctx
+}
+
+// Return Error or, if type is right error and context
+func UnpackIfErrorCtx(err error) string {
+	if e, ok := err.(*errCtx); ok {
+		if _, ok := e.error.(*errCtx); ok {
+			return fmt.Sprint(UnpackIfErrorCtx(e.error), ": ", e.Context())
+		}
+		return fmt.Sprint(e.Error(), ": ", e.Context())
+	}
+	return err.Error()
+}
+
+// implements: go 1.13 errors.Unwrap(err error) error
+// TODO replace with native code once we no longer support go1.12
+func errorsUnwrap(err error) error {
+	u, ok := err.(interface {
+		Unwrap() error
+	})
+	if !ok {
+		return nil
+	}
+	return u.Unwrap()
+}
+
+// implements: go 1.13 errors.Is(err, target error) bool
+// TODO replace with native code once we no longer support go1.12
+func ErrorIs(err, target error) bool {
+	// this is an outright copy of go 1.13 errors.Is(err, target error) bool
+	// removed isComparable
+	if err == nil || target == nil {
+		return err == target
+	}
+
+	for {
+		if err == target {
+			return true
+		}
+		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(target) {
+			return true
+		}
+		// TODO: consider supporing target.Is(err). This would allow
+		// user-definable predicates, but also may allow for coping with sloppy
+		// APIs, thereby making it easier to get away with them.
+		if err = errorsUnwrap(err); err == nil {
+			return false
+		}
+	}
+}

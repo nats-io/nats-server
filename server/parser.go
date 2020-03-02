@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -855,9 +855,11 @@ func (c *client) parse(buf []byte) error {
 		// exact at all but the performance hit is too great to be precise, and
 		// catching here should prevent memory exhaustion attacks.
 		if len(c.argBuf) > int(mcl) {
-			c.sendErr(ErrMaxControlLine.Error())
+			err := NewErrorCtx(ErrMaxControlLine, "State %d, max_control_line %d, Buffer len %d",
+				c.state, int(mcl), len(c.argBuf))
+			c.sendErr(err.Error())
 			c.closeConnection(MaxControlLineExceeded)
-			return ErrMaxControlLine
+			return err
 		}
 	}
 
