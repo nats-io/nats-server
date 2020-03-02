@@ -43,8 +43,9 @@ Logging Options:
     -r, --remote_syslog <addr>       Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
     -V, --trace                      Trace the raw protocol
+    -VV                              Verbose trace (traces system account) 
     -DV                              Debug and trace
-    --sys_trace                      Trace the system account (default: false)
+    -DVV                             Debug and verbose trace (traces system account) 
 
 Authorization Options:
         --user <user>                User required for connections
