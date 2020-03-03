@@ -1916,3 +1916,82 @@ func TestClientIPv6Address(t *testing.T) {
 		t.Fatalf("Wrong string representation of an IPv6 address: %q", ncs)
 	}
 }
+
+func TestPBNotIncreasedOnMaxPending(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = 100
+	s := &Server{opts: opts}
+	c := &client{srv: s}
+	c.initClient()
+
+	c.mu.Lock()
+	c.queueOutbound(make([]byte, 200))
+	pb := c.out.pb
+	c.mu.Unlock()
+
+	if pb != 0 {
+		t.Fatalf("c.out.pb should be 0, got %v", pb)
+	}
+}
+
+type testConnWritePartial struct {
+	net.Conn
+	partial bool
+	buf     bytes.Buffer
+}
+
+func (c *testConnWritePartial) Write(p []byte) (int, error) {
+	n := len(p)
+	if c.partial {
+		n = 5
+	}
+	return c.buf.Write(p[:n])
+}
+
+func (c *testConnWritePartial) SetWriteDeadline(_ time.Time) error {
+	return nil
+}
+
+func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = 1024
+	s := &Server{opts: opts}
+
+	fakeConn := &testConnWritePartial{}
+	c := &client{srv: s, nc: fakeConn}
+	c.initClient()
+
+	bufs := [][]byte{
+		[]byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+		[]byte("------"),
+		[]byte("0123456789"),
+	}
+	expected := bytes.Buffer{}
+	for i, buf := range bufs {
+		expected.Write(buf)
+		c.mu.Lock()
+		if i == 0 {
+			fakeConn.partial = true
+			c.out.sz = 10
+		} else {
+			fakeConn.partial = false
+			c.out.sz = 5
+		}
+		c.queueOutbound(buf)
+		c.flushOutbound()
+		c.mu.Unlock()
+	}
+	// Ensure everything is flushed.
+	for done := false; !done; {
+		c.mu.Lock()
+		if c.out.pb > 0 {
+			c.flushOutbound()
+		} else {
+			done = true
+		}
+		c.mu.Unlock()
+	}
+	if !bytes.Equal(expected.Bytes(), fakeConn.buf.Bytes()) {
+		t.Fatalf("Expected\n%q\ngot\n%q", expected.String(), fakeConn.buf.String())
+	}
+}

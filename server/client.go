@@ -1112,7 +1112,7 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Check to see if we can reuse buffers.
-	if len(cnb) > 0 {
+	if len(cnb) > 0 && n >= int64(len(cnb[0])) {
 		oldp := cnb[0][:0]
 		if cap(oldp) >= int(c.out.sz) {
 			// Replace primary or secondary if they are nil, reusing same buffer.
@@ -1562,6 +1562,9 @@ func (c *client) queueOutbound(data []byte) bool {
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
 	if c.kind == CLIENT && c.out.pb > c.out.mp {
+		// Perf wise, it looks like it is faster to optimistically add than
+		// checking current pb+len(data) and then add to pb.
+		c.out.pb -= int64(len(data))
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes, true)
