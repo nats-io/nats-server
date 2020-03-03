@@ -117,11 +117,12 @@ func genAsyncParser(c *client) (func(string), chan bool) {
 }
 
 var defaultServerOptions = Options{
-	Host:   "127.0.0.1",
-	Trace:  false,
-	Debug:  false,
-	NoLog:  true,
-	NoSigs: true,
+	Host:                  "127.0.0.1",
+	Trace:                 true,
+	Debug:                 true,
+	DisableShortFirstPing: true,
+	NoLog:                 true,
+	NoSigs:                true,
 }
 
 func rawSetup(serverOptions Options) (*Server, *testAsyncClient, *bufio.Reader, string) {
