@@ -1723,7 +1723,7 @@ func (c *client) processGatewayAccountSub(accName string) error {
 // the sublist if present.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRUnsub(arg []byte, trace bool) error {
-	accName, subject, queue, err := c.parseUnsubProto(trace, arg)
+	accName, subject, queue, err := c.parseUnsubProto(arg, trace)
 	if err != nil {
 		return fmt.Errorf("processGatewaySubjectUnsub %s", err.Error())
 	}

@@ -895,8 +895,8 @@ func (s *Server) reloadClientTraceLevel() {
 	update := func(c *client) {
 		// client.trace is commonly read while holding the lock
 		c.mu.Lock()
-		defer c.mu.Unlock()
 		c.setTraceLevel()
+		c.mu.Unlock()
 	}
 
 	// Iterate over every client and update

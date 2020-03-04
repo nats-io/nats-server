@@ -668,7 +668,7 @@ func (c *client) removeRemoteSubs() {
 	}
 }
 
-func (c *client) parseUnsubProto(trace bool, arg []byte) (string, []byte, []byte, error) {
+func (c *client) parseUnsubProto(arg []byte, trace bool) (string, []byte, []byte, error) {
 	if trace {
 		c.traceInOp("RS-", arg)
 	}
@@ -695,7 +695,7 @@ func (c *client) processRemoteUnsub(arg []byte, trace bool) (err error) {
 	if srv == nil {
 		return nil
 	}
-	accountName, subject, _, err := c.parseUnsubProto(trace, arg)
+	accountName, subject, _, err := c.parseUnsubProto(arg, trace)
 	if err != nil {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}

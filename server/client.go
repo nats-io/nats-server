@@ -2562,7 +2562,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 		c.pcd[client] = needFlush
 	}
 
-	if c.trace {
+	if client.trace {
 		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
 	}
 
