@@ -1240,14 +1240,6 @@ func (c *client) traceInOp(op string, arg []byte) {
 }
 
 // Traces an outgoing operation.
-// Will check if tracing is enabled, DOES need the client lock.
-func (c *client) traceOutOpIfOk(op string, arg []byte) {
-	if c.trace {
-		c.traceOutOp(op, arg)
-	}
-}
-
-// Traces an outgoing operation.
 // Will NOT check if tracing is enabled, does NOT need the client lock.
 func (c *client) traceOutOp(op string, arg []byte) {
 	c.traceOp("->> %s", op, arg)
@@ -1339,11 +1331,7 @@ func computeRTT(start time.Time) time.Duration {
 	return rtt
 }
 
-func (c *client) processConnect(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("CONNECT", removePassFromTrace(arg))
-	}
-
+func (c *client) processConnect(arg []byte) error {
 	c.mu.Lock()
 	// If we can't stop the timer because the callback is in progress...
 	if !c.clearAuthTimer() {
@@ -1663,7 +1651,9 @@ func (c *client) enqueueProto(proto []byte) {
 
 // Assume the lock is held upon entry.
 func (c *client) sendPong() {
-	c.traceOutOpIfOk("PONG", nil)
+	if c.trace {
+		c.traceOutOp("PONG", nil)
+	}
 	c.enqueueProto([]byte(pongProto))
 }
 
@@ -1697,7 +1687,9 @@ func (c *client) sendRTTPingLocked() bool {
 func (c *client) sendPing() {
 	c.rttStart = time.Now()
 	c.ping.out++
-	c.traceOutOpIfOk("PING", nil)
+	if c.trace {
+		c.traceOutOp("PING", nil)
+	}
 	c.enqueueProto([]byte(pingProto))
 }
 
@@ -1716,14 +1708,18 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 
 func (c *client) sendErr(err string) {
 	c.mu.Lock()
-	c.traceOutOpIfOk("-ERR", []byte(err))
+	if c.trace {
+		c.traceOutOp("-ERR", []byte(err))
+	}
 	c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
 	c.mu.Unlock()
 }
 
 func (c *client) sendOK() {
 	c.mu.Lock()
-	c.traceOutOpIfOk("OK", nil)
+	if c.trace {
+		c.traceOutOp("OK", nil)
+	}
 	c.enqueueProto([]byte(okProto))
 	c.pcd[c] = needFlush
 	c.mu.Unlock()
@@ -1731,9 +1727,6 @@ func (c *client) sendOK() {
 
 func (c *client) processPing() {
 	c.mu.Lock()
-	if c.trace {
-		c.traceInOp("PING", nil)
-	}
 
 	if c.isClosed() {
 		c.mu.Unlock()
@@ -1793,9 +1786,6 @@ func (c *client) processPing() {
 
 func (c *client) processPong() {
 	c.mu.Lock()
-	if c.trace {
-		c.traceInOp("PONG", nil)
-	}
 	c.ping.out = 0
 	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
@@ -1806,11 +1796,7 @@ func (c *client) processPong() {
 	}
 }
 
-func (c *client) processPub(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("PUB", arg)
-	}
-
+func (c *client) processPub(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_PUB_ARGS][]byte{}
 	args := a[:0]
@@ -1887,11 +1873,7 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte, noForward bool, trace bool) (*subscription, error) {
-	if trace {
-		c.traceInOp("SUB", argo)
-	}
-
+func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) {
 	// Indicate activity.
 	c.in.subs++
 
@@ -2273,10 +2255,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	}
 }
 
-func (c *client) processUnsub(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("UNSUB", arg)
-	}
+func (c *client) processUnsub(arg []byte) error {
 	args := splitArg(arg)
 	var sid []byte
 	max := -1
@@ -2730,29 +2709,25 @@ func isReservedReply(reply []byte) bool {
 }
 
 // This will decide to call the client code or router code.
-func (c *client) processInboundMsg(msg []byte, trace bool) {
+func (c *client) processInboundMsg(msg []byte) {
 	switch c.kind {
 	case CLIENT:
-		c.processInboundClientMsg(msg, trace)
+		c.processInboundClientMsg(msg)
 	case ROUTER:
-		c.processInboundRoutedMsg(msg, trace)
+		c.processInboundRoutedMsg(msg)
 	case GATEWAY:
-		c.processInboundGatewayMsg(msg, trace)
+		c.processInboundGatewayMsg(msg)
 	case LEAF:
-		c.processInboundLeafMsg(msg, trace)
+		c.processInboundLeafMsg(msg)
 	}
 }
 
 // processInboundClientMsg is called to process an inbound msg from a client.
-func (c *client) processInboundClientMsg(msg []byte, trace bool) {
+func (c *client) processInboundClientMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if trace {
-		c.traceMsg(msg)
-	}
 
 	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {

@@ -1227,11 +1227,7 @@ func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 }
 
 // processLeafSub will process an inbound sub request for the remote leaf node.
-func (c *client) processLeafSub(argo []byte, trace bool) (err error) {
-	if trace {
-		c.traceInOp("LS+", argo)
-	}
-
+func (c *client) processLeafSub(argo []byte) (err error) {
 	// Indicate activity.
 	c.in.subs++
 
@@ -1355,11 +1351,7 @@ func (s *Server) reportLeafNodeLoop(c *client) {
 }
 
 // processLeafUnsub will process an inbound unsub request for the remote leaf node.
-func (c *client) processLeafUnsub(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("LS-", arg)
-	}
-
+func (c *client) processLeafUnsub(arg []byte) error {
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
@@ -1394,11 +1386,7 @@ func (c *client) processLeafUnsub(arg []byte, trace bool) error {
 	return nil
 }
 
-func (c *client) processLeafMsgArgs(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("LMSG", arg)
-	}
-
+func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
@@ -1469,15 +1457,11 @@ func (c *client) processLeafMsgArgs(arg []byte, trace bool) error {
 }
 
 // processInboundLeafMsg is called to process an inbound msg from a leaf node.
-func (c *client) processInboundLeafMsg(msg []byte, trace bool) {
+func (c *client) processInboundLeafMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if trace {
-		c.traceMsg(msg)
-	}
 
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {

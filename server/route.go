@@ -139,10 +139,7 @@ func (c *client) removeReplySubTimeout(sub *subscription) {
 	}
 }
 
-func (c *client) processAccountSub(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("A+", arg)
-	}
+func (c *client) processAccountSub(arg []byte) error {
 	accName := string(arg)
 	if c.kind == GATEWAY {
 		return c.processGatewayAccountSub(accName)
@@ -151,7 +148,6 @@ func (c *client) processAccountSub(arg []byte, trace bool) error {
 }
 
 func (c *client) processAccountUnsub(arg []byte) {
-	c.traceInOp("A-", arg)
 	accName := string(arg)
 	if c.kind == GATEWAY {
 		c.processGatewayAccountUnsub(accName)
@@ -159,10 +155,7 @@ func (c *client) processAccountUnsub(arg []byte) {
 }
 
 // Process an inbound RMSG specification from the remote route.
-func (c *client) processRoutedMsgArgs(arg []byte, trace bool) error {
-	if trace {
-		c.traceInOp("RMSG", arg)
-	}
+func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
@@ -234,15 +227,11 @@ func (c *client) processRoutedMsgArgs(arg []byte, trace bool) error {
 }
 
 // processInboundRouteMsg is called to process an inbound msg from a route.
-func (c *client) processInboundRoutedMsg(msg []byte, trace bool) {
+func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if trace {
-		c.traceMsg(msg)
-	}
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -668,11 +657,7 @@ func (c *client) removeRemoteSubs() {
 	}
 }
 
-func (c *client) parseUnsubProto(arg []byte, trace bool) (string, []byte, []byte, error) {
-	if trace {
-		c.traceInOp("RS-", arg)
-	}
-
+func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
@@ -690,12 +675,12 @@ func (c *client) parseUnsubProto(arg []byte, trace bool) (string, []byte, []byte
 }
 
 // Indicates no more interest in the given account/subject for the remote side.
-func (c *client) processRemoteUnsub(arg []byte, trace bool) (err error) {
+func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	srv := c.srv
 	if srv == nil {
 		return nil
 	}
-	accountName, subject, _, err := c.parseUnsubProto(arg, trace)
+	accountName, subject, _, err := c.parseUnsubProto(arg)
 	if err != nil {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
@@ -740,11 +725,7 @@ func (c *client) processRemoteUnsub(arg []byte, trace bool) (err error) {
 	return nil
 }
 
-func (c *client) processRemoteSub(argo []byte, trace bool) (err error) {
-	if trace {
-		c.traceInOp("RS+", argo)
-	}
-
+func (c *client) processRemoteSub(argo []byte) (err error) {
 	// Indicate activity.
 	c.in.subs++
 

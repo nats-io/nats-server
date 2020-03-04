@@ -268,14 +268,16 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 			trace := c.trace
 			c.mu.Unlock()
 
-			if trace {
-				c.traceInOp(fmt.Sprintf(
-					"PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
-			}
-
 			// Add in NL
 			b = append(b, _CRLF_...)
-			c.processInboundClientMsg(b, trace)
+
+			if trace {
+				c.traceInOp(fmt.Sprintf("PUB %s %s %d",
+					c.pa.subject, c.pa.reply, c.pa.size), nil)
+				c.traceMsg(b)
+			}
+
+			c.processInboundClientMsg(b)
 			// See if we are doing graceful shutdown.
 			if !pm.last {
 				c.flushClients(0) // Never spend time in place.
@@ -1024,8 +1026,13 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	trace := c.trace
 	s.mu.Unlock()
 
+	arg := []byte(subject + " " + sid)
+	if trace {
+		c.traceInOp("SUB", arg)
+	}
+
 	// Now create the subscription
-	return c.processSub([]byte(subject+" "+sid), internalOnly, trace)
+	return c.processSub(arg, internalOnly)
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {

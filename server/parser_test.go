@@ -301,7 +301,7 @@ func TestParsePubArg(t *testing.T) {
 			subject: "foo", reply: "", size: 2222, szb: "2222"},
 	} {
 		t.Run(test.arg, func(t *testing.T) {
-			if err := c.processPub([]byte(test.arg), false); err != nil {
+			if err := c.processPub([]byte(test.arg)); err != nil {
 				t.Fatalf("Unexpected parse error: %v\n", err)
 			}
 			if !bytes.Equal(c.pa.subject, []byte(test.subject)) {
@@ -324,7 +324,7 @@ func TestParsePubBadSize(t *testing.T) {
 	c := dummyClient()
 	// Setup localized max payload
 	c.mpay = 32768
-	if err := c.processPub([]byte("foo 2222222222222222"), false); err == nil {
+	if err := c.processPub([]byte("foo 2222222222222222")); err == nil {
 		t.Fatalf("Expected parse error for size too large")
 	}
 }
