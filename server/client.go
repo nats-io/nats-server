@@ -1035,6 +1035,10 @@ func (c *client) flushOutbound() bool {
 
 	// For selecting primary replacement.
 	cnb := nb
+	var lfs int
+	if len(cnb) > 0 {
+		lfs = len(cnb[0])
+	}
 
 	// In case it goes away after releasing the lock.
 	nc := c.nc
@@ -1112,7 +1116,7 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Check to see if we can reuse buffers.
-	if len(cnb) > 0 && n >= int64(len(cnb[0])) {
+	if lfs != 0 && n >= int64(lfs) {
 		oldp := cnb[0][:0]
 		if cap(oldp) >= int(c.out.sz) {
 			// Replace primary or secondary if they are nil, reusing same buffer.

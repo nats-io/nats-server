@@ -1943,7 +1943,7 @@ type testConnWritePartial struct {
 func (c *testConnWritePartial) Write(p []byte) (int, error) {
 	n := len(p)
 	if c.partial {
-		n = 5
+		n = 15
 	}
 	return c.buf.Write(p[:n])
 }
@@ -1957,7 +1957,7 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 	opts.MaxPending = 1024
 	s := &Server{opts: opts}
 
-	fakeConn := &testConnWritePartial{}
+	fakeConn := &testConnWritePartial{partial: true}
 	c := &client{srv: s, nc: fakeConn}
 	c.initClient()
 
@@ -1967,18 +1967,13 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 		[]byte("0123456789"),
 	}
 	expected := bytes.Buffer{}
-	for i, buf := range bufs {
+	for _, buf := range bufs {
 		expected.Write(buf)
 		c.mu.Lock()
-		if i == 0 {
-			fakeConn.partial = true
-			c.out.sz = 10
-		} else {
-			fakeConn.partial = false
-			c.out.sz = 5
-		}
 		c.queueOutbound(buf)
+		c.out.sz = 10
 		c.flushOutbound()
+		fakeConn.partial = false
 		c.mu.Unlock()
 	}
 	// Ensure everything is flushed.
