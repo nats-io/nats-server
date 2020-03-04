@@ -1,3 +1,4 @@
+FROM synadia/jsm:latest AS jsm
 FROM golang:1.13.7-alpine3.11 AS builder
 
 WORKDIR $GOPATH/src/github.com/nats-io/nats-server
@@ -16,6 +17,7 @@ RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
 COPY --from=builder /nats-server /nats/bin/nats-server
+COPY --from=jsm /usr/local/bin/nats /usr/local/bin/
 
 # NOTE: For backwards compatibility, we add a symlink to /gnatsd which is
 # where the binary from the scratch container image used to be located.
