@@ -608,7 +608,8 @@ func waitForOutboundGateways(t *testing.T, s *server.Server, expected int, timeo
 	}
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		if n := s.NumOutboundGateways(); n != expected {
-			return fmt.Errorf("Expected %v outbound gateway(s), got %v", expected, n)
+			return fmt.Errorf("Expected %v outbound gateway(s), got %v (ulimt -n too low?)",
+				expected, n)
 		}
 		return nil
 	})
