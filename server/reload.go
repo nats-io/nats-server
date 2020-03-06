@@ -901,7 +901,7 @@ func (s *Server) reloadClientTraceLevel() {
 
 	s.gateway.RLock()
 	clientCnt += len(s.gateway.in) + len(s.gateway.outo)
-	s.gateway.Unlock()
+	s.gateway.RUnlock()
 
 	clients := make([]*client, 0, clientCnt)
 
