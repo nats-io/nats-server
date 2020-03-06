@@ -285,7 +285,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		// We will put this in the normal log if first connect, does not force -DV mode to know
 		// that the connect worked.
 		if firstConnect {
-			s.Noticef("Connected leafnode to %q", rURL.Hostname())
+			s.Noticef("Connected leafnode to %q", rURL.Host)
 		}
 		return
 	}
