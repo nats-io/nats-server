@@ -892,39 +892,45 @@ func (s *Server) reloadClientTraceLevel() {
 		return
 	}
 
-	update := func(c *client) {
-		// client.trace is commonly read while holding the lock
-		c.mu.Lock()
-		c.setTraceLevel()
-		c.mu.Unlock()
-	}
-
-	// Iterate over every client and update
-	// If this is not timely AND unexpected during a reload (with changes in trace level):
-	// Consider storing clients in a list, ten iterate without holding locks
-	// Or usage of sync.Map to store clients in the first place
-
-	if s.eventsEnabled() {
-		update(s.sys.client)
-	}
+	// Create a list of all clients.
+	// Update their trace level when not holding server or gateway lock
 
 	s.mu.Lock()
+	clientCnt := 1 + len(s.clients) + len(s.grTmpClients) + len(s.routes) + len(s.leafs)
+	s.mu.Unlock()
+
+	s.gateway.RLock()
+	clientCnt += len(s.gateway.in) + len(s.gateway.outo)
+	s.gateway.Unlock()
+
+	clients := make([]*client, 0, clientCnt)
+
+	s.mu.Lock()
+	if s.eventsEnabled() {
+		clients = append(clients, s.sys.client)
+	}
+
 	cMaps := []map[uint64]*client{s.clients, s.grTmpClients, s.routes, s.leafs}
 	for _, m := range cMaps {
 		for _, c := range m {
-			update(c)
+			clients = append(clients, c)
 		}
 	}
 	s.mu.Unlock()
 
 	s.gateway.RLock()
 	for _, c := range s.gateway.in {
-		update(c)
+		clients = append(clients, c)
 	}
-	for _, c := range s.gateway.outo {
-		update(c)
-	}
+	clients = append(clients, s.gateway.outo...)
 	s.gateway.RUnlock()
+
+	for _, c := range clients {
+		// client.trace is commonly read while holding the lock
+		c.mu.Lock()
+		c.setTraceLevel()
+		c.mu.Unlock()
+	}
 }
 
 // reloadAuthorization reconfigures the server authorization settings,
