@@ -73,6 +73,7 @@ type route struct {
 	authRequired bool
 	tlsRequired  bool
 	connectURLs  []string
+	wsConnURLs   []string
 	replySubs    map[*subscription]*time.Timer
 	gatewayURL   string
 	leafnodeURL  string
@@ -524,7 +525,7 @@ func (c *client) processRouteInfo(info *Info) {
 		// Unless disabled, possibly update the server's INFO protocol
 		// and send to clients that know how to handle async INFOs.
 		if !s.getOpts().Cluster.NoAdvertise {
-			s.addClientConnectURLsAndSendINFOToClients(info.ClientConnectURLs)
+			s.addConnectURLsAndSendINFOToClients(info.ClientConnectURLs, info.WSConnectURLs)
 		}
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
@@ -570,7 +571,7 @@ func (c *client) updateRemoteRoutePerms(sl *Sublist, info *Info) {
 // sendAsyncInfoToClients sends an INFO protocol to all
 // connected clients that accept async INFO updates.
 // The server lock is held on entry.
-func (s *Server) sendAsyncInfoToClients() {
+func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 	// If there are no clients supporting async INFO protocols, we are done.
 	// Also don't send if we are shutting down...
 	if s.cproto == 0 || s.shutdown {
@@ -583,7 +584,9 @@ func (s *Server) sendAsyncInfoToClients() {
 		// registered (server has received CONNECT and first PING). For
 		// clients that are not at this stage, this will happen in the
 		// processing of the first PING (see client.processPing)
-		if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
+		if ((regCli && c.ws == nil) || (wsCli && c.ws != nil)) &&
+			c.opts.Protocol >= ClientProtoInfo &&
+			c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
 			c.enqueueProto(c.generateClientInfoJSON(s.copyInfo()))
@@ -1236,6 +1239,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		s.remotes[id] = c
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
+		c.route.wsConnURLs = info.WSConnectURLs
 		cid := c.cid
 		hash := string(c.route.hash)
 		c.mu.Unlock()
@@ -1495,6 +1499,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
 		info.ClientConnectURLs = s.clientConnectURLs
+		info.WSConnectURLs = s.websocket.connectURLs
 	}
 	// If we have selected a random port...
 	if port == 0 {

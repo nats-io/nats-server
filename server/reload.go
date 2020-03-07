@@ -306,8 +306,10 @@ func (c *clusterOption) Apply(server *Server) {
 	server.routeInfo.AuthRequired = c.newValue.Username != ""
 	if c.newValue.NoAdvertise {
 		server.routeInfo.ClientConnectURLs = nil
+		server.routeInfo.WSConnectURLs = nil
 	} else {
 		server.routeInfo.ClientConnectURLs = server.clientConnectURLs
+		server.routeInfo.WSConnectURLs = server.websocket.connectURLs
 	}
 	server.setRouteInfoHostPortAndIP()
 	server.mu.Unlock()
@@ -523,7 +525,7 @@ type clientAdvertiseOption struct {
 // Apply the setting by updating the server info and regenerate the infoJSON byte array.
 func (c *clientAdvertiseOption) Apply(server *Server) {
 	server.mu.Lock()
-	server.setInfoHostPortAndGenerateJSON()
+	server.setInfoHostPort()
 	server.mu.Unlock()
 	server.Noticef("Reload: client_advertise = %s", c.newValue)
 }
@@ -627,6 +629,7 @@ func (s *Server) Reload() error {
 	clusterOrgPort := curOpts.Cluster.Port
 	gatewayOrgPort := curOpts.Gateway.Port
 	leafnodesOrgPort := curOpts.LeafNode.Port
+	websocketOrgPort := curOpts.Websocket.Port
 
 	s.mu.Unlock()
 
@@ -655,6 +658,9 @@ func (s *Server) Reload() error {
 	}
 	if newOpts.LeafNode.Port == -1 {
 		newOpts.LeafNode.Port = leafnodesOrgPort
+	}
+	if newOpts.Websocket.Port == -1 {
+		newOpts.Websocket.Port = websocketOrgPort
 	}
 
 	if err := s.reloadOptions(curOpts, newOpts); err != nil {
@@ -755,6 +761,10 @@ func imposeOrder(value interface{}) error {
 	case GatewayOpts:
 		sort.Slice(value.Gateways, func(i, j int) bool {
 			return value.Gateways[i].Name < value.Gateways[j].Name
+		})
+	case WebsocketOpts:
+		sort.Slice(value.AllowedOrigins, func(i, j int) bool {
+			return value.AllowedOrigins[i] < value.AllowedOrigins[j]
 		})
 	case string, bool, int, int32, int64, time.Duration, float64, nil,
 		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, Authentication:
@@ -914,6 +924,18 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			return nil, fmt.Errorf("config reload not supported for jetstream max memory")
 		case "jetstreammaxstore":
 			return nil, fmt.Errorf("config reload not supported for jetstream max storage")
+		case "websocket":
+			// Similar to gateways
+			tmpOld := oldValue.(WebsocketOpts)
+			tmpNew := newValue.(WebsocketOpts)
+			tmpOld.TLSConfig = nil
+			tmpNew.TLSConfig = nil
+			// If there is really a change prevents reload.
+			if !reflect.DeepEqual(tmpOld, tmpNew) {
+				// See TODO(ik) note below about printing old/new values.
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
 		case "connecterrorreports":
 			diffOpts = append(diffOpts, &connectErrorReports{newValue: newValue.(int)})
 		case "reconnecterrorreports":

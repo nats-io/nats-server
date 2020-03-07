@@ -54,6 +54,12 @@ func TestPortsFile(t *testing.T) {
 	opts.HTTPPort = -1
 	opts.ProfPort = -1
 	opts.Cluster.Port = -1
+	opts.Websocket.Port = -1
+	tc := &server.TLSConfigOpts{
+		CertFile: "./configs/certs/server-cert.pem",
+		KeyFile:  "./configs/certs/server-key.pem",
+	}
+	opts.Websocket.TLSConfig, _ = server.GenTLSConfig(tc)
 
 	s := RunServer(&opts)
 	// this for test cleanup in case we fail - will be ignored if server already shutdown
@@ -98,6 +104,10 @@ func TestPortsFile(t *testing.T) {
 
 	if len(readPorts.Profile) == 0 || !strings.HasPrefix(readPorts.Profile[0], "http://") {
 		t.Fatal("Expected at least one profile listen url")
+	}
+
+	if len(readPorts.WebSocket) == 0 || !strings.HasPrefix(readPorts.WebSocket[0], "wss://") {
+		t.Fatal("Expected at least one ws listen url")
 	}
 
 	// testing cleanup

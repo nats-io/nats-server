@@ -969,6 +969,7 @@ type Varz struct {
 	TLSVerify         bool              `json:"tls_verify,omitempty"`
 	IP                string            `json:"ip,omitempty"`
 	ClientConnectURLs []string          `json:"connect_urls,omitempty"`
+	WSConnectURLs     []string          `json:"ws_connect_urls,omitempty"`
 	MaxConn           int               `json:"max_connections"`
 	MaxSubs           int               `json:"max_subscriptions,omitempty"`
 	PingInterval      time.Duration     `json:"ping_interval"`
@@ -1286,8 +1287,10 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.Mem = rss
 	v.CPU = pcpu
 	if l := len(s.info.ClientConnectURLs); l > 0 {
-		v.ClientConnectURLs = make([]string, l)
-		copy(v.ClientConnectURLs, s.info.ClientConnectURLs)
+		v.ClientConnectURLs = append([]string(nil), s.info.ClientConnectURLs...)
+	}
+	if l := len(s.info.WSConnectURLs); l > 0 {
+		v.WSConnectURLs = append([]string(nil), s.info.WSConnectURLs...)
 	}
 	v.Connections = len(s.clients)
 	v.TotalConnections = s.totalClients
