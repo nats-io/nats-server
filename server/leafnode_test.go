@@ -784,6 +784,72 @@ func TestLeafNodeLoop(t *testing.T) {
 	checkLeafNodeConnected(t, sa)
 }
 
+func TestLeafNodeLoopFromDAG(t *testing.T) {
+	// we want A point to B and B to A.
+	oa := DefaultOptions()
+	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	oa.LeafNode.Port = -1
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	la := &captureErrorLogger{errCh: make(chan string, 10)}
+	sa.SetLogger(la, false, false)
+	ua, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", oa.LeafNode.Port))
+
+	ob := DefaultOptions()
+	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	ob.LeafNode.Port = -1
+	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	lb := &captureErrorLogger{errCh: make(chan string, 10)}
+	sb.SetLogger(lb, false, false)
+	ub, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
+
+	checkLeafNodeConnected(t, sa)
+	checkLeafNodeConnected(t, sb)
+
+	oc := DefaultOptions()
+	oc.LeafNode.ReconnectInterval = 10 * time.Millisecond
+	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}, {URLs: []*url.URL{ub}}}
+	sc := RunServer(oc)
+	// logger with channel can only be specified after startup and is thus not used
+
+	// either error channel (for a or b) may get the error, but not both.
+	errCnt := 0
+
+errorLoop:
+	for {
+		select {
+		case e := <-la.errCh:
+			if !strings.Contains(e, "Loop") {
+				t.Fatalf("Expected error about loop, got %v", e)
+			}
+			errCnt++
+		case e := <-lb.errCh:
+			if !strings.Contains(e, "Loop") {
+				t.Fatalf("Expected error about loop, got %v", e)
+			}
+			errCnt++
+		case <-time.After(2 * time.Second):
+			if errCnt != 1 {
+				t.Fatalf("Did not get any error regarding loop")
+			}
+			break errorLoop
+		}
+	}
+
+	sc.Shutdown()
+	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ub}}}
+	sc = RunServer(oc)
+	defer sc.Shutdown()
+
+	checkLeafNodeConnected(t, sa)
+	checkLeafNodeConnectedCnt(t, sb, 2)
+	checkLeafNodeConnected(t, sc)
+}
+
 func TestLeafCloseTLSConnection(t *testing.T) {
 	opts := DefaultOptions()
 	opts.DisableShortFirstPing = true
