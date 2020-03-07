@@ -1111,8 +1111,10 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSTimeout:  ln.TLSTimeout,
 			Remotes:     []RemoteLeafOptsVarz{},
 		},
-		Start:   s.start,
-		MaxSubs: opts.MaxSubs,
+		Start:    s.start,
+		MaxSubs:  opts.MaxSubs,
+		Cores:    numCores,
+		MaxProcs: maxProcs,
 	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)
@@ -1192,8 +1194,6 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.Uptime = myUptime(time.Since(s.start))
 	v.Mem = rss
 	v.CPU = pcpu
-	v.Cores = numCores
-	v.MaxProcs = maxProcs
 	if l := len(s.info.ClientConnectURLs); l > 0 {
 		v.ClientConnectURLs = make([]string, l)
 		copy(v.ClientConnectURLs, s.info.ClientConnectURLs)
