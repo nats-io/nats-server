@@ -32,9 +32,11 @@ import (
 
 // Snapshot this
 var numCores int
+var maxProcs int
 
 func init() {
 	numCores = runtime.NumCPU()
+	maxProcs = runtime.GOMAXPROCS(0)
 }
 
 // Connz represents detailed information on current client connections.
@@ -926,6 +928,7 @@ type Varz struct {
 	Uptime            string            `json:"uptime"`
 	Mem               int64             `json:"mem"`
 	Cores             int               `json:"cores"`
+	MaxProcs          int               `json:"gomaxprocs"`
 	CPU               float64           `json:"cpu"`
 	Connections       int               `json:"connections"`
 	TotalConnections  uint64            `json:"total_connections"`
@@ -1108,8 +1111,10 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSTimeout:  ln.TLSTimeout,
 			Remotes:     []RemoteLeafOptsVarz{},
 		},
-		Start:   s.start,
-		MaxSubs: opts.MaxSubs,
+		Start:    s.start,
+		MaxSubs:  opts.MaxSubs,
+		Cores:    numCores,
+		MaxProcs: maxProcs,
 	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)
@@ -1189,7 +1194,6 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.Uptime = myUptime(time.Since(s.start))
 	v.Mem = rss
 	v.CPU = pcpu
-	v.Cores = numCores
 	if l := len(s.info.ClientConnectURLs); l > 0 {
 		v.ClientConnectURLs = make([]string, l)
 		copy(v.ClientConnectURLs, s.info.ClientConnectURLs)
