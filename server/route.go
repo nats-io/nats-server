@@ -140,7 +140,6 @@ func (c *client) removeReplySubTimeout(sub *subscription) {
 }
 
 func (c *client) processAccountSub(arg []byte) error {
-	c.traceInOp("A+", arg)
 	accName := string(arg)
 	if c.kind == GATEWAY {
 		return c.processGatewayAccountSub(accName)
@@ -149,7 +148,6 @@ func (c *client) processAccountSub(arg []byte) error {
 }
 
 func (c *client) processAccountUnsub(arg []byte) {
-	c.traceInOp("A-", arg)
 	accName := string(arg)
 	if c.kind == GATEWAY {
 		c.processGatewayAccountUnsub(accName)
@@ -157,10 +155,7 @@ func (c *client) processAccountUnsub(arg []byte) {
 }
 
 // Process an inbound RMSG specification from the remote route.
-func (c *client) processRoutedMsgArgs(trace bool, arg []byte) error {
-	if trace {
-		c.traceInOp("RMSG", arg)
-	}
+func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
@@ -237,10 +232,6 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if c.trace {
-		c.traceMsg(msg)
-	}
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -667,8 +658,6 @@ func (c *client) removeRemoteSubs() {
 }
 
 func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
-	c.traceInOp("RS-", arg)
-
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
@@ -737,8 +726,6 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 }
 
 func (c *client) processRemoteSub(argo []byte) (err error) {
-	c.traceInOp("RS+", argo)
-
 	// Indicate activity.
 	c.in.subs++
 

@@ -1814,8 +1814,6 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 // from remote gateway.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRSub(arg []byte) error {
-	c.traceInOp("RS+", arg)
-
 	// Indicate activity.
 	c.in.subs++
 
@@ -2730,10 +2728,6 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if c.trace {
-		c.traceMsg(msg)
-	}
 
 	if c.opts.Verbose {
 		c.sendOK()

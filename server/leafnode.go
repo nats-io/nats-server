@@ -1193,6 +1193,7 @@ func (c *client) sendAllLeafSubs() {
 	c.mu.Unlock()
 }
 
+// Lock should be held.
 func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 	if key == "" {
 		return
@@ -1227,8 +1228,6 @@ func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 
 // processLeafSub will process an inbound sub request for the remote leaf node.
 func (c *client) processLeafSub(argo []byte) (err error) {
-	c.traceInOp("LS+", argo)
-
 	// Indicate activity.
 	c.in.subs++
 
@@ -1353,8 +1352,6 @@ func (s *Server) reportLeafNodeLoop(c *client) {
 
 // processLeafUnsub will process an inbound unsub request for the remote leaf node.
 func (c *client) processLeafUnsub(arg []byte) error {
-	c.traceInOp("LS-", arg)
-
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
@@ -1389,11 +1386,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	return nil
 }
 
-func (c *client) processLeafMsgArgs(trace bool, arg []byte) error {
-	if trace {
-		c.traceInOp("LMSG", arg)
-	}
-
+func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
 	args := a[:0]
@@ -1469,10 +1462,6 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
-
-	if c.trace {
-		c.traceMsg(msg)
-	}
 
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {

@@ -119,6 +119,7 @@ func (c *client) parse(buf []byte) error {
 	authSet := c.awaitingAuth()
 	// Snapshot max control line as well.
 	mcl := c.mcl
+	trace := c.trace
 	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
@@ -220,7 +221,10 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
-				if err := c.processPub(c.trace, arg); err != nil {
+				if trace {
+					c.traceInOp("PUB", arg)
+				}
+				if err := c.processPub(arg); err != nil {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
@@ -277,6 +281,9 @@ func (c *client) parse(buf []byte) error {
 			} else {
 				c.msgBuf = buf[c.as : i+1]
 			}
+			if trace {
+				c.traceMsg(c.msgBuf)
+			}
 			c.processInboundMsg(c.msgBuf)
 			c.argBuf, c.msgBuf = nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
@@ -319,6 +326,9 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if trace {
+					c.traceInOp("A+", arg)
+				}
 				if err := c.processAccountSub(arg); err != nil {
 					return err
 				}
@@ -354,6 +364,9 @@ func (c *client) parse(buf []byte) error {
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
+				}
+				if trace {
+					c.traceInOp("A-", arg)
 				}
 				c.processAccountUnsub(arg)
 				c.drop, c.as, c.state = 0, i+1, OP_START
@@ -407,12 +420,24 @@ func (c *client) parse(buf []byte) error {
 
 				switch c.kind {
 				case CLIENT:
+					if trace {
+						c.traceInOp("SUB", arg)
+					}
 					_, err = c.processSub(arg, false)
 				case ROUTER:
+					if trace {
+						c.traceInOp("RS+", arg)
+					}
 					err = c.processRemoteSub(arg)
 				case GATEWAY:
+					if trace {
+						c.traceInOp("RS+", arg)
+					}
 					err = c.processGatewayRSub(arg)
 				case LEAF:
+					if trace {
+						c.traceInOp("LS+", arg)
+					}
 					err = c.processLeafSub(arg)
 				}
 				if err != nil {
@@ -519,12 +544,24 @@ func (c *client) parse(buf []byte) error {
 
 				switch c.kind {
 				case CLIENT:
+					if trace {
+						c.traceInOp("UNSUB", arg)
+					}
 					err = c.processUnsub(arg)
 				case ROUTER:
+					if trace && c.srv != nil {
+						c.traceInOp("RS-", arg)
+					}
 					err = c.processRemoteUnsub(arg)
 				case GATEWAY:
+					if trace {
+						c.traceInOp("RS-", arg)
+					}
 					err = c.processGatewayRUnsub(arg)
 				case LEAF:
+					if trace {
+						c.traceInOp("LS-", arg)
+					}
 					err = c.processLeafUnsub(arg)
 				}
 				if err != nil {
@@ -553,6 +590,9 @@ func (c *client) parse(buf []byte) error {
 		case OP_PING:
 			switch b {
 			case '\n':
+				if trace {
+					c.traceInOp("PING", nil)
+				}
 				c.processPing()
 				c.drop, c.state = 0, OP_START
 			}
@@ -573,6 +613,9 @@ func (c *client) parse(buf []byte) error {
 		case OP_PONG:
 			switch b {
 			case '\n':
+				if trace {
+					c.traceInOp("PONG", nil)
+				}
 				c.processPong()
 				c.drop, c.state = 0, OP_START
 			}
@@ -638,6 +681,9 @@ func (c *client) parse(buf []byte) error {
 				} else {
 					arg = buf[c.as : i-c.drop]
 				}
+				if trace {
+					c.traceInOp("CONNECT", removePassFromTrace(arg))
+				}
 				if err := c.processConnect(arg); err != nil {
 					return err
 				}
@@ -694,9 +740,15 @@ func (c *client) parse(buf []byte) error {
 				}
 				var err error
 				if c.kind == ROUTER || c.kind == GATEWAY {
-					err = c.processRoutedMsgArgs(c.trace, arg)
+					if trace {
+						c.traceInOp("RMSG", arg)
+					}
+					err = c.processRoutedMsgArgs(arg)
 				} else if c.kind == LEAF {
-					err = c.processLeafMsgArgs(c.trace, arg)
+					if trace {
+						c.traceInOp("LMSG", arg)
+					}
+					err = c.processLeafMsgArgs(arg)
 				}
 				if err != nil {
 					return err
@@ -869,7 +921,7 @@ func (c *client) parse(buf []byte) error {
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
 			// Works also for MSG_ARG, when message comes from ROUTE.
-			if err := c.clonePubArg(); err != nil {
+			if err := c.clonePubArg(trace); err != nil {
 				goto parseErr
 			}
 		}
@@ -921,17 +973,26 @@ func protoSnippet(start int, buf []byte) string {
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
-func (c *client) clonePubArg() error {
+func (c *client) clonePubArg(trace bool) error {
 	// Just copy and re-process original arg buffer.
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
-		return c.processRoutedMsgArgs(false, c.argBuf)
+		if trace {
+			c.traceInOp("RMSG", c.argBuf)
+		}
+		return c.processRoutedMsgArgs(c.argBuf)
 	case LEAF:
-		return c.processLeafMsgArgs(false, c.argBuf)
+		if trace {
+			c.traceInOp("LMSG", c.argBuf)
+		}
+		return c.processLeafMsgArgs(c.argBuf)
 	default:
-		return c.processPub(false, c.argBuf)
+		if trace {
+			c.traceInOp("PUB", c.argBuf)
+		}
+		return c.processPub(c.argBuf)
 	}
 }
