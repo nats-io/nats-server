@@ -104,7 +104,8 @@ func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 
 func TestVersionMatchesTag(t *testing.T) {
 	tag := os.Getenv("TRAVIS_TAG")
-	if tag == "" {
+	// Travis started to return '' when no tag is set. Support both now.
+	if tag == "" || tag == "''" {
 		t.SkipNow()
 	}
 	// We expect a tag of the form vX.Y.Z. If that's not the case,
