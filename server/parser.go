@@ -921,7 +921,7 @@ func (c *client) parse(buf []byte) error {
 		// read buffer and we are not able to process the msg.
 		if c.argBuf == nil {
 			// Works also for MSG_ARG, when message comes from ROUTE.
-			if err := c.clonePubArg(trace); err != nil {
+			if err := c.clonePubArg(); err != nil {
 				goto parseErr
 			}
 		}
@@ -973,26 +973,17 @@ func protoSnippet(start int, buf []byte) string {
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
-func (c *client) clonePubArg(trace bool) error {
+func (c *client) clonePubArg() error {
 	// Just copy and re-process original arg buffer.
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
-		if trace {
-			c.traceInOp("RMSG", c.argBuf)
-		}
 		return c.processRoutedMsgArgs(c.argBuf)
 	case LEAF:
-		if trace {
-			c.traceInOp("LMSG", c.argBuf)
-		}
 		return c.processLeafMsgArgs(c.argBuf)
 	default:
-		if trace {
-			c.traceInOp("PUB", c.argBuf)
-		}
 		return c.processPub(c.argBuf)
 	}
 }
