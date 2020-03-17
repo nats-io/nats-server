@@ -1143,27 +1143,22 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	// Regenerate route INFO
 	s.generateRouteInfoJSON()
 	infoJSON = s.routeInfoJSON
-	s.mu.Unlock()
 
 	// If there were no route, we are done
 	if len(routes) == 0 {
+		s.mu.Unlock()
 		return
 	}
 
 	// If only older servers, simply close all routes and they will do the right
 	// thing on reconnect.
 	if withNewProto == 0 {
+		s.mu.Unlock()
 		for _, route := range routes {
 			route.closeConnection(RouteRemoved)
 		}
 		return
 	}
-
-	// Fake clients to test cluster permissions
-	oldPermsTester := &client{}
-	oldPermsTester.setRoutePermissions(oldPerms)
-	newPermsTester := &client{}
-	newPermsTester.setRoutePermissions(newPerms)
 
 	var (
 		_localSubs       [4096]*subscription
@@ -1174,6 +1169,13 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	)
 	// FIXME(dlc) - Change for accounts.
 	s.gacc.sl.localSubs(&localSubs)
+	s.mu.Unlock()
+
+	// Fake clients to test cluster permissions
+	oldPermsTester := &client{}
+	oldPermsTester.setRoutePermissions(oldPerms)
+	newPermsTester := &client{}
+	newPermsTester.setRoutePermissions(newPerms)
 
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
@@ -1220,9 +1222,14 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
 		route.mu.Unlock()
 	}
-	// Remove as a batch all the subs that we have removed from each route.
-	// FIXME(dlc) - Change for accounts.
-	s.gacc.sl.RemoveBatch(deleteRoutedSubs)
+
+	if len(deleteRoutedSubs) > 0 {
+		s.mu.Lock()
+		// Remove as a batch all the subs that we have removed from each route.
+		// FIXME(dlc) - Change for accounts.
+		s.gacc.sl.RemoveBatch(deleteRoutedSubs)
+		s.mu.Unlock()
+	}
 }
 
 // validateClusterOpts ensures the new ClusterOpts does not change host or

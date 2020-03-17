@@ -1403,9 +1403,12 @@ func (c *client) processConnect(arg []byte) error {
 				c.mu.Lock()
 				acc := c.acc
 				c.mu.Unlock()
+				srv.mu.Lock()
 				if acc != nil && acc != srv.gacc {
+					srv.mu.Unlock()
 					return ErrTooManyAccountConnections
 				}
+				srv.mu.Unlock()
 			}
 			c.authViolation()
 			return ErrAuthentication
