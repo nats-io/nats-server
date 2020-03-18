@@ -637,7 +637,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			// Subjects can not be AckAll.
+			// Filtered subjects can not be AckAll.
 			if _, err := mset.AddConsumer(&server.ConsumerConfig{
 				Delivery:      delivery,
 				DeliverAll:    true,
@@ -4085,14 +4085,11 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
-			config := s.JetStreamConfig()
-			if config == nil {
-				t.Fatalf("Expected non-nil config")
+			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
+				defer os.RemoveAll(config.StoreDir)
 			}
-			defer os.RemoveAll(config.StoreDir)
 
-			cfg := &server.StreamConfig{Name: "foo", Storage: server.FileStorage}
-			mset, err := s.GlobalAccount().AddStream(cfg)
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
 			}
@@ -4137,7 +4134,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 
 			// Delete one from the middle
 			deleteAndCheck(5, 1)
-			// Now make sure sequences are update properly.
+			// Now make sure sequences are updated properly.
 			// Delete first msg.
 			deleteAndCheck(1, 2)
 			// Now last
@@ -4153,6 +4150,11 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			deleteAndCheck(15, 12)
 			deleteAndCheck(16, 12)
 			deleteAndCheck(20, 12)
+
+			// Only file storage beyond here.
+			if c.mconfig.Storage == server.MemoryStorage {
+				return
+			}
 
 			// Shutdown the server.
 			s.Shutdown()
