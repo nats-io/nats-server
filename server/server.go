@@ -1929,8 +1929,10 @@ func tlsVersion(ver uint16) string {
 		return "1.1"
 	case tls.VersionTLS12:
 		return "1.2"
+	case tls.VersionTLS13:
+		return "1.3"
 	}
-	return fmt.Sprintf("Unknown [%x]", ver)
+	return fmt.Sprintf("Unknown [0x%x]", ver)
 }
 
 // We use hex here so we don't need multiple versions
@@ -1939,7 +1941,7 @@ func tlsCipher(cs uint16) string {
 	if present {
 		return name
 	}
-	return fmt.Sprintf("Unknown [%x]", cs)
+	return fmt.Sprintf("Unknown [0x%x]", cs)
 }
 
 // Remove a client or route from our internal accounting.

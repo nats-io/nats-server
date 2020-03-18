@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -161,6 +162,26 @@ func TestStartupAndShutdown(t *testing.T) {
 	}
 }
 
+func TestTLSVersions(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		value    uint16
+		expected string
+	}{
+		{"1.0", tls.VersionTLS10, "1.0"},
+		{"1.1", tls.VersionTLS11, "1.1"},
+		{"1.2", tls.VersionTLS12, "1.2"},
+		{"1.3", tls.VersionTLS13, "1.3"},
+		{"unknown", 0x999, "Unknown [0x999]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if v := tlsVersion(test.value); v != test.expected {
+				t.Fatalf("Expected value 0x%x to be %q, got %q", test.value, test.expected, v)
+			}
+		})
+	}
+}
+
 func TestTlsCipher(t *testing.T) {
 	if strings.Compare(tlsCipher(0x0005), "TLS_RSA_WITH_RC4_128_SHA") != 0 {
 		t.Fatalf("Invalid tls cipher")
@@ -207,8 +228,17 @@ func TestTlsCipher(t *testing.T) {
 	if strings.Compare(tlsCipher(0xc02c), "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384") != 0 {
 		t.Fatalf("Invalid tls cipher")
 	}
-	if !strings.Contains(tlsCipher(0x9999), "Unknown") {
-		t.Fatalf("Expected an unknown cipher.")
+	if strings.Compare(tlsCipher(0x1301), "TLS_AES_128_GCM_SHA256") != 0 {
+		t.Fatalf("Invalid tls cipher")
+	}
+	if strings.Compare(tlsCipher(0x1302), "TLS_AES_256_GCM_SHA384") != 0 {
+		t.Fatalf("Invalid tls cipher")
+	}
+	if strings.Compare(tlsCipher(0x1303), "TLS_CHACHA20_POLY1305_SHA256") != 0 {
+		t.Fatalf("Invalid tls cipher")
+	}
+	if strings.Compare(tlsCipher(0x9999), "Unknown [0x9999]") != 0 {
+		t.Fatalf("Expected an unknown cipher")
 	}
 }
 
