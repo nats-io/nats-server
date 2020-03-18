@@ -1369,7 +1369,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 				nc.PublishRequest(reqNextMsgSubj, sub.Subject, nil)
 				m, err := sub.NextMsg(time.Second)
 				if err != nil {
-					t.Fatalf("Unexpected error waiting for messages: %v", err)
+					t.Fatalf("Unexpected error waiting for message[%d]: %v", i, err)
 				}
 				sseq, dseq, dcount := o.ReplyInfo(m.Reply)
 				if sseq != uint64(i) {
@@ -2689,10 +2689,10 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			mset.AddConsumer(&server.ConsumerConfig{Delivery: sub3.Subject, DeliverAll: true, AckPolicy: server.AckNone})
 
 			// Wait for all messsages to be pending for each sub.
-			for _, sub := range []*nats.Subscription{sub1, sub2, sub3} {
-				checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != totalMsgs {
-						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, totalMsgs)
+			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
+				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); nmsgs != totalMsgs {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d for sub %d", nmsgs, totalMsgs, i+1)
 					}
 					return nil
 				})

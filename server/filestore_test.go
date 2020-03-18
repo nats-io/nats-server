@@ -635,11 +635,13 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if !bytes.Equal(msg, smsg) {
 		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
 	}
+	// Hold for offset check later.
 	sm, _ := fs.msgForSeq(1)
+
 	if !fs.EraseMsg(1) {
 		t.Fatalf("Expected erase msg to return success")
 	}
-	if bytes.Equal(msg, smsg) {
+	if sm2, _ := fs.msgForSeq(1); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
 
@@ -652,7 +654,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	}
 	defer fp.Close()
 	fp.ReadAt(buf, sm.off)
-	nsubj, nmsg, seq, ts, err := msgFromBuf(buf)
+	nsubj, nmsg, seq, ts, err := msgFromBuf(buf, nil)
 	if err != nil {
 		t.Fatalf("error reading message from block: %v", err)
 	}
@@ -818,6 +820,69 @@ func TestFileStoreMeta(t *testing.T) {
 	mychecksum = hex.EncodeToString(hh.Sum(nil))
 	if mychecksum != string(checksum) {
 		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
+	}
+}
+
+func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	subj, msg := "foo", []byte("Hello World!")
+
+	for i := uint64(1); i <= 10; i++ {
+		fs.StoreMsg(subj, msg)
+		if _, _, _, err := fs.LoadMsg(i); err != nil {
+			t.Fatalf("Error loading %d: %v", i, err)
+		}
+	}
+}
+
+func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	subj, msg := "foo", []byte("Hello World!")
+	storedMsgSize := fileStoreMsgSize(subj, msg)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < 20; i++ {
+		fs.StoreMsg(subj, msg)
+	}
+	state := fs.State()
+	if state.Msgs != 20 {
+		t.Fatalf("Expected 20 msgs, got %d", state.Msgs)
+	}
+	fs.Stop()
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := uint64(1); i <= 20; i++ {
+		if _, _, _, err := fs.LoadMsg(i); err != nil {
+			t.Fatalf("Error loading %d: %v", i, err)
+		}
 	}
 }
 
@@ -1060,17 +1125,17 @@ func TestFileStoreConsumer(t *testing.T) {
 }
 
 func TestFileStorePerf(t *testing.T) {
-	// Uncomment to run, holding place for now.
+	// Comment out to run, holding place for now.
 	t.SkipNow()
 
-	subj, msg := "foo", make([]byte, 4*1024)
+	subj, msg := "foo", make([]byte, 1024-33)
 	for i := 0; i < len(msg); i++ {
 		msg[i] = 'D'
 	}
 	storedMsgSize := fileStoreMsgSize(subj, msg)
 
-	// 10GB
-	toStore := 10 * 1024 * 1024 * 1024 / storedMsgSize
+	// 5GB
+	toStore := 5 * 1024 * 1024 * 1024 / storedMsgSize
 
 	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
 		toStore,
@@ -1081,7 +1146,6 @@ func TestFileStorePerf(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
-	fmt.Printf("StoreDir is %q\n", storeDir)
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -1105,33 +1169,58 @@ func TestFileStorePerf(t *testing.T) {
 	fmt.Printf("Filesystem cache flush, paused 5 seconds.\n\n")
 	time.Sleep(5 * time.Second)
 
-	fmt.Printf("reading %d msgs of %s each, totalling %s\n",
-		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
-	)
-
+	fmt.Printf("Restoring..\n")
+	start = time.Now()
 	fs, err = newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		FileStoreConfig{StoreDir: storeDir},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	fmt.Printf("time to restore is %v\n\n", time.Since(start))
+
+	fmt.Printf("LOAD: reading %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		fs.LoadMsg(i)
+		if _, _, _, err := fs.LoadMsg(i); err != nil {
+			t.Fatalf("Error loading %d: %v", i, err)
+		}
 	}
-	fs.Stop()
 
 	tt = time.Since(start)
 	fmt.Printf("time to read all back messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
 	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
+	// Do again to test skip for hash..
+	fmt.Printf("\nSKIP CHECKSUM: reading %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	start = time.Now()
+	for i := uint64(1); i <= toStore; i++ {
+		if _, _, _, err := fs.LoadMsg(i); err != nil {
+			t.Fatalf("Error loading %d: %v", i, err)
+		}
+	}
+
+	tt = time.Since(start)
+	fmt.Printf("time to read all back messages is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+
+	fs.Stop()
+
 	fs, err = newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		FileStoreConfig{StoreDir: storeDir},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
@@ -1158,7 +1247,7 @@ func TestFileStorePerf(t *testing.T) {
 	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	fs, err = newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 128 * 1024 * 1024},
+		FileStoreConfig{StoreDir: storeDir},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
@@ -1175,8 +1264,61 @@ func TestFileStorePerf(t *testing.T) {
 	}
 }
 
+func TestFileStoreReadBackMsgPerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	subj := "foo"
+	msg := []byte("ABCDEFGH") // Smaller shows problems more.
+
+	storedMsgSize := fileStoreMsgSize(subj, msg)
+
+	// Make sure we store 2 blocks.
+	toStore := defaultStreamBlockSize * 2 / storedMsgSize
+
+	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+	fmt.Printf("StoreDir is %q\n", storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	start := time.Now()
+	for i := 0; i < int(toStore); i++ {
+		fs.StoreMsg(subj, msg)
+	}
+
+	tt := time.Since(start)
+	fmt.Printf("time to store is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+
+	// We should not have cached here with no reads.
+	// Pick something towards end of the block.
+	index := defaultStreamBlockSize/storedMsgSize - 22
+	start = time.Now()
+	fs.LoadMsg(index)
+	fmt.Printf("Time to load first msg [%d] = %v\n", index, time.Since(start))
+
+	start = time.Now()
+	fs.LoadMsg(index + 2)
+	fmt.Printf("Time to load second msg [%d] = %v\n", index+2, time.Since(start))
+}
+
 func TestFileStoreConsumerPerf(t *testing.T) {
-	// Uncomment to run, holding place for now.
+	// Comment out to run, holding place for now.
 	t.SkipNow()
 
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
