@@ -278,7 +278,13 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		ss = memStoreMsgSize(sm.subj, sm.msg)
 		ms.state.Bytes -= ss
 		if seq == ms.state.FirstSeq {
-			ms.state.FirstSeq++
+			var nseq uint64
+			for nseq = ms.state.FirstSeq + 1; nseq < ms.state.LastSeq; nseq++ {
+				if _, ok := ms.msgs[nseq]; ok {
+					break
+				}
+			}
+			ms.state.FirstSeq = nseq
 		}
 		if secure {
 			rand.Read(sm.msg)

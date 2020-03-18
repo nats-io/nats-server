@@ -931,7 +931,8 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 		mb.first.seq = seq
 		mb.first.ts = ts
 	}
-	mb.last.seq = seq
+	// Need atomics here for selectMsgBlock speed.
+	atomic.StoreUint64(&mb.last.seq, seq)
 	mb.last.ts = ts
 	mb.bytes += rl
 	mb.msgs++
@@ -1409,7 +1410,9 @@ func (fs *fileStore) flushPendingWrites() error {
 	for lbb := fs.wmb.Len(); lbb > 0; lbb = fs.wmb.Len() {
 		n, err := fs.wmb.WriteTo(mb.mfd)
 		if err != nil {
-			fs.removeMsgBlockIndex(mb)
+			mb.mu.Lock()
+			mb.removeIndex()
+			mb.mu.Unlock()
 			return err
 		}
 
@@ -1619,7 +1622,9 @@ func (fs *fileStore) Purge() uint64 {
 	fs.lmb = nil
 
 	for _, mb := range blks {
+		mb.mu.Lock()
 		fs.removeMsgBlock(mb)
+		mb.mu.Unlock()
 	}
 	// Now place new write msg block with correct info.
 	fs.newMsgBlockForWrite()
@@ -1645,7 +1650,8 @@ func (fs *fileStore) numMsgBlocks() int {
 	return len(fs.blks)
 }
 
-func (fs *fileStore) removeMsgBlockIndex(mb *msgBlock) {
+// Lock should be held.
+func (mb *msgBlock) removeIndex() {
 	if mb.ifd != nil {
 		mb.ifd.Close()
 		mb.ifd = nil
@@ -1654,10 +1660,9 @@ func (fs *fileStore) removeMsgBlockIndex(mb *msgBlock) {
 }
 
 // Removes the msgBlock
-// Lock should be held.
+// Both locks should be held.
 func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
-	fs.removeMsgBlockIndex(mb)
-
+	mb.removeIndex()
 	if mb.mfd != nil {
 		mb.mfd.Close()
 		mb.mfd = nil
