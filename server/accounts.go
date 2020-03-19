@@ -1710,14 +1710,6 @@ func (a *Account) hasIssuerNoLock(issuer string) bool {
 	return false
 }
 
-// Returns the loop detection subject used for leafnodes
-func (a *Account) getLds() string {
-	a.mu.RLock()
-	lds := a.lds
-	a.mu.RUnlock()
-	return lds
-}
-
 // Placeholder for signaling token auth required.
 var tokenAuthReq = []*Account{}
 

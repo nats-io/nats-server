@@ -360,10 +360,16 @@ func runSolicitWithCredentials(t *testing.T, opts *Options, creds string) (*Serv
 
 // Helper function to check that a leaf node has connected to our server.
 func checkLeafNodeConnected(t *testing.T, s *Server) {
+	checkLeafNodeConnectedCnt(t, s, 1)
+}
+
+// Helper function to check that a leaf node has connected to n server.
+func checkLeafNodeConnectedCnt(t *testing.T, s *Server, lnCons int) {
 	t.Helper()
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		if nln := s.NumLeafNodes(); nln != 1 {
-			return fmt.Errorf("Expected a connected leafnode for server %q, got none", s.ID())
+		if nln := s.NumLeafNodes(); nln != lnCons {
+			return fmt.Errorf("Expected %d connected leafnode(s) for server %q, got %d",
+				lnCons, s.ID(), nln)
 		}
 		return nil
 	})

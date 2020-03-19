@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -562,6 +563,45 @@ func TestLeafNodeNoEcho(t *testing.T) {
 
 	leafSend("LMSG foo 2\r\nOK\r\n")
 	expectNothing(t, lc)
+}
+
+func TestLeafNodeLoop(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	lc1 := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc1.Close()
+
+	leaf1Send, leaf1Expect := setupLeaf(t, lc1, 1)
+	leaf1Send("PING\r\n")
+	leaf1Expect(pongRe)
+
+	leaf1Send("LS+ $lds.foo\r\n")
+	expectNothing(t, lc1)
+
+	// Same loop detection subscription from same client
+	leaf1Send("LS+ $lds.foo\r\n")
+	expectNothing(t, lc1)
+
+	lc2 := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc2.Close()
+
+	leaf2Send, leaf2Expect := setupLeaf(t, lc2, 2)
+	leaf2Send("PING\r\n")
+	leaf2Expect(pongRe)
+
+	// Same loop detection subscription from different client
+	leaf2Send("LS+ $lds.foo\r\n")
+	leaf2Expect(regexp.MustCompile(
+		"-ERR 'Loop detected for leafnode account=\".G\". " +
+			"Delaying attempt to reconnect for .*"))
 }
 
 // Used to setup clusters of clusters for tests.
