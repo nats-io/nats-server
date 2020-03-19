@@ -28,7 +28,6 @@ import (
 	"math/rand"
 	"os"
 	"path"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -901,13 +900,15 @@ func (fs *fileStore) flushLoop(fch, qch chan struct{}) {
 		select {
 		case <-fch:
 			waiting := fs.writePendingSize()
+			ts := 1 * time.Millisecond
 			for waiting < coalesceMinimum {
-				runtime.Gosched()
+				time.Sleep(ts)
 				newWaiting := fs.writePendingSize()
 				if newWaiting <= waiting {
 					break
 				}
 				waiting = newWaiting
+				ts *= 2
 			}
 			fs.flushPendingWritesUnlocked()
 		case <-qch:
