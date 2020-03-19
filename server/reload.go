@@ -1143,6 +1143,7 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	// Regenerate route INFO
 	s.generateRouteInfoJSON()
 	infoJSON = s.routeInfoJSON
+	gacc := s.gacc
 	s.mu.Unlock()
 
 	// If there were no route, we are done
@@ -1173,7 +1174,7 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		deleteRoutedSubs []*subscription
 	)
 	// FIXME(dlc) - Change for accounts.
-	s.gacc.sl.localSubs(&localSubs)
+	gacc.sl.localSubs(&localSubs)
 
 	// Go through all local subscriptions
 	for _, sub := range localSubs {
@@ -1222,7 +1223,7 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	}
 	// Remove as a batch all the subs that we have removed from each route.
 	// FIXME(dlc) - Change for accounts.
-	s.gacc.sl.RemoveBatch(deleteRoutedSubs)
+	gacc.sl.RemoveBatch(deleteRoutedSubs)
 }
 
 // validateClusterOpts ensures the new ClusterOpts does not change host or

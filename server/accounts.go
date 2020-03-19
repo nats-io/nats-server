@@ -438,8 +438,14 @@ func (a *Account) removeClient(c *client) int {
 		}
 	}
 	a.mu.Unlock()
-	if c != nil && c.srv != nil && a != c.srv.gacc && removed {
-		c.srv.accConnsUpdate(a)
+
+	if c != nil && c.srv != nil && removed {
+		c.srv.mu.Lock()
+		doRemove := a != c.srv.gacc
+		c.srv.mu.Unlock()
+		if doRemove {
+			c.srv.accConnsUpdate(a)
+		}
 	}
 	return n
 }

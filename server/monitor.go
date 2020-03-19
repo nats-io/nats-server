@@ -772,15 +772,19 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		}
 	}
 
+	s.mu.Lock()
+	gaccSl := s.gacc.sl
+	s.mu.Unlock()
+
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.gacc.sl.Stats(), 0, offset, limit, nil}
+	sz := &Subsz{gaccSl.Stats(), 0, offset, limit, nil}
 
 	if subdetail {
 		// Now add in subscription's details
 		var raw [4096]*subscription
 		subs := raw[:0]
 
-		s.gacc.sl.localSubs(&subs)
+		gaccSl.localSubs(&subs)
 		details := make([]SubDetail, len(subs))
 		i := 0
 		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
