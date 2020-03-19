@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -4574,7 +4575,69 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 	}
 }
 
-// Benchmark placeholder
+////////////////////////////////////////
+// Benchmark placeholders
+////////////////////////////////////////
+
+func TestJetStreamPubPerf(t *testing.T) {
+	// Uncomment to run, holding place for now.
+	//t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc := s.GlobalAccount()
+
+	msetConfig := server.StreamConfig{
+		Name:     "sr22",
+		Storage:  server.FileStorage,
+		Subjects: []string{"foo"},
+	}
+
+	if _, err := acc.AddStream(&msetConfig); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 2000000
+	numProducers := 1
+
+	payload := []byte("Hello World")
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+
+	for n := 0; n < numProducers; n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			for i := 0; i < int(toSend)/numProducers; i++ {
+				nc.Publish("foo", payload)
+			}
+			nc.Flush()
+		}()
+	}
+
+	// Wait for Go routines.
+	time.Sleep(10 * time.Millisecond)
+
+	start := time.Now()
+
+	close(startCh)
+	wg.Wait()
+
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
+}
+
 func TestJetStreamPubSubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
 	t.SkipNow()
@@ -4582,11 +4645,9 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	acc := s.GlobalAccount()
 

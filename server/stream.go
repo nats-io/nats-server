@@ -509,6 +509,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	stype := mset.config.Storage
 	name := mset.config.Name
 	maxMsgSize := int(mset.config.MaxMsgSize)
+	numConsumers := len(mset.consumers)
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -541,7 +542,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 	}
 
-	if err == nil && seq > 0 {
+	if err == nil && numConsumers > 0 && seq > 0 {
 		var needSignal bool
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
