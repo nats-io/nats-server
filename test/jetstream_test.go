@@ -799,6 +799,21 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			defer o.Delete()
 
 			checkMsgs(1)
+
+			// Now do push based queue-subscribers
+			sub, _ = nc2.QueueSubscribeSync("_qg_", "dev")
+			defer sub.Unsubscribe()
+			nc2.Flush()
+
+			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			// Since we sent another batch need check to be looking for 2x.
+			toSend *= 2
+			checkMsgs(1)
 		})
 	}
 }

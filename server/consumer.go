@@ -445,7 +445,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 	return false
 }
 
-// This processes and update to the local interest for a delivery subject.
+// This processes an update to the local interest for a delivery subject.
 func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 	interest := o.hasDeliveryInterest(localInterest)
 
