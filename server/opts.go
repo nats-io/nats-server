@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -613,10 +613,10 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			return
 		}
 	case "jetstream":
-		err := parseJetStream(tk, o, &errors, &warnings)
+		err := parseJetStream(tk, o, errors, warnings)
 		if err != nil {
-			errors = append(errors, err)
-			continue
+			*errors = append(*errors, err)
+			return
 		}
 	case "logfile", "log_file":
 		o.LogFile = v.(string)
@@ -1108,7 +1108,9 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 }
 
 func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
-	tk, v := unwrapValue(v)
+	var lt token
+
+	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]interface{})
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected map to define JetStream, got %T", v)}
@@ -1117,7 +1119,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 	opts.JetStream = true
 
 	for mk, mv := range cm {
-		tk, mv = unwrapValue(mv)
+		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "store_dir", "storedir":
 			opts.StoreDir = mv.(string)

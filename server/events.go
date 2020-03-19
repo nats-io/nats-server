@@ -1017,7 +1017,7 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	c := s.sys.client
 	trace := c.trace
 	s.sys.sid++
-	sid := s.sys.sid
+	sid := strconv.Itoa(s.sys.sid)
 	s.mu.Unlock()
 
 	arg := []byte(subject + " " + sid)
@@ -1026,7 +1026,7 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	}
 
 	// Now create the subscription
-	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(sid)), internalOnly)
+	sub, err := c.processSub(arg, internalOnly)
 	if err != nil {
 		return nil, err
 	}

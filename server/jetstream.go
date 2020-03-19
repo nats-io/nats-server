@@ -65,7 +65,7 @@ type jetStream struct {
 	storeReserved int64
 }
 
-// This represents a jetstream  enabled account.
+// This represents a jetstream enabled account.
 // Worth noting that we include the js ptr, this is because
 // in general we want to be very efficient when receiving messages on
 // and internal sub for a msgSet, so we will direct link to the msgSet
