@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -931,14 +931,19 @@ func (s *Server) createInternalSystemClient() *client {
 	return s.createInternalClient(SYSTEM)
 }
 
-// Creates and internal jetstream client.
+// Creates an internal jetstream client.
 func (s *Server) createInternalJetStreamClient() *client {
 	return s.createInternalClient(JETSTREAM)
 }
 
+// Creates an internal client for Account.
+func (s *Server) createInternalAccountClient() *client {
+	return s.createInternalClient(ACCOUNT)
+}
+
 // Internal clients. kind should be SYSTEM or JETSTREAM
 func (s *Server) createInternalClient(kind int) *client {
-	if kind != SYSTEM && kind != JETSTREAM {
+	if kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT {
 		return nil
 	}
 	now := time.Now()
@@ -1003,6 +1008,11 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	}
 	if acc.clients == nil {
 		acc.clients = make(map[*client]*client)
+	}
+	if len(acc.imports.services) > 0 && acc.ic == nil {
+		acc.ic = s.createInternalAccountClient()
+		acc.ic.acc = acc
+		acc.addAllServiceImportSubs()
 	}
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
