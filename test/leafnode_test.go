@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1479,9 +1479,9 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// So everything should be setup here. So let's test streams first.
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
-	// Wait for the sub to propagate.
+	// Wait for the sub(s) to propagate.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 1 {
+		if subs := s.NumSubscriptions(); subs < 2 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil

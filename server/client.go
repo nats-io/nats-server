@@ -46,6 +46,8 @@ const (
 	LEAF
 	// JETSTREAM is an internal jetstream client.
 	JETSTREAM
+	// ACCOUNT is for the internal client for accounts.
+	ACCOUNT
 )
 
 const (
@@ -1899,9 +1901,6 @@ func splitArg(arg []byte) [][]byte {
 }
 
 func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) {
-	// Indicate activity.
-	c.in.subs++
-
 	// Copy so we do not reference a potentially large buffer
 	// FIXME(dlc) - make more efficient.
 	arg := make([]byte, len(argo))
@@ -1923,6 +1922,9 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 
 	c.mu.Lock()
 
+	// Indicate activity.
+	c.in.subs++
+
 	// Grab connection type, account and server info.
 	kind := c.kind
 	acc := c.acc
@@ -1930,8 +1932,8 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 
 	sid := string(sub.sid)
 
-	// This check does not apply to SYSTEM or JETSTREAM clients (because they don't have a `nc`...)
-	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM) {
+	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
+	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
 		c.mu.Unlock()
 		return sub, nil
 	}
@@ -2294,13 +2296,14 @@ func (c *client) processUnsub(arg []byte) error {
 	default:
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
-	// Indicate activity.
-	c.in.subs++
 
 	var sub *subscription
 	var ok, unsub bool
 
 	c.mu.Lock()
+
+	// Indicate activity.
+	c.in.subs++
 
 	// Grab connection type.
 	kind := c.kind
@@ -2482,20 +2485,27 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	client.outMsgs++
 	client.outBytes += msgSize
 
-	atomic.AddInt64(&srv.outMsgs, 1)
-	atomic.AddInt64(&srv.outBytes, msgSize)
-
 	// Check for internal subscriptions.
-	if client.kind == SYSTEM || client.kind == JETSTREAM {
+	if client.kind == SYSTEM || client.kind == JETSTREAM || client.kind == ACCOUNT {
 		s := client.srv
 		client.mu.Unlock()
 		if sub.icb == nil {
 			s.Debugf("Received internal callback with no registered handler")
 			return false
 		}
-		sub.icb(sub, c, string(subject), string(c.pa.reply), msg[:msgSize])
+		// Internal account clients are for service imports and need the
+		// complete raw msg with '\r\n'.
+		if client.kind == ACCOUNT {
+			sub.icb(sub, c, string(subject), string(c.pa.reply), msg)
+		} else {
+			sub.icb(sub, c, string(subject), string(c.pa.reply), msg[:msgSize])
+		}
 		return true
 	}
+
+	// We don't count internal deliveries so we update server statistics here.
+	atomic.AddInt64(&srv.outMsgs, 1)
+	atomic.AddInt64(&srv.outBytes, msgSize)
 
 	// If we are a client and we detect that the consumer we are
 	// sending to is in a stalled state, go ahead and wait here
@@ -2519,7 +2529,6 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	// track the binding between the routed reply and the reply set in the message
 	// header (which is c.pa.reply without the GNR routing prefix).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
-
 		if gwrply {
 			// Note we keep track "in" the destination client (`client`) but the
 			// routed reply subject is in `c.pa.reply`. Should that change, we
@@ -2790,14 +2799,6 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		return true
 	}
 
-	// Indication if we attempted to deliver the message to anyone.
-	var didDeliver bool
-
-	// Check to see if we need to map/route to another account.
-	if c.acc.imports.services != nil {
-		didDeliver = c.checkForImportServices(c.acc, msg)
-	}
-
 	// If we have an exported service and we are doing remote tracking, check this subject
 	// to see if we need to report the latency.
 	if c.rrTracking != nil {
@@ -2852,6 +2853,8 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		}
 	}
 
+	// Indication if we attempted to deliver the message to anyone.
+	var didDeliver bool
 	var qnames [][]byte
 
 	// Check for no interest, short circuit if so.
@@ -2881,7 +2884,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 
 // This is invoked knowing that this client has some GW replies
 // in its map. It will check if one is find for the c.pa.subject
-// and if so will process it directly (send to GWs and LEAF) and
+// and if so will process it directly (send to GWs and LEAFs) and
 // return true to notify the caller that the message was handled.
 // If there is no mapping for the subject, false is returned.
 func (c *client) handleGWReplyMap(msg []byte) bool {
@@ -2932,106 +2935,100 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	return true
 }
 
-// This checks and process import services by doing the mapping and sending the
-// message onward if applicable.
-func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
-	if acc == nil || acc.imports.services == nil {
-		return false
+// processServiceImport is an internal callback when a subscription matches an imported service
+// from another account.
+func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
+	if c.kind == GATEWAY && !isServiceReply(c.pa.subject) {
+		return
 	}
-
-	var didDeliver, matchedWC bool
 
 	acc.mu.RLock()
-	// Make sure this does not have a wildcard in it, with pedantic == false these can sneak through.
-	if acc.imports.hasWC && subjectHasWildcard(string(c.pa.subject)) {
-		acc.mu.RUnlock()
-		return false
-	}
-	si := acc.imports.services[string(c.pa.subject)]
-	// If we did not match but we have wildcards, check for them here.
-	if si == nil && acc.imports.hasWC {
-		// TODO(dlc) - this will be slow with large number of service imports, may need to revisit and optimize.
-		for subject, tsi := range acc.imports.services {
-			if subjectHasWildcard(subject) && subjectIsSubsetMatch(string(c.pa.subject), subject) {
-				si, matchedWC = tsi, true
-				break
-			}
-		}
-	}
-	invalid := si != nil && si.invalid
+	shouldReturn := si.invalid || acc.sl == nil || acc.imports.services == nil
 	acc.mu.RUnlock()
 
-	// Get the results from the other account for the mapped "to" subject.
-	// If we have been marked invalid simply return here.
-	if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
-		var nrr []byte
-		if c.pa.reply != nil {
-			var latency *serviceLatency
-			var tracking bool
-			if tracking = shouldSample(si.latency); tracking {
-				latency = si.latency
-			}
-			// We want to remap this to provide anonymity.
-			nrr = si.acc.newServiceReply(tracking)
-			si.acc.addRespServiceImport(acc, string(nrr), string(c.pa.reply), si.rt, latency)
+	if shouldReturn {
+		return
+	}
 
-			// Track our responses for cleanup if not auto-expire.
-			if si.rt != Singleton {
-				acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
-			} else if si.latency != nil && c.rtt == 0 {
-				// We have a service import that we are tracking but have not established RTT.
-				c.sendRTTPing()
-			}
+	var nrr []byte
+	if c.pa.reply != nil {
+		var latency *serviceLatency
+		var tracking bool
+		if tracking = shouldSample(si.latency); tracking {
+			latency = si.latency
 		}
+		// We want to remap this to provide anonymity.
+		nrr = si.acc.newServiceReply(tracking)
+		si.acc.addRespServiceImport(acc, string(nrr), string(c.pa.reply), si.rt, latency)
 
-		// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
-		to := si.to
-		if matchedWC {
-			to = string(c.pa.subject)
-		}
-		// FIXME(dlc) - Do L1 cache trick from above.
-		rr := si.acc.sl.Match(to)
-		// This gives us a notion that we have interest in this message.
-		didDeliver = len(rr.psubs)+len(rr.qsubs) > 0
-		// Check to see if we have no results and this is an internal serviceImport.
-		// If so we need to clean that up.
-		if !didDeliver && si.internal {
-			// We may also have a response entry, so go through that way.
-			si.acc.checkForRespEntry(to)
-		}
-
-		// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
-		// need to handle that since the processMsgResults will want a queue filter.
-		flags := pmrNoFlag
-		if c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF {
-			flags |= pmrIgnoreEmptyQueueFilter
-		}
-
-		// If this is not a gateway connection but gateway is enabled,
-		// try to send this converted message to all gateways.
-		if c.srv.gateway.enabled {
-			flags |= pmrCollectQueueNames
-			queues := c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
-			didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
-		} else {
-			c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
-		}
-
-		shouldRemove := si.ae
-
-		// Calculate tracking info here if we are tracking this request/response.
-		if si.tracking {
-			if requesting := firstSubFromResult(rr); requesting != nil {
-				shouldRemove = acc.sendTrackingLatency(si, requesting.client, c)
-			}
-		}
-
-		if shouldRemove {
-			acc.removeServiceImport(si.from)
+		// Track our responses for cleanup if not auto-expire.
+		if si.rt != Singleton {
+			acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
+		} else if si.latency != nil && c.rtt == 0 {
+			// We have a service import that we are tracking but have not established RTT.
+			c.sendRTTPing()
 		}
 	}
 
-	return didDeliver
+	// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
+	to := si.to
+	if si.hasWC {
+		to = string(c.pa.subject)
+	}
+
+	// FIXME(dlc) - Do L1 cache trick like normal client?
+	rr := si.acc.sl.Match(to)
+
+	// This gives us a notion that we have interest in this message.
+	didDeliver := len(rr.psubs)+len(rr.qsubs) > 0
+	// Check to see if we have no results and this is an internal serviceImport.
+	// If so we need to clean that up.
+	if !didDeliver && si.internal {
+		// We may also have a response entry, so go through that way.
+		si.acc.checkForRespEntry(to)
+	}
+
+	// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
+	// need to handle that since the processMsgResults will want a queue filter.
+	flags := pmrNoFlag
+	if c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF {
+		flags |= pmrIgnoreEmptyQueueFilter
+	}
+
+	// We will be calling back into processMsgResults since we are now being called as a normal sub.
+	// We need to take care of the c.in.rts, so save off what is there and use a local version. We
+	// will put back what was there after.
+
+	orts := c.in.rts
+
+	var lrts [routeTargetInit]routeTarget
+	c.in.rts = lrts[:0]
+
+	// If this is not a gateway connection but gateway is enabled,
+	// try to send this converted message to all gateways.
+	if c.srv.gateway.enabled {
+		flags |= pmrCollectQueueNames
+		queues := c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
+		c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues)
+	} else {
+		c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
+	}
+
+	// Put what was there back now.
+	c.in.rts = orts
+
+	shouldRemove := si.ae
+
+	// Calculate tracking info here if we are tracking this request/response.
+	if si.tracking {
+		if requesting := firstSubFromResult(rr); requesting != nil {
+			shouldRemove = acc.sendTrackingLatency(si, requesting.client, c)
+		}
+	}
+
+	if shouldRemove {
+		acc.removeServiceImport(si.from)
+	}
 }
 
 func (c *client) addSubToRouteTargets(sub *subscription) {
@@ -3099,8 +3096,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 	// Check for JetStream encoded reply subjects.
 	// For now these will only be on $JS.ACK prefixed reply subjects.
-	if len(creply) > 0 && c.kind != CLIENT &&
-		c.kind != SYSTEM && c.kind != JETSTREAM &&
+	if len(creply) > 0 &&
+		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
 		bytes.HasPrefix(creply, []byte(jetStreamAckPre)) {
 		// We need to rewrite the subject and the reply.
 		if li := bytes.LastIndex(creply, []byte("@")); li != 0 && li < len(creply)-1 {
@@ -3163,7 +3160,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// leaf nodes or routes even if there are no queue filters since we collect
 	// them above and do not process inline like normal clients.
 	// However, do select queue subs if asked to ignore empty queue filter.
-	if (c.kind != CLIENT && c.kind != JETSTREAM) && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
+	if (c.kind != CLIENT && c.kind != JETSTREAM && c.kind != ACCOUNT) && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
 		goto sendToRoutesOrLeafs
 	}
 

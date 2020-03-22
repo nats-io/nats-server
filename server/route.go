@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -252,11 +252,6 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	if acc == nil {
 		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
 		return
-	}
-
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
-		c.checkForImportServices(acc, msg)
 	}
 
 	// Check for no interest, short circuit if so.

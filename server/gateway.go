@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2311,7 +2311,7 @@ var subPool = &sync.Pool{
 func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) bool {
 	gwsa := [16]*client{}
 	gws := gwsa[:0]
-	// This is in fast path, so avoid calling function when possible.
+	// This is in fast path, so avoid calling functions when possible.
 	// Get the outbound connections in place instead of calling
 	// getOutboundGatewayConnections().
 	gw := c.srv.gateway
@@ -2671,12 +2671,8 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	// If route is nil, we will process the incoming message locally.
 	if route == nil {
 		// Check if this is a service reply subject (_R_)
-		if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-			// This will map the _R_ back to a real subject and get
-			// the interest for that subject and process the message.
-			c.checkForImportServices(acc, msg)
-			return true
-		}
+		isServiceReply := len(acc.imports.services) > 0 && isServiceReply(c.pa.subject)
+
 		var queues [][]byte
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			flags := pmrCollectQueueNames | pmrIgnoreEmptyQueueFilter
@@ -2691,7 +2687,9 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		// Since this was a reply that made it to the origin cluster,
 		// we now need to send the message with the real subject to
 		// gateways in case they have interest on that reply subject.
-		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+		if !isServiceReply {
+			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+		}
 	} else if c.kind == GATEWAY {
 		// Only if we are a gateway connection should we try to route
 		// to the server where the request originated.
@@ -2756,12 +2754,24 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	}
 
 	// Check if this is a service reply subject (_R_)
+	noInterest := len(r.psubs) == 0
 	checkNoInterest := true
-	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-		c.checkForImportServices(acc, msg)
-		checkNoInterest = false
+	if acc.imports.services != nil {
+		if isServiceReply(c.pa.subject) {
+			checkNoInterest = false
+		} else {
+			// We need to eliminate the subject interest from the service imports here to
+			// make sure we send the proper no interest if the service import is the only interest.
+			noInterest = true
+			for _, sub := range r.psubs {
+				if sub.client.kind != ACCOUNT {
+					noInterest = false
+					break
+				}
+			}
+		}
 	}
-	if checkNoInterest && len(r.psubs) == 0 {
+	if checkNoInterest && noInterest {
 		// If there is no interest on plain subs, possibly send an RS-,
 		// even if there is qsubs interest.
 		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)

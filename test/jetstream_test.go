@@ -4581,7 +4581,7 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 
 func TestJetStreamPubPerf(t *testing.T) {
 	// Uncomment to run, holding place for now.
-	//t.SkipNow()
+	t.SkipNow()
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
