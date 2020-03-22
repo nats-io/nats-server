@@ -366,7 +366,7 @@ func TestFileStorePurge(t *testing.T) {
 		t.Fatalf("Expected to have exactly 1 empty msg block, got %d", numBlocks)
 	}
 
-	checkPurgeState := func() {
+	checkPurgeState := func(stored uint64) {
 		t.Helper()
 		state = fs.State()
 		if state.Msgs != 0 {
@@ -375,14 +375,14 @@ func TestFileStorePurge(t *testing.T) {
 		if state.Bytes != 0 {
 			t.Fatalf("Expected 0 bytes after purge, got %d", state.Bytes)
 		}
-		if state.LastSeq != toStore {
+		if state.LastSeq != stored {
 			t.Fatalf("Expected LastSeq to be %d., got %d", toStore, state.LastSeq)
 		}
-		if state.FirstSeq != toStore+1 {
+		if state.FirstSeq != stored+1 {
 			t.Fatalf("Expected FirstSeq to be %d., got %d", toStore+1, state.FirstSeq)
 		}
 	}
-	checkPurgeState()
+	checkPurgeState(toStore)
 
 	// Make sure we recover same state.
 	fs.Stop()
@@ -397,7 +397,53 @@ func TestFileStorePurge(t *testing.T) {
 		t.Fatalf("Expected to have exactly 1 empty msg block, got %d", numBlocks)
 	}
 
-	checkPurgeState()
+	checkPurgeState(toStore)
+
+	// Now make sure we clean up any dangling purged messages.
+	for i := uint64(0); i < toStore; i++ {
+		fs.StoreMsg(subj, msg)
+	}
+	state = fs.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
+	}
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
+	}
+
+	// We will simulate crashing before the purge directory is cleared.
+	mdir := path.Join(storeDir, msgDir)
+	pdir := path.Join(fs.fcfg.StoreDir, "ptest")
+	os.Rename(mdir, pdir)
+	os.MkdirAll(mdir, 0755)
+
+	fs.Purge()
+	checkPurgeState(toStore * 2)
+
+	// Make sure we recover same state.
+	fs.Stop()
+
+	purgeDir := path.Join(fs.fcfg.StoreDir, purgeDir)
+	os.Rename(pdir, purgeDir)
+
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	if numBlocks := fs.numMsgBlocks(); numBlocks != 1 {
+		t.Fatalf("Expected to have exactly 1 empty msg block, got %d", numBlocks)
+	}
+
+	checkPurgeState(toStore * 2)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if _, err := os.Stat(purgeDir); err == nil {
+			return fmt.Errorf("purge directory still present")
+		}
+		return nil
+	})
 }
 
 func TestFileStoreRemovePartialRecovery(t *testing.T) {

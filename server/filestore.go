@@ -121,6 +121,8 @@ const (
 	streamsDir = "streams"
 	// This is where we keep the message store blocks.
 	msgDir = "msgs"
+	// This is where we temporarily move the messages dir.
+	purgeDir = "__msgs__"
 	// used to scan blk file names.
 	blkScan = "%d.blk"
 	// used to scan index file names.
@@ -273,6 +275,7 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 }
 
 // Write out meta and the checksum.
+// Lock should be held.
 func (fs *fileStore) writeStreamMeta() error {
 	meta := path.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
@@ -400,6 +403,12 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 func (fs *fileStore) recoverMsgs() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	// Check for any left over purged messages.
+	pdir := path.Join(fs.fcfg.StoreDir, purgeDir)
+	if _, err := os.Stat(pdir); err == nil {
+		go os.RemoveAll(pdir)
+	}
 
 	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
 	fis, err := ioutil.ReadDir(mdir)
@@ -1611,22 +1620,25 @@ func (fs *fileStore) Purge() uint64 {
 	fs.mu.Lock()
 	fs.flushPendingWrites()
 	purged := fs.state.Msgs
-	cb := fs.scb
 	bytes := int64(fs.state.Bytes)
+
 	fs.state.FirstSeq = fs.state.LastSeq + 1
 	fs.state.Bytes = 0
 	fs.state.Msgs = 0
+	fs.writeStreamMeta()
 
-	blks := fs.blks
 	lmb := fs.lmb
 	fs.blks = nil
 	fs.lmb = nil
 
-	for _, mb := range blks {
-		mb.mu.Lock()
-		fs.removeMsgBlock(mb)
-		mb.mu.Unlock()
-	}
+	// Move the msgs directory out of the way, will delete out of band.
+	// FIXME(dlc) - These can error and we need to change api.
+	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
+	pdir := path.Join(fs.fcfg.StoreDir, purgeDir)
+	os.Rename(mdir, pdir)
+	os.MkdirAll(mdir, 0755)
+	go os.RemoveAll(pdir)
+
 	// Now place new write msg block with correct info.
 	fs.newMsgBlockForWrite()
 	if lmb != nil {
@@ -1635,6 +1647,8 @@ func (fs *fileStore) Purge() uint64 {
 		fs.lmb.last = lmb.last
 		fs.lmb.writeIndexInfo()
 	}
+
+	cb := fs.scb
 	fs.mu.Unlock()
 
 	if cb != nil {
