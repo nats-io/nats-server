@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3350,13 +3350,14 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client.
+		// and foo.request then send the reply to the client. We also send the reply
+		// optimistically to the other side.
 		if i == 0 {
-			expected = 3
+			expected = 4
 		} else {
-			// The second time, one of the account will be suppressed, so we will get
-			// only 2 more messages.
-			expected = 5
+			// The second time, one of the accounts will be suppressed and the reply going
+			// back so we will get only 2 more messages.
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3656,13 +3657,14 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client.
+		// and foo.request then send the reply to the client. We also send the reply
+		// optimistically to the other side.
 		if i == 0 {
-			expected = 3
+			expected = 4
 		} else {
-			// The second time, one of the account will be suppressed, so we will get
-			// only 2 more messages.
-			expected = 5
+			// The second time, one of the accounts will be suppressed and the reply going
+			// back so we will get only 2 more messages.
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -4099,13 +4101,13 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 		})
 	}
 	checkSubs(t, fooA1, "A1", 1)
-	checkSubs(t, barA1, "A1", 0)
+	checkSubs(t, barA1, "A1", 1)
 	checkSubs(t, fooA2, "A2", 1)
-	checkSubs(t, barA2, "A2", 0)
-	checkSubs(t, fooB1, "B1", 0)
-	checkSubs(t, barB1, "B1", 1)
+	checkSubs(t, barA2, "A2", 1)
+	checkSubs(t, fooB1, "B1", 1)
+	checkSubs(t, barB1, "B1", 2)
 	checkSubs(t, fooB2, "B2", 1)
-	checkSubs(t, barB2, "B2", 1)
+	checkSubs(t, barB2, "B2", 2)
 
 	// Speed up exiration
 	fooA2.SetAutoExpireTTL(10 * time.Millisecond)
@@ -4145,10 +4147,10 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, fooB1, "B1", 0)
 	checkSubs(t, fooB2, "B2", 1)
 
-	checkSubs(t, barA1, "A1", 0)
-	checkSubs(t, barA2, "A2", 0)
-	checkSubs(t, barB1, "B1", 0)
-	checkSubs(t, barB2, "B2", 0)
+	checkSubs(t, barA1, "A1", 1)
+	checkSubs(t, barA2, "A2", 1)
+	checkSubs(t, barB1, "B1", 1)
+	checkSubs(t, barB2, "B2", 1)
 
 	// Check that this all work in interest-only mode.
 
@@ -4467,13 +4469,13 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				})
 			}
 			checkSubs(t, fooA1, "A1", 1)
-			checkSubs(t, barA1, "A1", 0)
+			checkSubs(t, barA1, "A1", 1)
 			checkSubs(t, fooA2, "A2", 1)
-			checkSubs(t, barA2, "A2", 0)
-			checkSubs(t, fooB1, "B1", 0)
-			checkSubs(t, barB1, "B1", 1)
+			checkSubs(t, barA2, "A2", 1)
+			checkSubs(t, fooB1, "B1", 1)
+			checkSubs(t, barB1, "B1", 2)
 			checkSubs(t, fooB2, "B2", 1)
-			checkSubs(t, barB2, "B2", 1)
+			checkSubs(t, barB2, "B2", 2)
 
 			// Speed up exiration
 			fooA2.SetAutoExpireTTL(10 * time.Millisecond)
@@ -4513,10 +4515,10 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, fooB1, "B1", 0)
 			checkSubs(t, fooB2, "B2", 1)
 
-			checkSubs(t, barA1, "A1", 0)
-			checkSubs(t, barA2, "A2", 0)
-			checkSubs(t, barB1, "B1", 0)
-			checkSubs(t, barB2, "B2", 0)
+			checkSubs(t, barA1, "A1", 1)
+			checkSubs(t, barA2, "A2", 1)
+			checkSubs(t, barB1, "B1", 1)
+			checkSubs(t, barB2, "B2", 1)
 
 			// Check that this all work in interest-only mode.
 
@@ -5069,7 +5071,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 		}
 
 		// Send reply
-		natsPub(t, clientBFoo, msg.Reply, []byte("ok"))
+		natsPub(t, clientBFoo, msg.Reply, []byte("ok-42"))
 		natsFlush(t, clientBFoo)
 
 		// Now check that the subscription on the reply receives the message...
@@ -5079,7 +5081,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sub failed to get reply: %v", err)
 			}
-			if msg.Subject != replySubj || string(msg.Data) != "ok" {
+			if msg.Subject != replySubj || string(msg.Data) != "ok-42" {
 				t.Fatalf("Unexpected message: %v", msg)
 			}
 		}
@@ -5093,7 +5095,6 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 	// direct connection between the responder's server to the
 	// requestor's server and also through routes.
 	testServiceImport(t, oa1.Host, oa1.Port)
-
 	testServiceImport(t, oa2.Host, oa2.Port)
 	// sa1 is the one receiving the reply from GW between B and A.
 	// Check that the server routes directly to the the server

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,8 @@ type Account struct {
 	mu           sync.RWMutex
 	sqmu         sync.Mutex
 	sl           *Sublist
+	ic           *client
+	isid         int
 	etmr         *time.Timer
 	ctmr         *time.Timer
 	strack       map[string]sconns
@@ -103,6 +106,7 @@ type streamImport struct {
 type serviceImport struct {
 	acc      *Account
 	claim    *jwt.Import
+	sub      *subscription
 	from     string
 	to       string
 	ts       int64
@@ -110,6 +114,7 @@ type serviceImport struct {
 	latency  *serviceLatency
 	m1       *ServiceLatency
 	ae       bool
+	hasWC    bool
 	internal bool
 	invalid  bool
 	tracking bool
@@ -182,7 +187,6 @@ type exportMap struct {
 type importMap struct {
 	streams  []*streamImport
 	services map[string]*serviceImport // TODO(dlc) sync.Map may be better.
-	hasWC    bool                      // This is for service import wildcards.
 }
 
 // NewAccount creates a new unlimited account with the given name.
@@ -191,6 +195,7 @@ func NewAccount(name string) *Account {
 		Name:   name,
 		limits: limits{-1, -1, -1, -1, 0, 0, 0},
 	}
+
 	return a
 }
 
@@ -490,9 +495,8 @@ func (a *Account) removeClient(c *client) int {
 }
 
 func (a *Account) randomClient() *client {
-	var c *client
-	if a.siReplyClient != nil {
-		return a.siReplyClient
+	if a.ic != nil {
+		return a.ic
 	}
 	for c = range a.clients {
 		break
@@ -872,22 +876,22 @@ func (a *Account) removeServiceImport(subject string) {
 	si, ok := a.imports.services[subject]
 	delete(a.imports.services, subject)
 
+	var sid []byte
+	c := a.ic
+
 	if ok && si != nil {
 		if si.ae {
 			a.nae--
 		}
-		if a.imports.hasWC && subjectHasWildcard(subject) {
-			// Need to still make sure we have a wildcard entry.
-			a.imports.hasWC = false
-			for subject := range a.imports.services {
-				if subjectHasWildcard(subject) {
-					a.imports.hasWC = true
-					break
-				}
-			}
+		if a.ic != nil && si.sub != nil && si.sub.sid != nil {
+			sid = si.sub.sid
 		}
 	}
 	a.mu.Unlock()
+
+	if sid != nil {
+		c.processUnsub(sid)
+	}
 }
 
 // This tracks responses to service requests mappings. This is used for cleanup.
@@ -1036,17 +1040,82 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		return nil, fmt.Errorf("duplicate service import subject %q, previously used in import for account %q, subject %q",
 			from, dup.acc.Name, dup.to)
 	}
-	if subjectHasWildcard(from) {
-		a.imports.hasWC = true
-	}
+
 	if to == "" {
 		to = from
 	}
-	si := &serviceImport{dest, claim, from, to, 0, rt, lat, nil, false, false, false, false}
+	hasWC := subjectHasWildcard(from)
+
+	si := &serviceImport{dest, claim, nil, from, to, 0, rt, lat, nil, false, hasWC, false, false, false}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
+	if err := a.addServiceImportSub(si); err != nil {
+		a.removeServiceImport(si.from)
+		return nil, err
+	}
 	return si, nil
+}
+
+// This will add an account subscription that matches the "from" from a service import entry.
+func (a *Account) addServiceImportSub(si *serviceImport) error {
+	a.mu.RLock()
+	// Create an internal client if we don't have on yet.
+	if a.ic == nil && a.srv != nil {
+		a.ic = a.srv.createInternalAccountClient()
+		a.ic.acc = a
+	}
+	c := a.ic
+	sid := strconv.Itoa(a.isid + 1)
+	a.mu.RUnlock()
+
+	// This will happen in parsing when the account has not been properly setup.
+	if c == nil {
+		return nil
+	}
+
+	sub, err := c.processSub([]byte(si.from+" "+sid), true)
+	if err != nil {
+		return err
+	}
+
+	sub.icb = func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		c.processServiceImport(si, a, msg)
+	}
+
+	a.mu.Lock()
+	a.isid++
+	si.sub = sub
+	a.mu.Unlock()
+
+	return nil
+}
+
+// Remove all the subscriptions associated with service imports.
+func (a *Account) removeAllServiceImportSubs() {
+	a.mu.RLock()
+	var sids [][]byte
+	for _, si := range a.imports.services {
+		if si.sub != nil && si.sub.sid != nil {
+			sids = append(sids, si.sub.sid)
+		}
+	}
+	c := a.ic
+	a.mu.RUnlock()
+
+	if c == nil {
+		return
+	}
+	for _, sid := range sids {
+		c.processUnsub(sid)
+	}
+}
+
+// Add in subscriptions for all registered service imports.
+func (a *Account) addAllServiceImportSubs() {
+	for _, si := range a.imports.services {
+		a.addServiceImportSub(si)
+	}
 }
 
 // Helper to determine when to sample.
@@ -1166,7 +1235,7 @@ func (a *Account) addRespServiceImport(dest *Account, from, to string, rt Servic
 	}
 	// dest is the requestor's account. a is the service responder with the export.
 	ae := rt == Singleton
-	si := &serviceImport{dest, nil, from, to, 0, rt, nil, nil, ae, true, false, false}
+	si := &serviceImport{dest, nil, nil, from, to, 0, rt, nil, nil, ae, false, true, false, false}
 	a.imports.services[from] = si
 	if ae {
 		a.nae++
@@ -1181,6 +1250,11 @@ func (a *Account) addRespServiceImport(dest *Account, from, to string, rt Servic
 		}
 	}
 	a.mu.Unlock()
+
+	if err := a.addServiceImportSub(si); err != nil {
+		a.removeServiceImport(si.from)
+		return nil
+	}
 	return si
 }
 
@@ -1984,10 +2058,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			// to lock "acc". If we find that to be needed, we will need to
 			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
-			for _, im := range acc.imports.services {
-				if im != nil && im.acc.Name == a.Name {
+			for _, si := range acc.imports.services {
+				if si != nil && si.acc.Name == a.Name {
 					// Check for if we are still authorized for an import.
-					im.invalid = !a.checkServiceImportAuthorized(acc, im.to, im.claim)
+					si.invalid = !a.checkServiceImportAuthorized(acc, si.to, si.claim)
 				}
 			}
 			acc.mu.Unlock()

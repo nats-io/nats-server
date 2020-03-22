@@ -1,4 +1,4 @@
-// Copyright 2017-2019 The NATS Authors
+// Copyright 2017-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1036,6 +1036,7 @@ func (s *Server) reloadAuthorization() {
 						newAcc.clients[c] = struct{}{}
 					}
 				}
+
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
 				newAcc.respMap = acc.respMap
@@ -1046,6 +1047,10 @@ func (s *Server) reloadAuthorization() {
 				if !acc.checkStreamImportsEqual(newAcc) {
 					awcsti[newAcc.Name] = struct{}{}
 				}
+
+				// We need to remove all old service import subs.
+				acc.removeAllServiceImportSubs()
+				newAcc.addAllServiceImportSubs()
 			}
 			return true
 		})

@@ -1289,10 +1289,6 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	if len(barAcc.imports.services) != 0 {
 		t.Fatalf("Expected no imported services, got %d", len(barAcc.imports.services))
 	}
-	if barAcc.imports.hasWC {
-		t.Fatalf("Expected the hasWC flag to be cleared")
-	}
-
 }
 
 // Make sure the AddStreamExport function is additive if called multiple times.
@@ -1622,7 +1618,7 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	fooAcc.SetAutoExpireTTL(time.Millisecond)
 	fooAcc.SetMaxAutoExpireResponseMaps(5)
 
-	// Now setup the resonder under cfoo and the listener for the results
+	// Now setup the responder under cfoo and the listener for the results
 	time.Sleep(50 * time.Millisecond)
 	baseSubs := int(srvA.NumSubscriptions())
 	fooSub := natsSubSync(t, cfooNC, "track.service")
@@ -1648,6 +1644,7 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 
 	// Send 2 requests
 	natsSubSync(t, cbarNC, "resp")
+
 	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 
@@ -1672,7 +1669,6 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	}
 
 	numTracking := tracking()
-
 	if numTracking != 2 {
 		t.Fatalf("Expected to have 2 tracking replies, got %d", numTracking)
 	}

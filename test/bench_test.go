@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -289,6 +289,77 @@ func createClientWithAccount(b *testing.B, account, host string, port int) net.C
 	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
 	sendProto(b, c, cs)
 	return c
+}
+
+func benchOptionsForServiceImports() *server.Options {
+	o := DefaultTestOptions
+	o.Host = "127.0.0.1"
+	o.Port = -1
+	o.DisableShortFirstPing = true
+	foo := server.NewAccount("$foo")
+	bar := server.NewAccount("$bar")
+	o.Accounts = []*server.Account{foo, bar}
+
+	return &o
+}
+
+func addServiceImports(b *testing.B, s *server.Server) {
+	// Add a bunch of service exports with wildcards, similar to JS.
+	var exports = []string{
+		server.JetStreamEnabled,
+		server.JetStreamInfo,
+		server.JetStreamCreateTemplate,
+		server.JetStreamListTemplates,
+		server.JetStreamTemplateInfo,
+		server.JetStreamDeleteTemplate,
+		server.JetStreamCreateStream,
+		server.JetStreamUpdateStream,
+		server.JetStreamListStreams,
+		server.JetStreamStreamInfo,
+		server.JetStreamDeleteStream,
+		server.JetStreamPurgeStream,
+		server.JetStreamDeleteMsg,
+		server.JetStreamCreateConsumer,
+		server.JetStreamCreateEphemeralConsumer,
+		server.JetStreamConsumers,
+		server.JetStreamConsumerInfo,
+		server.JetStreamDeleteConsumer,
+	}
+	foo, _ := s.LookupAccount("$foo")
+	bar, _ := s.LookupAccount("$bar")
+
+	for _, export := range exports {
+		if err := bar.AddServiceExport(export, nil); err != nil {
+			b.Fatalf("Could not add service export: %v", err)
+		}
+		if err := foo.AddServiceImport(bar, export, ""); err != nil {
+			b.Fatalf("Could not add service import: %v", err)
+		}
+	}
+}
+
+func Benchmark__PubServiceImports(b *testing.B) {
+	o := benchOptionsForServiceImports()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addServiceImports(b, s)
+
+	c := createClientWithAccount(b, "$foo", o.Host, o.Port)
+	defer c.Close()
+
+	bw := bufio.NewWriterSize(c, defaultSendBufSize)
+	sendOp := []byte("PUB foo 2\r\nok\r\n")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bw.Write(sendOp)
+	}
+	err := bw.Flush()
+	if err != nil {
+		b.Errorf("Received error on FLUSH write: %v\n", err)
+	}
+	b.StopTimer()
 }
 
 func Benchmark___PubSubAccsImport(b *testing.B) {
