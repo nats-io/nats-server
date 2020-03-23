@@ -14,6 +14,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"crypto/sha256"
@@ -64,6 +65,7 @@ type fileStore struct {
 	qch     chan struct{}
 	cfs     []*consumerFileStore
 	closed  bool
+	sips    int
 }
 
 // Represents a message store block and its data.
@@ -292,28 +294,6 @@ func (fs *fileStore) writeStreamMeta() error {
 	fs.hh.Write(b)
 	checksum := hex.EncodeToString(fs.hh.Sum(nil))
 	sum := path.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (cfs *consumerFileStore) writeConsumerMeta() error {
-	meta := path.Join(cfs.odir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
-		return err
-	}
-	b, err := json.MarshalIndent(cfs.cfg, _EMPTY_, "  ")
-	if err != nil {
-		return err
-	}
-	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
-		return err
-	}
-	cfs.hh.Reset()
-	cfs.hh.Write(b)
-	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
-	sum := path.Join(cfs.odir, JetStreamMetaFileSum)
 	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
 		return err
 	}
@@ -621,39 +601,49 @@ func (fs *fileStore) enforceBytesLimit() {
 }
 
 // Lock should be held but will be released during actual remove.
-func (fs *fileStore) deleteFirstMsgLocked() bool {
+func (fs *fileStore) deleteFirstMsgLocked() (bool, error) {
 	fs.mu.Unlock()
 	defer fs.mu.Lock()
 	return fs.removeMsg(fs.state.FirstSeq, false)
 }
 
 // Lock should NOT be held.
-func (fs *fileStore) deleteFirstMsg() bool {
+func (fs *fileStore) deleteFirstMsg() (bool, error) {
 	return fs.removeMsg(fs.state.FirstSeq, false)
 }
 
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
-func (fs *fileStore) RemoveMsg(seq uint64) bool {
+func (fs *fileStore) RemoveMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, false)
 }
 
-func (fs *fileStore) EraseMsg(seq uint64) bool {
+func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, true)
 }
 
+func (fs *fileStore) isSnapshotting() bool {
+	fs.mu.RLock()
+	iss := fs.sips > 0
+	fs.mu.RUnlock()
+	return iss
+}
+
 // Remove a message, optionally rewriting the mb file.
-func (fs *fileStore) removeMsg(seq uint64, secure bool) bool {
+func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
+	if fs.isSnapshotting() {
+		return false, ErrStoreSnapshotInProgress
+	}
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
-		return false
+		return false, nil
 	}
 	sm, _ := mb.fetchMsg(seq)
 	// We have the message here, so we can delete it.
 	if sm != nil {
 		fs.deleteMsgFromBlock(mb, seq, sm, secure)
 	}
-	return sm != nil
+	return sm != nil, nil
 }
 
 // Loop on requests to write out our index file. This is used when calling
@@ -1776,6 +1766,161 @@ func (fs *fileStore) Stop() error {
 	return err
 }
 
+const errFile = "errors.txt"
+
+// Stream our snapshot through zip.
+func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
+	defer w.Close()
+	defer zw.Close()
+	defer func() {
+		fs.mu.Lock()
+		fs.sips--
+		fs.mu.Unlock()
+	}()
+
+	// We want to grab the stream and consumers to snapshot their state.
+	// We will grab the messages after that.
+
+	writeErr := func(err string) {
+		f, _ := zw.Create(errFile)
+		f.Write([]byte(err))
+	}
+
+	fs.mu.Lock()
+	// Write our general meta data.
+	if err := fs.writeStreamMeta(); err != nil {
+		fs.mu.Unlock()
+		writeErr(fmt.Sprintf("Could not write stream meta file: %v", err))
+		return
+	}
+	meta, err := ioutil.ReadFile(path.Join(fs.fcfg.StoreDir, JetStreamMetaFile))
+	if err != nil {
+		fs.mu.Unlock()
+		writeErr(fmt.Sprintf("Could not read stream meta file: %v", err))
+		return
+	}
+	sum, err := ioutil.ReadFile(path.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum))
+	if err != nil {
+		fs.mu.Unlock()
+		writeErr(fmt.Sprintf("Could not read stream checksum file: %v", err))
+		return
+	}
+	fs.mu.Unlock()
+
+	writeFile := func(name string, buf []byte) error {
+		f, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(meta)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Meta first.
+	if writeFile(JetStreamMetaFile, meta) != nil {
+		return
+	}
+	if writeFile(JetStreamMetaFileSum, sum) != nil {
+		return
+	}
+
+	// FIXME(dlc) - Do templates
+
+	// Now do messages themselves.
+	fs.mu.Lock()
+	lmb := fs.lmb
+	blks := fs.blks
+	fs.mu.Unlock()
+
+	// Can't use join path here, zip only recognizes relative paths with forward slashes.
+	msgPre := msgDir + "/"
+
+	for _, mb := range blks {
+		if mb == lmb {
+			fs.flushPendingWrites()
+		}
+		mb.mu.Lock()
+		buf, err := ioutil.ReadFile(mb.ifn)
+		if err != nil {
+			mb.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not read message block [%d] meta file: %v", mb.index, err))
+			return
+		}
+		if writeFile(msgPre+fmt.Sprintf(indexScan, mb.index), buf) != nil {
+			mb.mu.Unlock()
+			return
+		}
+		// We could stream but don't want to hold the lock and prevent changes, so just read in and
+		// release the lock for now.
+		// TODO(dlc) - Maybe reuse buffer?
+		buf, err = ioutil.ReadFile(mb.mfn)
+		if err != nil {
+			mb.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
+			return
+		}
+		mb.mu.Unlock()
+		// Do this one unlocked.
+		if writeFile(msgPre+fmt.Sprintf(blkScan, mb.index), buf) != nil {
+			return
+		}
+	}
+	// Do consumers' state last.
+	fs.mu.Lock()
+	cfs := fs.cfs
+	fs.mu.Unlock()
+
+	for _, o := range cfs {
+		o.syncStateFile()
+		o.mu.Lock()
+		meta, err := ioutil.ReadFile(path.Join(o.odir, JetStreamMetaFile))
+		if err != nil {
+			o.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not read consumer meta file for %q: %v", o.name, err))
+			return
+		}
+		sum, err := ioutil.ReadFile(path.Join(o.odir, JetStreamMetaFileSum))
+		if err != nil {
+			o.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not read consumer checksum file for %q: %v", o.name, err))
+			return
+		}
+		state, err := ioutil.ReadFile(path.Join(o.odir, consumerState))
+		if err != nil {
+			o.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not read consumer state for %q: %v", o.name, err))
+			return
+		}
+		odirPre := consumerDir + "/" + o.name
+		o.mu.Unlock()
+
+		// Write all the consumer files.
+		if writeFile(odirPre+"/"+JetStreamMetaFile, meta) != nil {
+			return
+		}
+		if writeFile(odirPre+"/"+JetStreamMetaFileSum, sum) != nil {
+			return
+		}
+		writeFile(odirPre+"/"+consumerState, state)
+	}
+}
+
+// Create a snapshot of this stream and its consumer's state along with messages.
+func (fs *fileStore) Snapshot() (io.ReadCloser, error) {
+	fs.mu.Lock()
+	// Mark us as snapshotting
+	fs.sips += 1
+	fs.mu.Unlock()
+
+	pr, pw := io.Pipe()
+	go fs.streamSnapshot(pw, zip.NewWriter(pw))
+
+	return pr, nil
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Consumers
 ////////////////////////////////////////////////////////////////////////////////
@@ -1923,6 +2068,30 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.mu.Unlock()
 
 	return err
+}
+
+// Write out the consumer meta data, i.e. state.
+// Lock should be held.
+func (cfs *consumerFileStore) writeConsumerMeta() error {
+	meta := path.Join(cfs.odir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+		return err
+	}
+	b, err := json.MarshalIndent(cfs.cfg, _EMPTY_, "  ")
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+		return err
+	}
+	cfs.hh.Reset()
+	cfs.hh.Write(b)
+	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
+	sum := path.Join(cfs.odir, JetStreamMetaFileSum)
+	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (o *consumerFileStore) syncStateFile() {

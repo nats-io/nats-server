@@ -207,7 +207,7 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	if !bytes.Equal(msg, smsg) {
 		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
 	}
-	if !ms.EraseMsg(1) {
+	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
 	}
 	if bytes.Equal(msg, smsg) {
