@@ -509,7 +509,10 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	}
 	var response = OK
 	seq, _ := strconv.Atoi(string(msg))
-	if !mset.EraseMsg(uint64(seq)) {
+	removed, err := mset.EraseMsg(uint64(seq))
+	if err != nil {
+		response = protoErr(err)
+	} else if !removed {
 		response = protoErr(fmt.Sprintf("sequence [%d] not found", seq))
 	}
 	s.sendAPIResponse(c, subject, reply, string(msg), response)
