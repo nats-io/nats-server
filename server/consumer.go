@@ -1143,7 +1143,17 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
 // Deliver a msg to the observable.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64) {
-	o.mset.sendq <- &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount), msg, o, seq}
+	if o.mset == nil {
+		return
+	}
+	sendq := o.mset.sendq
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount), msg, o, seq}
+
+	// This needs to be unlocked since the other side may need this lock on failed delivery.
+	o.mu.Unlock()
+	sendq <- pmsg
+	o.mu.Lock()
+
 	if o.config.AckPolicy == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq
@@ -1152,6 +1162,7 @@ func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64
 	}
 	o.dseq++
 	o.updateStore()
+
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
