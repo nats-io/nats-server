@@ -14,10 +14,12 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math/bits"
 	"math/rand"
@@ -515,7 +517,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 
 	// Remove evens
 	for i := 2; i <= toStore; i += 2 {
-		if !fs.RemoveMsg(uint64(i)) {
+		if removed, _ := fs.RemoveMsg(uint64(i)); !removed {
 			t.Fatalf("Expected remove to return true")
 		}
 	}
@@ -684,7 +686,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	// Hold for offset check later.
 	sm, _ := fs.msgForSeq(1)
 
-	if !fs.EraseMsg(1) {
+	if removed, _ := fs.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
 	}
 	if sm2, _ := fs.msgForSeq(1); sm2 != nil {
@@ -741,7 +743,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 
 	// Erase the even messages.
 	for i := 2; i <= toStore; i += 2 {
-		if !fs.EraseMsg(uint64(i)) {
+		if removed, _ := fs.EraseMsg(uint64(i)); !removed {
 			t.Fatalf("Expected erase msg to return true")
 		}
 	}
@@ -1053,6 +1055,163 @@ func TestFileStoreReadCache(t *testing.T) {
 	}
 }
 
+func TestFileStoreSnapshot(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	subj, msg := "foo", []byte("Hello Snappy!")
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	toSend := 2233
+	for i := 0; i < toSend; i++ {
+		fs.StoreMsg(subj, msg)
+	}
+
+	// Create a few consumers.
+	o1, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+	if err != nil {
+		t.Fatalf("Unexepected error: %v", err)
+	}
+	o2, err := fs.ConsumerStore("o33", &ConsumerConfig{})
+	if err != nil {
+		t.Fatalf("Unexepected error: %v", err)
+	}
+	state := &ConsumerState{}
+	state.Delivered.ConsumerSeq = 100
+	state.Delivered.StreamSeq = 100
+	state.AckFloor.ConsumerSeq = 22
+	state.AckFloor.StreamSeq = 22
+
+	if err := o1.Update(state); err != nil {
+		t.Fatalf("Unexepected error updating state: %v", err)
+	}
+	state.AckFloor.ConsumerSeq = 33
+	state.AckFloor.StreamSeq = 33
+
+	if err := o2.Update(state); err != nil {
+		t.Fatalf("Unexepected error updating state: %v", err)
+	}
+
+	snapshot := func() []byte {
+		t.Helper()
+		r, err := fs.Snapshot()
+		if err != nil {
+			t.Fatalf("Error creating snapshot")
+		}
+		snapshot, err := ioutil.ReadAll(r)
+		if err != nil {
+			t.Fatalf("Error reading snapshot")
+		}
+		return snapshot
+	}
+
+	// This will unzip the snapshot and create a new filestore that will recover the state.
+	// We will compare the states for this vs the original one.
+	verifySnapshot := func(snap []byte) {
+		r := bytes.NewReader(snap)
+		zr, _ := zip.NewReader(r, int64(len(snap)))
+
+		rstoreDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+		sdir := path.Join(rstoreDir, "$G", "streams")
+		os.MkdirAll(sdir, 0755)
+		defer os.RemoveAll(rstoreDir)
+
+		for _, f := range zr.File {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("Error opening file in zip file: %v", err)
+			}
+			fpath := path.Join(sdir, filepath.Clean(f.Name))
+			pdir := filepath.Dir(fpath)
+			os.MkdirAll(pdir, 0755)
+			fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, f.Mode())
+			if err != nil {
+				t.Fatalf("Error opening file[%s]: %v", fpath, err)
+			}
+			if _, err := io.Copy(fd, rc); err != nil {
+				t.Fatalf("Error writing file[%s]: %v", fpath, err)
+			}
+			rc.Close()
+		}
+		fsr, err := newFileStore(
+			FileStoreConfig{StoreDir: storeDir},
+			StreamConfig{Name: "zzz", Storage: FileStorage},
+		)
+		if err != nil {
+			t.Fatalf("Error restoring from snapshot: %v", err)
+		}
+		state := fs.State()
+		rstate := fsr.State()
+
+		// FIXME(dlc)
+		// Right now the upper layers in JetStream recover the consumers and do not expect
+		// the lower layers to do that. So for now blank that out of our original state.
+		state.Consumers = 0
+
+		// FIXME(dlc) - Also the hashes will not match if directory is not the same, so need to
+		// work through that problem too. The test below will pass but if you try to extract a
+		// message that will most likely fail.
+		if rstate != state {
+			t.Fatalf("Restored state does not match, %+v vs %+v", rstate, state)
+		}
+	}
+
+	// Simple case first.
+	snap := snapshot()
+	verifySnapshot(snap)
+
+	// Remove first 100 messages.
+	for i := 1; i <= 100; i++ {
+		fs.RemoveMsg(uint64(i))
+	}
+
+	snap = snapshot()
+	verifySnapshot(snap)
+
+	// Now sporadic messages inside the stream.
+	total := int64(toSend - 100)
+	// Delete 50 random messages.
+	for i := 0; i < 50; i++ {
+		seq := uint64(rand.Int63n(total) + 101)
+		fs.RemoveMsg(seq)
+	}
+
+	snap = snapshot()
+	verifySnapshot(snap)
+
+	// Now check to make sure that we get the correct error when trying to delete or erase
+	// a message when a snapshot is in progress and that closing the reader releases that condition.
+
+	r, err := fs.Snapshot()
+	if err != nil {
+		t.Fatalf("Error creating snapshot")
+	}
+	if _, err := fs.RemoveMsg(122); err != ErrStoreSnapshotInProgress {
+		t.Fatalf("Did not get the correct error on remove during snapshot: %v", err)
+	}
+	if _, err := fs.EraseMsg(122); err != ErrStoreSnapshotInProgress {
+		t.Fatalf("Did not get the correct error on remove during snapshot: %v", err)
+	}
+
+	// Now make sure we can do these when we close the reader and release the snapshot condition.
+	r.Close()
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if _, err := fs.RemoveMsg(122); err != nil {
+			return fmt.Errorf("Got an error on remove after snapshot: %v", err)
+		}
+		return nil
+	})
+}
+
 func TestFileStoreConsumer(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
@@ -1073,7 +1232,7 @@ func TestFileStoreConsumer(t *testing.T) {
 	}
 	state := &ConsumerState{}
 	if err := o.Update(state); err == nil {
-		t.Fatalf("Exepected an error and got none")
+		t.Fatalf("Expected an error and got none")
 	}
 
 	updateAndCheck := func() {

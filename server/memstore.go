@@ -15,6 +15,7 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"sort"
 	"sync"
@@ -253,19 +254,19 @@ func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
-func (ms *memStore) RemoveMsg(seq uint64) bool {
+func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
 	removed := ms.removeMsg(seq, false)
 	ms.mu.Unlock()
-	return removed
+	return removed, nil
 }
 
 // EraseMsg will remove the message and rewrite its contents.
-func (ms *memStore) EraseMsg(seq uint64) bool {
+func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
 	removed := ms.removeMsg(seq, true)
 	ms.mu.Unlock()
-	return removed
+	return removed, nil
 }
 
 // Removes the message referenced by seq.
@@ -348,6 +349,10 @@ type consumerMemStore struct {
 func (ms *memStore) ConsumerStore(_ string, _ *ConsumerConfig) (ConsumerStore, error) {
 	ms.incConsumers()
 	return &consumerMemStore{ms}, nil
+}
+
+func (ms *memStore) Snapshot() (io.ReadCloser, error) {
+	return nil, fmt.Errorf("no impl")
 }
 
 // No-ops.

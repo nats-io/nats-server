@@ -329,17 +329,17 @@ func (mset *Stream) Purge() uint64 {
 
 // RemoveMsg will remove a message from a stream.
 // FIXME(dlc) - Should pick one and be consistent.
-func (mset *Stream) RemoveMsg(seq uint64) bool {
+func (mset *Stream) RemoveMsg(seq uint64) (bool, error) {
 	return mset.store.RemoveMsg(seq)
 }
 
 // DeleteMsg will remove a message from a stream.
-func (mset *Stream) DeleteMsg(seq uint64) bool {
+func (mset *Stream) DeleteMsg(seq uint64) (bool, error) {
 	return mset.store.RemoveMsg(seq)
 }
 
 // EraseMsg will securely remove a message and rewrite the data with random data.
-func (mset *Stream) EraseMsg(seq uint64) bool {
+func (mset *Stream) EraseMsg(seq uint64) (bool, error) {
 	return mset.store.EraseMsg(seq)
 }
 
@@ -626,7 +626,7 @@ func (mset *Stream) internalSendLoop() {
 
 	for {
 		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Jetstream internal send queue > 75% for account: %q stream: %q", c.acc.Name, name)
+			s.Warnf("Jetstream internal send queue > 75%% for account: %q stream: %q", c.acc.Name, name)
 			last = time.Now()
 		}
 		select {
