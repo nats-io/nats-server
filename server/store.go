@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -36,13 +37,16 @@ var (
 	ErrStoreMsgNotFound = errors.New("no message found")
 	// ErrStoreEOF is returned when message seq is greater than the last sequence.
 	ErrStoreEOF = errors.New("stream EOF")
+	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
+	// while a snapshot is in progress.
+	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
 )
 
 type StreamStore interface {
 	StoreMsg(subj string, msg []byte) (uint64, error)
 	LoadMsg(seq uint64) (subj string, msg []byte, ts int64, err error)
-	RemoveMsg(seq uint64) bool
-	EraseMsg(seq uint64) bool
+	RemoveMsg(seq uint64) (bool, error)
+	EraseMsg(seq uint64) (bool, error)
 	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
@@ -51,6 +55,7 @@ type StreamStore interface {
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
+	Snapshot() (io.ReadCloser, error)
 }
 
 // RetentionPolicy determines how messages in a set are retained.

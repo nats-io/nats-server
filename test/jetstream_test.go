@@ -4135,7 +4135,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			deleteAndCheck := func(seq, expectedFirstSeq uint64) {
 				t.Helper()
 				beforeState := mset.State()
-				if !mset.DeleteMsg(seq) {
+				if removed, _ := mset.DeleteMsg(seq); !removed {
 					t.Fatalf("Expected the delete of sequence %d to succeed", seq)
 				}
 				expectedState := beforeState
