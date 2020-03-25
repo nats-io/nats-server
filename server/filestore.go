@@ -1913,7 +1913,7 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 
 	for _, mb := range blks {
 		if mb == lmb {
-			fs.flushPendingWrites()
+			fs.flushPendingWritesUnlocked()
 		}
 		mb.mu.Lock()
 		buf, err := ioutil.ReadFile(mb.ifn)
