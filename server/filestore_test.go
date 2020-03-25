@@ -72,7 +72,10 @@ func TestFileStoreBasics(t *testing.T) {
 }
 
 func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
-	storeDir := filepath.Join("", JetStreamStoreDir)
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
 	fcfg := FileStoreConfig{StoreDir: storeDir}
 
 	if _, err := newFileStore(fcfg, StreamConfig{Storage: MemoryStorage}); err == nil {
@@ -81,10 +84,6 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	if _, err := newFileStore(fcfg, StreamConfig{Storage: FileStorage}); err == nil {
 		t.Fatalf("Expected an error with no name")
 	}
-
-	// Make the directories to succeed in setup.
-	os.MkdirAll(storeDir, 0755)
-	defer os.RemoveAll(storeDir)
 
 	fs, err := newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
 	if err != nil {
@@ -116,6 +115,11 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	}
 	// Stop will flush to disk.
 	fs.Stop()
+
+	// Make sure Store call after does not work.
+	if _, err := fs.StoreMsg(subj, []byte("no work")); err == nil {
+		t.Fatalf("Expected an error for StoreMsg call after Stop, got none")
+	}
 
 	// Restart
 	fs, err = newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
@@ -337,7 +341,8 @@ func TestFileStorePurge(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	blkSize := uint64(64 * 1024)
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -358,8 +363,9 @@ func TestFileStorePurge(t *testing.T) {
 		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
 
-	if numBlocks := fs.numMsgBlocks(); numBlocks <= 1 {
-		t.Fatalf("Expected to have more then 1 msg block, got %d", numBlocks)
+	expectedBlocks := int(storedMsgSize * toStore / blkSize)
+	if numBlocks := fs.numMsgBlocks(); numBlocks <= expectedBlocks {
+		t.Fatalf("Expected to have more then %d msg blocks, got %d", blkSize, numBlocks)
 	}
 
 	fs.Purge()
@@ -389,7 +395,7 @@ func TestFileStorePurge(t *testing.T) {
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -428,7 +434,7 @@ func TestFileStorePurge(t *testing.T) {
 	purgeDir := path.Join(fs.fcfg.StoreDir, purgeDir)
 	os.Rename(pdir, purgeDir)
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 64 * 1024}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

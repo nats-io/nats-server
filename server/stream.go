@@ -527,7 +527,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		// Check to see if we are over the account limit.
 		seq, err = store.StoreMsg(subject, msg)
 		if err != nil {
-			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+			if err != ErrStoreClosed {
+				c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+			}
 			response = []byte(fmt.Sprintf("-ERR '%v'", err))
 		} else if jsa.limitsExceeded(stype) {
 			c.Warnf("JetStream resource limits exceeded for account: %q", accName)

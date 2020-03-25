@@ -604,6 +604,7 @@ func (o *Consumer) updateStateLoop() {
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
 		case <-fch:
+			// FIXME(dlc) - Check for fast changes at quick intervals.
 			time.Sleep(25 * time.Millisecond)
 			o.mu.Lock()
 			if o.store != nil {
@@ -850,7 +851,7 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 		return
 	}
 
-	// can be nil during shutdown, locks are help in the caller
+	// can be nil during shutdown, locks are held in the caller
 	if o.mset != nil && o.mset.sendq != nil {
 		o.mset.sendq <- &jsPubMsg{o.deliveryExcEventT, o.deliveryExcEventT, _EMPTY_, j, nil, 0}
 	}
@@ -892,7 +893,7 @@ func (o *Consumer) getNextMsg() (string, []byte, uint64, uint64, error) {
 		}
 		// We got an error here. If this is an EOF we will return, otherwise
 		// we can continue looking.
-		if err == ErrStoreEOF {
+		if err == ErrStoreEOF || err == ErrStoreClosed {
 			return "", nil, 0, 0, err
 		}
 		// Skip since its probably deleted or expired.
@@ -1162,7 +1163,6 @@ func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64
 	}
 	o.dseq++
 	o.updateStore()
-
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
