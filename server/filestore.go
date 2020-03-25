@@ -232,6 +232,10 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 }
 
 func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
+
 	if cfg.Name == "" {
 		return fmt.Errorf("name required")
 	}
@@ -387,7 +391,7 @@ func (fs *fileStore) recoverMsgs() error {
 	// Check for any left over purged messages.
 	pdir := path.Join(fs.fcfg.StoreDir, purgeDir)
 	if _, err := os.Stat(pdir); err == nil {
-		go os.RemoveAll(pdir)
+		os.RemoveAll(pdir)
 	}
 
 	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
@@ -444,7 +448,12 @@ func (fs *fileStore) recoverMsgs() error {
 func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fs.mu.RLock()
 	lastSeq := fs.state.LastSeq
+	closed := fs.closed
 	fs.mu.RUnlock()
+
+	if closed {
+		return 0
+	}
 
 	mb := fs.selectMsgBlockForStart(t)
 	if mb == nil {
@@ -540,6 +549,10 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 // Store stores a message.
 func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	fs.mu.Lock()
+	if fs.closed {
+		fs.mu.Unlock()
+		return 0, ErrStoreClosed
+	}
 
 	seq := fs.state.LastSeq + 1
 	if fs.state.FirstSeq == 0 {
@@ -622,6 +635,13 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, true)
 }
 
+func (fs *fileStore) isClosed() bool {
+	fs.mu.RLock()
+	closed := fs.closed
+	fs.mu.RUnlock()
+	return closed
+}
+
 func (fs *fileStore) isSnapshotting() bool {
 	fs.mu.RLock()
 	iss := fs.sips > 0
@@ -631,6 +651,9 @@ func (fs *fileStore) isSnapshotting() bool {
 
 // Remove a message, optionally rewriting the mb file.
 func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
+	if fs.isClosed() {
+		return false, ErrStoreClosed
+	}
 	if fs.isSnapshotting() {
 		return false, ErrStoreSnapshotInProgress
 	}
@@ -884,7 +907,7 @@ func (fs *fileStore) kickFlusher() {
 	}
 }
 
-func (fs *fileStore) writePendingSize() int {
+func (fs *fileStore) pendingWriteSize() int {
 	var sz int
 	fs.mu.RLock()
 	if fs.wmb != nil {
@@ -898,11 +921,14 @@ func (fs *fileStore) flushLoop(fch, qch chan struct{}) {
 	for {
 		select {
 		case <-fch:
-			waiting := fs.writePendingSize()
+			waiting := fs.pendingWriteSize()
+			if waiting == 0 {
+				continue
+			}
 			ts := 1 * time.Millisecond
 			for waiting < coalesceMinimum {
 				time.Sleep(ts)
-				newWaiting := fs.writePendingSize()
+				newWaiting := fs.pendingWriteSize()
 				if newWaiting <= waiting {
 					break
 				}
@@ -1318,11 +1344,17 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 
 // Will return message for the given sequence number.
 func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
+	fs.mu.RLock()
+	if fs.closed {
+		fs.mu.RUnlock()
+		return nil, ErrStoreClosed
+	}
+	fseq := fs.state.FirstSeq
+	fs.mu.RUnlock()
+
 	// Indicates we want first msg.
 	if seq == 0 {
-		fs.mu.RLock()
-		seq = fs.state.FirstSeq
-		fs.mu.RUnlock()
+		seq = fseq
 	}
 
 	mb := fs.selectMsgBlock(seq)
@@ -1608,41 +1640,52 @@ func (fs *fileStore) dmapEntries() int {
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() uint64 {
 	fs.mu.Lock()
-	fs.flushPendingWrites()
+	if fs.closed {
+		fs.mu.Unlock()
+		return 0
+	}
+
 	purged := fs.state.Msgs
-	bytes := int64(fs.state.Bytes)
+	rbytes := int64(fs.state.Bytes)
 
 	fs.state.FirstSeq = fs.state.LastSeq + 1
 	fs.state.Bytes = 0
 	fs.state.Msgs = 0
-	fs.writeStreamMeta()
 
-	lmb := fs.lmb
+	for _, mb := range fs.blks {
+		mb.dirtyClose()
+	}
+
 	fs.blks = nil
+	fs.wmb = &bytes.Buffer{}
 	fs.lmb = nil
 
 	// Move the msgs directory out of the way, will delete out of band.
-	// FIXME(dlc) - These can error and we need to change api.
+	// FIXME(dlc) - These can error and we need to change api above to propagate?
 	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
 	pdir := path.Join(fs.fcfg.StoreDir, purgeDir)
-	os.Rename(mdir, pdir)
-	os.MkdirAll(mdir, 0755)
-	go os.RemoveAll(pdir)
-
-	// Now place new write msg block with correct info.
-	fs.newMsgBlockForWrite()
-	if lmb != nil {
-		fs.lmb.first = lmb.last
-		fs.lmb.first.seq += 1
-		fs.lmb.last = lmb.last
-		fs.lmb.writeIndexInfo()
+	// If purge directory still exists then we need to wait
+	// in place and remove since rename would fail.
+	if _, err := os.Stat(pdir); err == nil {
+		os.RemoveAll(pdir)
 	}
+	os.Rename(mdir, pdir)
+	go os.RemoveAll(pdir)
+	// Create new one.
+	os.MkdirAll(mdir, 0755)
+
+	// Make sure we have a lmb to write to.
+	fs.newMsgBlockForWrite()
+
+	fs.lmb.first.seq = fs.state.FirstSeq
+	fs.lmb.last.seq = fs.state.LastSeq
+	fs.lmb.writeIndexInfo()
 
 	cb := fs.scb
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-bytes)
+		cb(-rbytes)
 	}
 
 	return purged
@@ -1691,6 +1734,31 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 	go mb.close(true)
 }
 
+// Called by purge to simply get rid of the cache and close and fds.
+// FIXME(dlc) - Merge with below func.
+func (mb *msgBlock) dirtyClose() {
+	if mb == nil {
+		return
+	}
+	mb.mu.Lock()
+	// Close cache
+	mb.cache = nil
+	// Quit our loops.
+	if mb.qch != nil {
+		close(mb.qch)
+		mb.qch = nil
+	}
+	if mb.mfd != nil {
+		mb.mfd.Close()
+		mb.mfd = nil
+	}
+	if mb.ifd != nil {
+		mb.ifd.Close()
+		mb.ifd = nil
+	}
+	mb.mu.Unlock()
+}
+
 func (mb *msgBlock) close(sync bool) {
 	if mb == nil {
 		return
@@ -1724,6 +1792,10 @@ func (fs *fileStore) closeLastMsgBlock(sync bool) {
 }
 
 func (fs *fileStore) Delete() error {
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
+	// TODO(dlc) - check error here?
 	fs.Purge()
 	if err := fs.Stop(); err != nil {
 		return err
@@ -1735,7 +1807,7 @@ func (fs *fileStore) Stop() error {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
-		return nil
+		return ErrStoreClosed
 	}
 	fs.closed = true
 	close(fs.qch)
@@ -1763,6 +1835,7 @@ func (fs *fileStore) Stop() error {
 	for _, o := range cfs {
 		o.Stop()
 	}
+
 	return err
 }
 
@@ -1911,6 +1984,10 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 // Create a snapshot of this stream and its consumer's state along with messages.
 func (fs *fileStore) Snapshot() (io.ReadCloser, error) {
 	fs.mu.Lock()
+	if fs.closed {
+		fs.mu.Unlock()
+		return nil, ErrStoreClosed
+	}
 	// Mark us as snapshotting
 	fs.sips += 1
 	fs.mu.Unlock()
@@ -1943,6 +2020,9 @@ type consumerFileStore struct {
 func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if fs == nil {
 		return nil, fmt.Errorf("filestore is nil")
+	}
+	if fs.isClosed() {
+		return nil, ErrStoreClosed
 	}
 	if cfg == nil || name == "" {
 		return nil, fmt.Errorf("bad consumer config")

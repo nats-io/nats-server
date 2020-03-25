@@ -33,6 +33,8 @@ const (
 )
 
 var (
+	// ErrStoreClosed is returned when the store has been closed
+	ErrStoreClosed = errors.New("store is closed")
 	// ErrStoreMsgNotFound when message was not found but was expected to be.
 	ErrStoreMsgNotFound = errors.New("no message found")
 	// ErrStoreEOF is returned when message seq is greater than the last sequence.
