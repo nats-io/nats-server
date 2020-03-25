@@ -1609,6 +1609,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	defer nc.Close()
 
 	sub, _ := nc.SubscribeSync(dsubj)
+	nc.Flush()
 	defer sub.Unsubscribe()
 
 	// Send one message.
@@ -3497,7 +3498,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	delta := (runtime.NumGoroutine() - base)
 	if delta > 3 {
 		t.Logf("%d Go routines still exist post Shutdown()", delta)
-		time.Sleep(30 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
 
 	s = RunBasicJetStreamServer()

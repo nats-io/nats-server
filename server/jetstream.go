@@ -195,7 +195,6 @@ func (s *Server) shutdownJetStream() {
 	s.mu.Unlock()
 
 	for _, jsa := range jsas {
-		jsa.flushState()
 		s.js.disableJetStream(jsa)
 	}
 
@@ -619,27 +618,6 @@ func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 
 	jsa.delete()
 
-	return nil
-}
-
-// Flush JetStream state for the account.
-func (jsa *jsAccount) flushState() error {
-	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled for account")
-	}
-
-	// Collect the streams.
-	var _msets [64]*Stream
-	msets := _msets[:0]
-	jsa.mu.Lock()
-	for _, mset := range jsa.streams {
-		msets = append(msets, mset)
-	}
-	jsa.mu.Unlock()
-
-	for _, mset := range msets {
-		mset.store.Stop()
-	}
 	return nil
 }
 
