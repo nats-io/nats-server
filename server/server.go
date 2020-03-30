@@ -1828,9 +1828,9 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	// Do subs, do not place by default in main ConnInfo
 	if len(c.subs) > 0 {
-		cc.subs = make([]string, 0, len(c.subs))
+		cc.subs = make([]SubDetail, 0, len(c.subs))
 		for _, sub := range c.subs {
-			cc.subs = append(cc.subs, string(sub.subject))
+			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
 	}
 	// Hold user as well.
