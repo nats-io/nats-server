@@ -697,7 +697,21 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 			o.TrustedOperators = append(o.TrustedOperators, opc)
 		}
+		// In case "resolver" is defined as well, it takes precedence
+		if o.AccountResolver == nil && len(o.TrustedOperators) == 1 {
+			if accUrl, err := parseURL(o.TrustedOperators[0].AccountServerURL, "account resolver"); err == nil {
+				// accommodate nsc which appends "/accounts" during nsc push
+				suffix := ""
+				if accUrl.Path == "/jwt/v1/" || accUrl.Path == "/jwt/v1" {
+					suffix = "/accounts"
+				}
+				o.AccountResolver, _ = NewURLAccResolver(accUrl.String() + suffix)
+			}
+		}
 	case "resolver", "account_resolver", "accounts_resolver":
+		// "resolver" takes precedence over value obtained from "operator".
+		// Clear so that parsing errors are not silently ignored.
+		o.AccountResolver = nil
 		var memResolverRe = regexp.MustCompile(`(MEM|MEMORY|mem|memory)\s*`)
 		var resolverRe = regexp.MustCompile(`(?:URL|url){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
 		str, ok := v.(string)
