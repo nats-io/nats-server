@@ -820,6 +820,11 @@ func TestNewRouteQueueSubsDistribution(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	// Each server should have its 100 local subscriptions, plus 1 for the route.
+	if err := checkExpectedSubs(101, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+
 	sender := createClientConn(t, optsA.Host, optsA.Port)
 	defer sender.Close()
 	send, expect := setupConn(t, sender)
