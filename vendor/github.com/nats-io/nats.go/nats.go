@@ -45,7 +45,7 @@ import (
 
 // Default Constants
 const (
-	Version                 = "1.9.1"
+	Version                 = "1.9.2"
 	DefaultURL              = "nats://127.0.0.1:4222"
 	DefaultPort             = 4222
 	DefaultMaxReconnect     = 60
@@ -415,7 +415,6 @@ type Conn struct {
 	respScanf string               // The scanf template to extract mux token
 	respMux   *Subscription        // A single response subscription
 	respMap   map[string]chan *Msg // Request map for the response msg channels
-	respSetup sync.Once            // Ensures response subscription occurs once
 	respRand  *rand.Rand           // Used for generating suffix
 }
 
@@ -1295,12 +1294,6 @@ func (nc *Conn) createConn() (err error) {
 		return err
 	}
 
-	// No clue why, but this stalls and kills performance on Mac (Mavericks).
-	// https://code.google.com/p/go/issues/detail?id=6930
-	//if ip, ok := nc.conn.(*net.TCPConn); ok {
-	//	ip.SetReadBuffer(defaultBufSize)
-	//}
-
 	if nc.pending != nil && nc.bw != nil {
 		// Move to pending buffer.
 		nc.bw.Flush()
@@ -2056,31 +2049,21 @@ func (nc *Conn) readLoop() {
 	if nc.ps == nil {
 		nc.ps = &parseState{}
 	}
+	conn := nc.conn
 	nc.mu.Unlock()
+
+	if conn == nil {
+		return
+	}
 
 	// Stack based buffer.
 	b := make([]byte, defaultBufSize)
 
 	for {
-		// ps is thread safe, so RLock is okay
-		nc.mu.RLock()
-		sb := nc.isClosed() || nc.isReconnecting()
-		if sb {
-			nc.ps = &parseState{}
-		}
-		conn := nc.conn
-		nc.mu.RUnlock()
-
-		if sb || conn == nil {
-			break
-		}
-
-		n, err := conn.Read(b)
-		if err != nil {
+		if n, err := conn.Read(b); err != nil {
 			nc.processOpErr(err)
 			break
-		}
-		if err := nc.parse(b[:n]); err != nil {
+		} else if err = nc.parse(b[:n]); err != nil {
 			nc.processOpErr(err)
 			break
 		}
@@ -2686,23 +2669,6 @@ func (nc *Conn) respHandler(m *Msg) {
 	}
 }
 
-// Create the response subscription we will use for all
-// new style responses. This will be on an _INBOX with an
-// additional terminal token. The subscription will be on
-// a wildcard. Caller is responsible for ensuring this is
-// only called once.
-func (nc *Conn) createRespMux(respSub string) error {
-	s, err := nc.Subscribe(respSub, nc.respHandler)
-	if err != nil {
-		return err
-	}
-	nc.mu.Lock()
-	nc.respScanf = strings.Replace(respSub, "*", "%s", -1)
-	nc.respMux = s
-	nc.mu.Unlock()
-	return nil
-}
-
 // Helper to setup and send new request style requests. Return the chan to receive the response.
 func (nc *Conn) createNewRequestAndSend(subj string, data []byte) (chan *Msg, string, error) {
 	// Do setup for the new style if needed.
@@ -2714,18 +2680,19 @@ func (nc *Conn) createNewRequestAndSend(subj string, data []byte) (chan *Msg, st
 	respInbox := nc.newRespInbox()
 	token := respInbox[respInboxPrefixLen:]
 	nc.respMap[token] = mch
-	createSub := nc.respMux == nil
-	ginbox := nc.respSub
-	nc.mu.Unlock()
-
-	if createSub {
-		// Make sure scoped subscription is setup only once.
-		var err error
-		nc.respSetup.Do(func() { err = nc.createRespMux(ginbox) })
+	if nc.respMux == nil {
+		// Create the response subscription we will use for all new style responses.
+		// This will be on an _INBOX with an additional terminal token. The subscription
+		// will be on a wildcard.
+		s, err := nc.subscribeLocked(nc.respSub, _EMPTY_, nc.respHandler, nil, false)
 		if err != nil {
+			nc.mu.Unlock()
 			return nil, token, err
 		}
+		nc.respScanf = strings.Replace(nc.respSub, "*", "%s", -1)
+		nc.respMux = s
 	}
+	nc.mu.Unlock()
 
 	if err := nc.PublishRequest(subj, respInbox, data); err != nil {
 		return nil, token, err
@@ -2952,15 +2919,22 @@ func (nc *Conn) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSyn
 	if nc == nil {
 		return nil, ErrInvalidConnection
 	}
+	nc.mu.Lock()
+	s, err := nc.subscribeLocked(subj, queue, cb, ch, isSync)
+	nc.mu.Unlock()
+	return s, err
+}
+
+func (nc *Conn) subscribeLocked(subj, queue string, cb MsgHandler, ch chan *Msg, isSync bool) (*Subscription, error) {
+	if nc == nil {
+		return nil, ErrInvalidConnection
+	}
 	if badSubject(subj) {
 		return nil, ErrBadSubject
 	}
 	if queue != "" && badQueue(queue) {
 		return nil, ErrBadQueueName
 	}
-	nc.mu.Lock()
-	// ok here, but defer is generally expensive
-	defer nc.mu.Unlock()
 
 	// Check for some error conditions.
 	if nc.isClosed() {
@@ -3727,6 +3701,10 @@ func (nc *Conn) close(status Status, doCBs bool, err error) {
 		if nc.Opts.ClosedCB != nil {
 			nc.ach.push(func() { nc.Opts.ClosedCB(nc) })
 		}
+	}
+	// If this is terminal, then we have to notify the asyncCB handler that
+	// it can exit once all async cbs have been dispatched.
+	if status == CLOSED {
 		nc.ach.close()
 	}
 	nc.mu.Unlock()
@@ -3766,6 +3744,19 @@ func (nc *Conn) IsConnected() bool {
 func (nc *Conn) drainConnection() {
 	// Snapshot subs list.
 	nc.mu.Lock()
+
+	// Check again here if we are in a state to not process.
+	if nc.isClosed() {
+		nc.mu.Unlock()
+		return
+	}
+	if nc.isConnecting() || nc.isReconnecting() {
+		nc.mu.Unlock()
+		// Move to closed state.
+		nc.close(CLOSED, true, nil)
+		return
+	}
+
 	subs := make([]*Subscription, 0, len(nc.subs))
 	for _, s := range nc.subs {
 		subs = append(subs, s)
@@ -3812,7 +3803,7 @@ func (nc *Conn) drainConnection() {
 	nc.mu.Unlock()
 
 	// Do publish drain via Flush() call.
-	err := nc.Flush()
+	err := nc.FlushTimeout(5 * time.Second)
 	if err != nil {
 		pushErr(err)
 		nc.close(CLOSED, true, nil)
@@ -3830,20 +3821,23 @@ func (nc *Conn) drainConnection() {
 // option to know when the connection has moved from draining to closed.
 func (nc *Conn) Drain() error {
 	nc.mu.Lock()
-	defer nc.mu.Unlock()
-
 	if nc.isClosed() {
+		nc.mu.Unlock()
 		return ErrConnectionClosed
 	}
 	if nc.isConnecting() || nc.isReconnecting() {
+		nc.mu.Unlock()
+		nc.close(CLOSED, true, nil)
 		return ErrConnectionReconnecting
 	}
 	if nc.isDraining() {
+		nc.mu.Unlock()
 		return nil
 	}
-
 	nc.status = DRAINING_SUBS
 	go nc.drainConnection()
+	nc.mu.Unlock()
+
 	return nil
 }
 
