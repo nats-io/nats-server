@@ -136,6 +136,9 @@ const (
 	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
 	JetStreamAdvisoryConsumerMaxDeliveryExceedPre = JetStreamAdvisoryPrefix + ".MAX_DELIVERIES"
 
+	// JetStreamAdvisoryEnabled is a notification published when JetStream is enabled on an account
+	JetStreamAdvisoryEnabled = JetStreamAdvisoryPrefix + ".ENABLED"
+
 	// JetStreamAPIAuditAdvisory is a notification about JetStream API access.
 	JetStreamAPIAuditAdvisory = JetStreamAdvisoryPrefix + ".API"
 )
@@ -744,7 +747,17 @@ type JetStreamAPIAudit struct {
 	Response string         `json:"response"`
 }
 
+type JetStreamEnabledAdvisory struct {
+	Schema  string `json:"schema"`
+	ID      string `json:"id"`
+	Time    string `json:"timestamp"`
+	Server  string `json:"server"`
+	Account string `json:"account"`
+	Version string `json:"server_version"`
+}
+
 const auditSchema = "io.nats.jetstream.advisory.v1.api_audit"
+const enabledSchema = "io.nats.jetstream.advisory.v1.enabled"
 
 // sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
 func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
@@ -782,6 +795,24 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 		s.sendInternalAccountMsg(c.acc, JetStreamAPIAuditAdvisory, ej)
 	} else {
 		s.Warnf("JetStream could not marshal audit event for account %q: %v", c.acc.Name, err)
+	}
+}
+
+func (s *Server) sendJetStreamEnabledAdvisory(a *Account) {
+	e := &JetStreamEnabledAdvisory{
+		Schema:  enabledSchema,
+		ID:      nuid.Next(),
+		Time:    time.Now().UTC().Format(time.RFC3339Nano),
+		Server:  s.Name(),
+		Account: a.Name,
+		Version: VERSION,
+	}
+
+	ej, err := json.MarshalIndent(e, "", "  ")
+	if err == nil {
+		s.sendInternalAccountMsg(a, JetStreamAdvisoryEnabled, ej)
+	} else {
+		s.Warnf("JetStream could not marshal enabled event for account %q: %v", a.Name, err)
 	}
 }
 

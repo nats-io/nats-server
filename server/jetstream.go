@@ -317,7 +317,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// Restore any state here.
 	s.Noticef("  Recovering JetStream state for account %q", a.Name)
 
-	// Check templates first since messsage sets will need proper ownership.
+	// Check templates first since streams will need proper ownership.
 	tdir := path.Join(jsa.storeDir, tmplsDir)
 	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
 		key := sha256.Sum256([]byte(tdir))
@@ -454,6 +454,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			}
 		}
 	}
+
+	s.sendJetStreamEnabledAdvisory(a)
 
 	s.Noticef("JetStream state for account %q recovered", a.Name)
 
