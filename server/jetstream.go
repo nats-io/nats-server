@@ -49,10 +49,11 @@ type JetStreamAccountLimits struct {
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
-	Memory  uint64                 `json:"memory"`
-	Store   uint64                 `json:"storage"`
-	Streams int                    `json:"streams"`
-	Limits  JetStreamAccountLimits `json:"limits"`
+	Memory    uint64                 `json:"memory"`
+	Store     uint64                 `json:"storage"`
+	Streams   int                    `json:"streams"`
+	Consumers int                    `json:"consumers"`
+	Limits    JetStreamAccountLimits `json:"limits"`
 }
 
 // This is for internal accounting for JetStream for this server.
@@ -571,13 +572,20 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 
 	var stats JetStreamAccountStats
 	if jsa != nil {
+		consumers := 0
+		for _, s := range jsa.streams {
+			consumers += len(s.consumers)
+		}
+
 		jsa.mu.Lock()
 		stats.Memory = uint64(jsa.memUsed)
 		stats.Store = uint64(jsa.storeUsed)
 		stats.Streams = len(jsa.streams)
+		stats.Consumers = consumers
 		stats.Limits = jsa.limits
 		jsa.mu.Unlock()
 	}
+
 	return stats
 }
 
