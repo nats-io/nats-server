@@ -30,6 +30,7 @@ import (
 )
 
 type ConsumerInfo struct {
+	Stream string         `json:"stream_name"`
 	Name   string         `json:"name"`
 	Config ConsumerConfig `json:"config"`
 	State  ConsumerState  `json:"state"`
@@ -633,6 +634,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	info := &ConsumerInfo{
+		Stream: o.streamName,
 		Name:   o.name,
 		Config: o.config,
 		State: ConsumerState{
