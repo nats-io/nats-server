@@ -1,7 +1,7 @@
 language: go
 go:
+- 1.14.x
 - 1.13.x
-- 1.12.x
 addons:
   apt:
     packages:
@@ -31,7 +31,7 @@ script:
 
 deploy:
   provider: script
-  skip_cleanup: true
+  skip_cleanup: false
   script: curl -sL http://git.io/goreleaser | bash
   verbose: true
   on:
