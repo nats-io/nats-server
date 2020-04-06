@@ -416,20 +416,6 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 		return true
 	}
 
-	// Check service imports.
-	if acc.imports.services != nil {
-		acc.mu.RLock()
-		si := acc.imports.services[delivery]
-		invalid := si != nil && si.invalid
-		acc.mu.RUnlock()
-		if si != nil && !invalid && si.acc != nil && si.acc.sl != nil {
-			rr := si.acc.sl.Match(si.to)
-			if len(rr.psubs)+len(rr.qsubs) > 0 {
-				return true
-			}
-		}
-	}
-
 	// If we are here check gateways.
 	if acc.srv != nil && acc.srv.gateway.enabled {
 		gw := acc.srv.gateway
@@ -1025,6 +1011,19 @@ func (o *Consumer) processReplay() error {
 	return nil
 }
 
+// Will check to make sure those waiting still have registered interest.
+func (o *Consumer) checkWaitingForInterest() bool {
+	for len(o.waiting) > 0 {
+		rr := o.acc.sl.Match(o.waiting[0])
+		if len(rr.psubs)+len(rr.qsubs) > 0 {
+			break
+		}
+		// No more interest so go ahead and remove this one from our list.
+		o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+	}
+	return len(o.waiting) > 0
+}
+
 func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	// Process the replay, return on error.
@@ -1056,7 +1055,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 		}
 
 		// If we are in pull mode and no one is waiting already break and wait.
-		if o.isPullMode() && len(o.waiting) == 0 {
+		if o.isPullMode() && !o.checkWaitingForInterest() {
 			goto waitForMsgs
 		}
 
@@ -1111,7 +1110,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
 	}
 
 	// If we are in pull mode and no one is waiting already break and wait.
-	if o.isPullMode() && len(o.waiting) == 0 {
+	if o.isPullMode() && !o.checkWaitingForInterest() {
 		o.mu.Unlock()
 		return false
 	}
