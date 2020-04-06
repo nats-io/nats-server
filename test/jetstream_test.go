@@ -1577,6 +1577,84 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	wcfg := &server.ConsumerConfig{Durable: "worker", DeliverAll: true, AckPolicy: server.AckExplicit}
+	o, err := mset.AddConsumer(wcfg)
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	rqn := o.RequestNextMsgSubject()
+	defer o.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Ask for a message even though one is not there. This will queue us up for waiting.
+	if _, err := nc.Request(rqn, nil, 10*time.Millisecond); err == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+
+	// This is using new style request mechanism. so drop the connection itself to get rid of interest.
+	nc.Close()
+
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+	// Send a message
+	sendStreamMsg(t, nc, mname, "Hello World!")
+
+	msg, err := nc.Request(rqn, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	_, dseq, dc := o.ReplyInfo(msg.Reply)
+	if dseq != 1 {
+		t.Fatalf("Expected consumer sequence of 1, got %d", dseq)
+	}
+	if dc != 1 {
+		t.Fatalf("Expected delivery count of 1, got %d", dc)
+	}
+
+	// Now do old school request style and more than one waiting.
+	nc = clientConnectWithOldRequest(t, s)
+	defer nc.Close()
+
+	// Now queue up 10 waiting via failed requests.
+	for i := 0; i < 10; i++ {
+		if _, err := nc.Request(rqn, nil, 1*time.Millisecond); err == nil {
+			t.Fatalf("Expected an error, got none")
+		}
+	}
+
+	// Send a second message
+	sendStreamMsg(t, nc, mname, "Hello World!")
+
+	msg, err = nc.Request(rqn, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	_, dseq, dc = o.ReplyInfo(msg.Reply)
+	if dseq != 2 {
+		t.Fatalf("Expected consumer sequence of 2, got %d", dseq)
+	}
+	if dc != 1 {
+		t.Fatalf("Expected delivery count of 1, got %d", dc)
+	}
+}
+
 func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
