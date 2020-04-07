@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -702,7 +702,10 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 	}
 
 	bindGlobal := func(s *server.Server) {
-		ngs, _ := s.LookupAccount("NGS")
+		ngs, err := s.LookupAccount("NGS")
+		if err != nil {
+			return
+		}
 		// Bind global to service import
 		gacc, _ := s.LookupAccount("$G")
 		gacc.AddServiceImport(ngs, "ngs.usage", "ngs.usage.$G")
@@ -938,6 +941,42 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 		t.Fatalf("Expected only 1 msg, got %d", len(matches))
 	}
 	checkLmsg(t, matches[0], "bar", "", "2", "OK")
+}
+
+// This will test that we propagate interest only mode after a leafnode
+// has been established and a new server joins a remote cluster.
+func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
+	ca := createClusterWithName(t, "A", 1)
+	defer shutdownCluster(ca)
+
+	// Create the leafnode on a server in cluster A.
+	opts := ca.opts[0]
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend("PING\r\n")
+	leafExpect(pongRe)
+
+	// Now setup the cluster B.
+	cb := createClusterWithName(t, "B", 1, ca)
+	defer shutdownCluster(cb)
+
+	// Create client on a server in cluster B
+	opts = cb.opts[0]
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	// Make sure we see interest graph propagation on the leaf node
+	// connection. This is required since leaf nodes only send data
+	// in the presence of interest.
+	send("SUB foo 1\r\nPING\r\n")
+	expect(pongRe)
+	leafExpect(lsubRe)
 }
 
 func TestLeafNodeLocalizedDQ(t *testing.T) {
