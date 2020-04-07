@@ -1059,6 +1059,118 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 	}
 }
 
+func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "ORDERS", Storage: server.MemoryStorage, Subjects: []string{"orders.*.*"}}},
+		{"FileStore", &server.StreamConfig{Name: "ORDERS", Storage: server.FileStorage, Subjects: []string{"orders.*.*"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			toSend := 100
+			for i := 1; i <= toSend; i++ {
+				subj := fmt.Sprintf("orders.%d.%s", i, "NEW")
+				sendStreamMsg(t, nc, subj, "new order")
+			}
+			// Randomly move 25 to shipped.
+			toShip := 25
+			shipped := make(map[int]bool)
+			for i := 0; i < toShip; {
+				orderId := rand.Intn(toSend-1) + 1
+				if shipped[orderId] {
+					continue
+				}
+				subj := fmt.Sprintf("orders.%d.%s", orderId, "SHIPPED")
+				sendStreamMsg(t, nc, subj, "shipped order")
+				shipped[orderId] = true
+				i++
+			}
+			state := mset.State()
+			if state.Msgs != uint64(toSend+toShip) {
+				t.Fatalf("Expected %d messages, got %d", toSend+toShip, state.Msgs)
+			}
+
+			delivery := nats.NewInbox()
+			sub, _ := nc.SubscribeSync(delivery)
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			// Get all shipped.
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: "orders.*.SHIPPED", DeliverAll: true})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			checkFor(t, time.Second, 25*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toShip {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toShip)
+				}
+				return nil
+			})
+			for nmsgs, _, _ := sub.Pending(); nmsgs > 0; nmsgs, _, _ = sub.Pending() {
+				sub.NextMsg(time.Second)
+			}
+			if nmsgs, _, _ := sub.Pending(); nmsgs != 0 {
+				t.Fatalf("Expected no pending, got %d", nmsgs)
+			}
+
+			// Get all new
+			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: "orders.*.NEW", DeliverAll: true})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			checkFor(t, time.Second, 25*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+				}
+				return nil
+			})
+			for nmsgs, _, _ := sub.Pending(); nmsgs > 0; nmsgs, _, _ = sub.Pending() {
+				sub.NextMsg(time.Second)
+			}
+			if nmsgs, _, _ := sub.Pending(); nmsgs != 0 {
+				t.Fatalf("Expected no pending, got %d", nmsgs)
+			}
+
+			// Now grab a single orderId that has shipped, so we should have two messages.
+			var orderId int
+			for orderId = range shipped {
+				break
+			}
+			subj := fmt.Sprintf("orders.%d.*", orderId)
+			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: subj, DeliverAll: true})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			checkFor(t, time.Second, 25*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 2 {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, 2)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 	cases := []struct {
 		name    string
