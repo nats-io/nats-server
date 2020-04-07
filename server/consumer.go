@@ -142,7 +142,7 @@ type Consumer struct {
 	mset              *Stream
 	acc               *Account
 	name              string
-	streamName        string
+	stream            string
 	sseq              uint64
 	dseq              uint64
 	adflr             uint64
@@ -162,6 +162,7 @@ type Consumer struct {
 	store             ConsumerStore
 	active            bool
 	replay            bool
+	filterWC          bool
 	dtmr              *time.Timer
 	dthresh           time.Duration
 	fch               chan struct{}
@@ -218,9 +219,6 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != "" {
-		if !subjectIsLiteral(config.FilterSubject) {
-			return nil, fmt.Errorf("consumer filter subject has wildcards")
-		}
 		// Make sure this is a valid partition of the interest subjects.
 		if !mset.validSubject(config.FilterSubject) {
 			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
@@ -299,10 +297,15 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		o.name = createConsumerName()
 	}
 
+	// Check if we have  filtered subject that is a wildcard.
+	if config.FilterSubject != _EMPTY_ && !subjectIsLiteral(config.FilterSubject) {
+		o.filterWC = true
+	}
+
 	// already under lock, mset.Name() would deadlock
-	o.streamName = mset.config.Name
-	o.ackEventT = JetStreamMetricConsumerAckPre + "." + o.streamName + "." + o.name
-	o.deliveryExcEventT = JetStreamAdvisoryConsumerMaxDeliveryExceedPre + "." + o.streamName + "." + o.name
+	o.stream = mset.config.Name
+	o.ackEventT = JetStreamMetricConsumerAckPre + "." + o.stream + "." + o.name
+	o.deliveryExcEventT = JetStreamAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
 
 	store, err := mset.store.ConsumerStore(o.name, config)
 	if err != nil {
@@ -620,7 +623,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	info := &ConsumerInfo{
-		Stream: o.streamName,
+		Stream: o.stream,
 		Name:   o.name,
 		Config: o.config,
 		State: ConsumerState{
@@ -692,7 +695,7 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 		Schema:      "io.nats.jetstream.metric.v1.consumer_ack",
 		ID:          nuid.Next(),
 		Time:        now.Format(time.RFC3339Nano),
-		Stream:      o.streamName,
+		Stream:      o.stream,
 		Consumer:    o.name,
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
@@ -828,7 +831,7 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 		Schema:     "io.nats.jetstream.advisory.v1.max_deliver",
 		ID:         nuid.Next(),
 		Time:       time.Now().UTC().Format(time.RFC3339Nano),
-		Stream:     o.streamName,
+		Stream:     o.stream,
 		Consumer:   o.name,
 		StreamSeq:  sseq,
 		Deliveries: dcount,
@@ -843,6 +846,16 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 	if o.mset != nil && o.mset.sendq != nil {
 		o.mset.sendq <- &jsPubMsg{o.deliveryExcEventT, o.deliveryExcEventT, _EMPTY_, j, nil, 0}
 	}
+}
+
+// Check to see if the candidate subject matches a filter if its present.
+func (o *Consumer) isFilteredMatch(subj string) bool {
+	if !o.filterWC {
+		return subj == o.config.FilterSubject
+	}
+	// If we are here we have a wildcard filter subject.
+	// TODO(dlc) at speed might be better to just do a sublist with L2 and/or possibly L1.
+	return subjectIsSubsetMatch(subj, o.config.FilterSubject)
 }
 
 // Get next available message from underlying store.
@@ -872,7 +885,7 @@ func (o *Consumer) getNextMsg() (string, []byte, uint64, uint64, error) {
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
-				if o.config.FilterSubject != _EMPTY_ && subj != o.config.FilterSubject {
+				if o.config.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
 					continue
 				}
 			}
@@ -981,7 +994,7 @@ func (o *Consumer) processReplay() error {
 			}
 		}
 		// We have a message to deliver here.
-		if err == nil && (partition == _EMPTY_ || subj == partition) {
+		if err == nil && (partition == _EMPTY_ || o.isFilteredMatch(subj)) {
 			// FIXME(dlc) - pull based.
 			if !pullMode {
 				o.deliverMsg(o.dsubj, subj, msg, o.sseq, 1)
