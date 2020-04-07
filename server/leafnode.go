@@ -74,6 +74,11 @@ func (c *client) isSolicitedLeafNode() bool {
 	return c.kind == LEAF && c.leaf.remote != nil
 }
 
+// Returns true if this is a solicited leafnode and is not configured to be treated as a hub.
+func (c *client) isSpokeLeafNode() bool {
+	return c.kind == LEAF && c.leaf.remote != nil && !c.leaf.remote.Hub
+}
+
 func (c *client) isUnsolicitedLeafNode() bool {
 	return c.kind == LEAF && c.leaf.remote == nil
 }
@@ -570,6 +575,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
+	var sendSysConnectEvent bool
 
 	c.mu.Lock()
 	c.initClient()
@@ -581,6 +587,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			remote.LocalAccount = globalAccountName
 		}
 		c.leaf.remote = remote
+		sendSysConnectEvent = c.leaf.remote.Hub
 		c.mu.Unlock()
 		// TODO: Decide what should be the optimal behavior here.
 		// For now, if lookup fails, we will constantly try
@@ -785,6 +792,9 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		s.addLeafNodeConnection(c)
 		s.initLeafNodeSmap(c)
 		c.sendAllLeafSubs()
+		if sendSysConnectEvent {
+			s.sendLeafNodeConnect(c.acc)
+		}
 	}
 
 	return c
@@ -1014,7 +1024,7 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	acc.mu.Lock()
 	accName := acc.Name
 	// If we are solicited we only send interest for local clients.
-	if c.isSolicitedLeafNode() {
+	if c.isSpokeLeafNode() {
 		acc.sl.localSubs(&subs)
 	} else {
 		acc.sl.All(&subs)
@@ -1051,7 +1061,7 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	}
 
 	applyGlobalRouting := s.gateway.enabled
-	if c.isSolicitedLeafNode() {
+	if c.isSpokeLeafNode() {
 		// Add a fake subscription for this solicited leafnode connection
 		// so that we can send back directly for mapped GW replies.
 		c.srv.gwLeafSubs.Insert(&subscription{client: c, subject: []byte(gwReplyPrefix + ">")})
@@ -1129,7 +1139,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	// If we are solicited make sure this is a local client or a non-solicited leaf node
 	skind := sub.client.kind
-	if c.isSolicitedLeafNode() && !(skind == CLIENT || (skind == LEAF && !sub.client.isSolicitedLeafNode())) {
+	if c.isSpokeLeafNode() && !(skind == CLIENT || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
 		c.mu.Unlock()
 		return
 	}
@@ -1335,7 +1345,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		atomic.StoreInt32(&osub.qw, sub.qw)
 		acc.sl.UpdateRemoteQSub(osub)
 	}
-	solicited := c.isSolicitedLeafNode()
+	spoke := c.isSpokeLeafNode()
 	c.mu.Unlock()
 
 	if err := c.addShadowSubscriptions(acc, sub); err != nil {
@@ -1345,7 +1355,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	// If we are not solicited, treat leaf node subscriptions similar to a
 	// client subscription, meaning we forward them to routes, gateways and
 	// other leaf nodes as needed.
-	if !solicited {
+	if !spoke {
 		// If we are routing add to the route map for the associated account.
 		srv.updateRouteSubscriptionMap(acc, sub, 1)
 		if updateGWs {

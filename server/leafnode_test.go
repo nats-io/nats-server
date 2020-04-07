@@ -1015,3 +1015,83 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 		})
 	}
 }
+
+func TestLeafNodeRemoteIsHub(t *testing.T) {
+	oa := testDefaultOptionsForGateway("A")
+	oa.Accounts = []*Account{NewAccount("sys")}
+	oa.SystemAccount = "sys"
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	lno := DefaultOptions()
+	lno.LeafNode.Host = "127.0.0.1"
+	lno.LeafNode.Port = -1
+	ln := RunServer(lno)
+	defer ln.Shutdown()
+
+	ob1 := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	ob1.Accounts = []*Account{NewAccount("sys")}
+	ob1.SystemAccount = "sys"
+	ob1.Cluster.Host = "127.0.0.1"
+	ob1.Cluster.Port = -1
+	ob1.LeafNode.Host = "127.0.0.1"
+	ob1.LeafNode.Port = -1
+	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", lno.LeafNode.Port))
+	ob1.LeafNode.Remotes = []*RemoteLeafOpts{
+		&RemoteLeafOpts{
+			URLs: []*url.URL{u},
+			Hub:  true,
+		},
+	}
+	sb1 := RunServer(ob1)
+	defer sb1.Shutdown()
+
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+	waitForInboundGateways(t, sb1, 1, 2*time.Second)
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+
+	checkLeafNodeConnected(t, sb1)
+
+	// For now, due to issue 977, let's restart the leafnode so that the
+	// leafnode connect is propagated in the super-cluster.
+	ln.Shutdown()
+	ln = RunServer(lno)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, sb1)
+
+	// Connect another server in cluster B
+	ob2 := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	ob2.Accounts = []*Account{NewAccount("sys")}
+	ob2.SystemAccount = "sys"
+	ob2.Cluster.Host = "127.0.0.1"
+	ob2.Cluster.Port = -1
+	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ob1.Cluster.Port))
+	sb2 := RunServer(ob2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+
+	// Create sub on "foo" connected to sa
+	ncA := natsConnect(t, sa.ClientURL())
+	defer ncA.Close()
+	subFoo := natsSubSync(t, ncA, "foo")
+
+	// Create sub on "bar" connected to sb2
+	ncB2 := natsConnect(t, sb2.ClientURL())
+	defer ncB2.Close()
+	subBar := natsSubSync(t, ncB2, "bar")
+
+	// Create pub connection on leafnode
+	ncLN := natsConnect(t, ln.ClientURL())
+	defer ncLN.Close()
+
+	// Publish on foo and make sure it is received.
+	natsPub(t, ncLN, "foo", []byte("msg"))
+	natsNexMsg(t, subFoo, time.Second)
+
+	// Publish on foo and make sure it is received.
+	natsPub(t, ncLN, "bar", []byte("msg"))
+	natsNexMsg(t, subBar, time.Second)
+}
