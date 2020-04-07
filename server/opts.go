@@ -136,6 +136,7 @@ type RemoteLeafOpts struct {
 	TLS          bool        `json:"-"`
 	TLSConfig    *tls.Config `json:"-"`
 	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
+	Hub          bool        `json:"hub,omitempty"`
 }
 
 // Options block for nats-server.
@@ -1376,6 +1377,8 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				} else {
 					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT)
 				}
+			case "hub":
+				remote.Hub = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
