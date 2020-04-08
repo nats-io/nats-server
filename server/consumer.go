@@ -1307,6 +1307,10 @@ func (o *Consumer) NextSeq() uint64 {
 // partition subject.
 func (o *Consumer) selectSubjectLast() {
 	stats := o.mset.store.State()
+	if stats.LastSeq == 0 {
+		o.sseq = stats.LastSeq
+		return
+	}
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
 		subj, _, _, err := o.mset.store.LoadMsg(seq)

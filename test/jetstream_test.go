@@ -288,6 +288,57 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 	}
 }
 
+// Test for https://github.com/nats-io/jetstream/issues/143
+func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
+	subj := "my_stream"
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			obsReq := server.CreateConsumerRequest{
+				Stream: subj,
+				Config: server.ConsumerConfig{
+					Durable:       "d",
+					DeliverLast:   true,
+					FilterSubject: "foo.22",
+					AckPolicy:     server.AckExplicit,
+				},
+			}
+			req, err := json.Marshal(obsReq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			_, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, subj, "d"), req, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			nc.Close()
+			s.Shutdown()
+		})
+	}
+}
+
 func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 	cases := []struct {
 		name    string
