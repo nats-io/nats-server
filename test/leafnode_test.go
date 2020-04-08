@@ -659,12 +659,12 @@ func waitForOutboundGateways(t *testing.T, s *server.Server, expected int, timeo
 // Will have Gateways and Leaf Node connections active.
 func createClusterWithName(t *testing.T, clusterName string, numServers int, connectTo ...*cluster) *cluster {
 	t.Helper()
-	return createClusterEx(t, false, clusterName, numServers, connectTo...)
+	return createClusterEx(t, false, 5*time.Millisecond, true, clusterName, numServers, connectTo...)
 }
 
 // Creates a cluster and optionally additional accounts and users.
 // Will have Gateways and Leaf Node connections active.
-func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServers int, connectTo ...*cluster) *cluster {
+func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, waitOnGWs bool, clusterName string, numServers int, connectTo ...*cluster) *cluster {
 	t.Helper()
 
 	if clusterName == "" || numServers < 1 {
@@ -721,7 +721,7 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 	}
 
 	// Make the GWs form faster for the tests.
-	server.SetGatewaysSolicitDelay(5 * time.Millisecond)
+	server.SetGatewaysSolicitDelay(gwSolicit)
 	defer server.ResetGatewaysSolicitDelay()
 
 	// Create seed first.
@@ -760,10 +760,12 @@ func createClusterEx(t *testing.T, doAccounts bool, clusterName string, numServe
 	}
 	checkClusterFormed(t, c.servers...)
 
-	// Wait on gateway connections if we were asked to connect to other gateways.
-	if numGWs := len(connectTo); numGWs > 0 {
-		for _, s := range c.servers {
-			waitForOutboundGateways(t, s, numGWs, 2*time.Second)
+	if waitOnGWs {
+		// Wait on gateway connections if we were asked to connect to other gateways.
+		if numGWs := len(connectTo); numGWs > 0 {
+			for _, s := range c.servers {
+				waitForOutboundGateways(t, s, numGWs, 2*time.Second)
+			}
 		}
 	}
 
@@ -946,7 +948,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 // This will test that we propagate interest only mode after a leafnode
 // has been established and a new server joins a remote cluster.
 func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
-	ca := createClusterWithName(t, "A", 1)
+	ca := createClusterWithName(t, "A", 3)
 	defer shutdownCluster(ca)
 
 	// Create the leafnode on a server in cluster A.
@@ -959,7 +961,7 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	leafExpect(pongRe)
 
 	// Now setup the cluster B.
-	cb := createClusterWithName(t, "B", 1, ca)
+	cb := createClusterWithName(t, "B", 3, ca)
 	defer shutdownCluster(cb)
 
 	// Create client on a server in cluster B
@@ -976,6 +978,64 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	// in the presence of interest.
 	send("SUB foo 1\r\nPING\r\n")
 	expect(pongRe)
+	leafExpect(lsubRe)
+}
+
+// This will test that we propagate interest only mode after a leafnode
+// has been established and a server is restarted..
+func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
+	ca := createClusterWithName(t, "A", 3)
+	defer shutdownCluster(ca)
+
+	// Now setup the cluster B.
+	cb := createClusterWithName(t, "B", 3, ca)
+	defer shutdownCluster(cb)
+
+	// Create the leafnode on a server in cluster B.
+	opts := cb.opts[1]
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend("PING\r\n")
+	leafExpect(pongRe)
+
+	// Create client on a server in cluster A
+	opts = ca.opts[1]
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	send, expect := setupConn(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	// Make sure we see interest graph propagation on the leaf node
+	// connection. This is required since leaf nodes only send data
+	// in the presence of interest.
+	send("SUB foo 1\r\nPING\r\n")
+	expect(pongRe)
+	leafExpect(lsubRe)
+
+	// Close old leaf connection and simulate a reconnect.
+	lc.Close()
+
+	// Shutdown and recreate B and the leafnode connection to it.
+	shutdownCluster(cb)
+
+	// Create new cluster with longer solicit and don't wait for GW connect.
+	cb = createClusterEx(t, false, 500*time.Millisecond, false, "B", 1, ca)
+	defer shutdownCluster(cb)
+
+	opts = cb.opts[0]
+	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	_, leafExpect = setupLeaf(t, lc, 3)
+
+	// Now wait on GW solicit to fire
+	time.Sleep(500 * time.Millisecond)
+
+	// We should see the interest for 'foo' here.
 	leafExpect(lsubRe)
 }
 
@@ -2384,12 +2444,10 @@ func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
 }
 
 func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
-	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
-	defer server.ResetGatewaysSolicitDelay()
-
-	ca := createClusterEx(t, true, "A", 3)
+	gwSolicit := 10 * time.Millisecond
+	ca := createClusterEx(t, true, gwSolicit, true, "A", 3)
 	defer shutdownCluster(ca)
-	cb := createClusterEx(t, true, "B", 3, ca)
+	cb := createClusterEx(t, true, gwSolicit, true, "B", 3, ca)
 	defer shutdownCluster(cb)
 
 	// Hang a responder off of cluster A.
@@ -2504,14 +2562,12 @@ func TestLeafNodeSendsAccountingEvents(t *testing.T) {
 }
 
 func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
-	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
-	defer server.ResetGatewaysSolicitDelay()
-
-	ca := createClusterEx(t, true, "A", 3)
+	gwSolicit := 10 * time.Millisecond
+	ca := createClusterEx(t, true, gwSolicit, true, "A", 3)
 	defer shutdownCluster(ca)
-	cb := createClusterEx(t, true, "B", 3, ca)
+	cb := createClusterEx(t, true, gwSolicit, true, "B", 3, ca)
 	defer shutdownCluster(cb)
-	cc := createClusterEx(t, true, "C", 3, ca, cb)
+	cc := createClusterEx(t, true, gwSolicit, true, "C", 3, ca, cb)
 	defer shutdownCluster(cc)
 
 	// Create queue subscribers
@@ -2593,12 +2649,10 @@ func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 }
 
 func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
-	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
-	defer server.ResetGatewaysSolicitDelay()
-
-	ca := createClusterEx(t, true, "A", 3)
+	gwSolicit := 10 * time.Millisecond
+	ca := createClusterEx(t, true, gwSolicit, true, "A", 3)
 	defer shutdownCluster(ca)
-	cb := createClusterEx(t, true, "B", 3, ca)
+	cb := createClusterEx(t, true, gwSolicit, true, "B", 3, ca)
 	defer shutdownCluster(cb)
 
 	// Create queue subscribers

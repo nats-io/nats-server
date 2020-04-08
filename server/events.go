@@ -657,17 +657,26 @@ func (s *Server) updateRemoteServer(ms *ServerInfo) {
 // processNewServer will hold any logic we want to use when we discover a new server.
 // Lock should be held upon entry.
 func (s *Server) processNewServer(ms *ServerInfo) {
-	// Right now we will check if we have leafnode servers and if so send another
+	// Right now we only check if we have leafnode servers and if so send another
 	// connect update to make sure they switch this account to interest only mode.
-	// TODO(dlc) - this will cause this account to be loaded on all servers. Need a better
-	// way with GW2.
-	if s.gateway.enabled && len(s.leafs) > 0 {
-		sent := make(map[*Account]bool, len(s.leafs))
-		for _, c := range s.leafs {
-			if !sent[c.acc] {
-				s.sendLeafNodeConnectMsg(c.acc.Name)
-				sent[c.acc] = true
-			}
+	s.ensureGWsInterestOnlyForLeafNodes()
+}
+
+// If GW is enabled on this server and there are any leaf node connections,
+// this function will send a LeafNode connect system event to the super cluster
+// to ensure that the GWs are in interest-only mode for this account.
+// Lock should be held upon entry.
+// TODO(dlc) - this will cause this account to be loaded on all servers. Need a better
+// way with GW2.
+func (s *Server) ensureGWsInterestOnlyForLeafNodes() {
+	if !s.gateway.enabled || len(s.leafs) == 0 {
+		return
+	}
+	sent := make(map[*Account]bool, len(s.leafs))
+	for _, c := range s.leafs {
+		if !sent[c.acc] {
+			s.sendLeafNodeConnectMsg(c.acc.Name)
+			sent[c.acc] = true
 		}
 	}
 }
