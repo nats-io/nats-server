@@ -60,7 +60,7 @@ func createSuperCluster(t *testing.T, numServersPer, numClusters int) *superclus
 
 	for i := 0; i < numClusters; i++ {
 		// Pick cluster name and setup default accounts.
-		c := createClusterEx(t, true, randClusterName(), numServersPer, clusters...)
+		c := createClusterEx(t, true, 5*time.Millisecond, true, randClusterName(), numServersPer, clusters...)
 		clusters = append(clusters, c)
 	}
 	return &supercluster{clusters}

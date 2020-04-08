@@ -398,9 +398,11 @@ func (a *Account) addClient(c *client) int {
 		}
 	}
 	a.mu.Unlock()
-	if c != nil && c.srv != nil && a != c.srv.globalAccount() && added {
+
+	if c != nil && c.srv != nil && added {
 		c.srv.accConnsUpdate(a)
 	}
+
 	return n
 }
 

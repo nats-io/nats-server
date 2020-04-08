@@ -1077,6 +1077,12 @@ func (c *client) processGatewayInfo(info *Info) {
 		// Send back to the server that initiated this gateway connection the
 		// list of all remote gateways known on this server.
 		s.gossipGatewaysToInboundGateway(info.Gateway, c)
+
+		// Now make sure if we have any knowledge of connected leafnodes that we resend the
+		// connect events to switch those accounts into interest only mode.
+		s.mu.Lock()
+		s.ensureGWsInterestOnlyForLeafNodes()
+		s.mu.Unlock()
 	}
 }
 

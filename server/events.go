@@ -642,6 +642,7 @@ func (s *Server) updateRemoteServer(ms *ServerInfo) {
 	su := s.sys.servers[ms.ID]
 	if su == nil {
 		s.sys.servers[ms.ID] = &serverUpdate{ms.Seq, time.Now()}
+		s.processNewServer(ms)
 	} else {
 		// Should always be going up.
 		if ms.Seq <= su.seq {
@@ -650,6 +651,33 @@ func (s *Server) updateRemoteServer(ms *ServerInfo) {
 		}
 		su.seq = ms.Seq
 		su.ltime = time.Now()
+	}
+}
+
+// processNewServer will hold any logic we want to use when we discover a new server.
+// Lock should be held upon entry.
+func (s *Server) processNewServer(ms *ServerInfo) {
+	// Right now we only check if we have leafnode servers and if so send another
+	// connect update to make sure they switch this account to interest only mode.
+	s.ensureGWsInterestOnlyForLeafNodes()
+}
+
+// If GW is enabled on this server and there are any leaf node connections,
+// this function will send a LeafNode connect system event to the super cluster
+// to ensure that the GWs are in interest-only mode for this account.
+// Lock should be held upon entry.
+// TODO(dlc) - this will cause this account to be loaded on all servers. Need a better
+// way with GW2.
+func (s *Server) ensureGWsInterestOnlyForLeafNodes() {
+	if !s.gateway.enabled || len(s.leafs) == 0 {
+		return
+	}
+	sent := make(map[*Account]bool, len(s.leafs))
+	for _, c := range s.leafs {
+		if !sent[c.acc] {
+			s.sendLeafNodeConnectMsg(c.acc.Name)
+			sent[c.acc] = true
+		}
 	}
 }
 
@@ -708,8 +736,7 @@ func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply strin
 	}
 }
 
-// leafNodeConnected is an event we will receive when a leaf node for a given account
-// connects.
+// leafNodeConnected is an event we will receive when a leaf node for a given account connects.
 func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply string, msg []byte) {
 	m := accNumConnsReq{}
 	if err := json.Unmarshal(msg, &m); err != nil {
@@ -805,19 +832,25 @@ func (s *Server) sendLeafNodeConnect(a *Account) {
 		s.mu.Unlock()
 		return
 	}
-	subj := fmt.Sprintf(leafNodeConnectEventSubj, a.Name)
-	m := accNumConnsReq{Account: a.Name}
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendLeafNodeConnectMsg(a.Name)
 	s.mu.Unlock()
 
 	s.switchAccountToInterestMode(a.Name)
+}
+
+// Send the leafnode connect message.
+// Lock should be held.
+func (s *Server) sendLeafNodeConnectMsg(accName string) {
+	subj := fmt.Sprintf(leafNodeConnectEventSubj, accName)
+	m := accNumConnsReq{Account: accName}
+	s.sendInternalMsg(subj, "", &m.Server, &m)
 }
 
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
 // Lock should be held on entry.
 func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
-	if !s.eventsEnabled() || a == nil || a == s.gacc {
+	if !s.eventsEnabled() || a == nil {
 		return
 	}
 	a.mu.RLock()

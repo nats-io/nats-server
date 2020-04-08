@@ -861,6 +861,15 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// Send out statsz updates periodically.
 	s.wrapChk(s.startStatszTimer)()
 
+	// If we have existing accounts make sure we enable account tracking.
+	s.mu.Lock()
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		s.enableAccountTracking(acc)
+		return true
+	})
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -1153,7 +1162,7 @@ func (s *Server) Start() {
 		return
 	}
 
-	// Setup system account which will start eventing stack.
+	// Setup system account which will start the eventing stack.
 	if sa := opts.SystemAccount; sa != _EMPTY_ {
 		if err := s.SetSystemAccount(sa); err != nil {
 			s.Fatalf("Can't set system account: %v", err)
