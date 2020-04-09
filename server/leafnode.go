@@ -1271,7 +1271,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 
 	acc := c.acc
 	// Check if we have a loop.
-	if string(sub.subject) == acc.getLDSubject() {
+	if strings.HasPrefix(string(sub.subject), leafNodeLoopDetectionSubjectPrefix) && string(sub.subject) == acc.getLDSubject() {
 		c.mu.Unlock()
 		srv.reportLeafNodeLoop(c)
 		return nil
