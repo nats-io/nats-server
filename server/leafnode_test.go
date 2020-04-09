@@ -785,69 +785,66 @@ func TestLeafNodeLoop(t *testing.T) {
 }
 
 func TestLeafNodeLoopFromDAG(t *testing.T) {
-	// we want A point to B and B to A.
+	// We want B & C to point to A, A itself does not point to any other server.
 	oa := DefaultOptions()
+	oa.ServerName = "A"
 	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oa.LeafNode.Port = -1
 	sa := RunServer(oa)
 	defer sa.Shutdown()
 
-	la := &captureErrorLogger{errCh: make(chan string, 10)}
-	sa.SetLogger(la, false, false)
 	ua, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", oa.LeafNode.Port))
 
+	// B will point to A
 	ob := DefaultOptions()
+	ob.ServerName = "B"
 	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	ob.LeafNode.Port = -1
 	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
 	sb := RunServer(ob)
 	defer sb.Shutdown()
 
-	lb := &captureErrorLogger{errCh: make(chan string, 10)}
-	sb.SetLogger(lb, false, false)
 	ub, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
 
 	checkLeafNodeConnected(t, sa)
 	checkLeafNodeConnected(t, sb)
 
+	// C will point to A and B
 	oc := DefaultOptions()
+	oc.ServerName = "C"
 	oc.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}, {URLs: []*url.URL{ub}}}
+	oc.LeafNode.loopDelay = 100 * time.Millisecond // Allow logger to be attached before connecting.
 	sc := RunServer(oc)
-	// logger with channel can only be specified after startup and is thus not used
 
-	// either error channel (for a or b) may get the error, but not both.
-	errCnt := 0
+	lc := &captureErrorLogger{errCh: make(chan string, 10)}
+	sc.SetLogger(lc, false, false)
 
-errorLoop:
-	for {
-		select {
-		case e := <-la.errCh:
-			if !strings.Contains(e, "Loop") {
-				t.Fatalf("Expected error about loop, got %v", e)
-			}
-			errCnt++
-		case e := <-lb.errCh:
-			if !strings.Contains(e, "Loop") {
-				t.Fatalf("Expected error about loop, got %v", e)
-			}
-			errCnt++
-		case <-time.After(2 * time.Second):
-			if errCnt != 1 {
-				t.Fatalf("Did not get any error regarding loop")
-			}
-			break errorLoop
+	// We should get an error.
+	select {
+	case e := <-lc.errCh:
+		if !strings.Contains(e, "Loop") {
+			t.Fatalf("Expected error about loop, got %v", e)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get any error regarding loop")
 	}
 
+	// C should not be connected to anything.
+	checkLeafNodeConnectedCount(t, sc, 0)
+	// A and B are connected to each other.
+	checkLeafNodeConnectedCount(t, sa, 1)
+	checkLeafNodeConnectedCount(t, sb, 1)
+
+	// Shutdown C and restart without the loop.
 	sc.Shutdown()
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ub}}}
 	sc = RunServer(oc)
 	defer sc.Shutdown()
 
-	checkLeafNodeConnected(t, sa)
-	checkLeafNodeConnectedCnt(t, sb, 2)
-	checkLeafNodeConnected(t, sc)
+	checkLeafNodeConnectedCount(t, sa, 1)
+	checkLeafNodeConnectedCount(t, sb, 2)
+	checkLeafNodeConnectedCount(t, sc, 1)
 }
 
 func TestLeafCloseTLSConnection(t *testing.T) {
