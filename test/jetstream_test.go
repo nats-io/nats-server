@@ -468,11 +468,38 @@ func TestJetStreamAddStreamCanonicalNames(t *testing.T) {
 	}
 
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.bar"}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.bar."}))
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.*"}))
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "foo.>"}))
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "*"}))
 	expectErr(acc.AddStream(&server.StreamConfig{Name: ">"}))
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "*>"}))
+}
+
+func TestJetStreamAddStreamBadSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	expectAPIErr := func(cfg server.StreamConfig) {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		resp, _ := nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, cfg.Name), req, time.Second)
+		if string(resp.Data) != "-ERR 'malformed subject'" {
+			t.Fatalf("Did not get proper err response: %q", resp.Data)
+		}
+	}
+
+	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{"foo.bar."}})
+	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".."}})
+	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".*"}})
+	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".>"}})
 }
 
 func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
