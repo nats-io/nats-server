@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -3227,4 +3228,83 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 
 	// Make sure this works.
 	checkLeafNodeConnected(t, srvA)
+}
+
+func TestLeafNodePermissions(t *testing.T) {
+	lo1 := testDefaultOptionsForLeafNodes()
+	lo1.LeafNode.Permissions = &server.LeafNodePermissions{
+		Import: &server.SubjectPermission{
+			Allow: []string{"foo.*"},
+			Deny:  []string{"foo.bar"},
+		},
+		Export: &server.SubjectPermission{
+			Allow: []string{"baz.*"},
+			Deny:  []string{"baz.bat"},
+		},
+	}
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	ln2 := createLeafConn(t, lo1.LeafNode.Host, lo1.LeafNode.Port)
+	defer ln2.Close()
+
+	ln2Send, ln2Expect := setupLeaf(t, ln2, 1)
+
+	checkLeafNodeConnected(t, ln1)
+
+	// Create client on ln1
+	nc1, err := nats.Connect(ln1.ClientURL())
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+
+	// Based on the Import permissions on LN1, a local subscription on LN1
+	// on subject "foo.baz" should be sent to LN2.
+	fooBazSub, _ := nc1.SubscribeSync("foo.baz")
+	ln2Expect(lsubRe)
+	// However, one on "foo.bar" should not.
+	fooBarSub, _ := nc1.SubscribeSync("foo.bar")
+	expectNothing(t, ln2)
+
+	// Make sure that local subs work ok, so publish from LN1 directly.
+	nc1.Publish("foo.baz", []byte("ok"))
+	if _, err := fooBazSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not get message: %v", err)
+	}
+	nc1.Publish("foo.bar", []byte("ok"))
+	if _, err := fooBarSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not get message: %v", err)
+	}
+
+	// Now check with publish messages coming from LN2.
+	// Sending on foo.baz should make it to LN1's local sub.
+	ln2Send("LMSG foo.baz 2\r\nok\r\n")
+	if _, err := fooBazSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not get message: %v", err)
+	}
+	// But messages sent on foo.bar should be dropped on LN1
+	ln2Send("LMSG foo.bar 2\r\nok\r\n")
+	if _, err := fooBarSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have delivered message on foo.bar")
+	}
+
+	// Now check export. Sending from LN2 a subscription on baz.bar should
+	// be registered in LN1.
+	ln2Send("LS+ baz.bar\r\n")
+	buf := ln2Expect(errRe)
+	if !bytes.Contains(buf, []byte("Permissions Violation")) {
+		t.Fatalf("Expected permission violation, got %q", buf)
+	}
+	// So sending from LN1 should make it to LN2.
+	nc1.Publish("baz.bar", []byte("ok"))
+	ln2Expect(lmsgRe)
+
+	// Now send a subscription to baz.bat and LN1 should drop it, meaning
+	// that a local publisher on LN1 on subject baz.bat should not make
+	// it to LN2.
+	ln2Send("LS+ baz.bat\r\nPING\r\n")
+	ln2Expect(pongRe)
+	nc1.Publish("baz.bat", []byte("ok"))
+	expectNothing(t, ln2)
 }

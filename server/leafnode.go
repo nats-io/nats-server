@@ -717,6 +717,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Lock()
 		}
 
+		c.setLeafNodePermissions(remote.Permissions)
 		c.sendLeafConnect(tlsRequired)
 		c.Debugf("Remote leafnode connect msg sent")
 
@@ -982,10 +983,17 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		return ErrWrongGateway
 	}
 
+	var perms *LeafNodePermissions
+	if s != nil {
+		perms = s.getOpts().LeafNode.Permissions
+	}
 	// Leaf Nodes do not do echo or verbose or pedantic.
+	c.mu.Lock()
 	c.opts.Verbose = false
 	c.opts.Echo = false
 	c.opts.Pedantic = false
+	c.setLeafNodePermissions(perms)
+	c.mu.Unlock()
 
 	// Create and initialize the smap since we know our bound account now.
 	lm := s.initLeafNodeSmap(c)
@@ -1007,6 +1015,13 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	s.sendLeafNodeConnect(c.acc)
 
 	return nil
+}
+
+// Set the permissions for this leafnode connection
+// Lock held on entry
+func (c *client) setLeafNodePermissions(perms *LeafNodePermissions) {
+	// Since LeafNodePermissions is same than RoutePermissions, use this function.
+	c.setRoutePermissions(perms)
 }
 
 // Snapshot the current subscriptions from the sublist into our smap which
@@ -1143,6 +1158,12 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 		c.mu.Unlock()
 		return
 	}
+	// If we have an import permission and we
+	if !c.canImport(string(sub.subject)) {
+		c.mu.Unlock()
+		c.Debugf("Cannot import %q, not forwarding local subscription request", sub.subject)
+		return
+	}
 
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
@@ -1274,7 +1295,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	// Check permissions if applicable.
 	if !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
-		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
+		c.Debugf("Cannot export %q, ignoring remote subscription request", sub.subject)
 		return nil
 	}
 

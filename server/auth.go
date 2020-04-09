@@ -113,6 +113,9 @@ type RoutePermissions struct {
 	Export *SubjectPermission `json:"export"`
 }
 
+// LeafNodePermissions has import/export permissions
+type LeafNodePermissions = RoutePermissions
+
 // clone will clone an individual subject permission.
 func (p *SubjectPermission) clone() *SubjectPermission {
 	if p == nil {

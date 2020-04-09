@@ -1095,3 +1095,89 @@ func TestLeafNodeRemoteIsHub(t *testing.T) {
 	natsPub(t, ncLN, "bar", []byte("msg"))
 	natsNexMsg(t, subBar, time.Second)
 }
+
+func TestLeafNodePermissions(t *testing.T) {
+	// Start with the leafnode that will accept the connection
+	lo1 := DefaultOptions()
+	lo1.LeafNode.Host = "127.0.0.1"
+	lo1.LeafNode.Port = -1
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
+	lo2 := DefaultOptions()
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{u},
+			Permissions: &LeafNodePermissions{
+				Import: &SubjectPermission{
+					Allow: []string{"foo.*"},
+					Deny:  []string{"foo.bar"},
+				},
+				Export: &SubjectPermission{
+					Allow: []string{"baz.*"},
+					Deny:  []string{"baz.bat"},
+				},
+			},
+		},
+	}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	checkLeafNodeConnected(t, ln1)
+
+	// Create clients on ln1 and ln2
+	nc1, err := nats.Connect(ln1.ClientURL())
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+	nc2, err := nats.Connect(ln2.ClientURL())
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc2.Close()
+
+	checkSubs := func(acc *Account, expected int) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := acc.TotalSubs(); n != expected {
+				return fmt.Errorf("Expected %d subs, got %v", expected, n)
+			}
+			return nil
+		})
+	}
+
+	// Based on the Import permissions on LN2, a local subscription on LN2
+	// on subject "foo.baz" should be sent to LN1.
+	fooBazSub, _ := nc2.SubscribeSync("foo.baz")
+	checkSubs(ln1.globalAccount(), 1)
+	nc1.Publish("foo.baz", []byte("ok"))
+	if _, err := fooBazSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not get message: %v", err)
+	}
+
+	// However, one on "foo.bar" should not.
+	fooBarSub, _ := nc2.SubscribeSync("foo.bar")
+	checkSubs(ln1.globalAccount(), 1)
+	nc1.Publish("foo.bar", []byte("ok"))
+	if _, err := fooBarSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have received message")
+	}
+
+	// Create on LN1 a sub on baz.>
+	base := ln2.globalAccount().TotalSubs()
+	bazSub, _ := nc1.SubscribeSync("baz.>")
+	checkSubs(ln2.globalAccount(), base+1)
+
+	// We check LN2's export permissions.
+	nc2.Publish("baz.bar", []byte("ok"))
+	if _, err := bazSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not get message: %v", err)
+	}
+
+	nc2.Publish("baz.bat", []byte("ok"))
+	if _, err := bazSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have received message")
+	}
+}

@@ -119,6 +119,9 @@ type LeafNodeOpts struct {
 	NoAdvertise       bool          `json:"-"`
 	ReconnectInterval time.Duration `json:"-"`
 
+	// Permissions applied to accepted LeafNode connections
+	Permissions *LeafNodePermissions `json:"-"`
+
 	// For solicited connections to other clusters/superclusters.
 	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`
 
@@ -130,13 +133,14 @@ type LeafNodeOpts struct {
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
 type RemoteLeafOpts struct {
-	LocalAccount string      `json:"local_account,omitempty"`
-	URLs         []*url.URL  `json:"urls,omitempty"`
-	Credentials  string      `json:"-"`
-	TLS          bool        `json:"-"`
-	TLSConfig    *tls.Config `json:"-"`
-	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
-	Hub          bool        `json:"hub,omitempty"`
+	LocalAccount string               `json:"local_account,omitempty"`
+	URLs         []*url.URL           `json:"urls,omitempty"`
+	Credentials  string               `json:"-"`
+	TLS          bool                 `json:"-"`
+	TLSConfig    *tls.Config          `json:"-"`
+	TLSTimeout   float64              `json:"tls_timeout,omitempty"`
+	Hub          bool                 `json:"hub,omitempty"`
+	Permissions  *LeafNodePermissions `json:"-"`
 }
 
 // Options block for nats-server.
@@ -1180,6 +1184,16 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		case "no_advertise":
 			opts.LeafNode.NoAdvertise = mv.(bool)
 			trackExplicitVal(opts, &opts.inConfig, "LeafNode.NoAdvertise", opts.LeafNode.NoAdvertise)
+		case "permissions":
+			perms, err := parseUserPermissions(mv, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			opts.LeafNode.Permissions = &LeafNodePermissions{
+				Import: perms.Publish,
+				Export: perms.Subscribe,
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -1379,6 +1393,16 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				}
 			case "hub":
 				remote.Hub = v.(bool)
+			case "permissions":
+				perms, err := parseUserPermissions(v, errors, warnings)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
+				remote.Permissions = &LeafNodePermissions{
+					Import: perms.Publish,
+					Export: perms.Subscribe,
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
