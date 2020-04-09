@@ -125,7 +125,7 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	}
 	fsCfg.StoreDir = storeDir
 	if err := mset.setupStore(fsCfg); err != nil {
-		mset.delete()
+		mset.Delete()
 		return nil, err
 	}
 	// Setup our internal send go routine.
@@ -133,7 +133,7 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 
 	// Setup subscriptions
 	if err := mset.subscribeToStream(); err != nil {
-		mset.delete()
+		mset.Delete()
 		return nil, err
 	}
 
@@ -380,6 +380,8 @@ func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(mset.sid)), false)
 	if err != nil {
 		return nil, err
+	} else if sub == nil {
+		return nil, fmt.Errorf("malformed subject")
 	}
 	c.mu.Lock()
 	sub.icb = cb
