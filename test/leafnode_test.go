@@ -23,7 +23,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -565,45 +564,6 @@ func TestLeafNodeNoEcho(t *testing.T) {
 	expectNothing(t, lc)
 }
 
-func TestLeafNodeLoop(t *testing.T) {
-	s, opts := runLeafServer()
-	defer s.Shutdown()
-
-	c := createClientConn(t, opts.Host, opts.Port)
-	defer c.Close()
-
-	send, expect := setupConn(t, c)
-	send("PING\r\n")
-	expect(pongRe)
-
-	lc1 := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
-	defer lc1.Close()
-
-	leaf1Send, leaf1Expect := setupLeaf(t, lc1, 1)
-	leaf1Send("PING\r\n")
-	leaf1Expect(pongRe)
-
-	leaf1Send("LS+ $lds.foo\r\n")
-	expectNothing(t, lc1)
-
-	// Same loop detection subscription from same client
-	leaf1Send("LS+ $lds.foo\r\n")
-	expectNothing(t, lc1)
-
-	lc2 := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
-	defer lc2.Close()
-
-	leaf2Send, leaf2Expect := setupLeaf(t, lc2, 2)
-	leaf2Send("PING\r\n")
-	leaf2Expect(pongRe)
-
-	// Same loop detection subscription from different client
-	leaf2Send("LS+ $lds.foo\r\n")
-	leaf2Expect(regexp.MustCompile(
-		"-ERR 'Loop detected for leafnode account=\".G\". " +
-			"Delaying attempt to reconnect for .*"))
-}
-
 // Used to setup clusters of clusters for tests.
 type cluster struct {
 	servers []*server.Server
@@ -847,12 +807,12 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	defer lc.Close()
 	_, leafExpect := setupConn(t, lc)
 	var totalBuf []byte
-	for count := 0; count != 4; {
+	for count := 0; count != 5; {
 		buf := leafExpect(lsubRe)
 		totalBuf = append(totalBuf, buf...)
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 4 {
-			t.Fatalf("Expected %v matches, got %v (buf=%s)", 3, count, totalBuf)
+		if count > 5 {
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 4, count, totalBuf)
 		}
 	}
 	if !strings.Contains(string(totalBuf), "foo") {
@@ -1397,9 +1357,9 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 
 	lsub, _ := ncl.SubscribeSync("foo.test")
 
-	// Wait for the sub to propagate.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 1 {
+	// Wait for the subs to propagate. LDS + foo.test
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if subs := s.NumSubscriptions(); subs < 2 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
@@ -1578,9 +1538,9 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// So everything should be setup here. So let's test streams first.
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
-	// Wait for the sub to propagate.
+	// Wait for the subs to propagate.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 1 {
+		if subs := s.NumSubscriptions(); subs < 2 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
@@ -1740,9 +1700,9 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	// So everything should be setup here. So let's test streams first.
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
-	// Wait for the sub to propagate to s2.
+	// Wait for the sub to propagate to s2. LDS + subject above.
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		if acc1.RoutedSubs() == 0 {
+		if acc1.RoutedSubs() != 2 {
 			return fmt.Errorf("Still no routed subscription")
 		}
 		return nil
@@ -2440,7 +2400,7 @@ func TestLeafNodeSendsRemoteSubsOnConnect(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	setupLeaf(t, lc, 2)
+	setupLeaf(t, lc, 3)
 }
 
 func TestLeafNodeServiceImportLikeNGS(t *testing.T) {

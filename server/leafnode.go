@@ -45,8 +45,7 @@ const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solici
 const leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
 
 // Prefix for loop detection subject
-const leafNodeLoopDetectionSubjectPrefixOld = "lds."
-const leafNodeLoopDetectionSubjectPrefix = "$" + leafNodeLoopDetectionSubjectPrefixOld
+const leafNodeLoopDetectionSubjectPrefix = "$LDS."
 
 type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
@@ -1088,9 +1087,8 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	}
 	// Detect loop by subscribing to a specific subject and checking
 	// if this is coming back to us.
-	if c.leaf.remote == nil {
-		c.leaf.smap[lds]++
-	}
+	c.leaf.smap[lds]++
+
 	lenMap := len(c.leaf.smap)
 	c.mu.Unlock()
 	return lenMap
@@ -1271,6 +1269,14 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		return nil
 	}
 
+	acc := c.acc
+	// Check if we have a loop.
+	if strings.HasPrefix(string(sub.subject), leafNodeLoopDetectionSubjectPrefix) && string(sub.subject) == acc.getLDSubject() {
+		c.mu.Unlock()
+		srv.reportLeafNodeLoop(c)
+		return nil
+	}
+
 	// Check permissions if applicable.
 	if !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
@@ -1295,44 +1301,10 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	key := string(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
-	acc := c.acc
 	if osub == nil {
-		subj := string(sub.subject)
-		accUnlock := false
-		// Check if we have a loop.
-		if len(subj) >= len(leafNodeLoopDetectionSubjectPrefixOld) {
-			subStripped := subj
-			if subStripped[0] == '$' {
-				subStripped = subStripped[1:]
-			}
-			if strings.HasPrefix(subStripped, leafNodeLoopDetectionSubjectPrefixOld) {
-				// The following check (involving acc.sl) and the later insert need to be tied together
-				// using the account lock, such that checking and modifying the sublist appear as one operation.
-				acc.mu.Lock()
-				accUnlock = true
-				// There is a loop if we receive our own subscription back.
-				loopFound := subj == acc.lds
-				if !loopFound {
-					// Or if a subscription from a different client already exists.
-					if res := acc.sl.Match(subj); res != nil && len(res.psubs)+len(res.qsubs) != 0 {
-						loopFound = true
-					}
-				}
-				if loopFound {
-					acc.mu.Unlock()
-					c.mu.Unlock()
-					srv.reportLeafNodeLoop(c)
-					return nil
-				}
-			}
-		}
 		c.subs[key] = sub
 		// Now place into the account sl.
-		err := acc.sl.Insert(sub)
-		if accUnlock {
-			acc.mu.Unlock()
-		}
-		if err != nil {
+		if err := acc.sl.Insert(sub); err != nil {
 			delete(c.subs, key)
 			c.mu.Unlock()
 			c.Errorf("Could not insert subscription: %v", err)
