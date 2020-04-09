@@ -3307,4 +3307,26 @@ func TestLeafNodePermissions(t *testing.T) {
 	ln2Expect(pongRe)
 	nc1.Publish("baz.bat", []byte("ok"))
 	expectNothing(t, ln2)
+
+	// Also create a queue sub on foo.bar on LN1 and we are going to test
+	// that when we restart LN2, LN1 is filtering out the denied imports
+	// when sending its subs list.
+	queueFooBarSub, _ := nc1.QueueSubscribeSync("foo.bar", "queue")
+	expectNothing(t, ln2)
+
+	ln2.Close()
+	ln2 = createLeafConn(t, lo1.LeafNode.Host, lo1.LeafNode.Port)
+	defer ln2.Close()
+
+	ln2Send, _ = setupLeaf(t, ln2, 2)
+
+	checkLeafNodeConnected(t, ln1)
+
+	ln2Send("LMSG foo.bar 2\r\nok\r\n")
+	if _, err := fooBarSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have delivered message on foo.bar")
+	}
+	if _, err := queueFooBarSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have delivered message on foo.bar")
+	}
 }

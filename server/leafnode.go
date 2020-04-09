@@ -1158,7 +1158,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 		c.mu.Unlock()
 		return
 	}
-	// If we have an import permission and we
+	// Do not forward a local subscription if this subject cannot be imported
 	if !c.canImport(string(sub.subject)) {
 		c.mu.Unlock()
 		c.Debugf("Cannot import %q, not forwarding local subscription request", sub.subject)
@@ -1207,6 +1207,14 @@ func keyFromSub(sub *subscription) string {
 	return string(key)
 }
 
+// Helper that returns the subject portion of the key if it contains a queue name
+func subjFromKey(key string) string {
+	if idx := strings.Index(key, " "); idx != -1 {
+		return key[:idx]
+	}
+	return key
+}
+
 // Send all subscriptions for this account that include local
 // and possibly all other remote subscriptions.
 func (c *client) sendAllLeafSubs() {
@@ -1214,7 +1222,14 @@ func (c *client) sendAllLeafSubs() {
 	var b bytes.Buffer
 
 	c.mu.Lock()
+	checkPerms := c.perms != nil || c.mperms != nil
 	for key, n := range c.leaf.smap {
+		if checkPerms {
+			subj := subjFromKey(key)
+			if !strings.HasPrefix(subj, leafNodeLoopDetectionSubjectPrefix) && !c.canImport(subjFromKey(key)) {
+				continue
+			}
+		}
 		c.writeLeafSub(&b, key, n)
 	}
 	buf := b.Bytes()
