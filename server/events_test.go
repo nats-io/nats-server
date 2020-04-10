@@ -366,7 +366,7 @@ func checkLeafNodeConnected(t *testing.T, s *Server) {
 // Helper function to check that a leaf node has connected to n server.
 func checkLeafNodeConnectedCount(t *testing.T, s *Server, lnCons int) {
 	t.Helper()
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
 		if nln := s.NumLeafNodes(); nln != lnCons {
 			return fmt.Errorf("Expected %d connected leafnode(s) for server %q, got %d",
 				lnCons, s.ID(), nln)

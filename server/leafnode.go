@@ -44,6 +44,10 @@ const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solici
 // When a loop is detected, delay the reconnect of solicited connection.
 const leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
 
+// When a server receives a message causing a permission violation, the
+// connection is closed and it won't attempt to reconnect for that long.
+const leafNodeReconnectAfterPermViolation = 30 * time.Second
+
 // Prefix for loop detection subject
 const leafNodeLoopDetectionSubjectPrefix = "$LDS."
 
@@ -65,7 +69,8 @@ type leafNodeCfg struct {
 	tlsName   string
 	username  string
 	password  string
-	loopDelay time.Duration // A loop condition was detected
+	perms     *Permissions
+	connDelay time.Duration // Delay before a connect, could be used while detecting loop condition, etc..
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -156,6 +161,16 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 		RemoteLeafOpts: remote,
 		urls:           make([]*url.URL, 0, len(remote.URLs)),
 	}
+	if len(remote.DenyExports) > 0 || len(remote.DenyImports) > 0 {
+		perms := &Permissions{}
+		if len(remote.DenyExports) > 0 {
+			perms.Subscribe = &SubjectPermission{Deny: remote.DenyExports}
+		}
+		if len(remote.DenyImports) > 0 {
+			perms.Publish = &SubjectPermission{Deny: remote.DenyImports}
+		}
+		cfg.perms = perms
+	}
 	// Start with the one that is configured. We will add to this
 	// array when receiving async leafnode INFOs.
 	cfg.urls = append(cfg.urls, cfg.URLs...)
@@ -192,20 +207,18 @@ func (cfg *leafNodeCfg) getCurrentURL() *url.URL {
 }
 
 // Returns how long the server should wait before attempting
-// to solicit a remote leafnode connection following the
-// detection of a loop.
-// Returns 0 if no loop was detected.
-func (cfg *leafNodeCfg) getLoopDelay() time.Duration {
+// to solicit a remote leafnode connection.
+func (cfg *leafNodeCfg) getConnectDelay() time.Duration {
 	cfg.RLock()
-	delay := cfg.loopDelay
+	delay := cfg.connDelay
 	cfg.RUnlock()
 	return delay
 }
 
-// Reset the loop delay.
-func (cfg *leafNodeCfg) resetLoopDelay() {
+// Reset the connect delay.
+func (cfg *leafNodeCfg) resetConnectDelay() {
 	cfg.Lock()
-	cfg.loopDelay = 0
+	cfg.connDelay = 0
 	cfg.Unlock()
 }
 
@@ -239,13 +252,13 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	resolver := s.leafNodeOpts.resolver
 	s.mu.Unlock()
 
-	if loopDelay := remote.getLoopDelay(); loopDelay > 0 {
+	if connDelay := remote.getConnectDelay(); connDelay > 0 {
 		select {
-		case <-time.After(loopDelay):
+		case <-time.After(connDelay):
 		case <-s.quitCh:
 			return
 		}
-		remote.resetLoopDelay()
+		remote.resetConnectDelay()
 	}
 
 	var conn net.Conn
@@ -586,6 +599,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			remote.LocalAccount = globalAccountName
 		}
 		c.leaf.remote = remote
+		c.setPermissions(remote.perms)
 		sendSysConnectEvent = c.leaf.remote.Hub
 		c.mu.Unlock()
 		// TODO: Decide what should be the optimal behavior here.
@@ -1271,16 +1285,25 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 
 	acc := c.acc
 	// Check if we have a loop.
-	if strings.HasPrefix(string(sub.subject), leafNodeLoopDetectionSubjectPrefix) && string(sub.subject) == acc.getLDSubject() {
+	ldsPrefix := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
+	if ldsPrefix && string(sub.subject) == acc.getLDSubject() {
 		c.mu.Unlock()
 		srv.reportLeafNodeLoop(c)
 		return nil
 	}
 
-	// Check permissions if applicable.
-	if !c.canExport(string(sub.subject)) {
+	// Check permissions if applicable. (but exclude the $LDS, $GR and _GR_)
+	checkPerms := true
+	if sub.subject[0] == '$' || sub.subject[0] == '_' {
+		if ldsPrefix ||
+			bytes.HasPrefix(sub.subject, []byte(oldGWReplyPrefix)) ||
+			bytes.HasPrefix(sub.subject, []byte(gwReplyPrefix)) {
+			checkPerms = false
+		}
+	}
+	if checkPerms && !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
-		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
+		c.leafSubPermViolation(sub.subject)
 		return nil
 	}
 
@@ -1344,19 +1367,21 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 func (s *Server) reportLeafNodeLoop(c *client) {
 	delay := leafNodeReconnectDelayAfterLoopDetected
 	opts := s.getOpts()
-	if opts.LeafNode.loopDelay != 0 {
-		delay = opts.LeafNode.loopDelay
+	if opts.LeafNode.connDelay != 0 {
+		delay = opts.LeafNode.connDelay
 	}
 	c.mu.Lock()
 	if c.leaf.remote != nil {
 		c.leaf.remote.Lock()
-		c.leaf.remote.loopDelay = delay
+		c.leaf.remote.connDelay = delay
 		c.leaf.remote.Unlock()
 	}
 	accName := c.acc.Name
 	c.mu.Unlock()
 	c.sendErrAndErr(fmt.Sprintf("Loop detected for leafnode account=%q. Delaying attempt to reconnect for %v",
 		accName, delay))
+	// Leafnode do not close the connection on processErr(), so close it here.
+	c.closeConnection(ProtocolViolation)
 }
 
 // processLeafUnsub will process an inbound unsub request for the remote leaf node.
@@ -1474,7 +1499,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
-		c.pubPermissionViolation(c.pa.subject)
+		c.leafPubPermViolation(c.pa.subject)
 		return
 	}
 
@@ -1543,4 +1568,44 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	if c.srv.gateway.enabled {
 		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, qnames)
 	}
+}
+
+// Handles a publish permission violation.
+// See leafPermViolation() for details.
+func (c *client) leafPubPermViolation(subj []byte) {
+	c.leafPermViolation(true, subj)
+}
+
+// Handles a subscription permission violation.
+// See leafPermViolation() for details.
+func (c *client) leafSubPermViolation(subj []byte) {
+	c.leafPermViolation(false, subj)
+}
+
+// Common function to process publish or subscribe leafnode permission violation.
+// Sends the permission violation error to the remote, logs it and closes the connection.
+// If this is from a server soliciting, the reconnection will be delayed.
+func (c *client) leafPermViolation(pub bool, subj []byte) {
+	c.mu.Lock()
+	if c.leaf.remote != nil {
+		delay := leafNodeReconnectAfterPermViolation
+		if s := c.srv; s != nil {
+			if srvdelay := s.getOpts().LeafNode.connDelay; srvdelay != 0 {
+				delay = srvdelay
+			}
+		}
+		c.leaf.remote.connDelay = delay
+	}
+	c.mu.Unlock()
+	var action string
+	if pub {
+		c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subj))
+		action = "Publish"
+	} else {
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q", subj))
+		action = "Subscription"
+	}
+	c.Errorf("%s Violation on %q - Check other side configuration", action, subj)
+	// TODO: add a new close reason that is more appropriate?
+	c.closeConnection(ProtocolViolation)
 }

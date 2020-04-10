@@ -751,7 +751,7 @@ func TestLeafNodeLoop(t *testing.T) {
 	oa.LeafNode.Port = 1234
 	ub, _ := url.Parse("nats://127.0.0.1:5678")
 	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ub}}}
-	oa.LeafNode.loopDelay = 50 * time.Millisecond
+	oa.LeafNode.connDelay = 50 * time.Millisecond
 	sa := RunServer(oa)
 	defer sa.Shutdown()
 
@@ -763,7 +763,7 @@ func TestLeafNodeLoop(t *testing.T) {
 	ob.LeafNode.Port = 5678
 	ua, _ := url.Parse("nats://127.0.0.1:1234")
 	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
-	ob.LeafNode.loopDelay = 50 * time.Millisecond
+	ob.LeafNode.connDelay = 50 * time.Millisecond
 	sb := RunServer(ob)
 	defer sb.Shutdown()
 
@@ -814,7 +814,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	oc.ServerName = "C"
 	oc.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}, {URLs: []*url.URL{ub}}}
-	oc.LeafNode.loopDelay = 100 * time.Millisecond // Allow logger to be attached before connecting.
+	oc.LeafNode.connDelay = 100 * time.Millisecond // Allow logger to be attached before connecting.
 	sc := RunServer(oc)
 
 	lc := &captureErrorLogger{errCh: make(chan string, 10)}
@@ -1091,4 +1091,202 @@ func TestLeafNodeRemoteIsHub(t *testing.T) {
 	// Publish on foo and make sure it is received.
 	natsPub(t, ncLN, "bar", []byte("msg"))
 	natsNexMsg(t, subBar, time.Second)
+}
+
+func TestLeafNodePermissions(t *testing.T) {
+	lo1 := DefaultOptions()
+	lo1.LeafNode.Host = "127.0.0.1"
+	lo1.LeafNode.Port = -1
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	errLog := &captureErrorLogger{errCh: make(chan string, 1)}
+	ln1.SetLogger(errLog, false, false)
+
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
+	lo2 := DefaultOptions()
+	lo2.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	lo2.LeafNode.connDelay = 100 * time.Millisecond
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs:        []*url.URL{u},
+			DenyExports: []string{"export.*", "export"},
+			DenyImports: []string{"import.*", "import"},
+		},
+	}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	checkLeafNodeConnected(t, ln1)
+
+	// Create clients on ln1 and ln2
+	nc1, err := nats.Connect(ln1.ClientURL())
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+	nc2, err := nats.Connect(ln2.ClientURL())
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc2.Close()
+
+	checkSubs := func(acc *Account, expected int) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := acc.TotalSubs(); n != expected {
+				return fmt.Errorf("Expected %d subs, got %v", expected, n)
+			}
+			return nil
+		})
+	}
+
+	// Create a sub on ">" on LN1
+	subAll := natsSubSync(t, nc1, ">")
+	// this should be registered in LN2 (there is 1 sub for LN1 $LDS subject)
+	checkSubs(ln2.globalAccount(), 2)
+
+	// Check deny export clause from messages published from LN2
+	for _, test := range []struct {
+		name     string
+		subject  string
+		received bool
+	}{
+		{"do not send on export.bat", "export.bat", false},
+		{"do not send on export", "export", false},
+		{"send on foo", "foo", true},
+		{"send on export.this.one", "export.this.one", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			nc2.Publish(test.subject, []byte("msg"))
+			if test.received {
+				natsNexMsg(t, subAll, time.Second)
+			} else {
+				if _, err := subAll.NextMsg(50 * time.Millisecond); err == nil {
+					t.Fatalf("Should not have received message on %q", test.subject)
+				}
+			}
+		})
+	}
+
+	subAll.Unsubscribe()
+	// Goes down to 1 (the $LDS one)
+	checkSubs(ln2.globalAccount(), 1)
+
+	// Check that deny export clause prevents subs from LN1 on matching
+	// subjects in the deny list to be registered on LN2. Furthermore,
+	// LN1 will receive a permission violation and the connection will
+	// be closed.
+	for _, test := range []struct {
+		name    string
+		subject string
+		ok      bool
+	}{
+		{"reject remote sub on export.*", "export.*", false},
+		{"reject remote sub on export", "export", false},
+		{"accepts remote sub on foo", "foo", true},
+		{"accepts remote sub on export.this.one.ok", "export.this.one.ok", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sub := natsSubSync(t, nc1, test.subject)
+			if !test.ok {
+				select {
+				case e := <-errLog.errCh:
+					if !strings.Contains(e, "Permissions Violation for Subscription to") {
+						t.Fatalf("Unexpected error: %q", e)
+					}
+				case <-time.After(time.Second):
+					t.Fatalf("Should have got an error")
+				}
+				sub.Unsubscribe()
+				// Should have disconnected
+				checkLeafNodeConnectedCount(t, ln2, 0)
+				checkSubs(ln2.globalAccount(), 0)
+				// But will reconnect after the connect delay
+				checkLeafNodeConnectedCount(t, ln2, 1)
+			} else {
+				checkSubs(ln2.globalAccount(), 2)
+				nc2.Publish(test.subject, []byte("msg"))
+				natsNexMsg(t, sub, time.Second)
+				sub.Unsubscribe()
+				checkSubs(ln2.globalAccount(), 1)
+			}
+		})
+	}
+
+	// Now check deny import clause.
+	// As of now, we don't suppress forwarding of subscriptions on LN2 that
+	// match the deny import clause to be forwarded to LN1. However, messages
+	// should still not be able to come back to LN2.
+	for _, test := range []struct {
+		name       string
+		subSubject string
+		pubSubject string
+		ok         bool
+	}{
+		{"reject import on import.*", "import.*", "import.bad", false},
+		{"reject import on import", "import", "import", false},
+		{"accepts import on foo", "foo", "foo", true},
+		{"accepts import on import.this.one.ok", "import.*.>", "import.this.one.ok", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sub := natsSubSync(t, nc2, test.subSubject)
+			checkSubs(ln1.globalAccount(), 2)
+			nc1.Publish(test.pubSubject, []byte("msg"))
+			if !test.ok {
+				select {
+				case e := <-errLog.errCh:
+					if !strings.Contains(e, "Permissions Violation for Publish to") {
+						t.Fatalf("Unexpected error: %q", e)
+					}
+				case <-time.After(time.Second):
+					t.Fatalf("Should have got an error")
+				}
+				sub.Unsubscribe()
+				// Should have disconnected
+				checkLeafNodeConnectedCount(t, ln2, 0)
+				checkSubs(ln1.globalAccount(), 0)
+				// But will reconnect after the connect delay
+				checkLeafNodeConnectedCount(t, ln2, 1)
+			} else {
+				natsNexMsg(t, sub, time.Second)
+				sub.Unsubscribe()
+				checkSubs(ln1.globalAccount(), 1)
+			}
+		})
+	}
+}
+
+func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
+	lo1 := DefaultOptions()
+	lo1.Accounts = []*Account{NewAccount("SYS")}
+	lo1.SystemAccount = "SYS"
+	lo1.Gateway.Name = "A"
+	lo1.Gateway.Port = -1
+	lo1.LeafNode.Host = "127.0.0.1"
+	lo1.LeafNode.Port = -1
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
+	lo2 := DefaultOptions()
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs:        []*url.URL{u},
+			DenyExports: []string{">"},
+		},
+	}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	checkLeafNodeConnected(t, ln1)
+
+	// The deny is totally restrictive, but make sure that we still accept the $LDS, $GR and _GR_ go from LN1.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		// We should have registered the 3 subs from the accepting leafnode.
+		if n := ln2.globalAccount().TotalSubs(); n != 3 {
+			return fmt.Errorf("Expected %d subs, got %v", 3, n)
+		}
+		return nil
+	})
 }

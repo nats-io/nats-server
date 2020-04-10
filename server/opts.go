@@ -125,7 +125,7 @@ type LeafNodeOpts struct {
 	// Not exported, for tests.
 	resolver    netResolver
 	dialTimeout time.Duration
-	loopDelay   time.Duration
+	connDelay   time.Duration
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
@@ -137,6 +137,8 @@ type RemoteLeafOpts struct {
 	TLSConfig    *tls.Config `json:"-"`
 	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
 	Hub          bool        `json:"hub,omitempty"`
+	DenyImports  []string    `json:"-"`
+	DenyExports  []string    `json:"-"`
 }
 
 // Options block for nats-server.
@@ -1379,6 +1381,20 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				}
 			case "hub":
 				remote.Hub = v.(bool)
+			case "deny_imports", "deny_import":
+				subjects, err := parseSubjects(tk, errors, warnings)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
+				remote.DenyImports = subjects
+			case "deny_exports", "deny_export":
+				subjects, err := parseSubjects(tk, errors, warnings)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
+				remote.DenyExports = subjects
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
