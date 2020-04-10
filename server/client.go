@@ -1278,6 +1278,7 @@ func (c *client) processInfo(arg []byte) error {
 }
 
 func (c *client) processErr(errStr string) {
+	close := true
 	switch c.kind {
 	case CLIENT:
 		c.Errorf("Client Error %s", errStr)
@@ -1287,8 +1288,11 @@ func (c *client) processErr(errStr string) {
 		c.Errorf("Gateway Error %s", errStr)
 	case LEAF:
 		c.Errorf("Leafnode Error %s", errStr)
+		close = false
 	}
-	c.closeConnection(ParseError)
+	if close {
+		c.closeConnection(ParseError)
+	}
 }
 
 // Password pattern matcher.
