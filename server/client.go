@@ -2125,6 +2125,8 @@ func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool)
 
 	// Update our route map here.
 	c.srv.updateRouteSubscriptionMap(im.acc, &nsub, 1)
+	c.srv.updateLeafNodes(im.acc, &nsub, 1)
+
 	return &nsub, nil
 }
 
