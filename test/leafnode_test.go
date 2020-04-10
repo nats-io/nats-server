@@ -3259,10 +3259,7 @@ func TestStreamExportWithMultipleAccounts(t *testing.T) {
 		        ]
 			    imports: [
 		            {
-		                stream: {
-		                    account: EXTERNAL
-		                    subject: "foo"
-		                }
+		                stream: { account: EXTERNAL, subject: "foo"}, prefix: "bar"
 		            }
 		        ]
 		    },
