@@ -2430,6 +2430,8 @@ func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
 	sl, slOpts := runSolicitLeafServer(opts)
 	defer sl.Shutdown()
 
+	checkLeafNodeConnected(t, sl)
+
 	// Create a normal direct connect client on B.
 	url = fmt.Sprintf("nats://dlc:pass@%s:%d", opts.Host, opts.Port)
 	nc2, err := nats.Connect(url)
@@ -2451,6 +2453,44 @@ func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
 	defer ncl.Close()
 
 	if _, err := ncl.Request("ngs.usage", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
+		t.Fatalf("Did not receive response: %v", err)
+	}
+}
+
+func TestLeafNodeServiceImportResponderOnLeaf(t *testing.T) {
+	gwSolicit := 10 * time.Millisecond
+	ca := createClusterEx(t, true, gwSolicit, true, "A", 3)
+	defer shutdownCluster(ca)
+
+	// Now create a leafnode server on A that will bind to the NGS account.
+	opts := ca.opts[1]
+	sl, slOpts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://ngs:pass@%s:%d", opts.LeafNode.Host, opts.LeafNode.Port))
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, sl)
+
+	// Now create a client on the leafnode.
+	ncl, err := nats.Connect(fmt.Sprintf("nats://%s:%d", slOpts.Host, slOpts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl.Close()
+
+	// Create a queue subscriber to send results
+	ncl.QueueSubscribe("ngs.usage.*", "ngs", func(m *nats.Msg) {
+		m.Respond([]byte("22"))
+	})
+	ncl.Flush()
+
+	// Create a normal direct connect client on A. Needs to be same server as leafnode.
+	opts = ca.opts[1]
+	nc, err := nats.Connect(fmt.Sprintf("nats://dlc:pass@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	if _, err := nc.Request("ngs.usage", []byte("fingers crossed"), 500*time.Millisecond); err != nil {
 		t.Fatalf("Did not receive response: %v", err)
 	}
 }
