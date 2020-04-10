@@ -1468,8 +1468,8 @@ func (c *client) processLeafMsgArgs(arg []byte) error {
 // processInboundLeafMsg is called to process an inbound msg from a leaf node.
 func (c *client) processInboundLeafMsg(msg []byte) {
 	// Update statistics
-	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
+	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	// Check pub permissions

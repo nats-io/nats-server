@@ -1045,6 +1045,8 @@ func (a *Account) createRespWildcard() []byte {
 			a.siReplyClient = c
 			a.mu.Unlock()
 		}
+		// Now check on leafnode updates.
+		s.updateLeafNodes(a, sub, 1)
 	}
 
 	return pre
