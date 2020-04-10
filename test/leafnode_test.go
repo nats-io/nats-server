@@ -3228,3 +3228,79 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 	// Make sure this works.
 	checkLeafNodeConnected(t, srvA)
 }
+
+// This will test for a bug in stream export/import with leafnodes.
+// https://github.com/nats-io/nats-server/issues/1332
+func TestStreamExportWithMultipleAccounts(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	bConfigTemplate := `
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			remotes = [
+			{
+				url:"nats://127.0.0.1:%d"
+				account:"EXTERNAL"
+			}
+			]
+		}
+		accounts: {
+		    INTERNAL: {
+		        users: [
+		            {user: good, password: pwd}
+		        ]
+			    imports: [
+		            {
+		                stream: { account: EXTERNAL, subject: "foo"}, prefix: "bar"
+		            }
+		        ]
+		    },
+		    EXTERNAL: {
+		        users: [
+		            {user: bad, password: pwd}
+		        ]
+		        exports: [{stream: "foo"}]
+		    },
+		}
+	`
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate, optsA.LeafNode.Port)))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsB.Host, optsB.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	wcsub, err := nc.SubscribeSync(">")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer wcsub.Unsubscribe()
+	nc.Flush()
+
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	nc2.Publish("foo", nil)
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, err := wcsub.Pending(); err != nil || nmsgs != 1 {
+			return fmt.Errorf("Did not receive the message: %v", err)
+		}
+		return nil
+	})
+}
