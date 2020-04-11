@@ -3309,6 +3309,7 @@ func TestStreamExportWithMultipleAccounts(t *testing.T) {
 // https://github.com/nats-io/nats-server/issues/1336
 func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	confA := createConfFile(t, []byte(`
+		server_name: A
 		listen: 127.0.0.1:-1
 		leafnodes {
 			listen: "127.0.0.1:-1"
@@ -3318,6 +3319,7 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	defer srvA.Shutdown()
 
 	bConfigTemplate := `
+		server_name: B
 		listen: 127.0.0.1:-1
 		leafnodes {
 			listen: "127.0.0.1:-1"
@@ -3363,12 +3365,10 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	defer nc2.Close()
 
 	nc2.Subscribe("foo", func(msg *nats.Msg) {
-		fmt.Printf("received on [%s] respond on [%s]", msg.Subject, msg.Reply)
 		if err := msg.Respond([]byte("world")); err != nil {
 			t.Fatalf("Error on respond: %v", err)
 		}
 	})
-
 	nc2.Flush()
 
 	nc, err := nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsB.Host, optsB.Port))
@@ -3377,11 +3377,11 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	}
 	defer nc.Close()
 
-	resp, err := nc.Request("foo", []byte("hello"), 5*time.Second)
+	resp, err := nc.Request("foo", []byte("hello"), 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if resp == nil || strings.Compare("world", string(resp.Data)) != 0 {
-		t.Fatal("Did not receive the right message")
+		t.Fatal("Did not receive the correct message")
 	}
 }
