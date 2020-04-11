@@ -1538,9 +1538,9 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// So everything should be setup here. So let's test streams first.
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
-	// Wait for the subs to propagate.
+	// Wait for all subs to propagate.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 2 {
+		if subs := s.NumSubscriptions(); subs < 3 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
