@@ -3304,3 +3304,84 @@ func TestStreamExportWithMultipleAccounts(t *testing.T) {
 		return nil
 	})
 }
+
+// This will test for a bug in service export/import with leafnodes.
+// https://github.com/nats-io/nats-server/issues/1336
+func TestServiceExportWithMultipleAccounts(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		server_name: A
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	bConfigTemplate := `
+		server_name: B
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			remotes = [
+			{
+				url:"nats://127.0.0.1:%d"
+				account:"EXTERNAL"
+			}
+			]
+		}
+		accounts: {
+			INTERNAL: {
+				users: [
+					{user: good, password: pwd}
+				]
+				imports: [
+					{
+						service: {
+							account: EXTERNAL
+							subject: "foo"
+						}
+					}
+				]
+			},
+			EXTERNAL: {
+				users: [
+					{user: evil, password: pwd}
+				]
+				exports: [{service: "foo"}]
+			},
+		}
+	`
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate, optsA.LeafNode.Port)))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// connect to confA, and offer a service
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	nc2.Subscribe("foo", func(msg *nats.Msg) {
+		if err := msg.Respond([]byte("world")); err != nil {
+			t.Fatalf("Error on respond: %v", err)
+		}
+	})
+	nc2.Flush()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsB.Host, optsB.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	resp, err := nc.Request("foo", []byte("hello"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp == nil || strings.Compare("world", string(resp.Data)) != 0 {
+		t.Fatal("Did not receive the correct message")
+	}
+}
