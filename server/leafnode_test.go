@@ -1290,3 +1290,70 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 		return nil
 	})
 }
+
+// Make sure that if the node that detects the loop (and sends the error and
+// close the connection) is the accept side, the remote node (the one that solicits)
+// properly use the reconnect delay.
+func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
+	bo := DefaultOptions()
+	bo.LeafNode.Host = "127.0.0.1"
+	bo.LeafNode.Port = -1
+	b := RunServer(bo)
+	defer b.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	b.SetLogger(l, false, false)
+
+	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", bo.LeafNode.Port))
+
+	ao := testDefaultOptionsForGateway("A")
+	ao.Accounts = []*Account{NewAccount("SYS")}
+	ao.SystemAccount = "SYS"
+	ao.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	ao.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{u},
+			Hub:  true,
+		},
+	}
+	a := RunServer(ao)
+	defer a.Shutdown()
+
+	co := testGatewayOptionsFromToWithServers(t, "C", "A", a)
+	co.Accounts = []*Account{NewAccount("SYS")}
+	co.SystemAccount = "SYS"
+	co.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	co.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{u},
+			Hub:  true,
+		},
+	}
+	c := RunServer(co)
+	defer c.Shutdown()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case e := <-l.errCh:
+			if !strings.Contains(e, "Loop detected") {
+				t.Fatalf("Unexpected error: %q", e)
+			}
+		case <-time.After(200 * time.Millisecond):
+			// We are likely to detect from each A and C servers,
+			// but consider a failure if we did not receive any.
+			if i == 0 {
+				t.Fatalf("Should have detected loop")
+			}
+		}
+	}
+
+	// The reconnect attempt is set to 5ms, but the default loop delay
+	// is 30 seconds, so we should not get any new error for that long.
+	// Check if we are getting more errors..
+	select {
+	case e := <-l.errCh:
+		t.Fatalf("Should not have gotten another error, got %q", e)
+	case <-time.After(50 * time.Millisecond):
+		// OK!
+	}
+}

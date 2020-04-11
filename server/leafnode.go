@@ -215,10 +215,10 @@ func (cfg *leafNodeCfg) getConnectDelay() time.Duration {
 	return delay
 }
 
-// Reset the connect delay.
-func (cfg *leafNodeCfg) resetConnectDelay() {
+// Sets the connect delay.
+func (cfg *leafNodeCfg) setConnectDelay(delay time.Duration) {
 	cfg.Lock()
-	cfg.connDelay = 0
+	cfg.connDelay = delay
 	cfg.Unlock()
 }
 
@@ -258,7 +258,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		case <-s.quitCh:
 			return
 		}
-		remote.resetConnectDelay()
+		remote.setConnectDelay(0)
 	}
 
 	var conn net.Conn
@@ -1288,7 +1288,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	ldsPrefix := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
 	if ldsPrefix && string(sub.subject) == acc.getLDSubject() {
 		c.mu.Unlock()
-		srv.reportLeafNodeLoop(c)
+		c.handleLeafNodeLoop(true)
 		return nil
 	}
 
@@ -1364,23 +1364,19 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	return nil
 }
 
-func (s *Server) reportLeafNodeLoop(c *client) {
-	delay := leafNodeReconnectDelayAfterLoopDetected
-	opts := s.getOpts()
-	if opts.LeafNode.connDelay != 0 {
-		delay = opts.LeafNode.connDelay
+// If the leafnode is a solicited, set the connect delay based on default
+// or private option (for tests). Sends the error to the other side, log and
+// close the connection.
+func (c *client) handleLeafNodeLoop(sendErr bool) {
+	accName, delay := c.setLeafConnectDelayIfSoliciting(leafNodeReconnectDelayAfterLoopDetected)
+	errTxt := fmt.Sprintf("Loop detected for leafnode account=%q. Delaying attempt to reconnect for %v", accName, delay)
+	if sendErr {
+		c.sendErr(errTxt)
 	}
-	c.mu.Lock()
-	if c.leaf.remote != nil {
-		c.leaf.remote.Lock()
-		c.leaf.remote.connDelay = delay
-		c.leaf.remote.Unlock()
-	}
-	accName := c.acc.Name
-	c.mu.Unlock()
-	c.sendErrAndErr(fmt.Sprintf("Loop detected for leafnode account=%q. Delaying attempt to reconnect for %v",
-		accName, delay))
-	// Leafnode do not close the connection on processErr(), so close it here.
+	c.Errorf(errTxt)
+	// If we are here with "sendErr" false, it means that this is the server
+	// that received the error. The other side will have closed the connection,
+	// but does not hurt to close here too.
 	c.closeConnection(ProtocolViolation)
 }
 
@@ -1586,17 +1582,7 @@ func (c *client) leafSubPermViolation(subj []byte) {
 // Sends the permission violation error to the remote, logs it and closes the connection.
 // If this is from a server soliciting, the reconnection will be delayed.
 func (c *client) leafPermViolation(pub bool, subj []byte) {
-	c.mu.Lock()
-	if c.leaf.remote != nil {
-		delay := leafNodeReconnectAfterPermViolation
-		if s := c.srv; s != nil {
-			if srvdelay := s.getOpts().LeafNode.connDelay; srvdelay != 0 {
-				delay = srvdelay
-			}
-		}
-		c.leaf.remote.connDelay = delay
-	}
-	c.mu.Unlock()
+	c.setLeafConnectDelayIfSoliciting(leafNodeReconnectAfterPermViolation)
 	var action string
 	if pub {
 		c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subj))
@@ -1608,4 +1594,32 @@ func (c *client) leafPermViolation(pub bool, subj []byte) {
 	c.Errorf("%s Violation on %q - Check other side configuration", action, subj)
 	// TODO: add a new close reason that is more appropriate?
 	c.closeConnection(ProtocolViolation)
+}
+
+// Invoked from generic processErr() for LEAF connections.
+func (c *client) leafProcessErr(errStr string) {
+	// We will look for Loop detected error coming from the other side.
+	// If we solicit, set the connect delay.
+	if !strings.Contains(errStr, "Loop detected") {
+		return
+	}
+	c.handleLeafNodeLoop(false)
+}
+
+// If this leaf connection solicits, sets the connect delay to the given value,
+// or the one from the server option's LeafNode.connDelay if one is set (for tests).
+// Returns the connection's account name and delay.
+func (c *client) setLeafConnectDelayIfSoliciting(delay time.Duration) (string, time.Duration) {
+	c.mu.Lock()
+	if c.isSolicitedLeafNode() {
+		if s := c.srv; s != nil {
+			if srvdelay := s.getOpts().LeafNode.connDelay; srvdelay != 0 {
+				delay = srvdelay
+			}
+		}
+		c.leaf.remote.setConnectDelay(delay)
+	}
+	accName := c.acc.Name
+	c.mu.Unlock()
+	return accName, delay
 }

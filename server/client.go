@@ -1288,6 +1288,7 @@ func (c *client) processErr(errStr string) {
 		c.Errorf("Gateway Error %s", errStr)
 	case LEAF:
 		c.Errorf("Leafnode Error %s", errStr)
+		c.leafProcessErr(errStr)
 		close = false
 	}
 	if close {
