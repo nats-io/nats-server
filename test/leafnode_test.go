@@ -3240,12 +3240,13 @@ func TestStreamExportWithMultipleAccounts(t *testing.T) {
 
 	nc2.Publish("foo", nil)
 
-	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-		if nmsgs, _, err := wcsub.Pending(); err != nil || nmsgs != 1 {
-			return fmt.Errorf("Did not receive the message: %v", err)
-		}
-		return nil
-	})
+	msg, err := wcsub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Did not receive the message: %v", err)
+	}
+	if msg.Subject != "bar.foo" {
+		t.Fatalf("Received on wrong subject: %q", msg.Subject)
+	}
 }
 
 // This will test for a bug in service export/import with leafnodes.
