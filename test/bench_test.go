@@ -1630,7 +1630,7 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	nc.Flush()
 
 	b.ResetTimer()
-	o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: deliverTo, Durable: oname, AckPolicy: server.AckNone, DeliverAll: true})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: deliverTo, Durable: oname, AckPolicy: server.AckNone})
 	if err != nil {
 		b.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -1674,7 +1674,7 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 
 	// Create basic work queue mode consumer.
 	oname := "WQ"
-	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, DeliverAll: true})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname})
 	if err != nil {
 		b.Fatalf("Expected no error with registered interest, got %v", err)
 	}

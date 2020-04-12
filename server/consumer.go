@@ -37,12 +37,11 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	Delivery        string        `json:"delivery_subject"`
 	Durable         string        `json:"durable_name,omitempty"`
-	StreamSeq       uint64        `json:"stream_seq,omitempty"`
-	StartTime       time.Time     `json:"start_time,omitempty"`
-	DeliverAll      bool          `json:"deliver_all,omitempty"`
-	DeliverLast     bool          `json:"deliver_last,omitempty"`
+	DeliverSubject  string        `json:"deliver_subject,omitempty"`
+	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
+	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
+	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
 	AckPolicy       AckPolicy     `json:"ack_policy"`
 	AckWait         time.Duration `json:"ack_wait,omitempty"`
 	MaxDeliver      int           `json:"max_deliver,omitempty"`
@@ -80,6 +79,39 @@ type ConsumerDeliveryExceededAdvisory struct {
 	Consumer   string `json:"consumer"`
 	StreamSeq  uint64 `json:"stream_seq"`
 	Deliveries uint64 `json:"deliveries"`
+}
+
+// DeliverPolicy determines how the consumer should select the first message to deliver.
+type DeliverPolicy int
+
+const (
+	// DeliverAll will be the default so can be omitted from the request.
+	DeliverAll DeliverPolicy = iota
+	// DeliverLast will start the consumer with the last sequence received.
+	DeliverLast
+	// DeliverNew will only deliver new messages that are sent after the consumer is created.
+	DeliverNew
+	// DeliverByStartSequence will look for a defined starting sequence to start.
+	DeliverByStartSequence
+	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime
+	DeliverByStartTime
+)
+
+func (dp DeliverPolicy) String() string {
+	switch dp {
+	case DeliverAll:
+		return "all"
+	case DeliverLast:
+		return "last"
+	case DeliverNew:
+		return "new"
+	case DeliverByStartSequence:
+		return "by_start_sequence"
+	case DeliverByStartTime:
+		return "by_start_time"
+	default:
+		return "undefined"
+	}
 }
 
 // AckPolicy determines how the consumer should acknowledge delivered messages.
@@ -189,12 +221,12 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	var err error
 
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
-	if config.Delivery != _EMPTY_ {
-		if !subjectIsLiteral(config.Delivery) {
-			return nil, fmt.Errorf("consumer delivery subject has wildcards")
+	if config.DeliverSubject != _EMPTY_ {
+		if !subjectIsLiteral(config.DeliverSubject) {
+			return nil, fmt.Errorf("consumer deliver subject has wildcards")
 		}
-		if mset.deliveryFormsCycle(config.Delivery) {
-			return nil, fmt.Errorf("consumer delivery subject forms a cycle")
+		if mset.deliveryFormsCycle(config.DeliverSubject) {
+			return nil, fmt.Errorf("consumer deliver subject forms a cycle")
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
@@ -229,13 +261,42 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 
 	// Check on start position conflicts.
-	noTime := time.Time{}
-	if config.StreamSeq > 0 && (config.StartTime != noTime || config.DeliverAll || config.DeliverLast) {
-		return nil, fmt.Errorf("consumer starting position conflict")
-	} else if config.StartTime != noTime && (config.DeliverAll || config.DeliverLast) {
-		return nil, fmt.Errorf("consumer starting position conflict")
-	} else if config.DeliverAll && config.DeliverLast {
-		return nil, fmt.Errorf("consumer starting position conflict")
+	switch config.DeliverPolicy {
+	case DeliverAll:
+		if config.OptStartSeq > 0 {
+			return nil, fmt.Errorf("consumer delivery policy is deliver all, but optional start sequence is also set")
+		}
+		if config.OptStartTime != nil {
+			return nil, fmt.Errorf("consumer delivery policy is deliver all, but optional start time is also set")
+		}
+	case DeliverLast:
+		if config.OptStartSeq > 0 {
+			return nil, fmt.Errorf("consumer delivery policy is deliver last, but optional start sequence is also set")
+		}
+		if config.OptStartTime != nil {
+			return nil, fmt.Errorf("consumer delivery policy is deliver last, but optional start time is also set")
+		}
+	case DeliverNew:
+		if config.OptStartSeq > 0 {
+			return nil, fmt.Errorf("consumer delivery policy is deliver new, but optional start sequence is also set")
+		}
+		if config.OptStartTime != nil {
+			return nil, fmt.Errorf("consumer delivery policy is deliver new, but optional start time is also set")
+		}
+	case DeliverByStartSequence:
+		if config.OptStartSeq == 0 {
+			return nil, fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
+		}
+		if config.OptStartTime != nil {
+			return nil, fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start time is also set")
+		}
+	case DeliverByStartTime:
+		if config.OptStartTime == nil {
+			return nil, fmt.Errorf("consumer delivery policy is deliver by start time, but optional start time is not set")
+		}
+		if config.OptStartSeq != 0 {
+			return nil, fmt.Errorf("consumer delivery policy is deliver by start time, but optional start sequence is also set")
+		}
 	}
 
 	sampleFreq := 0
@@ -275,7 +336,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 				return nil, fmt.Errorf("filtered consumer not unique on workqueue stream")
 			}
 		}
-		if !config.DeliverAll {
+		if config.DeliverPolicy != DeliverAll {
 			mset.mu.Unlock()
 			return nil, fmt.Errorf("consumer must be deliver all on workqueue stream")
 		}
@@ -284,7 +345,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// Set name, which will be durable name if set, otherwise we create one at random.
 	o := &Consumer{mset: mset,
 		config: *config,
-		dsubj:  config.Delivery,
+		dsubj:  config.DeliverSubject,
 		active: true,
 		qch:    make(chan struct{}),
 		fch:    make(chan struct{}),
@@ -347,7 +408,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			return nil, fmt.Errorf("consumer replacement durable config not the same")
 		}
 		// Once we are here we have a replacement push-based durable.
-		eo.updateDeliverySubject(o.config.Delivery)
+		eo.updateDeliverSubject(o.config.DeliverSubject)
 		return eo, nil
 	}
 	// Set up the ack subscription for this observable. Will use wildcard for all acks.
@@ -379,7 +440,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	if o.isPushMode() {
 		o.dthresh = JsDeleteWaitTimeDefault
 		o.inch = make(chan bool, 4)
-		a.sl.RegisterNotification(config.Delivery, o.inch)
+		a.sl.RegisterNotification(config.DeliverSubject, o.inch)
 		o.active = o.hasDeliveryInterest(<-o.inch)
 		// Check if we are not durable that the delivery subject has interest.
 		if !o.isDurable() && !o.active {
@@ -412,7 +473,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 		return false
 	}
 	acc := o.acc
-	delivery := o.config.Delivery
+	deliver := o.config.DeliverSubject
 	o.mu.Unlock()
 
 	if localInterest {
@@ -424,7 +485,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 		gw := acc.srv.gateway
 		gw.RLock()
 		for _, gwc := range gw.outo {
-			psi, qr := gwc.gatewayInterest(acc.Name, delivery)
+			psi, qr := gwc.gatewayInterest(acc.Name, deliver)
 			if psi || qr != nil {
 				gw.RUnlock()
 				return true
@@ -435,7 +496,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 	return false
 }
 
-// This processes an update to the local interest for a delivery subject.
+// This processes an update to the local interest for a deliver subject.
 func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 	interest := o.hasDeliveryInterest(localInterest)
 
@@ -472,7 +533,7 @@ func (o *Consumer) Config() ConsumerConfig {
 
 // This is a config change for the delivery subject for a
 // push based consumer.
-func (o *Consumer) updateDeliverySubject(newDelivery string) {
+func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	// Update the config and the dsubj
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -482,22 +543,22 @@ func (o *Consumer) updateDeliverySubject(newDelivery string) {
 		return
 	}
 
-	oldDelivery := o.config.Delivery
-	o.dsubj = newDelivery
-	o.config.Delivery = newDelivery
+	oldDeliver := o.config.DeliverSubject
+	o.dsubj = newDeliver
+	o.config.DeliverSubject = newDeliver
 	// FIXME(dlc) - check partitions, we may need offset.
 	o.dseq = o.adflr
 	o.sseq = o.asflr
 
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.ClearNotification(oldDelivery, o.inch)
-	o.acc.sl.RegisterNotification(newDelivery, o.inch)
+	o.acc.sl.ClearNotification(oldDeliver, o.inch)
+	o.acc.sl.RegisterNotification(newDeliver, o.inch)
 }
 
 // Check that configs are equal but allow delivery subjects to be different.
 func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 	// These were copied in so can set Delivery here.
-	a.Delivery, b.Delivery = _EMPTY_, _EMPTY_
+	a.DeliverSubject, b.DeliverSubject = _EMPTY_, _EMPTY_
 	return a == b
 }
 
@@ -1244,26 +1305,25 @@ func (o *Consumer) selectSubjectLast() {
 // Will select the starting sequence.
 func (o *Consumer) selectStartingSeqNo() {
 	stats := o.mset.store.State()
-	noTime := time.Time{}
-	if o.config.StreamSeq == 0 {
-		if o.config.DeliverAll {
+	if o.config.OptStartSeq == 0 {
+		if o.config.DeliverPolicy == DeliverAll {
 			o.sseq = stats.FirstSeq
-		} else if o.config.DeliverLast {
+		} else if o.config.DeliverPolicy == DeliverLast {
 			o.sseq = stats.LastSeq
 			// If we are partitioned here we may need to walk backwards.
 			if o.config.FilterSubject != _EMPTY_ {
 				o.selectSubjectLast()
 			}
-		} else if o.config.StartTime != noTime {
+		} else if o.config.OptStartTime != nil {
 			// If we are here we are time based.
 			// TODO(dlc) - Once clustered can't rely on this.
-			o.sseq = o.mset.store.GetSeqFromTime(o.config.StartTime)
+			o.sseq = o.mset.store.GetSeqFromTime(*o.config.OptStartTime)
 		} else {
 			// Default is deliver new only.
 			o.sseq = stats.LastSeq + 1
 		}
 	} else {
-		o.sseq = o.config.StreamSeq
+		o.sseq = o.config.OptStartSeq
 	}
 
 	if stats.FirstSeq == 0 {
@@ -1292,11 +1352,11 @@ func (o *Consumer) isDurable() bool {
 
 // Are we in push mode, delivery subject, etc.
 func (o *Consumer) isPushMode() bool {
-	return o.config.Delivery != _EMPTY_
+	return o.config.DeliverSubject != _EMPTY_
 }
 
 func (o *Consumer) isPullMode() bool {
-	return o.config.Delivery == _EMPTY_
+	return o.config.DeliverSubject == _EMPTY_
 }
 
 // Name returns the name of this observable.
@@ -1398,7 +1458,7 @@ func (o *Consumer) stop(dflag bool) error {
 	o.reqSub = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.dtmr)
-	delivery := o.config.Delivery
+	delivery := o.config.DeliverSubject
 	o.mu.Unlock()
 
 	if delivery != "" {
