@@ -265,9 +265,10 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			}
 
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
-				Durable:   "d",
-				StartTime: startTime,
-				AckPolicy: server.AckExplicit,
+				Durable:       "d",
+				DeliverPolicy: server.DeliverByStartTime,
+				OptStartTime:  &startTime,
+				AckPolicy:     server.AckExplicit,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -320,7 +321,7 @@ func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 				Stream: subj,
 				Config: server.ConsumerConfig{
 					Durable:       "d",
-					DeliverLast:   true,
+					DeliverPolicy: server.DeliverLast,
 					FilterSubject: "foo.22",
 					AckPolicy:     server.AckExplicit,
 				},
@@ -372,11 +373,10 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 			ackWait := 10 * time.Millisecond
 
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
-				Delivery:   sub.Subject,
-				DeliverAll: true,
-				AckPolicy:  server.AckExplicit,
-				AckWait:    ackWait,
-				MaxDeliver: maxDeliver,
+				DeliverSubject: sub.Subject,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        ackWait,
+				MaxDeliver:     maxDeliver,
 			})
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
@@ -427,7 +427,6 @@ func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
 				Durable:      "d",
-				DeliverAll:   true,
 				AckPolicy:    server.AckExplicit,
 				ReplayPolicy: server.ReplayOriginal,
 			})
@@ -704,55 +703,45 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			// Check for delivery subject errors.
 
 			// Literal delivery subject required.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: "foo.*"}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: "foo.*"}); err == nil {
 				t.Fatalf("Expected an error on bad delivery subject")
 			}
 			// Check for cycles
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: "foo"}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: "foo"}); err == nil {
 				t.Fatalf("Expected an error on delivery subject that forms a cycle")
 			}
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: "bar"}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: "bar"}); err == nil {
 				t.Fatalf("Expected an error on delivery subject that forms a cycle")
 			}
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: "*"}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: "*"}); err == nil {
 				t.Fatalf("Expected an error on delivery subject that forms a cycle")
 			}
 
 			// StartPosition conflicts
+			now := time.Now()
 			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				Delivery:  "A",
-				StreamSeq: 1,
-				StartTime: time.Now(),
+				DeliverSubject: "A",
+				OptStartSeq:    1,
+				OptStartTime:   &now,
 			}); err == nil {
 				t.Fatalf("Expected an error on start position conflicts")
 			}
 			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				Delivery:   "A",
-				StartTime:  time.Now(),
-				DeliverAll: true,
-			}); err == nil {
-				t.Fatalf("Expected an error on start position conflicts")
-			}
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				Delivery:    "A",
-				DeliverAll:  true,
-				DeliverLast: true,
+				DeliverSubject: "A",
+				OptStartTime:   &now,
 			}); err == nil {
 				t.Fatalf("Expected an error on start position conflicts")
 			}
 
 			// Non-Durables need to have subscription to delivery subject.
 			delivery := nats.NewInbox()
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery}); err == nil {
 				t.Fatalf("Expected an error on unsubscribed delivery subject")
 			}
 
 			// Pull-based consumers are required to be durable since we do not know when they should
 			// be cleaned up.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				DeliverAll: true,
-				AckPolicy:  server.AckExplicit,
-			}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{AckPolicy: server.AckExplicit}); err == nil {
 				t.Fatalf("Expected an error on pull-based that is non-durable.")
 			}
 
@@ -764,16 +753,15 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			// Filtered subjects can not be AckAll.
 			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				Delivery:      delivery,
-				DeliverAll:    true,
-				FilterSubject: "foo",
-				AckPolicy:     server.AckAll,
+				DeliverSubject: delivery,
+				FilterSubject:  "foo",
+				AckPolicy:      server.AckAll,
 			}); err == nil {
 				t.Fatalf("Expected an error on partitioned consumer with ack policy of all")
 			}
 
 			// This should work..
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -785,7 +773,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 	}
 }
 
-func TestJetStreamBasicDelivery(t *testing.T) {
+func TestJetStreamBasicDeliverSubject(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.StreamConfig
@@ -825,7 +813,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc2.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -880,7 +868,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			o.Delete()
 
 			// Now check for deliver last, deliver new and deliver by seq.
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverLast: true})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject, DeliverPolicy: server.DeliverLast})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -902,12 +890,6 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			checkSubEmpty()
 			o.Delete()
 
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject}) // Default is deliver new only.
-			if err != nil {
-				t.Fatalf("Expected no error with registered interest, got %v", err)
-			}
-			defer o.Delete()
-
 			// Make sure we only got one message.
 			if m, err := sub.NextMsg(5 * time.Millisecond); err == nil {
 				t.Fatalf("Expected no msg, got %+v", m)
@@ -917,7 +899,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			o.Delete()
 
 			// Now try by sequence number.
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, StreamSeq: 101})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject, DeliverPolicy: server.DeliverByStartSequence, OptStartSeq: 101})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -930,7 +912,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc2.Flush()
 
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -944,7 +926,7 @@ func TestJetStreamBasicDelivery(t *testing.T) {
 }
 
 func workerModeConfig(name string) *server.ConsumerConfig {
-	return &server.ConsumerConfig{Durable: name, DeliverAll: true, AckPolicy: server.AckExplicit}
+	return &server.ConsumerConfig{Durable: name, AckPolicy: server.AckExplicit}
 }
 
 func TestJetStreamBasicWorkQueue(t *testing.T) {
@@ -1082,7 +1064,7 @@ func TestJetStreamSubjectFiltering(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: subjB, DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: subjB})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1150,7 +1132,7 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 			}
 
 			oname := "WQ"
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, FilterSubject: subjA, DeliverAll: true, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, FilterSubject: subjA, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1234,7 +1216,7 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 			nc.Flush()
 
 			// Get all shipped.
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: "orders.*.SHIPPED", DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: "orders.*.SHIPPED"})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1254,7 +1236,7 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 			}
 
 			// Get all new
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: "orders.*.NEW", DeliverAll: true})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: "orders.*.NEW"})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1279,7 +1261,7 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 				break
 			}
 			subj := fmt.Sprintf("orders.%d.*", orderId)
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, FilterSubject: subj, DeliverAll: true})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: subj})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1455,19 +1437,19 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 
 			// This type of stream has restrictions which we will test here.
 			// DeliverAll is only start mode allowed.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverLast: true}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverPolicy: server.DeliverLast}); err == nil {
 				t.Fatalf("Expected an error with anything but DeliverAll")
 			}
 
 			// We will create a non-partitioned consumer. This should succeed.
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", DeliverAll: true, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
 			}
 			defer o.Delete()
 
 			// Now if we create another this should fail, only can have one non-partitioned.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{DeliverAll: true}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{}); err == nil {
 				t.Fatalf("Expected an error on attempt for second consumer for a workqueue")
 			}
 			o.Delete()
@@ -1481,7 +1463,7 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			pConfig := func(pname string) *server.ConsumerConfig {
 				dname := fmt.Sprintf("PPBO-%d", pindex)
 				pindex += 1
-				return &server.ConsumerConfig{Durable: dname, DeliverAll: true, FilterSubject: pname, AckPolicy: server.AckExplicit}
+				return &server.ConsumerConfig{Durable: dname, FilterSubject: pname, AckPolicy: server.AckExplicit}
 			}
 			o, err = mset.AddConsumer(pConfig("MY_WORK_QUEUE.A"))
 			if err != nil {
@@ -1519,10 +1501,9 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			// Push based will be allowed now, including ephemerals.
 			// They can not overlap etc meaning same rules as above apply.
 			o4, err := mset.AddConsumer(&server.ConsumerConfig{
-				Durable:    "DURABLE",
-				Delivery:   "SOME.SUBJ",
-				DeliverAll: true,
-				AckPolicy:  server.AckExplicit,
+				Durable:        "DURABLE",
+				DeliverSubject: "SOME.SUBJ",
+				AckPolicy:      server.AckExplicit,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected Error: %v", err)
@@ -1538,7 +1519,7 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			nc.Flush()
 
 			// This should fail at first due to conflict above.
-			ephCfg := &server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true, AckPolicy: server.AckExplicit}
+			ephCfg := &server.ConsumerConfig{DeliverSubject: sub.Subject, AckPolicy: server.AckExplicit}
 			if _, err := mset.AddConsumer(ephCfg); err == nil {
 				t.Fatalf("Expected an error ")
 			}
@@ -1587,7 +1568,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 
 			ackWait := 100 * time.Millisecond
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", DeliverAll: true, AckPolicy: server.AckExplicit, AckWait: ackWait})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit, AckWait: ackWait})
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
 			}
@@ -1685,7 +1666,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
 			}
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", DeliverAll: true, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
 			}
@@ -1761,7 +1742,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 			ackWait := 50 * time.Millisecond
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", DeliverAll: true, AckPolicy: server.AckExplicit, AckWait: ackWait})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit, AckWait: ackWait})
 			if err != nil {
 				t.Fatalf("Expected no error, got %v", err)
 			}
@@ -1828,7 +1809,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	}
 	defer mset.Delete()
 
-	wcfg := &server.ConsumerConfig{Durable: "worker", DeliverAll: true, AckPolicy: server.AckExplicit}
+	wcfg := &server.ConsumerConfig{Durable: "worker", AckPolicy: server.AckExplicit}
 	o, err := mset.AddConsumer(wcfg)
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
@@ -1910,12 +1891,11 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	max := 4
 
 	o, err := mset.AddConsumer(&server.ConsumerConfig{
-		Durable:    "TO",
-		Delivery:   dsubj,
-		DeliverAll: true,
-		AckPolicy:  server.AckExplicit,
-		AckWait:    25 * time.Millisecond,
-		MaxDeliver: max,
+		Durable:        "TO",
+		DeliverSubject: dsubj,
+		AckPolicy:      server.AckExplicit,
+		AckWait:        25 * time.Millisecond,
+		MaxDeliver:     max,
 	})
 	defer o.Delete()
 
@@ -2082,11 +2062,10 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	nc.Flush()
 
 	o, err := mset.AddConsumer(&server.ConsumerConfig{
-		Durable:    "TO",
-		Delivery:   sub.Subject,
-		DeliverAll: true,
-		AckPolicy:  server.AckExplicit,
-		AckWait:    100 * time.Millisecond,
+		Durable:        "TO",
+		DeliverSubject: sub.Subject,
+		AckPolicy:      server.AckExplicit,
+		AckWait:        100 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2159,7 +2138,7 @@ func TestJetStreamActiveDelivery(t *testing.T) {
 				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
 			}
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "to", Delivery: "d", DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "to", DeliverSubject: "d"})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -2207,7 +2186,7 @@ func TestJetStreamEphemeralConsumers(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -2284,7 +2263,7 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 			// Capture the subscription.
 			delivery := sub.Subject
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -2386,7 +2365,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			dname := "d22"
 			subj1 := nats.NewInbox()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, Delivery: subj1, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -2433,7 +2412,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			}
 
 			// We should not be able to try to add an observer with the same name.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, Delivery: subj1, AckPolicy: server.AckExplicit}); err == nil {
+			if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit}); err == nil {
 				t.Fatalf("Expected and error trying to add a new durable consumer while first still active")
 			}
 
@@ -2452,7 +2431,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Durable: dname, Delivery: subj2, AckPolicy: server.AckExplicit})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj2, AckPolicy: server.AckExplicit})
 			if err != nil {
 				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
 			}
@@ -2512,12 +2491,12 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 
 			// Now create an consumer for foo.AA, only requesting the last one.
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
-				Durable:       dname,
-				Delivery:      dsubj,
-				FilterSubject: "foo.AA",
-				DeliverLast:   true,
-				AckPolicy:     server.AckExplicit,
-				AckWait:       100 * time.Millisecond,
+				Durable:        dname,
+				DeliverSubject: dsubj,
+				FilterSubject:  "foo.AA",
+				DeliverPolicy:  server.DeliverLast,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        100 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -2646,7 +2625,7 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -2963,10 +2942,9 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			// Now create an consumer and make sure it functions properly.
 			// This will test redelivery state and purge of the stream.
 			wcfg := &server.ConsumerConfig{
-				Durable:    "WQ",
-				DeliverAll: true,
-				AckPolicy:  server.AckExplicit,
-				AckWait:    20 * time.Millisecond,
+				Durable:   "WQ",
+				AckPolicy: server.AckExplicit,
+				AckWait:   20 * time.Millisecond,
 			}
 			o, err := mset.AddConsumer(wcfg)
 			if err != nil {
@@ -3066,13 +3044,13 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			// 3. AckNone
 
 			sub1 := syncSub()
-			mset.AddConsumer(&server.ConsumerConfig{Delivery: sub1.Subject, DeliverAll: true, AckPolicy: server.AckExplicit})
+			mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub1.Subject, AckPolicy: server.AckExplicit})
 
 			sub2 := syncSub()
-			mset.AddConsumer(&server.ConsumerConfig{Delivery: sub2.Subject, DeliverAll: true, AckPolicy: server.AckAll})
+			mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub2.Subject, AckPolicy: server.AckAll})
 
 			sub3 := syncSub()
-			mset.AddConsumer(&server.ConsumerConfig{Delivery: sub3.Subject, DeliverAll: true, AckPolicy: server.AckNone})
+			mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub3.Subject, AckPolicy: server.AckNone})
 
 			// Wait for all messsages to be pending for each sub.
 			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
@@ -3197,7 +3175,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3217,7 +3195,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 			}
 
 			// Now do replay rate to match original.
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true, ReplayPolicy: server.ReplayOriginal})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject, ReplayPolicy: server.ReplayOriginal})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3293,11 +3271,10 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			}
 			subj := "d.dc"
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
-				Durable:      "derek",
-				Delivery:     subj,
-				DeliverAll:   true,
-				AckPolicy:    server.AckNone,
-				ReplayPolicy: server.ReplayOriginal,
+				Durable:        "derek",
+				DeliverSubject: subj,
+				AckPolicy:      server.AckNone,
+				ReplayPolicy:   server.ReplayOriginal,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -3355,7 +3332,7 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 			nc.Flush()
 
 			// Now do replay rate to match original.
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true, ReplayPolicy: server.ReplayOriginal})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject, ReplayPolicy: server.ReplayOriginal})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3967,7 +3944,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	delivery := nats.NewInbox()
 	obsReq := server.CreateConsumerRequest{
 		Stream: msetCfg.Name,
-		Config: server.ConsumerConfig{Delivery: delivery, DeliverAll: true},
+		Config: server.ConsumerConfig{DeliverSubject: delivery},
 	}
 	req, err = json.Marshal(obsReq)
 	if err != nil {
@@ -4041,8 +4018,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if len(oinfo.Config.Durable) != 0 {
 		t.Fatalf("Expected no durable name, but got %q", oinfo.Config.Durable)
 	}
-	if oinfo.Config.Delivery != delivery {
-		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.Delivery)
+	if oinfo.Config.DeliverSubject != delivery {
+		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.DeliverSubject)
 	}
 	if oinfo.State.Delivered.ConsumerSeq != 10 {
 		t.Fatalf("Expected consumer delivered sequence of 10, got %d", oinfo.State.Delivered.ConsumerSeq)
@@ -4058,7 +4035,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// Make sure we can't create a durable using the ephemeral API endpoint.
 	obsReq = server.CreateConsumerRequest{
 		Stream: msetCfg.Name,
-		Config: server.ConsumerConfig{Durable: "myd", Delivery: delivery, DeliverAll: true},
+		Config: server.ConsumerConfig{Durable: "myd", DeliverSubject: delivery},
 	}
 	req, err = json.Marshal(obsReq)
 	if err != nil {
@@ -4080,7 +4057,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// Make sure empty in cfg does not work
 	obsReq2 := server.CreateConsumerRequest{
 		Stream: msetCfg.Name,
-		Config: server.ConsumerConfig{Delivery: delivery, DeliverAll: true},
+		Config: server.ConsumerConfig{DeliverSubject: delivery},
 	}
 	req2, err := json.Marshal(obsReq2)
 	if err != nil {
@@ -4567,7 +4544,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			sub, _ := nc.SubscribeSync(delivery)
 			nc.Flush()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: delivery, DeliverAll: true, FilterSubject: "foo"})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: "foo"})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -4894,7 +4871,7 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 	nc2.Flush()
 	time.Sleep(25 * time.Millisecond)
 
-	o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
 	if err != nil {
 		t.Fatalf("Expected no error with registered interest, got %v", err)
 	}
@@ -5050,9 +5027,8 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	nc.Flush()
 
 	_, err = mset.AddConsumer(&server.ConsumerConfig{
-		Delivery:   delivery,
-		DeliverAll: true,
-		AckPolicy:  server.AckNone,
+		DeliverSubject: delivery,
+		AckPolicy:      server.AckNone,
 	})
 	if err != nil {
 		t.Fatalf("Error creating consumer: %v", err)
