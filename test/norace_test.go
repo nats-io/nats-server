@@ -549,7 +549,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 
 	// Create basic work queue mode consumer.
 	oname := "WQ"
-	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, DeliverAll: true, AckPolicy: server.AckExplicit})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, AckPolicy: server.AckExplicit})
 	if err != nil {
 		t.Fatalf("Expected no error with durable, got %v", err)
 	}
