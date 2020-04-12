@@ -400,6 +400,52 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_WQ", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "MY_WQ", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Queue up our work item.
+			sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:      "d",
+				DeliverAll:   true,
+				AckPolicy:    server.AckExplicit,
+				ReplayPolicy: server.ReplayOriginal,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			// Force delay here which triggers the bug.
+			time.Sleep(250 * time.Millisecond)
+
+			if _, err = nc.Request(o.RequestNextMsgSubject(), nil, time.Second); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 	cases := []struct {
 		name    string
