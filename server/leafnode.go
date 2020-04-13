@@ -87,8 +87,8 @@ func (c *client) isSpokeLeafNode() bool {
 	return c.kind == LEAF && c.leaf.isSpoke
 }
 
-func (c *client) isUnsolicitedLeafNode() bool {
-	return c.kind == LEAF && c.leaf.remote == nil
+func (c *client) isHubLeafNode() bool {
+	return c.kind == LEAF && !c.leaf.isSpoke
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
