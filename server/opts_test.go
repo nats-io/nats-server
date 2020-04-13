@@ -1698,6 +1698,50 @@ func TestParseServiceLatency(t *testing.T) {
 	}
 }
 
+func TestParsingAccountImport(t *testing.T) {
+	header := `
+		accounts {
+			testAccount {
+				%s
+			}
+		}`
+	for _, test := range []struct {
+		name        string
+		content     string
+		expectedErr string
+	}{
+		{
+			"to_in_stream",
+			`imports: [{stream: {account: "test", subject:"test"}, to: "TEST"}]`,
+			"Setting \"to\" for a stream is not supported, only \"prefix\" is",
+		},
+		{
+			"prefix_in_service",
+			`imports: [{service: {account: "test", subject:"test"}, prefix: "TEST"}]`,
+			"Setting \"prefix\" for a service is not supported, only \"to\" is",
+		},
+		{
+			"response_in_stream",
+			`exports: [{stream:"test", response: "single"}]`,
+			"Detected response directive on non-service",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := fmt.Sprintf("server_config_gateways_%s.conf", test.name)
+			defer os.Remove(file)
+			if err := ioutil.WriteFile(file, []byte(fmt.Sprintf(header, test.content)), 0600); err != nil {
+				t.Fatalf("Error writing config file: %v", err)
+			}
+			_, err := ProcessConfigFile(file)
+			if err == nil {
+				t.Fatalf("Expected to fail, did not. Content:\n%s", test.content)
+			} else if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Fatalf("Expected error containing %q, got %q, for content:\n%s", test.expectedErr, err, test.content)
+			}
+		})
+	}
+}
+
 func TestAccountUsersLoadedProperly(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 	listen: "127.0.0.1:-1"

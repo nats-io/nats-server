@@ -2102,6 +2102,10 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 		pre, to    string
 		lt         token
 	)
+	const (
+		badTo     = `Setting "to" for a stream is not supported, only "prefix" is`
+		badPrefix = `Setting "prefix" for a service is not supported, only "to" is`
+	)
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, mv := unwrapValue(v, &lt)
@@ -2116,6 +2120,10 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			if curService != nil {
 				err := &configErr{tk, "Detected stream but already saw a service"}
 				*errors = append(*errors, err)
+				continue
+			}
+			if to != "" {
+				*errors = append(*errors, &configErr{tk, badTo})
 				continue
 			}
 			ac, ok := mv.(map[string]interface{})
@@ -2145,6 +2153,10 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				*errors = append(*errors, err)
 				continue
 			}
+			if pre != "" {
+				*errors = append(*errors, &configErr{tk, badPrefix})
+				continue
+			}
 			ac, ok := mv.(map[string]interface{})
 			if !ok {
 				err := &configErr{tk, fmt.Sprintf("Service entry should be an account map, got %T", mv)}
@@ -2167,11 +2179,19 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				curService.to = to
 			}
 		case "prefix":
+			if curService != nil {
+				*errors = append(*errors, &configErr{tk, badPrefix})
+				continue
+			}
 			pre = mv.(string)
 			if curStream != nil {
 				curStream.pre = pre
 			}
 		case "to":
+			if curStream != nil {
+				*errors = append(*errors, &configErr{tk, badTo})
+				continue
+			}
 			to = mv.(string)
 			if curService != nil {
 				curService.to = to
