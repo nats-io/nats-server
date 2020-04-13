@@ -265,3 +265,48 @@ func (rp *ReplayPolicy) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
+
+const (
+	deliverAllPolicyString       = "all"
+	deliverLastPolicyString      = "last"
+	deliverNewPolicyString       = "new"
+	deliverByStartSequenceString = "by_start_sequence"
+	deliverByStartTimeString     = "by_start_time"
+	deliverUndefinedString       = "undefined"
+)
+
+func (p *DeliverPolicy) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case jsonString(deliverAllPolicyString), jsonString(deliverUndefinedString):
+		*p = DeliverAll
+	case jsonString(deliverLastPolicyString):
+		*p = DeliverLast
+	case jsonString(deliverNewPolicyString):
+		*p = DeliverNew
+	case jsonString(deliverByStartSequenceString):
+		*p = DeliverByStartSequence
+	case jsonString(deliverByStartTimeString):
+		*p = DeliverByStartTime
+	default:
+		return fmt.Errorf("can not unmarshal %q", data)
+	}
+
+	return nil
+}
+
+func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
+	switch p {
+	case DeliverAll:
+		return json.Marshal(deliverAllPolicyString)
+	case DeliverLast:
+		return json.Marshal(deliverLastPolicyString)
+	case DeliverNew:
+		return json.Marshal(deliverNewPolicyString)
+	case DeliverByStartSequence:
+		return json.Marshal(deliverByStartSequenceString)
+	case DeliverByStartTime:
+		return json.Marshal(deliverByStartTimeString)
+	default:
+		return json.Marshal(deliverUndefinedString)
+	}
+}
