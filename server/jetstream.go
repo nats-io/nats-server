@@ -166,33 +166,98 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		if err := s.GlobalAccount().EnableJetStream(nil); err != nil {
 			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
-	} else if err := s.enableAllJetStreamAccounts(); err != nil {
+	} else if err := s.configAllJetStreamAccounts(); err != nil {
 		return fmt.Errorf("Error enabling jetstream on configured accounts: %v", err)
 	}
 
 	return nil
 }
 
-// enableAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
-func (s *Server) enableAllJetStreamAccounts() error {
+// enableAllJetStreamServiceImports turns on all service imports for jetstream for this account.
+func (a *Account) enableAllJetStreamServiceImports() error {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+
+	if s == nil {
+		return fmt.Errorf("jetstream account not registered")
+	}
+
+	// In case the enabled import exists here.
+	a.removeServiceImport(JetStreamEnabled)
+
+	sys := s.SystemAccount()
+	for _, export := range allJsExports {
+		if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
+			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+		}
+	}
+	return nil
+}
+
+// enableJetStreamEnabledServiceImportOnly will enable the single service import responder.
+// Should we do them all regardless?
+func (a *Account) enableJetStreamEnabledServiceImportOnly() error {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+
+	if s == nil {
+		return fmt.Errorf("jetstream account not registered")
+	}
+	sys := s.SystemAccount()
+	if err := a.AddServiceImport(sys, JetStreamEnabled, _EMPTY_); err != nil {
+		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+	}
+	return nil
+}
+
+// configAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
+func (s *Server) configAllJetStreamAccounts() error {
 	var jsAccounts []*Account
 
+	// Snapshot into our own list. Might not be needed.
 	s.mu.Lock()
 	s.accounts.Range(func(k, v interface{}) bool {
-		acc := v.(*Account)
-		if acc.jsLimits != nil {
-			jsAccounts = append(jsAccounts, acc)
-		}
+		jsAccounts = append(jsAccounts, v.(*Account))
 		return true
 	})
+	enabled := s.js != nil
 	s.mu.Unlock()
+
+	// Bail if server not enabled. If it was enabled and a reload turns it off
+	// that will be handled elsewhere.
+	if !enabled {
+		return nil
+	}
+
+	sys := s.SystemAccount()
 
 	// Process any jetstream enabled accounts here.
 	for _, acc := range jsAccounts {
-		if err := acc.EnableJetStream(acc.jsLimits); err != nil {
-			return err
+		if acc.jsLimits != nil {
+			// Check if already enabled. This can be during a reload.
+			if acc.JetStreamEnabled() {
+				if err := acc.enableAllJetStreamServiceImports(); err != nil {
+					return err
+				}
+				if err := acc.UpdateJetStreamLimits(acc.jsLimits); err != nil {
+					return err
+				}
+			} else if err := acc.EnableJetStream(acc.jsLimits); err != nil {
+				return err
+			}
+			acc.jsLimits = nil
+		} else if acc != sys {
+			if acc.JetStreamEnabled() {
+				acc.DisableJetStream()
+			}
+			// We will setup basic service imports to respond to
+			// requests if JS is enabled for this account.
+			if err := acc.enableJetStreamEnabledServiceImportOnly(); err != nil {
+				return err
+			}
 		}
-		acc.jsLimits = nil
 	}
 	return nil
 }
@@ -314,11 +379,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	a.mu.Unlock()
 
 	// Create the proper imports here.
-	sys := s.SystemAccount()
-	for _, export := range allJsExports {
-		if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
-			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
-		}
+	if err := a.enableAllJetStreamServiceImports(); err != nil {
+		return err
 	}
 
 	s.Debugf("Enabled JetStream for account %q", a.Name)
@@ -538,17 +600,16 @@ func (a *Account) LookupStream(name string) (*Stream, error) {
 func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s := a.srv
+	jsa := a.js
 	a.mu.RUnlock()
+
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}
-
 	js := s.getJetStream()
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
 	}
-
-	jsa := js.lookupAccount(a)
 	if jsa == nil {
 		return fmt.Errorf("jetstream not enabled for account")
 	}
