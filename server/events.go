@@ -1206,7 +1206,7 @@ func totalSubs(rr *SublistResult, qg []byte) (nsubs int32) {
 		if qg != nil && !bytes.Equal(qg, sub.queue) {
 			return
 		}
-		if sub.client.kind == CLIENT || sub.client.isUnsolicitedLeafNode() {
+		if sub.client.kind == CLIENT || sub.client.isHubLeafNode() {
 			nsubs++
 		}
 	}
@@ -1262,7 +1262,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 				if qgroup != nil && !bytes.Equal(qgroup, sub.queue) {
 					continue
 				}
-				if sub.client.kind == CLIENT || sub.client.isUnsolicitedLeafNode() {
+				if sub.client.kind == CLIENT || sub.client.isHubLeafNode() {
 					nsubs++
 				}
 			}
@@ -1349,7 +1349,7 @@ func (s *Server) nsubsRequest(sub *subscription, _ *client, subject, reply strin
 		subs := _subs[:0]
 		acc.sl.All(&subs)
 		for _, sub := range subs {
-			if (sub.client.kind == CLIENT || sub.client.isUnsolicitedLeafNode()) && subjectIsSubsetMatch(string(sub.subject), m.Subject) {
+			if (sub.client.kind == CLIENT || sub.client.isHubLeafNode()) && subjectIsSubsetMatch(string(sub.subject), m.Subject) {
 				if m.Queue != nil && !bytes.Equal(m.Queue, sub.queue) {
 					continue
 				}

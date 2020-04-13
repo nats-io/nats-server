@@ -58,6 +58,9 @@ type leaf struct {
 	smap map[string]int32
 	// We have any auth stuff here for solicited connections.
 	remote *leafNodeCfg
+	// isSpoke tells us what role we are playing.
+	// Used when we receive a connection but otherside tells us they are a hub.
+	isSpoke bool
 }
 
 // Used for remote (solicited) leafnodes.
@@ -78,13 +81,14 @@ func (c *client) isSolicitedLeafNode() bool {
 	return c.kind == LEAF && c.leaf.remote != nil
 }
 
-// Returns true if this is a solicited leafnode and is not configured to be treated as a hub.
+// Returns true if this is a solicited leafnode and is not configured to be treated as a hub or a receiving
+// connection leafnode where the otherside has declared itself to be the hub.
 func (c *client) isSpokeLeafNode() bool {
-	return c.kind == LEAF && c.leaf.remote != nil && !c.leaf.remote.Hub
+	return c.kind == LEAF && c.leaf.isSpoke
 }
 
-func (c *client) isUnsolicitedLeafNode() bool {
-	return c.kind == LEAF && c.leaf.remote == nil
+func (c *client) isHubLeafNode() bool {
+	return c.kind == LEAF && !c.leaf.isSpoke
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
@@ -443,6 +447,7 @@ func (c *client) sendLeafConnect(tlsRequired bool) {
 	cinfo := leafConnectInfo{
 		TLS:  tlsRequired,
 		Name: c.srv.info.ID,
+		Hub:  c.leaf.remote.Hub,
 	}
 
 	// Check for credentials first, that will take precedence..
@@ -600,7 +605,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 		c.leaf.remote = remote
 		c.setPermissions(remote.perms)
-		sendSysConnectEvent = c.leaf.remote.Hub
+		if c.leaf.remote.Hub {
+			sendSysConnectEvent = true
+		} else {
+			c.leaf.isSpoke = true
+		}
 		c.mu.Unlock()
 		// TODO: Decide what should be the optimal behavior here.
 		// For now, if lookup fails, we will constantly try
@@ -962,7 +971,7 @@ type leafConnectInfo struct {
 	TLS  bool   `json:"tls_required"`
 	Comp bool   `json:"compression,omitempty"`
 	Name string `json:"name,omitempty"`
-
+	Hub  bool   `json:"is_hub,omitempty"`
 	// Just used to detect wrong connection attempts.
 	Gateway string `json:"gateway,omitempty"`
 }
@@ -999,6 +1008,11 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.opts.Verbose = false
 	c.opts.Echo = false
 	c.opts.Pedantic = false
+
+	// If the other side has declared itself a hub, so we will take on the spoke role.
+	if proto.Hub {
+		c.leaf.isSpoke = true
+	}
 
 	// Create and initialize the smap since we know our bound account now.
 	lm := s.initLeafNodeSmap(c)
