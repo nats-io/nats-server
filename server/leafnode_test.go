@@ -1360,6 +1360,7 @@ func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
 
 func TestLeafNodeHubWithGateways(t *testing.T) {
 	ao := DefaultOptions()
+	ao.ServerName = "A"
 	ao.LeafNode.Host = "127.0.0.1"
 	ao.LeafNode.Port = -1
 	a := RunServer(ao)
@@ -1368,6 +1369,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	ua, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ao.LeafNode.Port))
 
 	bo := testDefaultOptionsForGateway("B")
+	bo.ServerName = "B"
 	bo.Accounts = []*Account{NewAccount("SYS")}
 	bo.SystemAccount = "SYS"
 	bo.LeafNode.ReconnectInterval = 5 * time.Millisecond
@@ -1381,6 +1383,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	defer b.Shutdown()
 
 	do := DefaultOptions()
+	do.ServerName = "D"
 	do.LeafNode.Host = "127.0.0.1"
 	do.LeafNode.Port = -1
 	d := RunServer(do)
@@ -1389,6 +1392,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	ud, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", do.LeafNode.Port))
 
 	co := testGatewayOptionsFromToWithServers(t, "C", "B", b)
+	co.ServerName = "C"
 	co.Accounts = []*Account{NewAccount("SYS")}
 	co.SystemAccount = "SYS"
 	co.LeafNode.ReconnectInterval = 5 * time.Millisecond
@@ -1420,7 +1424,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	// Wait for interest to be registered on A.
 	checkExpectedSubs(t, subsOnABefore+1, a)
 
-	// Create requestor on A and send the request, expect reply.
+	// Create requestor on A and send the request, expect a reply.
 	ncA := natsConnect(t, a.ClientURL())
 	defer ncA.Close()
 	if msg, err := ncA.Request("service", []byte("request"), time.Second); err != nil {
