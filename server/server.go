@@ -480,7 +480,6 @@ func (s *Server) configureAccounts() error {
 			ea.approved[sub] = acc
 		}
 	}
-
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Exports

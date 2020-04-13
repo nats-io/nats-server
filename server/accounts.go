@@ -45,7 +45,7 @@ type Account struct {
 	sqmu         sync.Mutex
 	sl           *Sublist
 	ic           *client
-	isid         int
+	isid         uint64
 	etmr         *time.Timer
 	ctmr         *time.Timer
 	strack       map[string]sconns
@@ -63,6 +63,7 @@ type Account struct {
 	imports      importMap
 	exports      exportMap
 	js           *jsAccount
+	jsLimits     *JetStreamAccountLimits
 	limits
 	nae           int32
 	pruning       bool
@@ -242,6 +243,8 @@ func (a *Account) shallowCopy() *Account {
 			}
 		}
 	}
+	na.jsLimits = a.jsLimits
+
 	return na
 }
 
@@ -1066,7 +1069,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 		a.ic.acc = a
 	}
 	c := a.ic
-	sid := strconv.Itoa(a.isid + 1)
+	sid := strconv.FormatUint(a.isid+1, 10)
 	a.mu.RUnlock()
 
 	// This will happen in parsing when the account has not been properly setup.

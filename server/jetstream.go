@@ -166,8 +166,34 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		if err := s.GlobalAccount().EnableJetStream(nil); err != nil {
 			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
+	} else if err := s.enableAllJetStreamAccounts(); err != nil {
+		return fmt.Errorf("Error enabling jetstream on configured accounts: %v", err)
 	}
 
+	return nil
+}
+
+// enableAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
+func (s *Server) enableAllJetStreamAccounts() error {
+	var jsAccounts []*Account
+
+	s.mu.Lock()
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		if acc.jsLimits != nil {
+			jsAccounts = append(jsAccounts, acc)
+		}
+		return true
+	})
+	s.mu.Unlock()
+
+	// Process any jetstream enabled accounts here.
+	for _, acc := range jsAccounts {
+		if err := acc.EnableJetStream(acc.jsLimits); err != nil {
+			return err
+		}
+		acc.jsLimits = nil
+	}
 	return nil
 }
 
