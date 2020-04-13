@@ -1268,13 +1268,10 @@ func (s *Server) Start() {
 	// the system account setup above. JetStream will create its
 	// own system account if one is not present.
 	if opts.JetStream {
-		var cfg *JetStreamConfig
-		if opts.StoreDir != "" {
-			cfg = &JetStreamConfig{
-				StoreDir:  opts.StoreDir,
-				MaxMemory: opts.JetStreamMaxMemory,
-				MaxStore:  opts.JetStreamMaxStore,
-			}
+		cfg := &JetStreamConfig{
+			StoreDir:  opts.StoreDir,
+			MaxMemory: opts.JetStreamMaxMemory,
+			MaxStore:  opts.JetStreamMaxStore,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start jetstream: %v", err)

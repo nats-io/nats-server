@@ -1249,6 +1249,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				}
 			}
 		}
+		opts.JetStream = true
 	default:
 		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}
@@ -3210,6 +3211,13 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.ReconnectErrorReports == 0 {
 		opts.ReconnectErrorReports = DEFAULT_RECONNECT_ERROR_REPORTS
+	}
+	// JetStream
+	if opts.JetStreamMaxMemory == 0 {
+		opts.JetStreamMaxMemory = -1
+	}
+	if opts.JetStreamMaxStore == 0 {
+		opts.JetStreamMaxStore = -1
 	}
 }
 
