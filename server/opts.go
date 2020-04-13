@@ -1124,38 +1124,124 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
+var dynamicJSAccountLimits = &JetStreamAccountLimits{-1, -1, -1, -1}
+
+// Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
+// use dynamic account limits.
+func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+	var lt token
+
+	tk, v := unwrapValue(v, &lt)
+
+	// Value here can be bool, or string "enabled" or a map.
+	switch vv := v.(type) {
+	case bool:
+		if vv {
+			acc.jsLimits = dynamicJSAccountLimits
+		}
+	case string:
+		switch strings.ToLower(vv) {
+		case "enabled", "enable":
+			acc.jsLimits = dynamicJSAccountLimits
+		case "disabled", "disable":
+			acc.jsLimits = nil
+		default:
+			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+		}
+	case map[string]interface{}:
+		jsLimits := &JetStreamAccountLimits{-1, -1, -1, -1}
+		for mk, mv := range vv {
+			tk, mv = unwrapValue(mv, &lt)
+			switch strings.ToLower(mk) {
+			case "max_memory", "max_mem", "mem", "memory":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxMemory = int64(vv)
+			case "max_store", "max_file", "max_disk", "store", "disk":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxStore = int64(vv)
+			case "max_streams", "streams":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxStreams = int(vv)
+			case "max_consumers", "consumers":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxConsumers = int(vv)
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: mk,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		acc.jsLimits = jsLimits
+	default:
+		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
+	}
+
+	return nil
+}
+
+// Parse enablement of jetstream for a server.
 func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 
 	tk, v := unwrapValue(v, &lt)
-	cm, ok := v.(map[string]interface{})
-	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected map to define JetStream, got %T", v)}
-	}
 
-	opts.JetStream = true
-
-	for mk, mv := range cm {
-		tk, mv = unwrapValue(mv, &lt)
-		switch strings.ToLower(mk) {
-		case "store_dir", "storedir":
-			opts.StoreDir = mv.(string)
-		case "max_memory_store", "max_mem_store":
-			opts.JetStreamMaxMemory = mv.(int64)
-		case "max_file_store":
-			opts.JetStreamMaxStore = mv.(int64)
+	// Value here can be bool, or string "enabled" or a map.
+	switch vv := v.(type) {
+	case bool:
+		opts.JetStream = v.(bool)
+	case string:
+		switch strings.ToLower(vv) {
+		case "enabled", "enable":
+			opts.JetStream = true
+		case "disabled", "disable":
+			opts.JetStream = false
 		default:
-			if !tk.IsUsedVariable() {
-				err := &unknownConfigFieldErr{
-					field: mk,
-					configErr: configErr{
-						token: tk,
-					},
+			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+		}
+	case map[string]interface{}:
+		for mk, mv := range vv {
+			tk, mv = unwrapValue(mv, &lt)
+			switch strings.ToLower(mk) {
+			case "store_dir", "storedir":
+				opts.StoreDir = mv.(string)
+			case "max_memory_store", "max_mem_store":
+				opts.JetStreamMaxMemory = mv.(int64)
+			case "max_file_store":
+				opts.JetStreamMaxStore = mv.(int64)
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: mk,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
 				}
-				*errors = append(*errors, err)
-				continue
 			}
 		}
+	default:
+		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}
 
 	return nil
@@ -1678,6 +1764,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 					exportStreams = append(exportStreams, streams...)
 					exportServices = append(exportServices, services...)
+				case "jetstream":
+					err := parseJetStreamForAccount(mv, acc, errors, warnings)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
+					}
 				case "users":
 					nkeys, users, err := parseUsers(mv, opts, errors, warnings)
 					if err != nil {

@@ -1132,7 +1132,7 @@ func lexSkip(lx *lexer, nextState stateFn) stateFn {
 
 // Tests to see if we have a number suffix
 func isNumberSuffix(r rune) bool {
-	return r == 'k' || r == 'K' || r == 'm' || r == 'M' || r == 'g' || r == 'G'
+	return r == 'k' || r == 'K' || r == 'm' || r == 'M' || r == 'g' || r == 'G' || r == 't' || r == 'T' || r == 'p' || r == 'P' || r == 'e' || r == 'E'
 }
 
 // Tests for both key separators

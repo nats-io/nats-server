@@ -4922,6 +4922,85 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 	}
 }
 
+func clientConnectToServerWithUP(t *testing.T, opts *server.Options, user, pass string) *nats.Conn {
+	curl := fmt.Sprintf("nats://%s:%s@%s:%d", user, pass, opts.Host, opts.Port)
+	nc, err := nats.Connect(curl, nats.Name("JS-UP-TEST"), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	return nc
+}
+
+func TestJetStreamMultipleAccountsBasics(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: enabled
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ {user: ua, password: pwd} ]
+			},
+			B: {
+				jetstream: {max_mem: 1GB, max_store: 1TB, max_streams: 10, max_consumers: 1k}
+				users: [ {user: ub, password: pwd} ]
+			},
+			C: {
+				users: [ {user: uc, password: pwd} ]
+			},
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	nc := clientConnectToServerWithUP(t, opts, "ua", "pwd")
+	defer nc.Close()
+
+	resp, _ := nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	nc = clientConnectToServerWithUP(t, opts, "ub", "pwd")
+	defer nc.Close()
+
+	resp, _ = nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	resp, err := nc.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var info server.JetStreamAccountStats
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	limits := info.Limits
+	if limits.MaxStreams != 10 {
+		t.Fatalf("Expected 10 for MaxStreams, got %d", limits.MaxStreams)
+	}
+	if limits.MaxConsumers != 1000 {
+		t.Fatalf("Expected MaxConsumers of %d, got %d", 1000, limits.MaxConsumers)
+	}
+	gb := int64(1024 * 1024 * 1024)
+	if limits.MaxMemory != gb {
+		t.Fatalf("Expected MaxMemory to be 1GB, got %d", limits.MaxMemory)
+	}
+	if limits.MaxStore != 1024*gb {
+		t.Fatalf("Expected MaxStore to be 1TB, got %d", limits.MaxStore)
+	}
+	// Check C is not enabled.
+	nc = clientConnectToServerWithUP(t, opts, "uc", "pwd")
+	defer nc.Close()
+
+	if _, err = nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond); err == nil {
+		t.Fatalf("Expected no response for account c")
+	}
+}
+
 ////////////////////////////////////////
 // Benchmark placeholders
 ////////////////////////////////////////
