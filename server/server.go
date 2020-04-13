@@ -1248,7 +1248,7 @@ func (s *Server) Start() {
 	// own system account if one is not present.
 	if opts.JetStream {
 		var cfg *JetStreamConfig
-		if opts.StoreDir != "" {
+		if opts.StoreDir != "" || opts.JetStreamMaxMemory != 0 || opts.JetStreamMaxStore != 0 {
 			cfg = &JetStreamConfig{
 				StoreDir:  opts.StoreDir,
 				MaxMemory: opts.JetStreamMaxMemory,
