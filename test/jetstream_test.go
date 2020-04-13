@@ -5001,6 +5001,30 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	}
 }
 
+func TestJetStreamServerResourcesConfig(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 2GB, max_file_store: 1TB}
+	`))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	gb := int64(1024 * 1024 * 1024)
+	jsc := s.JetStreamConfig()
+	if jsc.MaxMemory != 2*gb {
+		t.Fatalf("Expected MaxMemory to be %d, got %d", 2*gb, jsc.MaxMemory)
+	}
+	if jsc.MaxStore != 1024*gb {
+		t.Fatalf("Expected MaxStore to be %d, got %d", 1024*gb, jsc.MaxStore)
+	}
+}
+
 ////////////////////////////////////////
 // Benchmark placeholders
 ////////////////////////////////////////
