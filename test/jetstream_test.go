@@ -16,6 +16,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/url"
@@ -4934,7 +4935,7 @@ func clientConnectToServerWithUP(t *testing.T, opts *server.Options, user, pass 
 func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
-		jetstream: enabled
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
 		accounts: {
 			A: {
 				jetstream: enabled
@@ -4958,19 +4959,19 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
-	nc := clientConnectToServerWithUP(t, opts, "ua", "pwd")
-	defer nc.Close()
+	nca := clientConnectToServerWithUP(t, opts, "ua", "pwd")
+	defer nca.Close()
 
-	resp, _ := nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	resp, _ := nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
 	expectOKResponse(t, resp)
 
-	nc = clientConnectToServerWithUP(t, opts, "ub", "pwd")
-	defer nc.Close()
+	ncb := clientConnectToServerWithUP(t, opts, "ub", "pwd")
+	defer ncb.Close()
 
-	resp, _ = nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
 	expectOKResponse(t, resp)
 
-	resp, err := nc.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err := ncb.Request(server.JetStreamInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4992,12 +4993,102 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if limits.MaxStore != 1024*gb {
 		t.Fatalf("Expected MaxStore to be 1TB, got %d", limits.MaxStore)
 	}
-	// Check C is not enabled.
-	nc = clientConnectToServerWithUP(t, opts, "uc", "pwd")
-	defer nc.Close()
 
-	if _, err = nc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond); err == nil {
-		t.Fatalf("Expected no response for account c")
+	ncc := clientConnectToServerWithUP(t, opts, "uc", "pwd")
+	defer ncc.Close()
+
+	expectNotEnabled := func(resp *nats.Msg, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("Unexpected error requesting enabled status")
+		}
+		if resp == nil {
+			t.Fatalf("No response, possible timeout?")
+		}
+		if string(resp.Data) != "-ERR 'jetstream not enabled for account'" {
+			t.Fatalf("Expected to get a response indicating jetstream is not enabled for this account, got %q", resp.Data)
+		}
+	}
+
+	// Check C is not enabled. We expect a negative response, not a timeout.
+	expectNotEnabled(ncc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond))
+
+	// Now do simple reload and check that we do the right thing. Testing enable and disable and also change in limits
+	newConf := []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		accounts: {
+			A: {
+				jetstream: disabled
+				users: [ {user: ua, password: pwd} ]
+			},
+			B: {
+				jetstream: {max_mem: 32GB, max_store: 512GB, max_streams: 100, max_consumers: 4k}
+				users: [ {user: ub, password: pwd} ]
+			},
+			C: {
+				jetstream: {max_mem: 1GB, max_store: 1TB, max_streams: 10, max_consumers: 1k}
+				users: [ {user: uc, password: pwd} ]
+			},
+		}
+	`)
+	if err := ioutil.WriteFile(conf, newConf, 0600); err != nil {
+		t.Fatalf("Error rewriting server's config file: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on server reload: %v", err)
+	}
+	expectNotEnabled(nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond))
+
+	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	resp, _ = ncc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
+	expectOKResponse(t, resp)
+
+	// Now check that limits have been updated.
+	// Account B
+	resp, err = ncb.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	limits = info.Limits
+	if limits.MaxStreams != 100 {
+		t.Fatalf("Expected 100 for MaxStreams, got %d", limits.MaxStreams)
+	}
+	if limits.MaxConsumers != 4000 {
+		t.Fatalf("Expected MaxConsumers of %d, got %d", 4000, limits.MaxConsumers)
+	}
+	if limits.MaxMemory != 32*gb {
+		t.Fatalf("Expected MaxMemory to be 32GB, got %d", limits.MaxMemory)
+	}
+	if limits.MaxStore != 512*gb {
+		t.Fatalf("Expected MaxStore to be 512GB, got %d", limits.MaxStore)
+	}
+
+	// Account C
+	resp, err = ncc.Request(server.JetStreamInfo, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	limits = info.Limits
+	if limits.MaxStreams != 10 {
+		t.Fatalf("Expected 10 for MaxStreams, got %d", limits.MaxStreams)
+	}
+	if limits.MaxConsumers != 1000 {
+		t.Fatalf("Expected MaxConsumers of %d, got %d", 1000, limits.MaxConsumers)
+	}
+	if limits.MaxMemory != gb {
+		t.Fatalf("Expected MaxMemory to be 1GB, got %d", limits.MaxMemory)
+	}
+	if limits.MaxStore != 1024*gb {
+		t.Fatalf("Expected MaxStore to be 1TB, got %d", limits.MaxStore)
 	}
 }
 

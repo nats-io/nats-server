@@ -50,6 +50,10 @@ type option interface {
 	// IsClusterPermsChange indicates if this option requires reloading
 	// cluster permissions.
 	IsClusterPermsChange() bool
+
+	// IsJetStreamChange inidicates a change in the servers config for JetStream.
+	// Account changes will be handled separately in reloadAuthorization.
+	IsJetStreamChange() bool
 }
 
 // noopOption is a base struct that provides default no-op behaviors.
@@ -68,6 +72,10 @@ func (n noopOption) IsAuthChange() bool {
 }
 
 func (n noopOption) IsClusterPermsChange() bool {
+	return false
+}
+
+func (n noopOption) IsJetStreamChange() bool {
 	return false
 }
 
@@ -528,6 +536,20 @@ func (a *accountsOption) Apply(s *Server) {
 	s.Noticef("Reloaded: accounts")
 }
 
+// For changes to a server's config.
+type jetStreamOption struct {
+	noopOption
+	newValue bool
+}
+
+func (a *jetStreamOption) Apply(s *Server) {
+	s.Noticef("Reloaded: jetstream")
+}
+
+func (jso jetStreamOption) IsJetStreamChange() bool {
+	return true
+}
+
 // connectErrorReports implements the option interface for the `connect_error_reports`
 // setting.
 type connectErrorReports struct {
@@ -810,6 +832,18 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "storedir":
+			return nil, fmt.Errorf("config reload not supported for jetstream storage directory")
+		case "jetstream":
+			new := newValue.(bool)
+			old := oldValue.(bool)
+			if new != old {
+				diffOpts = append(diffOpts, &jetStreamOption{newValue: new})
+			}
+		case "jetstreammaxmemory":
+			return nil, fmt.Errorf("config reload not supported for jetstream max memory")
+		case "jetstreammaxstore":
+			return nil, fmt.Errorf("config reload not supported for jetstream max storage")
 		case "connecterrorreports":
 			diffOpts = append(diffOpts, &connectErrorReports{newValue: newValue.(int)})
 		case "reconnecterrorreports":
@@ -940,10 +974,11 @@ func (s *Server) reloadAuthorization() {
 	// This map will contain the names of accounts that have their streams
 	// import configuration changed.
 	awcsti := make(map[string]struct{})
-
+	checkJetStream := false
 	s.mu.Lock()
 
-	// This can not be changed for now so ok to check server's trustedKeys
+	// This can not be changed for now so ok to check server's trustedKeys unlocked.
+	// If plain configured accounts, process here.
 	if s.trustedKeys == nil {
 		// We need to drain the old accounts here since we have something
 		// new configured. We do not want s.accounts to change since that would
@@ -978,6 +1013,7 @@ func (s *Server) reloadAuthorization() {
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
 				newAcc.respMap = acc.respMap
+				newAcc.js = acc.js
 				acc.mu.RUnlock()
 
 				// Check if current and new config of this account are same
@@ -992,6 +1028,8 @@ func (s *Server) reloadAuthorization() {
 			}
 			return true
 		})
+		// Double check any JetStream configs.
+		checkJetStream = true
 	} else if s.opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {
@@ -1075,6 +1113,11 @@ func (s *Server) reloadAuthorization() {
 			route.setNoReconnect()
 			route.authViolation()
 		}
+	}
+
+	// We will double check all JetStream configs on a reload.
+	if checkJetStream {
+		s.configAllJetStreamAccounts()
 	}
 }
 
