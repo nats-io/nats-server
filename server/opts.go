@@ -1218,6 +1218,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]interface{}:
+		opts.JetStream = true
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
