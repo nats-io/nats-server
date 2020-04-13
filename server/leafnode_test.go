@@ -1357,3 +1357,75 @@ func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
 		// OK!
 	}
 }
+
+func TestLeafNodeHubWithGateways(t *testing.T) {
+	ao := DefaultOptions()
+	ao.LeafNode.Host = "127.0.0.1"
+	ao.LeafNode.Port = -1
+	a := RunServer(ao)
+	defer a.Shutdown()
+
+	ua, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ao.LeafNode.Port))
+
+	bo := testDefaultOptionsForGateway("B")
+	bo.Accounts = []*Account{NewAccount("SYS")}
+	bo.SystemAccount = "SYS"
+	bo.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	bo.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{ua},
+			Hub:  true,
+		},
+	}
+	b := RunServer(bo)
+	defer b.Shutdown()
+
+	do := DefaultOptions()
+	do.LeafNode.Host = "127.0.0.1"
+	do.LeafNode.Port = -1
+	d := RunServer(do)
+	defer d.Shutdown()
+
+	ud, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", do.LeafNode.Port))
+
+	co := testGatewayOptionsFromToWithServers(t, "C", "B", b)
+	co.Accounts = []*Account{NewAccount("SYS")}
+	co.SystemAccount = "SYS"
+	co.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	co.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{ud},
+			Hub:  true,
+		},
+	}
+	c := RunServer(co)
+	defer c.Shutdown()
+
+	waitForInboundGateways(t, b, 1, 2*time.Second)
+	waitForInboundGateways(t, c, 1, 2*time.Second)
+	checkLeafNodeConnected(t, a)
+	checkLeafNodeConnected(t, d)
+
+	// Create a responder on D
+	ncD := natsConnect(t, d.ClientURL())
+	defer ncD.Close()
+
+	subsOnABefore := a.globalAccount().TotalSubs()
+
+	ncD.Subscribe("service", func(m *nats.Msg) {
+		m.Respond([]byte("reply"))
+	})
+	ncD.Flush()
+
+	// Wait for interest to be registered on A.
+	checkExpectedSubs(t, subsOnABefore+1, a)
+
+	// Create requestor on A and send the request, expect reply.
+	ncA := natsConnect(t, a.ClientURL())
+	defer ncA.Close()
+	if msg, err := ncA.Request("service", []byte("request"), time.Second); err != nil {
+		t.Fatalf("Failed to get reply: %v", err)
+	} else if string(msg.Data) != "reply" {
+		t.Fatalf("Unexpected reply: %q", msg.Data)
+	}
+}
