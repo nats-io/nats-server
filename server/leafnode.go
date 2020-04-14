@@ -1056,6 +1056,10 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	} else {
 		acc.sl.All(&subs)
 	}
+
+	// Check if we have an existing service import reply.
+	siReply := acc.siReply
+
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
 	for isubj := range acc.imports.services {
@@ -1116,6 +1120,13 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 	// Detect loop by subscribing to a specific subject and checking
 	// if this is coming back to us.
 	c.leaf.smap[lds]++
+
+	// Check if we need to add an existing siReply to our map.
+	// This will be a prefix so add on the wildcard.
+	if siReply != nil {
+		wcsub := append(siReply, '>')
+		c.leaf.smap[string(wcsub)]++
+	}
 
 	lenMap := len(c.leaf.smap)
 	c.mu.Unlock()

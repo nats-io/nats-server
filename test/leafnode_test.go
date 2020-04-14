@@ -3315,6 +3315,8 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 			listen: "127.0.0.1:-1"
 		}
 	`))
+	defer os.Remove(confA)
+
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 
@@ -3354,6 +3356,8 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	`
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate, optsA.LeafNode.Port)))
+	defer os.Remove(confB)
+
 	srvB, optsB := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
 
@@ -3378,6 +3382,168 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	defer nc.Close()
 
 	resp, err := nc.Request("foo", []byte("hello"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp == nil || strings.Compare("world", string(resp.Data)) != 0 {
+		t.Fatal("Did not receive the correct message")
+	}
+}
+
+// This will test for a bug in service export/import with leafnode restart.
+// https://github.com/nats-io/nats-server/issues/1344
+func TestServiceExportWithLeafnodeRestart(t *testing.T) {
+	confG := createConfFile(t, []byte(`
+		server_name: G
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization { account:"EXTERNAL" }
+		}
+
+		accounts: {
+		    INTERNAL: {
+		        users: [
+		            {user: good, password: pwd}
+		        ]
+		        exports: [{service: "foo", response: singleton}]
+			    imports: [
+		            {
+		                service: {
+		                    account: EXTERNAL
+		                    subject: "evilfoo"
+		                }, to: from_evilfoo
+		            }
+		        ]
+		    },
+		    EXTERNAL: {
+		        users: [
+		            {user: evil, password: pwd}
+		        ]
+		        exports: [{service: "evilfoo", response: singleton}]
+			    imports: [
+		            {
+		                service: {
+		                    account: INTERNAL
+		                    subject: "foo"
+		                }, to: goodfoo
+		            }
+		        ]
+		    }
+		}
+	`))
+	defer os.Remove(confG)
+
+	srvG, optsG := RunServerWithConfig(confG)
+	defer srvG.Shutdown()
+
+	eConfigTemplate := `
+		server_name: E
+		listen: 127.0.0.1:-1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			remotes = [
+			{
+				url:"nats://127.0.0.1:%d"
+				account:"EXTERNAL_GOOD"
+			}
+			]
+		}
+
+		accounts: {
+		    INTERNAL_EVILINC: {
+		        users: [
+		            {user: evil, password: pwd}
+		        ]
+		        exports: [{service: "foo", response: singleton}]
+			    imports: [
+		            {
+		                service: {
+		                    account: EXTERNAL_GOOD
+		                    subject: "goodfoo"
+		                }, to: from_goodfoo
+		            }
+		        ]
+		    },
+		    EXTERNAL_GOOD: {
+		        users: [
+		            {user: good, password: pwd}
+		        ]
+		        exports: [{service: "goodfoo", response: singleton}]
+			    imports: [
+		            {
+		                service: {
+		                    account: INTERNAL_EVILINC
+		                    subject: "foo"
+		                }, to: evilfoo
+		            }
+		        ]
+		    },
+		}
+	`
+
+	confE := createConfFile(t, []byte(fmt.Sprintf(eConfigTemplate, optsG.LeafNode.Port)))
+	defer os.Remove(confE)
+
+	srvE, optsE := RunServerWithConfig(confE)
+	defer srvE.Shutdown()
+
+	// connect to confE, and offer a service
+	nc2, err := nats.Connect(fmt.Sprintf("nats://evil:pwd@%s:%d", optsE.Host, optsE.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	nc2.Subscribe("foo", func(msg *nats.Msg) {
+		if err := msg.Respond([]byte("world")); err != nil {
+			t.Fatalf("Error on respond: %v", err)
+		}
+	})
+	nc2.Flush()
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsG.Host, optsG.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	resp, err := nc.Request("from_evilfoo", []byte("hello"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp == nil || strings.Compare("world", string(resp.Data)) != 0 {
+		t.Fatal("Did not receive the correct message")
+	}
+
+	// Now restart server E and requestor and replier.
+	srvE.Shutdown()
+	nc.Close()
+	nc2.Close()
+
+	srvE, optsE = RunServerWithConfig(confE)
+	defer srvE.Shutdown()
+
+	nc2, err = nats.Connect(fmt.Sprintf("nats://evil:pwd@%s:%d", optsE.Host, optsE.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	nc2.Subscribe("foo", func(msg *nats.Msg) {
+		if err := msg.Respond([]byte("world")); err != nil {
+			t.Fatalf("Error on respond: %v", err)
+		}
+	})
+	nc2.Flush()
+
+	nc, err = nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsG.Host, optsG.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	resp, err = nc.Request("from_evilfoo", []byte("hello"), 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
