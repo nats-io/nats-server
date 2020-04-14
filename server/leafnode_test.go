@@ -1414,15 +1414,18 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	ncD := natsConnect(t, d.ClientURL())
 	defer ncD.Close()
 
-	subsOnABefore := a.globalAccount().TotalSubs()
-
 	ncD.Subscribe("service", func(m *nats.Msg) {
 		m.Respond([]byte("reply"))
 	})
 	ncD.Flush()
 
-	// Wait for interest to be registered on A.
-	checkExpectedSubs(t, subsOnABefore+1, a)
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		acc := a.globalAccount()
+		if r := acc.sl.Match("service"); r != nil && len(r.psubs) == 1 {
+			return nil
+		}
+		return fmt.Errorf("subscription still not registered")
+	})
 
 	// Create requestor on A and send the request, expect a reply.
 	ncA := natsConnect(t, a.ClientURL())
