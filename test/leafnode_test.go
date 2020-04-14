@@ -3517,9 +3517,9 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 	}
 
 	// Now restart server E and requestor and replier.
-	srvE.Shutdown()
 	nc.Close()
 	nc2.Close()
+	srvE.Shutdown()
 
 	srvE, optsE = RunServerWithConfig(confE)
 	defer srvE.Shutdown()
