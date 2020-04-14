@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -218,6 +219,55 @@ func TestJetStreamAddStream(t *testing.T) {
 				t.Fatalf("Got an error deleting the stream: %v", err)
 			}
 		})
+	}
+}
+
+func TestJetStreamPubAck(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sname := "PUBACK"
+	acc := s.GlobalAccount()
+	mconfig := &server.StreamConfig{Name: sname, Subjects: []string{"foo"}, Storage: server.MemoryStorage}
+	mset, err := acc.AddStream(mconfig)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	checkRespDetails := func(resp *nats.Msg, err error, seq uint64) {
+		if err != nil {
+			t.Fatalf("Unexpected error from send stream msg: %v", err)
+		}
+		if resp == nil {
+			t.Fatalf("No response from send stream msg")
+		}
+		if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+			t.Fatalf("Did not get a correct response: %q", resp.Data)
+		}
+		var pubAck server.PubAck
+		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if pubAck.Stream != sname {
+			t.Fatalf("Expected %q for stream name, got %q", sname, pubAck.Stream)
+		}
+		if pubAck.Seq != seq {
+			t.Fatalf("Expected %d for sequence, got %d", seq, pubAck.Seq)
+		}
+	}
+
+	// Send messages and make sure pubAck details are correct.
+	for i := uint64(1); i <= 1000; i++ {
+		resp, err := nc.Request("foo", []byte("HELLO"), 100*time.Millisecond)
+		checkRespDetails(resp, err, i)
 	}
 }
 
@@ -588,7 +638,7 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	if resp == nil {
 		t.Fatalf("No response, possible timeout?")
 	}
-	if string(resp.Data) != server.OK {
+	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
 	}
 }

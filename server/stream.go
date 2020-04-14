@@ -16,6 +16,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path"
 	"strconv"
 	"sync"
@@ -39,6 +40,14 @@ type StreamConfig struct {
 	Template     string          `json:"template_owner,omitempty"`
 }
 
+// PubAck is the detail you get back from a publish to a stream that was successful.
+// e.g. +OK {"stream": "my_stream", "seq": 22}
+type PubAck struct {
+	Stream string `json:"stream"`
+	Seq    uint64 `json:"seq"`
+}
+
+// StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
 	Config StreamConfig `json:"config"`
 	State  StreamState  `json:"state"`
@@ -53,6 +62,7 @@ type Stream struct {
 	jsa       *jsAccount
 	client    *client
 	sid       int
+	pubAck    []byte
 	sendq     chan *jsPubMsg
 	store     StreamStore
 	consumers map[string]*Consumer
@@ -136,6 +146,14 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 		mset.Delete()
 		return nil, err
 	}
+
+	// Create our pubAck here. This will be reused and for +OK will contain JSON
+	// for stream name and sequence.
+	longestSeq := strconv.FormatUint(math.MaxUint64, 10)
+	lpubAck := len(AckAck) + len(cfg.Name) + len("{\"stream\": ,\"seq\": }") + len(longestSeq)
+	mset.pubAck = make([]byte, 0, lpubAck)
+	mset.pubAck = append(mset.pubAck, AckAck...)
+	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	return mset, nil
 }
@@ -507,6 +525,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		accName = c.acc.Name
 	}
 	doAck := !mset.config.NoAck
+	pubAck := mset.pubAck
 	jsa := mset.jsa
 	stype := mset.config.Storage
 	name := mset.config.Name
@@ -519,7 +538,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	}
 
 	// Response to send.
-	response := AckAck
+	var response []byte
 	var seq uint64
 	var err error
 
@@ -538,6 +557,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 			response = []byte("-ERR 'resource limits exceeded for account'")
 			store.RemoveMsg(seq)
 			seq = 0
+		} else if err == nil && doAck && len(reply) > 0 {
+			response = append(pubAck, strconv.FormatUint(seq, 10)...)
+			response = append(response, '}')
 		}
 	}
 

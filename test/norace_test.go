@@ -604,8 +604,7 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 
 	sendSubj := "bar"
 	for i := 0; i < toSend; i++ {
-		resp, _ := nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-		expectOKResponse(t, resp)
+		sendStreamMsg(t, nc, sendSubj, "Hello World!")
 	}
 
 	// Wait for test to complete.
