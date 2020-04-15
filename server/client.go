@@ -1196,6 +1196,14 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 	if skipFlush {
 		c.flags.set(skipFlushOnClose)
 	}
+	// Be consistent with the creation: for routes and gateways,
+	// we use Noticef on create, so use that too for delete.
+	if c.kind == ROUTER || c.kind == GATEWAY {
+		c.Noticef("%s connection closed: %v", c.typeString(), reason.String())
+	} else { // Client and Leaf Node connections.
+		c.Debugf("%s connection closed: %v", c.typeString(), reason.String())
+	}
+
 	// Save off the connection if its a client or leafnode.
 	if c.kind == CLIENT || c.kind == LEAF {
 		if nc := c.nc; nc != nil && c.srv != nil {
@@ -3517,13 +3525,6 @@ func (c *client) closeConnection(reason ClosedState) {
 // been started.
 func (c *client) teardownConn() {
 	c.mu.Lock()
-	// Be consistent with the creation: for routes and gateways,
-	// we use Noticef on create, so use that too for delete.
-	if c.kind == ROUTER || c.kind == GATEWAY {
-		c.Noticef("%s connection closed", c.typeString())
-	} else { // Client and Leaf Node connections.
-		c.Debugf("%s connection closed", c.typeString())
-	}
 
 	c.clearAuthTimer()
 	c.clearPingTimer()

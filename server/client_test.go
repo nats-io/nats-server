@@ -1990,3 +1990,51 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 		t.Fatalf("Expected\n%q\ngot\n%q", expected.String(), fakeConn.buf.String())
 	}
 }
+
+type captureNoticeLogger struct {
+	DummyLogger
+	notices []string
+}
+
+func (l *captureNoticeLogger) Noticef(format string, v ...interface{}) {
+	l.Lock()
+	l.notices = append(l.notices, fmt.Sprintf(format, v...))
+	l.Unlock()
+}
+
+func TestCloseConnectionLogsReason(t *testing.T) {
+	o1 := DefaultOptions()
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	l := &captureNoticeLogger{}
+	s1.SetLogger(l, true, true)
+
+	o2 := DefaultOptions()
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+	s2.Shutdown()
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if s1.NumRoutes() != 0 {
+			return fmt.Errorf("route still connected")
+		}
+		return nil
+	})
+	// Now check that s1 has logged that the connection is closed and that the reason is included.
+	ok := false
+	l.Lock()
+	for _, n := range l.notices {
+		if strings.Contains(n, "connection closed: "+ClientClosed.String()) {
+			ok = true
+			break
+		}
+	}
+	l.Unlock()
+	if !ok {
+		t.Fatal("Log does not contain closed reason")
+	}
+}
