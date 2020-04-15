@@ -92,12 +92,7 @@ func TestLeafNodeInfo(t *testing.T) {
 	// Now close connection, make sure we are doing the right accounting in the server.
 	lc.Close()
 
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nln := s.NumLeafNodes(); nln != 0 {
-			return fmt.Errorf("Number of leaf nodes is %d", nln)
-		}
-		return nil
-	})
+	checkLeafNodeConnections(t, s, 0)
 }
 
 func TestLeafNodeSplitBuffer(t *testing.T) {
@@ -146,31 +141,22 @@ func TestNumLeafNodes(t *testing.T) {
 		sendProto(t, lc, "CONNECT {}\r\n")
 		return lc
 	}
-	checkLFCount := func(n int) {
-		t.Helper()
-		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if nln := s.NumLeafNodes(); nln != n {
-				return fmt.Errorf("Number of leaf nodes is %d", nln)
-			}
-			return nil
-		})
-	}
-	checkLFCount(0)
+	checkLeafNodeConnections(t, s, 0)
 
 	lc1 := createNewLeafNode()
 	defer lc1.Close()
-	checkLFCount(1)
+	checkLeafNodeConnections(t, s, 1)
 
 	lc2 := createNewLeafNode()
 	defer lc2.Close()
-	checkLFCount(2)
+	checkLeafNodeConnections(t, s, 2)
 
 	// Now test remove works.
 	lc1.Close()
-	checkLFCount(1)
+	checkLeafNodeConnections(t, s, 1)
 
 	lc2.Close()
-	checkLFCount(0)
+	checkLeafNodeConnections(t, s, 0)
 }
 
 func TestLeafNodeRequiresConnect(t *testing.T) {
@@ -1904,16 +1890,7 @@ func TestLeafNodeFailover(t *testing.T) {
 	ca.servers[0].Shutdown()
 
 	// Make sure that s reconnects its LN connection
-	checkLNConnected := func(t *testing.T, s *server.Server) {
-		t.Helper()
-		checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
-			if s.NumLeafNodes() == 1 {
-				return nil
-			}
-			return fmt.Errorf("Server did not reconnect to second server in cluster A")
-		})
-	}
-	checkLNConnected(t, ca.servers[1])
+	checkLeafNodeConnected(t, ca.servers[1])
 
 	// Verify that LeafNode info protocol is sent to the server `s`
 	// with list of new servers. To do that, we will restart
@@ -1930,7 +1907,7 @@ func TestLeafNodeFailover(t *testing.T) {
 	// Shutdown the server the LN is currently connected to. It should
 	// reconnect to newa0.
 	ca.servers[1].Shutdown()
-	checkLNConnected(t, newa0)
+	checkLeafNodeConnected(t, newa0)
 
 	// Now shutdown newa0 and make sure `s` does not reconnect
 	// to server in gateway.
@@ -1939,9 +1916,7 @@ func TestLeafNodeFailover(t *testing.T) {
 	// Wait for more than the reconnect attempts.
 	time.Sleep(opts.LeafNode.ReconnectInterval + 50*time.Millisecond)
 
-	if cb.servers[0].NumLeafNodes() != 0 {
-		t.Fatalf("Server reconnected to server in cluster B")
-	}
+	checkLeafNodeConnections(t, cb.servers[0], 0)
 }
 
 func TestLeafNodeAdvertise(t *testing.T) {
@@ -1989,12 +1964,7 @@ func TestLeafNodeAdvertise(t *testing.T) {
 	defer s.Shutdown()
 
 	// Wait for leaf node connection to be established on s1.
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		if s1.NumLeafNodes() == 1 {
-			return nil
-		}
-		return fmt.Errorf("Leaf node connection still not established")
-	})
+	checkLeafNodeConnected(t, s1)
 
 	// Shutdown s1. The listener that we created should be the one
 	// receiving the connection from s.
@@ -2042,11 +2012,16 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	mycreds := genCredsFile(t, ujwt, seed)
 	defer os.Remove(mycreds)
 
-	checkLFCount := func(n int) {
+	checkAccConnectionCounts := func(t *testing.T, expected int) {
 		t.Helper()
-		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if nln := s.NumLeafNodes(); nln != n {
-				return fmt.Errorf("Number of leaf nodes is %d", nln)
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			// Make sure we are accounting properly here.
+			if nln := acc.NumLeafNodes(); nln != expected {
+				return fmt.Errorf("expected %v leaf node, got %d", expected, nln)
+			}
+			// clients and leafnodes counted together.
+			if nc := acc.NumConnections(); nc != expected {
+				return fmt.Errorf("expected %v for total connections, got %d", expected, nc)
 			}
 			return nil
 		})
@@ -2055,60 +2030,33 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf)
 	defer sl.Shutdown()
-	checkLFCount(1)
-
-	// Make sure we are accounting properly here.
-	if nln := acc.NumLeafNodes(); nln != 1 {
-		t.Fatalf("Expected 1 leaf node, got %d", nln)
-	}
-	// clients and leafnodes counted together.
-	if nc := acc.NumConnections(); nc != 1 {
-		t.Fatalf("Expected 1 for total connections, got %d", nc)
-	}
+	checkLeafNodeConnections(t, s, 1)
 
 	s2, _, lnconf2 := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf2)
 	defer s2.Shutdown()
-	checkLFCount(2)
+	checkLeafNodeConnections(t, s, 2)
+	checkAccConnectionCounts(t, 2)
 
-	// Make sure we are accounting properly here.
-	if nln := acc.NumLeafNodes(); nln != 2 {
-		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
-	}
-	// clients and leafnodes counted together.
-	if nc := acc.NumConnections(); nc != 2 {
-		t.Fatalf("Expected 2 total connections, got %d", nc)
-	}
 	s2.Shutdown()
-	checkLFCount(1)
+	checkLeafNodeConnections(t, s, 1)
 
-	// Make sure we are accounting properly here.
-	if nln := acc.NumLeafNodes(); nln != 1 {
-		t.Fatalf("Expected 1 leaf node, got %d", nln)
-	}
-	// clients and leafnodes counted together.
-	if nc := acc.NumConnections(); nc != 1 {
-		t.Fatalf("Expected 1 for total connections, got %d", nc)
-	}
+	checkAccConnectionCounts(t, 1)
 
 	// Now add back the second one as #3.
 	s3, _, lnconf3 := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf3)
 	defer s3.Shutdown()
-	checkLFCount(2)
+	checkLeafNodeConnections(t, s, 2)
 
-	if nln := acc.NumLeafNodes(); nln != 2 {
-		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
-	}
+	checkAccConnectionCounts(t, 2)
 
 	// Once we are here we should not be able to create anymore. Limit == 2.
 	s4, _, lnconf4 := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf4)
 	defer s4.Shutdown()
 
-	if nln := acc.NumLeafNodes(); nln != 2 {
-		t.Fatalf("Expected 2 leaf nodes, got %d", nln)
-	}
+	checkAccConnectionCounts(t, 2)
 
 	// Make sure s4 has 0 still.
 	if nln := s4.NumLeafNodes(); nln != 0 {
@@ -2116,7 +2064,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	}
 
 	// Make sure this is still 2.
-	checkLFCount(2)
+	checkLeafNodeConnections(t, s, 2)
 }
 
 func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
@@ -2217,51 +2165,46 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 		defer sl2.Shutdown()
 	}
 
-	checkLFCount := func(s *server.Server, n int) {
-		t.Helper()
-		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if nln := s.NumLeafNodes(); nln != n {
-				return fmt.Errorf("Number of leaf nodes is %d", nln)
-			}
-			return nil
-		})
-	}
-	checkLFCount(s1, loop)
-	checkLFCount(s2, loop)
+	checkLeafNodeConnections(t, s1, loop)
+	checkLeafNodeConnections(t, s2, loop)
 
 	// Now check that we have the remotes registered. This will prove we are sending
 	// and processing the leaf node connect events properly etc.
-	checkAccRemoteLFCount := func(acc *server.Account, n int) {
+	checkAccLFCount := func(acc *server.Account, remote bool, n int) {
 		t.Helper()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if nrln := acc.NumRemoteLeafNodes(); nrln != n {
-				return fmt.Errorf("Number of remote leaf nodes is %d", nrln)
+			str := ""
+			var nln int
+			if remote {
+				nln = acc.NumRemoteLeafNodes()
+				str = "remote"
+			} else {
+				nln = acc.NumLeafNodes()
+			}
+			if nln != n {
+				return fmt.Errorf("number of expected %sleaf nodes is %v, got %v", str, n, nln)
 			}
 			return nil
 		})
 	}
-	checkAccRemoteLFCount(acc, loop)
-	checkAccRemoteLFCount(acc2, loop)
+	checkAccLFCount(acc, true, loop)
+	checkAccLFCount(acc2, true, loop)
 
 	// Now that we are here we should not be allowed anymore leaf nodes.
 	l, _, lnconf := runSolicitWithCredentials(t, s1Opts, mycreds)
 	defer os.Remove(lnconf)
 	defer l.Shutdown()
 
-	if nln := acc.NumLeafNodes(); nln != maxleafs {
-		t.Fatalf("Expected %d leaf nodes, got %d", maxleafs, nln)
-	}
+	checkAccLFCount(acc, false, maxleafs)
 	// Should still be at loop size.
-	checkLFCount(s1, loop)
+	checkLeafNodeConnections(t, s1, loop)
 
 	l, _, lnconf = runSolicitWithCredentials(t, s2Opts, mycreds)
 	defer os.Remove(lnconf)
 	defer l.Shutdown()
-	if nln := acc2.NumLeafNodes(); nln != maxleafs {
-		t.Fatalf("Expected %d leaf nodes, got %d", maxleafs, nln)
-	}
+	checkAccLFCount(acc2, false, maxleafs)
 	// Should still be at loop size.
-	checkLFCount(s2, loop)
+	checkLeafNodeConnections(t, s2, loop)
 }
 
 func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
