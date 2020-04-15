@@ -1199,9 +1199,9 @@ func (c *client) markConnAsClosed(reason ClosedState, skipFlush bool) bool {
 	// Be consistent with the creation: for routes and gateways,
 	// we use Noticef on create, so use that too for delete.
 	if c.kind == ROUTER || c.kind == GATEWAY {
-		c.Noticef("%s connection closed: %v", c.typeString(), reason.String())
+		c.Noticef("%s connection closed: %s", c.typeString(), reason)
 	} else { // Client and Leaf Node connections.
-		c.Debugf("%s connection closed: %v", c.typeString(), reason.String())
+		c.Debugf("%s connection closed: %s", c.typeString(), reason)
 	}
 
 	// Save off the connection if its a client or leafnode.
