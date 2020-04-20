@@ -45,7 +45,7 @@ var (
 )
 
 type StreamStore interface {
-	StoreMsg(subj string, msg []byte) (uint64, error)
+	StoreMsg(subj string, msg []byte) (uint64, int64, error)
 	LoadMsg(seq uint64) (subj string, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)

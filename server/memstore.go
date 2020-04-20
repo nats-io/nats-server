@@ -80,7 +80,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 }
 
 // Store stores a message.
-func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
+func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	ms.mu.Lock()
 	seq := ms.state.LastSeq + 1
 	if ms.state.FirstSeq == 0 {
@@ -94,8 +94,8 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 	}
 
 	startBytes := int64(ms.state.Bytes)
-
-	ms.msgs[seq] = &storedMsg{subj, msg, seq, time.Now().UnixNano()}
+	ts := time.Now().UnixNano()
+	ms.msgs[seq] = &storedMsg{subj, msg, seq, ts}
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, msg)
 	ms.state.LastSeq = seq
@@ -116,7 +116,7 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		cb(stopBytes - startBytes)
 	}
 
-	return seq, nil
+	return seq, ts, nil
 }
 
 // StorageBytesUpdate registers an async callback for updates to storage changes.

@@ -25,12 +25,17 @@ func TestMemStoreBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
+
 	subj, msg := "foo", []byte("Hello World")
-	if seq, err := ms.StoreMsg(subj, msg); err != nil {
+	now := time.Now().UnixNano()
+	if seq, ts, err := ms.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	} else if seq != 1 {
 		t.Fatalf("Expected sequence to be 1, got %d", seq)
+	} else if ts < now || ts > now+int64(time.Millisecond) {
+		t.Fatalf("Expected timestamp to be current, got %v", ts-now)
 	}
+
 	state := ms.State()
 	if state.Msgs != 1 {
 		t.Fatalf("Expected 1 msg, got %d", state.Msgs)
@@ -64,7 +69,7 @@ func TestMemStoreMsgLimit(t *testing.T) {
 	if state.Msgs != 10 {
 		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if _, err := ms.StoreMsg(subj, msg); err != nil {
+	if _, _, err := ms.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	state = ms.State()
@@ -108,7 +113,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 
 	// Now send 10 more and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		if _, err := ms.StoreMsg(subj, msg); err != nil {
+		if _, _, err := ms.StoreMsg(subj, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
