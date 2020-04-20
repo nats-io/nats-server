@@ -416,13 +416,14 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// that to scanf them back in.
 	mn := mset.config.Name
 	pre := fmt.Sprintf(JetStreamAckT, mn, o.name)
-	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d", pre)
-	ackSubj := fmt.Sprintf("%s.*.*.*", pre)
+	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d", pre)
+	ackSubj := fmt.Sprintf("%s.*.*.*.*", pre)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		return nil, err
 	} else {
 		o.ackSub = sub
 	}
+
 	// Setup the internal sub for next message requests.
 	if !o.isPushMode() {
 		o.nextMsgSubj = fmt.Sprintf(JetStreamRequestNextT, mn, o.name)
@@ -564,7 +565,8 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 
 // Process a message for the ack reply subject delivered with a message.
 func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	sseq, dseq, dcount := o.ReplyInfo(subject)
+	sseq, dseq, dcount, _ := o.ReplyInfo(subject)
+
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck):
 		o.ackMsg(sseq, dseq, dcount)
@@ -870,8 +872,8 @@ func (o *Consumer) processNextMsgReq(_ *subscription, _ *client, _, reply string
 		if o.replay {
 			o.waiting = append(o.waiting, reply)
 			shouldSignal = true
-		} else if subj, msg, seq, dc, _, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, msg, seq, dc)
+		} else if subj, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
+			o.deliverMsg(reply, subj, msg, seq, dc, ts)
 		} else {
 			o.waiting = append(o.waiting, reply)
 		}
@@ -928,7 +930,7 @@ func (o *Consumer) isFilteredMatch(subj string) bool {
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Consumer) getNextMsg() (string, []byte, uint64, uint64, int64, error) {
+func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
 	if o.mset == nil {
 		return _EMPTY_, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
 	}
@@ -1049,7 +1051,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			dsubj = o.dsubj
 		}
 
-		// If we are in a replay scenario and have not caught up check if we need to dely here.
+		// If we are in a replay scenario and have not caught up check if we need to delay here.
 		if o.replay && lts > 0 {
 			if delay = time.Duration(ts - lts); delay > time.Millisecond {
 				qch := o.qch
@@ -1065,7 +1067,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 		// Track this regardless.
 		lts = ts
 
-		o.deliverMsg(dsubj, subj, msg, seq, dcnt)
+		o.deliverMsg(dsubj, subj, msg, seq, dcnt, ts)
 
 		o.mu.Unlock()
 		continue
@@ -1081,13 +1083,13 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 	}
 }
 
-func (o *Consumer) ackReply(sseq, dseq, dcount uint64) string {
-	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq)
+func (o *Consumer) ackReply(sseq, dseq, dcount uint64, ts int64) string {
+	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq, ts)
 }
 
 // deliverCurrentMsg is the hot path to deliver a message that was just received.
 // Will return if the message was delivered or not.
-func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
+func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int64) bool {
 	o.mu.Lock()
 	if seq != o.sseq {
 		o.mu.Unlock()
@@ -1111,7 +1113,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
 
 	// If we are partitioned and we do not match, do not consider this a failure.
 	// Go ahead and return true.
-	if o.config.FilterSubject != _EMPTY_ && subj != o.config.FilterSubject {
+	if o.config.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
 		o.mu.Unlock()
 		return true
 	}
@@ -1127,7 +1129,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
 		msg = append(msg[:0:0], msg...)
 	}
 
-	o.deliverMsg(dsubj, subj, msg, seq, 1)
+	o.deliverMsg(dsubj, subj, msg, seq, 1, ts)
 	o.mu.Unlock()
 
 	return true
@@ -1135,12 +1137,12 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64) bool {
 
 // Deliver a msg to the observable.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64) {
+func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64, ts int64) {
 	if o.mset == nil {
 		return
 	}
 	sendq := o.mset.sendq
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount), msg, o, seq}
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), msg, o, seq}
 
 	// This needs to be unlocked since the other side may need this lock on failed delivery.
 	o.mu.Unlock()
@@ -1255,20 +1257,20 @@ func (o *Consumer) checkPending() {
 
 // SeqFromReply will extract a sequence number from a reply subject.
 func (o *Consumer) SeqFromReply(reply string) uint64 {
-	_, seq, _ := o.ReplyInfo(reply)
+	_, seq, _, _ := o.ReplyInfo(reply)
 	return seq
 }
 
 // StreamSeqFromReply will extract the stream sequence from the reply subject.
 func (o *Consumer) StreamSeqFromReply(reply string) uint64 {
-	seq, _, _ := o.ReplyInfo(reply)
+	seq, _, _, _ := o.ReplyInfo(reply)
 	return seq
 }
 
-func (o *Consumer) ReplyInfo(reply string) (sseq, dseq, dcount uint64) {
-	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq)
-	if err != nil || n != 3 {
-		return 0, 0, 0
+func (o *Consumer) ReplyInfo(reply string) (sseq, dseq, dcount uint64, ts int64) {
+	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq, &ts)
+	if err != nil || n != 4 {
+		return 0, 0, 0, 0
 	}
 	return
 }
@@ -1295,7 +1297,7 @@ func (o *Consumer) selectSubjectLast() {
 		if err == ErrStoreMsgNotFound {
 			continue
 		}
-		if subj == o.config.FilterSubject {
+		if o.isFilteredMatch(subj) {
 			o.sseq = seq
 			return
 		}

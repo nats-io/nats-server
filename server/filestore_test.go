@@ -40,13 +40,17 @@ func TestFileStoreBasics(t *testing.T) {
 	defer fs.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
+	now := time.Now().UnixNano()
 	for i := 1; i <= 5; i++ {
-		if seq, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, ts, err := fs.StoreMsg(subj, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
+		} else if ts < now || ts > now+int64(time.Millisecond) {
+			t.Fatalf("Expected timestamp to be current, got %v", ts-now)
 		}
 	}
+
 	state := fs.State()
 	if state.Msgs != 5 {
 		t.Fatalf("Expected 5 msgs, got %d", state.Msgs)
@@ -97,7 +101,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	toStore := uint64(100)
 	for i := uint64(1); i <= toStore; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
-		if seq, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, _, err := fs.StoreMsg(subj, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
@@ -117,7 +121,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	fs.Stop()
 
 	// Make sure Store call after does not work.
-	if _, err := fs.StoreMsg(subj, []byte("no work")); err == nil {
+	if _, _, err := fs.StoreMsg(subj, []byte("no work")); err == nil {
 		t.Fatalf("Expected an error for StoreMsg call after Stop, got none")
 	}
 
@@ -139,7 +143,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	// Now write 100 more msgs
 	for i := uint64(101); i <= toStore*2; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
-		if seq, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, _, err := fs.StoreMsg(subj, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
@@ -189,7 +193,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 	if state.Msgs != 10 {
 		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if _, err := fs.StoreMsg(subj, msg); err != nil {
+	if _, _, err := fs.StoreMsg(subj, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	state = fs.State()
@@ -238,7 +242,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 
 	// Now send 10 more and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		if _, err := fs.StoreMsg(subj, msg); err != nil {
+		if _, _, err := fs.StoreMsg(subj, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
