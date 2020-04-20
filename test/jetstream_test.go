@@ -329,7 +329,8 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			sseq, dseq, _ := o.ReplyInfo(msg.Reply)
+
+			sseq, dseq, _, _ := o.ReplyInfo(msg.Reply)
 			if dseq != 1 {
 				t.Fatalf("Expected delivered seq of 1, got %d", dseq)
 			}
@@ -1655,7 +1656,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error waiting for message[%d]: %v", i, err)
 				}
-				sseq, dseq, dcount := o.ReplyInfo(m.Reply)
+				sseq, dseq, dcount, _ := o.ReplyInfo(m.Reply)
 				if sseq != uint64(i) {
 					t.Fatalf("Expected set sequence of %d , got %d", i, sseq)
 				}
@@ -1729,7 +1730,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, rdseq, _ := o.ReplyInfo(m.Reply)
+				rsseq, rdseq, _, _ := o.ReplyInfo(m.Reply)
 				if rdseq != uint64(dseq) {
 					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
 				}
@@ -1805,7 +1806,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, rdseq, _ := o.ReplyInfo(m.Reply)
+				rsseq, rdseq, _, _ := o.ReplyInfo(m.Reply)
 				if rdseq != uint64(dseq) {
 					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
 				}
@@ -1888,7 +1889,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	_, dseq, dc := o.ReplyInfo(msg.Reply)
+	_, dseq, dc, _ := o.ReplyInfo(msg.Reply)
 	if dseq != 1 {
 		t.Fatalf("Expected consumer sequence of 1, got %d", dseq)
 	}
@@ -1914,7 +1915,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	_, dseq, dc = o.ReplyInfo(msg.Reply)
+	_, dseq, dc, _ = o.ReplyInfo(msg.Reply)
 	if dseq != 2 {
 		t.Fatalf("Expected consumer sequence of 2, got %d", dseq)
 	}
@@ -2565,7 +2566,7 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, roseq, dcount := o.ReplyInfo(m.Reply)
+				rsseq, roseq, dcount, _ := o.ReplyInfo(m.Reply)
 				if roseq != uint64(seq) {
 					t.Fatalf("Expected consumer sequence of %d , got %d", seq, roseq)
 				}
@@ -2584,7 +2585,7 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				_, roseq, dcount := o.ReplyInfo(m.Reply)
+				_, roseq, dcount, _ := o.ReplyInfo(m.Reply)
 				if roseq != uint64(seq) {
 					t.Fatalf("Expected consumer sequence of %d , got %d", seq, roseq)
 				}
@@ -2696,6 +2697,82 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 	}
 }
 
+func TestJetStreamMetadata(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			for i := 0; i < 10; i++ {
+				nc.Publish("DC", []byte("OK!"))
+				nc.Flush()
+				time.Sleep(time.Millisecond)
+			}
+
+			if state := mset.State(); state.Msgs != 10 {
+				t.Fatalf("Expected %d messages, got %d", 10, state.Msgs)
+			}
+
+			o, err := mset.AddConsumer(workerModeConfig("WQ"))
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			for i := uint64(1); i <= 10; i++ {
+				m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+
+				sseq, dseq, dcount, ts := o.ReplyInfo(m.Reply)
+
+				// Load the original message from the stream to verify ReplyInfo ts against stored message
+				smsgj, err := nc.Request(fmt.Sprintf(server.JetStreamMsgBySeqT, c.mconfig.Name), []byte(strconv.Itoa(int(sseq))), time.Second)
+				if err != nil {
+					t.Fatalf("Could not retrieve stream message: %v", err)
+				}
+				var smsg server.StoredMsg
+				err = json.Unmarshal(smsgj.Data, &smsg)
+				if err != nil {
+					t.Fatalf("Could not parse stream message: %v", err)
+				}
+
+				if ts != smsg.Time.UnixNano() {
+					t.Fatalf("Wrong timestamp in ReplyInfo for msg %d, expected %v got %v", i, ts, smsg.Time.UnixNano())
+				}
+				if sseq != i {
+					t.Fatalf("Expected set sequence of %d, got %d", i, sseq)
+				}
+				if dseq != i {
+					t.Fatalf("Expected delivery sequence of %d, got %d", i, dseq)
+				}
+				if dcount != 1 {
+					t.Fatalf("Expected delivery count to be 1, got %d", dcount)
+				}
+
+				m.Respond(server.AckAck)
+			}
+		})
+	}
+}
 func TestJetStreamRedeliverCount(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2738,7 +2815,9 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				sseq, dseq, dcount := o.ReplyInfo(m.Reply)
+
+				sseq, dseq, dcount, _ := o.ReplyInfo(m.Reply)
+
 				// Make sure we keep getting stream sequence #1
 				if sseq != 1 {
 					t.Fatalf("Expected set sequence of 1, got %d", sseq)
@@ -2750,6 +2829,7 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 				if dcount != i {
 					t.Fatalf("Expected delivery count to be %d, got %d", i, dcount)
 				}
+
 				// Make sure it keeps getting sent back.
 				m.Respond(server.AckNak)
 			}

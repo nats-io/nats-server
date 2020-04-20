@@ -547,22 +547,22 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 }
 
 // Store stores a message.
-func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
+func (fs *fileStore) StoreMsg(subj string, msg []byte) (seq uint64, ts int64, err error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
-		return 0, ErrStoreClosed
+		return 0, 0, ErrStoreClosed
 	}
 
-	seq := fs.state.LastSeq + 1
+	seq = fs.state.LastSeq + 1
 	if fs.state.FirstSeq == 0 {
 		fs.state.FirstSeq = seq
 	}
 
-	n, err := fs.writeMsgRecord(seq, subj, msg)
+	n, ts, err := fs.writeMsgRecord(seq, subj, msg)
 	if err != nil {
 		fs.mu.Unlock()
-		return 0, err
+		return 0, 0, err
 	}
 	fs.kickFlusher()
 
@@ -588,7 +588,7 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, error) {
 		cb(int64(n))
 	}
 
-	return seq, nil
+	return seq, ts, nil
 }
 
 // Will check the msg limit and drop firstSeq msg if needed.
@@ -966,7 +966,7 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 }
 
 // Lock should be held.
-func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64, error) {
+func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64, int64, error) {
 	var err error
 
 	// Get size for this message.
@@ -976,7 +976,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	mb := fs.lmb
 	if mb == nil || mb.numBytes()+rl > fs.fcfg.BlockSize {
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 
@@ -1016,7 +1016,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	copy(mb.lchk[0:], checksum)
 	mb.mu.Unlock()
 
-	return uint64(rl), nil
+	return rl, ts, nil
 }
 
 // Will rewrite the message in the underlying store.

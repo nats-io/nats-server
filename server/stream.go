@@ -541,12 +541,13 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 	var response []byte
 	var seq uint64
 	var err error
+	var ts int64
 
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
 	} else {
 		// Check to see if we are over the account limit.
-		seq, err = store.StoreMsg(subject, msg)
+		seq, ts, err = store.StoreMsg(subject, msg)
 		if err != nil {
 			if err != ErrStoreClosed {
 				c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
@@ -572,7 +573,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		var needSignal bool
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
-			if !o.deliverCurrentMsg(subject, msg, seq) {
+			if !o.deliverCurrentMsg(subject, msg, seq, ts) {
 				needSignal = true
 			}
 		}
