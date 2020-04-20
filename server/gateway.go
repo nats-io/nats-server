@@ -183,7 +183,6 @@ type gateway struct {
 	outbound   bool
 	cfg        *gatewayCfg
 	connectURL *url.URL          // Needed when sending CONNECT after receiving INFO from remote
-	infoJSON   []byte            // Needed when sending INFO after receiving INFO from remote
 	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
 	insim      map[string]*insie // Per-account subject no-interest sent or modeInterestOnly mode (inbound conn)
 
@@ -576,6 +575,13 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 // Generates the Gateway INFO protocol.
 // The gateway lock is held on entry
 func (g *srvGateway) generateInfoJSON() {
+	// We could be here when processing a route INFO that has a gateway URL,
+	// but this server is not configured for gateways, so simply ignore here.
+	// The configuration mismatch is reported somewhere else.
+	if !g.enabled {
+		return
+	}
+	g.info.GatewayURLs = g.getURLs()
 	b, err := json.Marshal(g.info)
 	if err != nil {
 		panic(err)
@@ -712,14 +718,9 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		tlsRequired = opts.Gateway.TLSConfig != nil
 	}
 
-	// Generate INFO to send
 	s.gateway.RLock()
-	// Make a copy
-	info := *s.gateway.info
-	info.GatewayURLs = s.gateway.getURLs()
+	infoJSON := s.gateway.infoJSON
 	s.gateway.RUnlock()
-	b, _ := json.Marshal(&info)
-	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 
 	// Perform some initialization under the client lock
 	c.mu.Lock()
@@ -734,7 +735,6 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		// Since we are delaying the connect until after receiving
 		// the remote's INFO protocol, save the URL we need to connect to.
 		c.gw.connectURL = url
-		c.gw.infoJSON = infoJSON
 
 		c.Noticef("Creating outbound gateway connection to %q", cfg.Name)
 	} else {
@@ -1008,6 +1008,10 @@ func (c *client) processGatewayInfo(info *Info) {
 
 		// If this is the first INFO, send our connect
 		if isFirstINFO {
+			s.gateway.RLock()
+			infoJSON := s.gateway.infoJSON
+			s.gateway.RUnlock()
+
 			// Note, if we want to support NKeys, then we would get the nonce
 			// from this INFO protocol and can sign it in the CONNECT we are
 			// going to send now.
@@ -1015,8 +1019,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			c.sendGatewayConnect()
 			c.Debugf("Gateway connect protocol sent to %q", gwName)
 			// Send INFO too
-			c.enqueueProto(c.gw.infoJSON)
-			c.gw.infoJSON = nil
+			c.enqueueProto(infoJSON)
 			c.gw.useOldPrefix = !info.GatewayNRP
 			c.mu.Unlock()
 
@@ -1474,20 +1477,47 @@ func (g *gatewayCfg) addURLs(infoURLs []string) {
 	}
 }
 
-// Adds this URL to the set of Gateway URLs
+// Adds this URL to the set of Gateway URLs.
+// Returns true if the URL has been added, false otherwise.
 // Server lock held on entry
-func (s *Server) addGatewayURL(urlStr string) {
+func (s *Server) addGatewayURL(urlStr string) bool {
 	s.gateway.Lock()
-	s.gateway.URLs[urlStr] = struct{}{}
+	_, present := s.gateway.URLs[urlStr]
+	if !present {
+		s.gateway.URLs[urlStr] = struct{}{}
+		s.gateway.generateInfoJSON()
+	}
 	s.gateway.Unlock()
+	return !present
 }
 
-// Remove this URL from the set of gateway URLs
+// Removes this URL from the set of gateway URLs.
+// Returns true if the URL has been removed, false otherwise.
 // Server lock held on entry
-func (s *Server) removeGatewayURL(urlStr string) {
+func (s *Server) removeGatewayURL(urlStr string) bool {
+	if s.shutdown {
+		return false
+	}
 	s.gateway.Lock()
-	delete(s.gateway.URLs, urlStr)
+	_, removed := s.gateway.URLs[urlStr]
+	if removed {
+		delete(s.gateway.URLs, urlStr)
+		s.gateway.generateInfoJSON()
+	}
 	s.gateway.Unlock()
+	return removed
+}
+
+// Sends a Gateway's INFO to all inbound GW connections.
+// Server lock is held on entry
+func (s *Server) sendAsyncGatewayInfo() {
+	s.gateway.RLock()
+	for _, ig := range s.gateway.in {
+		ig.mu.Lock()
+		ig.enqueueProto(s.gateway.infoJSON)
+		ig.mu.Unlock()
+	}
+	s.gateway.RUnlock()
 }
 
 // This returns the URL of the Gateway listen spec, or empty string
