@@ -1161,8 +1161,8 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		sendInfo = len(s.routes) > 1
 
 		// If the INFO contains a Gateway URL, add it to the list for our cluster.
-		if info.GatewayURL != "" {
-			s.addGatewayURL(info.GatewayURL)
+		if info.GatewayURL != "" && s.addGatewayURL(info.GatewayURL) {
+			s.sendAsyncGatewayInfo()
 		}
 
 		// Add the remote's leafnodeURL to our list of URLs and send the update
@@ -1634,6 +1634,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 func (s *Server) removeRoute(c *client) {
 	var rID string
 	var lnURL string
+	var gwURL string
 	var hash string
 	c.mu.Lock()
 	cid := c.cid
@@ -1642,6 +1643,7 @@ func (s *Server) removeRoute(c *client) {
 		rID = r.remoteID
 		lnURL = r.leafnodeURL
 		hash = r.hash
+		gwURL = r.gatewayURL
 	}
 	c.mu.Unlock()
 	s.mu.Lock()
@@ -1652,7 +1654,11 @@ func (s *Server) removeRoute(c *client) {
 		if ok && c == rc {
 			delete(s.remotes, rID)
 		}
-		s.removeGatewayURL(r.gatewayURL)
+		// Remove the remote's gateway URL from our list and
+		// send update to inbound Gateway connections.
+		if gwURL != _EMPTY_ && s.removeGatewayURL(gwURL) {
+			s.sendAsyncGatewayInfo()
+		}
 		// Remove the remote's leafNode URL from
 		// our list and send update to LN connections.
 		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {

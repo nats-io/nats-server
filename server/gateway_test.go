@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -5849,4 +5850,77 @@ func TestGatewayNoCrashOnInvalidSubject(t *testing.T) {
 	if _, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Error getting message: %v", err)
 	}
+}
+
+func TestGatewayUpdateURLsFromRemoteCluster(t *testing.T) {
+	ob1 := testDefaultOptionsForGateway("B")
+	sb1 := RunServer(ob1)
+	defer sb1.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb1)
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+
+	// Add a server to cluster B.
+	ob2 := testDefaultOptionsForGateway("B")
+	ob2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ob1.Cluster.Port))
+	sb2 := RunServer(ob2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+
+	pmap := make(map[int]string)
+	pmap[ob1.Gateway.Port] = "B1"
+	pmap[ob2.Gateway.Port] = "B2"
+
+	checkURLs := func(eurls map[string]string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			rg := sa.getRemoteGateway("B")
+			urls := rg.getURLsAsStrings()
+			for _, u := range urls {
+				if _, ok := eurls[u]; !ok {
+					_, sport, _ := net.SplitHostPort(u)
+					port, _ := strconv.Atoi(sport)
+					return fmt.Errorf("URL %q (%s) should not be in the list of urls (%q)", u, pmap[port], eurls)
+				}
+			}
+			return nil
+		})
+	}
+	expected := make(map[string]string)
+	expected[fmt.Sprintf("127.0.0.1:%d", ob1.Gateway.Port)] = "B1"
+	expected[fmt.Sprintf("127.0.0.1:%d", ob2.Gateway.Port)] = "B2"
+	checkURLs(expected)
+
+	// Add another in cluster B
+	ob3 := testDefaultOptionsForGateway("B")
+	ob3.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ob1.Cluster.Port))
+	sb3 := RunServer(ob3)
+	defer sb3.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2, sb3)
+	waitForOutboundGateways(t, sb3, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 3, 2*time.Second)
+
+	pmap[ob3.Gateway.Port] = "B3"
+
+	expected = make(map[string]string)
+	expected[fmt.Sprintf("127.0.0.1:%d", ob1.Gateway.Port)] = "B1"
+	expected[fmt.Sprintf("127.0.0.1:%d", ob2.Gateway.Port)] = "B2"
+	expected[fmt.Sprintf("127.0.0.1:%d", ob3.Gateway.Port)] = "B3"
+	checkURLs(expected)
+
+	// Now stop server SB2, which should cause SA to remove it from its list.
+	sb2.Shutdown()
+
+	expected = make(map[string]string)
+	expected[fmt.Sprintf("127.0.0.1:%d", ob1.Gateway.Port)] = "B1"
+	expected[fmt.Sprintf("127.0.0.1:%d", ob3.Gateway.Port)] = "B3"
+	checkURLs(expected)
 }
