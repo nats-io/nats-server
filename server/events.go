@@ -99,6 +99,9 @@ type ConnectEventMsg struct {
 	Client ClientInfo `json:"client"`
 }
 
+// ConnectEventMsgSchema is the schema ID for ConnectEventMsg
+const ConnectEventMsgSchema = "io.nats.server.advisory.v1.client_connect"
+
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
@@ -111,6 +114,9 @@ type DisconnectEventMsg struct {
 	Received DataStats  `json:"received"`
 	Reason   string     `json:"reason"`
 }
+
+// DisconnectEventMsgSchema is the schema ID for DisconnectEventMsg
+const DisconnectEventMsgSchema = "io.nats.server.advisory.v1.client_disconnect"
 
 // AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
@@ -1003,7 +1009,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
-		Schema: "io.nats.server.advisory.v1.client_connect",
+		Schema: ConnectEventMsgSchema,
 		ID:     nuid.Next(),
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
@@ -1043,7 +1049,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
-		Schema: "io.nats.server.advisory.v1.client_disconnect",
+		Schema: DisconnectEventMsgSchema,
 		ID:     nuid.Next(),
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
@@ -1084,7 +1090,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
-		Schema: "io.nats.server.advisory.v1.client_disconnect",
+		Schema: DisconnectEventMsgSchema,
 		ID:     nuid.Next(),
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
