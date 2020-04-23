@@ -230,7 +230,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &cem); err != nil {
 		t.Fatalf("Error unmarshalling connect event message: %v", err)
 	}
-	if cem.Schema != "io.nats.server.advisory.v1.client_connect" {
+	if cem.Schema != ConnectEventMsgSchema {
 		t.Fatalf("Incorrect schema in connect event: %s", cem.Schema)
 	}
 	if cem.Time == "" {
@@ -286,7 +286,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &dem); err != nil {
 		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
 	}
-	if dem.Schema != "io.nats.server.advisory.v1.client_disconnect" {
+	if dem.Schema != DisconnectEventMsgSchema {
 		t.Fatalf("Incorrect schema in connect event: %s", cem.Schema)
 	}
 	if dem.Time == "" {
