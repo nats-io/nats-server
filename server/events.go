@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nuid"
+
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
@@ -88,6 +90,9 @@ type ServerStatsMsg struct {
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
+	Schema string     `json:"schema"`
+	ID     string     `json:"id"`
+	Time   string     `json:"timestamp"`
 	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
 }
@@ -95,6 +100,9 @@ type ConnectEventMsg struct {
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
+	Schema   string     `json:"schema"`
+	ID       string     `json:"id"`
+	Time     string     `json:"timestamp"`
 	Server   ServerInfo `json:"server"`
 	Client   ClientInfo `json:"client"`
 	Sent     DataStats  `json:"sent"`
@@ -920,6 +928,9 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
+		Schema: "io.nats.server.advisory.v1.client_connect",
+		ID:     nuid.Next(),
+		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Host:    c.host,
@@ -957,6 +968,9 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
+		Schema: "io.nats.server.advisory.v1.client_disconnect",
+		ID:     nuid.Next(),
+		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
@@ -995,6 +1009,9 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
+		Schema: "io.nats.server.advisory.v1.client_disconnect",
+		ID:     nuid.Next(),
+		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
