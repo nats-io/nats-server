@@ -258,7 +258,7 @@ func (s *Server) jsCreateTemplateRequest(sub *subscription, c *client, subject, 
 	}
 	templateName := subjectToken(subject, 2)
 	if templateName != cfg.Name {
-		s.sendInternalAccountMsg(c.acc, reply, protoErr("template name in subject does not match request"))
+		s.sendAPIResponse(c, subject, reply, string(msg), protoErr("template name in subject does not match request"))
 		return
 	}
 
@@ -361,12 +361,12 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		s.sendAPIResponse(c, subject, reply, string(msg), JetStreamBadRequest)
 		return
 	}
 	streamName := subjectToken(subject, 2)
 	if streamName != cfg.Name {
-		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
+		s.sendAPIResponse(c, subject, reply, string(msg), protoErr("stream name in subject does not match request"))
 		return
 	}
 
@@ -388,12 +388,12 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		s.sendInternalAccountMsg(c.acc, reply, JetStreamBadRequest)
+		s.sendAPIResponse(c, subject, reply, string(msg), JetStreamBadRequest)
 		return
 	}
 	streamName := subjectToken(subject, 2)
 	if streamName != cfg.Name {
-		s.sendInternalAccountMsg(c.acc, reply, protoErr("stream name in subject does not match request"))
+		s.sendAPIResponse(c, subject, reply, string(msg), protoErr("stream name in subject does not match request"))
 		return
 	}
 	mset, err := c.acc.LookupStream(streamName)
