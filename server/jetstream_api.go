@@ -734,7 +734,7 @@ type ClientAPIAudit struct {
 
 // JetStreamAPIAudit is an advisory about administrative actions taken on JetStream
 type JetStreamAPIAudit struct {
-	Schema   string         `json:"schema"`
+	Type     string         `json:"type"`
 	ID       string         `json:"id"`
 	Time     string         `json:"timestamp"`
 	Server   string         `json:"server"`
@@ -744,7 +744,7 @@ type JetStreamAPIAudit struct {
 	Response string         `json:"response"`
 }
 
-const auditSchema = "io.nats.jetstream.advisory.v1.api_audit"
+const auditType = "io.nats.jetstream.advisory.v1.api_audit"
 
 // sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
 func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
@@ -758,7 +758,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 	c.mu.Unlock()
 
 	e := &JetStreamAPIAudit{
-		Schema: auditSchema,
+		Type:   auditType,
 		ID:     nuid.Next(),
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Server: s.Name(),

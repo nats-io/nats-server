@@ -38,6 +38,7 @@ import (
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 
 	"github.com/nats-io/nats-server/v2/logger"
 )
@@ -873,16 +874,17 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	acc.mu.Unlock()
 
 	s.sys = &internal{
-		account: acc,
-		client:  s.createInternalSystemClient(),
-		seq:     1,
-		sid:     1,
-		servers: make(map[string]*serverUpdate),
-		replies: make(map[string]msgHandler),
-		sendq:   make(chan *pubMsg, internalSendQLen),
-		statsz:  eventsHBInterval,
-		orphMax: 5 * eventsHBInterval,
-		chkOrph: 3 * eventsHBInterval,
+		account:  acc,
+		client:   s.createInternalSystemClient(),
+		seq:      1,
+		sid:      1,
+		servers:  make(map[string]*serverUpdate),
+		replies:  make(map[string]msgHandler),
+		sendq:    make(chan *pubMsg, internalSendQLen),
+		statsz:   eventsHBInterval,
+		orphMax:  5 * eventsHBInterval,
+		chkOrph:  3 * eventsHBInterval,
+		eventids: nuid.New(),
 	}
 	s.sys.wg.Add(1)
 	s.mu.Unlock()

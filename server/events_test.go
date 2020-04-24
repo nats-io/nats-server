@@ -230,8 +230,8 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &cem); err != nil {
 		t.Fatalf("Error unmarshalling connect event message: %v", err)
 	}
-	if cem.Schema != ConnectEventMsgSchema {
-		t.Fatalf("Incorrect schema in connect event: %s", cem.Schema)
+	if cem.Type != ConnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
 	}
 	if cem.Time == "" {
 		t.Fatalf("Event time is not set")
@@ -286,8 +286,8 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &dem); err != nil {
 		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
 	}
-	if dem.Schema != DisconnectEventMsgSchema {
-		t.Fatalf("Incorrect schema in connect event: %s", cem.Schema)
+	if dem.Type != DisconnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
 	}
 	if dem.Time == "" {
 		t.Fatalf("Event time is not set")
