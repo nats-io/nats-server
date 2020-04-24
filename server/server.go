@@ -207,6 +207,8 @@ type Server struct {
 		ch chan time.Duration
 		m  sync.Map
 	}
+
+	eventids *nuid.NUID
 }
 
 // Make sure all are 64bits for atomic use
@@ -279,6 +281,7 @@ func NewServer(opts *Options) (*Server, error) {
 		start:      now,
 		configTime: now,
 		gwLeafSubs: NewSublistWithCache(),
+		eventids:   nuid.New(),
 	}
 
 	// Trusted root operator keys.
@@ -874,17 +877,16 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	acc.mu.Unlock()
 
 	s.sys = &internal{
-		account:  acc,
-		client:   s.createInternalSystemClient(),
-		seq:      1,
-		sid:      1,
-		servers:  make(map[string]*serverUpdate),
-		replies:  make(map[string]msgHandler),
-		sendq:    make(chan *pubMsg, internalSendQLen),
-		statsz:   eventsHBInterval,
-		orphMax:  5 * eventsHBInterval,
-		chkOrph:  3 * eventsHBInterval,
-		eventids: nuid.New(),
+		account: acc,
+		client:  s.createInternalSystemClient(),
+		seq:     1,
+		sid:     1,
+		servers: make(map[string]*serverUpdate),
+		replies: make(map[string]msgHandler),
+		sendq:   make(chan *pubMsg, internalSendQLen),
+		statsz:  eventsHBInterval,
+		orphMax: 5 * eventsHBInterval,
+		chkOrph: 3 * eventsHBInterval,
 	}
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
