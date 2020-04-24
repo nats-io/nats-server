@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server/pse"
-	"github.com/nats-io/nuid"
 )
 
 const (
@@ -81,7 +80,6 @@ type internal struct {
 	statsz   time.Duration
 	shash    string
 	inboxPre string
-	eventids *nuid.NUID
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -990,19 +988,21 @@ func (s *Server) accConnsUpdate(a *Account) {
 	s.sendAccConnsUpdate(a, subj)
 }
 
+// server lock should be held
 func (s *Server) nextEventID() string {
-	return s.sys.eventids.Next()
+	return s.eventids.Next()
 }
 
 // accountConnectEvent will send an account client connect event if there is interest.
 // This is a billing event.
 func (s *Server) accountConnectEvent(c *client) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -1014,7 +1014,7 @@ func (s *Server) accountConnectEvent(c *client) {
 
 	m := ConnectEventMsg{
 		Type: ConnectEventMsgType,
-		ID:   s.nextEventID(),
+		ID:   eid,
 		Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
@@ -1037,11 +1037,12 @@ func (s *Server) accountConnectEvent(c *client) {
 // This is a billing event.
 func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -1054,8 +1055,8 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 
 	m := DisconnectEventMsg{
 		Type: DisconnectEventMsgType,
-		ID:   s.nextEventID(),
-		Time: time.Now().UTC().Format(time.RFC3339Nano),
+		ID:   eid,
+		Time: now.UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
@@ -1090,13 +1091,14 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 		s.mu.Unlock()
 		return
 	}
+	eid := s.nextEventID()
 	s.mu.Unlock()
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
 		Type: DisconnectEventMsgType,
-		ID:   s.nextEventID(),
-		Time: time.Now().UTC().Format(time.RFC3339Nano),
+		ID:   eid,
+		Time: now.UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
