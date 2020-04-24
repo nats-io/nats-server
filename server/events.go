@@ -27,9 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/nuid"
-
 	"github.com/nats-io/nats-server/v2/server/pse"
+	"github.com/nats-io/nuid"
 )
 
 const (
@@ -82,6 +81,7 @@ type internal struct {
 	statsz   time.Duration
 	shash    string
 	inboxPre string
+	eventids *nuid.NUID
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -92,20 +92,20 @@ type ServerStatsMsg struct {
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
-	Schema string     `json:"schema"`
+	Type   string     `json:"type"`
 	ID     string     `json:"id"`
 	Time   string     `json:"timestamp"`
 	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
 }
 
-// ConnectEventMsgSchema is the schema ID for ConnectEventMsg
-const ConnectEventMsgSchema = "io.nats.server.advisory.v1.client_connect"
+// ConnectEventMsgType is the schema type for ConnectEventMsg
+const ConnectEventMsgType = "io.nats.server.advisory.v1.client_connect"
 
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
-	Schema   string     `json:"schema"`
+	Type     string     `json:"type"`
 	ID       string     `json:"id"`
 	Time     string     `json:"timestamp"`
 	Server   ServerInfo `json:"server"`
@@ -115,8 +115,8 @@ type DisconnectEventMsg struct {
 	Reason   string     `json:"reason"`
 }
 
-// DisconnectEventMsgSchema is the schema ID for DisconnectEventMsg
-const DisconnectEventMsgSchema = "io.nats.server.advisory.v1.client_disconnect"
+// DisconnectEventMsgType is the schema type for DisconnectEventMsg
+const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 
 // AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
@@ -990,6 +990,10 @@ func (s *Server) accConnsUpdate(a *Account) {
 	s.sendAccConnsUpdate(a, subj)
 }
 
+func (s *Server) nextEventID() string {
+	return s.sys.eventids.Next()
+}
+
 // accountConnectEvent will send an account client connect event if there is interest.
 // This is a billing event.
 func (s *Server) accountConnectEvent(c *client) {
@@ -1009,9 +1013,9 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
-		Schema: ConnectEventMsgSchema,
-		ID:     nuid.Next(),
-		Time:   time.Now().UTC().Format(time.RFC3339Nano),
+		Type: ConnectEventMsgType,
+		ID:   s.nextEventID(),
+		Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Host:    c.host,
@@ -1049,9 +1053,9 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
-		Schema: DisconnectEventMsgSchema,
-		ID:     nuid.Next(),
-		Time:   time.Now().UTC().Format(time.RFC3339Nano),
+		Type: DisconnectEventMsgType,
+		ID:   s.nextEventID(),
+		Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
@@ -1090,9 +1094,9 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
-		Schema: DisconnectEventMsgSchema,
-		ID:     nuid.Next(),
-		Time:   time.Now().UTC().Format(time.RFC3339Nano),
+		Type: DisconnectEventMsgType,
+		ID:   s.nextEventID(),
+		Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,

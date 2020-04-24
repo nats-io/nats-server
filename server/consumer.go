@@ -58,7 +58,7 @@ type CreateConsumerRequest struct {
 // ConsumerAckMetric is a metric published when a user acknowledges a message, the
 // number of these that will be published is dependant on SampleFrequency
 type ConsumerAckMetric struct {
-	Schema      string `json:"schema"`
+	Type        string `json:"type"`
 	ID          string `json:"id"`
 	Time        string `json:"timestamp"`
 	Stream      string `json:"stream"`
@@ -69,10 +69,13 @@ type ConsumerAckMetric struct {
 	Deliveries  uint64 `json:"deliveries"`
 }
 
+// ConsumerAckMetricType is the schema type for ConsumerAckMetricType
+const ConsumerAckMetricType = "io.nats.jetstream.metric.v1.consumer_ack"
+
 // ConsumerDeliveryExceededAdvisory is an advisory informing that a message hit
 // its MaxDeliver threshold and so might be a candidate for DLQ handling
 type ConsumerDeliveryExceededAdvisory struct {
-	Schema     string `json:"schema"`
+	Type       string `json:"type"`
 	ID         string `json:"id"`
 	Time       string `json:"timestamp"`
 	Stream     string `json:"stream"`
@@ -80,6 +83,9 @@ type ConsumerDeliveryExceededAdvisory struct {
 	StreamSeq  uint64 `json:"stream_seq"`
 	Deliveries uint64 `json:"deliveries"`
 }
+
+// ConsumerDeliveryExceededAdvisoryType is the schema type for ConsumerDeliveryExceededAdvisory
+const ConsumerDeliveryExceededAdvisoryType = "io.nats.jetstream.advisory.v1.max_deliver"
 
 // DeliverPolicy determines how the consumer should select the first message to deliver.
 type DeliverPolicy int
@@ -755,7 +761,7 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 	now := time.Now().UTC()
 	unow := now.UnixNano()
 	e := &ConsumerAckMetric{
-		Schema:      "io.nats.jetstream.metric.v1.consumer_ack",
+		Type:        ConsumerAckMetricType,
 		ID:          nuid.Next(),
 		Time:        now.Format(time.RFC3339Nano),
 		Stream:      o.stream,
@@ -897,7 +903,7 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 
 func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 	e := &ConsumerDeliveryExceededAdvisory{
-		Schema:     "io.nats.jetstream.advisory.v1.max_deliver",
+		Type:       ConsumerDeliveryExceededAdvisoryType,
 		ID:         nuid.Next(),
 		Time:       time.Now().UTC().Format(time.RFC3339Nano),
 		Stream:     o.stream,
