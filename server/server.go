@@ -38,6 +38,7 @@ import (
 
 	"github.com/nats-io/jwt"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 
 	"github.com/nats-io/nats-server/v2/logger"
 )
@@ -206,6 +207,8 @@ type Server struct {
 		ch chan time.Duration
 		m  sync.Map
 	}
+
+	eventids *nuid.NUID
 }
 
 // Make sure all are 64bits for atomic use
@@ -278,6 +281,7 @@ func NewServer(opts *Options) (*Server, error) {
 		start:      now,
 		configTime: now,
 		gwLeafSubs: NewSublistWithCache(),
+		eventids:   nuid.New(),
 	}
 
 	// Trusted root operator keys.

@@ -230,6 +230,15 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &cem); err != nil {
 		t.Fatalf("Error unmarshalling connect event message: %v", err)
 	}
+	if cem.Type != ConnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
+	}
+	if cem.Time == "" {
+		t.Fatalf("Event time is not set")
+	}
+	if len(cem.ID) != 22 {
+		t.Fatalf("Event ID is incorrectly set to len %d", len(cem.ID))
+	}
 	if cem.Server.ID != s.ID() {
 		t.Fatalf("Expected server to be %q, got %q", s.ID(), cem.Server.ID)
 	}
@@ -277,7 +286,15 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &dem); err != nil {
 		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
 	}
-
+	if dem.Type != DisconnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
+	}
+	if dem.Time == "" {
+		t.Fatalf("Event time is not set")
+	}
+	if len(dem.ID) != 22 {
+		t.Fatalf("Event ID is incorrectly set to len %d", len(cem.ID))
+	}
 	if dem.Server.ID != s.ID() {
 		t.Fatalf("Expected server to be %q, got %q", s.ID(), dem.Server.ID)
 	}

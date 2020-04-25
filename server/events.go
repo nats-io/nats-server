@@ -88,19 +88,31 @@ type ServerStatsMsg struct {
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
+	Type   string     `json:"type"`
+	ID     string     `json:"id"`
+	Time   string     `json:"timestamp"`
 	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
 }
 
+// ConnectEventMsgType is the schema type for ConnectEventMsg
+const ConnectEventMsgType = "io.nats.server.advisory.v1.client_connect"
+
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
+	Type     string     `json:"type"`
+	ID       string     `json:"id"`
+	Time     string     `json:"timestamp"`
 	Server   ServerInfo `json:"server"`
 	Client   ClientInfo `json:"client"`
 	Sent     DataStats  `json:"sent"`
 	Received DataStats  `json:"received"`
 	Reason   string     `json:"reason"`
 }
+
+// DisconnectEventMsgType is the schema type for DisconnectEventMsg
+const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 
 // AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
@@ -901,15 +913,21 @@ func (s *Server) accConnsUpdate(a *Account) {
 	s.sendAccConnsUpdate(a, subj)
 }
 
+// server lock should be held
+func (s *Server) nextEventID() string {
+	return s.eventids.Next()
+}
+
 // accountConnectEvent will send an account client connect event if there is interest.
 // This is a billing event.
 func (s *Server) accountConnectEvent(c *client) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -920,6 +938,9 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
+		Type: ConnectEventMsgType,
+		ID:   eid,
+		Time: time.Now().UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Host:    c.host,
@@ -941,11 +962,12 @@ func (s *Server) accountConnectEvent(c *client) {
 // This is a billing event.
 func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -957,6 +979,9 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
+		Type: DisconnectEventMsgType,
+		ID:   eid,
+		Time: now.UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
@@ -991,10 +1016,14 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 		s.mu.Unlock()
 		return
 	}
+	eid := s.nextEventID()
 	s.mu.Unlock()
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
+		Type: DisconnectEventMsgType,
+		ID:   eid,
+		Time: now.UTC().Format(time.RFC3339Nano),
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
