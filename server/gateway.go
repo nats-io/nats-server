@@ -2312,11 +2312,11 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 
 // Evaluates if the given reply should be mapped or not.
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
-	// If the reply is a service reply (_R_), we will use the replyClient
-	// instead of the client handed to us. This client holds the wildcard
+	// If the reply is a service reply (_R_), we will use the account's internal
+	// clientinstead of the client handed to us. This client holds the wildcard
 	// for all service replies.
 	if isServiceReply(reply) {
-		c = acc.replyClient()
+		c = acc.internalClient()
 	}
 	// If for this client there is a recent matching subscription interest
 	// then we will map.
@@ -2330,6 +2330,7 @@ func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -2481,8 +2482,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		c.deliverMsg(sub, subject, mh, msg, false)
-		didDeliver = true
+		didDeliver = c.deliverMsg(sub, subject, mh, msg, false) || didDeliver
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
@@ -2704,6 +2704,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		}
 		return true
 	}
+
 	// If route is nil, we will process the incoming message locally.
 	if route == nil {
 		// Check if this is a service reply subject (_R_)
@@ -2718,7 +2719,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 			if c.kind == ROUTER {
 				flags |= pmrAllowSendFromRouteToRoute
 			}
-			queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags)
+			_, queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags)
 		}
 		// Since this was a reply that made it to the origin cluster,
 		// we now need to send the message with the real subject to

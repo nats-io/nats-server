@@ -1219,7 +1219,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We only store state on local subs for transmission across all other routes.
-	if sub.client == nil || (sub.client.kind != CLIENT && sub.client.kind != SYSTEM && sub.client.kind != LEAF) {
+	if sub.client == nil || sub.client.kind == ROUTER || sub.client.kind == GATEWAY {
 		return
 	}
 

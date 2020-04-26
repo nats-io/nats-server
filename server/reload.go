@@ -596,6 +596,14 @@ func (m *maxTracedMsgLenOption) Apply(server *Server) {
 // file or an option which doesn't support hot-swapping was changed.
 func (s *Server) Reload() error {
 	s.mu.Lock()
+
+	s.reloading = true
+	defer func() {
+		s.mu.Lock()
+		s.reloading = false
+		s.mu.Unlock()
+	}()
+
 	if s.configFile == "" {
 		s.mu.Unlock()
 		return errors.New("can only reload config when a file is provided using -c or --config")
@@ -1074,8 +1082,8 @@ func (s *Server) reloadAuthorization() {
 
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
-				newAcc.respMap = acc.respMap
 				newAcc.js = acc.js
+				newAcc.imports.rrMap = acc.imports.rrMap
 				acc.mu.RUnlock()
 
 				// Check if current and new config of this account are same
@@ -1171,6 +1179,8 @@ func (s *Server) reloadAuthorization() {
 			client.authViolation()
 			continue
 		}
+		// Check to make sure account is correct.
+		client.swapAccountAfterReload()
 		// Remove any unauthorized subscriptions and check for account imports.
 		client.processSubsOnConfigReload(awcsti)
 	}
@@ -1194,7 +1204,7 @@ func (s *Server) reloadAuthorization() {
 
 // Returns true if given client current account has changed (or user
 // no longer exist) in the new config, false if the user did not
-// change account.
+// change accounts.
 // Server lock is held on entry.
 func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 	var (

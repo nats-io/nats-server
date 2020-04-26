@@ -1866,6 +1866,8 @@ func (reason ClosedState) String() string {
 		return "Missing Account"
 	case Revocation:
 		return "Credentials Revoked"
+	case InternalClient:
+		return "Internal Client"
 	}
 	return "Unknown State"
 }

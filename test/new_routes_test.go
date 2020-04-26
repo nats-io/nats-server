@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1447,8 +1447,6 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	// Do Accounts for the servers.
 	fooA, _ := registerAccounts(t, srvA)
 	fooB, barB := registerAccounts(t, srvB)
-
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
 
 	// Add in the service export for the requests. Make it public.
 	if err := fooA.AddServiceExport("test.request", nil); err != nil {

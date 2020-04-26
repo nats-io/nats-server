@@ -1201,7 +1201,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	}
 	rl := remoteLatency{}
 	if err := json.Unmarshal(msg, &rl); err != nil {
-		s.Errorf("Error unmarshalling remot elatency measurement: %v", err)
+		s.Errorf("Error unmarshalling remote latency measurement: %v", err)
 		return
 	}
 	// Now we need to look up the responseServiceImport associated with this measurement.
@@ -1216,7 +1216,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 		reply = string(getSubjectFromGWRoutedReply([]byte(reply), old))
 	}
 	acc.mu.RLock()
-	si := acc.imports.services[reply]
+	si := acc.exports.responses[reply]
 	if si == nil {
 		acc.mu.RUnlock()
 		return
@@ -1246,6 +1246,11 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	// M1 TotalLatency is correct, so use that.
 	// Will use those to back into NATS latency.
 	m1.merge(&m2)
+
+	// Clear the requesting client since we send the result here.
+	si.acc.mu.Lock()
+	si.rc = nil
+	si.acc.mu.Unlock()
 
 	// Make sure we remove the entry here.
 	acc.removeServiceImport(si.from)
