@@ -2641,7 +2641,7 @@ func (c *client) trackRemoteReply(subject, reply string) {
 		ReqId:      reply,
 		respThresh: respThresh,
 	}
-	rl.M2.RequestStart = time.Now()
+	rl.M2.RequestStart = time.Now().UTC()
 	c.rrTracking.rmap[reply] = &rl
 }
 
