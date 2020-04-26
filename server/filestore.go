@@ -622,7 +622,10 @@ func (fs *fileStore) deleteFirstMsgLocked() (bool, error) {
 
 // Lock should NOT be held.
 func (fs *fileStore) deleteFirstMsg() (bool, error) {
-	return fs.removeMsg(fs.state.FirstSeq, false)
+	fs.mu.RLock()
+	seq := fs.state.FirstSeq
+	fs.mu.RUnlock()
+	return fs.removeMsg(seq, false)
 }
 
 // RemoveMsg will remove the message from this store.
