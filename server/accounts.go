@@ -796,7 +796,7 @@ func (a *Account) sendBadRequestTrackingLatency(si *serviceImport, requestor *cl
 	sl := &ServiceLatency{
 		Status:       400,
 		Error:        "Bad Request",
-		RequestStart: time.Now().Add(-requestor.getRTTValue()),
+		RequestStart: time.Now().Add(-requestor.getRTTValue()).UTC(),
 	}
 	a.sendLatencyResult(si, sl)
 }
@@ -812,7 +812,7 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 	sl := &ServiceLatency{
 		Status:       408,
 		Error:        "Request Timeout",
-		RequestStart: reqStart,
+		RequestStart: reqStart.UTC(),
 		NATSLatency: NATSLatency{
 			Requestor: reqClientRTT,
 		},
@@ -827,7 +827,7 @@ func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiR
 	}
 	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
 	sl := &ServiceLatency{
-		RequestStart: reqStart,
+		RequestStart: reqStart.UTC(),
 		NATSLatency: NATSLatency{
 			Requestor: reqClientRTT,
 		},
@@ -870,7 +870,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 	sl := &ServiceLatency{
 		Status:         200,
 		AppName:        appName,
-		RequestStart:   reqStart,
+		RequestStart:   reqStart.UTC(),
 		ServiceLatency: serviceRTT - respClientRTT,
 		NATSLatency: NATSLatency{
 			Requestor: reqClientRTT,
