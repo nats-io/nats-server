@@ -2052,15 +2052,23 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 		})
 	}
 
+	checkAccNLF := func(n int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if nln := acc.NumLeafNodes(); nln != n {
+				return fmt.Errorf("Expected %d leaf node, got %d", n, nln)
+			}
+			return nil
+		})
+	}
+
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf)
 	defer sl.Shutdown()
 	checkLFCount(1)
 
 	// Make sure we are accounting properly here.
-	if nln := acc.NumLeafNodes(); nln != 1 {
-		t.Fatalf("Expected 1 leaf node, got %d", nln)
-	}
+	checkAccNLF(1)
 	// clients and leafnodes counted together.
 	if nc := acc.NumConnections(); nc != 1 {
 		t.Fatalf("Expected 1 for total connections, got %d", nc)
@@ -2083,9 +2091,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	checkLFCount(1)
 
 	// Make sure we are accounting properly here.
-	if nln := acc.NumLeafNodes(); nln != 1 {
-		t.Fatalf("Expected 1 leaf node, got %d", nln)
-	}
+	checkAccNLF(1)
 	// clients and leafnodes counted together.
 	if nc := acc.NumConnections(); nc != 1 {
 		t.Fatalf("Expected 1 for total connections, got %d", nc)
@@ -3361,6 +3367,8 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 
 	srvB, optsB := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
+
+	checkLeafNodeConnected(t, srvB)
 
 	// connect to confA, and offer a service
 	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))

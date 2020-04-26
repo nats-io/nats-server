@@ -1063,7 +1063,7 @@ func TestAddServiceExport(t *testing.T) {
 		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 	tr := fooAcc.exports.services["test.request"]
-	if tr != nil {
+	if len(tr.approved) != 0 {
 		t.Fatalf("Expected no authorized accounts, got %d", len(tr.approved))
 	}
 	if err := fooAcc.AddServiceExport("test.request", []*Account{barAcc}); err != nil {
@@ -1186,10 +1186,8 @@ func TestServiceExportWithWildcards(t *testing.T) {
 			}
 			checkPayload(crBar, []byte("22\r\n"), t)
 
-			// Make sure we have no service imports on fooAcc. An implicit one was created
-			// for the response but should be removed when the response was processed.
-			if nr := fooAcc.numServiceRoutes(); nr != 0 {
-				t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+			if nr := barAcc.NumPendingAllResponses(); nr != 0 {
+				t.Fatalf("Expected no responses on barAcc, got %d", nr)
 			}
 		})
 	}
@@ -1422,10 +1420,8 @@ func TestCrossAccountRequestReply(t *testing.T) {
 	}
 	checkPayload(crBar, []byte("22\r\n"), t)
 
-	// Make sure we have no service imports on fooAcc. An implicit one was created
-	// for the response but should be removed when the response was processed.
-	if nr := fooAcc.numServiceRoutes(); nr != 0 {
-		t.Fatalf("Expected no remaining routes on fooAcc, got %d", nr)
+	if nr := barAcc.NumPendingAllResponses(); nr != 0 {
+		t.Fatalf("Expected no responses on barAcc, got %d", nr)
 	}
 }
 
@@ -1567,10 +1563,12 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
 	optsA.NoSigs, optsA.NoLog = true, true
+	optsA.ServerName = "A"
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 	optsB := nextServerOpts(optsA)
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsA.ServerName = "B"
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
@@ -1615,8 +1613,13 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	}
 
 	// Set new limits
-	fooAcc.SetAutoExpireTTL(time.Millisecond)
-	fooAcc.SetMaxAutoExpireResponseMaps(5)
+	for _, srv := range srvs {
+		fooAcc, _ := srv.LookupAccount("$foo")
+		err := fooAcc.SetServiceExportResponseThreshold("track.service", 5*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Error setting response threshold: %v", err)
+		}
+	}
 
 	// Now setup the responder under cfoo and the listener for the results
 	time.Sleep(50 * time.Millisecond)
@@ -1663,102 +1666,78 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 
 	tracking := func() int {
 		rc.mu.Lock()
-		numTracking := len(rc.rrTracking)
+		var nt int
+		if rc.rrTracking != nil {
+			nt = len(rc.rrTracking.rmap)
+		}
 		rc.mu.Unlock()
-		return numTracking
+		return nt
 	}
 
-	numTracking := tracking()
-	if numTracking != 2 {
-		t.Fatalf("Expected to have 2 tracking replies, got %d", numTracking)
+	expectTracking := func(expected int) {
+		t.Helper()
+		if numTracking := tracking(); numTracking != expected {
+			t.Fatalf("Expected to have %d tracking replies, got %d", expected, numTracking)
+		}
 	}
 
-	// Make sure these remote tracking replies honor the current auto expire TTL.
-	time.Sleep(2 * time.Millisecond)
-
+	expectTracking(2)
+	// Make sure these remote tracking replies honor the current respThresh for a service export.
+	time.Sleep(10 * time.Millisecond)
+	expectTracking(0)
+	// Also make sure tracking is removed
 	rc.mu.Lock()
-	rc.pruneRemoteTracking()
-	numTracking = len(rc.rrTracking)
+	removed := rc.rrTracking == nil
 	rc.mu.Unlock()
-
-	if numTracking != 0 {
-		t.Fatalf("Expected to have no more tracking replies, got %d", numTracking)
+	if !removed {
+		t.Fatalf("Expected the rrTracking to be removed")
 	}
 
-	// Test that we trigger on max.
-	for i := 0; i < 4; i++ {
-		natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
-		readFooMsg()
-	}
+	// Now let's test that a lower response threshold is picked up.
+	fSub := natsSubSync(t, cfooNC, "foo")
+	natsFlush(t, cfooNC)
 
-	if numTracking = tracking(); numTracking != 4 {
-		t.Fatalf("Expected to have 4 tracking replies, got %d", numTracking)
-	}
+	// Wait for it to propagate.
+	checkExpectedSubs(t, baseSubs+4, srvA)
 
-	// Make sure they will be expired.
-	time.Sleep(2 * time.Millisecond)
-
-	// Should trigger here
+	// queue up some first. We want to test changing when rrTracking exists.
 	natsPubReq(t, cbarNC, "req", "resp", []byte("help"))
 	readFooMsg()
+	expectTracking(1)
 
-	if numTracking = tracking(); numTracking != 1 {
-		t.Fatalf("Expected to have 1 tracking reply, got %d", numTracking)
-	}
-}
-
-func TestCrossAccountRequestReplyResponseMaps(t *testing.T) {
-	s, fooAcc, barAcc := simpleAccountServer(t)
-	defer s.Shutdown()
-
-	// Make sure they have the correct defaults
-	if max := barAcc.MaxAutoExpireResponseMaps(); max != DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS {
-		t.Fatalf("Expected %d for max default, but got %d", DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS, max)
+	for _, s := range srvs {
+		fooAcc, _ := s.LookupAccount("$foo")
+		barAcc, _ := s.LookupAccount("$bar")
+		fooAcc.AddServiceExport("foo", nil)
+		fooAcc.TrackServiceExport("foo", "foo.results")
+		fooAcc.SetServiceExportResponseThreshold("foo", time.Millisecond)
+		barAcc.AddServiceImport(fooAcc, "foo", "foo")
 	}
 
-	if ttl := barAcc.AutoExpireTTL(); ttl != DEFAULT_TTL_AE_RESPONSE_MAP {
-		t.Fatalf("Expected %v for the ttl default, got %v", DEFAULT_TTL_AE_RESPONSE_MAP, ttl)
+	natsSubSync(t, cbarNC, "reply")
+	natsPubReq(t, cbarNC, "foo", "reply", []byte("help"))
+	if _, err := fSub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Did not receive foo msg: %v", err)
+	}
+	expectTracking(2)
+
+	rc.mu.Lock()
+	lrt := rc.rrTracking.lrt
+	rc.mu.Unlock()
+	if lrt != time.Millisecond {
+		t.Fatalf("Expected lrt of %v, got %v", time.Millisecond, lrt)
 	}
 
-	ttl := 500 * time.Millisecond
-	barAcc.SetMaxAutoExpireResponseMaps(5)
-	barAcc.SetAutoExpireTTL(ttl)
-	cfoo, _, _ := newClientForServer(s)
-	defer cfoo.close()
+	// Now make sure we clear on close.
+	rc.closeConnection(ClientClosed)
 
-	if err := cfoo.registerWithAccount(fooAcc); err != nil {
-		t.Fatalf("Error registering client with 'foo' account: %v", err)
-	}
-
-	if err := barAcc.AddServiceExport("test.request", nil); err != nil {
-		t.Fatalf("Error adding account service export: %v", err)
-	}
-	if err := fooAcc.AddServiceImport(barAcc, "foo", "test.request"); err != nil {
-		t.Fatalf("Error adding account service import: %v", err)
-	}
-
-	for i := 0; i < 10; i++ {
-		cfoo.parseAsync("PUB foo bar 4\r\nhelp\r\n")
-	}
-
-	// We should expire because of max.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nae := barAcc.numAutoExpireResponseMaps(); nae != 5 {
-			return fmt.Errorf("Number of responsemaps is %d", nae)
-		}
-		return nil
-	})
-
-	// Wait for the ttl to expire.
-	time.Sleep(2 * ttl)
-
-	// Now run prune and make sure we collect the timed-out ones.
-	barAcc.pruneAutoExpireResponseMaps()
-
-	// We should expire because ttl.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nae := barAcc.numAutoExpireResponseMaps(); nae != 0 {
-			return fmt.Errorf("Number of responsemaps is %d", nae)
+	// Actual tear down will be not inline.
+	checkFor(t, time.Second, 5*time.Millisecond, func() error {
+		rc.mu.Lock()
+		removed = rc.rrTracking == nil
+		rc.mu.Unlock()
+		if !removed {
+			return fmt.Errorf("Expected the rrTracking to be removed after client close")
 		}
 		return nil
 	})
@@ -1782,11 +1761,11 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	}
 
 	// Add in the service export for the requests. Make it public.
-	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Streamed, nil); err != nil {
+	if err := fooAcc.AddServiceExportWithResponse("test.request", Streamed, nil); err != nil {
 		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 	// Now add in the route mapping for request to be routed to the foo account.
-	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
+	if err := barAcc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
 		t.Fatalf("Error adding account service import to client bar: %v", err)
 	}
 
@@ -1836,14 +1815,13 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	cbar.closeConnection(ClientClosed)
 
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nr := fooAcc.numServiceRoutes(); nr != 0 {
-			return fmt.Errorf("Number of implicit service imports is %d", nr)
+		if nr := barAcc.NumPendingAllResponses(); nr != 0 {
+			return fmt.Errorf("Number of responses is %d", nr)
 		}
 		return nil
 	})
 
 	// Now test bogus reply subjects are handled and do not accumulate the response maps.
-
 	cbar, _, _ = newClientForServer(s)
 	defer cbar.close()
 
@@ -1872,108 +1850,24 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 
 	replyOp = fmt.Sprintf("PUB %s 2\r\n22\r\n", matches[REPLY_INDEX])
 
-	// Make sure we have the response map.
-	if nr := fooAcc.numServiceRoutes(); nr != 1 {
-		t.Fatalf("Expected a response map to be present, got %d", nr)
-	}
-
 	cfoo.parseAsync(replyOp)
 
 	// Now wait for a bit, the reply should trip a no interest condition
 	// which should clean this up.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nr := fooAcc.numServiceRoutes(); nr != 0 {
-			return fmt.Errorf("Number of implicit service imports is %d", nr)
+		if nr := fooAcc.NumPendingAllResponses(); nr != 0 {
+			return fmt.Errorf("Number of responses is %d", nr)
 		}
 		return nil
 	})
 
 	// Also make sure the response map entry is gone as well.
-	barAcc.mu.RLock()
-	lrm := len(barAcc.respMap)
-	barAcc.mu.RUnlock()
+	fooAcc.mu.RLock()
+	lrm := len(fooAcc.exports.responses)
+	fooAcc.mu.RUnlock()
 
 	if lrm != 0 {
-		t.Fatalf("Expected the respMap tp be cleared, got %d entries", lrm)
-	}
-}
-
-// This is for bogus reply subjects and no responses from a service provider.
-func TestCrossAccountServiceResponseLeaks(t *testing.T) {
-	s, fooAcc, barAcc := simpleAccountServer(t)
-	defer s.Shutdown()
-
-	// Set max response maps to < 100
-	barAcc.SetMaxResponseMaps(99)
-
-	cfoo, crFoo, _ := newClientForServer(s)
-	defer cfoo.close()
-
-	if err := cfoo.registerWithAccount(fooAcc); err != nil {
-		t.Fatalf("Error registering client with 'foo' account: %v", err)
-	}
-	cbar, _, _ := newClientForServer(s)
-	defer cbar.close()
-
-	if err := cbar.registerWithAccount(barAcc); err != nil {
-		t.Fatalf("Error registering client with 'bar' account: %v", err)
-	}
-
-	// Add in the service export for the requests. Make it public.
-	if err := cfoo.acc.AddServiceExportWithResponse("test.request", Streamed, nil); err != nil {
-		t.Fatalf("Error adding account service export to client foo: %v", err)
-	}
-	// Now add in the route mapping for request to be routed to the foo account.
-	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test.request"); err != nil {
-		t.Fatalf("Error adding account service import to client bar: %v", err)
-	}
-
-	// Now setup the resonder under cfoo
-	cfoo.parse([]byte("SUB test.request 1\r\n"))
-
-	// Now send some requests..We will not respond.
-	var sb strings.Builder
-	for i := 0; i < 50; i++ {
-		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
-	}
-	cbar.parseAsync(sb.String())
-
-	// Make sure requests are processed.
-	if _, err := crFoo.ReadString('\n'); err != nil {
-		t.Fatalf("Error reading from client 'bar': %v", err)
-	}
-
-	// We should have leaked response maps.
-	if nr := fooAcc.numServiceRoutes(); nr != 50 {
-		t.Fatalf("Expected response maps to be present, got %d", nr)
-	}
-
-	sb.Reset()
-	for i := 50; i < 100; i++ {
-		sb.WriteString(fmt.Sprintf("PUB foo REPLY.%d 4\r\nhelp\r\n", i))
-	}
-	cbar.parseAsync(sb.String())
-
-	// Make sure requests are processed.
-	if _, err := crFoo.ReadString('\n'); err != nil {
-		t.Fatalf("Error reading from client 'bar': %v", err)
-	}
-
-	// They should be gone here eventually.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if nr := fooAcc.numServiceRoutes(); nr != 0 {
-			return fmt.Errorf("Number of implicit service imports is %d", nr)
-		}
-		return nil
-	})
-
-	// Also make sure the response map entry is gone as well.
-	barAcc.mu.RLock()
-	lrm := len(barAcc.respMap)
-	barAcc.mu.RUnlock()
-
-	if lrm != 0 {
-		t.Fatalf("Expected the respMap tp be cleared, got %d entries", lrm)
+		t.Fatalf("Expected the responses to be cleared, got %d entries", lrm)
 	}
 }
 

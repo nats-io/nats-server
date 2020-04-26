@@ -1656,6 +1656,7 @@ type export struct {
 	accs []string
 	rt   ServiceRespType
 	lat  *serviceLatency
+	rthr time.Duration
 }
 
 type importStream struct {
@@ -1864,6 +1865,15 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			continue
 		}
 
+		if service.rthr != 0 {
+			// Response threshold was set in options.
+			if err := service.acc.SetServiceExportResponseThreshold(service.sub, service.rthr); err != nil {
+				msg := fmt.Sprintf("Error adding service export response threshold for %q: %v", service.sub, err)
+				*errors = append(*errors, &configErr{tk, msg})
+				continue
+			}
+		}
+
 		if service.lat != nil {
 			if opts.SystemAccount == "" {
 				msg := fmt.Sprintf("Error adding service latency sampling for %q: %v", service.sub, ErrNoSysAccount.Error())
@@ -2032,6 +2042,8 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		rtSeen     bool
 		rtToken    token
 		lat        *serviceLatency
+		threshSeen bool
+		thresh     time.Duration
 		latToken   token
 		lt         token
 	)
@@ -2071,7 +2083,37 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			if accounts != nil {
 				curStream.accs = accounts
 			}
+		case "service":
+			if curStream != nil {
+				err := &configErr{tk, fmt.Sprintf("Detected service %q but already saw a stream", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			mvs, ok := mv.(string)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("Expected service name to be string, got %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			curService = &export{sub: mvs}
+			if accounts != nil {
+				curService.accs = accounts
+			}
+			if rtSeen {
+				curService.rt = rt
+			}
+			if lat != nil {
+				curService.lat = lat
+			}
+			if threshSeen {
+				curService.rthr = thresh
+			}
 		case "response", "response_type":
+			if rtSeen {
+				err := &configErr{tk, "Duplicate response type definition"}
+				*errors = append(*errors, err)
+				continue
+			}
 			rtSeen = true
 			rtToken = tk
 			mvs, ok := mv.(string)
@@ -2099,27 +2141,32 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				err := &configErr{tk, "Detected response directive on non-service"}
 				*errors = append(*errors, err)
 			}
-		case "service":
-			if curStream != nil {
-				err := &configErr{tk, fmt.Sprintf("Detected service %q but already saw a stream", mv)}
+		case "threshold", "response_threshold", "response_max_time", "response_time":
+			if threshSeen {
+				err := &configErr{tk, "Duplicate response threshold detected"}
 				*errors = append(*errors, err)
 				continue
 			}
+			threshSeen = true
 			mvs, ok := mv.(string)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected service name to be string, got %T", mv)}
+				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
-			curService = &export{sub: mvs}
-			if accounts != nil {
-				curService.accs = accounts
+			var err error
+			thresh, err = time.ParseDuration(mvs)
+			if err != nil {
+				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %q", mvs)}
+				*errors = append(*errors, err)
+				continue
 			}
-			if rtSeen {
-				curService.rt = rt
+			if curService != nil {
+				curService.rthr = thresh
 			}
-			if lat != nil {
-				curService.lat = lat
+			if curStream != nil {
+				err := &configErr{tk, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
 			}
 		case "accounts":
 			for _, iv := range mv.([]interface{}) {
@@ -2307,6 +2354,8 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			curService = &importService{an: accountName, sub: subject}
 			if to != "" {
 				curService.to = to
+			} else {
+				curService.to = subject
 			}
 		case "prefix":
 			pre = mv.(string)

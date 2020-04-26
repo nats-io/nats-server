@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -66,6 +66,21 @@ func createSuperCluster(t *testing.T, numServersPer, numClusters int) *superclus
 	return &supercluster{clusters}
 }
 
+func (sc *supercluster) setResponseThreshold(t *testing.T, maxTime time.Duration) {
+	t.Helper()
+	for _, c := range sc.clusters {
+		for _, s := range c.servers {
+			foo, err := s.LookupAccount("FOO")
+			if err != nil {
+				t.Fatalf("Error looking up account 'FOO': %v", err)
+			}
+			if err := foo.SetServiceExportResponseThreshold("ngs.usage.*", maxTime); err != nil {
+				t.Fatalf("Error setting response threshold")
+			}
+		}
+	}
+}
+
 func (sc *supercluster) setupLatencyTracking(t *testing.T, p int) {
 	t.Helper()
 	for _, c := range sc.clusters {
@@ -125,6 +140,16 @@ func clientConnectWithName(t *testing.T, opts *server.Options, user, appname str
 func clientConnect(t *testing.T, opts *server.Options, user string) *nats.Conn {
 	t.Helper()
 	return clientConnectWithName(t, opts, user, "")
+}
+
+func clientConnectOldRequest(t *testing.T, opts *server.Options, user string) *nats.Conn {
+	t.Helper()
+	url := fmt.Sprintf("nats://%s:pass@%s:%d", user, opts.Host, opts.Port)
+	nc, err := nats.Connect(url, nats.UseOldRequestStyle())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	return nc
 }
 
 func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time, serviceTime time.Duration) {
@@ -207,13 +232,13 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 	sc := createSuperCluster(t, 2, 2)
 	defer sc.shutdown()
 
-	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	// Now add in new service export to FOO and have BAR import that with tracking enabled.
 	sc.setupLatencyTracking(t, 100)
 
 	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
 	defer nc.Close()
 
-	// The service listener. Instant response.
+	// The service listener. Mostly instant response.
 	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
 		time.Sleep(time.Millisecond)
 		msg.Respond([]byte("22 msgs"))
@@ -221,11 +246,16 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
-
 	nc.Flush()
 
 	// Requestor and processing
 	requestAndCheck := func(sopts *server.Options) {
+		t.Helper()
+
+		if nmsgs, _, err := rsub.Pending(); err != nil || nmsgs != 0 {
+			t.Fatalf("Did not expect any latency results, got %d", nmsgs)
+		}
+
 		rtt := 10 * time.Millisecond
 		sp, opts := newSlowProxy(rtt, sopts)
 		defer sp.Stop()
@@ -235,6 +265,7 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 
 		start := time.Now()
 		nc2.Flush()
+		// Check rtt for slow proxy
 		if d := time.Since(start); d < rtt {
 			t.Fatalf("Expected an rtt of at least %v, got %v", rtt, d)
 		}
@@ -247,9 +278,15 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 
 		var sl server.ServiceLatency
-		rmsg, _ := rsub.NextMsg(time.Second)
+		rmsg, err := rsub.NextMsg(time.Second)
+		if err != nil || rmsg == nil {
+			t.Fatalf("Did not receive latency results")
+		}
 		json.Unmarshal(rmsg.Data, &sl)
 
+		if sl.Status != 200 {
+			t.Fatalf("Expected a status 200 Ok, got [%d] %q", sl.Status, sl.Error)
+		}
 		// We want to test here that when the client requestor RTT is larger then the response time
 		// we still deliver a requestor value > 0.
 		// Now check that it is close to rtt.
@@ -258,6 +295,11 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 		if sl.TotalLatency < rtt {
 			t.Fatalf("Expected total latency to be > %v, got %v", rtt, sl.TotalLatency)
+		}
+		// Check for trailing duplicates..
+		rmsg, err = rsub.NextMsg(100 * time.Millisecond)
+		if err == nil {
+			t.Fatalf("Duplicate metric result, %q", rmsg.Data)
 		}
 	}
 
@@ -439,9 +481,9 @@ func TestServiceLatencyNoSubsLeak(t *testing.T) {
 		nc.Close()
 	}
 
-	// We are adding 2 here for the wildcard response subject for service replies.
-	// we only have one but it will show in two places.
-	startSubs += 2
+	// We are adding 3 here for the wildcard response subject for service replies.
+	// we only have one but it will show in three places.
+	startSubs += 3
 
 	checkFor(t, time.Second, 50*time.Millisecond, func() error {
 		if numSubs := sc.totalSubs(); numSubs != startSubs {
@@ -703,6 +745,7 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
+	nc.Flush()
 
 	// Create second client and send request from this one.
 	url2 := fmt.Sprintf("nats://%s:%d/", opts2.Host, opts2.Port)
@@ -834,7 +877,6 @@ func TestServiceLatencyRemoteConnectAdjustNegativeValues(t *testing.T) {
 
 	// The service listener.
 	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
-		// time.Sleep(serviceTime)
 		msg.Respond([]byte("22 msgs"))
 	})
 
@@ -894,5 +936,176 @@ func TestServiceLatencyRemoteConnectAdjustNegativeValues(t *testing.T) {
 		if sl.NATSLatency.System < 0 {
 			t.Fatalf("Unexpected negative system latency value: %v", sl)
 		}
+	}
+}
+
+func TestServiceLatencyFailureReportingSingleServer(t *testing.T) {
+	sc := createSuperCluster(t, 1, 1)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+	sc.setResponseThreshold(t, 20*time.Millisecond)
+
+	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
+	defer nc.Close()
+
+	// Listen for metrics
+	rsub, err := nc.SubscribeSync("results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Flush()
+
+	getMetricResult := func() *server.ServiceLatency {
+		t.Helper()
+		rmsg, err := rsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Expected to receive latency metric: %v", err)
+		}
+		var sl server.ServiceLatency
+		if err = json.Unmarshal(rmsg.Data, &sl); err != nil {
+			t.Errorf("Unexpected error processing latency metric: %s", err)
+		}
+		return &sl
+	}
+
+	// Same server
+	nc2 := clientConnect(t, sc.clusters[0].opts[0], "bar")
+	defer nc2.Close()
+
+	// Test a request with no reply subject
+	nc2.Publish("ngs.usage", []byte("1h"))
+	sl := getMetricResult()
+	if sl.Status != 400 {
+		t.Fatalf("Expected to get a bad request status [400], got %d", sl.Status)
+	}
+
+	// Proper request, but no responders.
+	nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+	sl = getMetricResult()
+	if sl.Status != 503 {
+		t.Fatalf("Expected to get a service unavailable status [503], got %d", sl.Status)
+	}
+
+	// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+	sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
+		time.Sleep(20 * time.Millisecond)
+		msg.Respond([]byte("22 msgs"))
+	})
+	nc.Flush()
+
+	nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+	sl = getMetricResult()
+	if sl.Status != 504 {
+		t.Fatalf("Expected to get a service timeout status [504], got %d", sl.Status)
+	}
+
+	// Make sure we do not get duplicates.
+	if rmsg, err := rsub.NextMsg(50 * time.Millisecond); err == nil {
+		t.Fatalf("Unexpected second response metric: %q\n", rmsg.Data)
+	}
+
+	// Now setup a responder that will respond under the threshold.
+	sub.Unsubscribe()
+	nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
+		time.Sleep(5 * time.Millisecond)
+		msg.Respond([]byte("22 msgs"))
+	})
+	nc.Flush()
+	time.Sleep(100 * time.Millisecond)
+
+	// Now create a responder using old request and we will do a short timeout.
+	nc3 := clientConnectOldRequest(t, sc.clusters[0].opts[0], "bar")
+	defer nc3.Close()
+
+	nc3.Request("ngs.usage", []byte("1h"), time.Millisecond)
+	sl = getMetricResult()
+	if sl.Status != 408 {
+		t.Fatalf("Expected to get a request timeout status [408], got %d", sl.Status)
+	}
+}
+
+func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
+	sc := createSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+	sc.setResponseThreshold(t, 10*time.Millisecond)
+
+	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
+	defer nc.Close()
+
+	// Listen for metrics
+	rsub, err := nc.SubscribeSync("results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Flush()
+
+	getMetricResult := func() *server.ServiceLatency {
+		t.Helper()
+		rmsg, err := rsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Expected to receive latency metric: %v", err)
+		}
+		var sl server.ServiceLatency
+		if err = json.Unmarshal(rmsg.Data, &sl); err != nil {
+			t.Errorf("Unexpected error processing latency metric: %s", err)
+		}
+		return &sl
+	}
+
+	cases := []struct {
+		ci, si int
+		desc   string
+	}{
+		{0, 0, "same server"},
+		{0, 1, "same cluster, different server"},
+		{1, 1, "different cluster"},
+	}
+
+	for _, cs := range cases {
+		// Select the server to send request from.
+		nc2 := clientConnect(t, sc.clusters[cs.ci].opts[cs.si], "bar")
+		defer nc2.Close()
+
+		// Test a request with no reply subject
+		nc2.Publish("ngs.usage", []byte("1h"))
+		sl := getMetricResult()
+		if sl.Status != 400 {
+			t.Fatalf("Test %q, Expected to get a bad request status [400], got %d", cs.desc, sl.Status)
+		}
+
+		// Proper request, but no responders.
+		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		sl = getMetricResult()
+		if sl.Status != 503 {
+			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
+		}
+
+		// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
+			time.Sleep(20 * time.Millisecond)
+			msg.Respond([]byte("22 msgs"))
+		})
+		defer sub.Unsubscribe()
+		nc.Flush()
+		// Wait to propagate.
+		time.Sleep(100 * time.Millisecond)
+
+		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		sl = getMetricResult()
+		if sl.Status != 504 {
+			t.Fatalf("Test %q, Expected to get a service timeout status [504], got %d", cs.desc, sl.Status)
+		}
+
+		// Clean up subscriber and requestor
+		nc2.Close()
+		sub.Unsubscribe()
+		nc.Flush()
+		// Wait to propagate.
+		time.Sleep(100 * time.Millisecond)
 	}
 }

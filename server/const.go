@@ -130,16 +130,6 @@ const (
 	// DEFAULT_MAX_CLOSED_CLIENTS is the maximum number of closed connections we hold onto.
 	DEFAULT_MAX_CLOSED_CLIENTS = 10000
 
-	// DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS is for auto-expire response maps for imports.
-	DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS = 100000
-
-	// DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS is for non auto-expire response maps for imports.
-	// These are present for non-singleton response types.
-	DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS = 100000
-
-	// DEFAULT_TTL_AE_RESPONSE_MAP is the default time to expire auto-response map entries.
-	DEFAULT_TTL_AE_RESPONSE_MAP = 10 * time.Minute
-
 	// DEFAULT_LAME_DUCK_DURATION is the time in which the server spreads
 	// the closing of clients when signaled to go in lame duck mode.
 	DEFAULT_LAME_DUCK_DURATION = 2 * time.Minute
@@ -175,6 +165,11 @@ const (
 	// DEFAULT_ALLOW_RESPONSE_EXPIRATION is the default time allowed for a given
 	// dynamic response permission.
 	DEFAULT_ALLOW_RESPONSE_EXPIRATION = 2 * time.Minute
+
+	// DEFAULT_SERVICE_EXPORT_RESPONSE_THRESHOLD is the default time that the system will
+	// expect a service export response to be delivered. This is used in corner cases for
+	// time based cleanup of reverse mapping structures.
+	DEFAULT_SERVICE_EXPORT_RESPONSE_THRESHOLD = 2 * time.Minute
 
 	// DEFAULT_SERVICE_LATENCY_SAMPLING is the default sampling rate for service
 	// latency metrics

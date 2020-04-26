@@ -522,7 +522,7 @@ func TestJWTAccountRenew(t *testing.T) {
 	if acc == nil {
 		t.Fatalf("Expected to retrieve the account")
 	}
-	s.updateAccountClaims(acc, nac)
+	s.UpdateAccountClaims(acc, nac)
 
 	// Now make sure we can connect.
 	c, cr, cs := createClient(t, s, akp)
@@ -682,7 +682,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
 
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 
 	// Our service import should have failed with a bad token.
 	if les := len(acc.imports.services); les != 0 {
@@ -707,7 +707,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 	// Our service import should have succeeded.
 	if les := len(acc.imports.services); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -737,7 +737,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 	// Our service import should have succeeded. Should be the only one since we reset.
 	if les := len(acc.imports.services); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -753,7 +753,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 0 {
 		t.Fatalf("Expected imports services len of 0, got %d", les)
@@ -777,7 +777,7 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 	// Our stream import should have not succeeded.
 	if les := len(acc.imports.streams); les != 1 {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
@@ -867,8 +867,8 @@ func TestJWTAccountExportWithResponseType(t *testing.T) {
 	}
 
 	se, ok = services["test.old"]
-	if !ok || se != nil {
-		t.Fatalf("Service with a singleton response and no tokens should be nil in the map")
+	if !ok || se == nil || len(se.approved) > 0 {
+		t.Fatalf("Service with a singleton response and no tokens should not be nil and have no approvals")
 	}
 }
 
@@ -954,7 +954,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	barJWT, _ = barAC.Encode(okp)
 	addAccountToMemResolver(s, barPub, barJWT)
 	acc, _ := s.LookupAccount(barPub)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 
 	checkShadow(0)
 
@@ -963,7 +963,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	barAC.Imports.Add(streamImport)
 	barJWT, _ = barAC.Encode(okp)
 	addAccountToMemResolver(s, barPub, barJWT)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 
 	checkShadow(1)
 
@@ -972,7 +972,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
 	acc, _ = s.LookupAccount(fooPub)
-	s.updateAccountClaims(acc, fooAC)
+	s.UpdateAccountClaims(acc, fooAC)
 	checkShadow(0)
 
 	// Now add it in but with permission required.
@@ -980,7 +980,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC.Exports.Add(streamExport)
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(acc, fooAC)
+	s.UpdateAccountClaims(acc, fooAC)
 
 	checkShadow(0)
 
@@ -990,7 +990,7 @@ func TestJWTAccountImportExportUpdates(t *testing.T) {
 	fooAC.Exports.Add(streamExport)
 	fooJWT, _ = fooAC.Encode(okp)
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(acc, fooAC)
+	s.UpdateAccountClaims(acc, fooAC)
 
 	checkShadow(1)
 }
@@ -1137,7 +1137,7 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(fooAcc, fooAC)
+	s.UpdateAccountClaims(fooAcc, fooAC)
 	l, _ = cr.ReadString('\n')
 	if !strings.HasPrefix(l, "-ERR") {
 		t.Fatalf("Expected an ERR, got: %v", l)
@@ -1378,7 +1378,7 @@ func TestJWTAccountServiceImportAuthSwitch(t *testing.T) {
 	}
 	addAccountToMemResolver(s, fooPub, fooJWTPrivate)
 	acc, _ := s.LookupAccount(fooPub)
-	s.updateAccountClaims(acc, fooACPrivate)
+	s.UpdateAccountClaims(acc, fooACPrivate)
 
 	// Send Another Request
 	ca.parseAsync("PUB ngs.usage 2\r\nhi\r\nPING\r\n")
@@ -1390,7 +1390,7 @@ func TestJWTAccountServiceImportAuthSwitch(t *testing.T) {
 
 	// Now put it back again to public and make sure it works again.
 	addAccountToMemResolver(s, fooPub, fooJWT)
-	s.updateAccountClaims(acc, fooAC)
+	s.UpdateAccountClaims(acc, fooAC)
 
 	// Send Request
 	ca.parseAsync("PUB ngs.usage 2\r\nhi\r\nPING\r\n")
@@ -1468,7 +1468,7 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	}
 	addAccountToMemResolver(s, fooPub, fooJWT)
 	acc, _ := s.LookupAccount(fooPub)
-	s.updateAccountClaims(acc, fooAC)
+	s.UpdateAccountClaims(acc, fooAC)
 
 	// Send Another Request
 	ca.parseAsync("PUB foo 2\r\nhi\r\nPING\r\n")
@@ -1501,7 +1501,7 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	}
 	addAccountToMemResolver(s, barPub, barJWT)
 	acc, _ = s.LookupAccount(barPub)
-	s.updateAccountClaims(acc, barAC)
+	s.UpdateAccountClaims(acc, barAC)
 
 	// Now it should work again.
 	// Send Another Request
@@ -1753,7 +1753,7 @@ func TestJWTUserSigningKey(t *testing.T) {
 	nac.SigningKeys.Add(aspub)
 	// update the memory resolver
 	acc, _ := s.LookupAccount(apub)
-	s.updateAccountClaims(acc, nac)
+	s.UpdateAccountClaims(acc, nac)
 
 	// Create a client with a signing key
 	c, cr, cs = createClientWithIssuer(t, s, askp, apub)
@@ -1778,7 +1778,7 @@ func TestJWTUserSigningKey(t *testing.T) {
 	// remove the signing key should bounce client
 	nac.SigningKeys = nil
 	acc, _ = s.LookupAccount(apub)
-	s.updateAccountClaims(acc, nac)
+	s.UpdateAccountClaims(acc, nac)
 
 	if !isClosed() {
 		t.Fatal("expected client to be gone")
@@ -1897,7 +1897,7 @@ func TestJWTAccountImportSignerRemoved(t *testing.T) {
 	srvJWT, srvAC := createSrvJwt()
 	addAccountToMemResolver(s, srvPK, srvJWT)
 	acc, _ := s.LookupAccount(srvPK)
-	s.updateAccountClaims(acc, srvAC)
+	s.UpdateAccountClaims(acc, srvAC)
 
 	// Send Another Request
 	client.parseAsync("PUB foo 2\r\nhi\r\nPING\r\n")
