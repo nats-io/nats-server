@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 func checkOptionsEqual(t *testing.T, golden, opts *Options) {
@@ -2459,4 +2461,71 @@ func TestExpandPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNoAuthUserCode(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		no_auth_user: $NO_AUTH_USER
+
+		accounts {
+			synadia {
+				users [
+					{user: "a", password: "a"},
+					{nkey : UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E},
+				]
+			}
+			acc {
+				users [
+					{user: "c", password: "c"}
+				]
+			}
+		}
+		# config for $G
+		authorization {
+			users [
+				{user: "b", password: "b"}
+			]
+		}
+	`))
+	defer os.Remove(confFileName)
+	defer os.Unsetenv("NO_AUTH_USER")
+
+	for _, user := range []string{"a", "b", "b"} {
+		t.Run(user, func(t *testing.T) {
+			os.Setenv("NO_AUTH_USER", user)
+			opts, err := ProcessConfigFile(confFileName)
+			if err != nil {
+				t.Fatalf("Received unexpected error %s", err)
+			} else {
+				srv := RunServer(opts)
+				nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port))
+				if err != nil {
+					t.Fatalf("couldn't connect %s", err)
+				}
+				nc.Close()
+				srv.Shutdown()
+			}
+		})
+	}
+
+	for _, badUser := range []string{"notthere", "UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E"} {
+		t.Run(badUser, func(t *testing.T) {
+			os.Setenv("NO_AUTH_USER", badUser)
+			opts, err := ProcessConfigFile(confFileName)
+			if err != nil {
+				t.Fatalf("Received unexpected error %s", err)
+			}
+			s, err := NewServer(opts)
+			if err != nil {
+				if !strings.HasPrefix(err.Error(), "no_auth_user") {
+					t.Fatalf("Received unexpected error %s", err)
+				}
+				return // error looks as expected
+			}
+			s.Shutdown()
+			t.Fatalf("Received no error, where no_auth_user error was expected")
+		})
+	}
+
 }

@@ -410,8 +410,10 @@ func validateOptions(o *Options) error {
 	if err := validateLeafNode(o); err != nil {
 		return err
 	}
-	// Check that gateway is properly configured. Returns no error
-	// if there is no gateway defined.
+	// Check that authentication is properly configured.
+	if err := validateAuth(o); err != nil {
+		return err
+	}
 	return validateGatewayOptions(o)
 }
 
