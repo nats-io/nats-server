@@ -702,6 +702,9 @@ func (nl *NATSLatency) TotalTime() time.Duration {
 // ServiceLatency is the JSON message sent out in response to latency tracking for
 // exported services.
 type ServiceLatency struct {
+	Type           string        `json:"type"`
+	ID             string        `json:"id"`
+	Time           string        `json:"timestamp"`
 	Status         int           `json:"status"`
 	Error          string        `json:"description,omitempty"`
 	AppName        string        `json:"app,omitempty"`
@@ -710,6 +713,8 @@ type ServiceLatency struct {
 	NATSLatency    NATSLatency   `json:"nats"`
 	TotalLatency   time.Duration `json:"total"`
 }
+
+const ServiceLatencyType = "io.nats.server.metric.v1.service_latency"
 
 // Merge function to merge m1 and m2 (requestor and responder) measurements
 // when there are two samples. This happens when the requestor and responder
@@ -751,6 +756,11 @@ type remoteLatency struct {
 // sendLatencyResult will send a latency result and clear the si of the requestor(rc).
 func (a *Account) sendLatencyResult(si *serviceImport, sl *ServiceLatency) {
 	si.acc.mu.Lock()
+
+	sl.Type = ServiceLatencyType
+	sl.ID = a.srv.nextEventID()
+	sl.Time = time.Now().UTC().Format(time.RFC3339Nano)
+
 	a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
 	si.rc = nil
 	si.acc.mu.Unlock()
@@ -763,6 +773,7 @@ func (a *Account) sendBadRequestTrackingLatency(si *serviceImport, requestor *cl
 		Error:        "Bad Request",
 		RequestStart: time.Now().Add(-requestor.getRTTValue()).UTC(),
 	}
+
 	a.sendLatencyResult(si, sl)
 }
 
