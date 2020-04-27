@@ -1261,7 +1261,8 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil && (sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM) && sub.im == nil {
+	if sub != nil && sub.client != nil &&
+		(sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM || sub.client.kind == ACCOUNT) && sub.im == nil {
 		*subs = append(*subs, sub)
 	}
 }
@@ -1344,18 +1345,4 @@ func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 		s.addAllNodeToSubs(l.fwc, subs)
 		s.collectAllSubs(l.fwc.next, subs)
 	}
-}
-
-// Helper to get the first result sub.
-func firstSubFromResult(rr *SublistResult) *subscription {
-	if rr == nil {
-		return nil
-	}
-	if len(rr.psubs) > 0 {
-		return rr.psubs[0]
-	}
-	if len(rr.qsubs) > 0 {
-		return rr.qsubs[0][0]
-	}
-	return nil
 }

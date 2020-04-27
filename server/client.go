@@ -171,6 +171,7 @@ const (
 	WrongGateway
 	MissingAccount
 	Revocation
+	InternalClient
 )
 
 // Some flags passed to processMsgResultsEx
@@ -219,10 +220,10 @@ type client struct {
 	last    time.Time
 	parseState
 
-	rtt        time.Duration
-	rttStart   time.Time
-	rrTracking map[string]*remoteLatency
-	rrMax      int
+	rtt      time.Duration
+	rttStart time.Time
+
+	rrTracking *rrTracking
 
 	route *route
 	gw    *gateway
@@ -235,6 +236,12 @@ type client struct {
 
 	trace bool
 	echo  bool
+}
+
+type rrTracking struct {
+	rmap map[string]*remoteLatency
+	ptmr *time.Timer
+	lrt  time.Duration
 }
 
 // Struct for PING initiation from the server.
@@ -496,6 +503,8 @@ func (c *client) initClient() {
 		c.ncs = "SYSTEM"
 	case JETSTREAM:
 		c.ncs = "JETSTREAM"
+	case ACCOUNT:
+		c.ncs = "ACCOUNT"
 	}
 }
 
@@ -1964,6 +1973,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 			return nil, nil
 		}
 	}
+
 	// Check if we have a maximum on the number of subscriptions.
 	if c.subsAtLimit() {
 		c.mu.Unlock()
@@ -2010,7 +2020,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	}
 
 	// If we are routing and this is a local sub, add to the route map for the associated account.
-	if kind == CLIENT || kind == SYSTEM || kind == JETSTREAM {
+	if kind == CLIENT || kind == SYSTEM || kind == JETSTREAM || kind == ACCOUNT {
 		srv.updateRouteSubscriptionMap(acc, sub, 1)
 		if updateGWs {
 			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
@@ -2285,7 +2295,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 
 	// Now check to see if this was part of a respMap entry for service imports.
 	if acc != nil {
-		acc.checkForRespEntry(string(sub.subject))
+		acc.checkForReverseEntry(string(sub.subject), nil, true)
 	}
 }
 
@@ -2550,8 +2560,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 		// FIXME(dlc) - We may need to optimize this.
 		// We will have tagged this with a suffix ('.T') if we are tracking. This is
 		// needed from sampling. Not all will be tracked.
-		if c.kind != CLIENT && client.acc.IsExportServiceTracking(string(subject)) && isTrackedReply(c.pa.reply) {
-			client.trackRemoteReply(string(c.pa.reply))
+		if c.kind != CLIENT && isTrackedReply(c.pa.reply) {
+			client.trackRemoteReply(string(subject), string(c.pa.reply))
 		}
 	}
 
@@ -2598,20 +2608,68 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 // This will track a remote reply for an exported service that has requested
 // latency tracking.
 // Lock assumed to be held.
-func (c *client) trackRemoteReply(reply string) {
+func (c *client) trackRemoteReply(subject, reply string) {
+	a := c.acc
+	if a == nil {
+		return
+	}
+
+	var lrt time.Duration
+	var respThresh time.Duration
+
+	a.mu.RLock()
+	se := a.getServiceExport(subject)
+	if se != nil {
+		lrt = a.lowestServiceExportResponseTime()
+		respThresh = se.respThresh
+	}
+	a.mu.RUnlock()
+
+	if se == nil {
+		return
+	}
+
 	if c.rrTracking == nil {
-		c.rrTracking = make(map[string]*remoteLatency)
-		c.rrMax = c.acc.MaxAutoExpireResponseMaps()
+		c.rrTracking = &rrTracking{
+			rmap: make(map[string]*remoteLatency),
+			ptmr: time.AfterFunc(lrt, c.pruneRemoteTracking),
+			lrt:  lrt,
+		}
 	}
 	rl := remoteLatency{
-		Account: c.acc.Name,
-		ReqId:   reply,
+		Account:    a.Name,
+		ReqId:      reply,
+		respThresh: respThresh,
 	}
-	rl.M2.RequestStart = time.Now()
-	c.rrTracking[reply] = &rl
-	if len(c.rrTracking) >= c.rrMax {
-		c.pruneRemoteTracking()
+	rl.M2.RequestStart = time.Now().UTC()
+	c.rrTracking.rmap[reply] = &rl
+}
+
+// pruneRemoteTracking will prune any remote tracking objects
+// that are too old. These are orphaned when a service is not
+// sending reponses etc.
+// Lock should be held upon entry.
+func (c *client) pruneRemoteTracking() {
+	c.mu.Lock()
+	if c.rrTracking == nil {
+		c.mu.Unlock()
+		return
 	}
+	now := time.Now()
+	for subject, rl := range c.rrTracking.rmap {
+		if now.After(rl.M2.RequestStart.Add(rl.respThresh)) {
+			delete(c.rrTracking.rmap, subject)
+		}
+	}
+	if len(c.rrTracking.rmap) > 0 {
+		t := c.rrTracking.ptmr
+		t.Stop()
+		t.Reset(c.rrTracking.lrt)
+	} else {
+		c.rrTracking.ptmr.Stop()
+		c.rrTracking = nil
+	}
+	c.mu.Unlock()
 }
 
 // pruneReplyPerms will remove any stale or expired entries
@@ -2657,20 +2715,6 @@ func (c *client) prunePubPermsCache() {
 		delete(c.perms.pcache, subject)
 		if r++; r > pruneSize {
 			break
-		}
-	}
-}
-
-// pruneRemoteTracking will prune any remote tracking objects
-// that are too old. These are orphaned when a service is not
-// sending reponses etc.
-// Lock should be held upon entry.
-func (c *client) pruneRemoteTracking() {
-	ttl := c.acc.AutoExpireTTL()
-	now := time.Now()
-	for reply, rl := range c.rrTracking {
-		if now.Sub(rl.M2.RequestStart) > ttl {
-			delete(c.rrTracking, reply)
 		}
 	}
 }
@@ -2810,9 +2854,9 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	// to see if we need to report the latency.
 	if c.rrTracking != nil {
 		c.mu.Lock()
-		rl := c.rrTracking[string(c.pa.subject)]
+		rl := c.rrTracking.rmap[string(c.pa.subject)]
 		if rl != nil {
-			delete(c.rrTracking, string(c.pa.subject))
+			delete(c.rrTracking.rmap, string(c.pa.subject))
 		}
 		rtt := c.rtt
 		c.mu.Unlock()
@@ -2824,7 +2868,6 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 			sl.NATSLatency.Responder = rtt
 			sl.TotalLatency = sl.ServiceLatency + rtt
 			sanitizeLatencyMetric(sl)
-
 			lsub := remoteLatencySubjectForResponse(c.pa.subject)
 			c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
 		}
@@ -2867,7 +2910,6 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		didDeliver = true
 		flag := pmrNoFlag
 		// If there are matching queue subs and we are in gateway mode,
 		// we need to keep track of the queue names the messages are
@@ -2878,7 +2920,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
+		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
@@ -2908,9 +2950,9 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	var rtt time.Duration
 
 	if c.rrTracking != nil {
-		rl = c.rrTracking[string(c.pa.subject)]
+		rl = c.rrTracking.rmap[string(c.pa.subject)]
 		if rl != nil {
-			delete(c.rrTracking, string(c.pa.subject))
+			delete(c.rrTracking.rmap, string(c.pa.subject))
 		}
 		rtt = c.rtt
 	}
@@ -2942,15 +2984,30 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	return true
 }
 
+// Used to setup the response map for a service import request that has a reply subject.
+func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport) *serviceImport {
+	rsi := si.acc.addRespServiceImport(acc, string(c.pa.reply), si)
+	if si.latency != nil {
+		if c.rtt == 0 {
+			// We have a service import that we are tracking but have not established RTT.
+			c.sendRTTPing()
+		}
+		si.acc.mu.Lock()
+		rsi.rc = c
+		si.acc.mu.Unlock()
+	}
+	return rsi
+}
+
 // processServiceImport is an internal callback when a subscription matches an imported service
-// from another account.
+// from another account. This includes response mappings as well.
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
-	if c.kind == GATEWAY && !isServiceReply(c.pa.subject) {
+	if c.kind == GATEWAY && !si.isRespServiceImport() {
 		return
 	}
 
 	acc.mu.RLock()
-	shouldReturn := si.invalid || acc.sl == nil || acc.imports.services == nil
+	shouldReturn := si.invalid || acc.sl == nil
 	acc.mu.RUnlock()
 
 	if shouldReturn {
@@ -2958,22 +3015,14 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	var nrr []byte
-	if c.pa.reply != nil {
-		var latency *serviceLatency
-		var tracking bool
-		if tracking = shouldSample(si.latency); tracking {
-			latency = si.latency
-		}
-		// We want to remap this to provide anonymity.
-		nrr = si.acc.newServiceReply(tracking)
-		si.acc.addRespServiceImport(acc, string(nrr), string(c.pa.reply), si.rt, latency)
+	var rsi *serviceImport
 
-		// Track our responses for cleanup if not auto-expire.
-		if si.rt != Singleton {
-			acc.addRespMapEntry(si.acc, string(c.pa.reply), string(nrr))
-		} else if si.latency != nil && c.rtt == 0 {
-			// We have a service import that we are tracking but have not established RTT.
-			c.sendRTTPing()
+	// Check if there is a reply present and set up a response.
+	// TODO(dlc) - restrict to configured service imports and not responses?
+	if len(c.pa.reply) > 0 {
+		rsi = c.setupResponseServiceImport(acc, si)
+		if rsi != nil {
+			nrr = []byte(rsi.from)
 		}
 	}
 
@@ -2985,15 +3034,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
-
-	// This gives us a notion that we have interest in this message.
-	didDeliver := len(rr.psubs)+len(rr.qsubs) > 0
-	// Check to see if we have no results and this is an internal serviceImport.
-	// If so we need to clean that up.
-	if !didDeliver && si.internal {
-		// We may also have a response entry, so go through that way.
-		si.acc.checkForRespEntry(to)
-	}
 
 	// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 	// need to handle that since the processMsgResults will want a queue filter.
@@ -3011,30 +3051,57 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	var lrts [routeTargetInit]routeTarget
 	c.in.rts = lrts[:0]
 
+	var didDeliver bool
+
 	// If this is not a gateway connection but gateway is enabled,
 	// try to send this converted message to all gateways.
 	if c.srv.gateway.enabled {
 		flags |= pmrCollectQueueNames
-		queues := c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
-		c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues)
+		var queues [][]byte
+		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
+		didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
 	} else {
-		c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
+		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
 	}
 
 	// Put what was there back now.
 	c.in.rts = orts
 
-	shouldRemove := si.ae
+	// Determine if we should remove this service import. This is for response service imports.
+	// We will remove if we did not deliver, or if we are a response service import and we are
+	// a singleton, or we have an EOF message.
+	shouldRemove := !didDeliver || (si.response && (si.rt == Singleton || len(msg) == LEN_CR_LF))
 
 	// Calculate tracking info here if we are tracking this request/response.
 	if si.tracking {
-		if requesting := firstSubFromResult(rr); requesting != nil {
-			shouldRemove = acc.sendTrackingLatency(si, requesting.client, c)
-		}
+		shouldRemove = acc.sendTrackingLatency(si, c)
 	}
 
+	// Check to see if this was a bad request with no reply and we were supposed to be tracking.
+	if !si.response && si.latency != nil && len(c.pa.reply) == 0 && shouldSample(si.latency) {
+		si.acc.sendBadRequestTrackingLatency(si, c)
+	}
+
+	// If we are streamed or chunked we need to update our timestamp to avoid cleanup.
+	if si.rt != Singleton && didDeliver {
+		acc.mu.Lock()
+		si.ts = time.Now().UnixNano()
+		acc.mu.Unlock()
+	}
+
+	// Cleanup of a response service import
 	if shouldRemove {
-		acc.removeServiceImport(si.from)
+		reason := rsiOk
+		if !didDeliver {
+			reason = rsiNoDelivery
+		}
+		if si.isRespServiceImport() {
+			acc.removeRespServiceImport(si, reason)
+		} else {
+			// This is a main import and since we could not even deliver to the exporting account
+			// go ahead and remove the respServiceImport we created above.
+			si.acc.removeRespServiceImport(rsi, reason)
+		}
 	}
 }
 
@@ -3074,7 +3141,8 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 }
 
 // This processes the sublist results for a given message.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int) [][]byte {
+// Returns if the message was delivered to at least target and queue filters.
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int) (bool, [][]byte) {
 	// For sending messages across routes and leafnodes.
 	// Reset if we have one since we reuse this data structure.
 	if c.in.rts != nil {
@@ -3111,6 +3179,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			subj, creply = creply[li+1:], creply[:li]
 		}
 	}
+
+	var didDeliver bool
 
 	// msg header for clients.
 	msgh := c.msgb[1:msgHeadProtoLen]
@@ -3152,7 +3222,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub, creply)
-		c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix)
+		didDeliver = c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix) || didDeliver
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -3268,6 +3338,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// for client connections only.
 			mh := c.msgHeader(msgh[:si], sub, rreply)
 			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
+				didDeliver = true
 				// Clear rsub
 				rsub = nil
 				if flags&pmrCollectQueueNames != 0 {
@@ -3291,7 +3362,7 @@ sendToRoutesOrLeafs:
 
 	// If no messages for routes or leafnodes return here.
 	if len(c.in.rts) == 0 {
-		return queues
+		return didDeliver, queues
 	}
 
 	// If we do have a deliver subject we need to do something with it.
@@ -3340,9 +3411,9 @@ sendToRoutesOrLeafs:
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, _CRLF_...)
-		c.deliverMsg(rt.sub, subject, mh, msg, false)
+		didDeliver = c.deliverMsg(rt.sub, subject, mh, msg, false) || didDeliver
 	}
-	return queues
+	return didDeliver, queues
 }
 
 func (c *client) pubPermissionViolation(subject []byte) {
@@ -3496,12 +3567,27 @@ func (c *client) typeString() string {
 		return "LeafNode"
 	case JETSTREAM:
 		return "JetStream"
+	case ACCOUNT:
+		return "Account"
 	}
 	return "Unknown Type"
 }
 
+// swapAccountAfterReload will check to make sure the bound account for this client
+// is current. Under certain circumstances after a reload we could be pointing to
+// an older one.
+func (c *client) swapAccountAfterReload() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.srv == nil {
+		return
+	}
+	acc, _ := c.srv.LookupAccount(c.acc.Name)
+	c.acc = acc
+}
+
 // processSubsOnConfigReload removes any subscriptions the client has that are no
-// longer authorized, and check for imports (accounts) due to a config reload.
+// longer authorized, and checks for imports (accounts) due to a config reload.
 func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	c.mu.Lock()
 	var (
@@ -3652,6 +3738,12 @@ func (c *client) teardownConn() {
 		gwName = c.gw.name
 		gwIsOutbound = c.gw.outbound
 		gwCfg = c.gw.cfg
+	}
+
+	// If we have remote latency tracking running shut that down.
+	if c.rrTracking != nil {
+		c.rrTracking.ptmr.Stop()
+		c.rrTracking = nil
 	}
 
 	c.mu.Unlock()

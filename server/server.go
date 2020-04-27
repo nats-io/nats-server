@@ -109,6 +109,7 @@ type Server struct {
 	opts             *Options
 	running          bool
 	shutdown         bool
+	reloading        bool
 	listener         net.Listener
 	gacc             *Account
 	sys              *internal
@@ -478,14 +479,20 @@ func (s *Server) configureAccounts() error {
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Exports
-		for _, ea := range acc.exports.streams {
-			if ea != nil {
-				swapApproved(&ea.exportAuth)
+		for _, se := range acc.exports.streams {
+			if se != nil {
+				swapApproved(&se.exportAuth)
 			}
 		}
-		for _, ea := range acc.exports.services {
-			if ea != nil {
-				swapApproved(&ea.exportAuth)
+		for _, se := range acc.exports.services {
+			if se != nil {
+				// Swap over the bound account for service exports.
+				if se.acc != nil {
+					if v, ok := s.accounts.Load(se.acc.Name); ok {
+						se.acc = v.(*Account)
+					}
+				}
+				swapApproved(&se.exportAuth)
 			}
 		}
 		// Imports
@@ -499,6 +506,13 @@ func (s *Server) configureAccounts() error {
 				si.acc = v.(*Account)
 			}
 		}
+		// Make sure the subs are running, but only if not reloading.
+		if len(acc.imports.services) > 0 && acc.ic == nil && !s.reloading {
+			acc.ic = s.createInternalAccountClient()
+			acc.ic.acc = acc
+			acc.addAllServiceImportSubs()
+		}
+
 		return true
 	})
 
@@ -1000,23 +1014,11 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	}
 	// Finish account setup and store.
 	s.setAccountSublist(acc)
-	if acc.maxnae == 0 {
-		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
-	}
-	if acc.maxaettl == 0 {
-		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
-	}
-	if acc.maxnrm == 0 {
-		acc.maxnrm = DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS
-	}
+
 	if acc.clients == nil {
 		acc.clients = make(map[*client]*client)
 	}
-	if len(acc.imports.services) > 0 && acc.ic == nil {
-		acc.ic = s.createInternalAccountClient()
-		acc.ic.acc = acc
-		acc.addAllServiceImportSubs()
-	}
+
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
 	// During config reload, it is possible that account was
@@ -1104,7 +1106,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.claimJWT = claimJWT
-		s.updateAccountClaims(acc, accClaims)
+		s.UpdateAccountClaims(acc, accClaims)
 		return nil
 	}
 	return err
@@ -1169,13 +1171,21 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		// registered and we should use this one.
 		if racc := s.registerAccount(acc); racc != nil {
 			// Update with the new claims in case they are new.
-			// Following call will return ErrAccountResolverSameClaims
+			// Following call will ignore ErrAccountResolverSameClaims
 			// if claims are the same.
 			err = s.updateAccountWithClaimJWT(racc, claimJWT)
 			if err != nil && err != ErrAccountResolverSameClaims {
 				return nil, err
 			}
+			//fmt.Printf("Fetch returning racc\n")
 			return racc, nil
+		}
+		// The sub imports may have been setup but will not have had their
+		// subscriptions properly setup. Do that here.
+		if len(acc.imports.services) > 0 && acc.ic == nil {
+			acc.ic = s.createInternalAccountClient()
+			acc.ic.acc = acc
+			acc.addAllServiceImportSubs()
 		}
 		return acc, nil
 	}

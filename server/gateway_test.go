@@ -236,6 +236,7 @@ func natsUnsub(t *testing.T, sub *nats.Subscription) {
 
 func testDefaultOptionsForGateway(name string) *Options {
 	o := DefaultOptions()
+	o.ServerName = name
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
@@ -3338,7 +3339,7 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// Check for duplicate message
-		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if msg, err := subB.NextMsg(250 * time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
@@ -3349,14 +3350,14 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client. We also send the reply
-		// optimistically to the other side.
+		// and foo.request then send the reply to the client and optimistically
+		// to the other gateway. Also send on _R_
 		if i == 0 {
-			expected = 4
+			expected = 5
 		} else {
 			// The second time, one of the accounts will be suppressed and the reply going
-			// back so we will get only 2 more messages.
-			expected = 6
+			// back so we should get only 2 more messages.
+			expected = 7
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3372,7 +3373,10 @@ func TestGatewayServiceImport(t *testing.T) {
 	})
 
 	// Speed up exiration
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
+	err := fooA.SetServiceExportResponseThreshold("test.request", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3402,7 +3406,10 @@ func TestGatewayServiceImport(t *testing.T) {
 	// Repeat similar test but without the small TTL and verify
 	// that if B is shutdown, the dangling subs for replies are
 	// cleared from the account sublist.
-	fooA.SetAutoExpireTTL(10 * time.Second)
+	err = fooA.SetServiceExportResponseThreshold("test.request", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	subA = natsSubSync(t, clientA, "test.request")
 	natsFlush(t, clientA)
@@ -3645,7 +3652,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 			t.Fatalf("Unexpected message: %v", msg)
 		}
 		// Check for duplicate message
-		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if msg, err := subB.NextMsg(250 * time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
@@ -3656,14 +3663,14 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client. We also send the reply
-		// optimistically to the other side.
+		// and foo.request then send the reply to the client and optimistically
+		// to the other gateway. Also send on _R_.
 		if i == 0 {
-			expected = 4
+			expected = 5
 		} else {
 			// The second time, one of the accounts will be suppressed and the reply going
-			// back so we will get only 2 more messages.
-			expected = 6
+			// back so we should get only 2 more messages.
+			expected = 7
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3679,7 +3686,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	})
 
 	// Speed up exiration
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
+	err := fooA.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3710,7 +3720,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	// Repeat similar test but without the small TTL and verify
 	// that if B is shutdown, the dangling subs for replies are
 	// cleared from the account sublist.
-	fooA.SetAutoExpireTTL(10 * time.Second)
+	err = fooA.SetServiceExportResponseThreshold("test.request", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	subA = natsQueueSubSync(t, clientA, "test.request", "queue")
 	natsFlush(t, clientA)
@@ -4109,8 +4122,14 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	checkSubs(t, barB2, "B2", 2)
 
 	// Speed up exiration
-	fooA2.SetAutoExpireTTL(10 * time.Millisecond)
-	fooB1.SetAutoExpireTTL(10 * time.Millisecond)
+	err = fooA2.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
+	err = fooB1.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -4133,17 +4152,15 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 
 	// We should expire because ttl.
 	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		// Now run prune and make sure we collect the timed-out ones.
-		fooB1.pruneAutoExpireResponseMaps()
-		if nae := fooB1.numAutoExpireResponseMaps(); nae != 0 {
-			return fmt.Errorf("Number of responsemaps is %d", nae)
+		if nr := len(fooA1.exports.responses); nr != 0 {
+			return fmt.Errorf("Number of responses is %d", nr)
 		}
 		return nil
 	})
 
 	checkSubs(t, fooA1, "A1", 0)
 	checkSubs(t, fooA2, "A2", 0)
-	checkSubs(t, fooB1, "B1", 0)
+	checkSubs(t, fooB1, "B1", 1)
 	checkSubs(t, fooB2, "B2", 1)
 
 	checkSubs(t, barA1, "A1", 1)
@@ -4477,8 +4494,14 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, barB2, "B2", 2)
 
 			// Speed up exiration
-			fooA2.SetAutoExpireTTL(10 * time.Millisecond)
-			fooB1.SetAutoExpireTTL(10 * time.Millisecond)
+			err = fooA1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Error setting response threshold: %v", err)
+			}
+			err = fooB1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Error setting response threshold: %v", err)
+			}
 
 			// Send 100 requests from clientB on foo.request,
 			for i := 0; i < 100; i++ {
@@ -4501,17 +4524,15 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			// We should expire because ttl.
 			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-				// Now run prune and make sure we collect the timed-out ones.
-				fooB1.pruneAutoExpireResponseMaps()
-				if nae := fooB1.numAutoExpireResponseMaps(); nae != 0 {
-					return fmt.Errorf("Number of responsemaps is %d", nae)
+				if nr := len(fooA1.exports.responses); nr != 0 {
+					return fmt.Errorf("Number of responses is %d", nr)
 				}
 				return nil
 			})
 
 			checkSubs(t, fooA1, "A1", 0)
 			checkSubs(t, fooA2, "A2", 0)
-			checkSubs(t, fooB1, "B1", 0)
+			checkSubs(t, fooB1, "B1", 1)
 			checkSubs(t, fooB2, "B2", 1)
 
 			checkSubs(t, barA1, "A1", 1)

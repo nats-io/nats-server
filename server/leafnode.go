@@ -1176,8 +1176,8 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	// If we are solicited make sure this is a local client or a non-solicited leaf node
 	skind := sub.client.kind
-
-	if c.isSpokeLeafNode() && !(skind == CLIENT || skind == SYSTEM || skind == JETSTREAM || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
+	updateClient := skind == CLIENT || skind == SYSTEM || skind == JETSTREAM || skind == ACCOUNT
+	if c.isSpokeLeafNode() && !(updateClient || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
 		c.mu.Unlock()
 		return
 	}
@@ -1578,7 +1578,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
+		_, qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
