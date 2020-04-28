@@ -1667,10 +1667,11 @@ type importStream struct {
 }
 
 type importService struct {
-	acc *Account
-	an  string
-	sub string
-	to  string
+	acc   *Account
+	an    string
+	sub   string
+	to    string
+	share bool
 }
 
 // Checks if an account name is reserved.
@@ -1913,6 +1914,11 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 		}
 		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
 			msg := fmt.Sprintf("Error adding service import %q: %v", service.sub, err)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
+		if err := service.acc.SetServiceImportSharing(ta, service.sub, service.share); err != nil {
+			msg := fmt.Sprintf("Error setting service import sharing %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
@@ -2289,6 +2295,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 		curStream  *importStream
 		curService *importService
 		pre, to    string
+		share      bool
 		lt         token
 	)
 	defer convertPanicToErrorList(&lt, errors)
@@ -2357,6 +2364,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			} else {
 				curService.to = subject
 			}
+			curService.share = share
 		case "prefix":
 			pre = mv.(string)
 			if curStream != nil {
@@ -2366,6 +2374,11 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			to = mv.(string)
 			if curService != nil {
 				curService.to = to
+			}
+		case "share":
+			share = mv.(bool)
+			if curService != nil {
+				curService.share = share
 			}
 		default:
 			if !tk.IsUsedVariable() {

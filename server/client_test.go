@@ -256,7 +256,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Authorization: "YZZ222", Name: "router"}) {
+	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Token: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 }

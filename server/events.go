@@ -1148,6 +1148,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	}
 	m1 := si.m1
 	m2 := rl.M2
+
 	lsub := si.latency.subject
 	acc.mu.RUnlock()
 
@@ -1180,7 +1181,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	// Make sure we remove the entry here.
 	acc.removeServiceImport(si.from)
 	// Send the metrics
-	s.sendInternalAccountMsg(acc, lsub, &m1)
+	s.sendInternalAccountMsg(acc, lsub, m1)
 }
 
 // This is used for all inbox replies so that we do not send supercluster wide interest
