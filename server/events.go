@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -566,6 +567,45 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
+
+	monSrvc := map[string]msgHandler{
+		"VARZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &VarzOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Varz(optz) })
+		},
+		"SUBSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &SubszOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Subsz(optz) })
+		},
+		"CONNZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &ConnzOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Connz(optz) })
+		},
+		"ROUTEZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &RoutezOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Routez(optz) })
+		},
+		"GATEWAYZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &GatewayzOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Gatewayz(optz) })
+		},
+		"LEAFZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &LeafzOptions{}
+			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Leafz(optz) })
+		},
+	}
+
+	for name, req := range monSrvc {
+		subject = fmt.Sprintf("$SYS.REQ.SERVER.%s.%s", s.info.ID, name)
+		if _, err := s.sysSubscribe(subject, req); err != nil {
+			s.Errorf("Error setting up internal tracking: %v", err)
+		}
+		subject = fmt.Sprintf("$SYS.REQ.SERVER.PING.%s", name)
+		if _, err := s.sysSubscribe(subject, req); err != nil {
+			s.Errorf("Error setting up internal tracking: %v", err)
+		}
+	}
+
 	// Listen for updates when leaf nodes connect for a given account. This will
 	// force any gateway connections to move to `modeInterestOnly`
 	subject = fmt.Sprintf(leafNodeConnectEventSubj, "*")
@@ -765,6 +805,31 @@ func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, 
 		return
 	}
 	s.sendStatsz(reply)
+}
+
+func (s *Server) zReq(reply string, msg []byte, optz interface{}, respf func() (interface{}, error)) {
+	if !s.EventsEnabled() || reply == _EMPTY_ {
+		return
+	}
+	server := &ServerInfo{}
+	response := map[string]interface{}{"server": server}
+	var err error
+	status := 0
+	if len(msg) != 0 {
+		err = json.Unmarshal(msg, optz)
+		status = http.StatusBadRequest // status is only included on error, so record how far execution got
+	}
+	if err == nil {
+		response["data"], err = respf()
+		status = http.StatusInternalServerError
+	}
+	if err != nil {
+		response["error"] = map[string]interface{}{
+			"code":        status,
+			"description": err.Error(),
+		}
+	}
+	s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
 }
 
 // remoteConnsUpdate gets called when we receive a remote update from another server.
