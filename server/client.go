@@ -199,6 +199,7 @@ type client struct {
 	opts    clientOpts
 	start   time.Time
 	nonce   []byte
+	pubKey  string
 	nc      net.Conn
 	ncs     string
 	out     outbound
@@ -416,22 +417,22 @@ func (s *subscription) isClosed() bool {
 }
 
 type clientOpts struct {
-	Echo          bool   `json:"echo"`
-	Verbose       bool   `json:"verbose"`
-	Pedantic      bool   `json:"pedantic"`
-	TLSRequired   bool   `json:"tls_required"`
-	Nkey          string `json:"nkey,omitempty"`
-	JWT           string `json:"jwt,omitempty"`
-	Sig           string `json:"sig,omitempty"`
-	Authorization string `json:"auth_token,omitempty"`
-	Username      string `json:"user,omitempty"`
-	Password      string `json:"pass,omitempty"`
-	Name          string `json:"name"`
-	Lang          string `json:"lang"`
-	Version       string `json:"version"`
-	Protocol      int    `json:"protocol"`
-	Account       string `json:"account,omitempty"`
-	AccountNew    bool   `json:"new_account,omitempty"`
+	Echo        bool   `json:"echo"`
+	Verbose     bool   `json:"verbose"`
+	Pedantic    bool   `json:"pedantic"`
+	TLSRequired bool   `json:"tls_required"`
+	Nkey        string `json:"nkey,omitempty"`
+	JWT         string `json:"jwt,omitempty"`
+	Sig         string `json:"sig,omitempty"`
+	Token       string `json:"auth_token,omitempty"`
+	Username    string `json:"user,omitempty"`
+	Password    string `json:"pass,omitempty"`
+	Name        string `json:"name"`
+	Lang        string `json:"lang"`
+	Version     string `json:"version"`
+	Protocol    int    `json:"protocol"`
+	Account     string `json:"account,omitempty"`
+	AccountNew  bool   `json:"new_account,omitempty"`
 
 	// Routes only
 	Import *SubjectPermission `json:"import,omitempty"`
@@ -2866,18 +2867,18 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		if rl != nil {
 			delete(c.rrTracking.rmap, string(c.pa.subject))
 		}
-		rtt := c.rtt
 		c.mu.Unlock()
+
 		if rl != nil {
 			sl := &rl.M2
 			// Fill this in and send it off to the other side.
-			sl.AppName = c.opts.Name
-			sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
-			sl.NATSLatency.Responder = rtt
-			sl.TotalLatency = sl.ServiceLatency + rtt
+			sl.Status = 200
+			sl.Responder = c.getLatencyInfo(true)
+			sl.ServiceLatency = time.Since(sl.RequestStart) - sl.Responder.RTT
+			sl.TotalLatency = sl.ServiceLatency + sl.Responder.RTT
 			sanitizeLatencyMetric(sl)
 			lsub := remoteLatencySubjectForResponse(c.pa.subject)
-			c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
+			c.srv.sendInternalAccountMsg(nil, lsub, rl) // Send to SYS account
 		}
 	}
 
@@ -2955,28 +2956,25 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	c.pa.subject = []byte(rm.ms)
 
 	var rl *remoteLatency
-	var rtt time.Duration
 
 	if c.rrTracking != nil {
 		rl = c.rrTracking.rmap[string(c.pa.subject)]
 		if rl != nil {
 			delete(c.rrTracking.rmap, string(c.pa.subject))
 		}
-		rtt = c.rtt
 	}
 	c.mu.Unlock()
 
 	if rl != nil {
 		sl := &rl.M2
 		// Fill this in and send it off to the other side.
-		sl.AppName = c.opts.Name
-		sl.ServiceLatency = time.Since(sl.RequestStart) - rtt
-		sl.NATSLatency.Responder = rtt
-		sl.TotalLatency = sl.ServiceLatency + rtt
+		sl.Status = 200
+		sl.Responder = c.getLatencyInfo(true)
+		sl.ServiceLatency = time.Since(sl.RequestStart) - sl.Responder.RTT
+		sl.TotalLatency = sl.ServiceLatency + sl.Responder.RTT
 		sanitizeLatencyMetric(sl)
-
 		lsub := remoteLatencySubjectForResponse(c.pa.subject)
-		c.srv.sendInternalAccountMsg(nil, lsub, &rl) // Send to SYS account
+		c.srv.sendInternalAccountMsg(nil, lsub, rl) // Send to SYS account
 	}
 
 	// Check for leaf nodes
@@ -3040,6 +3038,17 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		to = string(c.pa.subject)
 	}
 
+	// Check to see if this was a bad request with no reply and we were supposed to be tracking.
+	if !si.response && si.latency != nil && len(c.pa.reply) == 0 && shouldSample(si.latency) {
+		si.acc.sendBadRequestTrackingLatency(si, c)
+	}
+
+	// Send tracking info here if we are tracking this request/response.
+	var didSendTL bool
+	if si.tracking {
+		didSendTL = acc.sendTrackingLatency(si, c)
+	}
+
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
 
@@ -3079,17 +3088,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// We will remove if we did not deliver, or if we are a response service import and we are
 	// a singleton, or we have an EOF message.
 	shouldRemove := !didDeliver || (si.response && (si.rt == Singleton || len(msg) == LEN_CR_LF))
-
-	// Calculate tracking info here if we are tracking this request/response.
-	if si.tracking {
-		shouldRemove = acc.sendTrackingLatency(si, c)
+	// If we are tracking and we did not actually send the latency info we need to suppress the removal.
+	if si.tracking && !didSendTL {
+		shouldRemove = false
 	}
-
-	// Check to see if this was a bad request with no reply and we were supposed to be tracking.
-	if !si.response && si.latency != nil && len(c.pa.reply) == 0 && shouldSample(si.latency) {
-		si.acc.sendBadRequestTrackingLatency(si, c)
-	}
-
 	// If we are streamed or chunked we need to update our timestamp to avoid cleanup.
 	if si.rt != Singleton && didDeliver {
 		acc.mu.Lock()
@@ -3696,7 +3698,7 @@ func (c *client) teardownConn() {
 	if c.srv != nil {
 		if c.kind == ROUTER || c.kind == GATEWAY {
 			c.Noticef("%s connection closed", c.typeString())
-		} else { // Client, System, Jetstream and Leafnode connections.
+		} else { // Client, System, Jetstream, Account and Leafnode connections.
 			c.Debugf("%s connection closed", c.typeString())
 		}
 	}
@@ -3971,13 +3973,53 @@ func (c *client) pruneClosedSubFromPerAccountCache() {
 	}
 }
 
+// Grabs the information for latency reporting.
+func (c *client) getLatencyInfo(detailed bool) LatencyClient {
+	var lc LatencyClient
+	if c == nil || c.kind != CLIENT {
+		return lc
+	}
+	sn := c.srv.Name()
+	c.mu.Lock()
+	lc.RTT = c.rtt
+	if detailed {
+		lc.Name = c.opts.Name
+		lc.User = c.getRawAuthUser()
+		lc.IP = c.host
+		lc.CID = c.cid
+		lc.Server = sn
+	}
+	c.mu.Unlock()
+	return lc
+}
+
+// getRAwAuthUser returns the raw auth user for the client.
+// Lock should be held.
+func (c *client) getRawAuthUser() string {
+	switch {
+	case c.opts.Nkey != "":
+		return c.opts.Nkey
+	case c.opts.Username != "":
+		return c.opts.Username
+	case c.opts.JWT != "":
+		return c.pubKey
+	case c.opts.Token != "":
+		return c.opts.Token
+	default:
+		return ""
+	}
+}
+
 // getAuthUser returns the auth user for the client.
+// Lock should be held.
 func (c *client) getAuthUser() string {
 	switch {
 	case c.opts.Nkey != "":
 		return fmt.Sprintf("Nkey %q", c.opts.Nkey)
 	case c.opts.Username != "":
 		return fmt.Sprintf("User %q", c.opts.Username)
+	case c.opts.JWT != "":
+		return fmt.Sprintf("JWT User %q", c.pubKey)
 	default:
 		return `User "N/A"`
 	}

@@ -16,6 +16,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
@@ -76,6 +77,25 @@ func (sc *supercluster) setResponseThreshold(t *testing.T, maxTime time.Duration
 			}
 			if err := foo.SetServiceExportResponseThreshold("ngs.usage.*", maxTime); err != nil {
 				t.Fatalf("Error setting response threshold")
+			}
+		}
+	}
+}
+
+func (sc *supercluster) setImportShare(t *testing.T) {
+	t.Helper()
+	for _, c := range sc.clusters {
+		for _, s := range c.servers {
+			foo, err := s.LookupAccount("FOO")
+			if err != nil {
+				t.Fatalf("Error looking up account 'FOO': %v", err)
+			}
+			bar, err := s.LookupAccount("BAR")
+			if err != nil {
+				t.Fatalf("Error looking up account 'BAR': %v", err)
+			}
+			if err := bar.SetServiceImportSharing(foo, "ngs.usage.bar", true); err != nil {
+				t.Fatalf("Error setting import sharing: %v", err)
 			}
 		}
 	}
@@ -155,6 +175,10 @@ func clientConnectOldRequest(t *testing.T, opts *server.Options, user string) *n
 func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time, serviceTime time.Duration) {
 	t.Helper()
 
+	if sl.Status != 200 {
+		t.Fatalf("Bad status received, wanted 200 got %d", sl.Status)
+	}
+
 	serviceTime = serviceTime.Round(time.Millisecond)
 
 	startDelta := sl.RequestStart.Sub(start)
@@ -169,18 +193,56 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	}
 
 	// We should have NATS latency here that is non-zero with real clients.
-	if sl.NATSLatency.Requestor == 0 {
+	if sl.Requestor.RTT == 0 {
 		t.Fatalf("Expected non-zero NATS Requestor latency")
 	}
-	if sl.NATSLatency.Responder == 0 {
+	if sl.Responder.RTT == 0 {
 		t.Fatalf("Expected non-zero NATS Requestor latency")
 	}
 
 	// Make sure they add up
 	got := sl.TotalLatency
-	expected := sl.ServiceLatency + sl.NATSLatency.TotalTime()
+	expected := sl.ServiceLatency + sl.NATSTotalTime()
 	if got != expected {
 		t.Fatalf("Numbers do not add up: %+v,\ngot: %v\nexpected: %v", sl, got, expected)
+	}
+}
+
+func extendedCheck(t *testing.T, lc *server.LatencyClient, eUser, appName, eServer string) {
+	t.Helper()
+	if lc.User != eUser {
+		t.Fatalf("Expected user of %q, got %q", eUser, lc.User)
+	}
+	if appName != "" && appName != lc.Name {
+		t.Fatalf("Expected appname of %q, got %q\n", appName, lc.Name)
+	}
+	if lc.IP == "" {
+		t.Fatalf("Expected non-empty IP")
+	}
+	if lc.CID < 1 || lc.CID > 20 {
+		t.Fatalf("Expected a CID in range, got %d", lc.CID)
+	}
+	if eServer != "" && eServer != lc.Server {
+		t.Fatalf("Expected server of %q, got %q", eServer, lc.Server)
+	}
+}
+
+func noShareCheck(t *testing.T, lc *server.LatencyClient) {
+	t.Helper()
+	if lc.Name != "" {
+		t.Fatalf("appname should not have been shared, got %q", lc.Name)
+	}
+	if lc.User != "" {
+		t.Fatalf("user should not have been shared, got %q", lc.User)
+	}
+	if lc.IP != "" {
+		t.Fatalf("client ip should not have been shared, got %q", lc.IP)
+	}
+	if lc.CID != 0 {
+		t.Fatalf("client id should not have been shared, got %d", lc.CID)
+	}
+	if lc.Server != "" {
+		t.Fatalf("client' server should not have been shared, got %q", lc.Server)
 	}
 }
 
@@ -193,7 +255,7 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 
 	// Now we can setup and test, do single node only first.
 	// This is the service provider.
-	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
+	nc := clientConnectWithName(t, sc.clusters[0].opts[0], "foo", "service22")
 	defer nc.Close()
 
 	// The service listener.
@@ -212,8 +274,7 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 
 	// Send the request.
 	start := time.Now()
-	_, err := nc2.Request("ngs.usage", []byte("1h"), time.Second)
-	if err != nil {
+	if _, err := nc2.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
 		t.Fatalf("Expected a response")
 	}
 
@@ -222,6 +283,26 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	checkServiceLatency(t, sl, start, serviceTime)
+
+	rs := sc.clusters[0].servers[0]
+	extendedCheck(t, &sl.Responder, "foo", "service22", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
+
+	// Now make sure normal use case works with old request style.
+	nc3 := clientConnectOldRequest(t, sc.clusters[0].opts[0], "bar")
+	defer nc3.Close()
+
+	start = time.Now()
+	if _, err := nc3.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	}
+	nc3.Close()
+
+	checkServiceLatency(t, sl, start, serviceTime)
+	extendedCheck(t, &sl.Responder, "foo", "service22", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 }
 
 // If a client has a longer RTT that the effective RTT for NATS + responder
@@ -249,8 +330,9 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 	nc.Flush()
 
 	// Requestor and processing
-	requestAndCheck := func(sopts *server.Options) {
+	requestAndCheck := func(cindex, sindex int) {
 		t.Helper()
+		sopts := sc.clusters[cindex].opts[sindex]
 
 		if nmsgs, _, err := rsub.Pending(); err != nil || nmsgs != 0 {
 			t.Fatalf("Did not expect any latency results, got %d", nmsgs)
@@ -290,12 +372,18 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		// We want to test here that when the client requestor RTT is larger then the response time
 		// we still deliver a requestor value > 0.
 		// Now check that it is close to rtt.
-		if sl.NATSLatency.Requestor < rtt {
-			t.Fatalf("Expected requestor latency to be > %v, got %v", rtt, sl.NATSLatency.Requestor)
+		if sl.Requestor.RTT < rtt {
+			t.Fatalf("Expected requestor latency to be > %v, got %v", rtt, sl.Requestor.RTT)
 		}
 		if sl.TotalLatency < rtt {
 			t.Fatalf("Expected total latency to be > %v, got %v", rtt, sl.TotalLatency)
 		}
+
+		rs := sc.clusters[0].servers[0]
+		extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+		// Normally requestor's don't share
+		noShareCheck(t, &sl.Requestor)
+
 		// Check for trailing duplicates..
 		rmsg, err = rsub.NextMsg(100 * time.Millisecond)
 		if err == nil {
@@ -304,11 +392,11 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 	}
 
 	// Check same server.
-	requestAndCheck(sc.clusters[0].opts[0])
+	requestAndCheck(0, 0)
 	// Check from remote server across GW.
-	requestAndCheck(sc.clusters[1].opts[1])
+	requestAndCheck(1, 1)
 	// Same cluster but different server
-	requestAndCheck(sc.clusters[0].opts[1])
+	requestAndCheck(0, 1)
 }
 
 func connRTT(nc *nats.Conn) time.Duration {
@@ -362,11 +450,15 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 	}
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
+	rs := sc.clusters[0].servers[0]
+	extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
-	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency.TotalTime() < crtt {
-		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency.TotalTime(), crtt)
+	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSTotalTime() < crtt {
+		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSTotalTime(), crtt)
 	}
 
 	// Gateway Requestor
@@ -386,11 +478,14 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 	}
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
+	extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
-	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSLatency.TotalTime() < crtt {
-		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSLatency.TotalTime(), crtt)
+	if crtt := connRTT(nc) + connRTT(nc2); sl.NATSTotalTime() < crtt {
+		t.Fatalf("Not tracking second measurement for NATS latency across servers: %v vs %v", sl.NATSTotalTime(), crtt)
 	}
 
 	// Now turn off and make sure we no longer receive updates.
@@ -530,9 +625,10 @@ func TestServiceLatencyWithName(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	// Make sure we have AppName set.
-	if sl.AppName != "dlc22" {
-		t.Fatalf("Expected to have AppName set correctly, %q vs %q", "dlc22", sl.AppName)
-	}
+	rs := sc.clusters[0].servers[0]
+	extendedCheck(t, &sl.Responder, "foo", "dlc22", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 }
 
 func TestServiceLatencyWithNameMultiServer(t *testing.T) {
@@ -563,9 +659,10 @@ func TestServiceLatencyWithNameMultiServer(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	// Make sure we have AppName set.
-	if sl.AppName != "dlc22" {
-		t.Fatalf("Expected to have AppName set correctly, %q vs %q", "dlc22", sl.AppName)
-	}
+	rs := sc.clusters[0].servers[1]
+	extendedCheck(t, &sl.Responder, "foo", "dlc22", rs.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 }
 
 func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
@@ -623,7 +720,7 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		var sl server.ServiceLatency
 		json.Unmarshal(msg.Data, &sl)
 		rlock.Lock()
-		results[sl.AppName] += sl.ServiceLatency
+		results[sl.Responder.Name] += sl.ServiceLatency
 		rlock.Unlock()
 		if r := atomic.AddInt32(&received, 1); r >= toSend {
 			ch <- true
@@ -730,7 +827,8 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 
 	// Create service provider.
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	nc, err := nats.Connect(url, createUserCreds(t, s, svcKP))
+	copt, pubUser := createUserCredsOption(t, s, svcKP)
+	nc, err := nats.Connect(url, copt, nats.Name("fooService"))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
 	}
@@ -781,6 +879,8 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 	serviceExport.Latency = &jwt.ServiceLatency{Sampling: 100, Results: "results"}
 	updateAccount()
 
+	// Grab the service responder's user.
+
 	// Send the request.
 	start := time.Now()
 	_, err = nc2.Request("request", []byte("hello"), time.Second)
@@ -795,6 +895,9 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 	}
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
+	extendedCheck(t, &sl.Responder, pubUser, "fooService", s.Name())
+	// Normally requestor's don't share
+	noShareCheck(t, &sl.Requestor)
 
 	// Now we will remove tracking. Do this by simulating a JWT update.
 	serviceExport.Latency = nil
@@ -933,7 +1036,7 @@ func TestServiceLatencyRemoteConnectAdjustNegativeValues(t *testing.T) {
 		if sl.ServiceLatency < 0 {
 			t.Fatalf("Unexpected negative service latency value: %v", sl)
 		}
-		if sl.NATSLatency.System < 0 {
+		if sl.SystemLatency < 0 {
 			t.Fatalf("Unexpected negative system latency value: %v", sl)
 		}
 	}
@@ -977,6 +1080,7 @@ func TestServiceLatencyFailureReportingSingleServer(t *testing.T) {
 	// Test a request with no reply subject
 	nc2.Publish("ngs.usage", []byte("1h"))
 	sl := getMetricResult()
+
 	if sl.Status != 400 {
 		t.Fatalf("Expected to get a bad request status [400], got %d", sl.Status)
 	}
@@ -1108,4 +1212,277 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 		// Wait to propagate.
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// To test a bug rip@nats.io is seeing.
+func TestServiceLatencyOldRequestStyleSingleServer(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+		    SVC: {
+		        users: [ {user: svc, password: pass} ]
+		        exports: [  {
+					service: "svc.echo"
+					accounts: [CLIENT]
+					latency: {
+						sampling: 100%
+						subject: latency.svc
+					}
+				} ]
+		    },
+		    CLIENT: {
+		        users: [{user: client, password: pass} ]
+			    imports: [ {service: {account: SVC, subject: svc.echo}, to: SVC} ]
+		    },
+		    SYS: { users: [{user: admin, password: pass}] }
+		}
+
+		system_account: SYS
+	`))
+	defer os.Remove(conf)
+
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	// Responder
+	nc, err := nats.Connect(fmt.Sprintf("nats://svc:pass@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Listen for metrics
+	rsub, _ := nc.SubscribeSync("latency.svc")
+
+	// Requestor
+	nc2, err := nats.Connect(fmt.Sprintf("nats://client:pass@%s:%d", opts.Host, opts.Port), nats.UseOldRequestStyle())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Setup responder
+	serviceTime := 25 * time.Millisecond
+	sub, _ := nc.Subscribe("svc.echo", func(msg *nats.Msg) {
+		time.Sleep(serviceTime)
+		msg.Respond([]byte("world"))
+	})
+	nc.Flush()
+	defer sub.Unsubscribe()
+
+	// Send a request
+	start := time.Now()
+	if _, err := nc2.Request("SVC", []byte("1h"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	}
+
+	var sl server.ServiceLatency
+	rmsg, _ := rsub.NextMsg(time.Second)
+	json.Unmarshal(rmsg.Data, &sl)
+
+	checkServiceLatency(t, sl, start, serviceTime)
+	extendedCheck(t, &sl.Responder, "svc", "", srv.Name())
+	noShareCheck(t, &sl.Requestor)
+}
+
+// Check we get the proper detailed information for the requestor when allowed.
+func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
+	sc := createSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+	sc.setResponseThreshold(t, 10*time.Millisecond)
+	sc.setImportShare(t)
+
+	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
+	defer nc.Close()
+
+	// Listen for metrics
+	rsub, err := nc.SubscribeSync("results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Flush()
+
+	getMetricResult := func() *server.ServiceLatency {
+		t.Helper()
+		rmsg, err := rsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Expected to receive latency metric: %v", err)
+		}
+		var sl server.ServiceLatency
+		if err = json.Unmarshal(rmsg.Data, &sl); err != nil {
+			t.Errorf("Unexpected error processing latency metric: %s", err)
+		}
+		return &sl
+	}
+
+	cases := []struct {
+		ci, si int
+		desc   string
+	}{
+		{0, 0, "same server"},
+		{0, 1, "same cluster, different server"},
+		{1, 1, "different cluster"},
+	}
+
+	for _, cs := range cases {
+		// Select the server to send request from.
+		nc2 := clientConnect(t, sc.clusters[cs.ci].opts[cs.si], "bar")
+		defer nc2.Close()
+
+		rs := sc.clusters[cs.ci].servers[cs.si]
+
+		// Test a request with no reply subject
+		nc2.Publish("ngs.usage", []byte("1h"))
+		sl := getMetricResult()
+		if sl.Status != 400 {
+			t.Fatalf("Test %q, Expected to get a bad request status [400], got %d", cs.desc, sl.Status)
+		}
+		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+
+		// Proper request, but no responders.
+		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		sl = getMetricResult()
+		if sl.Status != 503 {
+			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
+		}
+		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+
+		// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
+			time.Sleep(20 * time.Millisecond)
+			msg.Respond([]byte("22 msgs"))
+		})
+		defer sub.Unsubscribe()
+		nc.Flush()
+		// Wait to propagate.
+		time.Sleep(100 * time.Millisecond)
+
+		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		sl = getMetricResult()
+		if sl.Status != 504 {
+			t.Fatalf("Test %q, Expected to get a service timeout status [504], got %d", cs.desc, sl.Status)
+		}
+		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+
+		// Clean up subscriber and requestor
+		nc2.Close()
+		sub.Unsubscribe()
+		nc.Flush()
+		// Wait to propagate.
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+		    SVC: {
+		        users: [ {user: svc, password: pass} ]
+		        exports: [  {
+					service: "svc.echo"
+					accounts: [CLIENT]
+					latency: {
+						sampling: 100%
+						subject: latency.svc
+					}
+				} ]
+		    },
+		    CLIENT: {
+		        users: [{user: client, password: pass} ]
+			    imports: [ {service: {account: SVC, subject: svc.echo}, to: SVC, share:true} ]
+		    },
+		    SYS: { users: [{user: admin, password: pass}] }
+		}
+
+		system_account: SYS
+	`))
+	defer os.Remove(conf)
+
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	// Responder
+	nc, err := nats.Connect(fmt.Sprintf("nats://svc:pass@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Listen for metrics
+	rsub, _ := nc.SubscribeSync("latency.svc")
+
+	// Requestor
+	nc2, err := nats.Connect(fmt.Sprintf("nats://client:pass@%s:%d", opts.Host, opts.Port), nats.UseOldRequestStyle())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Setup responder
+	serviceTime := 25 * time.Millisecond
+	sub, _ := nc.Subscribe("svc.echo", func(msg *nats.Msg) {
+		time.Sleep(serviceTime)
+		msg.Respond([]byte("world"))
+	})
+	nc.Flush()
+	defer sub.Unsubscribe()
+
+	// Send a request
+	start := time.Now()
+	if _, err := nc2.Request("SVC", []byte("1h"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	}
+
+	var sl server.ServiceLatency
+	rmsg, _ := rsub.NextMsg(time.Second)
+	json.Unmarshal(rmsg.Data, &sl)
+
+	checkServiceLatency(t, sl, start, serviceTime)
+	extendedCheck(t, &sl.Responder, "svc", "", srv.Name())
+	extendedCheck(t, &sl.Requestor, "client", "", srv.Name())
+
+	// Check reload.
+	newConf := []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+		    SVC: {
+		        users: [ {user: svc, password: pass} ]
+		        exports: [  {
+					service: "svc.echo"
+					accounts: [CLIENT]
+					latency: {
+						sampling: 100%
+						subject: latency.svc
+					}
+				} ]
+		    },
+		    CLIENT: {
+		        users: [{user: client, password: pass} ]
+			    imports: [ {service: {account: SVC, subject: svc.echo}, to: SVC} ]
+		    },
+		    SYS: { users: [{user: admin, password: pass}] }
+		}
+
+		system_account: SYS
+	`)
+	if err := ioutil.WriteFile(conf, newConf, 0600); err != nil {
+		t.Fatalf("Error rewriting server's config file: %v", err)
+	}
+	if err := srv.Reload(); err != nil {
+		t.Fatalf("Error on server reload: %v", err)
+	}
+
+	start = time.Now()
+	if _, err = nc2.Request("SVC", []byte("1h"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	}
+
+	var sl2 server.ServiceLatency
+	rmsg, _ = rsub.NextMsg(time.Second)
+	json.Unmarshal(rmsg.Data, &sl2)
+	noShareCheck(t, &sl2.Requestor)
 }

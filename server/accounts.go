@@ -113,6 +113,7 @@ type serviceImport struct {
 	response bool
 	invalid  bool
 	tracking bool
+	share    bool
 }
 
 // This is used to record when we create a mapping for implicit service
@@ -722,28 +723,35 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 	return false
 }
 
-// NATSLatency represents the internal NATS latencies, including RTTs to clients.
-type NATSLatency struct {
-	Requestor time.Duration `json:"req"`
-	Responder time.Duration `json:"resp"`
-	System    time.Duration `json:"sys"`
-}
-
-// TotalTime is a helper function that totals the NATS latencies.
-func (nl *NATSLatency) TotalTime() time.Duration {
-	return nl.Requestor + nl.Responder + nl.System
-}
-
 // ServiceLatency is the JSON message sent out in response to latency tracking for
-// exported services.
+// an accounts exported services.
 type ServiceLatency struct {
 	Status         int           `json:"status"`
 	Error          string        `json:"description,omitempty"`
-	AppName        string        `json:"app,omitempty"`
+	Requestor      LatencyClient `json:"requestor,omitempty"`
+	Responder      LatencyClient `json:"responder,omitempty"`
 	RequestStart   time.Time     `json:"start"`
-	ServiceLatency time.Duration `json:"svc"`
-	NATSLatency    NATSLatency   `json:"nats"`
+	ServiceLatency time.Duration `json:"service"`
+	SystemLatency  time.Duration `json:"system"`
 	TotalLatency   time.Duration `json:"total"`
+}
+
+// LatencyClient is the JSON message structure assigned to requestors and responders.
+// Note that for a requestor, the only information shared by default is the RTT used
+// to calculate the total latency. The requestor's account can designate to share
+// the additional information in the service import.
+type LatencyClient struct {
+	User   string        `json:"user,omitempty"`
+	Name   string        `json:"name,omitempty"`
+	RTT    time.Duration `json:"rtt"`
+	IP     string        `json:"ip"`
+	CID    uint64        `json:"cid"`
+	Server string        `json:"server"`
+}
+
+// NATSTotalTime is a helper function that totals the NATS latencies.
+func (nl *ServiceLatency) NATSTotalTime() time.Duration {
+	return nl.Requestor.RTT + nl.Responder.RTT + nl.SystemLatency
 }
 
 // Merge function to merge m1 and m2 (requestor and responder) measurements
@@ -754,10 +762,9 @@ type ServiceLatency struct {
 // m1 TotalLatency is correct, so use that.
 // Will use those to back into NATS latency.
 func (m1 *ServiceLatency) merge(m2 *ServiceLatency) {
-	m1.AppName = m2.AppName
-	m1.NATSLatency.System = m1.ServiceLatency - (m2.ServiceLatency + m2.NATSLatency.Responder)
+	m1.SystemLatency = m1.ServiceLatency - (m2.ServiceLatency + m2.Responder.RTT)
 	m1.ServiceLatency = m2.ServiceLatency
-	m1.NATSLatency.Responder = m2.NATSLatency.Responder
+	m1.Responder = m2.Responder
 	sanitizeLatencyMetric(m1)
 }
 
@@ -770,8 +777,8 @@ func sanitizeLatencyMetric(sl *ServiceLatency) {
 	if sl.ServiceLatency < 0 {
 		sl.ServiceLatency = 0
 	}
-	if sl.NATSLatency.System < 0 {
-		sl.NATSLatency.System = 0
+	if sl.SystemLatency < 0 {
+		sl.SystemLatency = 0
 	}
 }
 
@@ -794,44 +801,34 @@ func (a *Account) sendLatencyResult(si *serviceImport, sl *ServiceLatency) {
 // Used to send a bad request metric when we do not have a reply subject
 func (a *Account) sendBadRequestTrackingLatency(si *serviceImport, requestor *client) {
 	sl := &ServiceLatency{
-		Status:       400,
-		Error:        "Bad Request",
-		RequestStart: time.Now().Add(-requestor.getRTTValue()).UTC(),
+		Status:    400,
+		Error:     "Bad Request",
+		Requestor: requestor.getLatencyInfo(si.share),
 	}
+	sl.RequestStart = time.Now().Add(-sl.Requestor.RTT).UTC()
 	a.sendLatencyResult(si, sl)
 }
 
 // Used to send a latency result when the requestor interest was lost before the
 // response could be delivered.
 func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
-	var reqClientRTT time.Duration
-	if si.rc != nil {
-		reqClientRTT = si.rc.getRTTValue()
-	}
-	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
 	sl := &ServiceLatency{
-		Status:       408,
-		Error:        "Request Timeout",
-		RequestStart: reqStart.UTC(),
-		NATSLatency: NATSLatency{
-			Requestor: reqClientRTT,
-		},
+		Status: 408,
+		Error:  "Request Timeout",
 	}
+	if si.rc != nil {
+		sl.Requestor = si.rc.getLatencyInfo(si.share)
+	}
+	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
 	a.sendLatencyResult(si, sl)
 }
 
 func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiReason) {
-	var reqClientRTT time.Duration
+	sl := &ServiceLatency{}
 	if si.rc != nil {
-		reqClientRTT = si.rc.getRTTValue()
+		sl.Requestor = si.rc.getLatencyInfo(si.share)
 	}
-	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
-	sl := &ServiceLatency{
-		RequestStart: reqStart.UTC(),
-		NATSLatency: NATSLatency{
-			Requestor: reqClientRTT,
-		},
-	}
+	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
 	if reason == rsiNoDelivery {
 		sl.Status = 503
 		sl.Error = "Service Unavailable"
@@ -853,37 +850,20 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 
 	ts := time.Now()
 	serviceRTT := time.Duration(ts.UnixNano() - si.ts)
+	requestor := si.rc
 
-	var requestor = si.rc
-	var reqClientRTT = requestor.getRTTValue()
-	var respClientRTT time.Duration
-	var appName string
-
-	if responder != nil && responder.kind == CLIENT {
-		respClientRTT = responder.getRTTValue()
-		appName = responder.GetName()
-	}
-
-	// We will estimate time when request left the requestor by time we received
-	// and the client RTT for the requestor.
-	reqStart := time.Unix(0, si.ts-int64(reqClientRTT))
 	sl := &ServiceLatency{
-		Status:         200,
-		AppName:        appName,
-		RequestStart:   reqStart.UTC(),
-		ServiceLatency: serviceRTT - respClientRTT,
-		NATSLatency: NATSLatency{
-			Requestor: reqClientRTT,
-			Responder: respClientRTT,
-			System:    0,
-		},
-		TotalLatency: reqClientRTT + serviceRTT,
+		Status:    200,
+		Requestor: requestor.getLatencyInfo(si.share),
+		Responder: responder.getLatencyInfo(true),
 	}
-	if respClientRTT > 0 {
-		sl.NATSLatency.System = time.Since(ts)
-		sl.TotalLatency += sl.NATSLatency.System
+	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
+	sl.ServiceLatency = serviceRTT - sl.Responder.RTT
+	sl.TotalLatency = sl.Requestor.RTT + serviceRTT
+	if sl.Responder.RTT > 0 {
+		sl.SystemLatency = time.Since(ts)
+		sl.TotalLatency += sl.SystemLatency
 	}
-
 	sanitizeLatencyMetric(sl)
 
 	// If we are expecting a remote measurement, store our sl here.
@@ -961,6 +941,23 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 	return err
+}
+
+// SetServiceImportSharing will allow sharing of information about requests with the export account.
+// Used for service latency tracking at the moment.
+func (a *Account) SetServiceImportSharing(destination *Account, to string, allow bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.isClaimAccount() {
+		return fmt.Errorf("claim based accounts can not be updated directly")
+	}
+	for _, si := range a.imports.services {
+		if si.acc == destination && si.to == to {
+			si.share = allow
+			return nil
+		}
+	}
+	return fmt.Errorf("service import not found")
 }
 
 // AddServiceImport will add a route to an account to send published messages / requests
@@ -1209,7 +1206,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	}
 	hasWC := subjectHasWildcard(from)
 
-	si := &serviceImport{dest, claim, se, nil, from, to, "", 0, rt, lat, nil, nil, hasWC, false, false, false}
+	si := &serviceImport{dest, claim, se, nil, from, to, "", 0, rt, lat, nil, nil, hasWC, false, false, false, false}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
@@ -1491,6 +1488,9 @@ func (a *Account) ServiceExportResponseThreshold(export string) (time.Duration, 
 func (a *Account) SetServiceExportResponseThreshold(export string, maxTime time.Duration) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.isClaimAccount() {
+		return fmt.Errorf("claim based accounts can not be updated directly")
+	}
 	lrt := a.lowestServiceExportResponseTime()
 	se := a.getServiceExport(export)
 	if se == nil {
@@ -1512,9 +1512,8 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 	rt := osi.rt
 
 	// dest is the requestor's account. a is the service responder with the export.
-	se := osi.se
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, se, nil, nrr, to, osi.to, 0, rt, nil, nil, nil, false, true, false, false}
+	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, 0, rt, nil, nil, nil, false, true, false, false, osi.share}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)
@@ -1523,7 +1522,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// Always grab time and make sure response threshold timer is running.
 	si.ts = time.Now().UnixNano()
-	se.setResponseThresholdTimer()
+	osi.se.setResponseThresholdTimer()
 
 	if rt == Singleton && tracking {
 		si.latency = osi.latency
@@ -2104,6 +2103,12 @@ func (s *Server) AccountResolver() AccountResolver {
 	ar := s.accResolver
 	s.mu.Unlock()
 	return ar
+}
+
+// isClaimAccount returns if this account is backed by a JWT claim.
+// Lock should be held.
+func (a *Account) isClaimAccount() bool {
+	return a.claimJWT != ""
 }
 
 // updateAccountClaims will update an existing account with new claims.

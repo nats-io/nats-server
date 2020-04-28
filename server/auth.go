@@ -459,6 +459,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 		if err := c.RegisterNkeyUser(nkey); err != nil {
 			return false
 		}
+		// Hold onto the user's public key.
+		c.pubKey = juc.Subject
 
 		// Generate an event if we have a system account.
 		s.accountConnectEvent(c)
@@ -511,7 +513,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 
 	if c.kind == CLIENT {
 		if opts.Authorization != "" {
-			return comparePasswords(opts.Authorization, c.opts.Authorization)
+			return comparePasswords(opts.Authorization, c.opts.Token)
 		} else if opts.Username != "" {
 			if opts.Username != c.opts.Username {
 				return false
