@@ -873,7 +873,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 			m1, m2 := sl, si.m1
 			m1.merge(m2)
 			si.acc.mu.Unlock()
-			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
+			a.sendLatencyResult(si, m1)
 			si.rc = nil
 			return true
 		}
@@ -881,7 +881,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 		si.acc.mu.Unlock()
 		return false
 	} else {
-		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
+		a.sendLatencyResult(si, sl)
 		si.rc = nil
 	}
 	return true
