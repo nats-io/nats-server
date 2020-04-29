@@ -157,9 +157,9 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	// Create our pubAck here. This will be reused and for +OK will contain JSON
 	// for stream name and sequence.
 	longestSeq := strconv.FormatUint(math.MaxUint64, 10)
-	lpubAck := len(AckAck) + len(cfg.Name) + len("{\"stream\": ,\"seq\": }") + len(longestSeq)
+	lpubAck := len(OK) + len(cfg.Name) + len("{\"stream\": ,\"seq\": }") + len(longestSeq)
 	mset.pubAck = make([]byte, 0, lpubAck)
-	mset.pubAck = append(mset.pubAck, AckAck...)
+	mset.pubAck = append(mset.pubAck, OK...)
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	return mset, nil
