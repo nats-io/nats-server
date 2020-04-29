@@ -820,6 +820,7 @@ func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
 			o.adflr, o.asflr = dseq, sseq
 		}
 		delete(o.rdc, sseq)
+		o.removeFromRedeliverQueue(sseq)
 	case AckAll:
 		// no-op
 		if dseq <= o.adflr || sseq <= o.asflr {
@@ -828,7 +829,11 @@ func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
 		}
 		sagap = sseq - o.asflr
 		o.adflr, o.asflr = dseq, sseq
-		// FIXME(dlc) - delete rdc entries?
+		for seq := sseq; seq > sseq-sagap; seq-- {
+			delete(o.pending, seq)
+			delete(o.rdc, seq)
+			o.removeFromRedeliverQueue(seq)
+		}
 	case AckNone:
 		// FIXME(dlc) - This is error but do we care?
 		o.mu.Unlock()
@@ -1234,6 +1239,18 @@ func (o *Consumer) didNotDeliver(seq uint64) {
 func (o *Consumer) onRedeliverQueue(seq uint64) bool {
 	for _, rseq := range o.rdq {
 		if rseq == seq {
+			return true
+		}
+	}
+	return false
+}
+
+// Remove a sequence from the redelivery queue.
+// Lock should be held.
+func (o *Consumer) removeFromRedeliverQueue(seq uint64) bool {
+	for i, rseq := range o.rdq {
+		if rseq == seq {
+			o.rdq = append(o.rdq[:i], o.rdq[i+1:]...)
 			return true
 		}
 	}

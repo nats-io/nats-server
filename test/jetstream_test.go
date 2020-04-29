@@ -2878,6 +2878,54 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 	}
 }
 
+// We want to make sure that for pull based consumers that if we ack
+// late with no interest the redelivery attempt is removed and we do
+// not get the message back.
+func TestJetStreamRedeliverAndLateAck(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "LA", Storage: server.MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "DDD", AckPolicy: server.AckExplicit, AckWait: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Queue up message
+	sendStreamMsg(t, nc, "LA", "Hello World!")
+
+	nextSubj := o.RequestNextMsgSubject()
+	msg, err := nc.Request(nextSubj, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Wait for past ackwait time
+	time.Sleep(150 * time.Millisecond)
+	// Now ack!
+	msg.Respond(nil)
+	// We should not get this back.
+	if _, err := nc.Request(nextSubj, nil, 10*time.Millisecond); err == nil {
+		t.Fatalf("Message should not have been sent back")
+	}
+}
+
 func TestJetStreamCanNotNakAckd(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3261,19 +3309,14 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			// Now ack first for AckAll sub2
 			getAndAck(sub2)
-
 			// We should be at the same number since we acked 1, explicit acked 2
 			checkNumMsgs(totalMsgs)
-
 			// Now ack second for AckAll sub2
 			getAndAck(sub2)
-
 			// We should now have 1 removed.
 			checkNumMsgs(totalMsgs - 1)
-
 			// Now ack third for AckAll sub2
 			getAndAck(sub2)
-
 			// We should still only have 1 removed.
 			checkNumMsgs(totalMsgs - 1)
 
@@ -5289,6 +5332,7 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 
 ////////////////////////////////////////
 // Benchmark placeholders
+// TODO(dlc) - move
 ////////////////////////////////////////
 
 func TestJetStreamPubPerf(t *testing.T) {
