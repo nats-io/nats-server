@@ -3089,12 +3089,12 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 			}
-			state := o.Info().State
+			state := o.Info()
 			if state.AckFloor.ConsumerSeq != 50 {
 				t.Fatalf("Expected ack floor of 50, got %d", state.AckFloor.ConsumerSeq)
 			}
-			if len(state.Pending) != 25 {
-				t.Fatalf("Expected len(pending) to be 25, got %d", len(state.Pending))
+			if state.NumPending != 25 {
+				t.Fatalf("Expected len(pending) to be 25, got %d", state.NumPending)
 			}
 			// Now do purge.
 			mset.Purge()
@@ -3104,9 +3104,9 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 			// Now re-acquire state and check that we did the right thing.
 			// Pending should be cleared, and stream sequences should have been set
 			// to the total messages before purge + 1.
-			state = o.Info().State
-			if len(state.Pending) != 0 {
-				t.Fatalf("Expected no pending, got %d", len(state.Pending))
+			state = o.Info()
+			if state.NumPending != 0 {
+				t.Fatalf("Expected no pending, got %d", state.NumPending)
 			}
 			if state.Delivered.StreamSeq != 100 {
 				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.StreamSeq)
@@ -3188,9 +3188,9 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			// Now get the state and check that we did the right thing.
 			// Pending should be cleared, and stream sequences should have been set
 			// to the total messages before purge + 1.
-			state := o.Info().State
-			if len(state.Pending) != 0 {
-				t.Fatalf("Expected no pending, got %d", len(state.Pending))
+			state := o.Info()
+			if state.NumPending != 0 {
+				t.Fatalf("Expected no pending, got %d", state.NumPending)
 			}
 			if state.Delivered.StreamSeq != 100 {
 				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.StreamSeq)
@@ -4236,11 +4236,11 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if oinfo.Config.DeliverSubject != delivery {
 		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.DeliverSubject)
 	}
-	if oinfo.State.Delivered.ConsumerSeq != 10 {
-		t.Fatalf("Expected consumer delivered sequence of 10, got %d", oinfo.State.Delivered.ConsumerSeq)
+	if oinfo.Delivered.ConsumerSeq != 10 {
+		t.Fatalf("Expected consumer delivered sequence of 10, got %d", oinfo.Delivered.ConsumerSeq)
 	}
-	if oinfo.State.AckFloor.ConsumerSeq != 10 {
-		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.State.AckFloor.ConsumerSeq)
+	if oinfo.AckFloor.ConsumerSeq != 10 {
+		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.AckFloor.ConsumerSeq)
 	}
 
 	// Now delete the consumer.
@@ -4863,8 +4863,8 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 				}
 			}
 			nc.Flush()
-			ostate := o.Info().State
-			if ostate.AckFloor.StreamSeq != 11 || len(ostate.Pending) > 0 {
+			ostate := o.Info()
+			if ostate.AckFloor.StreamSeq != 11 || ostate.NumPending > 0 {
 				t.Fatalf("Inconsistent ack state: %+v", ostate)
 			}
 		})

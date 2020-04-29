@@ -31,10 +31,13 @@ import (
 )
 
 type ConsumerInfo struct {
-	Stream string         `json:"stream_name"`
-	Name   string         `json:"name"`
-	Config ConsumerConfig `json:"config"`
-	State  ConsumerState  `json:"state"`
+	Stream         string         `json:"stream_name"`
+	Name           string         `json:"name"`
+	Config         ConsumerConfig `json:"config"`
+	Delivered      SequencePair   `json:"delivered"`
+	AckFloor       SequencePair   `json:"ack_floor"`
+	NumPending     int            `json:"num_pending"`
+	NumRedelivered int            `json:"num_redelivered"`
 }
 
 type ConsumerConfig struct {
@@ -713,39 +716,22 @@ func (o *Consumer) updateStateLoop() {
 // Info returns our current consumer state.
 func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	info := &ConsumerInfo{
 		Stream: o.stream,
 		Name:   o.name,
 		Config: o.config,
-		State: ConsumerState{
-			// We track these internally as next to deliver, hence the -1.
-			Delivered: SequencePair{
-				ConsumerSeq: o.dseq - 1,
-				StreamSeq:   o.sseq - 1,
-			},
-			AckFloor: SequencePair{
-				ConsumerSeq: o.adflr,
-				StreamSeq:   o.asflr,
-			},
+		Delivered: SequencePair{
+			ConsumerSeq: o.dseq - 1,
+			StreamSeq:   o.sseq - 1,
 		},
+		AckFloor: SequencePair{
+			ConsumerSeq: o.adflr,
+			StreamSeq:   o.asflr,
+		},
+		NumPending:     len(o.pending),
+		NumRedelivered: len(o.rdc),
 	}
-
-	if len(o.pending) > 0 {
-		p := make(map[uint64]int64, len(o.pending))
-		for k, v := range o.pending {
-			p[k] = v
-		}
-		info.State.Pending = p
-	}
-	if len(o.rdc) > 0 {
-		r := make(map[uint64]uint64, len(o.rdc))
-		for k, v := range o.rdc {
-			r[k] = v
-		}
-		info.State.Redelivered = r
-	}
-
+	o.mu.Unlock()
 	return info
 }
 
