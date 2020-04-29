@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"path"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -93,9 +94,15 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	}
 
 	jsa.mu.Lock()
-	if _, ok := jsa.streams[cfg.Name]; ok {
+	if mset, ok := jsa.streams[cfg.Name]; ok {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("stream name already in use")
+		// Check to see if configs are same.
+		ocfg := mset.Config()
+		if reflect.DeepEqual(ocfg, cfg) {
+			return mset, nil
+		} else {
+			return nil, fmt.Errorf("stream name already in use")
+		}
 	}
 	// Check for limits.
 	if err := jsa.checkLimits(&cfg); err != nil {
