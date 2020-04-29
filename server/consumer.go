@@ -798,8 +798,10 @@ func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckExplicit:
-		o.sampleAck(sseq, dseq, dcount)
-		delete(o.pending, sseq)
+		if _, ok := o.pending[sseq]; ok {
+			o.sampleAck(sseq, dseq, dcount)
+			delete(o.pending, sseq)
+		}
 		// Consumers sequence numbers can skip during redlivery since
 		// they always increment. So if we do not have any pending treat
 		// as all scenario below. Otherwise check that we filled in a gap.
