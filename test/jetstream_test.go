@@ -633,6 +633,29 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "f", Subjects: []string{"foo.bar", "*.bar.>"}}))
 }
 
+func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
+	mconfig := &server.StreamConfig{
+		Name:     "ok",
+		Subjects: []string{"foo", "bar", "baz.*", "foo.bar.baz.>"},
+		Storage:  server.MemoryStorage,
+	}
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStream(mconfig)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	// Adding again with same config should be idempotent.
+	if _, err = acc.AddStream(mconfig); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+}
+
 func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	t.Helper()
 	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
@@ -820,6 +843,29 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			if err := mset.DeleteConsumer(o); err != nil {
 				t.Fatalf("Expected no error on delete, got %v", err)
+			}
+
+			// Now let's check that durables can be created and a duplicate call to add will be ok.
+			dcfg := &server.ConsumerConfig{
+				Durable:        "ddd",
+				DeliverSubject: delivery,
+				AckPolicy:      server.AckAll,
+			}
+			if _, err = mset.AddConsumer(dcfg); err != nil {
+				t.Fatalf("Unexpected error creating consumer: %v", err)
+			}
+			if _, err = mset.AddConsumer(dcfg); err != nil {
+				t.Fatalf("Unexpected error creating second identical consumer: %v", err)
+			}
+			// Not test that we can change the delivery subject if that is only thing that has not
+			// changed and we are not active.
+			sub.Unsubscribe()
+			sub, _ = nc.SubscribeSync("d.d.d")
+			nc.Flush()
+			defer sub.Unsubscribe()
+			dcfg.DeliverSubject = "d.d.d"
+			if _, err = mset.AddConsumer(dcfg); err != nil {
+				t.Fatalf("Unexpected error creating third consumer with just deliver subject changed: %v", err)
 			}
 		})
 	}
@@ -2461,11 +2507,6 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			for i := 1; i <= toSend/2; i++ {
 				m := getMsg(i)
 				m.Respond(nil)
-			}
-
-			// We should not be able to try to add an observer with the same name.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit}); err == nil {
-				t.Fatalf("Expected and error trying to add a new durable consumer while first still active")
 			}
 
 			// Now unsubscribe and wait to become inactive

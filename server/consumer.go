@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -316,6 +317,26 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Hold mset lock here.
 	mset.mu.Lock()
+
+	// If this one is durable and already exists, we let that be ok as long as the configs match=.
+	if isDurableConsumer(config) {
+		if eo, ok := mset.consumers[config.Durable]; ok {
+			mset.mu.Unlock()
+			ocfg := eo.Config()
+			if reflect.DeepEqual(&ocfg, config) {
+				return eo, nil
+			} else {
+				// If we are a push mode and not active  and only difference is
+				// deliver subject then update and return.
+				if config.DeliverSubject != "" && !eo.Active() && configsEqualSansDelivery(ocfg, *config) {
+					eo.updateDeliverSubject(config.DeliverSubject)
+					return eo, nil
+				} else {
+					return nil, fmt.Errorf("consumer already exists")
+				}
+			}
+		}
+	}
 
 	// Check for any limits.
 	if mset.config.MaxConsumers > 0 && len(mset.consumers) >= mset.config.MaxConsumers {
