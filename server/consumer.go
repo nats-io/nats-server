@@ -166,7 +166,9 @@ func (r ReplayPolicy) String() string {
 // Ack responses. Note that a nil or no payload is same as AckAck
 var (
 	// Ack
-	AckAck = []byte(OK) // nil or no payload to ack subject also means ACK
+	AckAck = []byte("+ACK") // nil or no payload to ack subject also means ACK
+	AckOK  = []byte(OK)     // deprecated but +OK meant ack as well.
+
 	// Nack
 	AckNak = []byte("-NAK")
 	// Progress indicator
@@ -595,7 +597,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 	sseq, dseq, dcount, _ := o.ReplyInfo(subject)
 
 	switch {
-	case len(msg) == 0, bytes.Equal(msg, AckAck):
+	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
 		o.ackMsg(sseq, dseq, dcount)
 	case bytes.Equal(msg, AckNext):
 		o.ackMsg(sseq, dseq, dcount)
