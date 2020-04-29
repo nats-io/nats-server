@@ -3901,7 +3901,9 @@ func ensureGWConnectTo(t *testing.T, s *Server, remoteGWName string, remoteGWSer
 				}
 			}
 			rg.Unlock()
-			nc.Close()
+			if nc != nil {
+				nc.Close()
+			}
 		} else {
 			good = true
 		}
