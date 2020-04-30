@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -157,6 +157,7 @@ type ClientInfo struct {
 	Lang    string     `json:"lang,omitempty"`
 	Version string     `json:"ver,omitempty"`
 	RTT     string     `json:"rtt,omitempty"`
+	Server  string     `json:"server,omitempty"`
 	Stop    *time.Time `json:"stop,omitempty"`
 }
 
@@ -1021,7 +1022,7 @@ func (s *Server) accountConnectEvent(c *client) {
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1063,7 +1064,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1105,7 +1106,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1242,10 +1243,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 		}
 	}
 
-	// Calculate the correct latency given M1 and M2.
-	// M2 ServiceLatency is correct, so use that.
-	// M1 TotalLatency is correct, so use that.
-	// Will use those to back into NATS latency.
+	// Calculate the correct latencies given M1 and M2.
 	m1.merge(&m2)
 
 	// Clear the requesting client since we send the result here.
@@ -1467,14 +1465,6 @@ func (s *Server) nsubsRequest(sub *subscription, _ *client, subject, reply strin
 		}
 	}
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
-}
-
-// Helper to grab name for a client.
-func nameForClient(c *client) string {
-	if c.user != nil {
-		return c.user.Nkey
-	}
-	return "N/A"
 }
 
 // Helper to grab account name for a client.
