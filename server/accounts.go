@@ -689,7 +689,10 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 }
 
 // ServiceLatency is the JSON message sent out in response to latency tracking for
-// an accounts exported services.
+// an accounts exported services. Additional client info is available in requestor
+// and responder. Note that for a requestor, the only information shared by default
+// is the RTT used to calculate the total latency. The requestor's account can
+// designate to share the additional information in the service import.
 type ServiceLatency struct {
 	Status         int           `json:"status"`
 	Error          string        `json:"description,omitempty"`
@@ -706,12 +709,16 @@ type ServiceLatency struct {
 // to calculate the total latency. The requestor's account can designate to share
 // the additional information in the service import.
 type LatencyClient struct {
-	User   string        `json:"user,omitempty"`
-	Name   string        `json:"name,omitempty"`
-	RTT    time.Duration `json:"rtt"`
-	IP     string        `json:"ip"`
-	CID    uint64        `json:"cid"`
-	Server string        `json:"server"`
+	Account string        `json:"acc"`
+	RTT     time.Duration `json:"rtt"`
+	Start   time.Time     `json:"start,omitempty"`
+	User    string        `json:"user,omitempty"`
+	Name    string        `json:"name,omitempty"`
+	Lang    string        `json:"lang,omitempty"`
+	Version string        `json:"ver,omitempty"`
+	IP      string        `json:"ip,omitempty"`
+	CID     uint64        `json:"cid,omitempty"`
+	Server  string        `json:"server,omitempty"`
 }
 
 // NATSTotalTime is a helper function that totals the NATS latencies.
@@ -768,7 +775,7 @@ func (a *Account) sendBadRequestTrackingLatency(si *serviceImport, requestor *cl
 	sl := &ServiceLatency{
 		Status:    400,
 		Error:     "Bad Request",
-		Requestor: requestor.getLatencyInfo(si.share),
+		Requestor: requestor.getClientInfo(si.share),
 	}
 	sl.RequestStart = time.Now().Add(-sl.Requestor.RTT).UTC()
 	a.sendLatencyResult(si, sl)
@@ -782,7 +789,7 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 		Error:  "Request Timeout",
 	}
 	if si.rc != nil {
-		sl.Requestor = si.rc.getLatencyInfo(si.share)
+		sl.Requestor = si.rc.getClientInfo(si.share)
 	}
 	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
 	a.sendLatencyResult(si, sl)
@@ -791,7 +798,7 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiReason) {
 	sl := &ServiceLatency{}
 	if si.rc != nil {
-		sl.Requestor = si.rc.getLatencyInfo(si.share)
+		sl.Requestor = si.rc.getClientInfo(si.share)
 	}
 	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
 	if reason == rsiNoDelivery {
@@ -819,8 +826,8 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 
 	sl := &ServiceLatency{
 		Status:    200,
-		Requestor: requestor.getLatencyInfo(si.share),
-		Responder: responder.getLatencyInfo(true),
+		Requestor: requestor.getClientInfo(si.share),
+		Responder: responder.getClientInfo(true),
 	}
 	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
 	sl.ServiceLatency = serviceRTT - sl.Responder.RTT

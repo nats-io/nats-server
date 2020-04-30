@@ -1380,7 +1380,6 @@ func (c *client) processConnect(arg []byte) error {
 	// Estimate RTT to start.
 	if c.kind == CLIENT {
 		c.rtt = computeRTT(c.start)
-
 		if c.srv != nil {
 			c.clearPingTimer()
 			c.srv.setFirstPingTimer(c)
@@ -2865,7 +2864,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 			sl := &rl.M2
 			// Fill this in and send it off to the other side.
 			sl.Status = 200
-			sl.Responder = c.getLatencyInfo(true)
+			sl.Responder = c.getClientInfo(true)
 			sl.ServiceLatency = time.Since(sl.RequestStart) - sl.Responder.RTT
 			sl.TotalLatency = sl.ServiceLatency + sl.Responder.RTT
 			sanitizeLatencyMetric(sl)
@@ -2961,7 +2960,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 		sl := &rl.M2
 		// Fill this in and send it off to the other side.
 		sl.Status = 200
-		sl.Responder = c.getLatencyInfo(true)
+		sl.Responder = c.getClientInfo(true)
 		sl.ServiceLatency = time.Since(sl.RequestStart) - sl.Responder.RTT
 		sl.TotalLatency = sl.ServiceLatency + sl.Responder.RTT
 		sanitizeLatencyMetric(sl)
@@ -3035,7 +3034,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		si.acc.sendBadRequestTrackingLatency(si, c)
 	}
 
-	// Send tracking info here if we are tracking this request/response.
+	// Send tracking info here if we are tracking this response.
+	// This is always a response.
 	var didSendTL bool
 	if si.tracking {
 		didSendTL = acc.sendTrackingLatency(si, c)
@@ -3964,20 +3964,28 @@ func (c *client) pruneClosedSubFromPerAccountCache() {
 	}
 }
 
-// Grabs the information for latency reporting.
-func (c *client) getLatencyInfo(detailed bool) LatencyClient {
+// Grabs the information for this client.
+func (c *client) getClientInfo(detailed bool) LatencyClient {
 	var lc LatencyClient
 	if c == nil || c.kind != CLIENT {
 		return lc
 	}
+	// Server name. Defaults to server ID if not set explicitly.
 	sn := c.srv.Name()
+
 	c.mu.Lock()
+	// Defaults for all are RTT and Account.
+	lc.Account = accForClient(c)
 	lc.RTT = c.rtt
+	// Detailed is opt in.
 	if detailed {
-		lc.Name = c.opts.Name
-		lc.User = c.getRawAuthUser()
+		lc.Start = c.start.UTC()
 		lc.IP = c.host
 		lc.CID = c.cid
+		lc.Name = c.opts.Name
+		lc.User = c.getRawAuthUser()
+		lc.Lang = c.opts.Lang
+		lc.Version = c.opts.Version
 		lc.Server = sn
 	}
 	c.mu.Unlock()
