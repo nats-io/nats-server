@@ -222,6 +222,73 @@ func TestJetStreamAddStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamAddStreamDiscardNew(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:     "foo",
+				MaxMsgs:  10,
+				MaxBytes: 4096,
+				Discard:  server.DiscardNew,
+				Storage:  server.MemoryStorage,
+				Replicas: 1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:     "foo",
+				MaxMsgs:  10,
+				MaxBytes: 4096,
+				Discard:  server.DiscardNew,
+				Storage:  server.FileStorage,
+				Replicas: 1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			subj := "foo"
+			toSend := 10
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, subj, fmt.Sprintf("MSG: %d", i+1))
+			}
+			// We expect this one to fail due to discard policy.
+			resp, _ := nc.Request(subj, []byte("discard me"), 100*time.Millisecond)
+			if resp == nil {
+				t.Fatalf("No response, possible timeout?")
+			}
+			if string(resp.Data) != "-ERR 'maximum messages exceeded'" {
+				t.Fatalf("Expected to get an error about maximum messages, got %q", resp.Data)
+			}
+
+			// Now do bytes.
+			mset.Purge()
+
+			big := make([]byte, 8192)
+			resp, _ = nc.Request(subj, big, 100*time.Millisecond)
+			if resp == nil {
+				t.Fatalf("No response, possible timeout?")
+			}
+			if string(resp.Data) != "-ERR 'maximum bytes exceeded'" {
+				t.Fatalf("Expected to get an error about maximum bytes, got %q", resp.Data)
+			}
+		})
+	}
+}
+
 func TestJetStreamPubAck(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
