@@ -39,6 +39,12 @@ var (
 	ErrStoreMsgNotFound = errors.New("no message found")
 	// ErrStoreEOF is returned when message seq is greater than the last sequence.
 	ErrStoreEOF = errors.New("stream EOF")
+	// ErrMaxMsgs is returned when we have discard new as a policy and we reached
+	// the message limit.
+	ErrMaxMsgs = errors.New("maximum messages exceeded")
+	// ErrMaxBytes is returned when we have discard new as a policy and we reached
+	// the bytes limit.
+	ErrMaxBytes = errors.New("maximum bytes exceeded")
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
@@ -71,6 +77,17 @@ const (
 	InterestPolicy
 	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
 	WorkQueuePolicy
+)
+
+// Discard Policy determines how we proceed when limits of messages or bytes are hit. The default, DicscardOld will
+// remove older messages. DiscardNew will fail to store the new message.
+type DiscardPolicy int
+
+const (
+	// DiscardOld will remove older messages to return to the limits.
+	DiscardOld = iota
+	//DiscardNew will error on a StoreMsg call
+	DiscardNew
 )
 
 // StreamStats is information about the given stream.
@@ -160,6 +177,40 @@ func (rp *RetentionPolicy) UnmarshalJSON(data []byte) error {
 		*rp = InterestPolicy
 	case jsonString(workQueuePolicyString):
 		*rp = WorkQueuePolicy
+	default:
+		return fmt.Errorf("can not unmarshal %q", data)
+	}
+	return nil
+}
+
+func (dp DiscardPolicy) String() string {
+	switch dp {
+	case DiscardOld:
+		return "DiscardOld"
+	case DiscardNew:
+		return "DiscardNew"
+	default:
+		return "Unknown Discard Policy"
+	}
+}
+
+func (dp DiscardPolicy) MarshalJSON() ([]byte, error) {
+	switch dp {
+	case DiscardOld:
+		return json.Marshal("old")
+	case DiscardNew:
+		return json.Marshal("new")
+	default:
+		return nil, fmt.Errorf("can not marshal %v", dp)
+	}
+}
+
+func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
+	switch strings.ToLower(string(data)) {
+	case jsonString("old"):
+		*dp = DiscardOld
+	case jsonString("new"):
+		*dp = DiscardNew
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}

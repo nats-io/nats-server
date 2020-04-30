@@ -554,6 +554,18 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (seq uint64, ts int64, er
 		return 0, 0, ErrStoreClosed
 	}
 
+	// Check if we are discarding new messages when we reach the limit.
+	if fs.cfg.Discard == DiscardNew {
+		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) {
+			fs.mu.Unlock()
+			return 0, 0, ErrMaxMsgs
+		}
+		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+uint64(len(msg)) >= uint64(fs.cfg.MaxBytes) {
+			fs.mu.Unlock()
+			return 0, 0, ErrMaxBytes
+		}
+	}
+
 	seq = fs.state.LastSeq + 1
 	if fs.state.FirstSeq == 0 {
 		fs.state.FirstSeq = seq

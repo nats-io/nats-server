@@ -33,6 +33,7 @@ type StreamConfig struct {
 	MaxConsumers int             `json:"max_consumers"`
 	MaxMsgs      int64           `json:"max_msgs"`
 	MaxBytes     int64           `json:"max_bytes"`
+	Discard      DiscardPolicy   `json:"discard"`
 	MaxAge       time.Duration   `json:"max_age"`
 	MaxMsgSize   int32           `json:"max_msg_size,omitempty"`
 	Storage      StorageType     `json:"storage"`

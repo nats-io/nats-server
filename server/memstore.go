@@ -25,11 +25,11 @@ import (
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
 	mu        sync.RWMutex
+	cfg       StreamConfig
 	state     StreamState
 	msgs      map[uint64]*storedMsg
 	scb       func(int64)
 	ageChk    *time.Timer
-	config    StreamConfig
 	consumers int
 }
 
@@ -47,7 +47,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
-	return &memStore{msgs: make(map[uint64]*storedMsg), config: *cfg}, nil
+	return &memStore{msgs: make(map[uint64]*storedMsg), cfg: *cfg}, nil
 }
 
 func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
@@ -59,15 +59,15 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 
 	ms.mu.Lock()
-	ms.config = *cfg
+	ms.cfg = *cfg
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
 	ms.enforceBytesLimit()
 	// Do age timers.
-	if ms.ageChk == nil && ms.config.MaxAge != 0 {
+	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
 		ms.startAgeChk()
 	}
-	if ms.ageChk != nil && ms.config.MaxAge == 0 {
+	if ms.ageChk != nil && ms.cfg.MaxAge == 0 {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
 	}
@@ -82,6 +82,19 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 // Store stores a message.
 func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	ms.mu.Lock()
+
+	// Check if we are discarding new messages when we reach the limit.
+	if ms.cfg.Discard == DiscardNew {
+		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
+			ms.mu.Unlock()
+			return 0, 0, ErrMaxMsgs
+		}
+		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+uint64(len(msg)) >= uint64(ms.cfg.MaxBytes) {
+			ms.mu.Unlock()
+			return 0, 0, ErrMaxBytes
+		}
+	}
+
 	seq := ms.state.LastSeq + 1
 	if ms.state.FirstSeq == 0 {
 		ms.state.FirstSeq = seq
@@ -105,7 +118,7 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	ms.enforceBytesLimit()
 
 	// Check if we have and need the age expiration timer running.
-	if ms.ageChk == nil && ms.config.MaxAge != 0 {
+	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
 		ms.startAgeChk()
 	}
 	cb := ms.scb
@@ -155,10 +168,10 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (ms *memStore) enforceMsgLimit() {
-	if ms.config.MaxMsgs <= 0 || ms.state.Msgs <= uint64(ms.config.MaxMsgs) {
+	if ms.cfg.MaxMsgs <= 0 || ms.state.Msgs <= uint64(ms.cfg.MaxMsgs) {
 		return
 	}
-	for nmsgs := ms.state.Msgs; nmsgs > uint64(ms.config.MaxMsgs); nmsgs = ms.state.Msgs {
+	for nmsgs := ms.state.Msgs; nmsgs > uint64(ms.cfg.MaxMsgs); nmsgs = ms.state.Msgs {
 		ms.deleteFirstMsgOrPanic()
 	}
 }
@@ -166,10 +179,10 @@ func (ms *memStore) enforceMsgLimit() {
 // Will check the bytes limit and drop msgs if needed.
 // Lock should be held.
 func (ms *memStore) enforceBytesLimit() {
-	if ms.config.MaxBytes <= 0 || ms.state.Bytes <= uint64(ms.config.MaxBytes) {
+	if ms.cfg.MaxBytes <= 0 || ms.state.Bytes <= uint64(ms.cfg.MaxBytes) {
 		return
 	}
-	for bs := ms.state.Bytes; bs > uint64(ms.config.MaxBytes); bs = ms.state.Bytes {
+	for bs := ms.state.Bytes; bs > uint64(ms.cfg.MaxBytes); bs = ms.state.Bytes {
 		ms.deleteFirstMsgOrPanic()
 	}
 }
@@ -177,8 +190,8 @@ func (ms *memStore) enforceBytesLimit() {
 // Will start the age check timer.
 // Lock should be held.
 func (ms *memStore) startAgeChk() {
-	if ms.ageChk == nil && ms.config.MaxAge != 0 {
-		ms.ageChk = time.AfterFunc(ms.config.MaxAge, ms.expireMsgs)
+	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
+		ms.ageChk = time.AfterFunc(ms.cfg.MaxAge, ms.expireMsgs)
 	}
 }
 
@@ -188,7 +201,7 @@ func (ms *memStore) expireMsgs() {
 	defer ms.mu.Unlock()
 
 	now := time.Now().UnixNano()
-	minAge := now - int64(ms.config.MaxAge)
+	minAge := now - int64(ms.cfg.MaxAge)
 	for {
 		if sm, ok := ms.msgs[ms.state.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
@@ -197,7 +210,7 @@ func (ms *memStore) expireMsgs() {
 				ms.ageChk.Stop()
 				ms.ageChk = nil
 			} else {
-				fireIn := time.Duration(sm.ts-now) + ms.config.MaxAge
+				fireIn := time.Duration(sm.ts-now) + ms.cfg.MaxAge
 				ms.ageChk.Reset(fireIn)
 			}
 			return
