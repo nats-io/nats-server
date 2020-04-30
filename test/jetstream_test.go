@@ -4126,7 +4126,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.JetStream {
+	if !enabledResp.Enabled {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
@@ -5353,7 +5353,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.JetStream {
+	if !enabledResp.Enabled {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
@@ -5364,7 +5364,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.JetStream {
+	if !enabledResp.Enabled {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
@@ -5406,7 +5406,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 		if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if enabledResp.JetStream {
+		if enabledResp.Enabled {
 			t.Fatalf("Expected to get a response indicating jetstream is not enabled for this account, got %q", resp.Data)
 		}
 	}
@@ -5445,7 +5445,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.JetStream {
+	if !enabledResp.Enabled {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
@@ -5453,7 +5453,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.JetStream {
+	if !enabledResp.Enabled {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 

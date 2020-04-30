@@ -149,6 +149,12 @@ type ApiError struct {
 	Description string `json:"description,omitempty"`
 }
 
+// JSEnabledResponse is the response to see if JetStream is enabled for this account.
+type JSApiEnabledResponse struct {
+	Error   *ApiError `json:"error,omitempty"`
+	Enabled bool      `json:"enabled"`
+}
+
 // JSApiStreamCreateResponse stream creation.
 type JSApiStreamCreateResponse struct {
 	Error *ApiError `json:"error,omitempty"`
@@ -305,18 +311,12 @@ func (s *Server) sendAPIResponse(c *client, subject, reply, request, response st
 	s.sendJetStreamAPIAuditAdvisory(c, subject, request, response)
 }
 
-// JSEnabledResponse is the response to see if JetStream is enabled for this account.
-type JSApiEnabledResponse struct {
-	Error     *ApiError `json:"error,omitempty"`
-	JetStream bool      `json:"jetstream"`
-}
-
 // Request to check if jetstream is enabled.
 func (s *Server) isJsEnabledRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
-	b, _ := json.MarshalIndent(&JSApiEnabledResponse{JetStream: c.acc.JetStreamEnabled()}, "", "  ")
+	b, _ := json.MarshalIndent(&JSApiEnabledResponse{Enabled: c.acc.JetStreamEnabled()}, "", "  ")
 	s.sendAPIResponse(c, subject, reply, string(msg), string(b))
 }
 
