@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"net/url"
 	"os"
@@ -655,8 +654,13 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		resp, _ := nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, cfg.Name), req, time.Second)
-		if string(resp.Data) != "-ERR 'malformed subject'" {
-			t.Fatalf("Did not get proper err response: %q", resp.Data)
+		var scResp server.JSApiStreamCreateResponse
+		if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		e := scResp.Error
+		if e == nil || e.Code != 500 || e.Description != "malformed subject" {
+			t.Fatalf("Did not get proper error response: %+v", e)
 		}
 	}
 
@@ -731,16 +735,6 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	}
 	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
-	}
-}
-
-func expectOKResponse(t *testing.T, m *nats.Msg) {
-	t.Helper()
-	if m == nil {
-		t.Fatalf("No response, possible timeout?")
-	}
-	if string(m.Data) != server.OK {
-		t.Fatalf("Expected a JetStreamPubAck, got %q", m.Data)
 	}
 }
 
@@ -4126,16 +4120,22 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	// This will return +OK if enabled.
+	// Should return true
 	resp, _ := nc.Request(server.JetStreamEnabled, nil, time.Second)
-	expectOKResponse(t, resp)
+	var enabledResp server.JSApiEnabledResponse
+	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !enabledResp.JetStream {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
 
 	// This will get the current information about usage and limits for this account.
 	resp, err := nc.Request(server.JetStreamInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var info server.JetStreamAccountStats
+	var info server.JSApiAccountInfo
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4152,13 +4152,35 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, msetCfg.Name), req, time.Second)
-	expectOKResponse(t, resp)
+	var scResp server.JSApiStreamCreateResponse
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
+	}
+
+	checkBadRequest := func(e *server.ApiError, description string) {
+		t.Helper()
+		if e == nil || e.Code != 400 || e.Description != description {
+			t.Fatalf("Did not get proper error: %+v", e)
+		}
+	}
+
+	checkServerError := func(e *server.ApiError, description string) {
+		t.Helper()
+		if e == nil || e.Code != 500 || e.Description != description {
+			t.Fatalf("Did not get proper server error: %+v\n", e)
+		}
+	}
 
 	// Check that the name in config has to match the name in the subject
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, "BOB"), req, time.Second)
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'stream name in subject does not match request'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	scResp.Error, scResp.StreamInfo = nil, nil
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkBadRequest(scResp.Error, "stream name in subject does not match request")
 
 	// Check that update works.
 	msetCfg.Subjects = []string{"foo", "bar", "baz"}
@@ -4168,7 +4190,13 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamUpdateStreamT, msetCfg.Name), req, time.Second)
-	expectOKResponse(t, resp)
+	scResp.Error, scResp.StreamInfo = nil, nil
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
+	}
 
 	// Now lookup info again and see that we can see the new stream.
 	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
@@ -4184,15 +4212,15 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Make sure list works.
 	resp, err = nc.Request(server.JetStreamListStreams, nil, time.Second)
-	var names []string
-	if err = json.Unmarshal(resp.Data, &names); err != nil {
+	var listResponse server.JSApiStreamListResponse
+	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if len(names) != 1 {
-		t.Fatalf("Expected only 1 stream but got %d", len(names))
+	if len(listResponse.Streams) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(listResponse.Streams))
 	}
-	if names[0] != msetCfg.Name {
-		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, names[0])
+	if listResponse.Streams[0] != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0])
 	}
 
 	// Now send some messages, then we can poll for info on this stream.
@@ -4207,7 +4235,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	var msi server.StreamInfo
 	if err = json.Unmarshal(resp.Data, &msi); err != nil {
-		log.Fatalf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 	if msi.State.Msgs != uint64(toSend) {
 		t.Fatalf("Expected to get %d msgs, got %d", toSend, msi.State.Msgs)
@@ -4218,9 +4246,11 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if string(resp.Data) != "-ERR 'stream not found'" {
-		t.Fatalf("Expected to get a not found error, got %q", resp.Data)
+	var bResp server.JSApiStreamInfoResponse
+	if err = json.Unmarshal(resp.Data, &bResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkServerError(bResp.Error, "stream not found")
 
 	// Now create an consumer.
 	delivery := nats.NewInbox()
@@ -4236,11 +4266,13 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Since we do not have interest this should have failed.
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer requires interest for delivery subject when ephemeral'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	var ccResp server.JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Now create subscription and make sure we get +OK
+	checkServerError(ccResp.Error, "consumer requires interest for delivery subject when ephemeral")
+
+	// Now create subscription and make sure we get proper response.
 	sub, _ := nc.SubscribeSync(delivery)
 	nc.Flush()
 
@@ -4248,8 +4280,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(string(resp.Data), server.OK) {
-		t.Fatalf("Expected OK, got %q", resp.Data)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
+		t.Fatalf("Got a bad response %+v", ccResp)
 	}
 
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
@@ -4264,25 +4300,28 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Since we do not have interest this should have failed.
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'stream name in subject does not match request'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Since we do not have interest this should have failed.
+	checkBadRequest(ccResp.Error, "stream name in subject does not match request")
 
 	// Get the list of all of the obervables for our stream.
 	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumersT, msetCfg.Name), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var onames []string
-	if err = json.Unmarshal(resp.Data, &onames); err != nil {
+	var clResponse server.JSApiConsumerListResponse
+	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if len(onames) != 1 {
-		t.Fatalf("Expected only 1 consumer but got %d", len(onames))
+	if len(clResponse.Consumers) != 1 {
+		t.Fatalf("Expected only 1 consumer but got %d", len(clResponse.Consumers))
 	}
 	// Now let's get info about our consumer.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumerInfoT, msetCfg.Name, onames[0]), nil, time.Second)
+	cName := clResponse.Consumers[0]
+	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumerInfoT, msetCfg.Name, cName), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4311,8 +4350,14 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now delete the consumer.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteConsumerT, msetCfg.Name, onames[0]), nil, time.Second)
-	expectOKResponse(t, resp)
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteConsumerT, msetCfg.Name, cName), nil, time.Second)
+	var cdResp server.JSApiConsumerDeleteResponse
+	if err = json.Unmarshal(resp.Data, &cdResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !cdResp.Success || cdResp.Error != nil {
+		t.Fatalf("Got a bad response %+v", ccResp)
+	}
 
 	// Make sure we can't create a durable using the ephemeral API endpoint.
 	obsReq = server.CreateConsumerRequest{
@@ -4327,16 +4372,23 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Since we are using the ephemeral endpoint we can not configure a durable name.
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer expected to be ephemeral but a durable name was set'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkBadRequest(ccResp.Error, "consumer expected to be ephemeral but a durable name was set")
 
 	// Now make sure we can create a durable on the subject with the proper name.
 	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, obsReq.Config.Durable), req, time.Second)
-	expectOKResponse(t, resp)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
+	}
 
-	// Make sure empty in cfg does not work
+	// Make sure empty durable in cfg does not work
 	obsReq2 := server.CreateConsumerRequest{
 		Stream: msetCfg.Name,
 		Config: server.ConsumerConfig{DeliverSubject: delivery},
@@ -4349,29 +4401,55 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer expected to be durable but a durable name was not set'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkBadRequest(ccResp.Error, "consumer expected to be durable but a durable name was not set")
+
 	// Now make sure we can't fake the consumer name.
 	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, "WRONG_CONSUMER_NAME"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'consumer name in subject does not match durable name in request'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	ccResp.Error, ccResp.ConsumerInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkBadRequest(ccResp.Error, "consumer name in subject does not match durable name in request")
 
 	// Now delete a msg.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), []byte("2"), time.Second)
-	expectOKResponse(t, resp)
+	var delMsgResp server.JSApiMsgDeleteResponse
+	if err = json.Unmarshal(resp.Data, &delMsgResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !delMsgResp.Success || delMsgResp.Error != nil {
+		t.Fatalf("Got a bad response %+v", ccResp)
+	}
 
 	// Now purge the stream.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamPurgeStreamT, msetCfg.Name), nil, time.Second)
-	expectOKResponse(t, resp)
+	var pResp server.JSApiStreamPurgeResponse
+	if err = json.Unmarshal(resp.Data, &pResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !pResp.Success || pResp.Error != nil {
+		t.Fatalf("Got a bad response %+v", ccResp)
+	}
+	if pResp.Purged != 9 {
+		t.Fatalf("Expected 9 purged, got %d", pResp.Purged)
+	}
 
 	// Now delete the stream.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteStreamT, msetCfg.Name), nil, time.Second)
-	expectOKResponse(t, resp)
+	var dResp server.JSApiStreamDeleteResponse
+	if err = json.Unmarshal(resp.Data, &dResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !dResp.Success || dResp.Error != nil {
+		t.Fatalf("Got a bad response %+v", dResp)
+	}
 
 	// Now grab stats again.
 	// This will get the current information about usage and limits for this account.
@@ -4407,11 +4485,20 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Check that the name in config has to match the name in the subject
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, "BOB"), req, time.Second)
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'template name in subject does not match request'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
+	var stResp server.JSApiStreamTemplateCreateResponse
+	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+	checkBadRequest(stResp.Error, "template name in subject does not match request")
+
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
-	expectOKResponse(t, resp)
+	stResp.Error, stResp.StreamTemplateInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if stResp.StreamTemplateInfo == nil || stResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
+	}
 
 	// Create a second one.
 	template.Name = "ss"
@@ -4423,44 +4510,62 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
-	expectOKResponse(t, resp)
-
-	// Now grab the list of templates
-	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
-	if err = json.Unmarshal(resp.Data, &names); err != nil {
+	stResp.Error, stResp.StreamTemplateInfo = nil, nil
+	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if len(names) != 2 {
-		t.Fatalf("Expected 2 templates but got %d", len(names))
+	if stResp.StreamTemplateInfo == nil || stResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
 	}
-	sort.Strings(names)
-	if names[0] != "kv" {
-		t.Fatalf("Expected to get %q, but got %q", "kv", names[0])
+
+	// Now grab the list of templates
+	var tListResp server.JSApiStreamTemplateListResponse
+	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-	if names[1] != "ss" {
-		t.Fatalf("Expected to get %q, but got %q", "ss", names[0])
+	if len(tListResp.Templates) != 2 {
+		t.Fatalf("Expected 2 templates but got %d", len(tListResp.Templates))
+	}
+	sort.Strings(tListResp.Templates)
+	if tListResp.Templates[0] != "kv" {
+		t.Fatalf("Expected to get %q, but got %q", "kv", tListResp.Templates[0])
+	}
+	if tListResp.Templates[1] != "ss" {
+		t.Fatalf("Expected to get %q, but got %q", "ss", tListResp.Templates[1])
 	}
 
 	// Now delete one.
 	// Test bad name.
 	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "bob"), nil, time.Second)
-	if !strings.HasPrefix(string(resp.Data), "-ERR 'no template found'") {
-		t.Fatalf("Got wrong error response: %q", resp.Data)
-	}
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "ss"), nil, time.Second)
-	expectOKResponse(t, resp)
-	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
-	if err = json.Unmarshal(resp.Data, &names); err != nil {
+	var tDeleteResp server.JSApiStreamTemplateDeleteResponse
+	if err = json.Unmarshal(resp.Data, &tDeleteResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if len(names) != 1 {
-		t.Fatalf("Expected 1 template but got %d", len(names))
+	checkServerError(tDeleteResp.Error, "template not found")
+
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "ss"), nil, time.Second)
+	tDeleteResp.Error = nil
+	if err = json.Unmarshal(resp.Data, &tDeleteResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-	if names[0] != "kv" {
-		t.Fatalf("Expected to get %q, but got %q", "kv", names[0])
+	if !tDeleteResp.Success || tDeleteResp.Error != nil {
+		t.Fatalf("Did not receive correct response")
 	}
 
-	// First create a stream
+	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	tListResp.Error, tListResp.Templates = nil, nil
+	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(tListResp.Templates) != 1 {
+		t.Fatalf("Expected 1 template but got %d", len(tListResp.Templates))
+	}
+	if tListResp.Templates[0] != "kv" {
+		t.Fatalf("Expected to get %q, but got %q", "kv", tListResp.Templates[0])
+	}
+
+	// First create a stream from the template
 	sendStreamMsg(t, nc, "kv.22", "derek")
 	// Last do info
 	resp, err = nc.Request(fmt.Sprintf(server.JetStreamTemplateInfoT, "kv"), nil, time.Second)
@@ -5244,13 +5349,24 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	defer nca.Close()
 
 	resp, _ := nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	expectOKResponse(t, resp)
+	var enabledResp server.JSApiEnabledResponse
+	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !enabledResp.JetStream {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
 
 	ncb := clientConnectToServerWithUP(t, opts, "ub", "pwd")
 	defer ncb.Close()
 
 	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	expectOKResponse(t, resp)
+	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !enabledResp.JetStream {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
 
 	resp, err := ncb.Request(server.JetStreamInfo, nil, time.Second)
 	if err != nil {
@@ -5286,7 +5402,11 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 		if resp == nil {
 			t.Fatalf("No response, possible timeout?")
 		}
-		if string(resp.Data) != "-ERR 'jetstream not enabled for account'" {
+		var enabledResp server.JSApiEnabledResponse
+		if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if enabledResp.JetStream {
 			t.Fatalf("Expected to get a response indicating jetstream is not enabled for this account, got %q", resp.Data)
 		}
 	}
@@ -5322,10 +5442,20 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	expectNotEnabled(nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond))
 
 	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	expectOKResponse(t, resp)
+	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !enabledResp.JetStream {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
 
 	resp, _ = ncc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	expectOKResponse(t, resp)
+	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !enabledResp.JetStream {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
 
 	// Now check that limits have been updated.
 	// Account B

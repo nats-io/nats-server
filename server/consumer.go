@@ -166,6 +166,9 @@ func (r ReplayPolicy) String() string {
 	}
 }
 
+// OK
+const OK = "+OK"
+
 // Ack responses. Note that a nil or no payload is same as AckAck
 var (
 	// Ack
