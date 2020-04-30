@@ -4,6 +4,8 @@ about: Request a feature for the NATS Server
 labels: 🎉 enhancement
 ---
 
+## Feature Request
+
 #### Use Case:
 
 #### Proposed Change:

@@ -4,6 +4,8 @@ about: Report a bug found in the NATS Server
 labels: 🐞 bug
 ---
 
+## Defect
+
 Make sure that these boxes are checked before submitting your issue -- thank you!
 
  - [ ] Included `nats-server -DV` output
