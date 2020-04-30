@@ -1083,11 +1083,11 @@ func (a *Account) LookupStreamTemplate(name string) (*StreamTemplate, error) {
 	jsa.mu.Lock()
 	defer jsa.mu.Unlock()
 	if jsa.templates == nil {
-		return nil, fmt.Errorf("no template found")
+		return nil, fmt.Errorf("template not found")
 	}
 	t, ok := jsa.templates[name]
 	if !ok {
-		return nil, fmt.Errorf("no template found")
+		return nil, fmt.Errorf("template not found")
 	}
 	return t, nil
 }
@@ -1128,11 +1128,11 @@ func (t *StreamTemplate) Delete() error {
 	jsa.mu.Lock()
 	if jsa.templates == nil {
 		jsa.mu.Unlock()
-		return fmt.Errorf("no template found")
+		return fmt.Errorf("template not found")
 	}
 	if _, ok := jsa.templates[t.Name]; !ok {
 		jsa.mu.Unlock()
-		return fmt.Errorf("no template found")
+		return fmt.Errorf("template not found")
 	}
 	delete(jsa.templates, t.Name)
 	acc := jsa.account
@@ -1191,11 +1191,11 @@ func (a *Account) Templates() []*StreamTemplate {
 // Will add a stream to a template, this is for recovery.
 func (jsa *jsAccount) addStreamNameToTemplate(tname, mname string) error {
 	if jsa.templates == nil {
-		return fmt.Errorf("no template found")
+		return fmt.Errorf("template not found")
 	}
 	t, ok := jsa.templates[tname]
 	if !ok {
-		return fmt.Errorf("no template found")
+		return fmt.Errorf("template not found")
 	}
 	// We found template.
 	t.mu.Lock()
@@ -1248,8 +1248,4 @@ func isValidName(name string) bool {
 // This can be used when naming streams or consumers with multi-token subjects.
 func CanonicalName(name string) string {
 	return strings.ReplaceAll(name, ".", "_")
-}
-
-func protoErr(err interface{}) string {
-	return fmt.Sprintf("%s '%v'", ErrPrefix, err)
 }
