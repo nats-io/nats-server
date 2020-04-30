@@ -72,9 +72,8 @@ Stream Info Error:
   "type": "io.nats.jetstream.api.v1.stream_info",
   "time": "2020-04-23T16:51:18.516363Z",
   "error": {
-    "message": "unknown stream bob",
-    "code": 123,
-    "kind": "JetStreamBadRequest"
+    "description": "unknown stream bob",
+    "code": 400
   },
   "config": {
     "name": "",
@@ -97,6 +96,10 @@ Stream Info Error:
 ```
 
 Here we have a minimally correct response with the additional error object.
+
+In the `error` struct we have `description` as a short human friendly explanation that should include enough context to
+identify what Stream or Consumer is being interacted with and whatever else we feel will help the user while not sharing
+privileged account information.  `code` will be HTTP like, 400 human error, 500 server error etc.
 
 Today the list API's just return `["ORDERS"]`, these will become:
 
