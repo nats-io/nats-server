@@ -158,6 +158,7 @@ type Options struct {
 	NoLog                 bool          `json:"-"`
 	NoSigs                bool          `json:"-"`
 	NoSublistCache        bool          `json:"-"`
+	NoHeaderSupport       bool          `json:"-"`
 	DisableShortFirstPing bool          `json:"-"`
 	Logtime               bool          `json:"-"`
 	MaxConn               int           `json:"max_connections"`
