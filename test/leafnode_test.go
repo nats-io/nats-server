@@ -1033,6 +1033,8 @@ func TestLeafNodeLocalizedDQ(t *testing.T) {
 
 func TestLeafNodeBasicAuth(t *testing.T) {
 	content := `
+    listen: "127.0.0.1:-1"
+
 	leafnodes {
 		listen: "127.0.0.1:-1"
 		authorization {
@@ -1097,6 +1099,8 @@ func runTLSSolicitLeafServer(lso *server.Options) (*server.Server, *server.Optio
 
 func TestLeafNodeTLS(t *testing.T) {
 	content := `
+	listen: "127.0.0.1:-1"
+
 	leafnodes {
 		listen: "127.0.0.1:-1"
 		tls {
@@ -1207,6 +1211,7 @@ func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, s
 	port: -1
 	operator = "./configs/nkeys/op.jwt"
 	resolver = MEMORY
+	listen: "127.0.0.1:-1"
 	leafnodes {
 		listen: "127.0.0.1:-1"
 	}

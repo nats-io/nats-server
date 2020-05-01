@@ -88,11 +88,17 @@ type ServerStatsMsg struct {
 	Stats  ServerStats `json:"statsz"`
 }
 
+// TypedEvent is a event or advisory sent by the server that has nats type hints
+// typically used for events that might be consumed by 3rd party event systems
+type TypedEvent struct {
+	Type string    `json:"type"`
+	ID   string    `json:"id"`
+	Time time.Time `json:"timestamp"`
+}
+
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
-	Type   string     `json:"type"`
-	ID     string     `json:"id"`
-	Time   string     `json:"timestamp"`
+	TypedEvent
 	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
 }
@@ -103,9 +109,7 @@ const ConnectEventMsgType = "io.nats.server.advisory.v1.client_connect"
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
-	Type     string     `json:"type"`
-	ID       string     `json:"id"`
-	Time     string     `json:"timestamp"`
+	TypedEvent
 	Server   ServerInfo `json:"server"`
 	Client   ClientInfo `json:"client"`
 	Sent     DataStats  `json:"sent"`
@@ -1014,9 +1018,11 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
-		Type: ConnectEventMsgType,
-		ID:   eid,
-		Time: time.Now().UTC().Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: ConnectEventMsgType,
+			ID:   eid,
+			Time: time.Now().UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Host:    c.host,
@@ -1055,9 +1061,11 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
-		Type: DisconnectEventMsgType,
-		ID:   eid,
-		Time: now.UTC().Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now.UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
@@ -1097,9 +1105,11 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
-		Type: DisconnectEventMsgType,
-		ID:   eid,
-		Time: now.UTC().Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now.UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
