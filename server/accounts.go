@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt"
+	"github.com/nats-io/nuid"
 )
 
 // For backwards compatibility with NATS < 2.0, users who are not explicitly defined into an
@@ -70,6 +71,8 @@ type Account struct {
 	lds         string  // loop detection subject for leaf nodes
 	siReply     []byte  // service reply prefix, will form wildcard subscription.
 	prand       *rand.Rand
+	eventids    *nuid.NUID
+	eventidsmu  sync.Mutex
 }
 
 // Account based limits.
@@ -194,8 +197,9 @@ type importMap struct {
 // NewAccount creates a new unlimited account with the given name.
 func NewAccount(name string) *Account {
 	a := &Account{
-		Name:   name,
-		limits: limits{-1, -1, -1, -1},
+		Name:     name,
+		limits:   limits{-1, -1, -1, -1},
+		eventids: nuid.New(),
 	}
 
 	return a
@@ -211,6 +215,16 @@ func (a *Account) shallowCopy() *Account {
 	na.exports = a.exports
 	na.jsLimits = a.jsLimits
 	return na
+}
+
+func (a *Account) nextEventID() string {
+	// TODO(dlc) we should add a nuid that holds a lock or massage this
+	// to work within the account lock but doing so now caused races
+	a.eventidsmu.Lock()
+	id := a.eventids.Next()
+	a.eventidsmu.Unlock()
+
+	return id
 }
 
 // Called to track a remote server and connections and leafnodes it
@@ -694,6 +708,8 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 // is the RTT used to calculate the total latency. The requestor's account can
 // designate to share the additional information in the service import.
 type ServiceLatency struct {
+	TypedEvent
+
 	Status         int           `json:"status"`
 	Error          string        `json:"description,omitempty"`
 	Requestor      LatencyClient `json:"requestor,omitempty"`
@@ -703,6 +719,9 @@ type ServiceLatency struct {
 	SystemLatency  time.Duration `json:"system"`
 	TotalLatency   time.Duration `json:"total"`
 }
+
+// ServiceLatencyType is the NATS Event Type for ServiceLatency
+const ServiceLatencyType = "io.nats.server.metric.v1.service_latency"
 
 // LatencyClient is the JSON message structure assigned to requestors and responders.
 // Note that for a requestor, the only information shared by default is the RTT used
@@ -764,6 +783,10 @@ type remoteLatency struct {
 
 // sendLatencyResult will send a latency result and clear the si of the requestor(rc).
 func (a *Account) sendLatencyResult(si *serviceImport, sl *ServiceLatency) {
+	sl.Type = ServiceLatencyType
+	sl.ID = a.nextEventID()
+	sl.Time = time.Now().UTC()
+
 	si.acc.mu.Lock()
 	a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
 	si.rc = nil
@@ -837,6 +860,10 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 		sl.TotalLatency += sl.SystemLatency
 	}
 	sanitizeLatencyMetric(sl)
+
+	sl.Type = ServiceLatencyType
+	sl.ID = a.nextEventID()
+	sl.Time = time.Now().UTC()
 
 	// If we are expecting a remote measurement, store our sl here.
 	// We need to account for the race between this and us receiving the

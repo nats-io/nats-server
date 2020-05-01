@@ -60,11 +60,9 @@ type CreateConsumerRequest struct {
 }
 
 // ConsumerAckMetric is a metric published when a user acknowledges a message, the
-// number of these that will be published is dependant on SampleFrequency
+// number of these that will be published is dependent on SampleFrequency
 type ConsumerAckMetric struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Time        string `json:"timestamp"`
+	TypedEvent
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
@@ -79,9 +77,7 @@ const ConsumerAckMetricType = "io.nats.jetstream.metric.v1.consumer_ack"
 // ConsumerDeliveryExceededAdvisory is an advisory informing that a message hit
 // its MaxDeliver threshold and so might be a candidate for DLQ handling
 type ConsumerDeliveryExceededAdvisory struct {
-	Type       string `json:"type"`
-	ID         string `json:"id"`
-	Time       string `json:"timestamp"`
+	TypedEvent
 	Stream     string `json:"stream"`
 	Consumer   string `json:"consumer"`
 	StreamSeq  uint64 `json:"stream_seq"`
@@ -772,10 +768,13 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 
 	now := time.Now().UTC()
 	unow := now.UnixNano()
+
 	e := &ConsumerAckMetric{
-		Type:        ConsumerAckMetricType,
-		ID:          nuid.Next(),
-		Time:        now.Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: ConsumerAckMetricType,
+			ID:   nuid.Next(),
+			Time: now,
+		},
 		Stream:      o.stream,
 		Consumer:    o.name,
 		ConsumerSeq: dseq,
@@ -922,9 +921,11 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 
 func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 	e := &ConsumerDeliveryExceededAdvisory{
-		Type:       ConsumerDeliveryExceededAdvisoryType,
-		ID:         nuid.Next(),
-		Time:       time.Now().UTC().Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: ConsumerDeliveryExceededAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
 		Stream:     o.stream,
 		Consumer:   o.name,
 		StreamSeq:  sseq,

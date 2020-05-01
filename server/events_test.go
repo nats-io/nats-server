@@ -233,7 +233,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if cem.Type != ConnectEventMsgType {
 		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
 	}
-	if cem.Time == "" {
+	if cem.Time.IsZero() {
 		t.Fatalf("Event time is not set")
 	}
 	if len(cem.ID) != 22 {
@@ -289,7 +289,7 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if dem.Type != DisconnectEventMsgType {
 		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
 	}
-	if dem.Time == "" {
+	if dem.Time.IsZero() {
 		t.Fatalf("Event time is not set")
 	}
 	if len(dem.ID) != 22 {
