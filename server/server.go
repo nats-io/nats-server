@@ -211,7 +211,8 @@ type Server struct {
 		m  sync.Map
 	}
 
-	eventids *nuid.NUID
+	// For eventIDs
+	eventIds *nuid.NUID
 }
 
 // Make sure all are 64bits for atomic use
@@ -277,17 +278,16 @@ func NewServer(opts *Options) (*Server, error) {
 	now := time.Now()
 
 	s := &Server{
-		kp:           kp,
-		configFile:   opts.ConfigFile,
-		info:         info,
-		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:         opts,
-		done:         make(chan bool, 1),
-		start:        now,
-		configTime:   now,
-		gwLeafSubs:   NewSublistWithCache(),
-		httpBasePath: httpBasePath,
-		eventids:     nuid.New(),
+		kp:         kp,
+		configFile: opts.ConfigFile,
+		info:       info,
+		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:       opts,
+		done:       make(chan bool, 1),
+		start:      now,
+		configTime: now,
+		gwLeafSubs: NewSublistWithCache(),
+		eventIds:   nuid.New(),
 	}
 
 	// Trusted root operator keys.
