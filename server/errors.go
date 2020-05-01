@@ -135,8 +135,15 @@ var (
 	// ErrRevocation is returned when a credential has been revoked.
 	ErrRevocation = errors.New("credentials have been revoked")
 
-	// Used to signal an error that a server is not running.
+	// ErrServerNotRunning is used to signal an error that a server is not running.
 	ErrServerNotRunning = errors.New("server is not running")
+
+	// ErrBadMsgHeader signals the parser detected a bad message header
+	ErrBadMsgHeader = errors.New("bad message header detected")
+
+	// ErrMsgHeadersNotSupported signals the parser detected a message header
+	// but they are not supported on this server.
+	ErrMsgHeadersNotSupported = errors.New("message headers not supported")
 )
 
 // configErr is a configuration error.

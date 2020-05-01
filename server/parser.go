@@ -17,6 +17,17 @@ import (
 	"fmt"
 )
 
+type parserState int
+type parseState struct {
+	state   parserState
+	as      int
+	drop    int
+	pa      pubArg
+	argBuf  []byte
+	msgBuf  []byte
+	scratch [MAX_CONTROL_LINE_SIZE]byte
+}
+
 type pubArg struct {
 	arg     []byte
 	pacache []byte
@@ -27,17 +38,7 @@ type pubArg struct {
 	szb     []byte
 	queues  [][]byte
 	size    int
-}
-
-type parserState int
-type parseState struct {
-	state   parserState
-	as      int
-	drop    int
-	pa      pubArg
-	argBuf  []byte
-	msgBuf  []byte
-	scratch [MAX_CONTROL_LINE_SIZE]byte
+	hdr     int
 }
 
 // Parser constants
@@ -284,6 +285,18 @@ func (c *client) parse(buf []byte) error {
 			}
 			if trace {
 				c.traceMsg(c.msgBuf)
+			}
+			// If we might have a hdr. len(5) is so that
+			// we can only check when we have at least that many.
+			// The reason for being low is to detect malformed hdrs.
+			// 226 is first byte of 2 bytes UTF for '⚡'
+			c.pa.hdr = 0
+			if c.pa.size > 5 && c.msgBuf[0] == 226 {
+				if err := c.checkForHeader(c.msgBuf); err != nil {
+					c.sendErr(err.Error())
+					c.closeConnection(MsgHeaderViolation)
+					return err
+				}
 			}
 			c.processInboundMsg(c.msgBuf)
 			c.argBuf, c.msgBuf = nil, nil

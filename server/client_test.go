@@ -43,6 +43,7 @@ type serverInfo struct {
 	AuthRequired bool   `json:"auth_required"`
 	TLSRequired  bool   `json:"tls_required"`
 	MaxPayload   int64  `json:"max_payload"`
+	Headers      bool   `json:"headers"`
 }
 
 type testAsyncClient struct {
@@ -187,6 +188,109 @@ func TestClientCreateAndInfo(t *testing.T) {
 		info.AuthRequired || info.TLSRequired ||
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
+	}
+}
+
+func TestServerHeaderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+	_, _, l := newClientForServer(s)
+
+	if !strings.HasPrefix(l, "INFO ") {
+		t.Fatalf("INFO response incorrect: %s\n", l)
+	}
+	var info serverInfo
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if !info.Headers {
+		t.Fatalf("Expected by default for headers support to be enabled")
+	}
+
+	opts.NoHeaderSupport = true
+	opts.Port = -1
+	s = New(&opts)
+	_, _, l = newClientForServer(s)
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Headers {
+		t.Fatalf("Expected headers support to be disabled")
+	}
+}
+
+// This will test the parser identifying headers.
+func TestParseMsgHeader(t *testing.T) {
+	_, c, r := setupClient()
+	defer c.close()
+
+	// And emoty hdr, first \r\n terminate marker line (like HTTP)
+	// The end of a valid header is 2 CR_LF back to back.
+	ehdr := []byte("⚡NATS⚡/0.1\r\n\r\n\r\nHELLO HEADERS")
+	publ := []byte(fmt.Sprintf("PUB foo %d\r\n", len(ehdr)))
+	msg := append(publ, ehdr...)
+	msg = append(msg, []byte(CR_LF)...)
+	err := c.parse(msg)
+	if err != nil {
+		t.Fatalf("Received error: %v\n", err)
+	}
+	if c.pa.hdr == 0 {
+		t.Fatalf("Expected to detect a header")
+	}
+	// Make sure our indexing works.
+	if !bytes.Equal(ehdr[c.pa.hdr:], []byte("HELLO HEADERS")) {
+		t.Fatalf("Expected just the msg body, but got %q for hdr index of %d", ehdr[c.pa.hdr:], c.pa.hdr)
+	}
+
+	// Now lets directly test some failure scenarios.
+	expectError := func(msgh []byte) {
+		t.Helper()
+		if err := c.checkForHeader(msgh); err != ErrBadMsgHeader {
+			t.Fatalf("Expected an error, got %v", err)
+		}
+	}
+	expectError([]byte("⚡NATS⚡/0.1\r\n\r\n\r"))
+	expectError([]byte("⚡NATS⚡ 0.1\r\n\r\n\r"))
+	expectError([]byte("⚡NATS⚡ "))
+	expectError([]byte("⚡NATS⚡ \r\n\r\n\r\n"))
+	expectError([]byte("⚡NOTS⚡/0.1"))
+
+	expectNoError := func(msgh []byte) {
+		t.Helper()
+		if err := c.checkForHeader(msgh); err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+	}
+	expectNoError([]byte("⚡NATS"))
+	expectNoError([]byte("⚡NOTS⚡"))
+	expectNoError([]byte("⚡NATS⚡/0.1\r\nWE DO NOT CARE WHAT IS IN BETWEEN\r\n\r\n"))
+
+	// Make sure we get chopped off on error.
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	// The client here is using a pipe, we need to be dequeuing
+	// data otherwise the server would be blocked trying to send
+	// the error back to it.
+	go func() {
+		defer wg.Done()
+		for {
+			if _, _, err := r.ReadLine(); err != nil {
+				return
+			}
+		}
+	}()
+
+	ehdr = []byte("⚡NATS⚡/0.1\r\nK:V\r\nHELLO HEADERS")
+	publ = []byte(fmt.Sprintf("PUB foo %d\r\n", len(ehdr)))
+	msg = append(publ, ehdr...)
+	msg = append(msg, []byte(CR_LF)...)
+
+	if err = c.parse(msg); err != ErrBadMsgHeader {
+		t.Fatalf("Expected to receive an error")
+	}
+	if !c.isClosed() {
+		t.Fatalf("Expected to have been closed")
 	}
 }
 
