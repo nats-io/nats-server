@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -190,6 +191,11 @@ type JSApiStreamPurgeResponse struct {
 type JSApiStreamUpdateResponse struct {
 	Error *ApiError `json:"error,omitempty"`
 	*StreamInfo
+}
+
+// JSApiMsgDeleteRequest delete message request.
+type JSApiMsgDeleteRequest struct {
+	Seq uint64 `json:"seq"`
 }
 
 // JSApiMsgDeleteResponse.
@@ -413,7 +419,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -445,7 +451,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -579,7 +585,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -595,6 +601,25 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
+func isEmptyRequest(req []byte) bool {
+	if len(req) == 0 {
+		return true
+	}
+	if bytes.Equal(req, []byte("{}")) {
+		return true
+	}
+	// If we are here we didn't get our simple match, but still could be valid.
+	var v interface{}
+	if err := json.Unmarshal(req, &v); err != nil {
+		return false
+	}
+	vm, ok := v.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	return len(vm) == 0
+}
+
 // Request to delete a stream.
 func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
@@ -606,7 +631,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -644,6 +669,13 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	var req JSApiMsgDeleteRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsBadRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	stream := subjectToken(subject, 2)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
@@ -651,14 +683,14 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	seq, _ := strconv.Atoi(string(msg))
-	removed, err := mset.EraseMsg(uint64(seq))
+
+	removed, err := mset.EraseMsg(req.Seq)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	} else if !removed {
-		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", seq)}
+		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", req.Seq)}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -677,7 +709,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -803,7 +835,7 @@ func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -833,7 +865,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -868,7 +900,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) != 0 {
+	if !isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return

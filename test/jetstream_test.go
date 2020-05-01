@@ -4419,13 +4419,18 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	checkBadRequest(ccResp.Error, "consumer name in subject does not match durable name in request")
 
 	// Now delete a msg.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), []byte("2"), time.Second)
+	dreq := server.JSApiMsgDeleteRequest{Seq: 2}
+	dreqj, err := json.Marshal(dreq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), dreqj, time.Second)
 	var delMsgResp server.JSApiMsgDeleteResponse
 	if err = json.Unmarshal(resp.Data, &delMsgResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if !delMsgResp.Success || delMsgResp.Error != nil {
-		t.Fatalf("Got a bad response %+v", ccResp)
+		t.Fatalf("Got a bad response %+v", delMsgResp.Error)
 	}
 
 	// Now purge the stream.
@@ -4435,7 +4440,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if !pResp.Success || pResp.Error != nil {
-		t.Fatalf("Got a bad response %+v", ccResp)
+		t.Fatalf("Got a bad response %+v", pResp)
 	}
 	if pResp.Purged != 9 {
 		t.Fatalf("Expected 9 purged, got %d", pResp.Purged)
@@ -4582,6 +4587,29 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if ti.Streams[0] != server.CanonicalName("kv.22") {
 		t.Fatalf("Expected stream with name %q, but got %q", server.CanonicalName("kv.22"), ti.Streams[0])
 	}
+
+	// Test that we can send nil or an empty legal json for requests that take no args.
+	// We know this stream does not exist, this just checking request processing.
+	checkEmptyReqArg := func(arg string) {
+		t.Helper()
+		var req []byte
+		if len(arg) > 0 {
+			req = []byte(arg)
+		}
+		resp, err = nc.Request(fmt.Sprintf(server.JetStreamDeleteStreamT, "foo_bar_baz"), req, time.Second)
+		var dResp server.JSApiStreamDeleteResponse
+		if err = json.Unmarshal(resp.Data, &dResp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if dResp.Error == nil || dResp.Error.Code != 500 {
+			t.Fatalf("Got a bad response, expected a non 400 response %+v", dResp.Error)
+		}
+	}
+
+	checkEmptyReqArg("")
+	checkEmptyReqArg("{}")
+	checkEmptyReqArg(" {} ")
+	checkEmptyReqArg(" { } ")
 }
 
 func TestJetStreamUpdateStream(t *testing.T) {
