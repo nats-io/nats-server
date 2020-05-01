@@ -29,6 +29,9 @@ context can be provided. URL Encoding has [broad language support](https://www.r
 
 All Admin APIs that today accept `nil` body should also accept an empty JSON document as request body.
 
+Any API that responds with JSON should also accept JSON, for example to delete a message by sequence we accept
+`10` as body today, this would need to become `{"seq": 10}` or similar.
+
 #### Responses
 
 All responses will be JSON objects, a few examples will describe it best. Any error that happens has to be 
@@ -99,8 +102,8 @@ Stream Info Error:
 Here we have a minimally correct response with the additional error object.
 
 In the `error` struct we have `description` as a short human friendly explanation that should include enough context to
-identify what Stream or Consumer is being interacted with and whatever else we feel will help the user while not sharing
-privileged account information.  `code` will be HTTP like, 400 human error, 500 server error etc.
+identify what Stream or Consumer acted on and whatever else we feel will help the user while not sharing privileged account
+information.  `code` will be HTTP like, 400 human error, 500 server error etc.
 
 Today the list API's just return `["ORDERS"]`, these will become:
 
