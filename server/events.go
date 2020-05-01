@@ -920,7 +920,7 @@ func (s *Server) accConnsUpdate(a *Account) {
 
 // server lock should be held
 func (s *Server) nextEventID() string {
-	return s.eventids.Next()
+	return s.eventIds.Next()
 }
 
 // accountConnectEvent will send an account client connect event if there is interest.

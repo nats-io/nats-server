@@ -209,7 +209,8 @@ type Server struct {
 		m  sync.Map
 	}
 
-	eventids *nuid.NUID
+	// For eventIDs
+	eventIds *nuid.NUID
 }
 
 // Make sure all are 64bits for atomic use
@@ -282,7 +283,7 @@ func NewServer(opts *Options) (*Server, error) {
 		start:      now,
 		configTime: now,
 		gwLeafSubs: NewSublistWithCache(),
-		eventids:   nuid.New(),
+		eventIds:   nuid.New(),
 	}
 
 	// Trusted root operator keys.

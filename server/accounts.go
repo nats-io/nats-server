@@ -71,8 +71,8 @@ type Account struct {
 	lds         string  // loop detection subject for leaf nodes
 	siReply     []byte  // service reply prefix, will form wildcard subscription.
 	prand       *rand.Rand
-	eventids    *nuid.NUID
-	eventidsmu  sync.Mutex
+	eventIds    *nuid.NUID
+	eventIdsMu  sync.Mutex
 }
 
 // Account based limits.
@@ -199,7 +199,7 @@ func NewAccount(name string) *Account {
 	a := &Account{
 		Name:     name,
 		limits:   limits{-1, -1, -1, -1},
-		eventids: nuid.New(),
+		eventIds: nuid.New(),
 	}
 
 	return a
@@ -217,13 +217,11 @@ func (a *Account) shallowCopy() *Account {
 	return na
 }
 
+// nextEventID uses its own lock for better concurrency.
 func (a *Account) nextEventID() string {
-	// TODO(dlc) we should add a nuid that holds a lock or massage this
-	// to work within the account lock but doing so now caused races
-	a.eventidsmu.Lock()
-	id := a.eventids.Next()
-	a.eventidsmu.Unlock()
-
+	a.eventIdsMu.Lock()
+	id := a.eventIds.Next()
+	a.eventIdsMu.Unlock()
 	return id
 }
 
