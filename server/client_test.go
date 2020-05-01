@@ -43,6 +43,7 @@ type serverInfo struct {
 	AuthRequired bool   `json:"auth_required"`
 	TLSRequired  bool   `json:"tls_required"`
 	MaxPayload   int64  `json:"max_payload"`
+	Headers      bool   `json:"headers"`
 }
 
 type testAsyncClient struct {
@@ -187,6 +188,38 @@ func TestClientCreateAndInfo(t *testing.T) {
 		info.AuthRequired || info.TLSRequired ||
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
+	}
+}
+
+func TestServerHeaderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+	c, _, l := newClientForServer(s)
+	defer c.close()
+
+	if !strings.HasPrefix(l, "INFO ") {
+		t.Fatalf("INFO response incorrect: %s\n", l)
+	}
+	var info serverInfo
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if !info.Headers {
+		t.Fatalf("Expected by default for header support to be enabled")
+	}
+
+	opts.NoHeaderSupport = true
+	opts.Port = -1
+	s = New(&opts)
+	c, _, l = newClientForServer(s)
+	defer c.close()
+
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Headers {
+		t.Fatalf("Expected header support to be disabled")
 	}
 }
 

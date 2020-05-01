@@ -68,6 +68,7 @@ type Info struct {
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
+	Headers           bool     `json:"headers"`
 	AuthRequired      bool     `json:"auth_required,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
@@ -269,6 +270,7 @@ func NewServer(opts *Options) (*Server, error) {
 		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
 		JetStream:    opts.JetStream,
+		Headers:      !opts.NoHeaderSupport,
 	}
 
 	now := time.Now()
@@ -1820,6 +1822,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	s.mu.Lock()
 	info := s.copyInfo()
 	c.nonce = []byte(info.Nonce)
+	c.headers = info.Headers
 	s.totalClients++
 	s.mu.Unlock()
 
