@@ -33,7 +33,8 @@ All Admin APIs that today accept `nil` body should also accept an empty JSON doc
 
 All responses will be JSON objects, a few examples will describe it best. Any error that happens has to be 
 communicated within the originally expected message type. Even the case where JetStream is not enabled for
-an account, the response has to be the data type the API would normally generate with additional `error`.
+an account, the response has to be a valid data type with the addition of `error`. When `error` is present
+empty fields may be omitted as long as the response still adheres to the schema.
 
 Successful Stream Info:
 
