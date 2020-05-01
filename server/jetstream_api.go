@@ -912,9 +912,7 @@ type ClientAPIAudit struct {
 
 // JetStreamAPIAudit is an advisory about administrative actions taken on JetStream
 type JetStreamAPIAudit struct {
-	Type     string         `json:"type"`
-	ID       string         `json:"id"`
-	Time     string         `json:"timestamp"`
+	TypedEvent
 	Server   string         `json:"server"`
 	Client   ClientAPIAudit `json:"client"`
 	Subject  string         `json:"subject"`
@@ -936,9 +934,11 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 	c.mu.Unlock()
 
 	e := &JetStreamAPIAudit{
-		Type:   auditType,
-		ID:     nuid.Next(),
-		Time:   time.Now().UTC().Format(time.RFC3339Nano),
+		TypedEvent: TypedEvent{
+			Type: auditType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
 		Server: s.Name(),
 		Client: ClientAPIAudit{
 			Host:     h,
