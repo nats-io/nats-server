@@ -14,7 +14,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"path"
@@ -43,7 +42,7 @@ type StreamConfig struct {
 }
 
 // PubAck is the detail you get back from a publish to a stream that was successful.
-// e.g. +OK {"stream": "my_stream", "seq": 22}
+// e.g. +OK {"stream": "Orders", "seq": 22}
 type PubAck struct {
 	Stream string `json:"stream"`
 	Seq    uint64 `json:"seq"`
@@ -51,8 +50,9 @@ type PubAck struct {
 
 // StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
-	Config StreamConfig `json:"config"`
-	State  StreamState  `json:"state"`
+	Config  StreamConfig `json:"config"`
+	Created time.Time    `json:"created"`
+	State   StreamState  `json:"state"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
@@ -69,6 +69,7 @@ type Stream struct {
 	store     StreamStore
 	consumers map[string]*Consumer
 	config    StreamConfig
+	created   time.Time
 }
 
 const (
@@ -164,6 +165,21 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	return mset, nil
+}
+
+// Created returns created time.
+func (mset *Stream) Created() time.Time {
+	mset.mu.RLock()
+	created := mset.created
+	mset.mu.RUnlock()
+	return created
+}
+
+// Internal to allow creation time to be restored.
+func (mset *Stream) setCreated(created time.Time) {
+	mset.mu.Lock()
+	mset.created = created
+	mset.mu.Unlock()
 }
 
 // Check to see if these subjects overlap with existing subjects.
@@ -377,12 +393,6 @@ func (mset *Stream) subscribeToStream() error {
 			return err
 		}
 	}
-	// Now subscribe for direct access
-	subj := fmt.Sprintf(JetStreamMsgBySeqT, mset.config.Name)
-	if _, err := mset.subscribeInternal(subj, mset.processMsgBySeq); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -454,9 +464,10 @@ func (mset *Stream) unsubscribe(sub *subscription) {
 }
 
 func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
-
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
+
+	mset.created = time.Now().UTC()
 
 	switch mset.config.Storage {
 	case MemoryStorage:
@@ -466,7 +477,7 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 		}
 		mset.store = ms
 	case FileStorage:
-		fs, err := newFileStore(*fsCfg, mset.config)
+		fs, err := newFileStoreWithCreated(*fsCfg, mset.config, mset.created)
 		if err != nil {
 			return err
 		}
@@ -475,52 +486,6 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 	jsa, st := mset.jsa, mset.config.Storage
 	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
 	return nil
-}
-
-// processMsgBySeq will return the message at the given sequence, or an -ERR if not found.
-func (mset *Stream) processMsgBySeq(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	mset.mu.Lock()
-	store := mset.store
-	c := mset.client
-	name := mset.config.Name
-	mset.mu.Unlock()
-
-	if c == nil {
-		return
-	}
-	var response []byte
-	var seq uint64
-	var err error
-
-	// If no sequence arg assume last sequence we have.
-	if len(msg) == 0 {
-		stats := store.State()
-		seq = stats.LastSeq
-	} else {
-		seq, err = strconv.ParseUint(string(msg), 10, 64)
-		if err != nil {
-			c.Debugf("JetStream request for message from message: %q - %q bad sequence arg %q", c.acc.Name, name, msg)
-			response = []byte("-ERR 'bad sequence argument'")
-			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-			return
-		}
-	}
-
-	subj, msg, ts, err := store.LoadMsg(seq)
-	if err != nil {
-		c.Debugf("JetStream request for message: %q - %q - %d error %v", c.acc.Name, name, seq, err)
-		response = []byte("-ERR 'could not load message from storage'")
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
-		return
-	}
-	sm := &StoredMsg{
-		Subject:  subj,
-		Sequence: seq,
-		Data:     msg,
-		Time:     time.Unix(0, ts),
-	}
-	response, _ = json.MarshalIndent(sm, "", "  ")
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.

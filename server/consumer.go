@@ -33,6 +33,7 @@ import (
 type ConsumerInfo struct {
 	Stream         string         `json:"stream_name"`
 	Name           string         `json:"name"`
+	Created        time.Time      `json:"created"`
 	Config         ConsumerConfig `json:"config"`
 	Delivered      SequencePair   `json:"delivered"`
 	AckFloor       SequencePair   `json:"ack_floor"`
@@ -214,6 +215,7 @@ type Consumer struct {
 	sfreq             int32
 	ackEventT         string
 	deliveryExcEventT string
+	created           time.Time
 }
 
 const (
@@ -230,7 +232,6 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 
 	var err error
-
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
 	if config.DeliverSubject != _EMPTY_ {
 		if !subjectIsLiteral(config.DeliverSubject) {
@@ -322,7 +323,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// Hold mset lock here.
 	mset.mu.Lock()
 
-	// If this one is durable and already exists, we let that be ok as long as the configs match=.
+	// If this one is durable and already exists, we let that be ok as long as the configs match.
 	if isDurableConsumer(config) {
 		if eo, ok := mset.consumers[config.Durable]; ok {
 			mset.mu.Unlock()
@@ -375,13 +376,14 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
 	o := &Consumer{mset: mset,
-		config: *config,
-		dsubj:  config.DeliverSubject,
-		active: true,
-		qch:    make(chan struct{}),
-		fch:    make(chan struct{}),
-		sfreq:  int32(sampleFreq),
-		maxdc:  uint64(config.MaxDeliver),
+		config:  *config,
+		dsubj:   config.DeliverSubject,
+		active:  true,
+		qch:     make(chan struct{}),
+		fch:     make(chan struct{}),
+		sfreq:   int32(sampleFreq),
+		maxdc:   uint64(config.MaxDeliver),
+		created: time.Now().UTC(),
 	}
 	if isDurableConsumer(config) {
 		o.name = config.Durable
@@ -396,8 +398,8 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// already under lock, mset.Name() would deadlock
 	o.stream = mset.config.Name
-	o.ackEventT = JetStreamMetricConsumerAckPre + "." + o.stream + "." + o.name
-	o.deliveryExcEventT = JetStreamAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
+	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
+	o.deliveryExcEventT = JSAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
 
 	store, err := mset.store.ConsumerStore(o.name, config)
 	if err != nil {
@@ -446,10 +448,11 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// We will remember the template to generate replies with sequence numbers and use
 	// that to scanf them back in.
 	mn := mset.config.Name
-	pre := fmt.Sprintf(JetStreamAckT, mn, o.name)
+	pre := fmt.Sprintf(jsAckT, mn, o.name)
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d", pre)
 	ackSubj := fmt.Sprintf("%s.*.*.*.*", pre)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
+		mset.mu.Unlock()
 		return nil, err
 	} else {
 		o.ackSub = sub
@@ -457,8 +460,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Setup the internal sub for next message requests.
 	if !o.isPushMode() {
-		o.nextMsgSubj = fmt.Sprintf(JetStreamRequestNextT, mn, o.name)
+		o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
+			mset.mu.Unlock()
 			o.Delete()
 			return nil, err
 		} else {
@@ -492,6 +496,21 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	go o.updateStateLoop()
 
 	return o, nil
+}
+
+// Created returns created time.
+func (o *Consumer) Created() time.Time {
+	o.mu.Lock()
+	created := o.created
+	o.mu.Unlock()
+	return created
+}
+
+// Internal to allow creation time to be restored.
+func (o *Consumer) setCreated(created time.Time) {
+	o.mu.Lock()
+	o.created = created
+	o.mu.Unlock()
 }
 
 // This will check for extended interest in a subject. If we have local interest we just return
@@ -716,9 +735,10 @@ func (o *Consumer) updateStateLoop() {
 func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.Lock()
 	info := &ConsumerInfo{
-		Stream: o.stream,
-		Name:   o.name,
-		Config: o.config,
+		Stream:  o.stream,
+		Name:    o.name,
+		Created: o.created,
+		Config:  o.config,
 		Delivered: SequencePair{
 			ConsumerSeq: o.dseq - 1,
 			StreamSeq:   o.sseq - 1,
@@ -1305,6 +1325,7 @@ func (o *Consumer) StreamSeqFromReply(reply string) uint64 {
 	return seq
 }
 
+// Grab encoded information in the reply subject for a delivered message.
 func (o *Consumer) ReplyInfo(reply string) (sseq, dseq, dcount uint64, ts int64) {
 	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq, &ts)
 	if err != nil || n != 4 {

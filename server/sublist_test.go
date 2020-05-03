@@ -673,11 +673,12 @@ func TestSubjectToken(t *testing.T) {
 			t.Fatalf("Expected token of %q, got %q", expected, token)
 		}
 	}
-	checkToken(subjectToken("foo.bar.baz.*", 0), "foo")
-	checkToken(subjectToken("foo.bar.baz.*", 1), "bar")
-	checkToken(subjectToken("foo.bar.baz.*", 2), "baz")
-	checkToken(subjectToken("foo.bar.baz.*", 3), "*")
-	checkToken(subjectToken("foo.bar.baz.*", 4), "")
+	checkToken(tokenAt("foo.bar.baz.*", 0), "")
+	checkToken(tokenAt("foo.bar.baz.*", 1), "foo")
+	checkToken(tokenAt("foo.bar.baz.*", 2), "bar")
+	checkToken(tokenAt("foo.bar.baz.*", 3), "baz")
+	checkToken(tokenAt("foo.bar.baz.*", 4), "*")
+	checkToken(tokenAt("foo.bar.baz.*", 5), "")
 }
 
 func TestSublistBadSubjectOnRemove(t *testing.T) {
