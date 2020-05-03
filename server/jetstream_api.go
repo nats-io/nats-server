@@ -280,7 +280,7 @@ type JSApiConsumersResponse struct {
 	Total     int       `json:"total"`
 	Offset    int       `json:"offset"`
 	Limit     int       `json:"limit"`
-	Consumers []string  `json:"streams"`
+	Consumers []string  `json:"consumers"`
 }
 
 // JSApiConsumerListResponse.
@@ -289,7 +289,7 @@ type JSApiConsumerListResponse struct {
 	Total     int             `json:"total"`
 	Offset    int             `json:"offset"`
 	Limit     int             `json:"limit"`
-	Consumers []*ConsumerInfo `json:"streams"`
+	Consumers []*ConsumerInfo `json:"consumers"`
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.
