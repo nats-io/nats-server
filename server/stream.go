@@ -204,6 +204,9 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if !isValidName(config.Name) {
 		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '.', '*', '>'")
 	}
+	if len(config.Name) > JSMaxNameLen {
+		return StreamConfig{}, fmt.Errorf("stream name is too long, maximum allowed is %d", JSMaxNameLen)
+	}
 	cfg := *config
 
 	// TODO(dlc) - check config for conflicts, e.g replicas > 1 in single server mode.

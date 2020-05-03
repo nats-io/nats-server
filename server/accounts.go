@@ -1178,6 +1178,14 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	}
 }
 
+// Internal check to see if a service import exists.
+func (a *Account) serviceImportExists(dest *Account, from string) bool {
+	a.mu.RLock()
+	dup := a.imports.services[from]
+	a.mu.RUnlock()
+	return dup != nil
+}
+
 // Add a service import.
 // This does no checks and should only be called by the msg processing code. Use
 // AddServiceImport from above if responding to user input or config changes, etc.
@@ -1185,13 +1193,13 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	rt := Singleton
 	var lat *serviceLatency
 
-	dest.mu.Lock()
+	dest.mu.RLock()
 	se := dest.getServiceExport(to)
 	if se != nil {
 		rt = se.respType
 		lat = se.latency
 	}
-	dest.mu.Unlock()
+	dest.mu.RUnlock()
 
 	a.mu.Lock()
 	if a.imports.services == nil {

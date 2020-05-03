@@ -386,9 +386,18 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		created: time.Now().UTC(),
 	}
 	if isDurableConsumer(config) {
+		if len(config.Durable) > JSMaxNameLen {
+			mset.mu.Unlock()
+			return nil, fmt.Errorf("consumer name is too long, maximum allowed is %d", JSMaxNameLen)
+		}
 		o.name = config.Durable
 	} else {
-		o.name = createConsumerName()
+		for {
+			o.name = createConsumerName()
+			if _, ok := mset.consumers[o.name]; !ok {
+				break
+			}
+		}
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
@@ -1432,7 +1441,7 @@ func (o *Consumer) Name() string {
 const randConsumerNameLen = 6
 
 func createConsumerName() string {
-	var b [64]byte
+	var b [256]byte
 	rand.Read(b[:])
 	sha := sha256.New()
 	sha.Write(b[:])
