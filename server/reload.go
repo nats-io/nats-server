@@ -1083,7 +1083,13 @@ func (s *Server) reloadAuthorization() {
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
 				newAcc.js = acc.js
-				newAcc.imports.rrMap = acc.imports.rrMap
+
+				if len(acc.imports.rrMap) > 0 {
+					newAcc.imports.rrMap = make(map[string][]*serviceRespEntry)
+					for k, v := range acc.imports.rrMap {
+						newAcc.imports.rrMap[k] = v
+					}
+				}
 				acc.mu.RUnlock()
 
 				// Check if current and new config of this account are same

@@ -49,13 +49,25 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 }
 
+// FileStreamInfo allows us to remember created time.
+type FileStreamInfo struct {
+	Created time.Time
+	StreamConfig
+}
+
+// File ConsumerInfo is used for creating consumer stores.
+type FileConsumerInfo struct {
+	Created time.Time
+	ConsumerConfig
+}
+
 type fileStore struct {
 	mu      sync.RWMutex
 	state   StreamState
 	scb     func(int64)
 	ageChk  *time.Timer
 	syncTmr *time.Timer
-	cfg     StreamConfig
+	cfg     FileStreamInfo
 	fcfg    FileStoreConfig
 	lmb     *msgBlock
 	blks    []*msgBlock
@@ -156,6 +168,10 @@ const (
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
+	return newFileStoreWithCreated(fcfg, cfg, time.Now())
+}
+
+func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time) (*fileStore, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("name required")
 	}
@@ -192,7 +208,7 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 
 	fs := &fileStore{
 		fcfg: fcfg,
-		cfg:  cfg,
+		cfg:  FileStreamInfo{Created: created, StreamConfig: cfg},
 		wmb:  &bytes.Buffer{},
 		fch:  make(chan struct{}),
 		qch:  make(chan struct{}),
@@ -219,9 +235,13 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 	if err := fs.recoverMsgs(); err != nil {
 		return nil, err
 	}
-	// Write our meta data.
-	if err := fs.writeStreamMeta(); err != nil {
-		return nil, err
+
+	// Write our meta data iff does not exist.
+	meta := path.Join(fcfg.StoreDir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
+		if err := fs.writeStreamMeta(); err != nil {
+			return nil, err
+		}
 	}
 
 	go fs.flushLoop(fs.fch, fs.qch)
@@ -244,8 +264,9 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 
 	fs.mu.Lock()
+	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
 	old_cfg := fs.cfg
-	fs.cfg = *cfg
+	fs.cfg = new_cfg
 	if err := fs.writeStreamMeta(); err != nil {
 		fs.cfg = old_cfg
 		fs.mu.Unlock()
@@ -2020,7 +2041,7 @@ func (fs *fileStore) Snapshot() (io.ReadCloser, error) {
 type consumerFileStore struct {
 	mu     sync.Mutex
 	fs     *fileStore
-	cfg    *ConsumerConfig
+	cfg    *FileConsumerInfo
 	name   string
 	odir   string
 	ifn    string
@@ -2046,9 +2067,10 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	if err := os.MkdirAll(odir, 0755); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
+	csi := &FileConsumerInfo{ConsumerConfig: *cfg}
 	o := &consumerFileStore{
 		fs:   fs,
-		cfg:  cfg,
+		cfg:  csi,
 		name: name,
 		odir: odir,
 		ifn:  path.Join(odir, consumerState),
@@ -2062,8 +2084,13 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	}
 	o.hh = hh
 
-	if err := o.writeConsumerMeta(); err != nil {
-		return nil, err
+	// Write our meta data iff does not exist.
+	meta := path.Join(odir, JetStreamMetaFile)
+	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
+		csi.Created = time.Now().UTC()
+		if err := o.writeConsumerMeta(); err != nil {
+			return nil, err
+		}
 	}
 
 	fs.mu.Lock()

@@ -3183,7 +3183,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// For now these will only be on $JS.ACK prefixed reply subjects.
 	if len(creply) > 0 &&
 		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
-		bytes.HasPrefix(creply, []byte(jetStreamAckPre)) {
+		bytes.HasPrefix(creply, []byte(jsAckPre)) {
 		// We need to rewrite the subject and the reply.
 		if li := bytes.LastIndex(creply, []byte("@")); li != 0 && li < len(creply)-1 {
 			subj, creply = creply[li+1:], creply[:li]
