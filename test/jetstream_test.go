@@ -4253,12 +4253,35 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected to see 1 Stream, got %d", info.Streams)
 	}
 
-	// Make sure list works.
+	// Make sure list names works.
 	resp, err = nc.Request(server.JSApiStreams, nil, time.Second)
-	var listResponse server.JSApiStreamsResponse
+	var namesResponse server.JSApiStreamsResponse
+	if err = json.Unmarshal(resp.Data, &namesResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(namesResponse.Streams) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(namesResponse.Streams))
+	}
+	if namesResponse.Total != 1 {
+		t.Fatalf("Expected total to be 1 but got %d", namesResponse.Total)
+	}
+	if namesResponse.Offset != 0 {
+		t.Fatalf("Expected offset to be 0 but got %d", namesResponse.Offset)
+	}
+	if namesResponse.Limit != server.JSApiNamesLimit {
+		t.Fatalf("Expected limit to be %d but got %d", server.JSApiNamesLimit, namesResponse.Limit)
+	}
+	if namesResponse.Streams[0] != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, namesResponse.Streams[0])
+	}
+
+	// Now do detailed version.
+	resp, err = nc.Request(server.JSApiStreamList, nil, time.Second)
+	var listResponse server.JSApiStreamListResponse
 	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
 	if len(listResponse.Streams) != 1 {
 		t.Fatalf("Expected only 1 stream but got %d", len(listResponse.Streams))
 	}
@@ -4271,8 +4294,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if listResponse.Limit != server.JSApiListLimit {
 		t.Fatalf("Expected limit to be %d but got %d", server.JSApiListLimit, listResponse.Limit)
 	}
-	if listResponse.Streams[0] != msetCfg.Name {
-		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0])
+	if listResponse.Streams[0].Config.Name != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0].Config.Name)
 	}
 
 	// Now send some messages, then we can poll for info on this stream.
@@ -4571,7 +4594,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now grab the list of templates
-	var tListResp server.JSApiStreamTemplateListResponse
+	var tListResp server.JSApiStreamTemplatesResponse
 	resp, err = nc.Request(server.JSApiTemplates, nil, time.Second)
 	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
