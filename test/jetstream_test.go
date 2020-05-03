@@ -4271,8 +4271,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if listResponse.Limit != server.JSApiListLimit {
 		t.Fatalf("Expected limit to be %d but got %d", server.JSApiListLimit, listResponse.Limit)
 	}
-	if listResponse.Streams[0].Config.Name != msetCfg.Name {
-		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0].Config.Name)
+	if listResponse.Streams[0] != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0])
 	}
 
 	// Now send some messages, then we can poll for info on this stream.
@@ -4378,7 +4378,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected only 1 consumer but got %d", len(clResponse.Consumers))
 	}
 	// Now let's get info about our consumer.
-	cName := clResponse.Consumers[0].Name
+	cName := clResponse.Consumers[0]
 	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerInfoT, msetCfg.Name, cName), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4602,7 +4602,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if !tDeleteResp.Success || tDeleteResp.Error != nil {
-		t.Fatalf("Did not receive correct response")
+		t.Fatalf("Did not receive correct response: %+v", tDeleteResp.Error)
 	}
 
 	resp, err = nc.Request(server.JSApiTemplates, nil, time.Second)
@@ -4718,8 +4718,8 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 		}
 		// Make sure we get the right stream.
 		sname := fmt.Sprintf("STREAM-%06d", expectedOffset+1)
-		if listResponse.Streams[0].Config.Name != sname {
-			t.Fatalf("Expected stream %q to be first, got %q", sname, listResponse.Streams[0].Config.Name)
+		if listResponse.Streams[0] != sname {
+			t.Fatalf("Expected stream %q to be first, got %q", sname, listResponse.Streams[0])
 		}
 	}
 
@@ -4730,6 +4730,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
 }
 
+// FIXME(dlc) - server shutdown takes a long time with large consumers.
 func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -4755,7 +4756,7 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	consumersNum := 4 * server.JSApiListLimit
+	consumersNum := 2 * server.JSApiListLimit
 	for i := 1; i <= consumersNum; i++ {
 		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: fmt.Sprintf("d.%d", i)})
 		if err != nil {
@@ -5593,7 +5594,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	expectNotEnabled := func(resp *nats.Msg, err error) {
 		t.Helper()
 		if err != nil {
-			t.Fatalf("Unexpected error requesting enabled status")
+			t.Fatalf("Unexpected error requesting enabled status: %v", err)
 		}
 		if resp == nil {
 			t.Fatalf("No response, possible timeout?")

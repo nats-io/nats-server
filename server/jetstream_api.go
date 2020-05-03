@@ -34,12 +34,12 @@ const (
 
 	// JSApiCreateTemplate is the endpoint to create new stream templates.
 	// Will return JSON response.
-	JSApiTemplateCreate  = "$JS.API.TEMPLATE.CREATE.*"
-	JSApiTemplateCreateT = "$JS.API.TEMPLATE.CREATE.%s"
+	JSApiTemplateCreate  = "$JS.API.STREAM.TEMPLATE.CREATE.*"
+	JSApiTemplateCreateT = "$JS.API.STREAM.TEMPLATE.CREATE.%s"
 
 	// JSApiListTemplates is the endpoint to list all stream templates for this account.
 	// Will return JSON response.
-	JSApiTemplates = "$JS.API.TEMPLATES"
+	JSApiTemplates = "$JS.API.TEMPLATE.LIST"
 
 	// JSApiTemplateInfo is for obtaining general information about a named stream template.
 	// Will return JSON response.
@@ -63,7 +63,7 @@ const (
 
 	// JSApiListStreams is the endpoint to list all streams for this account.
 	// Will return JSON response.
-	JSApiStreams = "$JS.API.STREAMS"
+	JSApiStreams = "$JS.API.STREAM.LIST"
 
 	// JSApiStreamInfo is for obtaining general information about a named stream.
 	// Will return JSON response.
@@ -82,13 +82,13 @@ const (
 
 	// JSApiDeleteMsg is the endpoint to delete messages from a stream.
 	// Will return JSON response.
-	JSApiMsgDelete  = "$JS.API.MSG.DELETE.*"
-	JSApiMsgDeleteT = "$JS.API.MSG.DELETE.%s"
+	JSApiMsgDelete  = "$JS.API.STREAM.MSG.DELETE.*"
+	JSApiMsgDeleteT = "$JS.API.STREAM.MSG.DELETE.%s"
 
 	// JSApiMsgGet is the template for direct requests for a message by its stream sequence number.
 	// Will return JSON response.
-	JSApiMsgGet  = "$JS.API.MSG.GET.*"
-	JSApiMsgGetT = "$JS.API.MSG.GET.%s"
+	JSApiMsgGet  = "$JS.API.STREAM.MSG.GET.*"
+	JSApiMsgGetT = "$JS.API.STREAM.MSG.GET.%s"
 
 	// JSApiConsumerCreate is the endpoint to create ephemeral consumers for streams.
 	// Will return JSON response.
@@ -97,13 +97,13 @@ const (
 
 	// JSApiDurableConsumerCreate is the endpoint to create ephemeral consumers for streams.
 	// You need to include the stream and consumer name in the subject.
-	JSApiDurableCreate  = "$JS.API.DURABLE.CREATE.*.*"
-	JSApiDurableCreateT = "$JS.API.DURABLE.CREATE.%s.%s"
+	JSApiDurableCreate  = "$JS.API.CONSUMER.DURABLE.CREATE.*.*"
+	JSApiDurableCreateT = "$JS.API.CONSUMER.DURABLE.CREATE.%s.%s"
 
 	// JSApiConsumers is the endpoint to list all consumers for the stream.
 	// Will return JSON response.
-	JSApiConsumers  = "$JS.API.CONSUMERS.*"
-	JSApiConsumersT = "$JS.API.CONSUMERS.%s"
+	JSApiConsumers  = "$JS.API.CONSUMER.LIST.*"
+	JSApiConsumersT = "$JS.API.CONSUMER.LIST.%s"
 
 	// JSApiConsumerInfo is for obtaining general information about a consumer.
 	// Will return JSON response.
@@ -145,6 +145,9 @@ const (
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )
 
+// Maximum name lengths for streams, consumers and templates.
+const JSMaxNameLen = 256
+
 // Responses for API calls.
 
 // ApiError is included in all responses if there was an error.
@@ -178,9 +181,9 @@ type JSApiStreamInfoResponse struct {
 	*StreamInfo
 }
 
-// Maximum entries we will return.
+// Maximum entries we will return for streams or consumers lists.
 // TODO(dlc) - with header or request support could request chunked response.
-const JSApiListLimit = 256
+const JSApiListLimit = 1024
 
 type JSApiStreamsRequest struct {
 	Offset int `json:"offset"`
@@ -189,11 +192,11 @@ type JSApiStreamsRequest struct {
 // JSApiStreamsResponse list of streams.
 // A nil request is valid and means all streams.
 type JSApiStreamsResponse struct {
-	Error   *ApiError     `json:"error,omitempty"`
-	Total   int           `json:"total"`
-	Offset  int           `json:"offset"`
-	Limit   int           `json:"limit"`
-	Streams []*StreamInfo `json:"streams,omitempty"`
+	Error   *ApiError `json:"error,omitempty"`
+	Total   int       `json:"total"`
+	Offset  int       `json:"offset"`
+	Limit   int       `json:"limit"`
+	Streams []string  `json:"streams"`
 }
 
 // JSApiStreamPurgeResponse.
@@ -256,11 +259,11 @@ type JSApiConsumersRequest struct {
 
 // JSApiConsumersResponse.
 type JSApiConsumersResponse struct {
-	Error     *ApiError       `json:"error,omitempty"`
-	Total     int             `json:"total"`
-	Offset    int             `json:"offset"`
-	Limit     int             `json:"limit"`
-	Consumers []*ConsumerInfo `json:"streams,omitempty"`
+	Error     *ApiError `json:"error,omitempty"`
+	Total     int       `json:"total"`
+	Offset    int       `json:"offset"`
+	Limit     int       `json:"limit"`
+	Consumers []string  `json:"streams"`
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.
@@ -384,10 +387,6 @@ func consumerNameFromSubject(subject string) string {
 	return tokenAt(subject, 6)
 }
 
-func durableNameFromSubject(subject string) string {
-	return tokenAt(subject, 6)
-}
-
 // Request to create a new template.
 func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
@@ -405,7 +404,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	templateName := templateNameFromSubject(subject)
+	templateName := tokenAt(subject, 6)
 	if templateName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "template name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -626,8 +625,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	})
 
 	for _, mset := range msets[offset:] {
-		info := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
-		resp.Streams = append(resp.Streams, info)
+		resp.Streams = append(resp.Streams, mset.config.Name)
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
@@ -740,7 +738,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		return
 	}
 
-	stream := streamNameFromSubject(subject)
+	stream := tokenAt(subject, 6)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -785,7 +783,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	stream := streamNameFromSubject(subject)
+	stream := tokenAt(subject, 6)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -864,7 +862,12 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	streamName := streamNameFromSubject(subject)
+	var streamName string
+	if expectDurable {
+		streamName = tokenAt(subject, 6)
+	} else {
+		streamName = tokenAt(subject, 5)
+	}
 	if streamName != req.Stream {
 		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -878,7 +881,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 
 	if expectDurable {
-		if numTokens(subject) != 6 {
+		if numTokens(subject) != 7 {
 			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but no durable name set in subject"}
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -889,7 +892,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		consumerName := durableNameFromSubject(subject)
+		consumerName := tokenAt(subject, 7)
 		if consumerName != req.Config.Durable {
 			resp.Error = &ApiError{Code: 400, Description: "consumer name in subject does not match durable name in request"}
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -941,7 +944,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		offset = req.Offset
 	}
 
-	streamName := tokenAt(subject, 4)
+	streamName := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -954,7 +957,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		return strings.Compare(obs[i].name, obs[j].name) < 0
 	})
 	for _, o := range obs[offset:] {
-		resp.Consumers = append(resp.Consumers, o.Info())
+		resp.Consumers = append(resp.Consumers, o.Name())
 		if len(resp.Consumers) >= JSApiListLimit {
 			break
 		}

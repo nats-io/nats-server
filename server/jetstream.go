@@ -188,8 +188,10 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 
 	sys := s.SystemAccount()
 	for _, export := range allJsExports {
-		if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
-			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+		if !a.serviceImportExists(sys, export) {
+			if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
+				return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+			}
 		}
 	}
 	return nil
@@ -962,6 +964,9 @@ func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, 
 	}
 	if tc.Config.Name != "" {
 		return nil, fmt.Errorf("template config name should be empty")
+	}
+	if len(tc.Name) > JSMaxNameLen {
+		return nil, fmt.Errorf("template name is too long, maximum allowed is %d", JSMaxNameLen)
 	}
 
 	// FIXME(dlc) - Hacky
