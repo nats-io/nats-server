@@ -879,6 +879,7 @@ func (s *Sublist) Stats() *SublistStats {
 	// If this is called frequently, which it should not be, this could hurt performance.
 	if cache != nil {
 		tot, max := 0, 0
+		s.RLock()
 		for _, r := range s.cache {
 			l := len(r.psubs) + len(r.qsubs)
 			tot += l
@@ -886,6 +887,7 @@ func (s *Sublist) Stats() *SublistStats {
 				max = l
 			}
 		}
+		s.RUnlock()
 		st.MaxFanout = uint32(max)
 		if tot > 0 {
 			st.AvgFanout = float64(tot) / float64(cc)
