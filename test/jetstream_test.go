@@ -4217,6 +4217,13 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		}
 	}
 
+	checkNotFound := func(e *server.ApiError, description string) {
+		t.Helper()
+		if e == nil || e.Code != 404 || e.Description != description {
+			t.Fatalf("Did not get proper server error: %+v\n", e)
+		}
+	}
+
 	// Check that the name in config has to match the name in the subject
 	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, "BOB"), req, time.Second)
 	scResp.Error, scResp.StreamInfo = nil, nil
@@ -4238,7 +4245,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response")
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
 	// Now lookup info again and see that we can see the new stream.
@@ -4328,7 +4335,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &bResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkServerError(bResp.Error, "stream not found")
+	checkNotFound(bResp.Error, "stream not found")
 
 	// Now create an consumer.
 	delivery := nats.NewInbox()
@@ -4523,7 +4530,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if !dResp.Success || dResp.Error != nil {
-		t.Fatalf("Got a bad response %+v", dResp)
+		t.Fatalf("Got a bad response %+v", dResp.Error)
 	}
 
 	// Now grab stats again.
@@ -4671,8 +4678,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		if err = json.Unmarshal(resp.Data, &dResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if dResp.Error == nil || dResp.Error.Code != 500 {
-			t.Fatalf("Got a bad response, expected a non 400 response %+v", dResp.Error)
+		if dResp.Error == nil || dResp.Error.Code != 404 {
+			t.Fatalf("Got a bad response, expected a 404 response %+v", dResp.Error)
 		}
 	}
 
@@ -4694,7 +4701,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 	defer os.RemoveAll(config.StoreDir)
 
 	// Create 4X limit
-	streamsNum := 4 * server.JSApiListLimit
+	streamsNum := 4 * server.JSApiNamesLimit
 	for i := 1; i <= streamsNum; i++ {
 		name := fmt.Sprintf("STREAM-%06d", i)
 		cfg := server.StreamConfig{Name: name}
@@ -4746,9 +4753,9 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 		}
 	}
 
-	checkResp(reqList(0), server.JSApiListLimit, 0)
-	checkResp(reqList(server.JSApiListLimit), server.JSApiListLimit, server.JSApiListLimit)
-	checkResp(reqList(2*server.JSApiListLimit), server.JSApiListLimit, 2*server.JSApiListLimit)
+	checkResp(reqList(0), server.JSApiNamesLimit, 0)
+	checkResp(reqList(server.JSApiNamesLimit), server.JSApiNamesLimit, server.JSApiNamesLimit)
+	checkResp(reqList(2*server.JSApiNamesLimit), server.JSApiNamesLimit, 2*server.JSApiNamesLimit)
 	checkResp(reqList(streamsNum), 0, streamsNum)
 	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
 }
@@ -4779,7 +4786,7 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 	defer sub.Unsubscribe()
 	nc.Flush()
 
-	consumersNum := 2 * server.JSApiListLimit
+	consumersNum := 4 * server.JSApiNamesLimit
 	for i := 1; i <= consumersNum; i++ {
 		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: fmt.Sprintf("d.%d", i)})
 		if err != nil {
@@ -4818,7 +4825,11 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 		}
 	}
 
-	checkResp(reqList(0), server.JSApiListLimit, 0)
+	checkResp(reqList(0), server.JSApiNamesLimit, 0)
+	checkResp(reqList(server.JSApiNamesLimit), server.JSApiNamesLimit, server.JSApiNamesLimit)
+	checkResp(reqList(2*server.JSApiNamesLimit), server.JSApiNamesLimit, 2*server.JSApiNamesLimit)
+	checkResp(reqList(consumersNum), 0, consumersNum)
+	checkResp(reqList(consumersNum-22), 22, consumersNum-22)
 }
 
 func TestJetStreamUpdateStream(t *testing.T) {

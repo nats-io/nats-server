@@ -523,7 +523,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 	name := templateNameFromSubject(subject)
 	t, err := c.acc.LookupStreamTemplate(name)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -575,6 +575,13 @@ func (s *Server) jsonResponse(v interface{}) string {
 func jsError(err error) *ApiError {
 	return &ApiError{
 		Code:        500,
+		Description: err.Error(),
+	}
+}
+
+func jsNotFoundError(err error) *ApiError {
+	return &ApiError{
+		Code:        404,
 		Description: err.Error(),
 	}
 }
@@ -639,7 +646,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 	mset, err := c.acc.LookupStream(streamName)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 	}
 
@@ -757,7 +764,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	name := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -803,7 +810,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -843,7 +850,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	stream := tokenAt(subject, 6)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -888,7 +895,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	stream := tokenAt(subject, 6)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -927,11 +934,10 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
 	resp.Purged = mset.Purge()
 	resp.Success = true
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
@@ -977,7 +983,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 	stream, err := c.acc.LookupStream(req.Stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1049,7 +1055,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	streamName := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(streamName)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1096,7 +1102,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	streamName := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(streamName)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1137,14 +1143,14 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	consumer := consumerNameFromSubject(subject)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		resp.Error = &ApiError{Code: 400, Description: "consumer not found"}
+		resp.Error = &ApiError{Code: 404, Description: "consumer not found"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1171,14 +1177,14 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	consumer := consumerNameFromSubject(subject)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		resp.Error = &ApiError{Code: 400, Description: "consumer not found"}
+		resp.Error = &ApiError{Code: 404, Description: "consumer not found"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
