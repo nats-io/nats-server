@@ -1501,15 +1501,15 @@ func stopAndClearTimer(tp **time.Timer) {
 
 // Stop will shutdown  the consumer for the associated stream.
 func (o *Consumer) Stop() error {
-	return o.stop(false)
+	return o.stop(false, true)
 }
 
 // Delete will delete the consumer for the associated stream.
 func (o *Consumer) Delete() error {
-	return o.stop(true)
+	return o.stop(true, true)
 }
 
-func (o *Consumer) stop(dflag bool) error {
+func (o *Consumer) stop(dflag, doSignal bool) error {
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil {
@@ -1540,7 +1540,9 @@ func (o *Consumer) stop(dflag bool) error {
 	// TODO(dlc) - Should not be bad for small amounts of observables, maybe
 	// even into thousands. Above that should check what this might do
 	// performance wise.
-	mset.sg.Broadcast()
+	if doSignal {
+		mset.sg.Broadcast()
+	}
 	mset.unsubscribe(ackSub)
 	mset.unsubscribe(reqSub)
 	delete(mset.consumers, o.name)

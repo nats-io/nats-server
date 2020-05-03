@@ -816,6 +816,7 @@ func (jsa *jsAccount) delete() {
 	for _, ms := range streams {
 		ms.stop(false)
 	}
+
 	for _, t := range ts {
 		acc.DeleteStreamTemplate(t)
 	}
