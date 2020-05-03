@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -341,43 +340,6 @@ func testSublistRemoveWithLargeSubs(t *testing.T, s *Sublist) {
 	// Check len again
 	r = s.Match(subject)
 	verifyLen(r.psubs, plistMin*2-3, t)
-}
-
-func TestSublistRemoveByClient(t *testing.T) {
-	testSublistRemoveByClient(t, NewSublistWithCache())
-}
-
-func TestSublistRemoveByClientNoCache(t *testing.T) {
-	testSublistRemoveByClient(t, NewSublistNoCache())
-}
-
-func testSublistRemoveByClient(t *testing.T, s *Sublist) {
-	c := &client{}
-	for i := 0; i < 10; i++ {
-		subject := fmt.Sprintf("a.b.c.d.e.f.%d", i)
-		sub := &subscription{client: c, subject: []byte(subject)}
-		s.Insert(sub)
-	}
-	verifyCount(s, 10, t)
-	s.Insert(&subscription{client: c, subject: []byte(">")})
-	s.Insert(&subscription{client: c, subject: []byte("foo.*")})
-	s.Insert(&subscription{client: c, subject: []byte("foo"), queue: []byte("bar")})
-	s.Insert(&subscription{client: c, subject: []byte("foo"), queue: []byte("bar")})
-	s.Insert(&subscription{client: c, subject: []byte("foo.bar"), queue: []byte("baz")})
-	s.Insert(&subscription{client: c, subject: []byte("foo.bar"), queue: []byte("baz")})
-	verifyCount(s, 16, t)
-	genid := atomic.LoadUint64(&s.genid)
-	s.RemoveAllForClient(c)
-	verifyCount(s, 0, t)
-	// genid should be different
-	if genid == atomic.LoadUint64(&s.genid) {
-		t.Fatalf("GenId should have been changed after removal of subs")
-	}
-	if s.CacheEnabled() {
-		if cc := s.CacheCount(); cc != 0 {
-			t.Fatalf("Cache should be zero, got %d", cc)
-		}
-	}
 }
 
 func TestSublistInvalidSubjectsInsert(t *testing.T) {
