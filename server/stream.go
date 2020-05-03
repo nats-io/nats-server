@@ -680,7 +680,21 @@ func (mset *Stream) stop(delete bool) error {
 	}
 	mset.consumers = nil
 	mset.mu.Unlock()
+
 	c.closeConnection(ClientClosed)
+
+	// Clean up consumers.
+	for _, o := range obs {
+		// Second flag says do not broadcast to signal.
+		if err := o.stop(delete, false); err != nil {
+			return err
+		}
+	}
+
+	// Make sure we release them all here at once.
+	mset.mu.Lock()
+	mset.sg.Broadcast()
+	mset.mu.Unlock()
 
 	if mset.store == nil {
 		return nil
@@ -690,21 +704,10 @@ func (mset *Stream) stop(delete bool) error {
 		if err := mset.store.Delete(); err != nil {
 			return err
 		}
-		for _, o := range obs {
-			if err := o.Delete(); err != nil {
-				return err
-			}
-		}
-	} else {
-		if err := mset.store.Stop(); err != nil {
-			return err
-		}
-		for _, o := range obs {
-			if err := o.Stop(); err != nil {
-				return err
-			}
-		}
+	} else if err := mset.store.Stop(); err != nil {
+		return err
 	}
+
 	return nil
 }
 
