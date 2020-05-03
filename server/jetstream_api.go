@@ -39,17 +39,17 @@ const (
 
 	// JSApiListTemplates is the endpoint to list all stream templates for this account.
 	// Will return JSON response.
-	JSApiTemplates = "$JS.API.TEMPLATE.LIST"
+	JSApiTemplates = "$JS.API.STREAM.TEMPLATE.LIST"
 
 	// JSApiTemplateInfo is for obtaining general information about a named stream template.
 	// Will return JSON response.
-	JSApiTemplateInfo  = "$JS.API.TEMPLATE.INFO.*"
-	JSApiTemplateInfoT = "$JS.API.TEMPLATE.INFO.%s"
+	JSApiTemplateInfo  = "$JS.API.STREAM.TEMPLATE.INFO.*"
+	JSApiTemplateInfoT = "$JS.API.STREAM.TEMPLATE.INFO.%s"
 
 	// JSApiDeleteTemplate is the endpoint to delete stream templates.
 	// Will return JSON response.
-	JSApiTemplateDelete  = "$JS.API.TEMPLATE.DELETE.*"
-	JSApiTemplateDeleteT = "$JS.API.TEMPLATE.DELETE.%s"
+	JSApiTemplateDelete  = "$JS.API.STREAM.TEMPLATE.DELETE.*"
+	JSApiTemplateDeleteT = "$JS.API.STREAM.TEMPLATE.DELETE.%s"
 
 	// JSApiCreateStream is the endpoint to create new streams.
 	// Will return JSON response.
@@ -376,7 +376,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 
 // Helpers for token extraction.
 func templateNameFromSubject(subject string) string {
-	return tokenAt(subject, 5)
+	return tokenAt(subject, 6)
 }
 
 func streamNameFromSubject(subject string) string {
@@ -404,7 +404,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	templateName := tokenAt(subject, 6)
+	templateName := templateNameFromSubject(subject)
 	if templateName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "template name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
