@@ -901,6 +901,7 @@ func (s *Sublist) Stats() *SublistStats {
 	// If this is called frequently, which it should not be, this could hurt performance.
 	if cache != nil {
 		tot, max, clen := 0, 0, 0
+		s.RLock()
 		for _, r := range s.cache {
 			clen++
 			l := len(r.psubs) + len(r.qsubs)
@@ -909,6 +910,7 @@ func (s *Sublist) Stats() *SublistStats {
 				max = l
 			}
 		}
+		s.RUnlock()
 		st.totFanout = tot
 		st.cacheCnt = clen
 		st.MaxFanout = uint32(max)
