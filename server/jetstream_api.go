@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,118 +28,121 @@ import (
 
 // Request API subjects for JetStream.
 const (
-	// JetStreamEnabled allows a user to dynamically check if JetStream is enabled for an account.
-	// Will return +OK on success, otherwise will timeout.
-	JetStreamEnabled = "$JS.ENABLED"
-
-	// JetStreamInfo is for obtaining general information about JetStream for this account.
+	// JSApiInfo is for obtaining general information about JetStream for this account.
 	// Will return JSON response.
-	JetStreamInfo = "$JS.INFO"
+	JSApiAccountInfo = "$JS.API.INFO"
 
-	// JetStreamCreateTemplate is the endpoint to create new stream templates.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateTemplate  = "$JS.TEMPLATE.*.CREATE"
-	JetStreamCreateTemplateT = "$JS.TEMPLATE.%s.CREATE"
-
-	// JetStreamListTemplates is the endpoint to list all stream templates for this account.
-	// Will return json list of string on success and -ERR on failure.
-	JetStreamListTemplates = "$JS.TEMPLATE.LIST"
-
-	// JetStreamTemplateInfo is for obtaining general information about a named stream template.
+	// JSApiCreateTemplate is the endpoint to create new stream templates.
 	// Will return JSON response.
-	JetStreamTemplateInfo  = "$JS.TEMPLATE.*.INFO"
-	JetStreamTemplateInfoT = "$JS.TEMPLATE.%s.INFO"
+	JSApiTemplateCreate  = "$JS.API.TEMPLATE.CREATE.*"
+	JSApiTemplateCreateT = "$JS.API.TEMPLATE.CREATE.%s"
 
-	// JetStreamDeleteTemplate is the endpoint to delete stream templates.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteTemplate  = "$JS.TEMPLATE.*.DELETE"
-	JetStreamDeleteTemplateT = "$JS.TEMPLATE.%s.DELETE"
-
-	// JetStreamCreateStream is the endpoint to create new streams.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateStream  = "$JS.STREAM.*.CREATE"
-	JetStreamCreateStreamT = "$JS.STREAM.%s.CREATE"
-
-	// JetStreamUpdateStream is the endpoint to update existing streams.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamUpdateStream  = "$JS.STREAM.*.UPDATE"
-	JetStreamUpdateStreamT = "$JS.STREAM.%s.UPDATE"
-
-	// JetStreamListStreams is the endpoint to list all streams for this account.
-	// Will return json list of string on success and -ERR on failure.
-	JetStreamListStreams = "$JS.STREAM.LIST"
-
-	// JetStreamStreamInfo is for obtaining general information about a named stream.
+	// JSApiListTemplates is the endpoint to list all stream templates for this account.
 	// Will return JSON response.
-	JetStreamStreamInfo  = "$JS.STREAM.*.INFO"
-	JetStreamStreamInfoT = "$JS.STREAM.%s.INFO"
+	JSApiTemplates = "$JS.API.TEMPLATES"
 
-	// JetStreamDeleteStream is the endpoint to delete streams.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteStream  = "$JS.STREAM.*.DELETE"
-	JetStreamDeleteStreamT = "$JS.STREAM.%s.DELETE"
+	// JSApiTemplateInfo is for obtaining general information about a named stream template.
+	// Will return JSON response.
+	JSApiTemplateInfo  = "$JS.API.TEMPLATE.INFO.*"
+	JSApiTemplateInfoT = "$JS.API.TEMPLATE.INFO.%s"
 
-	// JetStreamPurgeStream is the endpoint to purge streams.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamPurgeStream  = "$JS.STREAM.*.PURGE"
-	JetStreamPurgeStreamT = "$JS.STREAM.%s.PURGE"
+	// JSApiDeleteTemplate is the endpoint to delete stream templates.
+	// Will return JSON response.
+	JSApiTemplateDelete  = "$JS.API.TEMPLATE.DELETE.*"
+	JSApiTemplateDeleteT = "$JS.API.TEMPLATE.DELETE.%s"
 
-	// JetStreamDeleteMsg is the endpoint to delete messages from a stream.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteMsg  = "$JS.STREAM.*.MSG.DELETE"
-	JetStreamDeleteMsgT = "$JS.STREAM.%s.MSG.DELETE"
+	// JSApiCreateStream is the endpoint to create new streams.
+	// Will return JSON response.
+	JSApiStreamCreate  = "$JS.API.STREAM.CREATE.*"
+	JSApiStreamCreateT = "$JS.API.STREAM.CREATE.%s"
 
-	// JetStreamCreateConsumer is the endpoint to create durable consumers for streams.
+	// JSApiUpdateStream is the endpoint to update existing streams.
+	// Will return JSON response.
+	JSApiStreamUpdate  = "$JS.API.STREAM.UPDATE.*"
+	JSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s"
+
+	// JSApiListStreams is the endpoint to list all streams for this account.
+	// Will return JSON response.
+	JSApiStreams = "$JS.API.STREAMS"
+
+	// JSApiStreamInfo is for obtaining general information about a named stream.
+	// Will return JSON response.
+	JSApiStreamInfo  = "$JS.API.STREAM.INFO.*"
+	JSApiStreamInfoT = "$JS.API.STREAM.INFO.%s"
+
+	// JSApiDeleteStream is the endpoint to delete streams.
+	// Will return JSON response.
+	JSApiStreamDelete  = "$JS.API.STREAM.DELETE.*"
+	JSApiStreamDeleteT = "$JS.API.STREAM.DELETE.%s"
+
+	// JSApiPurgeStream is the endpoint to purge streams.
+	// Will return JSON response.
+	JSApiStreamPurge  = "$JS.API.STREAM.PURGE.*"
+	JSApiStreamPurgeT = "$JS.API.STREAM.PURGE.%s"
+
+	// JSApiDeleteMsg is the endpoint to delete messages from a stream.
+	// Will return JSON response.
+	JSApiMsgDelete  = "$JS.API.MSG.DELETE.*"
+	JSApiMsgDeleteT = "$JS.API.MSG.DELETE.%s"
+
+	// JSApiMsgGet is the template for direct requests for a message by its stream sequence number.
+	// Will return JSON response.
+	JSApiMsgGet  = "$JS.API.MSG.GET.*"
+	JSApiMsgGetT = "$JS.API.MSG.GET.%s"
+
+	// JSApiConsumerCreate is the endpoint to create ephemeral consumers for streams.
+	// Will return JSON response.
+	JSApiConsumerCreate  = "$JS.API.CONSUMER.CREATE.*"
+	JSApiConsumerCreateT = "$JS.API.CONSUMER.CREATE.%s"
+
+	// JSApiDurableConsumerCreate is the endpoint to create ephemeral consumers for streams.
 	// You need to include the stream and consumer name in the subject.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamCreateConsumer  = "$JS.STREAM.*.CONSUMER.*.CREATE"
-	JetStreamCreateConsumerT = "$JS.STREAM.%s.CONSUMER.%s.CREATE"
+	JSApiDurableCreate  = "$JS.API.DURABLE.CREATE.*.*"
+	JSApiDurableCreateT = "$JS.API.DURABLE.CREATE.%s.%s"
 
-	// JetStreamCreateEphemeralConsumer is the endpoint to create ephemeral consumers for streams.
-	// Will return +OK <consumer name> on success and -ERR on failure.
-	JetStreamCreateEphemeralConsumer  = "$JS.STREAM.*.EPHEMERAL.CONSUMER.CREATE"
-	JetStreamCreateEphemeralConsumerT = "$JS.STREAM.%s.EPHEMERAL.CONSUMER.CREATE"
-
-	// JetStreamConsumers is the endpoint to list all consumers for the stream.
-	// Will return json list of string on success and -ERR on failure.
-	JetStreamConsumers  = "$JS.STREAM.*.CONSUMERS"
-	JetStreamConsumersT = "$JS.STREAM.%s.CONSUMERS"
-
-	// JetStreamConsumerInfo is for obtaining general information about a consumer.
+	// JSApiConsumers is the endpoint to list all consumers for the stream.
 	// Will return JSON response.
-	JetStreamConsumerInfo  = "$JS.STREAM.*.CONSUMER.*.INFO"
-	JetStreamConsumerInfoT = "$JS.STREAM.%s.CONSUMER.%s.INFO"
+	JSApiConsumers  = "$JS.API.CONSUMERS.*"
+	JSApiConsumersT = "$JS.API.CONSUMERS.%s"
 
-	// JetStreamDeleteConsumer is the endpoint to delete consumers.
-	// Will return +OK on success and -ERR on failure.
-	JetStreamDeleteConsumer  = "$JS.STREAM.*.CONSUMER.*.DELETE"
-	JetStreamDeleteConsumerT = "$JS.STREAM.%s.CONSUMER.%s.DELETE"
+	// JSApiConsumerInfo is for obtaining general information about a consumer.
+	// Will return JSON response.
+	JSApiConsumerInfo  = "$JS.API.CONSUMER.INFO.*.*"
+	JSApiConsumerInfoT = "$JS.API.CONSUMER.INFO.%s.%s"
 
-	// JetStreamAckT is the template for the ack message stream coming back from an consumer
+	// JSApiDeleteConsumer is the endpoint to delete consumers.
+	// Will return JSON response.
+	JSApiConsumerDelete  = "$JS.API.CONSUMER.DELETE.*.*"
+	JSApiConsumerDeleteT = "$JS.API.CONSUMER.DELETE.%s.%s"
+
+	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
+	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
+
+	///////////////////////
+	// FIXME(dlc)
+	///////////////////////
+
+	// JetStreamAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
-	JetStreamAckT   = "$JS.ACK.%s.%s"
-	jetStreamAckPre = "$JS.ACK."
+	// FIXME(dlc) - What do we really need here??
+	jsAckT   = "$JS.ACK.%s.%s"
+	jsAckPre = "$JS.ACK."
 
-	// JetStreamRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
-	JetStreamRequestNextT = "$JS.STREAM.%s.CONSUMER.%s.NEXT"
+	// JSAdvisoryPrefix is a prefix for all JetStream advisories.
+	JSAdvisoryPrefix = "$JS.EVENT.ADVISORY"
 
-	// JetStreamMsgBySeqT is the template for direct requests for a message by its stream sequence number.
-	JetStreamMsgBySeqT = "$JS.STREAM.%s.MSG.BYSEQ"
+	// JSMetricPrefix is a prefix for all JetStream metrics.
+	JSMetricPrefix = "$JS.EVENT.METRIC"
 
-	// JetStreamAdvisoryPrefix is a prefix for all JetStream advisories.
-	JetStreamAdvisoryPrefix = "$JS.EVENT.ADVISORY"
-
-	// JetStreamMetricPrefix is a prefix for all JetStream metrics.
-	JetStreamMetricPrefix = "$JS.EVENT.METRIC"
-
-	// JetStreamMetricConsumerAckPre is a metric containing ack latency.
-	JetStreamMetricConsumerAckPre = JetStreamMetricPrefix + ".CONSUMER_ACK"
+	// JSMetricConsumerAckPre is a metric containing ack latency.
+	JSMetricConsumerAckPre = "$JS.EVENT.METRIC.CONSUMER.ACK"
 
 	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
-	JetStreamAdvisoryConsumerMaxDeliveryExceedPre = JetStreamAdvisoryPrefix + ".MAX_DELIVERIES"
+	JSAdvisoryConsumerMaxDeliveryExceedPre = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES"
 
 	// JetStreamAPIAuditAdvisory is a notification about JetStream API access.
-	JetStreamAPIAuditAdvisory = JetStreamAdvisoryPrefix + ".API"
+	// FIXME - Add in details about who..
+	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )
 
 // Responses for API calls.
@@ -150,10 +154,10 @@ type ApiError struct {
 	Description string `json:"description,omitempty"`
 }
 
-// JSEnabledResponse is the response to see if JetStream is enabled for this account.
-type JSApiEnabledResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Enabled bool      `json:"enabled"`
+// JSApiAccountInfoResponse reports back information on jetstream for this account.
+type JSApiAccountInfoResponse struct {
+	Error *ApiError `json:"error,omitempty"`
+	*JetStreamAccountStats
 }
 
 // JSApiStreamCreateResponse stream creation.
@@ -174,10 +178,22 @@ type JSApiStreamInfoResponse struct {
 	*StreamInfo
 }
 
-// JSApiStreamListResponse list of streams.
-type JSApiStreamListResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Streams []string  `json:"streams,omitempty"`
+// Maximum entries we will return.
+// TODO(dlc) - with header or request support could request chunked response.
+const JSApiListLimit = 256
+
+type JSApiStreamsRequest struct {
+	Offset int `json:"offset"`
+}
+
+// JSApiStreamsResponse list of streams.
+// A nil request is valid and means all streams.
+type JSApiStreamsResponse struct {
+	Error   *ApiError     `json:"error,omitempty"`
+	Total   int           `json:"total"`
+	Offset  int           `json:"offset"`
+	Limit   int           `json:"limit"`
+	Streams []*StreamInfo `json:"streams,omitempty"`
 }
 
 // JSApiStreamPurgeResponse.
@@ -204,6 +220,17 @@ type JSApiMsgDeleteResponse struct {
 	Success bool      `json:"success,omitempty"`
 }
 
+// JSApiMsgGetRequest get a message request.
+type JSApiMsgGetRequest struct {
+	Seq uint64 `json:"seq"`
+}
+
+// JSApiMsgGetResponse.
+type JSApiMsgGetResponse struct {
+	Error   *ApiError  `json:"error,omitempty"`
+	Message *StoredMsg `json:"message,omitempty"`
+}
+
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
 	Error *ApiError `json:"error,omitempty"`
@@ -222,10 +249,18 @@ type JSApiConsumerInfoResponse struct {
 	*ConsumerInfo
 }
 
-// JSApiConsumerListResponse.
-type JSApiConsumerListResponse struct {
-	Error     *ApiError `json:"error,omitempty"`
-	Consumers []string  `json:"streams,omitempty"`
+// JSApiConsumersRequest
+type JSApiConsumersRequest struct {
+	Offset int `json:"offset"`
+}
+
+// JSApiConsumersResponse.
+type JSApiConsumersResponse struct {
+	Error     *ApiError       `json:"error,omitempty"`
+	Total     int             `json:"total"`
+	Offset    int             `json:"offset"`
+	Limit     int             `json:"limit"`
+	Consumers []*ConsumerInfo `json:"streams,omitempty"`
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.
@@ -259,24 +294,24 @@ var (
 
 // For easier handling of exports and imports.
 var allJsExports = []string{
-	JetStreamEnabled,
-	JetStreamInfo,
-	JetStreamCreateTemplate,
-	JetStreamListTemplates,
-	JetStreamTemplateInfo,
-	JetStreamDeleteTemplate,
-	JetStreamCreateStream,
-	JetStreamUpdateStream,
-	JetStreamListStreams,
-	JetStreamStreamInfo,
-	JetStreamDeleteStream,
-	JetStreamPurgeStream,
-	JetStreamDeleteMsg,
-	JetStreamCreateConsumer,
-	JetStreamCreateEphemeralConsumer,
-	JetStreamConsumers,
-	JetStreamConsumerInfo,
-	JetStreamDeleteConsumer,
+	JSApiAccountInfo,
+	JSApiTemplateCreate,
+	JSApiTemplates,
+	JSApiTemplateInfo,
+	JSApiTemplateDelete,
+	JSApiStreamCreate,
+	JSApiStreamUpdate,
+	JSApiStreams,
+	JSApiStreamInfo,
+	JSApiStreamDelete,
+	JSApiStreamPurge,
+	JSApiMsgDelete,
+	JSApiMsgGet,
+	JSApiConsumerCreate,
+	JSApiDurableCreate,
+	JSApiConsumers,
+	JSApiConsumerInfo,
+	JSApiConsumerDelete,
 }
 
 func (s *Server) setJetStreamExportSubs() error {
@@ -284,24 +319,24 @@ func (s *Server) setJetStreamExportSubs() error {
 		subject string
 		handler msgHandler
 	}{
-		{JetStreamEnabled, s.isJsEnabledRequest},
-		{JetStreamInfo, s.jsAccountInfoRequest},
-		{JetStreamCreateTemplate, s.jsCreateTemplateRequest},
-		{JetStreamListTemplates, s.jsTemplateListRequest},
-		{JetStreamTemplateInfo, s.jsTemplateInfoRequest},
-		{JetStreamDeleteTemplate, s.jsTemplateDeleteRequest},
-		{JetStreamCreateStream, s.jsCreateStreamRequest},
-		{JetStreamUpdateStream, s.jsStreamUpdateRequest},
-		{JetStreamListStreams, s.jsStreamListRequest},
-		{JetStreamStreamInfo, s.jsStreamInfoRequest},
-		{JetStreamDeleteStream, s.jsStreamDeleteRequest},
-		{JetStreamPurgeStream, s.jsStreamPurgeRequest},
-		{JetStreamDeleteMsg, s.jsMsgDeleteRequest},
-		{JetStreamCreateConsumer, s.jsCreateConsumerRequest},
-		{JetStreamCreateEphemeralConsumer, s.jsCreateEphemeralConsumerRequest},
-		{JetStreamConsumers, s.jsConsumersRequest},
-		{JetStreamConsumerInfo, s.jsConsumerInfoRequest},
-		{JetStreamDeleteConsumer, s.jsConsumerDeleteRequest},
+		{JSApiAccountInfo, s.jsAccountInfoRequest},
+		{JSApiTemplateCreate, s.jsTemplateCreateRequest},
+		{JSApiTemplates, s.jsTemplateListRequest},
+		{JSApiTemplateInfo, s.jsTemplateInfoRequest},
+		{JSApiTemplateDelete, s.jsTemplateDeleteRequest},
+		{JSApiStreamCreate, s.jsStreamCreateRequest},
+		{JSApiStreamUpdate, s.jsStreamUpdateRequest},
+		{JSApiStreams, s.jsStreamListRequest},
+		{JSApiStreamInfo, s.jsStreamInfoRequest},
+		{JSApiStreamDelete, s.jsStreamDeleteRequest},
+		{JSApiStreamPurge, s.jsStreamPurgeRequest},
+		{JSApiMsgDelete, s.jsMsgDeleteRequest},
+		{JSApiMsgGet, s.jsMsgGetRequest},
+		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
+		{JSApiDurableCreate, s.jsDurableCreateRequest},
+		{JSApiConsumers, s.jsConsumerListRequest},
+		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
+		{JSApiConsumerDelete, s.jsConsumerDeleteRequest},
 	}
 
 	for _, p := range pairs {
@@ -317,26 +352,12 @@ func (s *Server) sendAPIResponse(c *client, subject, reply, request, response st
 	s.sendJetStreamAPIAuditAdvisory(c, subject, request, response)
 }
 
-// Request to check if jetstream is enabled.
-func (s *Server) isJsEnabledRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
-		return
-	}
-	b, _ := json.MarshalIndent(&JSApiEnabledResponse{Enabled: c.acc.JetStreamEnabled()}, "", "  ")
-	s.sendAPIResponse(c, subject, reply, string(msg), string(b))
-}
-
-type JSApiAccountInfo struct {
-	Error *ApiError `json:"error,omitempty"`
-	*JetStreamAccountStats
-}
-
 // Request for current usage and limits for this account.
 func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiAccountInfo
+	var resp JSApiAccountInfoResponse
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 	} else {
@@ -350,8 +371,25 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	s.sendAPIResponse(c, subject, reply, string(msg), string(b))
 }
 
+// Helpers for token extraction.
+func templateNameFromSubject(subject string) string {
+	return tokenAt(subject, 5)
+}
+
+func streamNameFromSubject(subject string) string {
+	return tokenAt(subject, 5)
+}
+
+func consumerNameFromSubject(subject string) string {
+	return tokenAt(subject, 6)
+}
+
+func durableNameFromSubject(subject string) string {
+	return tokenAt(subject, 6)
+}
+
 // Request to create a new template.
-func (s *Server) jsCreateTemplateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
@@ -367,7 +405,7 @@ func (s *Server) jsCreateTemplateRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	templateName := subjectToken(subject, 2)
+	templateName := templateNameFromSubject(subject)
 	if templateName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "template name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -424,7 +462,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	name := subjectToken(subject, 2)
+	name := templateNameFromSubject(subject)
 	t, err := c.acc.LookupStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -456,7 +494,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	name := subjectToken(subject, 2)
+	name := templateNameFromSubject(subject)
 	err := c.acc.DeleteStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -484,10 +522,11 @@ func jsError(err error) *ApiError {
 }
 
 // Request to create a stream.
-func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
+
 	var resp JSApiStreamCreateResponse
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
@@ -500,7 +539,7 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	streamName := subjectToken(subject, 2)
+	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -513,7 +552,7 @@ func (s *Server) jsCreateStreamRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.StreamInfo = &StreamInfo{State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -534,7 +573,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	streamName := subjectToken(subject, 2)
+	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -552,7 +591,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	resp.StreamInfo = &StreamInfo{State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -561,16 +600,41 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamListResponse
+	var resp JSApiStreamsResponse
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	msets := c.acc.Streams()
-	for _, mset := range msets {
-		resp.Streams = append(resp.Streams, mset.Name())
+
+	var offset int
+	if !isEmptyRequest(msg) {
+		var req JSApiStreamsRequest
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = jsBadRequestErr
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		offset = req.Offset
 	}
+
+	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
+	// TODO(dlc) - If this list is long maybe do this in a Go routine?
+	msets := c.acc.Streams()
+	sort.Slice(msets, func(i, j int) bool {
+		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
+	})
+
+	for _, mset := range msets[offset:] {
+		info := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+		resp.Streams = append(resp.Streams, info)
+		if len(resp.Streams) >= JSApiListLimit {
+			break
+		}
+	}
+	resp.Total = len(msets)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -590,14 +654,14 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	name := subjectToken(subject, 2)
+	name := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(name)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.StreamInfo = &StreamInfo{State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -636,7 +700,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	stream := subjectToken(subject, 2)
+	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -676,7 +740,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		return
 	}
 
-	stream := subjectToken(subject, 2)
+	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -698,6 +762,52 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
+// Request to get a raw stream message.
+func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+	var resp JSApiMsgGetResponse
+	if !c.acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if len(msg) == 0 {
+		resp.Error = jsBadRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	var req JSApiMsgGetRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsBadRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	stream := streamNameFromSubject(subject)
+	mset, err := c.acc.LookupStream(stream)
+	if err != nil {
+		resp.Error = jsError(err)
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	subj, msg, ts, err := mset.store.LoadMsg(req.Seq)
+	if err != nil {
+		resp.Error = jsError(err)
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	resp.Message = &StoredMsg{
+		Subject:  subj,
+		Sequence: req.Seq,
+		Data:     msg,
+		Time:     time.Unix(0, ts),
+	}
+	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
 // Request to purge a stream.
 func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
@@ -714,7 +824,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	stream := subjectToken(subject, 2)
+	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
@@ -728,61 +838,20 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 }
 
 // Request to create a durable consumer.
-func (s *Server) jsCreateConsumerRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
-		return
-	}
-	var resp JSApiConsumerCreateResponse
-	if !c.acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	var req CreateConsumerRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	streamName := subjectToken(subject, 2)
-	if streamName != req.Stream {
-		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	stream, err := c.acc.LookupStream(req.Stream)
-	if err != nil {
-		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	// Now check we do not have a durable.
-	if req.Config.Durable == _EMPTY_ {
-		resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but a durable name was not set"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	consumerName := subjectToken(subject, 4)
-	if consumerName != req.Config.Durable {
-		resp.Error = &ApiError{Code: 400, Description: "consumer name in subject does not match durable name in request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	o, err := stream.AddConsumer(&req.Config)
-	if err != nil {
-		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	resp.ConsumerInfo = o.Info()
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+func (s *Server) jsDurableCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	s.jsConsumerCreate(sub, c, subject, reply, msg, true)
 }
 
-// Request to create an ephemeral consumer.
-func (s *Server) jsCreateEphemeralConsumerRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+// Request to create a consumer.
+func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	s.jsConsumerCreate(sub, c, subject, reply, msg, false)
+}
+
+func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply string, msg []byte, expectDurable bool) {
 	if c == nil || c.acc == nil {
 		return
 	}
+
 	var resp JSApiConsumerCreateResponse
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
@@ -795,7 +864,7 @@ func (s *Server) jsCreateEphemeralConsumerRequest(sub *subscription, c *client, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	streamName := subjectToken(subject, 2)
+	streamName := streamNameFromSubject(subject)
 	if streamName != req.Stream {
 		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -807,11 +876,36 @@ func (s *Server) jsCreateEphemeralConsumerRequest(sub *subscription, c *client, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	// Now check we do not have a durable.
-	if req.Config.Durable != _EMPTY_ {
-		resp.Error = &ApiError{Code: 400, Description: "consumer expected to be ephemeral but a durable name was set"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+
+	if expectDurable {
+		if numTokens(subject) != 6 {
+			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but no durable name set in subject"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Now check on requirements for durable request.
+		if req.Config.Durable == _EMPTY_ {
+			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but a durable name was not set"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		consumerName := durableNameFromSubject(subject)
+		if consumerName != req.Config.Durable {
+			resp.Error = &ApiError{Code: 400, Description: "consumer name in subject does not match durable name in request"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	} else {
+		if numTokens(subject) != 5 {
+			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be ephemeral but detected a durable name set in subject"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if req.Config.Durable != _EMPTY_ {
+			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be ephemeral but a durable name was set in request"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 	}
 
 	o, err := stream.AddConsumer(&req.Config)
@@ -825,32 +919,49 @@ func (s *Server) jsCreateEphemeralConsumerRequest(sub *subscription, c *client, 
 }
 
 // Request for the list of all consumers.
-func (s *Server) jsConsumersRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiConsumerListResponse
+	var resp JSApiConsumersResponse
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	var offset int
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+		var req JSApiConsumersRequest
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = jsBadRequestErr
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		offset = req.Offset
 	}
-	name := subjectToken(subject, 2)
-	mset, err := c.acc.LookupStream(name)
+
+	streamName := tokenAt(subject, 4)
+	mset, err := c.acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
 	obs := mset.Consumers()
-	for _, o := range obs {
-		resp.Consumers = append(resp.Consumers, o.Name())
+	sort.Slice(obs, func(i, j int) bool {
+		return strings.Compare(obs[i].name, obs[j].name) < 0
+	})
+	for _, o := range obs[offset:] {
+		resp.Consumers = append(resp.Consumers, o.Info())
+		if len(resp.Consumers) >= JSApiListLimit {
+			break
+		}
 	}
+	resp.Total = len(obs)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -871,14 +982,14 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	stream := subjectToken(subject, 2)
+	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	consumer := subjectToken(subject, 4)
+	consumer := consumerNameFromSubject(subject)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
 		resp.Error = &ApiError{Code: 400, Description: "consumer not found"}
@@ -905,14 +1016,14 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	stream := subjectToken(subject, 2)
+	stream := streamNameFromSubject(subject)
 	mset, err := c.acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	consumer := subjectToken(subject, 4)
+	consumer := consumerNameFromSubject(subject)
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
 		resp.Error = &ApiError{Code: 400, Description: "consumer not found"}
@@ -989,7 +1100,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 
 	ej, err := json.MarshalIndent(e, "", "  ")
 	if err == nil {
-		s.sendInternalAccountMsg(c.acc, JetStreamAPIAuditAdvisory, ej)
+		s.sendInternalAccountMsg(c.acc, JSAuditAdvisory, ej)
 	} else {
 		s.Warnf("JetStream could not marshal audit event for account %q: %v", c.acc.Name, err)
 	}

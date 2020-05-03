@@ -184,7 +184,7 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 	}
 
 	// In case the enabled import exists here.
-	a.removeServiceImport(JetStreamEnabled)
+	a.removeServiceImport(JSApiAccountInfo)
 
 	sys := s.SystemAccount()
 	for _, export := range allJsExports {
@@ -197,7 +197,7 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 
 // enableJetStreamEnabledServiceImportOnly will enable the single service import responder.
 // Should we do them all regardless?
-func (a *Account) enableJetStreamEnabledServiceImportOnly() error {
+func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
@@ -206,7 +206,7 @@ func (a *Account) enableJetStreamEnabledServiceImportOnly() error {
 		return fmt.Errorf("jetstream account not registered")
 	}
 	sys := s.SystemAccount()
-	if err := a.AddServiceImport(sys, JetStreamEnabled, _EMPTY_); err != nil {
+	if err := a.AddServiceImport(sys, JSApiAccountInfo, _EMPTY_); err != nil {
 		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 	}
 	return nil
@@ -254,7 +254,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 			}
 			// We will setup basic service imports to respond to
 			// requests if JS is enabled for this account.
-			if err := acc.enableJetStreamEnabledServiceImportOnly(); err != nil {
+			if err := acc.enableJetStreamInfoServiceImportOnly(); err != nil {
 				return err
 			}
 		}
@@ -451,6 +451,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 	}
 
+	// Now recover the streams.
 	fis, _ := ioutil.ReadDir(sdir)
 	for _, fi := range fis {
 		mdir := path.Join(sdir, fi.Name())
@@ -486,7 +487,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			continue
 		}
 
-		var cfg StreamConfig
+		var cfg FileStreamInfo
 		if err := json.Unmarshal(buf, &cfg); err != nil {
 			s.Warnf("  Error unmarshalling Stream metafile: %v", err)
 			continue
@@ -496,10 +497,13 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("  Error adding Stream %q to Template %q: %v", cfg.Name, cfg.Template, err)
 			}
 		}
-		mset, err := a.AddStream(&cfg)
+		mset, err := a.AddStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating Stream %q: %v", cfg.Name, err)
 			continue
+		}
+		if !cfg.Created.IsZero() {
+			mset.setCreated(cfg.Created)
 		}
 
 		stats := mset.State()
@@ -527,16 +531,20 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("    Missing Consumer checksum for %q", metasum)
 				continue
 			}
-			var cfg ConsumerConfig
+			var cfg FileConsumerInfo
 			if err := json.Unmarshal(buf, &cfg); err != nil {
 				s.Warnf("    Error unmarshalling Consumer metafile: %v", err)
 				continue
 			}
-			obs, err := mset.AddConsumer(&cfg)
+			obs, err := mset.AddConsumer(&cfg.ConsumerConfig)
 			if err != nil {
 				s.Warnf("    Error adding Consumer: %v", err)
 				continue
 			}
+			if !cfg.Created.IsZero() {
+				obs.setCreated(cfg.Created)
+			}
+
 			if err := obs.readStoredState(); err != nil {
 				s.Warnf("    Error restoring Consumer state: %v", err)
 			}

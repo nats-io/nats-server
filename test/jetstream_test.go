@@ -390,12 +390,10 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-
 			msg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-
 			sseq, dseq, _, _ := o.ReplyInfo(msg.Reply)
 			if dseq != 1 {
 				t.Fatalf("Expected delivered seq of 1, got %d", dseq)
@@ -448,7 +446,7 @@ func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			_, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, subj, "d"), req, time.Second)
+			_, err = nc.Request(fmt.Sprintf(server.JSApiConsumerCreateT, subj), req, time.Second)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -653,7 +651,7 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		resp, _ := nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, cfg.Name), req, time.Second)
+		resp, _ := nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, cfg.Name), req, time.Second)
 		var scResp server.JSApiStreamCreateResponse
 		if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -664,10 +662,10 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 		}
 	}
 
-	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{"foo.bar."}})
-	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".."}})
-	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".*"}})
-	expectAPIErr(server.StreamConfig{Name: "S", Subjects: []string{".>"}})
+	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{"foo.bar."}})
+	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{".."}})
+	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{".*"}})
+	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{".>"}})
 }
 
 func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
@@ -2046,6 +2044,8 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	}
 	defer mset.Delete()
 
+	streamCreated := mset.Created()
+
 	dsubj := "D.TO"
 	max := 4
 
@@ -2057,6 +2057,10 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 		MaxDeliver:     max,
 	})
 	defer o.Delete()
+
+	consumerCreated := o.Created()
+	// For calculation of consumer created times below.
+	time.Sleep(5 * time.Millisecond)
 
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -2140,6 +2144,24 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 
 	// Now we should have max times three on our sub.
 	checkSubPending(max * 3)
+
+	// Now do some checks on created timestamps.
+	mset, err = s.GlobalAccount().LookupStream(mname)
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", mname)
+	}
+	if mset.Created() != streamCreated {
+		t.Fatalf("Stream creation time not restored, wanted %v, got %v", streamCreated, mset.Created())
+	}
+	o = mset.LookupConsumer("TO")
+	if o == nil {
+		t.Fatalf("Error looking up consumer: %v", err)
+	}
+	// Consumer created times can have a very small skew.
+	delta := o.Created().Sub(consumerCreated)
+	if delta > 5*time.Millisecond {
+		t.Fatalf("Consumer creation time not restored, wanted %v, got %v", consumerCreated, o.Created())
+	}
 }
 
 func TestJetStreamDeleteConsumerAndServerRestart(t *testing.T) {
@@ -2804,8 +2826,8 @@ func TestJetStreamMetadata(t *testing.T) {
 		name    string
 		mconfig *server.StreamConfig
 	}{
-		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
-		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Retention: server.WorkQueuePolicy, Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Retention: server.WorkQueuePolicy, Storage: server.FileStorage}},
 	}
 
 	for _, c := range cases {
@@ -2846,17 +2868,26 @@ func TestJetStreamMetadata(t *testing.T) {
 
 				sseq, dseq, dcount, ts := o.ReplyInfo(m.Reply)
 
+				mreq := &server.JSApiMsgGetRequest{Seq: sseq}
+				req, err := json.Marshal(mreq)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
 				// Load the original message from the stream to verify ReplyInfo ts against stored message
-				smsgj, err := nc.Request(fmt.Sprintf(server.JetStreamMsgBySeqT, c.mconfig.Name), []byte(strconv.Itoa(int(sseq))), time.Second)
+				smsgj, err := nc.Request(fmt.Sprintf(server.JSApiMsgGetT, c.mconfig.Name), req, time.Second)
 				if err != nil {
 					t.Fatalf("Could not retrieve stream message: %v", err)
 				}
-				var smsg server.StoredMsg
-				err = json.Unmarshal(smsgj.Data, &smsg)
+
+				var resp server.JSApiMsgGetResponse
+				err = json.Unmarshal(smsgj.Data, &resp)
 				if err != nil {
 					t.Fatalf("Could not parse stream message: %v", err)
 				}
-
+				if resp.Message == nil || resp.Error != nil {
+					t.Fatalf("Did not receive correct response")
+				}
+				smsg := resp.Message
 				if ts != smsg.Time.UnixNano() {
 					t.Fatalf("Wrong timestamp in ReplyInfo for msg %d, expected %v got %v", i, ts, smsg.Time.UnixNano())
 				}
@@ -2869,8 +2900,27 @@ func TestJetStreamMetadata(t *testing.T) {
 				if dcount != 1 {
 					t.Fatalf("Expected delivery count to be 1, got %d", dcount)
 				}
-
 				m.Respond(server.AckAck)
+			}
+
+			// Now make sure we get right response when message is missing.
+			mreq := &server.JSApiMsgGetRequest{Seq: 1}
+			req, err := json.Marshal(mreq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Load the original message from the stream to verify ReplyInfo ts against stored message
+			rmsg, err := nc.Request(fmt.Sprintf(server.JSApiMsgGetT, c.mconfig.Name), req, time.Second)
+			if err != nil {
+				t.Fatalf("Could not retrieve stream message: %v", err)
+			}
+			var resp server.JSApiMsgGetResponse
+			err = json.Unmarshal(rmsg.Data, &resp)
+			if err != nil {
+				t.Fatalf("Could not parse stream message: %v", err)
+			}
+			if resp.Error == nil || resp.Error.Code != 500 || resp.Error.Description != "no message found" {
+				t.Fatalf("Did not get correct error response: %+v", resp.Error)
 			}
 		})
 	}
@@ -4120,22 +4170,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	// Should return true
-	resp, _ := nc.Request(server.JetStreamEnabled, nil, time.Second)
-	var enabledResp server.JSApiEnabledResponse
-	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !enabledResp.Enabled {
-		t.Fatalf("Expected JetStream to be enabled")
-	}
-
 	// This will get the current information about usage and limits for this account.
-	resp, err := nc.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var info server.JSApiAccountInfo
+	var info server.JSApiAccountInfoResponse
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4151,13 +4191,16 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, msetCfg.Name), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, msetCfg.Name), req, time.Second)
 	var scResp server.JSApiStreamCreateResponse
 	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if scResp.StreamInfo == nil || scResp.Error != nil {
 		t.Fatalf("Did not receive correct response")
+	}
+	if time.Since(scResp.Created) > time.Second {
+		t.Fatalf("Created time seems wrong: %v\n", scResp.Created)
 	}
 
 	checkBadRequest := func(e *server.ApiError, description string) {
@@ -4175,7 +4218,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Check that the name in config has to match the name in the subject
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateStreamT, "BOB"), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, "BOB"), req, time.Second)
 	scResp.Error, scResp.StreamInfo = nil, nil
 	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4189,7 +4232,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamUpdateStreamT, msetCfg.Name), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamUpdateT, msetCfg.Name), req, time.Second)
 	scResp.Error, scResp.StreamInfo = nil, nil
 	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4199,7 +4242,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now lookup info again and see that we can see the new stream.
-	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err = nc.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4211,16 +4254,25 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Make sure list works.
-	resp, err = nc.Request(server.JetStreamListStreams, nil, time.Second)
-	var listResponse server.JSApiStreamListResponse
+	resp, err = nc.Request(server.JSApiStreams, nil, time.Second)
+	var listResponse server.JSApiStreamsResponse
 	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if len(listResponse.Streams) != 1 {
 		t.Fatalf("Expected only 1 stream but got %d", len(listResponse.Streams))
 	}
-	if listResponse.Streams[0] != msetCfg.Name {
-		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0])
+	if listResponse.Total != 1 {
+		t.Fatalf("Expected total to be 1 but got %d", listResponse.Total)
+	}
+	if listResponse.Offset != 0 {
+		t.Fatalf("Expected offset to be 0 but got %d", listResponse.Offset)
+	}
+	if listResponse.Limit != server.JSApiListLimit {
+		t.Fatalf("Expected limit to be %d but got %d", server.JSApiListLimit, listResponse.Limit)
+	}
+	if listResponse.Streams[0].Config.Name != msetCfg.Name {
+		t.Fatalf("Expected to get %q, but got %q", msetCfg.Name, listResponse.Streams[0].Config.Name)
 	}
 
 	// Now send some messages, then we can poll for info on this stream.
@@ -4229,7 +4281,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		nc.Request("foo", []byte("WELCOME JETSTREAM"), time.Second)
 	}
 
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamStreamInfoT, msetCfg.Name), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, msetCfg.Name), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4240,9 +4292,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if msi.State.Msgs != uint64(toSend) {
 		t.Fatalf("Expected to get %d msgs, got %d", toSend, msi.State.Msgs)
 	}
+	if time.Since(msi.Created) > time.Second {
+		t.Fatalf("Created time seems wrong: %v\n", msi.Created)
+	}
 
 	// Looking up one that is not there should yield an error.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamStreamInfoT, "BOB"), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "BOB"), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4262,7 +4317,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerCreateT, msetCfg.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4276,7 +4331,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	sub, _ := nc.SubscribeSync(delivery)
 	nc.Flush()
 
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerCreateT, msetCfg.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4287,6 +4342,9 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
 		t.Fatalf("Got a bad response %+v", ccResp)
 	}
+	if time.Since(ccResp.Created) > time.Second {
+		t.Fatalf("Created time seems wrong: %v\n", ccResp.Created)
+	}
 
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
@@ -4296,7 +4354,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	})
 
 	// Check that we get an error if the stream name in the subject does not match the config.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, "BOB"), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerCreateT, "BOB"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4307,12 +4365,12 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// Since we do not have interest this should have failed.
 	checkBadRequest(ccResp.Error, "stream name in subject does not match request")
 
-	// Get the list of all of the obervables for our stream.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumersT, msetCfg.Name), nil, time.Second)
+	// Get the list of all of the consumers for our stream.
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumersT, msetCfg.Name), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var clResponse server.JSApiConsumerListResponse
+	var clResponse server.JSApiConsumersResponse
 	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4320,8 +4378,8 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected only 1 consumer but got %d", len(clResponse.Consumers))
 	}
 	// Now let's get info about our consumer.
-	cName := clResponse.Consumers[0]
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamConsumerInfoT, msetCfg.Name, cName), nil, time.Second)
+	cName := clResponse.Consumers[0].Name
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerInfoT, msetCfg.Name, cName), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4350,7 +4408,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now delete the consumer.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteConsumerT, msetCfg.Name, cName), nil, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiConsumerDeleteT, msetCfg.Name, cName), nil, time.Second)
 	var cdResp server.JSApiConsumerDeleteResponse
 	if err = json.Unmarshal(resp.Data, &cdResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4368,7 +4426,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateEphemeralConsumerT, msetCfg.Name), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerCreateT, msetCfg.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4376,10 +4434,10 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkBadRequest(ccResp.Error, "consumer expected to be ephemeral but a durable name was set")
+	checkBadRequest(ccResp.Error, "consumer expected to be ephemeral but a durable name was set in request")
 
 	// Now make sure we can create a durable on the subject with the proper name.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, obsReq.Config.Durable), req, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiDurableCreateT, msetCfg.Name, obsReq.Config.Durable), req, time.Second)
 	ccResp.Error, ccResp.ConsumerInfo = nil, nil
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4397,7 +4455,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, obsReq.Config.Durable), req2, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiDurableCreateT, msetCfg.Name, obsReq.Config.Durable), req2, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4407,24 +4465,13 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	checkBadRequest(ccResp.Error, "consumer expected to be durable but a durable name was not set")
 
-	// Now make sure we can't fake the consumer name.
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamCreateConsumerT, msetCfg.Name, "WRONG_CONSUMER_NAME"), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	ccResp.Error, ccResp.ConsumerInfo = nil, nil
-	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	checkBadRequest(ccResp.Error, "consumer name in subject does not match durable name in request")
-
 	// Now delete a msg.
 	dreq := server.JSApiMsgDeleteRequest{Seq: 2}
 	dreqj, err := json.Marshal(dreq)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteMsgT, msetCfg.Name), dreqj, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiMsgDeleteT, msetCfg.Name), dreqj, time.Second)
 	var delMsgResp server.JSApiMsgDeleteResponse
 	if err = json.Unmarshal(resp.Data, &delMsgResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4434,7 +4481,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now purge the stream.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamPurgeStreamT, msetCfg.Name), nil, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamPurgeT, msetCfg.Name), nil, time.Second)
 	var pResp server.JSApiStreamPurgeResponse
 	if err = json.Unmarshal(resp.Data, &pResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4447,7 +4494,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now delete the stream.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteStreamT, msetCfg.Name), nil, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, msetCfg.Name), nil, time.Second)
 	var dResp server.JSApiStreamDeleteResponse
 	if err = json.Unmarshal(resp.Data, &dResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4458,7 +4505,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Now grab stats again.
 	// This will get the current information about usage and limits for this account.
-	resp, err = nc.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err = nc.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4489,14 +4536,14 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Check that the name in config has to match the name in the subject
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, "BOB"), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiTemplateCreateT, "BOB"), req, time.Second)
 	var stResp server.JSApiStreamTemplateCreateResponse
 	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	checkBadRequest(stResp.Error, "template name in subject does not match request")
 
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiTemplateCreateT, template.Name), req, time.Second)
 	stResp.Error, stResp.StreamTemplateInfo = nil, nil
 	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4511,10 +4558,10 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	req, err = json.Marshal(template)
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %s", err)
 	}
 
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamCreateTemplateT, template.Name), req, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiTemplateCreateT, template.Name), req, time.Second)
 	stResp.Error, stResp.StreamTemplateInfo = nil, nil
 	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4525,7 +4572,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Now grab the list of templates
 	var tListResp server.JSApiStreamTemplateListResponse
-	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	resp, err = nc.Request(server.JSApiTemplates, nil, time.Second)
 	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4542,14 +4589,14 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Now delete one.
 	// Test bad name.
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "bob"), nil, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiTemplateDeleteT, "bob"), nil, time.Second)
 	var tDeleteResp server.JSApiStreamTemplateDeleteResponse
 	if err = json.Unmarshal(resp.Data, &tDeleteResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	checkServerError(tDeleteResp.Error, "template not found")
 
-	resp, _ = nc.Request(fmt.Sprintf(server.JetStreamDeleteTemplateT, "ss"), nil, time.Second)
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiTemplateDeleteT, "ss"), nil, time.Second)
 	tDeleteResp.Error = nil
 	if err = json.Unmarshal(resp.Data, &tDeleteResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4558,7 +4605,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Did not receive correct response")
 	}
 
-	resp, err = nc.Request(server.JetStreamListTemplates, nil, time.Second)
+	resp, err = nc.Request(server.JSApiTemplates, nil, time.Second)
 	tListResp.Error, tListResp.Templates = nil, nil
 	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4573,7 +4620,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	// First create a stream from the template
 	sendStreamMsg(t, nc, "kv.22", "derek")
 	// Last do info
-	resp, err = nc.Request(fmt.Sprintf(server.JetStreamTemplateInfoT, "kv"), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiTemplateInfoT, "kv"), nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4596,7 +4643,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		if len(arg) > 0 {
 			req = []byte(arg)
 		}
-		resp, err = nc.Request(fmt.Sprintf(server.JetStreamDeleteStreamT, "foo_bar_baz"), req, time.Second)
+		resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, "foo_bar_baz"), req, time.Second)
 		var dResp server.JSApiStreamDeleteResponse
 		if err = json.Unmarshal(resp.Data, &dResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -4610,6 +4657,144 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	checkEmptyReqArg("{}")
 	checkEmptyReqArg(" {} ")
 	checkEmptyReqArg(" { } ")
+}
+
+func TestJetStreamAPIStreamListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	// Create 4X limit
+	streamsNum := 4 * server.JSApiListLimit
+	for i := 1; i <= streamsNum; i++ {
+		name := fmt.Sprintf("STREAM-%06d", i)
+		cfg := server.StreamConfig{Name: name}
+		_, err := s.GlobalAccount().AddStream(&cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error adding stream: %v", err)
+		}
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&server.JSApiStreamsRequest{Offset: offset})
+		}
+		resp, err := nc.Request(server.JSApiStreams, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse server.JSApiStreamsResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Streams) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Streams))
+		}
+		if listResponse.Total != streamsNum {
+			t.Fatalf("Expected total to be %d but got %d", streamsNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+		if expectedLen < 1 {
+			return
+		}
+		// Make sure we get the right stream.
+		sname := fmt.Sprintf("STREAM-%06d", expectedOffset+1)
+		if listResponse.Streams[0].Config.Name != sname {
+			t.Fatalf("Expected stream %q to be first, got %q", sname, listResponse.Streams[0].Config.Name)
+		}
+	}
+
+	checkResp(reqList(0), server.JSApiListLimit, 0)
+	checkResp(reqList(server.JSApiListLimit), server.JSApiListLimit, server.JSApiListLimit)
+	checkResp(reqList(2*server.JSApiListLimit), server.JSApiListLimit, 2*server.JSApiListLimit)
+	checkResp(reqList(streamsNum), 0, streamsNum)
+	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
+}
+
+func TestJetStreamAPIConsumerListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected non-nil config")
+	}
+	defer os.RemoveAll(config.StoreDir)
+
+	sname := "MYSTREAM"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: sname})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync("d.*")
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	consumersNum := 4 * server.JSApiListLimit
+	for i := 1; i <= consumersNum; i++ {
+		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: fmt.Sprintf("d.%d", i)})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	reqListSubject := fmt.Sprintf(server.JSApiConsumersT, sname)
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&server.JSApiConsumersRequest{Offset: offset})
+		}
+		resp, err := nc.Request(reqListSubject, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse server.JSApiConsumersResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Consumers) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Consumers))
+		}
+		if listResponse.Total != consumersNum {
+			t.Fatalf("Expected total to be %d but got %d", consumersNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+	}
+
+	checkResp(reqList(0), server.JSApiListLimit, 0)
 }
 
 func TestJetStreamUpdateStream(t *testing.T) {
@@ -5376,31 +5561,14 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	nca := clientConnectToServerWithUP(t, opts, "ua", "pwd")
 	defer nca.Close()
 
-	resp, _ := nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	var enabledResp server.JSApiEnabledResponse
-	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !enabledResp.Enabled {
-		t.Fatalf("Expected JetStream to be enabled")
-	}
-
 	ncb := clientConnectToServerWithUP(t, opts, "ub", "pwd")
 	defer ncb.Close()
 
-	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !enabledResp.Enabled {
-		t.Fatalf("Expected JetStream to be enabled")
-	}
-
-	resp, err := ncb.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err := ncb.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var info server.JetStreamAccountStats
+	var info server.JSApiAccountInfoResponse
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -5430,17 +5598,17 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 		if resp == nil {
 			t.Fatalf("No response, possible timeout?")
 		}
-		var enabledResp server.JSApiEnabledResponse
-		if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+		var iResp server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &iResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if enabledResp.Enabled {
-			t.Fatalf("Expected to get a response indicating jetstream is not enabled for this account, got %q", resp.Data)
+		if iResp.Error == nil {
+			t.Fatalf("Expected an error on not enabled account")
 		}
 	}
 
 	// Check C is not enabled. We expect a negative response, not a timeout.
-	expectNotEnabled(ncc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond))
+	expectNotEnabled(ncc.Request(server.JSApiAccountInfo, nil, 250*time.Millisecond))
 
 	// Now do simple reload and check that we do the right thing. Testing enable and disable and also change in limits
 	newConf := []byte(`
@@ -5467,27 +5635,27 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Error on server reload: %v", err)
 	}
-	expectNotEnabled(nca.Request(server.JetStreamEnabled, nil, 250*time.Millisecond))
+	expectNotEnabled(nca.Request(server.JSApiAccountInfo, nil, 250*time.Millisecond))
 
-	resp, _ = ncb.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+	resp, _ = ncb.Request(server.JSApiAccountInfo, nil, 250*time.Millisecond)
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.Enabled {
-		t.Fatalf("Expected JetStream to be enabled")
+	if info.Error != nil {
+		t.Fatalf("Expected JetStream to be enabled, got %+v", info.Error)
 	}
 
-	resp, _ = ncc.Request(server.JetStreamEnabled, nil, 250*time.Millisecond)
-	if err := json.Unmarshal(resp.Data, &enabledResp); err != nil {
+	resp, _ = ncc.Request(server.JSApiAccountInfo, nil, 250*time.Millisecond)
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !enabledResp.Enabled {
-		t.Fatalf("Expected JetStream to be enabled")
+	if info.Error != nil {
+		t.Fatalf("Expected JetStream to be enabled, got %+v", info.Error)
 	}
 
 	// Now check that limits have been updated.
 	// Account B
-	resp, err = ncb.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err = ncb.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -5509,7 +5677,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	}
 
 	// Account C
-	resp, err = ncc.Request(server.JetStreamInfo, nil, time.Second)
+	resp, err = ncc.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
