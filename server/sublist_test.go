@@ -1,4 +1,4 @@
-// Copyright 2016-2019 The NATS Authors
+// Copyright 2016-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -348,6 +348,21 @@ func TestSublistInvalidSubjectsInsert(t *testing.T) {
 
 func TestSublistInvalidSubjectsInsertNoCache(t *testing.T) {
 	testSublistInvalidSubjectsInsert(t, NewSublistNoCache())
+}
+
+func TestSublistNoCacheRemoveBatch(t *testing.T) {
+	s := NewSublistNoCache()
+	s.Insert(newSub("foo"))
+	sub := newSub("bar")
+	s.Insert(sub)
+	s.RemoveBatch([]*subscription{sub})
+	// Now test that this did not turn on cache
+	for i := 0; i < 10; i++ {
+		s.Match("foo")
+	}
+	if s.CacheEnabled() {
+		t.Fatalf("Cache should not be enabled")
+	}
 }
 
 func testSublistInvalidSubjectsInsert(t *testing.T, s *Sublist) {

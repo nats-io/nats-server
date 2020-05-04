@@ -753,7 +753,8 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	// has a large number of subscriptions compared to this client. Quick and dirty testing
 	// though said just disabling all the time best for now.
 
-	// Turn off our cache.
+	// Turn off our cache if enabled.
+	wasEnabled := s.cache != nil
 	s.cache = nil
 	for _, sub := range subs {
 		if err := s.remove(sub, false, false); err != nil {
@@ -762,7 +763,9 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	}
 	// Turn caching back on here.
 	atomic.AddUint64(&s.genid, 1)
-	s.cache = make(map[string]*SublistResult)
+	if wasEnabled {
+		s.cache = make(map[string]*SublistResult)
+	}
 	return nil
 }
 
