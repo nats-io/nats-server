@@ -1822,6 +1822,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	s.mu.Lock()
 	info := s.copyInfo()
 	c.nonce = []byte(info.Nonce)
+	c.headers = info.Headers
 	s.totalClients++
 	s.mu.Unlock()
 

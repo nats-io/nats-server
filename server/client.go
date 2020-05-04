@@ -221,7 +221,7 @@ type client struct {
 	msgb    [msgScratchSize]byte
 	last    time.Time
 	parseState
-	hdrsOk bool
+	headers bool
 
 	rtt      time.Duration
 	rttStart time.Time
@@ -1739,7 +1739,6 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
 	info.ClientIP = c.host
 	info.MaxPayload = c.mpay
-	c.hdrsOk = info.Headers
 	// Generate the info json
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
@@ -2815,7 +2814,7 @@ func (c *client) checkForHeader(msg []byte) error {
 	if ml < hdrMagicLen || !bytes.Equal(msg[:hdrMagicLen], []byte(hdrMagic)) {
 		return ErrBadMsgHeader
 	}
-	if !c.hdrsOk {
+	if !c.headers {
 		return ErrMsgHeadersNotSupported
 	}
 	hendi := bytes.Index(msg[hdrMagicLen:], []byte(hdrTerm))
