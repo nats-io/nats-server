@@ -41,6 +41,10 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 	s := RunRandClientPortServer()
 	defer s.Shutdown()
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	if err := s.EnableJetStream(nil); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -112,6 +116,10 @@ func clientConnectWithOldRequest(t *testing.T, s *server.Server) *nats.Conn {
 func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 
 	// Global in simple setup should be enabled already.
 	if !s.GlobalAccount().JetStreamEnabled() {
@@ -186,6 +194,10 @@ func TestJetStreamAddStream(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -249,6 +261,10 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -469,6 +485,10 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -528,6 +548,10 @@ func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -590,6 +614,10 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -641,6 +669,10 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	// Client for API requests.
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
@@ -678,6 +710,10 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	acc := s.GlobalAccount()
 	mset, err := acc.AddStream(mconfig)
 	if err != nil {
@@ -711,6 +747,10 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 
 	acc := s.GlobalAccount()
 	mset, err := acc.AddStream(mconfig)
@@ -749,6 +789,10 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -781,6 +825,10 @@ func TestJetStreamNoAckStream(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			// We can use NoAck to suppress acks even when reply subjects are present.
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
@@ -816,6 +864,10 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -942,6 +994,10 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -1099,6 +1155,10 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1194,6 +1254,10 @@ func TestJetStreamSubjectFiltering(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1266,6 +1330,10 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1334,6 +1402,10 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -1447,6 +1519,10 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1510,6 +1586,10 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -1585,6 +1665,10 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -1704,6 +1788,10 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1804,6 +1892,10 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -1877,6 +1969,10 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -1959,6 +2055,10 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 		defer os.RemoveAll(config.StoreDir)
 	}
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	mname := "MYS-PULL"
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.MemoryStorage})
 	if err != nil {
@@ -2032,6 +2132,10 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
@@ -2354,6 +2458,10 @@ func TestJetStreamEphemeralConsumers(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -2427,6 +2535,10 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -2534,6 +2646,10 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -2633,6 +2749,10 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -2779,6 +2899,10 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -2834,6 +2958,10 @@ func TestJetStreamMetadata(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -2938,6 +3066,10 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -2997,11 +3129,9 @@ func TestJetStreamRedeliverAndLateAck(t *testing.T) {
 	defer s.Shutdown()
 
 	// Forced cleanup of all persisted state.
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "LA", Storage: server.MemoryStorage})
 	if err != nil {
@@ -3049,6 +3179,10 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -3124,6 +3258,10 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -3161,6 +3299,10 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -3253,6 +3395,10 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -3336,6 +3482,10 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
 
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
@@ -3469,6 +3619,10 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -3577,6 +3731,10 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -3635,6 +3793,10 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
 			mset, err := s.GlobalAccount().AddStream(c.mconfig)
 			if err != nil {
 				t.Fatalf("Unexpected error adding stream: %v", err)
@@ -3681,6 +3843,10 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 func TestJetStreamSystemLimits(t *testing.T) {
 	s := RunRandClientPortServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 
 	if _, _, err := s.JetStreamReservedResources(); err == nil {
 		t.Fatalf("Expected error requesting jetstream reserved resources when not enabled")
@@ -3804,6 +3970,10 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	gacc := s.GlobalAccount()
 
 	al := &server.JetStreamAccountLimits{
@@ -3917,6 +4087,10 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 func TestJetStreamStreamFileStorageTrackingAndLimits(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 
 	gacc := s.GlobalAccount()
 
@@ -4036,11 +4210,9 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	acc := s.GlobalAccount()
 
@@ -4160,11 +4332,9 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	defer s.Shutdown()
 
 	// Forced cleanup of all persisted state.
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	// Client for API requests.
 	nc := clientConnectToServer(t, s)
@@ -4694,11 +4864,9 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 	defer s.Shutdown()
 
 	// Forced cleanup of all persisted state.
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	// Create 4X limit
 	streamsNum := 4 * server.JSApiNamesLimit
@@ -4765,11 +4933,9 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 	defer s.Shutdown()
 
 	// Forced cleanup of all persisted state.
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	sname := "MYSTREAM"
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: sname})
@@ -5220,15 +5386,12 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-
 			s := RunBasicJetStreamServer()
 			defer s.Shutdown()
 
-			config := s.JetStreamConfig()
-			if config == nil {
-				t.Fatalf("Expected non-nil config")
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
 			}
-			defer os.RemoveAll(config.StoreDir)
 
 			cfg := &server.StreamConfig{Name: "foo", Storage: server.FileStorage}
 			mset, err := s.GlobalAccount().AddStream(cfg)
@@ -5291,11 +5454,9 @@ func TestJetStreamTemplateBasics(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	acc := s.GlobalAccount()
 
@@ -5365,11 +5526,9 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
-	config := s.JetStreamConfig()
-	if config == nil {
-		t.Fatalf("Expected non-nil config")
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
-	defer os.RemoveAll(config.StoreDir)
 
 	acc := s.GlobalAccount()
 
@@ -5589,6 +5748,10 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 		t.Fatalf("Expected JetStream to be enabled")
 	}
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	nca := clientConnectToServerWithUP(t, opts, "ua", "pwd")
 	defer nca.Close()
 
@@ -5742,6 +5905,10 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 
 	if !s.JetStreamEnabled() {
 		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
 	}
 
 	gb := int64(1024 * 1024 * 1024)
