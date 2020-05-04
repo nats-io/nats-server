@@ -1182,9 +1182,9 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	m1.merge(&m2)
 
 	// Clear the requesting client since we send the result here.
-	si.acc.mu.Lock()
+	acc.mu.Lock()
 	si.rc = nil
-	si.acc.mu.Unlock()
+	acc.mu.Unlock()
 
 	// Make sure we remove the entry here.
 	acc.removeServiceImport(si.from)

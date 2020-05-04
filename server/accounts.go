@@ -785,10 +785,12 @@ func (a *Account) sendLatencyResult(si *serviceImport, sl *ServiceLatency) {
 	sl.ID = a.nextEventID()
 	sl.Time = time.Now().UTC()
 
-	si.acc.mu.Lock()
-	a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
+	a.mu.Lock()
+	lsubj := si.latency.subject
 	si.rc = nil
-	si.acc.mu.Unlock()
+	a.mu.Unlock()
+
+	a.srv.sendInternalAccountMsg(a, lsubj, sl)
 }
 
 // Used to send a bad request metric when we do not have a reply subject
@@ -809,19 +811,29 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 		Status: 408,
 		Error:  "Request Timeout",
 	}
-	if si.rc != nil {
-		sl.Requestor = si.rc.getClientInfo(si.share)
+	a.mu.RLock()
+	rc := si.rc
+	share := si.share
+	ts := si.ts
+	a.mu.RUnlock()
+	if rc != nil {
+		sl.Requestor = rc.getClientInfo(share)
 	}
-	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
+	sl.RequestStart = time.Unix(0, ts-int64(sl.Requestor.RTT)).UTC()
 	a.sendLatencyResult(si, sl)
 }
 
 func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiReason) {
 	sl := &ServiceLatency{}
-	if si.rc != nil {
-		sl.Requestor = si.rc.getClientInfo(si.share)
+	a.mu.RLock()
+	rc := si.rc
+	share := si.share
+	ts := si.ts
+	a.mu.RUnlock()
+	if rc != nil {
+		sl.Requestor = rc.getClientInfo(share)
 	}
-	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
+	sl.RequestStart = time.Unix(0, ts-int64(sl.Requestor.RTT)).UTC()
 	if reason == rsiNoDelivery {
 		sl.Status = 503
 		sl.Error = "Service Unavailable"
@@ -1026,14 +1038,19 @@ func (a *Account) removeRespServiceImport(si *serviceImport, reason rsiReason) {
 	if si == nil {
 		return
 	}
+
 	a.mu.Lock()
 	delete(a.exports.responses, si.from)
 	dest := si.acc
 	to := si.to
-	if si.tracking && si.rc != nil {
+	tracking := si.tracking
+	rc := si.rc
+	a.mu.Unlock()
+
+	if tracking && rc != nil {
 		a.sendBackendErrorTrackingLatency(si, reason)
 	}
-	a.mu.Unlock()
+
 	dest.checkForReverseEntry(to, si, false)
 }
 

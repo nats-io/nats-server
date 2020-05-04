@@ -1959,7 +1959,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 		defer os.RemoveAll(config.StoreDir)
 	}
 
-	mname := "MYS"
+	mname := "MYS-PULL"
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.MemoryStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
