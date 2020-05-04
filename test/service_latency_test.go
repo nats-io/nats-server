@@ -728,8 +728,8 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	})
 	nc.Flush()
 
-	// Send 100 requests from random locations.
-	for i := 0; i < 100; i++ {
+	// Send 200 requests from random locations.
+	for i := 0; i < 200; i++ {
 		doRequest()
 	}
 
@@ -1099,7 +1099,7 @@ func TestServiceLatencyFailureReportingSingleServer(t *testing.T) {
 	})
 	nc.Flush()
 
-	nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+	nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 	sl = getMetricResult()
 	if sl.Status != 504 {
 		t.Fatalf("Expected to get a service timeout status [504], got %d", sl.Status)
@@ -1183,23 +1183,23 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 		}
 
 		// Proper request, but no responders.
-		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 		sl = getMetricResult()
 		if sl.Status != 503 {
 			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
 		}
 
-		// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+		// The service listener. Make it slow. 10ms is respThreshold, so take 3X
 		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 			msg.Respond([]byte("22 msgs"))
 		})
 		defer sub.Unsubscribe()
 		nc.Flush()
 		// Wait to propagate.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
-		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 		sl = getMetricResult()
 		if sl.Status != 504 {
 			t.Fatalf("Test %q, Expected to get a service timeout status [504], got %d", cs.desc, sl.Status)
@@ -1210,7 +1210,7 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 		sub.Unsubscribe()
 		nc.Flush()
 		// Wait to propagate.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
