@@ -1189,7 +1189,7 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
 		}
 
-		// The service listener. Make it slow. 10ms is respThreshold, so take 3X
+		// The service listener. Make it slow. 10ms is respThreshold, so make 3X
 		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
 			time.Sleep(30 * time.Millisecond)
 			msg.Respond([]byte("22 msgs"))
@@ -1343,7 +1343,7 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
 
 		// Proper request, but no responders.
-		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 		sl = getMetricResult()
 		if sl.Status != 503 {
 			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
@@ -1358,9 +1358,9 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		defer sub.Unsubscribe()
 		nc.Flush()
 		// Wait to propagate.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
-		nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
+		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 		sl = getMetricResult()
 		if sl.Status != 504 {
 			t.Fatalf("Test %q, Expected to get a service timeout status [504], got %d", cs.desc, sl.Status)
@@ -1372,7 +1372,7 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		sub.Unsubscribe()
 		nc.Flush()
 		// Wait to propagate.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
