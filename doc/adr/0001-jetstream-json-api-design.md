@@ -74,27 +74,9 @@ Stream Info Error:
 ```json
 {
   "type": "io.nats.jetstream.api.v1.stream_info",
-  "time": "2020-04-23T16:51:18.516363Z",
   "error": {
     "description": "unknown stream bob",
     "code": 400
-  },
-  "config": {
-    "name": "",
-    "retention": "",
-    "max_consumers": 0,
-    "max_msgs": 0,
-    "max_bytes": 0,
-    "max_age": 0,
-    "storage": "",
-    "num_replicas": 0
-  },
-  "state": {
-    "messages": 0,
-    "bytes": 0,
-    "first_seq": 0,
-    "last_seq": 0,
-    "consumer_count": 0
   }
 }
 ```
@@ -104,6 +86,8 @@ Here we have a minimally correct response with the additional error object.
 In the `error` struct we have `description` as a short human friendly explanation that should include enough context to
 identify what Stream or Consumer acted on and whatever else we feel will help the user while not sharing privileged account
 information.  `code` will be HTTP like, 400 human error, 500 server error etc.
+
+Ideally the error response includes a minimally valid body of what was requested but this can be very hard to implement correctly.
 
 Today the list API's just return `["ORDERS"]`, these will become:
 
@@ -124,15 +108,62 @@ With the same `error` treatment when some error happens.
 To keep clients on small devices viable we will standardise our responses as in the examples below. 
 
  * `+OK` everything is fine no additional context 
- * `+OK stream=ORDERS&sequence=10` everything is fine, we have additional data to pass using standard URL encoding
+ * `+OK "stream=ORDERS&sequence=10"` everything is fine, we have additional data to pass using standard URL encoding
  * `-ERR` something failed, we have no reason
- * `-ERR reason=reason%20for%20failure&stream=STREAM` something failed, we have additional context to provide using standard URL encoding
+ * `-ERR "reason=reason%20for%20failure&stream=STREAM"` something failed, we have additional context to provide using standard URL encoding
 
 Additional information will be needed for example when there are overlapping Streams and one of them fail. 
 
-## Consequences
+## Implementation
 
-Even with these changes in JavaScript we'll have decoding issues since once in JSON mode JavaScript always wants JSON data and these 
-`+OK` will trip it up.
+While implementing this in JetStream the following pattern emerged:
+
+```go
+type JSApiResponse struct {
+	Type  string    `json:"type"`
+	Error *ApiError `json:"error,omitempty"`
+}
+
+type ApiError struct {
+	Code        int    `json:"code"`
+	Description string `json:"description,omitempty"`
+}
+
+type JSApiConsumerCreateResponse struct {
+	JSApiResponse
+	*ConsumerInfo
+}
+```
+
+This creates error responses without the valid `ConsumerInfo` fields but this is by far the most workable solution.
+
+Validating this in JSON Schema draft 7 is a bit awkward, not impossible and specifically leads to some hard to parse validation errors, but it works.:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nats.io/schemas/jetstream/api/v1/consumer_create_response.json",
+  "description": "A response from the JetStream $JS.API.CONSUMER.CREATE API",
+  "title": "io.nats.jetstream.api.v1.consumer_create_response",
+  "type": "object",
+  "required": ["type"],
+  "oneOf": [
+    {
+      "$ref": "definitions.json#/definitions/consumer_info"
+    },
+    {
+      "$ref": "definitions.json#/definitions/error_response"
+    }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "io.nats.jetstream.api.v1.consumer_create_response"
+    }
+  }
+}
+```
+
+## Consequences
 
 URL Encoding does not carry data types and the response fields will need documenting.

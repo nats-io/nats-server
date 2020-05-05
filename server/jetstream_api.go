@@ -163,71 +163,101 @@ type ApiError struct {
 	Description string `json:"description,omitempty"`
 }
 
+// ApiResponse is a standard response from the JetStream JSON API
+type ApiResponse struct {
+	Type  string    `json:"type"`
+	Error *ApiError `json:"error,omitempty"`
+}
+
+// ApiPaged includes variables used to create paged responses from the JSON API
+type ApiPaged struct {
+	Total  int `json:"total"`
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+}
+
+// ApiPagedRequest includes parameters allowing specific pages to be requests from APIs responding with ApiPaged
+type ApiPagedRequest struct {
+	Offset int `json:"offset"`
+}
+
 // JSApiAccountInfoResponse reports back information on jetstream for this account.
 type JSApiAccountInfoResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*JetStreamAccountStats
 }
 
+const JSApiAccountInfoResponseType = "io.nats.jetstream.api.v1.account_info_response"
+
 // JSApiStreamCreateResponse stream creation.
 type JSApiStreamCreateResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*StreamInfo
 }
+
+const JSApiStreamCreateResponseType = "io.nats.jetstream.api.v1.stream_create_response"
 
 // JSApiStreamDeleteResponse stream removal.
 type JSApiStreamDeleteResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Success bool      `json:"success,omitempty"`
+	ApiResponse
+	Success bool `json:"success,omitempty"`
 }
+
+const JSApiStreamDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
 
 // JSApiStreamInfoResponse.
 type JSApiStreamInfoResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*StreamInfo
 }
+
+const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
 
 // Maximum entries we will return for streams or consumers lists.
 // TODO(dlc) - with header or request support could request chunked response.
 const JSApiNamesLimit = 1024
 const JSApiListLimit = 256
 
-type JSApiStreamsRequest struct {
-	Offset int `json:"offset"`
+type JSApiStreamNamesRequest struct {
+	ApiPagedRequest
 }
 
-// JSApiStreamsResponse list of streams.
+// JSApiStreamNamesResponse list of streams.
 // A nil request is valid and means all streams.
-type JSApiStreamsResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Total   int       `json:"total"`
-	Offset  int       `json:"offset"`
-	Limit   int       `json:"limit"`
-	Streams []string  `json:"streams"`
+type JSApiStreamNamesResponse struct {
+	ApiResponse
+	ApiPaged
+	Streams []string `json:"streams"`
 }
+
+const JSApiStreamNamesResponseType = "io.nats.jetstream.api.v1.stream_names_response"
 
 // JSApiStreamListResponse list of detailed stream information.
 // A nil request is valid and means all streams.
 type JSApiStreamListResponse struct {
-	Error   *ApiError     `json:"error,omitempty"`
-	Total   int           `json:"total"`
-	Offset  int           `json:"offset"`
-	Limit   int           `json:"limit"`
+	ApiResponse
+	ApiPaged
 	Streams []*StreamInfo `json:"streams"`
 }
 
+const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_response"
+
 // JSApiStreamPurgeResponse.
 type JSApiStreamPurgeResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Success bool      `json:"success,omitempty"`
-	Purged  uint64    `json:"purged,omitempty"`
+	ApiResponse
+	Success bool   `json:"success,omitempty"`
+	Purged  uint64 `json:"purged,omitempty"`
 }
+
+const JSApiStreamPurgeResponseType = "io.nats.jetstream.api.v1.stream_purge_response"
 
 // JSApiStreamUpdateResponse for updating a stream.
 type JSApiStreamUpdateResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*StreamInfo
 }
+
+const JSApiStreamUpdateResponseType = "io.nats.jetstream.api.v1.stream_update_response"
 
 // JSApiMsgDeleteRequest delete message request.
 type JSApiMsgDeleteRequest struct {
@@ -236,9 +266,11 @@ type JSApiMsgDeleteRequest struct {
 
 // JSApiMsgDeleteResponse.
 type JSApiMsgDeleteResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Success bool      `json:"success,omitempty"`
+	ApiResponse
+	Success bool `json:"success,omitempty"`
 }
+
+const JSApiMsgDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
 
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
@@ -247,86 +279,102 @@ type JSApiMsgGetRequest struct {
 
 // JSApiMsgGetResponse.
 type JSApiMsgGetResponse struct {
-	Error   *ApiError  `json:"error,omitempty"`
+	ApiResponse
 	Message *StoredMsg `json:"message,omitempty"`
 }
 
+const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_request"
+
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*ConsumerInfo
 }
+
+const JSApiConsumerCreateResponseType = "io.nats.jetstream.api.v1.consumer_create_response"
 
 // JSApiConsumerDeleteResponse.
 type JSApiConsumerDeleteResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Success bool      `json:"success,omitempty"`
+	ApiResponse
+	Success bool `json:"success,omitempty"`
 }
+
+const JSApiConsumerDeleteResponseType = "io.nats.jetstream.api.v1.consumer_delete_response"
 
 // JSApiConsumerInfoResponse.
 type JSApiConsumerInfoResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*ConsumerInfo
 }
 
+const JSApiConsumerInfoResponseType = "io.nats.jetstream.api.v1.consumer_info_response"
+
 // JSApiConsumersRequest
 type JSApiConsumersRequest struct {
-	Offset int `json:"offset"`
+	ApiPagedRequest
 }
 
-// JSApiConsumersResponse.
-type JSApiConsumersResponse struct {
-	Error     *ApiError `json:"error,omitempty"`
-	Total     int       `json:"total"`
-	Offset    int       `json:"offset"`
-	Limit     int       `json:"limit"`
-	Consumers []string  `json:"consumers"`
+// JSApiConsumerNamesResponse.
+type JSApiConsumerNamesResponse struct {
+	ApiResponse
+	ApiPaged
+	Consumers []string `json:"consumers"`
 }
+
+const JSApiConsumerNamesResponseType = "io.nats.jetstream.api.v1.consumer_names_response"
 
 // JSApiConsumerListResponse.
 type JSApiConsumerListResponse struct {
-	Error     *ApiError       `json:"error,omitempty"`
-	Total     int             `json:"total"`
-	Offset    int             `json:"offset"`
-	Limit     int             `json:"limit"`
+	ApiResponse
+	ApiPaged
 	Consumers []*ConsumerInfo `json:"consumers"`
 }
 
+const JSApiConsumerListResponseType = "io.nats.jetstream.api.v1.consumer_list_response"
+
 // JSApiStreamTemplateCreateResponse for creating templates.
 type JSApiStreamTemplateCreateResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*StreamTemplateInfo
 }
+
+const JSApiStreamTemplateCreateResponseType = "io.nats.jetstream.api.v1.stream_template_create_response"
 
 // JSApiStreamTemplateDeleteResponse
 type JSApiStreamTemplateDeleteResponse struct {
-	Error   *ApiError `json:"error,omitempty"`
-	Success bool      `json:"success,omitempty"`
+	ApiResponse
+	Success bool `json:"success,omitempty"`
 }
+
+const JSApiStreamTemplateDeleteResponseType = "io.nats.jetstream.api.v1.stream_template_delete_response"
 
 // JSApiStreamTemplateInfoResponse for information about stream templates.
 type JSApiStreamTemplateInfoResponse struct {
-	Error *ApiError `json:"error,omitempty"`
+	ApiResponse
 	*StreamTemplateInfo
 }
 
-// JSApiTemplatessRequest
-type JSApiTemplatessRequest struct {
-	Offset int `json:"offset"`
+const JSApiStreamTemplateInfoResponseType = "io.nats.jetstream.api.v1.stream_template_info_response"
+
+// JSApiStreamTemplatesRequest
+type JSApiStreamTemplatesRequest struct {
+	ApiPagedRequest
 }
 
-// JSApiStreamTemplateListResponse list of templates.
-type JSApiStreamTemplatesResponse struct {
-	Error     *ApiError `json:"error,omitempty"`
-	Total     int       `json:"total"`
-	Offset    int       `json:"offset"`
-	Limit     int       `json:"limit"`
-	Templates []string  `json:"streams,omitempty"`
+// JSApiStreamTemplateNamesResponse list of templates
+type JSApiStreamTemplateNamesResponse struct {
+	ApiResponse
+	ApiPaged
+	Templates []string `json:"streams"`
 }
+
+const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 var (
-	jsNotEnabledErr = &ApiError{Code: 503, Description: "jetstream not enabled for account"}
-	jsBadRequestErr = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEnabledErr      = &ApiError{Code: 503, Description: "jetstream not enabled for account"}
+	jsBadRequestErr      = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEmptyRequestErr = &ApiError{Code: 400, Description: "expected an empty request payload"}
+	jsInvalidJSONErr     = &ApiError{Code: 400, Description: "invalid JSON received in request"}
 )
 
 // For easier handling of exports and imports.
@@ -398,7 +446,8 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiAccountInfoResponse
+
+	var resp = JSApiAccountInfoResponse{ApiResponse: ApiResponse{Type: JSApiAccountInfoResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 	} else {
@@ -430,7 +479,8 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamTemplateCreateResponse
+
+	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -438,7 +488,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 	}
 	var cfg StreamTemplateConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -467,7 +517,8 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamTemplatesResponse
+
+	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -475,9 +526,9 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 	}
 	var offset int
 	if !isEmptyRequest(msg) {
-		var req JSApiTemplatessRequest
+		var req JSApiStreamTemplatesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -509,14 +560,15 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamTemplateInfoResponse
+
+	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -541,14 +593,15 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamTemplateDeleteResponse
+
+	var resp = JSApiStreamTemplateDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateDeleteResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -592,7 +645,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	var resp JSApiStreamCreateResponse
+	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -600,7 +653,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -626,7 +679,8 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamUpdateResponse
+
+	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -634,7 +688,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -665,7 +719,8 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamsResponse
+
+	var resp = JSApiStreamNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamNamesResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -674,9 +729,9 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 
 	var offset int
 	if !isEmptyRequest(msg) {
-		var req JSApiStreamsRequest
+		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -708,7 +763,8 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamListResponse
+
+	var resp = JSApiStreamListResponse{ApiResponse: ApiResponse{Type: JSApiStreamListResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -717,9 +773,9 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 	var offset int
 	if !isEmptyRequest(msg) {
-		var req JSApiStreamsRequest
+		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -750,14 +806,15 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamInfoResponse
+
+	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -796,14 +853,15 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamDeleteResponse
+
+	var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -829,20 +887,21 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiMsgDeleteResponse
+
+	var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) == 0 {
+	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgDeleteRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -874,20 +933,21 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiMsgGetResponse
+
+	var resp = JSApiMsgGetResponse{ApiResponse: ApiResponse{Type: JSApiMsgGetResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) == 0 {
+	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgGetRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -920,14 +980,15 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiStreamPurgeResponse
+
+	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -958,7 +1019,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		return
 	}
 
-	var resp JSApiConsumerCreateResponse
+	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -966,7 +1027,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 	var req CreateConsumerRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1034,7 +1095,8 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiConsumersResponse
+
+	var resp = JSApiConsumerNamesResponse{ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1045,7 +1107,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	if !isEmptyRequest(msg) {
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -1081,7 +1143,8 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiConsumerListResponse
+
+	var resp = JSApiConsumerListResponse{ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1092,7 +1155,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	if !isEmptyRequest(msg) {
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -1128,14 +1191,15 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiConsumerInfoResponse
+
+	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1163,14 +1227,15 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	if c == nil || c.acc == nil {
 		return
 	}
-	var resp JSApiConsumerDeleteResponse
+
+	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
