@@ -371,8 +371,10 @@ type JSApiStreamTemplateNamesResponse struct {
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 var (
-	jsNotEnabledErr = &ApiError{Code: 503, Description: "jetstream not enabled for account"}
-	jsBadRequestErr = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEnabledErr      = &ApiError{Code: 503, Description: "jetstream not enabled for account"}
+	jsBadRequestErr      = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEmptyRequestErr = &ApiError{Code: 400, Description: "expected an empty request payload"}
+	jsInvalidJSONErr     = &ApiError{Code: 400, Description: "invalid JSON received in request"}
 )
 
 // For easier handling of exports and imports.
@@ -486,7 +488,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 	}
 	var cfg StreamTemplateConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -526,7 +528,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamTemplatesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -566,7 +568,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -599,7 +601,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -651,7 +653,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -686,7 +688,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -729,7 +731,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -773,7 +775,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -812,7 +814,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -859,7 +861,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -892,14 +894,14 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) == 0 {
+	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgDeleteRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -938,14 +940,14 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if len(msg) == 0 {
+	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgGetRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -986,7 +988,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1025,7 +1027,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 	var req CreateConsumerRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsInvalidJSONErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1105,7 +1107,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	if !isEmptyRequest(msg) {
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -1153,7 +1155,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	if !isEmptyRequest(msg) {
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = jsBadRequestErr
+			resp.Error = jsInvalidJSONErr
 			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -1197,7 +1199,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1233,7 +1235,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	if !isEmptyRequest(msg) {
-		resp.Error = jsBadRequestErr
+		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
