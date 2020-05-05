@@ -4432,7 +4432,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Make sure list names works.
 	resp, err = nc.Request(server.JSApiStreams, nil, time.Second)
-	var namesResponse server.JSApiStreamsResponse
+	var namesResponse server.JSApiStreamNamesResponse
 	if err = json.Unmarshal(resp.Data, &namesResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4570,7 +4570,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var clResponse server.JSApiConsumersResponse
+	var clResponse server.JSApiConsumerNamesResponse
 	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4771,7 +4771,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// Now grab the list of templates
-	var tListResp server.JSApiStreamTemplatesResponse
+	var tListResp server.JSApiStreamTemplateNamesResponse
 	resp, err = nc.Request(server.JSApiTemplates, nil, time.Second)
 	if err = json.Unmarshal(resp.Data, &tListResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4887,7 +4887,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 		t.Helper()
 		var req []byte
 		if offset > 0 {
-			req, _ = json.Marshal(&server.JSApiStreamsRequest{Offset: offset})
+			req, _ = json.Marshal(&server.JSApiStreamNamesRequest{ApiPagedRequest: server.ApiPagedRequest{Offset: offset}})
 		}
 		resp, err := nc.Request(server.JSApiStreams, req, time.Second)
 		if err != nil {
@@ -4898,7 +4898,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 
 	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
 		t.Helper()
-		var listResponse server.JSApiStreamsResponse
+		var listResponse server.JSApiStreamNamesResponse
 		if err := json.Unmarshal(resp, &listResponse); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -4964,7 +4964,7 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 		t.Helper()
 		var req []byte
 		if offset > 0 {
-			req, _ = json.Marshal(&server.JSApiConsumersRequest{Offset: offset})
+			req, _ = json.Marshal(&server.JSApiConsumersRequest{ApiPagedRequest: server.ApiPagedRequest{Offset: offset}})
 		}
 		resp, err := nc.Request(reqListSubject, req, time.Second)
 		if err != nil {
@@ -4975,7 +4975,7 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 
 	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
 		t.Helper()
-		var listResponse server.JSApiConsumersResponse
+		var listResponse server.JSApiConsumerNamesResponse
 		if err := json.Unmarshal(resp, &listResponse); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
