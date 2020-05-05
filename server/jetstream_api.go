@@ -169,14 +169,14 @@ type ApiResponse struct {
 	Error *ApiError `json:"error,omitempty"`
 }
 
-// ApiPagedResponse includes variables used to create paged responses from the JSON API
-type ApiPagedResponse struct {
+// ApiPaged includes variables used to create paged responses from the JSON API
+type ApiPaged struct {
 	Total  int `json:"total"`
 	Offset int `json:"offset"`
 	Limit  int `json:"limit"`
 }
 
-// ApiPagedRequest includes parameters allowing specific pages to be requests from APIs responding with ApiPagedResponse
+// ApiPagedRequest includes parameters allowing specific pages to be requests from APIs responding with ApiPaged
 type ApiPagedRequest struct {
 	Offset int `json:"offset"`
 }
@@ -226,7 +226,7 @@ type JSApiStreamNamesRequest struct {
 // A nil request is valid and means all streams.
 type JSApiStreamNamesResponse struct {
 	ApiResponse
-	ApiPagedResponse
+	ApiPaged
 	Streams []string `json:"streams"`
 }
 
@@ -236,7 +236,7 @@ const JSApiStreamNamesResponseType = "io.nats.jetstream.api.v1.stream_names_resp
 // A nil request is valid and means all streams.
 type JSApiStreamListResponse struct {
 	ApiResponse
-	ApiPagedResponse
+	ApiPaged
 	Streams []*StreamInfo `json:"streams"`
 }
 
@@ -317,7 +317,7 @@ type JSApiConsumersRequest struct {
 // JSApiConsumerNamesResponse.
 type JSApiConsumerNamesResponse struct {
 	ApiResponse
-	ApiPagedResponse
+	ApiPaged
 	Consumers []string `json:"consumers"`
 }
 
@@ -326,7 +326,7 @@ const JSApiConsumerNamesResponseType = "io.nats.jetstream.api.v1.consumer_names_
 // JSApiConsumerListResponse.
 type JSApiConsumerListResponse struct {
 	ApiResponse
-	ApiPagedResponse
+	ApiPaged
 	Consumers []*ConsumerInfo `json:"consumers"`
 }
 
@@ -364,7 +364,7 @@ type JSApiStreamTemplatesRequest struct {
 // JSApiStreamTemplateNamesResponse list of templates
 type JSApiStreamTemplateNamesResponse struct {
 	ApiResponse
-	ApiPagedResponse
+	ApiPaged
 	Templates []string `json:"streams"`
 }
 
