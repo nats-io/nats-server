@@ -365,7 +365,7 @@ type JSApiStreamTemplatesRequest struct {
 type JSApiStreamTemplateNamesResponse struct {
 	ApiResponse
 	ApiPagedResponse
-	Templates []string `json:"streams,omitempty"`
+	Templates []string `json:"streams"`
 }
 
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
