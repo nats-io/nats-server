@@ -1835,6 +1835,68 @@ func (c *client) processPong() {
 	}
 }
 
+// Header pubs take form HPUB <subject> [reply] <hdr_len> <total_len>\r\n
+func (c *client) processHeaderPub(arg []byte) error {
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_HPUB_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	c.pa.arg = arg
+	switch len(args) {
+	case 3:
+		c.pa.subject = args[0]
+		c.pa.reply = nil
+		c.pa.hdr = parseSize(args[1])
+		c.pa.size = parseSize(args[2])
+		c.pa.szb = args[2]
+	case 4:
+		c.pa.subject = args[0]
+		c.pa.reply = args[1]
+		c.pa.hdr = parseSize(args[2])
+		c.pa.size = parseSize(args[3])
+		c.pa.szb = args[3]
+	default:
+		return fmt.Errorf("processHeaderPub Parse Error: '%s'", arg)
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processHeaderPub Bad or Missing Header Size: '%s'", arg)
+	}
+	// If number overruns an int64, parseSize() will have returned a negative value
+	if c.pa.size < 0 {
+		return fmt.Errorf("processHeaderPub Bad or Missing Total Size: '%s'", arg)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processHeaderPub Header Size larger then TotalSize: '%s'", arg)
+	}
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	// Use int64() to avoid int32 overrun...
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
+		return ErrMaxPayload
+	}
+	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
+		c.sendErr("Invalid Publish Subject")
+	}
+	return nil
+}
+
 func (c *client) processPub(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_PUB_ARGS][]byte{}
@@ -1882,7 +1944,6 @@ func (c *client) processPub(arg []byte) error {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
-
 	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
 		c.sendErr("Invalid Publish Subject")
 	}
