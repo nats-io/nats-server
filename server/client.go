@@ -2856,36 +2856,6 @@ func isReservedReply(reply []byte) bool {
 	return false
 }
 
-// Header constants for new msg header support.
-const (
-	hdrMarker    = "⚡NATS⚡"
-	hdrMagic     = "⚡NATS⚡/0.1\r\n"
-	hdrTerm      = "\r\n\r\n"
-	hdrMarkerLen = len(hdrMarker)
-	hdrMagicLen  = len(hdrMagic)
-	minHdrLen    = len(hdrMagic) + len(hdrTerm)
-)
-
-func (c *client) checkForHeader(msg []byte) error {
-	ml := len(msg)
-	// I think these are ok, possible collision for header but no big deal IMO.
-	if ml <= hdrMarkerLen {
-		return nil
-	}
-	if ml < hdrMagicLen || !bytes.Equal(msg[:hdrMagicLen], []byte(hdrMagic)) {
-		return ErrBadMsgHeader
-	}
-	if !c.headers {
-		return ErrMsgHeadersNotSupported
-	}
-	hendi := bytes.Index(msg[hdrMagicLen:], []byte(hdrTerm))
-	if hendi < 0 {
-		return ErrBadMsgHeader
-	}
-	c.pa.hdr = hendi + hdrMagicLen + len(hdrTerm)
-	return nil
-}
-
 // This will decide to call the client code or router code.
 func (c *client) processInboundMsg(msg []byte) {
 	switch c.kind {
