@@ -163,6 +163,7 @@ type Options struct {
 	Nkeys                 []*NkeyUser   `json:"-"`
 	Users                 []*User       `json:"-"`
 	Accounts              []*Account    `json:"-"`
+	NoAuthUser            string        `json:"-"`
 	SystemAccount         string        `json:"-"`
 	AllowNewAccounts      bool          `json:"-"`
 	Username              string        `json:"-"`
@@ -783,6 +784,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				o.resolverPreloads[key] = jwtstr
 			}
 		}
+	case "no_auth_user":
+		o.NoAuthUser = v.(string)
 	case "system_account", "system":
 		// Already processed at the beginning so we just skip them
 		// to not treat them as unknown values.

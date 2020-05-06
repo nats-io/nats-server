@@ -16,6 +16,7 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -383,11 +384,19 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 			// Already checked that the client didn't send a user in connect
 			// but we set it here to be able to identify it in the logs.
 			c.opts.Username = euser
-		} else if c.opts.Username != "" {
-			user, ok = s.users[c.opts.Username]
-			if !ok {
-				s.mu.Unlock()
-				return false
+		} else {
+			if c.kind == CLIENT && c.opts.Username == "" && s.opts.NoAuthUser != "" {
+				if u, exists := s.users[s.opts.NoAuthUser]; exists {
+					c.opts.Username = u.Username
+					c.opts.Password = u.Password
+				}
+			}
+			if c.opts.Username != "" {
+				user, ok = s.users[c.opts.Username]
+				if !ok {
+					s.mu.Unlock()
+					return false
+				}
 			}
 		}
 	}
@@ -692,4 +701,24 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 		return false
 	}
 	return true
+}
+
+func validateAuth(o *Options) error {
+	if o.NoAuthUser == "" {
+		return nil
+	}
+	if len(o.TrustedOperators) > 0 {
+		return fmt.Errorf("no_auth_user not compatible with Trusted Operator")
+	}
+	if o.Users == nil {
+		return fmt.Errorf(`no_auth_user: "%s" present, but users are not defined`, o.NoAuthUser)
+	}
+	for _, u := range o.Users {
+		if u.Username == o.NoAuthUser {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		`no_auth_user: "%s" not present as user in authorization block or account configuration`,
+		o.NoAuthUser)
 }
