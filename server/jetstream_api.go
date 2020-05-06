@@ -283,7 +283,7 @@ type JSApiMsgGetResponse struct {
 	Message *StoredMsg `json:"message,omitempty"`
 }
 
-const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_request"
+const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_response"
 
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
@@ -480,7 +480,13 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
+	var resp = JSApiStreamTemplateCreateResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType},
+		StreamTemplateInfo: &StreamTemplateInfo{
+			Streams: []string{},
+		},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -518,7 +524,11 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
+	var resp = JSApiStreamTemplateNamesResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType},
+		Templates:   []string{},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -561,7 +571,13 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
+	var resp = JSApiStreamTemplateInfoResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType},
+		StreamTemplateInfo: &StreamTemplateInfo{
+			Streams: []string{},
+		},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -764,7 +780,11 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	var resp = JSApiStreamListResponse{ApiResponse: ApiResponse{Type: JSApiStreamListResponseType}}
+	var resp = JSApiStreamListResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
+		Streams:     []*StreamInfo{},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1096,7 +1116,11 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	var resp = JSApiConsumerNamesResponse{ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType}}
+	var resp = JSApiConsumerNamesResponse{
+		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
+		Consumers:   []string{},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1144,7 +1168,11 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	var resp = JSApiConsumerListResponse{ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType}}
+	var resp = JSApiConsumerListResponse{
+		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
+		Consumers:   []*ConsumerInfo{},
+	}
+
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
