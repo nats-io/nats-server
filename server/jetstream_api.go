@@ -283,7 +283,7 @@ type JSApiMsgGetResponse struct {
 	Message *StoredMsg `json:"message,omitempty"`
 }
 
-const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_request"
+const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_response"
 
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
