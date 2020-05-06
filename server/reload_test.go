@@ -4121,3 +4121,37 @@ func TestLoggingReload(t *testing.T) {
 	check("on.log", tracingPresent)
 	check("off-post.log", tracingAbsent)
 }
+
+func TestReloadValidate(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		no_auth_user: a
+		authorization {
+			users [
+				{user: "a", password: "a"},
+				{user: "b", password: "b"}
+			]
+		}
+	`))
+	defer os.Remove(confFileName)
+	srv, _ := RunServerWithConfig(confFileName)
+	if srv == nil {
+		t.Fatal("Server did not start")
+	}
+	// Induce error by removing the user no_auth_user points to
+	changeCurrentConfigContentWithNewContent(t, confFileName, []byte(`
+		listen: "127.0.0.1:-1"
+		no_auth_user: a
+		authorization {
+			users [
+				{user: "b", password: "b"}
+			]
+		}
+	`))
+	if err := srv.Reload(); err == nil {
+		t.Fatal("Expected error on reload, got none")
+	} else if strings.HasPrefix(err.Error(), " no_auth_user:") {
+		t.Logf("Expected no_auth_user error, got different one %s", err)
+	}
+	srv.Shutdown()
+}
