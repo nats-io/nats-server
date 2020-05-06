@@ -752,6 +752,8 @@ func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
 
 // Subsz represents detail information on current connections.
 type Subsz struct {
+	ID  string    `json:"server_id"`
+	Now time.Time `json:"now"`
 	*SublistStats
 	Total  int         `json:"total"`
 	Offset int         `json:"offset"`
@@ -827,19 +829,21 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		}
 	}
 
-	s.mu.Lock()
-	gaccSl := s.gacc.sl
-	s.mu.Unlock()
+	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{gaccSl.Stats(), 0, offset, limit, nil}
+	sz := &Subsz{s.info.ID, time.Now(), slStats, 0, offset, limit, nil}
 
 	if subdetail {
-		// Now add in subscription's details
 		var raw [4096]*subscription
 		subs := raw[:0]
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
+			slStats.add(acc.sl.Stats())
+			acc.sl.localSubs(&subs)
+			return true
+		})
 
-		gaccSl.localSubs(&subs)
 		details := make([]SubDetail, len(subs))
 		i := 0
 		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
@@ -870,6 +874,12 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		}
 		sz.Subs = details[minoff:maxoff]
 		sz.Total = len(sz.Subs)
+	} else {
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
+			slStats.add(acc.sl.Stats())
+			return true
+		})
 	}
 
 	return sz, nil
