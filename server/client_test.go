@@ -195,7 +195,8 @@ func TestServerHeaderSupport(t *testing.T) {
 	opts := defaultServerOptions
 	opts.Port = -1
 	s := New(&opts)
-	_, _, l := newClientForServer(s)
+	c, _, l := newClientForServer(s)
+	defer c.close()
 
 	if !strings.HasPrefix(l, "INFO ") {
 		t.Fatalf("INFO response incorrect: %s\n", l)
@@ -211,7 +212,9 @@ func TestServerHeaderSupport(t *testing.T) {
 	opts.NoHeaderSupport = true
 	opts.Port = -1
 	s = New(&opts)
-	_, _, l = newClientForServer(s)
+	c, _, l = newClientForServer(s)
+	defer c.close()
+
 	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
 		t.Fatalf("Could not parse INFO json: %v\n", err)
 	}
