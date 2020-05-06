@@ -59,6 +59,18 @@ func runMonitorServer() *Server {
 	return RunServer(opts)
 }
 
+func runMonitorServerWithAccounts() *Server {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	aA := NewAccount("A")
+	aB := NewAccount("B")
+	opts.Accounts = append(opts.Accounts, aA, aB)
+	opts.Users = append(opts.Users,
+		&User{Username: "a", Password: "a", Account: aA},
+		&User{Username: "b", Password: "b", Account: aB})
+	return RunServer(opts)
+}
+
 func runMonitorServerNoHTTPPort() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -1471,6 +1483,93 @@ func TestSubszTestPubSubject(t *testing.T) {
 	readBodyEx(t, testUrl+"test=foo..bar", http.StatusBadRequest, textPlain)
 }
 
+func TestSubszMultiAccount(t *testing.T) {
+	s := runMonitorServerWithAccounts()
+	defer s.Shutdown()
+
+	ncA := createClientConnWithUserSubscribeAndPublish(t, s, "a", "a")
+	defer ncA.Close()
+
+	ncA.Subscribe("foo.*", func(m *nats.Msg) {})
+	ncA.Subscribe("foo.bar", func(m *nats.Msg) {})
+	ncA.Subscribe("foo.foo", func(m *nats.Msg) {})
+
+	ncA.Publish("foo.bar", []byte("Hello"))
+	ncA.Publish("foo.baz", []byte("Hello"))
+	ncA.Publish("foo.foo", []byte("Hello"))
+
+	ncA.Flush()
+
+	ncB := createClientConnWithUserSubscribeAndPublish(t, s, "b", "b")
+	defer ncB.Close()
+
+	ncB.Subscribe("foo.*", func(m *nats.Msg) {})
+	ncB.Subscribe("foo.bar", func(m *nats.Msg) {})
+	ncB.Subscribe("foo.foo", func(m *nats.Msg) {})
+
+	ncB.Publish("foo.bar", []byte("Hello"))
+	ncB.Publish("foo.baz", []byte("Hello"))
+	ncB.Publish("foo.foo", []byte("Hello"))
+
+	ncB.Flush()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subsz?subs=1", &SubszOptions{Subscriptions: true})
+		if sl.NumSubs != 6 {
+			t.Fatalf("Expected NumSubs of 6, got %d\n", sl.NumSubs)
+		}
+		if sl.Total != 6 {
+			t.Fatalf("Expected Total of 6, got %d\n", sl.Total)
+		}
+		if len(sl.Subs) != 6 {
+			t.Fatalf("Expected subscription details for 6 subs, got %d\n", len(sl.Subs))
+		}
+	}
+}
+
+func TestSubszMultiAccountWithOffsetAndLimit(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	ncA := createClientConnWithUserSubscribeAndPublish(t, s, "a", "a")
+	defer ncA.Close()
+
+	for i := 0; i < 200; i++ {
+		ncA.Subscribe(fmt.Sprintf("foo.%d", i), func(m *nats.Msg) {})
+	}
+	ncA.Flush()
+
+	ncB := createClientConnWithUserSubscribeAndPublish(t, s, "b", "b")
+	defer ncB.Close()
+
+	for i := 0; i < 200; i++ {
+		ncB.Subscribe(fmt.Sprintf("foo.%d", i), func(m *nats.Msg) {})
+	}
+	ncB.Flush()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		sl := pollSubsz(t, s, mode, url+"subsz?subs=1&offset=10&limit=100", &SubszOptions{Subscriptions: true, Offset: 10, Limit: 100})
+		if sl.NumSubs != 400 {
+			t.Fatalf("Expected NumSubs of 200, got %d\n", sl.NumSubs)
+		}
+		if sl.Total != 100 {
+			t.Fatalf("Expected Total of 100, got %d\n", sl.Total)
+		}
+		if sl.Offset != 10 {
+			t.Fatalf("Expected Offset of 10, got %d\n", sl.Offset)
+		}
+		if sl.Limit != 100 {
+			t.Fatalf("Expected Total of 100, got %d\n", sl.Limit)
+		}
+		if len(sl.Subs) != 100 {
+			t.Fatalf("Expected subscription details for 100 subs, got %d\n", len(sl.Subs))
+		}
+	}
+}
+
 // Tests handle root
 func TestHandleRoot(t *testing.T) {
 	s := runMonitorServer()
@@ -1735,8 +1834,13 @@ func TestConnzClosedConnsBadTLSClient(t *testing.T) {
 }
 
 // Create a connection to test ConnInfo
-func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
-	natsURL := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
+func createClientConnWithUserSubscribeAndPublish(t *testing.T, s *Server, user, pwd string) *nats.Conn {
+	natsURL := ""
+	if user == "" {
+		natsURL = fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
+	} else {
+		natsURL = fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", user, pwd, s.Addr().(*net.TCPAddr).Port)
+	}
 	client := nats.DefaultOptions
 	client.Servers = []string{natsURL}
 	nc, err := client.Connect()
@@ -1757,6 +1861,10 @@ func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 	close(ch)
 	nc.Flush()
 	return nc
+}
+
+func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
+	return createClientConnWithUserSubscribeAndPublish(t, s, "", "")
 }
 
 func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {

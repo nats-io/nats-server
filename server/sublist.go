@@ -700,6 +700,28 @@ type SublistStats struct {
 	CacheHitRate float64 `json:"cache_hit_rate"`
 	MaxFanout    uint32  `json:"max_fanout"`
 	AvgFanout    float64 `json:"avg_fanout"`
+	totFanout    int
+	cacheCnt     int
+}
+
+func (s *SublistStats) add(stat *SublistStats) {
+	s.NumSubs += stat.NumSubs
+	s.NumCache += stat.NumCache
+	s.NumInserts += stat.NumInserts
+	s.NumRemoves += stat.NumRemoves
+	s.NumMatches += stat.NumMatches
+	s.CacheHitRate += stat.CacheHitRate
+	if s.MaxFanout < stat.MaxFanout {
+		s.MaxFanout = stat.MaxFanout
+	}
+
+	// ignore slStats.AvgFanout, collect the values
+	// it's based on instead
+	s.totFanout += stat.totFanout
+	s.cacheCnt += stat.cacheCnt
+	if s.totFanout > 0 {
+		s.AvgFanout = float64(s.totFanout) / float64(s.cacheCnt)
+	}
 }
 
 // Stats will return a stats structure for the current state.
@@ -735,6 +757,8 @@ func (s *Sublist) Stats() *SublistStats {
 			}
 			return true
 		})
+		st.totFanout = tot
+		st.cacheCnt = clen
 		st.MaxFanout = uint32(max)
 		if tot > 0 {
 			st.AvgFanout = float64(tot) / float64(clen)
