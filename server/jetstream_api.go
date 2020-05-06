@@ -270,7 +270,7 @@ type JSApiMsgDeleteResponse struct {
 	Success bool `json:"success,omitempty"`
 }
 
-const JSApiMsgDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
+const JSApiMsgDeleteResponseType = "io.nats.jetstream.api.v1.stream_msg_delete_response"
 
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
@@ -480,13 +480,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	var resp = JSApiStreamTemplateCreateResponse{
-		ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType},
-		StreamTemplateInfo: &StreamTemplateInfo{
-			Streams: []string{},
-		},
-	}
-
+	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -509,10 +503,14 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
 	}
 	t.mu.Lock()
 	tcfg := t.StreamTemplateConfig.deepCopy()
 	streams := t.streams
+	if streams == nil {
+		streams = []string{}
+	}
 	t.mu.Unlock()
 	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: tcfg, Streams: streams}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
@@ -524,11 +522,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	var resp = JSApiStreamTemplateNamesResponse{
-		ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType},
-		Templates:   []string{},
-	}
-
+	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -562,6 +556,9 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 	resp.Total = len(ts)
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
+	if resp.Templates == nil {
+		resp.Templates = []string{}
+	}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -571,13 +568,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	var resp = JSApiStreamTemplateInfoResponse{
-		ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType},
-		StreamTemplateInfo: &StreamTemplateInfo{
-			Streams: []string{},
-		},
-	}
-
+	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
 	if !c.acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -598,6 +589,9 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 	t.mu.Lock()
 	cfg := t.StreamTemplateConfig.deepCopy()
 	streams := t.streams
+	if streams == nil {
+		streams = []string{}
+	}
 	t.mu.Unlock()
 
 	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: cfg, Streams: streams}
