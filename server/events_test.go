@@ -1224,7 +1224,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 13, sa)
+	checkExpectedSubs(t, 25, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1433,6 +1433,132 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+}
+
+func TestServerEventsPingMonitorz(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	nc.Flush()
+
+	tests := []struct {
+		endpoint  string
+		opt       interface{}
+		resp      interface{}
+		respField []string
+	}{
+		{"VARZ", nil, &Varz{},
+			[]string{"now", "cpu"}},
+		{"SUBSZ", nil, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"}},
+		{"CONNZ", nil, &Connz{},
+			[]string{"now", "connections"}},
+		{"ROUTEZ", nil, &Routez{},
+			[]string{"now", "routes"}},
+		{"GATEWAYZ", nil, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"}},
+		{"LEAFZ", nil, &Leafz{},
+			[]string{"now", "leafs"}},
+
+		{"SUBSZ", &SubszOptions{}, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"}},
+		{"CONNZ", &ConnzOptions{}, &Connz{},
+			[]string{"now", "connections"}},
+		{"ROUTEZ", &RoutezOptions{}, &Routez{},
+			[]string{"now", "routes"}},
+		{"GATEWAYZ", &GatewayzOptions{}, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"}},
+		{"LEAFZ", &LeafzOptions{}, &Leafz{},
+			[]string{"now", "leafs"}},
+
+		{"SUBSZ", &SubszOptions{Limit: 5}, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"}},
+		{"CONNZ", &ConnzOptions{Limit: 5}, &Connz{},
+			[]string{"now", "connections"}},
+		{"ROUTEZ", &RoutezOptions{SubscriptionsDetail: true}, &Routez{},
+			[]string{"now", "routes"}},
+		{"GATEWAYZ", &GatewayzOptions{Accounts: true}, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"}},
+		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
+			[]string{"now", "leafs"}},
+	}
+
+	for i, test := range tests {
+		t.Run(fmt.Sprintf("%s-%d", test.endpoint, i), func(t *testing.T) {
+			var opt []byte
+			if test.opt != nil {
+				opt, err = json.Marshal(test.opt)
+				if err != nil {
+					t.Fatalf("Error marshaling opts: %v", err)
+				}
+			}
+			reply := nc.NewRespInbox()
+			replySubj, _ := nc.SubscribeSync(reply)
+
+			destSubj := fmt.Sprintf("%s.%s", serverStatsPingReqSubj, test.endpoint)
+			nc.PublishRequest(destSubj, reply, opt)
+
+			// Receive both manually.
+			msg, err := replySubj.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error receiving msg: %v", err)
+			}
+			response1 := make(map[string]map[string]interface{})
+
+			if err := json.Unmarshal(msg.Data, &response1); err != nil {
+				t.Fatalf("Error unmarshalling response1 json: %v", err)
+			}
+
+			serverName := ""
+			if response1["server"]["name"] == "A" {
+				serverName = "B"
+			} else if response1["server"]["name"] == "B" {
+				serverName = "A"
+			} else {
+				t.Fatalf("Error finding server in %s", string(msg.Data))
+			}
+			if resp, ok := response1["data"]; !ok {
+				t.Fatalf("Error finding: %s in %s",
+					strings.ToLower(test.endpoint), string(msg.Data))
+			} else {
+				for _, respField := range test.respField {
+					if _, ok := resp[respField]; !ok {
+						t.Fatalf("Error finding: %s in %s", respField, resp)
+					}
+				}
+			}
+
+			msg, err = replySubj.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error receiving msg: %v", err)
+			}
+			response2 := make(map[string]map[string]interface{})
+			if err := json.Unmarshal(msg.Data, &response2); err != nil {
+				t.Fatalf("Error unmarshalling the response2 json: %v", err)
+			}
+			if response2["server"]["name"] != serverName {
+				t.Fatalf("Error finding server %s in %s", serverName, string(msg.Data))
+			}
+			if resp, ok := response2["data"]; !ok {
+				t.Fatalf("Error finding: %s in %s",
+					strings.ToLower(test.endpoint), string(msg.Data))
+			} else {
+				for _, respField := range test.respField {
+					if _, ok := resp[respField]; !ok {
+						t.Fatalf("Error finding: %s in %s", respField, resp)
+					}
+				}
+			}
+		})
 	}
 }
 

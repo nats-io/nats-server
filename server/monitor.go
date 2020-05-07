@@ -1350,13 +1350,13 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 // GatewayzOptions are the options passed to Gatewayz()
 type GatewayzOptions struct {
 	// Name will output only remote gateways with this name
-	Name string
+	Name string `json:"name"`
 
 	// Accounts indicates if accounts with its interest should be included in the results.
-	Accounts bool
+	Accounts bool `json:"accounts"`
 
 	// AccountName will limit the list of accounts to that account name (makes Accounts implicit)
-	AccountName string
+	AccountName string `json:"account_name"`
 }
 
 // Gatewayz represents detailed information on Gateways
