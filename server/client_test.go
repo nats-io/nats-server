@@ -195,6 +195,7 @@ func TestServerHeaderSupport(t *testing.T) {
 	opts := defaultServerOptions
 	opts.Port = -1
 	s := New(&opts)
+
 	c, _, l := newClientForServer(s)
 	defer c.close()
 
@@ -212,6 +213,7 @@ func TestServerHeaderSupport(t *testing.T) {
 	opts.NoHeaderSupport = true
 	opts.Port = -1
 	s = New(&opts)
+
 	c, _, l = newClientForServer(s)
 	defer c.close()
 
@@ -220,6 +222,43 @@ func TestServerHeaderSupport(t *testing.T) {
 	}
 	if info.Headers {
 		t.Fatalf("Expected header support to be disabled")
+	}
+}
+
+// This test specifically is not testing how headers are encoded in a raw msg.
+// It wants to make sure the serve and clients agreement on when to use headers
+// is bi-directional and functions properly.
+func TestClientHeaderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	// Even though the server supports headers we need to explicitly say we do in the
+	// CONNECT. If we do not we should get an error.
+	if err := c.parse([]byte("CONNECT {}\r\nHPUB foo 0 2\r\nok\r\n")); err != ErrMsgHeadersNotSupported {
+		t.Fatalf("Expected to receive an error, got %v", err)
+	}
+
+	// This should succeed.
+	c, _, _ = newClientForServer(s)
+	defer c.close()
+
+	if err := c.parse([]byte("CONNECT {\"headers\":true}\r\nHPUB foo 0 2\r\nok\r\n")); err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+
+	// Now start a server without support.
+	opts.NoHeaderSupport = true
+	opts.Port = -1
+	s = New(&opts)
+
+	c, _, _ = newClientForServer(s)
+	defer c.close()
+	if err := c.parse([]byte("CONNECT {\"headers\":true}\r\nHPUB foo 0 2\r\nok\r\n")); err != ErrMsgHeadersNotSupported {
+		t.Fatalf("Expected to receive an error, got %v", err)
 	}
 }
 

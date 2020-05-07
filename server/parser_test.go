@@ -299,6 +299,7 @@ func TestParsePubBadSize(t *testing.T) {
 
 func TestParseHeaderPub(t *testing.T) {
 	c := dummyClient()
+	c.headers = true
 
 	hpub := []byte("HPUB foo 12 17\r\nname:derek\r\nHELLO\r")
 	if err := c.parse(hpub); err != nil || c.state != MSG_END_N {
@@ -360,6 +361,7 @@ func TestParseHeaderPub(t *testing.T) {
 
 func TestParseHeaderPubArg(t *testing.T) {
 	c := dummyClient()
+	c.headers = true
 
 	for _, test := range []struct {
 		arg     string
