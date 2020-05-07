@@ -435,6 +435,7 @@ type clientOpts struct {
 	Protocol    int    `json:"protocol"`
 	Account     string `json:"account,omitempty"`
 	AccountNew  bool   `json:"new_account,omitempty"`
+	Headers     bool   `json:"headers,omitempty"`
 
 	// Routes only
 	Import *SubjectPermission `json:"import,omitempty"`
@@ -1406,6 +1407,9 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 	ujwt := c.opts.JWT
+	// For headers both need to support. If the server supports headers
+	/// it will have been set to true before this is called.
+	c.headers = c.headers && c.opts.Headers
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -1837,6 +1841,10 @@ func (c *client) processPong() {
 
 // Header pubs take form HPUB <subject> [reply] <hdr_len> <total_len>\r\n
 func (c *client) processHeaderPub(arg []byte) error {
+	if !c.headers {
+		return ErrMsgHeadersNotSupported
+	}
+
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_HPUB_ARGS][]byte{}
 	args := a[:0]
