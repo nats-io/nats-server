@@ -2288,10 +2288,7 @@ func (s *Server) supportsHeaders() bool {
 	if s == nil {
 		return false
 	}
-	s.mu.Lock()
-	ans := s.info.Headers
-	s.mu.Unlock()
-	return ans
+	return !(s.getOpts().NoHeaderSupport)
 }
 
 // ID returns the server's ID
