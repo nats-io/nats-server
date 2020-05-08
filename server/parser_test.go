@@ -306,16 +306,19 @@ func TestParseHeaderPub(t *testing.T) {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
-		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'", c.pa.subject)
 	}
 	if c.pa.reply != nil {
-		t.Fatalf("Did not parse reply correctly: 'nil' vs '%s'\n", c.pa.reply)
+		t.Fatalf("Did not parse reply correctly: 'nil' vs '%s'", c.pa.reply)
 	}
 	if c.pa.hdr != 12 {
-		t.Fatalf("Did not parse msg header size correctly: 12 vs %d\n", c.pa.hdr)
+		t.Fatalf("Did not parse msg header size correctly: 12 vs %d", c.pa.hdr)
+	}
+	if !bytes.Equal(c.pa.hdb, []byte("12")) {
+		t.Fatalf("Did not parse or capture the header size as bytes correctly: %q", c.pa.hdb)
 	}
 	if c.pa.size != 17 {
-		t.Fatalf("Did not parse msg size correctly: 17 vs %d\n", c.pa.size)
+		t.Fatalf("Did not parse msg size correctly: 17 vs %d", c.pa.size)
 	}
 
 	// Clear snapshots
@@ -326,16 +329,19 @@ func TestParseHeaderPub(t *testing.T) {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
-		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'", c.pa.subject)
 	}
 	if !bytes.Equal(c.pa.reply, []byte("INBOX.22")) {
-		t.Fatalf("Did not parse reply correctly: 'INBOX.22' vs '%s'\n", c.pa.reply)
+		t.Fatalf("Did not parse reply correctly: 'INBOX.22' vs '%s'", c.pa.reply)
 	}
 	if c.pa.hdr != 12 {
-		t.Fatalf("Did not parse msg header size correctly: 12 vs %d\n", c.pa.hdr)
+		t.Fatalf("Did not parse msg header size correctly: 12 vs %d", c.pa.hdr)
+	}
+	if !bytes.Equal(c.pa.hdb, []byte("12")) {
+		t.Fatalf("Did not parse or capture the header size as bytes correctly: %q", c.pa.hdb)
 	}
 	if c.pa.size != 17 {
-		t.Fatalf("Did not parse msg size correctly: 17 vs %d\n", c.pa.size)
+		t.Fatalf("Did not parse msg size correctly: 17 vs %d", c.pa.size)
 	}
 
 	// Clear snapshots
@@ -353,6 +359,9 @@ func TestParseHeaderPub(t *testing.T) {
 	}
 	if c.pa.hdr != 0 {
 		t.Fatalf("Did not parse msg header size correctly: 0 vs %d\n", c.pa.hdr)
+	}
+	if !bytes.Equal(c.pa.hdb, []byte("0")) {
+		t.Fatalf("Did not parse or capture the header size as bytes correctly: %q", c.pa.hdb)
 	}
 	if c.pa.size != 5 {
 		t.Fatalf("Did not parse msg size correctly: 5 vs %d\n", c.pa.size)

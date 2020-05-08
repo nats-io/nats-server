@@ -1369,7 +1369,9 @@ func computeRTT(start time.Time) time.Duration {
 	return rtt
 }
 
+// processConnect will process a client connect op.
 func (c *client) processConnect(arg []byte) error {
+	supportsHeaders := c.srv.supportsHeaders()
 	c.mu.Lock()
 	// If we can't stop the timer because the callback is in progress...
 	if !c.clearAuthTimer() {
@@ -1415,9 +1417,8 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 	ujwt := c.opts.JWT
-	// For headers both need to support. If the server supports headers
-	/// it will have been set to true before this is called.
-	c.headers = c.headers && c.opts.Headers
+	// For headers both client and server need to support.
+	c.headers = supportsHeaders && c.opts.Headers
 	c.mu.Unlock()
 
 	if srv != nil {
@@ -1881,12 +1882,14 @@ func (c *client) processHeaderPub(arg []byte) error {
 		c.pa.reply = nil
 		c.pa.hdr = parseSize(args[1])
 		c.pa.size = parseSize(args[2])
+		c.pa.hdb = args[1]
 		c.pa.szb = args[2]
 	case 4:
 		c.pa.subject = args[0]
 		c.pa.reply = args[1]
 		c.pa.hdr = parseSize(args[2])
 		c.pa.size = parseSize(args[3])
+		c.pa.hdb = args[2]
 		c.pa.szb = args[3]
 	default:
 		return fmt.Errorf("processHeaderPub Parse Error: '%s'", arg)
@@ -2454,13 +2457,33 @@ func (c *client) checkDenySub(subject string) bool {
 	return false
 }
 
-func (c *client) msgHeader(mh []byte, sub *subscription, reply []byte) []byte {
+func (c *client) msgHeader(subj []byte, sub *subscription, reply []byte) []byte {
+	// See if we should do headers. We have to have a headers msg and
+	// the client we are going to deliver to needs to support headers as well.
+	// TODO(dlc) - This should only be for client connections, but should we check?
+	doHeaders := c.pa.hdr > 0 && sub.client != nil && sub.client.headers
+
+	var mh []byte
+	if doHeaders {
+		mh = c.msgb[:msgHeadProtoLen]
+		mh[0] = 'H'
+	} else {
+		mh = c.msgb[1:msgHeadProtoLen]
+	}
+	mh = append(mh, subj...)
+	mh = append(mh, ' ')
+
 	if len(sub.sid) > 0 {
 		mh = append(mh, sub.sid...)
 		mh = append(mh, ' ')
 	}
 	if reply != nil {
 		mh = append(mh, reply...)
+		mh = append(mh, ' ')
+	}
+
+	if doHeaders {
+		mh = append(mh, c.pa.hdb...)
 		mh = append(mh, ' ')
 	}
 	mh = append(mh, c.pa.szb...)
@@ -2565,6 +2588,12 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 				return false
 			}
 		}
+	}
+
+	// Check here if we have a header with our message. If this client can not
+	// support we need to strip the headers from the payload.
+	if c.pa.hdr > 0 && !sub.client.headers {
+		msg = msg[c.pa.hdr:]
 	}
 
 	// Update statistics
@@ -3259,11 +3288,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 	var didDeliver bool
 
-	// msg header for clients.
-	msgh := c.msgb[1:msgHeadProtoLen]
-	msgh = append(msgh, subj...)
-	msgh = append(msgh, ' ')
-	si := len(msgh)
+	// delivery subject for clients
+	var dsubj []byte
+	// Used as scratch if mapping
+	var _dsubj [64]byte
 
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
@@ -3288,17 +3316,15 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			continue
 		}
+		// Assume delivery subject is normal subject to this point.
+		dsubj = subj
 		// Check for stream import mapped subs. These apply to local subs only.
 		if sub.im != nil && sub.im.prefix != "" {
-			// Redo the subject here on the fly.
-			msgh = c.msgb[1:msgHeadProtoLen]
-			msgh = append(msgh, sub.im.prefix...)
-			msgh = append(msgh, subj...)
-			msgh = append(msgh, ' ')
-			si = len(msgh)
+			dsubj = append(_dsubj[:0], sub.im.prefix...)
+			dsubj = append(dsubj, subj...)
 		}
 		// Normal delivery
-		mh := c.msgHeader(msgh[:si], sub, creply)
+		mh := c.msgHeader(dsubj, sub, creply)
 		didDeliver = c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix) || didDeliver
 	}
 
@@ -3397,14 +3423,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				break
 			}
 
-			// Check for mapped subs
+			// Assume delivery subject is normal subject to this point.
+			dsubj = subj
+			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil && sub.im.prefix != "" {
-				// Redo the subject here on the fly.
-				msgh = c.msgb[1:msgHeadProtoLen]
-				msgh = append(msgh, sub.im.prefix...)
-				msgh = append(msgh, subject...)
-				msgh = append(msgh, ' ')
-				si = len(msgh)
+				dsubj = append(_dsubj[:0], sub.im.prefix...)
+				dsubj = append(dsubj, subj...)
 			}
 
 			var rreply = reply
@@ -3413,7 +3437,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			// "rreply" will be stripped of the $GNR prefix (if present)
 			// for client connections only.
-			mh := c.msgHeader(msgh[:si], sub, rreply)
+			mh := c.msgHeader(dsubj, sub, rreply)
 			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
 				didDeliver = true
 				// Clear rsub
