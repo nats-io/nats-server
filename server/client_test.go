@@ -2038,3 +2038,34 @@ func TestCloseConnectionLogsReason(t *testing.T) {
 		t.Fatal("Log does not contain closed reason")
 	}
 }
+
+func TestCloseConnectionVeryEarly(t *testing.T) {
+	o := DefaultOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	// The issue was with a connection that would break right when
+	// server was sending the INFO. Creating a bare TCP connection
+	// and closing it right away won't help reproduce the problem.
+	// So testing in 2 steps.
+
+	// Get a normal TCP connection to the server.
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	if err != nil {
+		s.mu.Unlock()
+		t.Fatalf("Unable to create tcp connection")
+	}
+	// Now close it.
+	c.Close()
+
+	// Wait that num clients falls to 0.
+	checkClientsCount(t, s, 0)
+
+	// Call again with this closed connection. Alternatively, we
+	// would have to call with a fake connection that implements
+	// net.Conn but returns an error on Write.
+	s.createClient(c)
+
+	// This connection should not have been added to the server.
+	checkClientsCount(t, s, 0)
+}

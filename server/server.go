@@ -1793,6 +1793,12 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// The connection may have been closed
 	if c.isClosed() {
 		c.mu.Unlock()
+		// If it was due to TLS timeout, teardownConn() has already been called.
+		// Otherwise, if connection was marked as closed while sending the INFO,
+		// we need to call teardownConn() directly here.
+		if !info.TLSRequired {
+			c.teardownConn()
+		}
 		return c
 	}
 
