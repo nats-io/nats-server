@@ -36,6 +36,7 @@ type pubArg struct {
 	deliver []byte
 	reply   []byte
 	szb     []byte
+	hdb     []byte
 	queues  [][]byte
 	size    int
 	hdr     int
@@ -367,7 +368,7 @@ func (c *client) parse(buf []byte) error {
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
 			c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
-			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.queues = nil, -1, 0, nil, nil
+			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.hdb, c.pa.queues = nil, -1, 0, nil, nil, nil
 		case OP_A:
 			switch b {
 			case '+':

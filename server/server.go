@@ -1822,7 +1822,6 @@ func (s *Server) createClient(conn net.Conn) *client {
 	s.mu.Lock()
 	info := s.copyInfo()
 	c.nonce = []byte(info.Nonce)
-	c.headers = info.Headers
 	s.totalClients++
 	s.mu.Unlock()
 
@@ -2252,6 +2251,17 @@ func (s *Server) ReadyForConnections(dur time.Duration) bool {
 		time.Sleep(25 * time.Millisecond)
 	}
 	return false
+}
+
+// Quick utility to function to tell if the server supports headers.
+func (s *Server) supportsHeaders() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	ans := s.info.Headers
+	s.mu.Unlock()
+	return ans
 }
 
 // ID returns the server's ID
