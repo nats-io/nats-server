@@ -127,6 +127,9 @@ const (
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
 
+	// MAX_HPUB_ARGS Maximum possible number of arguments from HPUB proto.
+	MAX_HPUB_ARGS = 4
+
 	// DEFAULT_MAX_CLOSED_CLIENTS is the maximum number of closed connections we hold onto.
 	DEFAULT_MAX_CLOSED_CLIENTS = 10000
 

@@ -68,6 +68,7 @@ type Info struct {
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
+	Headers           bool     `json:"headers"`
 	AuthRequired      bool     `json:"auth_required,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
@@ -269,6 +270,7 @@ func NewServer(opts *Options) (*Server, error) {
 		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
 		JetStream:    opts.JetStream,
+		Headers:      !opts.NoHeaderSupport,
 	}
 
 	now := time.Now()
@@ -2249,6 +2251,14 @@ func (s *Server) ReadyForConnections(dur time.Duration) bool {
 		time.Sleep(25 * time.Millisecond)
 	}
 	return false
+}
+
+// Quick utility to function to tell if the server supports headers.
+func (s *Server) supportsHeaders() bool {
+	if s == nil {
+		return false
+	}
+	return !(s.getOpts().NoHeaderSupport)
 }
 
 // ID returns the server's ID

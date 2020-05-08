@@ -43,6 +43,7 @@ type serverInfo struct {
 	AuthRequired bool   `json:"auth_required"`
 	TLSRequired  bool   `json:"tls_required"`
 	MaxPayload   int64  `json:"max_payload"`
+	Headers      bool   `json:"headers"`
 }
 
 type testAsyncClient struct {
@@ -188,6 +189,215 @@ func TestClientCreateAndInfo(t *testing.T) {
 		info.Port != DEFAULT_PORT {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
 	}
+}
+
+func TestServerHeaderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, l := newClientForServer(s)
+	defer c.close()
+
+	if !strings.HasPrefix(l, "INFO ") {
+		t.Fatalf("INFO response incorrect: %s\n", l)
+	}
+	var info serverInfo
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if !info.Headers {
+		t.Fatalf("Expected by default for header support to be enabled")
+	}
+
+	opts.NoHeaderSupport = true
+	opts.Port = -1
+	s = New(&opts)
+
+	c, _, l = newClientForServer(s)
+	defer c.close()
+
+	if err := json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Headers {
+		t.Fatalf("Expected header support to be disabled")
+	}
+}
+
+// This test specifically is not testing how headers are encoded in a raw msg.
+// It wants to make sure the serve and clients agreement on when to use headers
+// is bi-directional and functions properly.
+func TestClientHeaderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	// Even though the server supports headers we need to explicitly say we do in the
+	// CONNECT. If we do not we should get an error.
+	if err := c.parse([]byte("CONNECT {}\r\nHPUB foo 0 2\r\nok\r\n")); err != ErrMsgHeadersNotSupported {
+		t.Fatalf("Expected to receive an error, got %v", err)
+	}
+
+	// This should succeed.
+	c, _, _ = newClientForServer(s)
+	defer c.close()
+
+	if err := c.parse([]byte("CONNECT {\"headers\":true}\r\nHPUB foo 0 2\r\nok\r\n")); err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+
+	// Now start a server without support.
+	opts.NoHeaderSupport = true
+	opts.Port = -1
+	s = New(&opts)
+
+	c, _, _ = newClientForServer(s)
+	defer c.close()
+	if err := c.parse([]byte("CONNECT {\"headers\":true}\r\nHPUB foo 0 2\r\nok\r\n")); err != ErrMsgHeadersNotSupported {
+		t.Fatalf("Expected to receive an error, got %v", err)
+	}
+}
+
+var hmsgPat = regexp.MustCompile(`HMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)[^\S\r\n]+(\d+)\r\n`)
+
+func TestClientHeaderDeliverMsg(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, cr, _ := newClientForServer(s)
+	defer c.close()
+
+	connect := "CONNECT {\"headers\":true}"
+	subOp := "SUB foo 1"
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd := strings.Join([]string{connect, subOp, pubOp}, "\r\n")
+
+	c.parseAsync(cmd)
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	am := hmsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 7 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 7)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[HDR_INDEX] != "12" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[HDR_INDEX])
+	}
+	if matches[TLEN_INDEX] != "14" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[TLEN_INDEX])
+	}
+	checkPayload(cr, []byte("Name:Derek\r\nOK\r\n"), t)
+}
+
+var smsgPat = regexp.MustCompile(`^MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\r\n`)
+
+func TestClientHeaderDeliverStrippedMsg(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	b, br, _ := newClientForServer(s)
+	defer b.close()
+
+	// Does not support headers
+	b.parseAsync("SUB foo 1\r\nPING\r\n")
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	connect := "CONNECT {\"headers\":true}"
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd := strings.Join([]string{connect, pubOp}, "\r\n")
+	c.parseAsync(cmd)
+	// Read from 'b' client.
+	l, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	am := smsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a correct match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 6 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 6)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[LEN_INDEX] != "14" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
+	}
+	checkPayload(br, []byte("OK\r\n"), t)
+}
+
+func TestClientHeaderDeliverQueueSubStrippedMsg(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	b, br, _ := newClientForServer(s)
+	defer b.close()
+
+	// Does not support headers
+	b.parseAsync("SUB foo bar 1\r\nPING\r\n")
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	connect := "CONNECT {\"headers\":true}"
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd := strings.Join([]string{connect, pubOp}, "\r\n")
+	c.parseAsync(cmd)
+	// Read from 'b' client.
+	l, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	am := smsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a correct match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 6 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 6)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[LEN_INDEX] != "14" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
+	}
+	checkPayload(br, []byte("OK\r\n"), t)
 }
 
 func TestNonTLSConnectionState(t *testing.T) {
@@ -363,6 +573,8 @@ const (
 	SID_INDEX   = 2
 	REPLY_INDEX = 4
 	LEN_INDEX   = 5
+	HDR_INDEX   = 5
+	TLEN_INDEX  = 6
 )
 
 func grabPayload(cr *bufio.Reader, expected int) []byte {

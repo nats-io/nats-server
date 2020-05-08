@@ -1849,6 +1849,8 @@ func (reason ClosedState) String() string {
 		return "Credentials Revoked"
 	case InternalClient:
 		return "Internal Client"
+	case MsgHeaderViolation:
+		return "Message Header Violation"
 	}
 	return "Unknown State"
 }
