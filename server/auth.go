@@ -15,6 +15,8 @@ package server
 
 import (
 	"crypto/tls"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -527,6 +529,26 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 	return false
 }
 
+func getTLSAuthDCs(rdns *pkix.RDNSequence) string {
+	dcOID := asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
+	dcs := []string{}
+	for _, rdn := range *rdns {
+		if len(rdn) == 0 {
+			continue
+		}
+		for _, atv := range rdn {
+			value, ok := atv.Value.(string)
+			if !ok {
+				continue
+			}
+			if atv.Type.Equal(dcOID) {
+				dcs = append(dcs, "DC="+value)
+			}
+		}
+	}
+	return strings.Join(dcs, ",")
+}
+
 func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 	tlsState := c.GetTLSConnectionState()
 	if tlsState == nil {
@@ -563,6 +585,22 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 		for _, u := range cert.DNSNames {
 			if fn(u) {
 				c.Debugf("Using SAN found in cert for auth [%q]", u)
+				return true
+			}
+		}
+	}
+
+	// Try to get the full RDN Sequence that includes the domain components.
+	var rdns pkix.RDNSequence
+	if _, err := asn1.Unmarshal(cert.RawSubject, &rdns); err == nil {
+		// If found domain components then include roughly following
+		// the order from https://tools.ietf.org/html/rfc2253
+		rdn := cert.Subject.ToRDNSequence().String()
+		dcs := getTLSAuthDCs(&rdns)
+		if len(dcs) > 0 {
+			u := strings.Join([]string{rdn, dcs}, ",")
+			if fn(u) {
+				c.Debugf("Using RDNSequence for auth [%q]", u)
 				return true
 			}
 		}
