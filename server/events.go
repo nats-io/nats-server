@@ -74,6 +74,7 @@ type internal struct {
 	subs     map[string]msgHandler
 	replies  map[string]msgHandler
 	sendq    chan *pubMsg
+	resetCh  chan struct{}
 	wg       sync.WaitGroup
 	orphMax  time.Duration
 	chkOrph  time.Duration
@@ -209,12 +210,14 @@ type serverUpdate struct {
 func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	defer wg.Done()
 
+RESET:
 	s.mu.Lock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.Unlock()
 		return
 	}
 	c := s.sys.client
+	resetCh := s.sys.resetCh
 	sysacc := s.sys.account
 	sendq := s.sys.sendq
 	id := s.info.ID
@@ -289,6 +292,8 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 				c.flushClients(time.Second)
 				return
 			}
+		case <-resetCh:
+			goto RESET
 		case <-s.quitCh:
 			return
 		}
@@ -515,7 +520,7 @@ const sysHashLen = 6
 // Tradeoff is subscription and interest graph events vs connect and
 // disconnect events, etc.
 func (s *Server) initEventTracking() {
-	if !s.eventsEnabled() {
+	if !s.EventsEnabled() {
 		return
 	}
 	// Create a system hash which we use for other servers to target us specifically.
@@ -618,12 +623,16 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal latency tracking: %v", err)
 	}
 
-	// These are for system account exports for debugging from client applications.
-	sacc := s.sys.account
-
 	// This is for simple debugging of number of subscribers that exist in the system.
 	if _, err := s.sysSubscribeInternal(accSubsSubj, s.debugSubscribers); err != nil {
 		s.Errorf("Error setting up internal debug service for subscribers: %v", err)
+	}
+}
+
+// add all exports a system account will need
+func (s *Server) addSystemAccountExports(sacc *Account) {
+	if !s.EventsEnabled() {
+		return
 	}
 	if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
 		s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
@@ -736,6 +745,7 @@ func (s *Server) shutdownEventing() {
 	// internal send loop to exit.
 	s.sendShutdownEvent()
 	s.sys.wg.Wait()
+	close(s.sys.resetCh)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

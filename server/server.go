@@ -507,8 +507,18 @@ func (s *Server) configureAccounts() error {
 	if opts.SystemAccount != _EMPTY_ {
 		// Lock may be acquired in lookupAccount, so release to call lookupAccount.
 		s.mu.Unlock()
-		_, err := s.lookupAccount(opts.SystemAccount)
+		acc, err := s.lookupAccount(opts.SystemAccount)
 		s.mu.Lock()
+		if err == nil && s.sys != nil && acc != s.sys.account {
+			// sys.account.clients (including internal client)/respmap/etc... are transferred separately
+			s.sys.account = acc
+			s.mu.Unlock()
+			// acquires server lock separately
+			s.addSystemAccountExports(acc)
+			// can't hold the lock as go routine reading it may be waiting for lock as well
+			s.sys.resetCh <- struct{}{}
+			s.mu.Lock()
+		}
 		if err != nil {
 			return fmt.Errorf("error resolving system account: %v", err)
 		}
@@ -787,12 +797,13 @@ func (s *Server) SetSystemAccount(accName string) error {
 
 // SystemAccount returns the system account if set.
 func (s *Server) SystemAccount() *Account {
+	var sacc *Account
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.sys != nil {
-		return s.sys.account
+		sacc = s.sys.account
 	}
-	return nil
+	s.mu.Unlock()
+	return sacc
 }
 
 // For internal sends.
@@ -840,6 +851,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		subs:    make(map[string]msgHandler),
 		replies: make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, internalSendQLen),
+		resetCh: make(chan struct{}),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
@@ -851,6 +863,8 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	// Register with the account.
 	s.sys.client.registerWithAccount(acc)
+
+	s.addSystemAccountExports(acc)
 
 	// Start our internal loop to serialize outbound messages.
 	// We do our own wg here since we will stop first during shutdown.
@@ -875,16 +889,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.mu.Unlock()
 
 	return nil
-}
-
-func (s *Server) systemAccount() *Account {
-	var sacc *Account
-	s.mu.Lock()
-	if s.sys != nil {
-		sacc = s.sys.account
-	}
-	s.mu.Unlock()
-	return sacc
 }
 
 // Determine if accounts should track subscriptions for
@@ -940,7 +944,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 		acc.maxnrm = DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS
 	}
 	if acc.clients == nil {
-		acc.clients = make(map[*client]*client)
+		acc.clients = make(map[*client]struct{})
 	}
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
