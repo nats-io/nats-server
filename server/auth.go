@@ -573,7 +573,8 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 	hasSANs := len(cert.DNSNames) > 0
 	hasEmailAddresses := len(cert.EmailAddresses) > 0
 	hasSubject := len(cert.Subject.String()) > 0
-	if !hasEmailAddresses && !hasSubject {
+	hasURIs := len(cert.URIs) > 0
+	if !hasEmailAddresses && !hasSubject && !hasURIs {
 		c.Debugf("User required in cert, none found")
 		return false
 	}
@@ -591,6 +592,13 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 		for _, u := range cert.DNSNames {
 			if fn(u) {
 				c.Debugf("Using SAN found in cert for auth [%q]", u)
+				return true
+			}
+		}
+	case hasURIs:
+		for _, u := range cert.URIs {
+			if fn(u.String()) {
+				c.Debugf("Using URI found in cert for auth [%q]", u)
 				return true
 			}
 		}
