@@ -876,6 +876,65 @@ func TestNkeyUsersConfig(t *testing.T) {
 	}
 }
 
+func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	authorization {
+		default_permissions = {
+			publish = "foo"
+		}
+		users = [
+			{ user: "user", password: "pwd"}
+			{ user: "other", password: "pwd",
+				permissions = {
+					subscribe = "bar"
+				}
+			}
+			{ nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV" }
+			{ nkey: "UA3C5TBZYK5GJQJRWPMU6NFY5JNAEVQB2V2TUZFZDHFJFUYVKTTUOFKZ",
+				permissions = {
+					subscribe = "bar"
+				}
+			}
+		]
+	}`))
+	checkPerms := func(permsDef *Permissions, permsNonDef *Permissions) {
+		if permsDef.Publish.Allow[0] != "foo" {
+			t.Fatal("Publish allow foo missing")
+		} else if permsDef.Subscribe != nil {
+			t.Fatal("Has unexpected Subscribe permission")
+		} else if permsNonDef.Subscribe.Allow[0] != "bar" {
+			t.Fatal("Subscribe allow bar missing")
+		} else if permsNonDef.Publish != nil {
+			t.Fatal("Has unexpected Publish permission")
+		}
+	}
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if lu := len(opts.Users); lu != 2 {
+		t.Fatalf("Expected 2 nkey users, got %d", lu)
+	}
+	userDefault := opts.Users[0]
+	userNonDef := opts.Users[1]
+	if !strings.HasPrefix(userDefault.Username, "user") {
+		userDefault = opts.Users[1]
+		userNonDef = opts.Users[0]
+	}
+	checkPerms(userDefault.Permissions, userNonDef.Permissions)
+	if lu := len(opts.Nkeys); lu != 2 {
+		t.Fatalf("Expected 2 nkey users, got %d", lu)
+	}
+	nkeyDefault := opts.Nkeys[0]
+	nkeyNonDef := opts.Nkeys[1]
+	if !strings.HasPrefix(nkeyDefault.Nkey, "UDK") {
+		nkeyDefault = opts.Nkeys[1]
+		nkeyNonDef = opts.Nkeys[0]
+	}
+	checkPerms(nkeyDefault.Permissions, nkeyNonDef.Permissions)
+}
+
 func TestNkeyUsersWithPermsConfig(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
     authorization {
