@@ -2254,14 +2254,22 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 		}
 
 		// Now check for permission defaults with multiple users, etc.
-		if auth.users != nil && auth.defaultPermissions != nil {
-			for _, user := range auth.users {
-				if user.Permissions == nil {
-					user.Permissions = auth.defaultPermissions
+		if auth.defaultPermissions != nil {
+			if auth.users != nil {
+				for _, user := range auth.users {
+					if user.Permissions == nil {
+						user.Permissions = auth.defaultPermissions
+					}
+				}
+			}
+			if auth.nkeys != nil {
+				for _, user := range auth.nkeys {
+					if user.Permissions == nil {
+						user.Permissions = auth.defaultPermissions
+					}
 				}
 			}
 		}
-
 	}
 	return auth, nil
 }
