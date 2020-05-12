@@ -50,7 +50,7 @@ type Account struct {
 	sysclients   int32
 	nleafs       int32
 	nrleafs      int32
-	clients      map[*client]*client
+	clients      map[*client]struct{}
 	rm           map[string]int32
 	lqws         map[string]int32
 	usersRevoked map[string]int64
@@ -198,8 +198,43 @@ func (a *Account) shallowCopy() *Account {
 	na := NewAccount(a.Name)
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
-	na.imports = a.imports
-	na.exports = a.exports
+
+	if a.imports.streams != nil {
+		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))
+		for _, v := range a.imports.streams {
+			si := *v
+			na.imports.streams = append(na.imports.streams, &si)
+		}
+	}
+	if a.imports.services != nil {
+		na.imports.services = make(map[string]*serviceImport)
+		for k, v := range a.imports.services {
+			si := *v
+			na.imports.services[k] = &si
+		}
+	}
+	if a.exports.streams != nil {
+		na.exports.streams = make(map[string]*streamExport)
+		for k, v := range a.exports.streams {
+			if v != nil {
+				se := *v
+				na.exports.streams[k] = &se
+			} else {
+				na.exports.streams[k] = nil
+			}
+		}
+	}
+	if a.exports.services != nil {
+		na.exports.services = make(map[string]*serviceExport)
+		for k, v := range a.exports.services {
+			if v != nil {
+				se := *v
+				na.exports.services[k] = &se
+			} else {
+				na.exports.services[k] = nil
+			}
+		}
+	}
 	return na
 }
 
@@ -386,7 +421,7 @@ func (a *Account) addClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
 	if a.clients != nil {
-		a.clients[c] = c
+		a.clients[c] = struct{}{}
 	}
 	added := n != len(a.clients)
 	if added {
@@ -457,7 +492,7 @@ func (a *Account) randomClient() *client {
 	if a.siReplyClient != nil {
 		return a.siReplyClient
 	}
-	for _, c = range a.clients {
+	for c = range a.clients {
 		break
 	}
 	return c
@@ -1429,7 +1464,7 @@ func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 	a.mu.Lock()
 	si.invalid = true
 	clients := make([]*client, 0, len(a.clients))
-	for _, c := range a.clients {
+	for c := range a.clients {
 		clients = append(clients, c)
 	}
 	awcsti := map[string]struct{}{a.Name: {}}
@@ -1807,7 +1842,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	gatherClients := func() []*client {
 		a.mu.RLock()
 		clients := make([]*client, 0, len(a.clients))
-		for _, c := range a.clients {
+		for c := range a.clients {
 			clients = append(clients, c)
 		}
 		a.mu.RUnlock()
@@ -1897,7 +1932,7 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 					// Check for if we are still authorized for an import.
 					im.invalid = !a.checkStreamImportAuthorized(acc, im.from, im.claim)
 					awcsti[acc.Name] = struct{}{}
-					for _, c := range acc.clients {
+					for c := range acc.clients {
 						clients[c] = struct{}{}
 					}
 				}

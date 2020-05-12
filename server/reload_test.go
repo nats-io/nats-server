@@ -4155,3 +4155,149 @@ func TestReloadValidate(t *testing.T) {
 	}
 	srv.Shutdown()
 }
+
+func TestConfigReloadAccounts(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	system_account: SYS
+	accounts {
+		SYS {
+			users = [
+				{user: sys, password: pwd}
+			]
+		}
+		ACC {
+			users = [
+				{user: usr, password: pwd}
+			]
+		}
+		acc_deleted_after_reload_will_trigger_reload_of_all_accounts {
+			users = [
+				{user: notused, password: soon}
+			]
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	urlSys := fmt.Sprintf("nats://sys:pwd@%s:%d", o.Host, o.Port)
+	urlUsr := fmt.Sprintf("nats://usr:pwd@%s:%d", o.Host, o.Port)
+	oldAcc, ok := s.accounts.Load("SYS")
+	if !ok {
+		t.Fatal("No SYS account")
+	}
+
+	testSrvState := func(oldAcc interface{}) {
+		sysAcc := s.SystemAccount()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.sys == nil || sysAcc == nil {
+			t.Fatal("Expected sys.account to be non-nil")
+		}
+		if sysAcc.Name != "SYS" {
+			t.Fatal("Found wrong sys.account")
+		}
+		if s.opts.SystemAccount != "SYS" {
+			t.Fatal("Found wrong sys.account")
+		}
+		// This will fail prior to system account reload
+		if acc, ok := s.accounts.Load(s.opts.SystemAccount); !ok {
+			t.Fatal("Found different sys.account pointer")
+		} else if acc == oldAcc {
+			t.Fatal("System account is unaltered")
+		}
+		if s.sys.client == nil {
+			t.Fatal("Expected sys.client to be non-nil")
+		}
+		s.sys.client.mu.Lock()
+		defer s.sys.client.mu.Unlock()
+		if s.sys.client.acc.Name != "SYS" {
+			t.Fatal("Found wrong sys.account")
+		}
+		if s.sys.client.echo {
+			t.Fatal("Internal clients should always have echo false")
+		}
+		s.sys.account.mu.Lock()
+		if _, ok := s.sys.account.clients[s.sys.client]; !ok {
+			s.sys.account.mu.Unlock()
+			t.Fatal("internal client not present")
+		}
+		s.sys.account.mu.Unlock()
+	}
+
+	// Below tests use connection names so that they can be checked for.
+	// The test subscribes to ACC only. This avoids receiving own messages.
+	subscribe := func(name string) (*nats.Conn, *nats.Subscription, *nats.Subscription) {
+		c, err := nats.Connect(urlSys, nats.Name(name))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		subCon, err := c.SubscribeSync("$SYS.ACCOUNT.ACC.CONNECT")
+		if err != nil {
+			t.Fatalf("Error on subscribe CONNECT: %v", err)
+		}
+		subDis, err := c.SubscribeSync("$SYS.ACCOUNT.ACC.DISCONNECT")
+		if err != nil {
+			t.Fatalf("Error on subscribe DISCONNECT: %v", err)
+		}
+		return c, subCon, subDis
+	}
+	recv := func(name string, sub *nats.Subscription) {
+		if msg, err := sub.NextMsg(1 * time.Second); err != nil {
+			t.Fatalf("%s Error on next: %v", name, err)
+		} else {
+			cMsg := ConnectEventMsg{}
+			json.Unmarshal(msg.Data, &cMsg)
+			if cMsg.Client.Name != name {
+				t.Fatalf("%s wrong message: %s", name, string(msg.Data))
+			}
+		}
+	}
+	triggerSysEvent := func(name string, subs []*nats.Subscription) {
+		ncs1, err := nats.Connect(urlUsr, nats.Name(name))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		ncs1.Close()
+		for _, sub := range subs {
+			recv(name, sub)
+		}
+	}
+
+	testSrvState(nil)
+	c1, s1C, s1D := subscribe("SYS1")
+	defer c1.Close()
+	defer s1C.Unsubscribe()
+	defer s1D.Unsubscribe()
+	triggerSysEvent("BEFORE1", []*nats.Subscription{s1C, s1D})
+	triggerSysEvent("BEFORE2", []*nats.Subscription{s1C, s1D})
+
+	// Remove account to trigger account reload
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	system_account: SYS
+	accounts {
+		SYS {
+			users = [
+				{user: sys, password: pwd}
+			]
+		}
+		ACC {
+			users = [
+				{user: usr, password: pwd}
+			]
+		}
+	}
+	`)
+
+	testSrvState(oldAcc)
+	c2, s2C, s2D := subscribe("SYS2")
+	defer c2.Close()
+	defer s2C.Unsubscribe()
+	defer s2D.Unsubscribe()
+	// test new and existing subscriptions
+	triggerSysEvent("AFTER1", []*nats.Subscription{s1C, s1D, s2C, s2D})
+	triggerSysEvent("AFTER2", []*nats.Subscription{s1C, s1D, s2C, s2D})
+}

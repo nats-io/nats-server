@@ -866,7 +866,7 @@ func TestSystemAccountConnectionLimitsServersStaggered(t *testing.T) {
 
 	// Restart server B.
 	optsB.AccountResolver = sa.AccountResolver()
-	optsB.SystemAccount = sa.systemAccount().Name
+	optsB.SystemAccount = sa.SystemAccount().Name
 	sb = RunServer(optsB)
 	defer sb.Shutdown()
 	checkClusterFormed(t, sa, sb)

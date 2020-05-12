@@ -19,9 +19,12 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/jwt"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -687,6 +690,53 @@ func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
 	return nil
 }
 
+// For the purpose of comparing, impose a order on slice data types where order does not matter
+func imposeOrder(value interface{}) error {
+	switch value := value.(type) {
+	case []*Account:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i].Name < value[j].Name
+		})
+		for _, a := range value {
+			sort.Slice(a.imports.streams, func(i, j int) bool {
+				return a.imports.streams[i].acc.Name < a.imports.streams[j].acc.Name
+			})
+		}
+	case []*User:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i].Username < value[j].Username
+		})
+	case []*NkeyUser:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i].Nkey < value[j].Nkey
+		})
+	case []*url.URL:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i].String() < value[j].String()
+		})
+	case []string:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i] < value[j]
+		})
+	case []*jwt.OperatorClaims:
+		sort.Slice(value, func(i, j int) bool {
+			return value[i].Issuer < value[j].Issuer
+		})
+	case GatewayOpts:
+		sort.Slice(value.Gateways, func(i, j int) bool {
+			return value.Gateways[i].Name < value.Gateways[j].Name
+		})
+	case string, bool, int, int32, int64, time.Duration, float64, nil,
+		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, Authentication:
+		// explicitly skipped types
+	default:
+		// this will fail during unit tests
+		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",
+			reflect.TypeOf(value))
+	}
+	return nil
+}
+
 // diffOptions returns a slice containing options which have been changed. If
 // an option that doesn't support hot-swapping is changed, this returns an
 // error.
@@ -706,9 +756,14 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		var (
 			oldValue = oldConfig.Field(i).Interface()
 			newValue = newConfig.Field(i).Interface()
-			changed  = !reflect.DeepEqual(oldValue, newValue)
 		)
-		if !changed {
+		if err := imposeOrder(oldValue); err != nil {
+			return nil, err
+		}
+		if err := imposeOrder(newValue); err != nil {
+			return nil, err
+		}
+		if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
 			continue
 		}
 		switch strings.ToLower(field.Name) {
@@ -976,9 +1031,9 @@ func (s *Server) reloadAuthorization() {
 				// sublist and client map to the new account.
 				acc.mu.RLock()
 				if len(acc.clients) > 0 {
-					newAcc.clients = make(map[*client]*client, len(acc.clients))
-					for _, c := range acc.clients {
-						newAcc.clients[c] = c
+					newAcc.clients = make(map[*client]struct{}, len(acc.clients))
+					for c := range acc.clients {
+						newAcc.clients[c] = struct{}{}
 					}
 				}
 				newAcc.sl = acc.sl
