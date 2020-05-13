@@ -43,13 +43,14 @@ const CLUSTER_PORT = -1
 
 func DefaultMonitorOptions() *Options {
 	return &Options{
-		Host:       "127.0.0.1",
-		Port:       CLIENT_PORT,
-		HTTPHost:   "127.0.0.1",
-		HTTPPort:   MONITOR_PORT,
-		ServerName: "monitor_server",
-		NoLog:      true,
-		NoSigs:     true,
+		Host:         "127.0.0.1",
+		Port:         CLIENT_PORT,
+		HTTPHost:     "127.0.0.1",
+		HTTPPort:     MONITOR_PORT,
+		HTTPBasePath: "/",
+		ServerName:   "monitor_server",
+		NoLog:        true,
+		NoSigs:       true,
 	}
 }
 
@@ -136,6 +137,7 @@ var (
 	appJSONContent = "application/json"
 	appJSContent   = "application/javascript"
 	textPlain      = "text/plain; charset=utf-8"
+	textHTML       = "text/html; charset=utf-8"
 )
 
 func readBodyEx(t *testing.T, url string, status int, content string) []byte {
@@ -156,6 +158,18 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 		stackFatalf(t, "Got an error reading the body: %v\n", err)
 	}
 	return body
+}
+
+func TestHTTPBasePath(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.HTTPBasePath = "/nats"
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/nats", s.MonitorAddr().Port)
+	readBodyEx(t, url, http.StatusOK, textHTML)
 }
 
 func readBody(t *testing.T, url string) []byte {
