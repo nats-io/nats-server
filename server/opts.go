@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -173,6 +174,7 @@ type Options struct {
 	MaxPingsOut           int           `json:"ping_max"`
 	HTTPHost              string        `json:"http_host"`
 	HTTPPort              int           `json:"http_port"`
+	HTTPBasePath          string        `json:"http_base_path"`
 	HTTPSPort             int           `json:"https_port"`
 	AuthTimeout           float64       `json:"auth_timeout"`
 	MaxControlLine        int32         `json:"max_control_line"`
@@ -593,6 +595,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.HTTPPort = int(v.(int64))
 	case "https_port":
 		o.HTTPSPort = int(v.(int64))
+	case "http_base_path":
+		o.HTTPBasePath = v.(string)
 	case "cluster":
 		err := parseCluster(tk, o, errors, warnings)
 		if err != nil {
@@ -2814,6 +2818,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.HTTPPort != 0 {
 		opts.HTTPPort = flagOpts.HTTPPort
 	}
+	if flagOpts.HTTPBasePath != "" {
+		opts.HTTPBasePath = flagOpts.HTTPBasePath
+	}
 	if flagOpts.Debug {
 		opts.Debug = true
 	}
@@ -3316,6 +3323,17 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	return opts, nil
+}
+
+func normalizeBasePath(p string) string {
+	if len(p) == 0 {
+		return "/"
+	}
+	// add leading slash
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	return path.Clean(p)
 }
 
 // overrideTLS is called when at least "-tls=true" has been set.

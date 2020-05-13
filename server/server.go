@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -127,6 +128,7 @@ type Server struct {
 	start            time.Time
 	http             net.Listener
 	httpHandler      http.Handler
+	httpBasePath     string
 	profiler         net.Listener
 	httpReqStats     map[string]uint64
 	routeListener    net.Listener
@@ -239,6 +241,8 @@ func NewServer(opts *Options) (*Server, error) {
 		serverName = opts.ServerName
 	}
 
+	httpBasePath := normalizeBasePath(opts.HTTPBasePath)
+
 	// Validate some options. This is here because we cannot assume that
 	// server will always be started with configuration parsing (that could
 	// report issues). Its options can be (incorrectly) set by hand when
@@ -264,15 +268,16 @@ func NewServer(opts *Options) (*Server, error) {
 
 	now := time.Now()
 	s := &Server{
-		kp:         kp,
-		configFile: opts.ConfigFile,
-		info:       info,
-		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:       opts,
-		done:       make(chan bool, 1),
-		start:      now,
-		configTime: now,
-		gwLeafSubs: NewSublistWithCache(),
+		kp:           kp,
+		configFile:   opts.ConfigFile,
+		info:         info,
+		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:         opts,
+		done:         make(chan bool, 1),
+		start:        now,
+		configTime:   now,
+		gwLeafSubs:   NewSublistWithCache(),
+		httpBasePath: httpBasePath,
 	}
 
 	// Trusted root operator keys.
@@ -1566,6 +1571,10 @@ const (
 	StackszPath  = "/stacksz"
 )
 
+func (s *Server) basePath(p string) string {
+	return path.Join(s.httpBasePath, p)
+}
+
 // Start the monitoring server
 func (s *Server) startMonitoring(secure bool) error {
 	// Snapshot server options.
@@ -1620,23 +1629,23 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux := http.NewServeMux()
 
 	// Root
-	mux.HandleFunc(RootPath, s.HandleRoot)
+	mux.HandleFunc(s.basePath(RootPath), s.HandleRoot)
 	// Varz
-	mux.HandleFunc(VarzPath, s.HandleVarz)
+	mux.HandleFunc(s.basePath(VarzPath), s.HandleVarz)
 	// Connz
-	mux.HandleFunc(ConnzPath, s.HandleConnz)
+	mux.HandleFunc(s.basePath(ConnzPath), s.HandleConnz)
 	// Routez
-	mux.HandleFunc(RoutezPath, s.HandleRoutez)
+	mux.HandleFunc(s.basePath(RoutezPath), s.HandleRoutez)
 	// Gatewayz
-	mux.HandleFunc(GatewayzPath, s.HandleGatewayz)
+	mux.HandleFunc(s.basePath(GatewayzPath), s.HandleGatewayz)
 	// Leafz
-	mux.HandleFunc(LeafzPath, s.HandleLeafz)
+	mux.HandleFunc(s.basePath(LeafzPath), s.HandleLeafz)
 	// Subz
-	mux.HandleFunc(SubszPath, s.HandleSubsz)
+	mux.HandleFunc(s.basePath(SubszPath), s.HandleSubsz)
 	// Subz alias for backwards compatibility
-	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
+	mux.HandleFunc(s.basePath("/subscriptionsz"), s.HandleSubsz)
 	// Stacksz
-	mux.HandleFunc(StackszPath, s.HandleStacksz)
+	mux.HandleFunc(s.basePath(StackszPath), s.HandleStacksz)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the

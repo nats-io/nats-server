@@ -96,6 +96,7 @@ func TestConfigFile(t *testing.T) {
 		Trace:                 true,
 		Logtime:               false,
 		HTTPPort:              8222,
+		HTTPBasePath:          "/nats",
 		PidFile:               "/tmp/nats-server.pid",
 		ProfPort:              6543,
 		Syslog:                true,
@@ -252,6 +253,7 @@ func TestMergeOverrides(t *testing.T) {
 		Trace:          true,
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
+		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
 		PidFile:        "/tmp/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,
@@ -279,11 +281,12 @@ func TestMergeOverrides(t *testing.T) {
 
 	// Overrides via flags
 	opts := &Options{
-		Port:     2222,
-		Password: "porkchop",
-		Debug:    true,
-		HTTPPort: DEFAULT_HTTP_PORT,
-		ProfPort: 6789,
+		Port:         2222,
+		Password:     "porkchop",
+		Debug:        true,
+		HTTPPort:     DEFAULT_HTTP_PORT,
+		HTTPBasePath: DEFAULT_HTTP_BASE_PATH,
+		ProfPort:     6789,
 		Cluster: ClusterOpts{
 			NoAdvertise:    true,
 			ConnectRetries: 2,
@@ -1110,6 +1113,7 @@ func TestOptionsClone(t *testing.T) {
 		Trace:          true,
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
+		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
 		PidFile:        "/tmp/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,

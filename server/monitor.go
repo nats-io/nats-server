@@ -975,6 +975,7 @@ type Varz struct {
 	MaxPingsOut       int               `json:"ping_max"`
 	HTTPHost          string            `json:"http_host"`
 	HTTPPort          int               `json:"http_port"`
+	HTTPBasePath      string            `json:"http_base_path"`
 	HTTPSPort         int               `json:"https_port"`
 	AuthTimeout       float64           `json:"auth_timeout"`
 	MaxControlLine    int32             `json:"max_control_line"`
@@ -1081,7 +1082,7 @@ func myUptime(d time.Duration) string {
 // HandleRoot will show basic info and links to others handlers.
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	// This feels dumb to me, but is required: https://code.google.com/p/go/issues/detail?id=4799
-	if r.URL.Path != "/" {
+	if r.URL.Path != s.httpBasePath {
 		http.NotFound(w, r)
 		return
 	}
@@ -1099,16 +1100,23 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
   <body>
     <img src="http://nats.io/img/logo.png" alt="NATS">
     <br/>
-	<a href=/varz>varz</a><br/>
-	<a href=/connz>connz</a><br/>
-	<a href=/routez>routez</a><br/>
-	<a href=/gatewayz>gatewayz</a><br/>
-	<a href=/leafz>leafz</a><br/>
-	<a href=/subsz>subsz</a><br/>
+	<a href=%s>varz</a><br/>
+	<a href=%s>connz</a><br/>
+	<a href=%s>routez</a><br/>
+	<a href=%s>gatewayz</a><br/>
+	<a href=%s>leafz</a><br/>
+	<a href=%s>subsz</a><br/>
     <br/>
     <a href=https://docs.nats.io/nats-server/configuration/monitoring.html>help</a>
   </body>
-</html>`)
+</html>`,
+		s.basePath(VarzPath),
+		s.basePath(ConnzPath),
+		s.basePath(RoutezPath),
+		s.basePath(GatewayzPath),
+		s.basePath(LeafzPath),
+		s.basePath(SubszPath),
+	)
 }
 
 // Varz returns a Varz struct containing the server information.
@@ -1138,18 +1146,19 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	gw := &opts.Gateway
 	ln := &opts.LeafNode
 	varz := &Varz{
-		ID:        info.ID,
-		Version:   info.Version,
-		Proto:     info.Proto,
-		GitCommit: info.GitCommit,
-		GoVersion: info.GoVersion,
-		Name:      info.Name,
-		Host:      info.Host,
-		Port:      info.Port,
-		IP:        info.IP,
-		HTTPHost:  opts.HTTPHost,
-		HTTPPort:  opts.HTTPPort,
-		HTTPSPort: opts.HTTPSPort,
+		ID:           info.ID,
+		Version:      info.Version,
+		Proto:        info.Proto,
+		GitCommit:    info.GitCommit,
+		GoVersion:    info.GoVersion,
+		Name:         info.Name,
+		Host:         info.Host,
+		Port:         info.Port,
+		IP:           info.IP,
+		HTTPHost:     opts.HTTPHost,
+		HTTPPort:     opts.HTTPPort,
+		HTTPBasePath: opts.HTTPBasePath,
+		HTTPSPort:    opts.HTTPSPort,
 		Cluster: ClusterOptsVarz{
 			Host:        c.Host,
 			Port:        c.Port,
