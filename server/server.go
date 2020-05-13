@@ -515,8 +515,6 @@ func (s *Server) configureAccounts() error {
 			s.mu.Unlock()
 			// acquires server lock separately
 			s.addSystemAccountExports(acc)
-			// can't hold the lock as go routine reading it may be waiting for lock as well
-			s.sys.resetCh <- struct{}{}
 			s.mu.Lock()
 		}
 		if err != nil {

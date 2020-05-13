@@ -1106,7 +1106,16 @@ func (s *Server) reloadAuthorization() {
 	for _, route := range s.routes {
 		routes = append(routes, route)
 	}
+	var resetCh chan struct{}
+	if s.sys != nil {
+		// can't hold the lock as go routine reading it may be waiting for lock as well
+		resetCh = s.sys.resetCh
+	}
 	s.mu.Unlock()
+
+	if resetCh != nil {
+		resetCh <- struct{}{}
+	}
 
 	// Close clients that have moved accounts
 	for _, client := range cclients {
