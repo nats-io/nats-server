@@ -1442,6 +1442,11 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	return nil
 }
 
+func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
+	fmt.Printf("arg is %q\n", arg)
+	return nil
+}
+
 func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}

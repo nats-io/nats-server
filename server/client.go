@@ -2449,14 +2449,69 @@ func (c *client) checkDenySub(subject string) bool {
 	return false
 }
 
-func (c *client) msgHeader(subj []byte, sub *subscription, reply []byte) []byte {
+// Create a message header for routes or leafnodes. Header aware.
+func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
+	hasHeader := c.pa.hdr > 0
+	canReceiveHeader := rt.sub.client.headers
+
+	kind := rt.sub.client.kind
+	mh := c.msgb[:msgHeadProtoLen]
+	if kind == ROUTER {
+		// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
+		mh[0] = 'R'
+		mh = append(mh, acc.Name...)
+		mh = append(mh, ' ')
+	} else {
+		// Leaf nodes are LMSG
+		mh[0] = 'L'
+		// Remap subject if its a shadow subscription, treat like a normal client.
+		if rt.sub.im != nil && rt.sub.im.prefix != "" {
+			mh = append(mh, rt.sub.im.prefix...)
+		}
+	}
+	mh = append(mh, subj...)
+	mh = append(mh, ' ')
+
+	if len(rt.qs) > 0 {
+		if reply != nil {
+			mh = append(mh, "+ "...) // Signal that there is a reply.
+			mh = append(mh, reply...)
+			mh = append(mh, ' ')
+		} else {
+			mh = append(mh, "| "...) // Only queues
+		}
+		mh = append(mh, rt.qs...)
+	} else if reply != nil {
+		mh = append(mh, reply...)
+		mh = append(mh, ' ')
+	}
+	if hasHeader {
+		if canReceiveHeader {
+			mh[0] = 'H'
+			mh = append(mh, c.pa.hdb...)
+			mh = append(mh, ' ')
+			mh = append(mh, c.pa.szb...)
+		} else {
+			// If we are here we need to truncate the payload size
+			nsz := strconv.Itoa(c.pa.size - c.pa.hdr)
+			mh = append(mh, nsz...)
+		}
+	} else {
+		mh = append(mh, c.pa.szb...)
+	}
+	mh = append(mh, _CRLF_...)
+	return mh
+}
+
+// Create a message header for clients. Header aware.
+func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 	// See if we should do headers. We have to have a headers msg and
 	// the client we are going to deliver to needs to support headers as well.
-	// TODO(dlc) - This should only be for client connections, but should we check?
-	doHeaders := c.pa.hdr > 0 && sub.client != nil && sub.client.headers
+	hasHeader := c.pa.hdr > 0
+	canReceiveHeader := sub.client != nil && sub.client.headers
 
 	var mh []byte
-	if doHeaders {
+	if hasHeader && canReceiveHeader {
 		mh = c.msgb[:msgHeadProtoLen]
 		mh[0] = 'H'
 	} else {
@@ -2473,12 +2528,19 @@ func (c *client) msgHeader(subj []byte, sub *subscription, reply []byte) []byte 
 		mh = append(mh, reply...)
 		mh = append(mh, ' ')
 	}
-
-	if doHeaders {
-		mh = append(mh, c.pa.hdb...)
-		mh = append(mh, ' ')
+	if hasHeader {
+		if canReceiveHeader {
+			mh = append(mh, c.pa.hdb...)
+			mh = append(mh, ' ')
+			mh = append(mh, c.pa.szb...)
+		} else {
+			// If we are here we need to truncate the payload size
+			nsz := strconv.Itoa(c.pa.size - c.pa.hdr)
+			mh = append(mh, nsz...)
+		}
+	} else {
+		mh = append(mh, c.pa.szb...)
 	}
-	mh = append(mh, c.pa.szb...)
 	mh = append(mh, _CRLF_...)
 	return mh
 }
@@ -2584,6 +2646,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 
 	// Check here if we have a header with our message. If this client can not
 	// support we need to strip the headers from the payload.
+	// The actual header would have been processed correctluy for us, so just
+	// need to update payload.
 	if c.pa.hdr > 0 && !sub.client.headers {
 		msg = msg[c.pa.hdr:]
 	}
@@ -3316,7 +3380,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			dsubj = append(dsubj, subj...)
 		}
 		// Normal delivery
-		mh := c.msgHeader(dsubj, sub, creply)
+		mh := c.msgHeader(dsubj, creply, sub)
 		didDeliver = c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix) || didDeliver
 	}
 
@@ -3429,7 +3493,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			// "rreply" will be stripped of the $GNR prefix (if present)
 			// for client connections only.
-			mh := c.msgHeader(dsubj, sub, rreply)
+			mh := c.msgHeader(dsubj, rreply, sub)
 			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
 				didDeliver = true
 				// Clear rsub
@@ -3471,39 +3535,7 @@ sendToRoutesOrLeafs:
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
-		kind := rt.sub.client.kind
-		mh := c.msgb[:msgHeadProtoLen]
-		if kind == ROUTER {
-			// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
-			mh[0] = 'R'
-			mh = append(mh, acc.Name...)
-			mh = append(mh, ' ')
-		} else {
-			// Leaf nodes are LMSG
-			mh[0] = 'L'
-			// Remap subject if its a shadow subscription, treat like a normal client.
-			if rt.sub.im != nil && rt.sub.im.prefix != "" {
-				mh = append(mh, rt.sub.im.prefix...)
-			}
-		}
-		mh = append(mh, subject...)
-		mh = append(mh, ' ')
-
-		if len(rt.qs) > 0 {
-			if reply != nil {
-				mh = append(mh, "+ "...) // Signal that there is a reply.
-				mh = append(mh, reply...)
-				mh = append(mh, ' ')
-			} else {
-				mh = append(mh, "| "...) // Only queues
-			}
-			mh = append(mh, rt.qs...)
-		} else if reply != nil {
-			mh = append(mh, reply...)
-			mh = append(mh, ' ')
-		}
-		mh = append(mh, c.pa.szb...)
-		mh = append(mh, _CRLF_...)
+		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
 		didDeliver = c.deliverMsg(rt.sub, subject, mh, msg, false) || didDeliver
 	}
 	return didDeliver, queues

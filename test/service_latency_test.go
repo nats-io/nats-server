@@ -675,7 +675,7 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	sc.setupLatencyTracking(t, 100)
 
 	selectServer := func() *server.Options {
-		si, ci := rand.Int63n(int64(numServers)), rand.Int63n(int64(numServers))
+		si, ci := rand.Int63n(int64(numServers)), rand.Int63n(int64(numClusters))
 		return sc.clusters[ci].opts[si]
 	}
 

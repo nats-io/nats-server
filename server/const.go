@@ -124,6 +124,12 @@ const (
 	// MAX_MSG_ARGS Maximum possible number of arguments from MSG proto.
 	MAX_MSG_ARGS = 4
 
+	// MAX_RMSG_ARGS Maximum possible number of arguments from RMSG proto.
+	MAX_RMSG_ARGS = 6
+
+	// MAX_HMSG_ARGS Maximum possible number of arguments from HMSG proto.
+	MAX_HMSG_ARGS = 7
+
 	// MAX_PUB_ARGS Maximum possible number of arguments from PUB proto.
 	MAX_PUB_ARGS = 3
 

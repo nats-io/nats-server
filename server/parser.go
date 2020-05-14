@@ -68,6 +68,11 @@ const (
 	OP_HPUB
 	OP_HPUB_SPC
 	HPUB_ARG
+	OP_HM
+	OP_HMS
+	OP_HMSG
+	OP_HMSG_SPC
+	HMSG_ARG
 	OP_P
 	OP_PU
 	OP_PUB
@@ -191,6 +196,8 @@ func (c *client) parse(buf []byte) error {
 			switch b {
 			case 'P', 'p':
 				c.state = OP_HP
+			case 'M', 'm':
+				c.state = OP_HM
 			default:
 				goto parseErr
 			}
@@ -249,6 +256,73 @@ func (c *client) parse(buf []byte) error {
 				if c.msgBuf == nil {
 					i = c.as + c.pa.size - LEN_CR_LF
 				}
+			default:
+				if c.argBuf != nil {
+					c.argBuf = append(c.argBuf, b)
+				}
+			}
+		case OP_HM:
+			switch b {
+			case 'S', 's':
+				c.state = OP_HMS
+			default:
+				goto parseErr
+			}
+		case OP_HMS:
+			switch b {
+			case 'G', 'g':
+				c.state = OP_HMSG
+			default:
+				goto parseErr
+			}
+		case OP_HMSG:
+			switch b {
+			case ' ', '\t':
+				c.state = OP_HMSG_SPC
+			default:
+				goto parseErr
+			}
+		case OP_HMSG_SPC:
+			switch b {
+			case ' ', '\t':
+				continue
+			default:
+				c.state = HMSG_ARG
+				c.as = i
+			}
+		case HMSG_ARG:
+			switch b {
+			case '\r':
+				c.drop = 1
+			case '\n':
+				var arg []byte
+				if c.argBuf != nil {
+					arg = c.argBuf
+					c.argBuf = nil
+				} else {
+					arg = buf[c.as : i-c.drop]
+				}
+				var err error
+				if c.kind == ROUTER || c.kind == GATEWAY {
+					if trace {
+						c.traceInOp("HMSG", arg)
+					}
+					err = c.processRoutedHeaderMsgArgs(arg)
+				} else if c.kind == LEAF {
+					if trace {
+						c.traceInOp("HMSG", arg)
+					}
+					err = c.processLeafHeaderMsgArgs(arg)
+				}
+				if err != nil {
+					return err
+				}
+				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
+
+				// jump ahead with the index. If this overruns
+				// what is left we fall out and process split
+				// buffer.
+				i = c.as + c.pa.size - LEN_CR_LF
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)
