@@ -348,10 +348,13 @@ func TestClientHeaderDeliverStrippedMsg(t *testing.T) {
 	if matches[SID_INDEX] != "1" {
 		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
 	}
-	if matches[LEN_INDEX] != "14" {
+	if matches[LEN_INDEX] != "2" {
 		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
 	}
 	checkPayload(br, []byte("OK\r\n"), t)
+	if br.Buffered() != 0 {
+		t.Fatalf("Expected no extra bytes to be buffered, got %d", br.Buffered())
+	}
 }
 
 func TestClientHeaderDeliverQueueSubStrippedMsg(t *testing.T) {
@@ -394,7 +397,7 @@ func TestClientHeaderDeliverQueueSubStrippedMsg(t *testing.T) {
 	if matches[SID_INDEX] != "1" {
 		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
 	}
-	if matches[LEN_INDEX] != "14" {
+	if matches[LEN_INDEX] != "2" {
 		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
 	}
 	checkPayload(br, []byte("OK\r\n"), t)
