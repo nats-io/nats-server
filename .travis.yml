@@ -31,9 +31,8 @@ script:
 
 deploy:
   provider: script
-  skip_cleanup: false
+  cleanup: true
   script: curl -sL http://git.io/goreleaser | bash
-  verbose: true
   on:
     tags: true
     condition: $TRAVIS_GO_VERSION =~ 1.13

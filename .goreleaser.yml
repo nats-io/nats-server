@@ -35,7 +35,7 @@ builds:
       goarch: 386
 
 nfpms:
-  - name_template: '{{.ProjectName}}-{{.Tag}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}'
+  - file_name_template: '{{.ProjectName}}-{{.Tag}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}'
     homepage:  https://nats.io
     description: High-Performance server for NATS, the cloud native messaging system.
     maintainer: Ivan Kozlovic <ivan@synadia.com>
