@@ -1443,8 +1443,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 }
 
 func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
-	fmt.Printf("arg is %q\n", arg)
-	return nil
+	return fmt.Errorf("headers not implemented for leafnodes yet")
 }
 
 func (c *client) processLeafMsgArgs(arg []byte) error {

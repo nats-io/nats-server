@@ -220,13 +220,19 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 
 		// Grab queue names.
 		if c.pa.reply != nil {
-			c.pa.queues = args[4 : len(args)-1]
+			c.pa.queues = args[4 : len(args)-2]
 		} else {
-			c.pa.queues = args[3 : len(args)-1]
+			c.pa.queues = args[3 : len(args)-2]
 		}
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Header Size: '%s'", arg)
 	}
 	if c.pa.size < 0 {
 		return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processRoutedHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
 	}
 
 	// Common ones processed after check for arg length
