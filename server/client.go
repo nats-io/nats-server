@@ -2654,7 +2654,7 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 
 	// Check here if we have a header with our message. If this client can not
 	// support we need to strip the headers from the payload.
-	// The actual header would have been processed correctluy for us, so just
+	// The actual header would have been processed correctly for us, so just
 	// need to update payload.
 	if c.pa.hdr > 0 && !sub.client.headers {
 		msg = msg[c.pa.hdr:]

@@ -287,6 +287,7 @@ func (c *client) parse(buf []byte) error {
 			case ' ', '\t':
 				continue
 			default:
+				c.pa.hdr = 0
 				c.state = HMSG_ARG
 				c.as = i
 			}
@@ -876,6 +877,7 @@ func (c *client) parse(buf []byte) error {
 			case ' ', '\t':
 				continue
 			default:
+				c.pa.hdr = -1
 				c.state = MSG_ARG
 				c.as = i
 			}
@@ -1050,8 +1052,8 @@ func (c *client) parse(buf []byte) error {
 	if c.state == SUB_ARG || c.state == UNSUB_ARG ||
 		c.state == PUB_ARG || c.state == HPUB_ARG ||
 		c.state == ASUB_ARG || c.state == AUSUB_ARG ||
-		c.state == MSG_ARG || c.state == MINUS_ERR_ARG ||
-		c.state == CONNECT_ARG || c.state == INFO_ARG {
+		c.state == MSG_ARG || c.state == HMSG_ARG ||
+		c.state == MINUS_ERR_ARG || c.state == CONNECT_ARG || c.state == INFO_ARG {
 		// Setup a holder buffer to deal with split buffer scenario.
 		if c.argBuf == nil {
 			c.argBuf = c.scratch[:0]
@@ -1084,7 +1086,6 @@ func (c *client) parse(buf []byte) error {
 		// new buffer to hold the split message.
 		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
 			lrem := len(buf[c.as:])
-
 			// Consider it a protocol error when the remaining payload
 			// is larger than the reported size for PUB. It can happen
 			// when processing incomplete messages from rogue clients.
@@ -1134,7 +1135,11 @@ func (c *client) clonePubArg() error {
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
-		return c.processRoutedMsgArgs(c.argBuf)
+		if c.pa.hdr < 0 {
+			return c.processRoutedMsgArgs(c.argBuf)
+		} else {
+			return c.processRoutedHeaderMsgArgs(c.argBuf)
+		}
 	case LEAF:
 		return c.processLeafMsgArgs(c.argBuf)
 	default:

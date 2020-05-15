@@ -436,6 +436,123 @@ func TestParseHeaderPubArg(t *testing.T) {
 	}
 }
 
+func TestParseRoutedHeaderMsg(t *testing.T) {
+	c := dummyRouteClient()
+
+	pub := []byte("HMSG $foo foo 10 8\r\nXXXhello\r")
+	if err := c.parse(pub); err == nil {
+		t.Fatalf("Expected an error")
+	}
+
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
+
+	pub = []byte("HMSG $foo foo 3 8\r\nXXXhello\r")
+	err := c.parse(pub)
+	if err != nil || c.state != MSG_END_N {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.account, []byte("$foo")) {
+		t.Fatalf("Did not parse account correctly: '$foo' vs '%s'\n", c.pa.account)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if c.pa.reply != nil {
+		t.Fatalf("Did not parse reply correctly: 'nil' vs '%s'\n", c.pa.reply)
+	}
+	if c.pa.hdr != 3 {
+		t.Fatalf("Did not parse header size correctly: 3 vs %d\n", c.pa.hdr)
+	}
+	if c.pa.size != 8 {
+		t.Fatalf("Did not parse msg size correctly: 8 vs %d\n", c.pa.size)
+	}
+
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
+
+	pub = []byte("HMSG $G foo.bar INBOX.22 3 14\r\nOK:hello world\r")
+	err = c.parse(pub)
+	if err != nil || c.state != MSG_END_N {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.account, []byte("$G")) {
+		t.Fatalf("Did not parse account correctly: '$G' vs '%s'\n", c.pa.account)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.reply, []byte("INBOX.22")) {
+		t.Fatalf("Did not parse reply correctly: 'INBOX.22' vs '%s'\n", c.pa.reply)
+	}
+	if c.pa.hdr != 3 {
+		t.Fatalf("Did not parse header size correctly: 3 vs %d\n", c.pa.hdr)
+	}
+	if c.pa.size != 14 {
+		t.Fatalf("Did not parse msg size correctly: 14 vs %d\n", c.pa.size)
+	}
+
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
+
+	pub = []byte("HMSG $G foo.bar + reply baz 3 14\r\nOK:hello world\r")
+	err = c.parse(pub)
+	if err != nil || c.state != MSG_END_N {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.account, []byte("$G")) {
+		t.Fatalf("Did not parse account correctly: '$G' vs '%s'\n", c.pa.account)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.reply, []byte("reply")) {
+		t.Fatalf("Did not parse reply correctly: 'reply' vs '%s'\n", c.pa.reply)
+	}
+	if len(c.pa.queues) != 1 {
+		t.Fatalf("Expected 1 queue, got %d", len(c.pa.queues))
+	}
+	if !bytes.Equal(c.pa.queues[0], []byte("baz")) {
+		t.Fatalf("Did not parse queues correctly: 'baz' vs '%q'\n", c.pa.queues[0])
+	}
+	if c.pa.hdr != 3 {
+		t.Fatalf("Did not parse header size correctly: 3 vs %d\n", c.pa.hdr)
+	}
+	if c.pa.size != 14 {
+		t.Fatalf("Did not parse msg size correctly: 14 vs %d\n", c.pa.size)
+	}
+
+	// Clear snapshots
+	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
+
+	pub = []byte("HMSG $G foo.bar | baz 3 14\r\nOK:hello world\r")
+	err = c.parse(pub)
+	if err != nil || c.state != MSG_END_N {
+		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
+	}
+	if !bytes.Equal(c.pa.account, []byte("$G")) {
+		t.Fatalf("Did not parse account correctly: '$G' vs '%s'\n", c.pa.account)
+	}
+	if !bytes.Equal(c.pa.subject, []byte("foo.bar")) {
+		t.Fatalf("Did not parse subject correctly: 'foo' vs '%s'\n", c.pa.subject)
+	}
+	if !bytes.Equal(c.pa.reply, []byte("")) {
+		t.Fatalf("Did not parse reply correctly: '' vs '%s'\n", c.pa.reply)
+	}
+	if len(c.pa.queues) != 1 {
+		t.Fatalf("Expected 1 queue, got %d", len(c.pa.queues))
+	}
+	if !bytes.Equal(c.pa.queues[0], []byte("baz")) {
+		t.Fatalf("Did not parse queues correctly: 'baz' vs '%q'\n", c.pa.queues[0])
+	}
+	if c.pa.hdr != 3 {
+		t.Fatalf("Did not parse header size correctly: 3 vs %d\n", c.pa.hdr)
+	}
+	if c.pa.size != 14 {
+		t.Fatalf("Did not parse msg size correctly: 14 vs %d\n", c.pa.size)
+	}
+}
+
 func TestParseRouteMsg(t *testing.T) {
 	c := dummyRouteClient()
 
