@@ -22,6 +22,7 @@ import (
 	"net"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ var DefaultTestOptions = server.Options{
 	Port:                  4222,
 	NoLog:                 true,
 	NoSigs:                true,
-	MaxControlLine:        2048,
+	MaxControlLine:        4096,
 	DisableShortFirstPing: true,
 }
 
@@ -195,10 +196,19 @@ func checkInfoMsg(t tLogger, c net.Conn) server.Info {
 	return sinfo
 }
 
-func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
+func doHeadersConnect(t tLogger, c net.Conn, verbose, pedantic, ssl, headers bool) {
 	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v}\r\n", verbose, pedantic, ssl)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"headers\":%v}\r\n",
+		verbose, pedantic, ssl, headers)
 	sendProto(t, c, cs)
+}
+
+func doConnect(t tLogger, c net.Conn, verbose, pedantic, ssl bool) {
+	doHeadersConnect(t, c, verbose, pedantic, ssl, false)
+}
+
+func doDefaultHeadersConnect(t tLogger, c net.Conn) {
+	doHeadersConnect(t, c, false, false, false, true)
 }
 
 func doDefaultConnect(t tLogger, c net.Conn) {
@@ -225,6 +235,11 @@ func setupRoute(t tLogger, c net.Conn, opts *server.Options) (sendFun, expectFun
 	io.ReadFull(rand.Reader, u)
 	id := fmt.Sprintf("ROUTER:%s", hex.EncodeToString(u))
 	return setupRouteEx(t, c, opts, id)
+}
+
+func setupHeaderConn(t tLogger, c net.Conn) (sendFun, expectFun) {
+	doDefaultHeadersConnect(t, c)
+	return sendCommand(t, c), expectCommand(t, c)
 }
 
 func setupConn(t tLogger, c net.Conn) (sendFun, expectFun) {
@@ -286,6 +301,7 @@ var (
 	infoRe    = regexp.MustCompile(`INFO\s+([^\r\n]+)\r\n`)
 	pingRe    = regexp.MustCompile(`^PING\r\n`)
 	pongRe    = regexp.MustCompile(`^PONG\r\n`)
+	hmsgRe    = regexp.MustCompile(`(?:(?:HMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s+(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	msgRe     = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	rawMsgRe  = regexp.MustCompile(`(?:(?:MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n(.*?)))`)
 	okRe      = regexp.MustCompile(`\A\+OK\r\n`)
@@ -308,6 +324,10 @@ const (
 	replyIndex = 4
 	lenIndex   = 5
 	msgIndex   = 6
+	// Headers
+	hlenIndex = 5
+	tlenIndex = 6
+	hmsgIndex = 7
 
 	// Routed Messages
 	accIndex           = 1
@@ -327,7 +347,6 @@ func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 		stackFatalf(t, "Error reading from conn: %v\n", err)
 	}
 	buf := expBuf[:n]
-
 	if !re.Match(buf) {
 		stackFatalf(t, "Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'", buf, re)
 	}
@@ -416,6 +435,35 @@ func checkLmsg(t tLogger, m [][]byte, subject, replyAndQueues, len, msg string) 
 	}
 }
 
+// This will check that we got what we expected from a header message.
+func checkHmsg(t tLogger, m [][]byte, subject, sid, reply, hlen, len, hdr, msg string) {
+	if string(m[subIndex]) != subject {
+		stackFatalf(t, "Did not get correct subject: expected '%s' got '%s'\n", subject, m[subIndex])
+	}
+	if sid != "" && string(m[sidIndex]) != sid {
+		stackFatalf(t, "Did not get correct sid: expected '%s' got '%s'\n", sid, m[sidIndex])
+	}
+	if string(m[replyIndex]) != reply {
+		stackFatalf(t, "Did not get correct reply: expected '%s' got '%s'\n", reply, m[replyIndex])
+	}
+	if string(m[hlenIndex]) != hlen {
+		stackFatalf(t, "Did not get correct header length: expected '%s' got '%s'\n", hlen, m[hlenIndex])
+	}
+	if string(m[tlenIndex]) != len {
+		stackFatalf(t, "Did not get correct msg length: expected '%s' got '%s'\n", len, m[tlenIndex])
+	}
+	// Extract the payload and break up the headers and msg.
+	payload := string(m[hmsgIndex])
+	hi, _ := strconv.Atoi(hlen)
+	rhdr, rmsg := payload[:hi], payload[hi:]
+	if rhdr != hdr {
+		stackFatalf(t, "Did not get correct headers: expected '%s' got '%s'\n", hdr, rhdr)
+	}
+	if rmsg != msg {
+		stackFatalf(t, "Did not get correct msg: expected '%s' got '%s'\n", msg, rmsg)
+	}
+}
+
 // Closure for expectMsgs
 func expectRmsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 	return func(expected int) [][][]byte {
@@ -423,6 +471,18 @@ func expectRmsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
 		matches := rmsgRe.FindAllSubmatch(buf, -1)
 		if len(matches) != expected {
 			stackFatalf(t, "Did not get correct # routed msgs: %d vs %d\n", len(matches), expected)
+		}
+		return matches
+	}
+}
+
+// Closure for expectHMsgs
+func expectHeaderMsgsCommand(t tLogger, ef expectFun) func(int) [][][]byte {
+	return func(expected int) [][][]byte {
+		buf := ef(hmsgRe)
+		matches := hmsgRe.FindAllSubmatch(buf, -1)
+		if len(matches) != expected {
+			stackFatalf(t, "Did not get correct # msgs: %d vs %d\n", len(matches), expected)
 		}
 		return matches
 	}

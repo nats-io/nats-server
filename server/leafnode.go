@@ -1442,6 +1442,10 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	return nil
 }
 
+func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
+	return fmt.Errorf("headers not implemented for leafnodes yet")
+}
+
 func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
