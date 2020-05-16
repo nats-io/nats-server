@@ -738,6 +738,37 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "f", Subjects: []string{"foo.bar", "*.bar.>"}}))
 }
 
+func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc := s.GlobalAccount()
+
+	expectErr := func(_ *server.Stream, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "subjects overlap") {
+			t.Fatalf("Expected error but got none")
+		}
+	}
+
+	// Test that any overlapping subjects with our JSAPI should fail.
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "a", Subjects: []string{"$JS.API.foo", "$JS.API.bar"}}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "b", Subjects: []string{"$JS.API.>"}}))
+	expectErr(acc.AddStream(&server.StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
+
+	// Events and Advisories etc should be ok.
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.foo"}}); err != nil {
+		t.Fatalf("Expected this to work: %v", err)
+	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "b", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
+		t.Fatalf("Expected this to work: %v", err)
+	}
+}
+
 func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 	mconfig := &server.StreamConfig{
 		Name:     "ok",
