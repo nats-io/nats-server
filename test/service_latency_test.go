@@ -1342,6 +1342,9 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		}
 		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
 
+		// We wait here for the gateways to report no interest b/c optimistic mode.
+		time.Sleep(50 * time.Millisecond)
+
 		// Proper request, but no responders.
 		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
 		sl = getMetricResult()
@@ -1350,9 +1353,9 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		}
 		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
 
-		// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+		// The service listener. Make it slow. 10ms is respThreshold, so take 2.5X
 		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 			msg.Respond([]byte("22 msgs"))
 		})
 		defer sub.Unsubscribe()
