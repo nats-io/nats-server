@@ -241,6 +241,11 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 			if _, ok := dset[subj]; ok {
 				return StreamConfig{}, fmt.Errorf("duplicate subjects detected")
 			}
+			// Also check to make sure we do not overlap with our $JS API subjects.
+			if subjectIsSubsetMatch(subj, "$JS.API.>") {
+				return StreamConfig{}, fmt.Errorf("subjects overlap with jetstream api")
+			}
+
 			dset[subj] = struct{}{}
 		}
 	}
