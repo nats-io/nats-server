@@ -95,9 +95,14 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 		}
 	}
 
+	// Grab time.
+	now := time.Now()
+	ts := now.UnixNano()
+
 	seq := ms.state.LastSeq + 1
 	if ms.state.FirstSeq == 0 {
 		ms.state.FirstSeq = seq
+		ms.state.FirstTime = now.UTC()
 	}
 
 	// Make copies - https://github.com/go101/go101/wiki
@@ -107,11 +112,11 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	}
 
 	startBytes := int64(ms.state.Bytes)
-	ts := time.Now().UnixNano()
 	ms.msgs[seq] = &storedMsg{subj, msg, seq, ts}
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, msg)
 	ms.state.LastSeq = seq
+	ms.state.LastTime = now.UTC()
 
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
@@ -226,6 +231,7 @@ func (ms *memStore) Purge() uint64 {
 	cb := ms.scb
 	bytes := int64(ms.state.Bytes)
 	ms.state.FirstSeq = ms.state.LastSeq + 1
+	ms.state.FirstTime = ms.state.LastTime
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)
@@ -286,29 +292,41 @@ func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
-	if ok {
-		delete(ms.msgs, seq)
-		ms.state.Msgs--
-		ss = memStoreMsgSize(sm.subj, sm.msg)
-		ms.state.Bytes -= ss
-		if seq == ms.state.FirstSeq {
-			var nseq uint64
-			for nseq = ms.state.FirstSeq + 1; nseq < ms.state.LastSeq; nseq++ {
-				if _, ok := ms.msgs[nseq]; ok {
-					break
-				}
+	if !ok {
+		return false
+	}
+
+	delete(ms.msgs, seq)
+	ms.state.Msgs--
+	ss = memStoreMsgSize(sm.subj, sm.msg)
+	ms.state.Bytes -= ss
+	if seq == ms.state.FirstSeq {
+		var nsm *storedMsg
+		var ok bool
+		for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
+			if nsm, ok = ms.msgs[nseq]; ok {
+				break
 			}
-			ms.state.FirstSeq = nseq
 		}
-		if secure {
-			rand.Read(sm.msg)
-			sm.seq = 0
+		if nsm != nil {
+			ms.state.FirstSeq = nsm.seq
+			ms.state.FirstTime = time.Unix(0, nsm.ts).UTC()
+		} else {
+			// Like purge.
+			ms.state.FirstSeq = ms.state.LastSeq + 1
+			ms.state.FirstTime = time.Time{}
 		}
 	}
+	if secure {
+		rand.Read(sm.msg)
+		sm.seq = 0
+	}
+
 	if ms.scb != nil {
 		delta := int64(ss)
 		ms.scb(-delta)
 	}
+
 	return ok
 }
 

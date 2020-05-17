@@ -92,11 +92,13 @@ const (
 
 // StreamStats is information about the given stream.
 type StreamState struct {
-	Msgs      uint64 `json:"messages"`
-	Bytes     uint64 `json:"bytes"`
-	FirstSeq  uint64 `json:"first_seq"`
-	LastSeq   uint64 `json:"last_seq"`
-	Consumers int    `json:"consumer_count"`
+	Msgs      uint64    `json:"messages"`
+	Bytes     uint64    `json:"bytes"`
+	FirstSeq  uint64    `json:"first_seq"`
+	FirstTime time.Time `json:"first_ts"`
+	LastSeq   uint64    `json:"last_seq"`
+	LastTime  time.Time `json:"last_ts"`
+	Consumers int       `json:"consumer_count"`
 }
 
 // ConsumerStore stores state on consumers for streams.
