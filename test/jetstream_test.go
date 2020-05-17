@@ -2156,6 +2156,14 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	// This is using new style request mechanism. so drop the connection itself to get rid of interest.
 	nc.Close()
 
+	// Wait for client cleanup
+	checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+		if n := s.NumClients(); err != nil || n != 0 {
+			return fmt.Errorf("Still have %d clients", n)
+		}
+		return nil
+	})
+
 	nc = clientConnectToServer(t, s)
 	defer nc.Close()
 	// Send a message
