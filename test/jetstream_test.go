@@ -761,10 +761,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	expectErr(acc.AddStream(&server.StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
 
 	// Events and Advisories etc should be ok.
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.foo"}}); err != nil {
-		t.Fatalf("Expected this to work: %v", err)
-	}
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "b", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
 		t.Fatalf("Expected this to work: %v", err)
 	}
 }
@@ -839,6 +836,49 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 			state := mset.State()
 			if state.Msgs != 50 {
 				t.Fatalf("Expected 50 messages, got %d", state.Msgs)
+			}
+		})
+	}
+}
+
+func TestJetStreamStateTimestamps(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "foo", Storage: server.MemoryStorage, Subjects: []string{"foo.*"}}},
+		{"FileStore", &server.StreamConfig{Name: "foo", Storage: server.FileStorage, Subjects: []string{"foo.*"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			start := time.Now()
+			delay := 250 * time.Millisecond
+			sendStreamMsg(t, nc, "foo.bar", "Hello World!")
+			time.Sleep(delay)
+			sendStreamMsg(t, nc, "foo.bar", "Hello World Again!")
+
+			state := mset.State()
+			if state.FirstTime.Before(start) {
+				t.Fatalf("Unexpected first message timestamp: %v", state.FirstTime)
+			}
+			if state.LastTime.Before(start.Add(delay)) {
+				t.Fatalf("Unexpected last message timestamp: %v", state.LastTime)
 			}
 		})
 	}
@@ -5317,7 +5357,15 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 				expectedState.Msgs--
 				expectedState.Bytes -= bytesPerMsg
 				expectedState.FirstSeq = expectedFirstSeq
+
+				sm, err := mset.GetMsg(expectedFirstSeq)
+				if err != nil {
+					t.Fatalf("Error fetching message for seq: %d - %v", expectedFirstSeq, err)
+				}
+				expectedState.FirstTime = sm.Time
+
 				afterState := mset.State()
+				// Ignore first time in this test.
 				if afterState != expectedState {
 					t.Fatalf("Stats not what we expected. Expected %+v, got %+v\n", expectedState, afterState)
 				}
@@ -5360,6 +5408,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 
 			expected := server.StreamState{Msgs: 6, Bytes: 6 * bytesPerMsg, FirstSeq: 12, LastSeq: 20}
 			state = mset.State()
+			state.FirstTime, state.LastTime = time.Time{}, time.Time{}
 			if state != expected {
 				t.Fatalf("State not what we expected. Expected %+v, got %+v\n", expected, state)
 			}

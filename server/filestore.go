@@ -428,9 +428,11 @@ func (fs *fileStore) recoverMsgs() error {
 			if mb := fs.recoverMsgBlock(fi, index); mb != nil {
 				if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 					fs.state.FirstSeq = mb.first.seq
+					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
 				}
 				if mb.last.seq > fs.state.LastSeq {
 					fs.state.LastSeq = mb.last.seq
+					fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
 				}
 				fs.state.Msgs += mb.msgs
 				fs.state.Bytes += mb.bytes
@@ -568,7 +570,7 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 }
 
 // Store stores a message.
-func (fs *fileStore) StoreMsg(subj string, msg []byte) (seq uint64, ts int64, err error) {
+func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -587,10 +589,7 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (seq uint64, ts int64, er
 		}
 	}
 
-	seq = fs.state.LastSeq + 1
-	if fs.state.FirstSeq == 0 {
-		fs.state.FirstSeq = seq
-	}
+	seq := fs.state.LastSeq + 1
 
 	n, ts, err := fs.writeMsgRecord(seq, subj, msg)
 	if err != nil {
@@ -599,9 +598,15 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (seq uint64, ts int64, er
 	}
 	fs.kickFlusher()
 
+	if fs.state.FirstSeq == 0 {
+		fs.state.FirstSeq = seq
+		fs.state.FirstTime = time.Unix(0, ts).UTC()
+	}
+
 	fs.state.Msgs++
 	fs.state.Bytes += n
 	fs.state.LastSeq = seq
+	fs.state.LastTime = time.Unix(0, ts).UTC()
 
 	// Limits checks and enforcement.
 	// If they do any deletions they will update the
@@ -737,7 +742,23 @@ func (mb *msgBlock) selectNextFirst() {
 			break
 		}
 	}
+	// Set new first sequence.
 	mb.first.seq = seq
+
+	// Need to get the timestamp.
+	// We will try the cache direct and fallback if needed.
+	sm, _ := mb.cacheLookupLocked(seq)
+	if sm == nil {
+		// Slow path, need to unlock.
+		mb.mu.Unlock()
+		sm, _ = mb.fetchMsg(seq)
+		mb.mu.Lock()
+	}
+	if sm != nil {
+		mb.first.ts = sm.ts
+	} else {
+		mb.first.ts = 0
+	}
 }
 
 func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStoredMsg, secure bool) {
@@ -761,6 +782,7 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		mb.selectNextFirst()
 		if seq == fs.state.FirstSeq {
 			fs.state.FirstSeq = mb.first.seq // new one.
+			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
 		}
 		if mb.first.seq > mb.last.seq {
 			fs.removeMsgBlock(mb)
@@ -1338,7 +1360,12 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 	// vs read lock and promote. Also defer based on 1.14 performance.
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	return mb.cacheLookupLocked(seq)
+}
 
+// Will do a lookup from cache.
+// lock should be held.
+func (mb *msgBlock) cacheLookupLocked(seq uint64) (*fileStoredMsg, error) {
 	if mb.cache == nil {
 		return nil, errNoCache
 	}
@@ -1610,6 +1637,7 @@ func (mb *msgBlock) readIndexInfo() error {
 			mb.dmap[seq+mb.first.seq] = struct{}{}
 		}
 	}
+
 	return nil
 }
 
@@ -1692,6 +1720,8 @@ func (fs *fileStore) Purge() uint64 {
 	rbytes := int64(fs.state.Bytes)
 
 	fs.state.FirstSeq = fs.state.LastSeq + 1
+	fs.state.FirstTime = time.Time{}
+
 	fs.state.Bytes = 0
 	fs.state.Msgs = 0
 

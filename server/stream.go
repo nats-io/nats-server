@@ -716,6 +716,20 @@ func (mset *Stream) stop(delete bool) error {
 	return nil
 }
 
+func (mset *Stream) GetMsg(seq uint64) (*StoredMsg, error) {
+	subj, msg, ts, err := mset.store.LoadMsg(seq)
+	if err != nil {
+		return nil, err
+	}
+	sm := &StoredMsg{
+		Subject:  subj,
+		Sequence: seq,
+		Data:     msg,
+		Time:     time.Unix(0, ts).UTC(),
+	}
+	return sm, nil
+}
+
 // Consunmers will return all the current consumers for this stream.
 func (mset *Stream) Consumers() []*Consumer {
 	mset.mu.Lock()
