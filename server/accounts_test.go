@@ -390,7 +390,7 @@ func TestAccountParseConfigDuplicateUsers(t *testing.T) {
 func TestAccountParseConfigImportsExports(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/accounts.conf")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("parsing failed: ", err)
 	}
 	if la := len(opts.Accounts); la != 3 {
 		t.Fatalf("Expected to see 3 accounts in opts, got %d", la)

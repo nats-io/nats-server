@@ -65,14 +65,15 @@ type Account struct {
 	js           *jsAccount
 	jsLimits     *JetStreamAccountLimits
 	limits
-	expired     bool
-	signingKeys []string
-	srv         *Server // server this account is registered with (possibly nil)
-	lds         string  // loop detection subject for leaf nodes
-	siReply     []byte  // service reply prefix, will form wildcard subscription.
-	prand       *rand.Rand
-	eventIds    *nuid.NUID
-	eventIdsMu  sync.Mutex
+	expired      bool
+	signingKeys  []string
+	srv          *Server // server this account is registered with (possibly nil)
+	lds          string  // loop detection subject for leaf nodes
+	siReply      []byte  // service reply prefix, will form wildcard subscription.
+	prand        *rand.Rand
+	eventIds     *nuid.NUID
+	eventIdsMu   sync.Mutex
+	defaultPerms *Permissions
 }
 
 // Account based limits.
@@ -2450,6 +2451,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			a.usersRevoked[pk] = t
 		}
 	}
+	a.defaultPerms = buildPermissionsFromJwt(&ac.DefaultPermissions)
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -2518,16 +2520,13 @@ func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	return acc
 }
 
-// Helper to build internal NKeyUser.
-func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
-	nu := &NkeyUser{Nkey: uc.Subject, Account: acc}
-	if uc.IssuerAccount != "" {
-		nu.SigningKey = uc.Issuer
+// Helper to build Permissions from jwt.Permissions
+// or return nil if none were specified
+func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
+	if uc == nil {
+		return nil
 	}
-
-	// Now check for permissions.
 	var p *Permissions
-
 	if len(uc.Pub.Allow) > 0 || len(uc.Pub.Deny) > 0 {
 		if p == nil {
 			p = &Permissions{}
@@ -2553,6 +2552,21 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 			Expires: uc.Resp.Expires,
 		}
 		validateResponsePermissions(p)
+	}
+	return p
+}
+
+// Helper to build internal NKeyUser.
+func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
+	nu := &NkeyUser{Nkey: uc.Subject, Account: acc}
+	if uc.IssuerAccount != "" {
+		nu.SigningKey = uc.Issuer
+	}
+
+	// Now check for permissions.
+	var p = buildPermissionsFromJwt(&uc.Permissions)
+	if p == nil && acc.defaultPerms != nil {
+		p = acc.defaultPerms.clone()
 	}
 	nu.Permissions = p
 	return nu

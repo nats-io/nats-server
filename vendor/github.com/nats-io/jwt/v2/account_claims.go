@@ -55,12 +55,13 @@ func (o *OperatorLimits) Validate(_ *ValidationResults) {
 
 // Account holds account specific claims data
 type Account struct {
-	Imports     Imports        `json:"imports,omitempty"`
-	Exports     Exports        `json:"exports,omitempty"`
-	Identities  []Identity     `json:"identity,omitempty"`
-	Limits      OperatorLimits `json:"limits,omitempty"`
-	SigningKeys StringList     `json:"signing_keys,omitempty"`
-	Revocations RevocationList `json:"revocations,omitempty"`
+	Imports            Imports        `json:"imports,omitempty"`
+	Exports            Exports        `json:"exports,omitempty"`
+	Identities         []Identity     `json:"identity,omitempty"`
+	Limits             OperatorLimits `json:"limits,omitempty"`
+	SigningKeys        StringList     `json:"signing_keys,omitempty"`
+	Revocations        RevocationList `json:"revocations,omitempty"`
+	DefaultPermissions Permissions    `json:"default_permissions,omitempty"`
 	GenericFields
 }
 
@@ -69,6 +70,7 @@ func (a *Account) Validate(acct *AccountClaims, vr *ValidationResults) {
 	a.Imports.Validate(acct.Subject, vr)
 	a.Exports.Validate(vr)
 	a.Limits.Validate(vr)
+	a.DefaultPermissions.Validate(vr)
 
 	for _, i := range a.Identities {
 		i.Validate(vr)

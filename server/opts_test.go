@@ -901,7 +901,29 @@ func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 				}
 			}
 		]
-	}`))
+	}
+	accounts {
+		A {
+			default_permissions = {
+				publish = "foo"
+			}
+			users = [
+				{ user: "accuser", password: "pwd"}
+				{ user: "accother", password: "pwd",
+					permissions = {
+						subscribe = "bar"
+					}
+				}
+				{ nkey: "UC4YEYJHYKTU4LHROX7UEKEIO5RP5OUWDYXELHWXZOQHZYXHUD44LCRS" }
+				{ nkey: "UDLSDF4UY3YW7JJQCYE6T2D4KFDCH6RGF3R65KHK247G3POJPI27VMQ3",
+					permissions = {
+						subscribe = "bar"
+					}
+				}
+			]
+		}	
+	}
+	`))
 	checkPerms := func(permsDef *Permissions, permsNonDef *Permissions) {
 		if permsDef.Publish.Allow[0] != "foo" {
 			t.Fatal("Publish allow foo missing")
@@ -918,26 +940,48 @@ func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Received an error reading config file: %v", err)
 	}
-	if lu := len(opts.Users); lu != 2 {
-		t.Fatalf("Expected 2 nkey users, got %d", lu)
+
+	findUsers := func(u1, u2 string) (found []*User) {
+		find := []string{u1, u2}
+		for _, f := range find {
+			for _, u := range opts.Users {
+				if u.Username == f {
+					found = append(found, u)
+					break
+				}
+			}
+		}
+		return
 	}
-	userDefault := opts.Users[0]
-	userNonDef := opts.Users[1]
-	if !strings.HasPrefix(userDefault.Username, "user") {
-		userDefault = opts.Users[1]
-		userNonDef = opts.Users[0]
+
+	findNkeyUsers := func(nk1, nk2 string) (found []*NkeyUser) {
+		find := []string{nk1, nk2}
+		for _, f := range find {
+			for _, u := range opts.Nkeys {
+				if strings.HasPrefix(u.Nkey, f) {
+					found = append(found, u)
+					break
+				}
+			}
+		}
+		return
 	}
-	checkPerms(userDefault.Permissions, userNonDef.Permissions)
-	if lu := len(opts.Nkeys); lu != 2 {
-		t.Fatalf("Expected 2 nkey users, got %d", lu)
+
+	if lu := len(opts.Users); lu != 4 {
+		t.Fatalf("Expected 4 nkey users, got %d", lu)
 	}
-	nkeyDefault := opts.Nkeys[0]
-	nkeyNonDef := opts.Nkeys[1]
-	if !strings.HasPrefix(nkeyDefault.Nkey, "UDK") {
-		nkeyDefault = opts.Nkeys[1]
-		nkeyNonDef = opts.Nkeys[0]
+	foundU := findUsers("user", "other")
+	checkPerms(foundU[0].Permissions, foundU[1].Permissions)
+	foundU = findUsers("accuser", "accother")
+	checkPerms(foundU[0].Permissions, foundU[1].Permissions)
+
+	if lu := len(opts.Nkeys); lu != 4 {
+		t.Fatalf("Expected 4 nkey users, got %d", lu)
 	}
-	checkPerms(nkeyDefault.Permissions, nkeyNonDef.Permissions)
+	foundNk := findNkeyUsers("UDK", "UA3")
+	checkPerms(foundNk[0].Permissions, foundNk[1].Permissions)
+	foundNk = findNkeyUsers("UC4", "UDL")
+	checkPerms(foundNk[0].Permissions, foundNk[1].Permissions)
 }
 
 func TestNkeyUsersWithPermsConfig(t *testing.T) {
