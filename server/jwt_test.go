@@ -5249,3 +5249,183 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 		connectTest(s.ClientURL())
 	})
 }
+
+func TestJWTAccountProtectedImport(t *testing.T) {
+	srvFmt := `
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+			%s : "%s"
+		} `
+	setupAccounts := func(pass bool) (nkeys.KeyPair, string, string, string, nkeys.KeyPair, string, string, string, string) {
+		// Create accounts and imports/exports.
+		exportKP, _ := nkeys.CreateAccount()
+		exportPub, _ := exportKP.PublicKey()
+		exportAC := jwt.NewAccountClaims(exportPub)
+		exportAC.Exports.Add(&jwt.Export{Subject: "service.*", Type: jwt.Service, AccountTokenPosition: 2})
+		exportAC.Exports.Add(&jwt.Export{Subject: "stream.*", Type: jwt.Stream, AccountTokenPosition: 2})
+		exportJWT, err := exportAC.Encode(oKp)
+		require_NoError(t, err)
+		// create alternative exporter jwt without account token pos set
+		exportAC.Exports = jwt.Exports{}
+		exportAC.Exports.Add(&jwt.Export{Subject: "service.*", Type: jwt.Service})
+		exportAC.Exports.Add(&jwt.Export{Subject: "stream.*", Type: jwt.Stream})
+		exportJWTNoPos, err := exportAC.Encode(oKp)
+		require_NoError(t, err)
+
+		importKP, _ := nkeys.CreateAccount()
+		importPub, _ := importKP.PublicKey()
+		importAc := jwt.NewAccountClaims(importPub)
+		srvcSub, strmSub := "service.foo", "stream.foo"
+		if pass {
+			srvcSub = fmt.Sprintf("service.%s", importPub)
+			strmSub = fmt.Sprintf("stream.%s", importPub)
+		}
+		importAc.Imports.Add(&jwt.Import{Account: exportPub, Subject: jwt.Subject(srvcSub), Type: jwt.Service})
+		importAc.Imports.Add(&jwt.Import{Account: exportPub, Subject: jwt.Subject(strmSub), Type: jwt.Stream})
+		importJWT, err := importAc.Encode(oKp)
+		require_NoError(t, err)
+
+		return exportKP, exportPub, exportJWT, exportJWTNoPos, importKP, importPub, importJWT, srvcSub, strmSub
+	}
+	t.Run("pass", func(t *testing.T) {
+		exportKp, exportPub, exportJWT, _, importKp, importPub, importJWT, srvcSub, strmSub := setupAccounts(true)
+		cf := createConfFile(t, []byte(fmt.Sprintf(srvFmt, ojwt, exportPub, exportJWT, importPub, importJWT)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		t.Run("service", func(t *testing.T) {
+			sub, err := ncExp.Subscribe("service.*", func(msg *nats.Msg) {
+				msg.Respond([]byte("world"))
+			})
+			defer sub.Unsubscribe()
+			require_NoError(t, err)
+			ncExp.Flush()
+			msg, err := ncImp.Request(srvcSub, []byte("hello"), time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(msg.Data), "world")
+		})
+		t.Run("stream", func(t *testing.T) {
+			msgChan := make(chan *nats.Msg, 4)
+			defer close(msgChan)
+			sub, err := ncImp.ChanSubscribe(strmSub, msgChan)
+			defer sub.Unsubscribe()
+			require_NoError(t, err)
+			ncImp.Flush()
+			err = ncExp.Publish("stream.foo", []byte("hello"))
+			require_NoError(t, err)
+			err = ncExp.Publish(strmSub, []byte("hello"))
+			require_NoError(t, err)
+			msg := <-msgChan
+			require_Equal(t, string(msg.Data), "hello")
+			require_True(t, len(msgChan) == 0)
+		})
+	})
+	t.Run("fail", func(t *testing.T) {
+		exportKp, exportPub, exportJWT, _, importKp, importPub, importJWT, srvcSub, strmSub := setupAccounts(false)
+		cf := createConfFile(t, []byte(fmt.Sprintf(srvFmt, ojwt, exportPub, exportJWT, importPub, importJWT)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		t.Run("service", func(t *testing.T) {
+			sub, err := ncExp.Subscribe("service.*", func(msg *nats.Msg) {
+				msg.Respond([]byte("world"))
+			})
+			defer sub.Unsubscribe()
+			require_NoError(t, err)
+			ncExp.Flush()
+			_, err = ncImp.Request(srvcSub, []byte("hello"), time.Second)
+			require_Error(t, err)
+			require_Contains(t, err.Error(), "no responders available for request")
+		})
+		t.Run("stream", func(t *testing.T) {
+			msgChan := make(chan *nats.Msg, 4)
+			defer close(msgChan)
+			_, err := ncImp.ChanSubscribe(strmSub, msgChan)
+			require_NoError(t, err)
+			ncImp.Flush()
+			err = ncExp.Publish("stream.foo", []byte("hello"))
+			require_NoError(t, err)
+			err = ncExp.Publish(strmSub, []byte("hello"))
+			require_NoError(t, err)
+			select {
+			case <-msgChan:
+				t.Fatal("did not expect a message")
+			case <-time.After(250 * time.Millisecond):
+			}
+			require_True(t, len(msgChan) == 0)
+		})
+	})
+	t.Run("reload-off-2-on", func(t *testing.T) {
+		exportKp, exportPub, exportJWTOn, exportJWTOff, importKp, _, importJWT, srvcSub, strmSub := setupAccounts(false)
+		dirSrv := createDir(t, "srv")
+		defer os.RemoveAll(dirSrv)
+		// set up system account. Relying bootstrapping system account to not create JWT
+		sysAcc, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		sysPub, err := sysAcc.PublicKey()
+		require_NoError(t, err)
+		sysUsrCreds := newUserEx(t, sysAcc, false, sysPub)
+		defer os.Remove(sysUsrCreds)
+		cf := createConfFile(t, []byte(fmt.Sprintf(`		
+		port: -1
+		operator = %s
+		system_account = %s
+		resolver: {
+			type: full
+			dir: %s
+		}`, ojwt, sysPub, dirSrv)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		updateJwt(t, s.ClientURL(), sysUsrCreds, importJWT, 1)
+		updateJwt(t, s.ClientURL(), sysUsrCreds, exportJWTOff, 1)
+		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		msgChan := make(chan *nats.Msg, 4)
+		defer close(msgChan)
+		// ensure service passes
+		subSrvc, err := ncExp.Subscribe("service.*", func(msg *nats.Msg) {
+			msg.Respond([]byte("world"))
+		})
+		defer subSrvc.Unsubscribe()
+		require_NoError(t, err)
+		ncExp.Flush()
+		respMst, err := ncImp.Request(srvcSub, []byte("hello"), time.Second)
+		require_NoError(t, err)
+		require_Equal(t, string(respMst.Data), "world")
+		// ensure stream passes
+		subStrm, err := ncImp.ChanSubscribe(strmSub, msgChan)
+		defer subStrm.Unsubscribe()
+		require_NoError(t, err)
+		ncImp.Flush()
+		err = ncExp.Publish(strmSub, []byte("hello"))
+		require_NoError(t, err)
+		msg := <-msgChan
+		require_Equal(t, string(msg.Data), "hello")
+		require_True(t, len(msgChan) == 0)
+
+		updateJwt(t, s.ClientURL(), sysUsrCreds, exportJWTOn, 1)
+
+		// ensure service fails
+		_, err = ncImp.Request(srvcSub, []byte("hello"), time.Second)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "timeout")
+		s.AccountResolver().Store(exportPub, exportJWTOn)
+		// ensure stream fails
+		err = ncExp.Publish(strmSub, []byte("hello"))
+		require_NoError(t, err)
+		select {
+		case <-msgChan:
+			t.Fatal("did not expect a message")
+		case <-time.After(250 * time.Millisecond):
+		}
+		require_True(t, len(msgChan) == 0)
+	})
+}
