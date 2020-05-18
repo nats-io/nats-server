@@ -1,7 +1,9 @@
 module github.com/nats-io/nats-server/v2
 
+go 1.14
+
 require (
-	github.com/nats-io/jwt v0.3.2
+	github.com/nats-io/jwt v0.3.3-0.20200518170137-30f114e718e5
 	github.com/nats-io/nats.go v1.10.0
 	github.com/nats-io/nkeys v0.1.4
 	github.com/nats-io/nuid v1.0.1

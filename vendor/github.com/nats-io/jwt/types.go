@@ -241,8 +241,6 @@ type Permissions struct {
 
 // Validate the pub and sub fields in the permissions list
 func (p *Permissions) Validate(vr *ValidationResults) {
-	p.Pub.Validate(vr)
-	p.Sub.Validate(vr)
 	if p.Resp != nil {
 		p.Resp.Validate(vr)
 	}
