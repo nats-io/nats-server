@@ -464,6 +464,7 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 		MaxPayload:   s.info.MaxPayload,
 		Gateway:      opts.Gateway.Name,
 		GatewayNRP:   true,
+		Headers:      s.supportsHeaders(),
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -855,7 +856,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	c.mu.Unlock()
 }
 
-// Builds and sends the CONNET protocol for a gateway.
+// Builds and sends the CONNECT protocol for a gateway.
 func (c *client) sendGatewayConnect() {
 	tlsRequired := c.gw.cfg.TLSConfig != nil
 	url := c.gw.connectURL
@@ -1012,6 +1013,8 @@ func (c *client) processGatewayInfo(info *Info) {
 			infoJSON := s.gateway.infoJSON
 			s.gateway.RUnlock()
 
+			supportsHeaders := s.supportsHeaders()
+
 			// Note, if we want to support NKeys, then we would get the nonce
 			// from this INFO protocol and can sign it in the CONNECT we are
 			// going to send now.
@@ -1021,6 +1024,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			// Send INFO too
 			c.enqueueProto(infoJSON)
 			c.gw.useOldPrefix = !info.GatewayNRP
+			c.headers = supportsHeaders && info.Headers
 			c.mu.Unlock()
 
 			// Register as an outbound gateway.. if we had a protocol to ack our connect,
@@ -2377,9 +2381,6 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	// Get a subscription from the pool
 	sub := subPool.Get().(*subscription)
 
-	// Make sure we are an 'R' proto
-	c.msgb[0] = 'R'
-
 	// Check if the subject is on the reply prefix, if so, we
 	// need to send that message directly to the origin cluster.
 	directSend, old := isGWRoutedSubjectAndIsOldPrefix(subject)
@@ -2456,6 +2457,9 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				mreply = append(mreply, reply...)
 			}
 		}
+		// Setup the message header.
+		// Make sure we are an 'R' proto by default
+		c.msgb[0] = 'R'
 		mh := c.msgb[:msgHeadProtoLen]
 		mh = append(mh, accName...)
 		mh = append(mh, ' ')
@@ -2474,7 +2478,25 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			mh = append(mh, mreply...)
 			mh = append(mh, ' ')
 		}
-		mh = append(mh, c.pa.szb...)
+		// Headers
+		hasHeader := c.pa.hdr > 0
+		canReceiveHeader := gwc.headers
+
+		if hasHeader {
+			if canReceiveHeader {
+				mh[0] = 'H'
+				mh = append(mh, c.pa.hdb...)
+				mh = append(mh, ' ')
+				mh = append(mh, c.pa.szb...)
+			} else {
+				// If we are here we need to truncate the payload size
+				nsz := strconv.Itoa(c.pa.size - c.pa.hdr)
+				mh = append(mh, nsz...)
+			}
+		} else {
+			mh = append(mh, c.pa.szb...)
+		}
+
 		mh = append(mh, CR_LF...)
 
 		// We reuse the subscription object that we pass to deliverMsg.

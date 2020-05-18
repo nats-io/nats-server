@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -430,6 +431,183 @@ func TestGatewayIgnoreSelfReference(t *testing.T) {
 	}
 	if s2.getOutboundGatewayConnection("B") != nil {
 		t.Fatalf("Should not have a gateway connection to B")
+	}
+}
+
+func TestGatewayHeaderInfo(t *testing.T) {
+	o := testDefaultOptionsForGateway("A")
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v\n", err)
+	}
+	defer gwconn.Close()
+	client := bufio.NewReaderSize(gwconn, maxBufSize)
+	l, err := client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	var info serverInfo
+	if err = json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if !info.Headers {
+		t.Fatalf("Expected by default for header support to be enabled")
+	}
+
+	s.Shutdown()
+	gwconn.Close()
+
+	// Now turn headers off.
+	o.NoHeaderSupport = true
+	s = runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v\n", err)
+	}
+	defer gwconn.Close()
+	client = bufio.NewReaderSize(gwconn, maxBufSize)
+	l, err = client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	if err = json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Headers {
+		t.Fatalf("Expected header support to be disabled")
+	}
+}
+
+func TestGatewayHeaderSupport(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	o2.Gateway.ConnectRetries = 0
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	// s1 should have an outbound gateway to s2.
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	// s2 should have an inbound gateway
+	waitForInboundGateways(t, s2, 1, time.Second)
+	// and an outbound too
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	c, cr, _ := newClientForServer(s1)
+	defer c.close()
+
+	connect := "CONNECT {\"headers\":true}"
+	subOp := "SUB foo 1"
+	pingOp := "PING\r\n"
+	cmd := strings.Join([]string{connect, subOp, pingOp}, "\r\n")
+	c.parseAsync(cmd)
+	if _, err := cr.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	b, _, _ := newClientForServer(s2)
+	defer b.close()
+
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd = strings.Join([]string{connect, pubOp}, "\r\n")
+	b.parseAsync(cmd)
+
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	am := hmsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 7 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 7)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[HDR_INDEX] != "12" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[HDR_INDEX])
+	}
+	if matches[TLEN_INDEX] != "14" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[TLEN_INDEX])
+	}
+	checkPayload(cr, []byte("Name:Derek\r\nOK\r\n"), t)
+}
+
+func TestGatewayHeaderDeliverStrippedMsg(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	o2.Gateway.ConnectRetries = 0
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	o1.NoHeaderSupport = true
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	// s1 should have an outbound gateway to s2.
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	// s2 should have an inbound gateway
+	waitForInboundGateways(t, s2, 1, time.Second)
+	// and an outbound too
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	c, cr, _ := newClientForServer(s1)
+	defer c.close()
+
+	connect := "CONNECT {\"headers\":true}"
+	subOp := "SUB foo 1"
+	pingOp := "PING\r\n"
+	cmd := strings.Join([]string{connect, subOp, pingOp}, "\r\n")
+	c.parseAsync(cmd)
+	if _, err := cr.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	b, _, _ := newClientForServer(s2)
+	defer b.close()
+
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd = strings.Join([]string{connect, pubOp}, "\r\n")
+	b.parseAsync(cmd)
+
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	am := smsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a correct match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 6 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 6)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[LEN_INDEX] != "2" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
+	}
+	checkPayload(cr, []byte("OK\r\n"), t)
+	if cr.Buffered() != 0 {
+		t.Fatalf("Expected no extra bytes to be buffered, got %d", cr.Buffered())
 	}
 }
 
