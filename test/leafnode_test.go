@@ -85,8 +85,12 @@ func TestLeafNodeInfo(t *testing.T) {
 	if !info.AuthRequired {
 		t.Fatalf("AuthRequired should always be true for leaf nodes")
 	}
-	sendProto(t, lc, "CONNECT {}\r\n")
+	// By default headers should be true.
+	if !info.Headers {
+		t.Fatalf("Expected to have headers on by default")
+	}
 
+	sendProto(t, lc, "CONNECT {}\r\n")
 	checkLeafNodeConnected(t, s)
 
 	// Now close connection, make sure we are doing the right accounting in the server.
@@ -548,6 +552,65 @@ func TestLeafNodeNoEcho(t *testing.T) {
 
 	leafSend("LMSG foo 2\r\nOK\r\n")
 	expectNothing(t, lc)
+}
+
+func TestLeafNodeHeaderSupport(t *testing.T) {
+	srvA, optsA := runLeafServer()
+	defer srvA.Shutdown()
+
+	srvB, optsB := runSolicitLeafServer(optsA)
+	defer srvB.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	clientB := createClientConn(t, optsB.Host, optsB.Port)
+	defer clientB.Close()
+
+	sendA, expectA := setupHeaderConn(t, clientA)
+	sendA("SUB foo bar 22\r\n")
+	sendA("SUB bar 11\r\n")
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	if err := checkExpectedSubs(3, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	sendB, expectB := setupHeaderConn(t, clientB)
+	// Can not have \r\n in payload fyi for regex.
+	// With reply
+	sendB("HPUB foo reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	expectHeaderMsgs := expectHeaderMsgsCommand(t, expectA)
+	matches := expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "foo", "22", "reply", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without reply
+	sendB("HPUB foo 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "foo", "22", "", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without queues or reply
+	sendB("HPUB bar 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "bar", "11", "", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without queues but with reply
+	sendB("HPUB bar reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "bar", "11", "reply", "12", "14", "K1:V1,K2:V2 ", "ok")
 }
 
 // Used to setup clusters of clusters for tests.
