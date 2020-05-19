@@ -112,6 +112,7 @@ const (
 	writeLoopStarted                         // Marks that the writeLoop has been started.
 	skipFlushOnClose                         // Marks that flushOutbound() should not be called on connection close.
 	expectConnect                            // Marks if this connection is expected to send a CONNECT
+	allSubsSent                              // Marks this leafnode connection as having sent all subs.
 )
 
 // set the flag (would be equivalent to set the boolean to true)

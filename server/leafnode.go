@@ -1188,14 +1188,14 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
 	update := sub.queue != nil || n == 0 || n+delta <= 0
-
 	n += delta
 	if n > 0 {
 		c.leaf.smap[key] = n
 	} else {
 		delete(c.leaf.smap, key)
 	}
-	if update {
+	// Don't send in front of all subs.
+	if update && c.flags.isSet(allSubsSent) {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
@@ -1242,6 +1242,7 @@ func (c *client) sendAllLeafSubs() {
 		c.queueOutbound(buf)
 		c.flushSignal()
 	}
+	c.flags.set(allSubsSent)
 	c.mu.Unlock()
 }
 
