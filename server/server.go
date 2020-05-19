@@ -958,16 +958,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	return nil
 }
 
-func (s *Server) systemAccount() *Account {
-	var sacc *Account
-	s.mu.Lock()
-	if s.sys != nil {
-		sacc = s.sys.account
-	}
-	s.mu.Unlock()
-	return sacc
-}
-
 // Creates an internal system client.
 func (s *Server) createInternalSystemClient() *client {
 	return s.createInternalClient(SYSTEM)
