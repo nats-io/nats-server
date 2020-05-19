@@ -718,24 +718,6 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				o.SystemAccount = o.TrustedOperators[0].SystemAccount
 			}
 		}
-		if o.SystemAccount != "" {
-			foundSys := false
-			foundNonEmpty := false
-			for _, op := range o.TrustedOperators {
-				if op.SystemAccount != "" {
-					foundNonEmpty = true
-				}
-				if op.SystemAccount == o.SystemAccount {
-					foundSys = true
-					break
-				}
-			}
-			if foundNonEmpty && !foundSys {
-				err := &configErr{tk, "system_account in config and operator JWT must be identical"}
-				*errors = append(*errors, err)
-				return
-			}
-		}
 	case "resolver", "account_resolver", "accounts_resolver":
 		// "resolver" takes precedence over value obtained from "operator".
 		// Clear so that parsing errors are not silently ignored.

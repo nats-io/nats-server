@@ -2593,13 +2593,13 @@ func TestNoAuthUserCode(t *testing.T) {
 
 }
 
-const operatorJwt = `
+const operatorJwtWithSysAccAndUrlResolver = `
 	listen: "127.0.0.1:-1"
 	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJJVEdJNjNCUUszM1VNN1pBSzZWT1RXNUZEU01ESlNQU1pRQ0RMNUlLUzZQTVhBU0ROQ01RIiwiaWF0IjoxNTg5ODM5MjA1LCJpc3MiOiJPQ1k2REUyRVRTTjNVT0RGVFlFWEJaTFFMSTdYNEdTWFI1NE5aQzRCQkxJNlFDVFpVVDY1T0lWTiIsIm5hbWUiOiJPUCIsInN1YiI6Ik9DWTZERTJFVFNOM1VPREZUWUVYQlpMUUxJN1g0R1NYUjU0TlpDNEJCTEk2UUNUWlVUNjVPSVZOIiwidHlwZSI6Im9wZXJhdG9yIiwibmF0cyI6eyJhY2NvdW50X3NlcnZlcl91cmwiOiJodHRwOi8vbG9jYWxob3N0OjgwMDAvand0L3YxIiwib3BlcmF0b3Jfc2VydmljZV91cmxzIjpbIm5hdHM6Ly9sb2NhbGhvc3Q6NDIyMiJdLCJzeXN0ZW1fYWNjb3VudCI6IkFEWjU0N0IyNFdIUExXT0s3VE1MTkJTQTdGUUZYUjZVTTJOWjRISE5JQjdSREZWWlFGT1o0R1FRIn19.3u710KqMLwgXwsMvhxfEp9xzK84XyAZ-4dd6QY0T6hGj8Bw9mS-HcQ7HbvDDNU01S61tNFfpma_JR6LtB3ixBg
 `
 
 func TestReadOperatorJWT(t *testing.T) {
-	confFileName := createConfFile(t, []byte(operatorJwt))
+	confFileName := createConfFile(t, []byte(operatorJwtWithSysAccAndUrlResolver))
 	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
@@ -2615,22 +2615,46 @@ func TestReadOperatorJWT(t *testing.T) {
 	}
 }
 
+// using memory resolver so this test does not have to start the memory resolver
+const operatorJwtWithSysAccAndMemResolver = `
+	listen: "127.0.0.1:-1"
+	// Operator "TESTOP"
+	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJLRTZRU0tWTU1VWFFKNFZCTDNSNDdGRFlIWElaTDRZSE1INjVIT0k1UjZCNUpPUkxVQlZBIiwiaWF0IjoxNTg5OTE2MzgyLCJpc3MiOiJPQVRUVkJYTElVTVRRT1FXVUEySU0zRkdUQlFRSEFHUEZaQTVET05NTlFSUlRQUjYzTERBTDM1WiIsIm5hbWUiOiJURVNUT1AiLCJzdWIiOiJPQVRUVkJYTElVTVRRT1FXVUEySU0zRkdUQlFRSEFHUEZaQTVET05NTlFSUlRQUjYzTERBTDM1WiIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic3lzdGVtX2FjY291bnQiOiJBRFNQT1lNSFhKTjZKVllRQ0xSWjVYUTVJVU42QTNTMzNYQTROVjRWSDc0NDIzVTdVN1lSNFlWVyJ9fQ.HiyUtlk8kectKHeQHtuqFcjFt0RbYZE_WAqPCcoWlV2IFVdXuOTzShYEMgDmtgvsFG_zxNQOj08Gr6a06ovwBA
+	resolver: MEMORY
+	resolver_preload: {
+  		// Account "TESTSYS"
+  		ADSPOYMHXJN6JVYQCLRZ5XQ5IUN6A3S33XA4NV4VH74423U7U7YR4YVW: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiI2WEtYUFZNTjdEVFlBSUE0R1JDWUxXUElSM1ZEM1Q2UVk2RFg3NURHTVFVWkdVWTJSRFNRIiwiaWF0IjoxNTg5OTE2MzIzLCJpc3MiOiJPQVRUVkJYTElVTVRRT1FXVUEySU0zRkdUQlFRSEFHUEZaQTVET05NTlFSUlRQUjYzTERBTDM1WiIsIm5hbWUiOiJURVNUU1lTIiwic3ViIjoiQURTUE9ZTUhYSk42SlZZUUNMUlo1WFE1SVVONkEzUzMzWEE0TlY0Vkg3NDQyM1U3VTdZUjRZVlciLCJ0eXBlIjoiYWNjb3VudCIsIm5hdHMiOnsibGltaXRzIjp7InN1YnMiOi0xLCJjb25uIjotMSwibGVhZiI6LTEsImltcG9ydHMiOi0xLCJleHBvcnRzIjotMSwiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJ3aWxkY2FyZHMiOnRydWV9fX0.vhtWanIrOncdNfg-yO-7L61ccc-yRacvVtEsaIgWBEmW4czlEPhsiF1MkUKG91rtgcbwUf73ZIFEfja5MgFBAQ
+	}
+`
+
 func TestReadOperatorJWTSystemAccountMatch(t *testing.T) {
-	confFileName := createConfFile(t, []byte(operatorJwt+`
-		system_account: ADZ547B24WHPLWOK7TMLNBSA7FQFXR6UM2NZ4HHNIB7RDFVZQFOZ4GQQ
+	confFileName := createConfFile(t, []byte(operatorJwtWithSysAccAndMemResolver+`
+		system_account: ADSPOYMHXJN6JVYQCLRZ5XQ5IUN6A3S33XA4NV4VH74423U7U7YR4YVW
 	`))
 	defer os.Remove(confFileName)
-	if _, err := ProcessConfigFile(confFileName); err != nil {
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
 		t.Fatalf("Received unexpected error %s", err)
 	}
+	s, err := NewServer(opts)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	s.Shutdown()
 }
 
 func TestReadOperatorJWTSystemAccountMismatch(t *testing.T) {
-	confFileName := createConfFile(t, []byte(operatorJwt+`
+	confFileName := createConfFile(t, []byte(operatorJwtWithSysAccAndMemResolver+`
 		system_account: ADXJJCDCSRSMCOV25FXQW7R4QOG7R763TVEXBNWJHLBMBGWOJYG5XZBG
 	`))
 	defer os.Remove(confFileName)
-	if _, err := ProcessConfigFile(confFileName); err == nil {
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	s, err := NewServer(opts)
+	if err == nil {
+		s.Shutdown()
 		t.Fatalf("Received no error")
 	} else if !strings.Contains(err.Error(), "system_account in config and operator JWT must be identical") {
 		t.Fatalf("Received unexpected error %s", err)
