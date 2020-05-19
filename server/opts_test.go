@@ -2593,11 +2593,13 @@ func TestNoAuthUserCode(t *testing.T) {
 
 }
 
+const operatorJwt = `
+	listen: "127.0.0.1:-1"
+	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJJVEdJNjNCUUszM1VNN1pBSzZWT1RXNUZEU01ESlNQU1pRQ0RMNUlLUzZQTVhBU0ROQ01RIiwiaWF0IjoxNTg5ODM5MjA1LCJpc3MiOiJPQ1k2REUyRVRTTjNVT0RGVFlFWEJaTFFMSTdYNEdTWFI1NE5aQzRCQkxJNlFDVFpVVDY1T0lWTiIsIm5hbWUiOiJPUCIsInN1YiI6Ik9DWTZERTJFVFNOM1VPREZUWUVYQlpMUUxJN1g0R1NYUjU0TlpDNEJCTEk2UUNUWlVUNjVPSVZOIiwidHlwZSI6Im9wZXJhdG9yIiwibmF0cyI6eyJhY2NvdW50X3NlcnZlcl91cmwiOiJodHRwOi8vbG9jYWxob3N0OjgwMDAvand0L3YxIiwib3BlcmF0b3Jfc2VydmljZV91cmxzIjpbIm5hdHM6Ly9sb2NhbGhvc3Q6NDIyMiJdLCJzeXN0ZW1fYWNjb3VudCI6IkFEWjU0N0IyNFdIUExXT0s3VE1MTkJTQTdGUUZYUjZVTTJOWjRISE5JQjdSREZWWlFGT1o0R1FRIn19.3u710KqMLwgXwsMvhxfEp9xzK84XyAZ-4dd6QY0T6hGj8Bw9mS-HcQ7HbvDDNU01S61tNFfpma_JR6LtB3ixBg
+`
+
 func TestReadOperatorJWT(t *testing.T) {
-	confFileName := createConfFile(t, []byte(`
-		listen: "127.0.0.1:-1"
-		operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJJVEdJNjNCUUszM1VNN1pBSzZWT1RXNUZEU01ESlNQU1pRQ0RMNUlLUzZQTVhBU0ROQ01RIiwiaWF0IjoxNTg5ODM5MjA1LCJpc3MiOiJPQ1k2REUyRVRTTjNVT0RGVFlFWEJaTFFMSTdYNEdTWFI1NE5aQzRCQkxJNlFDVFpVVDY1T0lWTiIsIm5hbWUiOiJPUCIsInN1YiI6Ik9DWTZERTJFVFNOM1VPREZUWUVYQlpMUUxJN1g0R1NYUjU0TlpDNEJCTEk2UUNUWlVUNjVPSVZOIiwidHlwZSI6Im9wZXJhdG9yIiwibmF0cyI6eyJhY2NvdW50X3NlcnZlcl91cmwiOiJodHRwOi8vbG9jYWxob3N0OjgwMDAvand0L3YxIiwib3BlcmF0b3Jfc2VydmljZV91cmxzIjpbIm5hdHM6Ly9sb2NhbGhvc3Q6NDIyMiJdLCJzeXN0ZW1fYWNjb3VudCI6IkFEWjU0N0IyNFdIUExXT0s3VE1MTkJTQTdGUUZYUjZVTTJOWjRISE5JQjdSREZWWlFGT1o0R1FRIn19.3u710KqMLwgXwsMvhxfEp9xzK84XyAZ-4dd6QY0T6hGj8Bw9mS-HcQ7HbvDDNU01S61tNFfpma_JR6LtB3ixBg
-	`))
+	confFileName := createConfFile(t, []byte(operatorJwt))
 	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
@@ -2610,5 +2612,27 @@ func TestReadOperatorJWT(t *testing.T) {
 		t.Fatalf("Expected different SystemAccount: %s", opts.SystemAccount)
 	} else if r.url != "http://localhost:8000/jwt/v1/accounts/" {
 		t.Fatalf("Expected different SystemAccount: %s", r.url)
+	}
+}
+
+func TestReadOperatorJWTSystemAccountMatch(t *testing.T) {
+	confFileName := createConfFile(t, []byte(operatorJwt+`
+		system_account: ADZ547B24WHPLWOK7TMLNBSA7FQFXR6UM2NZ4HHNIB7RDFVZQFOZ4GQQ
+	`))
+	defer os.Remove(confFileName)
+	if _, err := ProcessConfigFile(confFileName); err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+}
+
+func TestReadOperatorJWTSystemAccountMismatch(t *testing.T) {
+	confFileName := createConfFile(t, []byte(operatorJwt+`
+		system_account: ADXJJCDCSRSMCOV25FXQW7R4QOG7R763TVEXBNWJHLBMBGWOJYG5XZBG
+	`))
+	defer os.Remove(confFileName)
+	if _, err := ProcessConfigFile(confFileName); err == nil {
+		t.Fatalf("Received no error")
+	} else if !strings.Contains(err.Error(), "system_account in config and operator JWT must be identical") {
+		t.Fatalf("Received unexpected error %s", err)
 	}
 }
