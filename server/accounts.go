@@ -525,6 +525,7 @@ func (a *Account) randomClient() *client {
 	if a.ic != nil {
 		return a.ic
 	}
+	var c *client
 	for c = range a.clients {
 		break
 	}
@@ -943,7 +944,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 // properly in any clients doing rrTracking.
 // Lock should be held.
 func (a *Account) updateAllClientsServiceExportResponseTime(lrt time.Duration) {
-	for _, c := range a.clients {
+	for c := range a.clients {
 		c.mu.Lock()
 		if c.rrTracking != nil && lrt != c.rrTracking.lrt {
 			c.rrTracking.lrt = lrt

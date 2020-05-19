@@ -280,16 +280,17 @@ func NewServer(opts *Options) (*Server, error) {
 	now := time.Now()
 
 	s := &Server{
-		kp:         kp,
-		configFile: opts.ConfigFile,
-		info:       info,
-		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:       opts,
-		done:       make(chan bool, 1),
-		start:      now,
-		configTime: now,
-		gwLeafSubs: NewSublistWithCache(),
-		eventIds:   nuid.New(),
+		kp:           kp,
+		configFile:   opts.ConfigFile,
+		info:         info,
+		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:         opts,
+		done:         make(chan bool, 1),
+		start:        now,
+		configTime:   now,
+		gwLeafSubs:   NewSublistWithCache(),
+		httpBasePath: httpBasePath,
+		eventIds:     nuid.New(),
 	}
 
 	// Trusted root operator keys.
@@ -515,6 +516,7 @@ func (s *Server) configureAccounts() error {
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+				si.se = si.acc.getServiceExport(si.to)
 			}
 		}
 		// Make sure the subs are running, but only if not reloading.
