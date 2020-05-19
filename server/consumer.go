@@ -695,7 +695,9 @@ func (o *Consumer) readStoredState() error {
 
 	// Setup tracking timer if we have restored pending.
 	if len(o.pending) > 0 && o.ptmr == nil {
+		o.mu.Lock()
 		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
+		o.mu.Unlock()
 	}
 	return err
 }
