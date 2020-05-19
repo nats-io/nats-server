@@ -373,7 +373,8 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 		TLSRequired:  tlsRequired,
 		TLSVerify:    tlsVerify,
 		MaxPayload:   s.info.MaxPayload, // TODO(dlc) - Allow override?
-		Proto:        1,                 // Fixed for now.
+		Headers:      s.supportsHeaders(),
+		Proto:        1, // Fixed for now.
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -861,6 +862,8 @@ func (c *client) processLeafnodeInfo(info *Info) error {
 		if info.TLSRequired && c.leaf.remote != nil {
 			c.leaf.remote.TLS = true
 		}
+		supportsHeaders := c.srv.supportsHeaders()
+		c.headers = supportsHeaders && info.Headers
 	}
 	// For both initial INFO and async INFO protocols, Possibly
 	// update our list of remote leafnode URLs we can connect to.
@@ -1443,7 +1446,87 @@ func (c *client) processLeafUnsub(arg []byte) error {
 }
 
 func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
-	return fmt.Errorf("headers not implemented for leafnodes yet")
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_MSG_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	c.pa.arg = arg
+	switch len(args) {
+	case 0, 1, 2:
+		return fmt.Errorf("processLeafHeaderMsgArgs Parse Error: '%s'", args)
+	case 3:
+		c.pa.reply = nil
+		c.pa.queues = nil
+		c.pa.hdb = args[1]
+		c.pa.hdr = parseSize(args[1])
+		c.pa.szb = args[2]
+		c.pa.size = parseSize(args[2])
+	case 4:
+		c.pa.reply = args[1]
+		c.pa.queues = nil
+		c.pa.hdb = args[2]
+		c.pa.hdr = parseSize(args[2])
+		c.pa.szb = args[3]
+		c.pa.size = parseSize(args[3])
+	default:
+		// args[1] is our reply indicator. Should be + or | normally.
+		if len(args[1]) != 1 {
+			return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[1])
+		}
+		switch args[1][0] {
+		case '+':
+			c.pa.reply = args[2]
+		case '|':
+			c.pa.reply = nil
+		default:
+			return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[1])
+		}
+		// Grab header size.
+		c.pa.hdb = args[len(args)-2]
+		c.pa.hdr = parseSize(c.pa.hdb)
+
+		// Grab size.
+		c.pa.szb = args[len(args)-1]
+		c.pa.size = parseSize(c.pa.szb)
+
+		// Grab queue names.
+		if c.pa.reply != nil {
+			c.pa.queues = args[3 : len(args)-2]
+		} else {
+			c.pa.queues = args[2 : len(args)-2]
+		}
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Header Size: '%s'", arg)
+	}
+	if c.pa.size < 0 {
+		return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processLeafHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
+	}
+
+	// Common ones processed after check for arg length
+	c.pa.subject = args[0]
+
+	return nil
 }
 
 func (c *client) processLeafMsgArgs(arg []byte) error {
