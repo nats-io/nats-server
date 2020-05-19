@@ -705,15 +705,17 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 			o.TrustedOperators = append(o.TrustedOperators, opc)
 		}
-		// In case "resolver" is defined as well, it takes precedence
-		if o.AccountResolver == nil && len(o.TrustedOperators) == 1 {
-			if accUrl, err := parseURL(o.TrustedOperators[0].AccountServerURL, "account resolver"); err == nil {
-				// accommodate nsc which appends "/accounts" during nsc push
-				suffix := ""
-				if accUrl.Path == "/jwt/v1/" || accUrl.Path == "/jwt/v1" {
-					suffix = "/accounts"
+		if len(o.TrustedOperators) == 1 {
+			// In case "resolver" is defined as well, it takes precedence
+			if o.AccountResolver == nil {
+				if accUrl, err := parseURL(o.TrustedOperators[0].AccountServerURL, "account resolver"); err == nil {
+					// nsc automatically appends "/accounts" during nsc push
+					o.AccountResolver, _ = NewURLAccResolver(accUrl.String() + "/accounts")
 				}
-				o.AccountResolver, _ = NewURLAccResolver(accUrl.String() + suffix)
+			}
+			// In case "system_account" is defined as well, it takes precedence
+			if o.SystemAccount == "" {
+				o.SystemAccount = o.TrustedOperators[0].SystemAccount
 			}
 		}
 	case "resolver", "account_resolver", "accounts_resolver":

@@ -89,6 +89,22 @@ func validateTrustedOperators(o *Options) error {
 	if len(o.TrustedOperators) > 0 && len(o.TrustedKeys) > 0 {
 		return fmt.Errorf("conflicting options for 'TrustedKeys' and 'TrustedOperators'")
 	}
+	if o.SystemAccount != "" {
+		foundSys := false
+		foundNonEmpty := false
+		for _, op := range o.TrustedOperators {
+			if op.SystemAccount != "" {
+				foundNonEmpty = true
+			}
+			if op.SystemAccount == o.SystemAccount {
+				foundSys = true
+				break
+			}
+		}
+		if foundNonEmpty && !foundSys {
+			return fmt.Errorf("system_account in config and operator JWT must be identical")
+		}
+	}
 	// If we have operators, fill in the trusted keys.
 	// FIXME(dlc) - We had TrustedKeys before TrustedOperators. The jwt.OperatorClaims
 	// has a DidSign(). Use that longer term. For now we can expand in place.
