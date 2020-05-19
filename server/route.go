@@ -400,51 +400,79 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 
 	s := c.srv
-	remoteID := c.route.remoteID
-
-	// Check if this is an INFO for gateways...
-	if info.Gateway != "" {
-		c.mu.Unlock()
-		// If this server has no gateway configured, report error and return.
-		if !s.gateway.enabled {
-			// FIXME: Should this be a Fatalf()?
-			s.Errorf("Received information about gateway %q from %s, but gateway is not configured",
-				info.Gateway, remoteID)
-			return
-		}
-		s.processGatewayInfoFromRoute(info, remoteID, c)
-		return
-	}
-
-	// We receive an INFO from a server that informs us about another server,
-	// so the info.ID in the INFO protocol does not match the ID of this route.
-	if remoteID != "" && remoteID != info.ID {
-		c.mu.Unlock()
-
-		// Process this implicit route. We will check that it is not an explicit
-		// route and/or that it has not been connected already.
-		s.processImplicitRoute(info)
-		return
-	}
-
-	// Need to set this for the detection of the route to self to work
-	// in closeConnection().
-	c.route.remoteID = info.ID
-
-	// Get the route's proto version
-	c.opts.Protocol = info.Proto
 
 	// Detect route to self.
-	if c.route.remoteID == s.info.ID {
+	if info.ID == s.info.ID {
+		// Need to set this so that the close does the right thing
+		c.route.remoteID = info.ID
 		c.mu.Unlock()
 		c.closeConnection(DuplicateRoute)
 		return
 	}
 
+	// If this is an async INFO from an existing route...
+	if c.flags.isSet(infoReceived) {
+		remoteID := c.route.remoteID
+
+		// Check if this is an INFO for gateways...
+		if info.Gateway != "" {
+			c.mu.Unlock()
+			// If this server has no gateway configured, report error and return.
+			if !s.gateway.enabled {
+				// FIXME: Should this be a Fatalf()?
+				s.Errorf("Received information about gateway %q from %s, but gateway is not configured",
+					info.Gateway, remoteID)
+				return
+			}
+			s.processGatewayInfoFromRoute(info, remoteID, c)
+			return
+		}
+
+		// We receive an INFO from a server that informs us about another server,
+		// so the info.ID in the INFO protocol does not match the ID of this route.
+		if remoteID != "" && remoteID != info.ID {
+			c.mu.Unlock()
+
+			// Process this implicit route. We will check that it is not an explicit
+			// route and/or that it has not been connected already.
+			s.processImplicitRoute(info)
+			return
+		}
+
+		var connectURLs []string
+		var wsConnectURLs []string
+
+		// If we are notified that the remote is going into LDM mode, capture route's connectURLs.
+		if info.LameDuckMode {
+			connectURLs = c.route.connectURLs
+			wsConnectURLs = c.route.wsConnURLs
+		} else {
+			// If this is an update due to config reload on the remote server,
+			// need to possibly send local subs to the remote server.
+			c.updateRemoteRoutePerms(sl, info)
+		}
+		c.mu.Unlock()
+
+		// If the remote is going into LDM and there are client connect URLs
+		// associated with this route and we are allowed to advertise, remove
+		// those URLs and update our clients.
+		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !s.getOpts().Cluster.NoAdvertise {
+			s.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
+		}
+		return
+	}
+
+	// Mark that the INFO protocol has been received, so we can detect updates.
+	c.flags.set(infoReceived)
+
+	// Get the route's proto version
+	c.opts.Protocol = info.Proto
+
 	// Headers
 	c.headers = supportsHeaders && info.Headers
 
 	// Copy over important information.
+	c.route.remoteID = info.ID
 	c.route.authRequired = info.AuthRequired
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
@@ -455,14 +483,6 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 	// Compute the hash of this route based on remoteID
 	c.route.hash = string(getHash(info.ID))
-
-	// If this is an update due to config reload on the remote server,
-	// need to possibly send local subs to the remote server.
-	if c.flags.isSet(infoReceived) {
-		c.updateRemoteRoutePerms(sl, info)
-		c.mu.Unlock()
-		return
-	}
 
 	// Copy over permissions as well.
 	c.opts.Import = info.Import
@@ -482,10 +502,6 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 		c.route.url = url
 	}
-
-	// Mark that the INFO protocol has been received. Will allow
-	// to detect INFO updates.
-	c.flags.set(infoReceived)
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
@@ -577,6 +593,7 @@ func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 	if s.cproto == 0 || s.shutdown {
 		return
 	}
+	info := s.copyInfo()
 
 	for _, c := range s.clients {
 		c.mu.Lock()
@@ -589,7 +606,7 @@ func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 			c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
-			c.enqueueProto(c.generateClientInfoJSON(s.copyInfo()))
+			c.enqueueProto(c.generateClientInfoJSON(info))
 		}
 		c.mu.Unlock()
 	}
@@ -653,6 +670,11 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Note: nonce is not used in routes.
+	// That being said, the info we get is the initial INFO which
+	// contains a nonce, but we now forward this to existing routes,
+	// so clear it now.
+	info.Nonce = _EMPTY_
 	b, _ := json.Marshal(info)
 	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 
@@ -1092,7 +1114,14 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Grab server variables
 	s.mu.Lock()
+	// New proto wants a nonce (although not used in routes, that is, not signed in CONNECT)
+	var raw [nonceLen]byte
+	nonce := raw[:]
+	s.generateNonce(nonce)
+	s.routeInfo.Nonce = string(nonce)
 	s.generateRouteInfoJSON()
+	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
+	s.routeInfo.Nonce = _EMPTY_
 	infoJSON := s.routeInfoJSON
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired

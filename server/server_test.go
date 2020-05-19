@@ -14,16 +14,20 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
+	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -871,6 +875,153 @@ func TestLameDuckMode(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestLameDuckModeInfo(t *testing.T) {
+	// Ensure that initial delay is set very high so that we can
+	// check that some events occur as expected before the client
+	// is disconnected.
+	atomic.StoreInt64(&lameDuckModeInitialDelay, int64(5*time.Second))
+	defer atomic.StoreInt64(&lameDuckModeInitialDelay, lameDuckModeDefaultInitialDelay)
+
+	optsA := DefaultOptions()
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.Cluster.Port = -1
+	optsA.LameDuckDuration = 50 * time.Millisecond
+	optsA.DisableShortFirstPing = true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	curla := fmt.Sprintf("127.0.0.1:%d", optsA.Port)
+	c, err := net.Dial("tcp", curla)
+	if err != nil {
+		t.Fatalf("Error connecting: %v", err)
+	}
+	defer c.Close()
+
+	client := bufio.NewReaderSize(c, maxBufSize)
+
+	getInfo := func() *serverInfo {
+		t.Helper()
+		l, err := client.ReadString('\n')
+		if err != nil {
+			t.Fatalf("Error receiving info from server: %v\n", err)
+		}
+		var info serverInfo
+		if err = json.Unmarshal([]byte(l[5:]), &info); err != nil {
+			t.Fatalf("Could not parse INFO json: %v\n", err)
+		}
+		return &info
+	}
+	getInfo()
+	c.Write([]byte("CONNECT {\"protocol\":1,\"verbose\":false}\r\nPING\r\n"))
+	client.ReadString('\n')
+
+	optsB := DefaultOptions()
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	checkConnectURLs := func(expected []string) *serverInfo {
+		t.Helper()
+		sort.Strings(expected)
+		si := getInfo()
+		sort.Strings(si.ConnectURLs)
+		if !reflect.DeepEqual(expected, si.ConnectURLs) {
+			t.Fatalf("Expected %q, got %q", expected, si.ConnectURLs)
+		}
+		return si
+	}
+
+	curlb := fmt.Sprintf("127.0.0.1:%d", optsB.Port)
+	expected := []string{curla, curlb}
+	checkConnectURLs(expected)
+
+	optsC := DefaultOptions()
+	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	srvC := RunServer(optsC)
+	defer srvC.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB, srvC)
+
+	curlc := fmt.Sprintf("127.0.0.1:%d", optsC.Port)
+	expected = append(expected, curlc)
+	checkConnectURLs(expected)
+
+	optsD := DefaultOptions()
+	optsD.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	srvD := RunServer(optsD)
+	defer srvD.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB, srvC, srvD)
+
+	curld := fmt.Sprintf("127.0.0.1:%d", optsD.Port)
+	expected = append(expected, curld)
+	checkConnectURLs(expected)
+
+	// Now lame duck server A and C. We should have client connected to A
+	// receive info that A is in LDM without A's URL, but also receive
+	// an update with C's URL gone.
+	// But first we need to create a client to C because otherwise the
+	// LDM signal will just shut it down because it would have no client.
+	nc, err := nats.Connect(srvC.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer nc.Close()
+	nc.Flush()
+
+	start := time.Now()
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		srvA.lameDuckMode()
+	}()
+
+	expected = []string{curlb, curlc, curld}
+	si := checkConnectURLs(expected)
+	if !si.LameDuckMode {
+		t.Fatal("Expected LameDuckMode to be true, it was not")
+	}
+
+	// Start LDM for server C. This should send an update to A
+	// which in turn should remove C from the list of URLs and
+	// update its client.
+	go func() {
+		defer wg.Done()
+		srvC.lameDuckMode()
+	}()
+
+	expected = []string{curlb, curld}
+	si = checkConnectURLs(expected)
+	// This update should not say that it is LDM.
+	if si.LameDuckMode {
+		t.Fatal("Expected LameDuckMode to be false, it was true")
+	}
+
+	// Now shutdown D, and we also should get an update.
+	srvD.Shutdown()
+
+	expected = []string{curlb}
+	si = checkConnectURLs(expected)
+	// This update should not say that it is LDM.
+	if si.LameDuckMode {
+		t.Fatal("Expected LameDuckMode to be false, it was true")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("Did not get the expected events prior of server A and C shutting down")
+	}
+
+	c.Close()
+	nc.Close()
+	// Don't need to wait for actual disconnect of clients,
+	// so shutdown the servers now.
+	srvA.Shutdown()
+	srvC.Shutdown()
+	wg.Wait()
 }
 
 func TestServerValidateGatewaysOptions(t *testing.T) {
