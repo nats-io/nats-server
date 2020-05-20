@@ -766,11 +766,28 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	msz := fileStoreMsgSize(sm.subj, sm.msg)
 
 	fs.mu.Lock()
+	mb.mu.Lock()
+
+	// Make sure the seq still exists.
+	if seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
+		mb.mu.Unlock()
+		fs.mu.Unlock()
+		return
+	}
+	// Now check dmap if it is there.
+	if mb.dmap != nil {
+		if _, ok := mb.dmap[seq]; ok {
+			mb.mu.Unlock()
+			fs.mu.Unlock()
+			return
+		}
+	}
+
+	// Global stats
 	fs.state.Msgs--
 	fs.state.Bytes -= msz
 
 	// Now local mb updates.
-	mb.mu.Lock()
 	mb.msgs--
 	mb.bytes -= msz
 	atomic.AddUint64(&mb.cgenid, 1)
