@@ -984,6 +984,7 @@ type Varz struct {
 	Cluster           ClusterOptsVarz   `json:"cluster,omitempty"`
 	Gateway           GatewayOptsVarz   `json:"gateway,omitempty"`
 	LeafNode          LeafNodeOptsVarz  `json:"leaf,omitempty"`
+	JetStream         JetStreamVarz     `json:"jetstream,omitempty"`
 	TLSTimeout        float64           `json:"tls_timeout"`
 	WriteDeadline     time.Duration     `json:"write_deadline"`
 	Start             time.Time         `json:"start"`
@@ -1006,6 +1007,14 @@ type Varz struct {
 	Subscriptions     uint32            `json:"subscriptions"`
 	HTTPReqStats      map[string]uint64 `json:"http_req_stats"`
 	ConfigLoadTime    time.Time         `json:"config_load_time"`
+}
+
+// JetStreamVarz contains basic runtime information about jetstream
+type JetStreamVarz struct {
+	MaxMemory int64  `json:"max_memory,omitempty"`
+	MaxStore  int64  `json:"max_store,omitempty"`
+	StoreDir  string `json:"store_dir,omitempty"`
+	Accounts  int    `json:"accounts,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1211,6 +1220,17 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		}
 		varz.LeafNode.Remotes = rlna
 	}
+
+	if s.js != nil {
+		s.js.mu.RLock()
+		varz.JetStream = JetStreamVarz{
+			MaxMemory: s.js.config.MaxMemory,
+			MaxStore:  s.js.config.MaxStore,
+			StoreDir:  s.js.config.StoreDir,
+		}
+		s.js.mu.RUnlock()
+	}
+
 	// Finish setting it up with fields that can be updated during
 	// configuration reload and runtime.
 	s.updateVarzConfigReloadableFields(varz)
@@ -1315,6 +1335,12 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		}
 	}
 	gw.RUnlock()
+
+	if s.js != nil {
+		s.js.mu.RLock()
+		v.JetStream.Accounts = len(s.js.accounts)
+		s.js.mu.RUnlock()
+	}
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -1840,6 +1866,10 @@ func (reason ClosedState) String() string {
 		return "Missing Account"
 	case Revocation:
 		return "Credentials Revoked"
+	case InternalClient:
+		return "Internal Client"
+	case MsgHeaderViolation:
+		return "Message Header Violation"
 	}
 	return "Unknown State"
 }

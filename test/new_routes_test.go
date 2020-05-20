@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -50,6 +50,78 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 	if info.Nonce == "" {
 		t.Fatalf("Expected a non empty nonce in new route INFO")
 	}
+	// By default headers should be true.
+	if !info.Headers {
+		t.Fatalf("Expected to have headers on by default")
+	}
+}
+
+func TestNewRouteHeaderSupport(t *testing.T) {
+	srvA, srvB, optsA, optsB := runServers(t)
+	defer srvA.Shutdown()
+	defer srvB.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	clientB := createClientConn(t, optsB.Host, optsB.Port)
+	defer clientB.Close()
+
+	sendA, expectA := setupHeaderConn(t, clientA)
+	sendA("SUB foo bar 22\r\n")
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	sendB, expectB := setupHeaderConn(t, clientB)
+	// Can not have \r\n in payload fyi for regex.
+	sendB("HPUB foo reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	expectHeaderMsgs := expectHeaderMsgsCommand(t, expectA)
+	matches := expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "foo", "22", "reply", "12", "14", "K1:V1,K2:V2 ", "ok")
+}
+
+func TestNewRouteHeaderSupportOldAndNew(t *testing.T) {
+	optsA := LoadConfig("./configs/srv_a.conf")
+	optsA.NoHeaderSupport = true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvB, optsB := RunServerWithConfig("./configs/srv_b.conf")
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	clientB := createClientConn(t, optsB.Host, optsB.Port)
+	defer clientB.Close()
+
+	sendA, expectA := setupHeaderConn(t, clientA)
+	sendA("SUB foo bar 22\r\n")
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	sendB, expectB := setupHeaderConn(t, clientB)
+	// Can not have \r\n in payload fyi for regex.
+	sendB("HPUB foo reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	expectMsgs := expectMsgsCommand(t, expectA)
+	matches := expectMsgs(1)
+	checkMsg(t, matches[0], "foo", "22", "reply", "2", "ok")
 }
 
 func TestNewRouteConnectSubs(t *testing.T) {
@@ -1447,8 +1519,6 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	// Do Accounts for the servers.
 	fooA, _ := registerAccounts(t, srvA)
 	fooB, barB := registerAccounts(t, srvB)
-
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
 
 	// Add in the service export for the requests. Make it public.
 	if err := fooA.AddServiceExport("test.request", nil); err != nil {

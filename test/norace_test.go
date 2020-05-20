@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -533,4 +534,89 @@ func TestNoRaceClusterLeaksSubscriptions(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.Delete()
+
+	// Create basic work queue mode consumer.
+	oname := "WQ"
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, AckPolicy: server.AckExplicit})
+	if err != nil {
+		t.Fatalf("Expected no error with durable, got %v", err)
+	}
+	defer o.Delete()
+
+	// To send messages.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// For normal work queue semantics, you send requests to the subject with stream and consumer name.
+	reqMsgSubj := o.RequestNextMsgSubject()
+
+	numWorkers := 25
+	counts := make([]int32, numWorkers)
+	var received int32
+
+	rwg := &sync.WaitGroup{}
+	rwg.Add(numWorkers)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(numWorkers)
+	ch := make(chan bool)
+
+	toSend := 1000
+
+	for i := 0; i < numWorkers; i++ {
+		nc := clientConnectToServer(t, s)
+		defer nc.Close()
+
+		go func(index int32) {
+			rwg.Done()
+			defer wg.Done()
+			<-ch
+
+			for counter := &counts[index]; ; {
+				m, err := nc.Request(reqMsgSubj, nil, 100*time.Millisecond)
+				if err != nil {
+					return
+				}
+				m.Respond(nil)
+				atomic.AddInt32(counter, 1)
+				if total := atomic.AddInt32(&received, 1); total >= int32(toSend) {
+					return
+				}
+			}
+		}(int32(i))
+	}
+
+	// Wait for requestors to be ready
+	rwg.Wait()
+	close(ch)
+
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, sendSubj, "Hello World!")
+	}
+
+	// Wait for test to complete.
+	wg.Wait()
+
+	target := toSend / numWorkers
+	delta := target/2 + 5
+	low, high := int32(target-delta), int32(target+delta)
+
+	for i := 0; i < numWorkers; i++ {
+		if msgs := atomic.LoadInt32(&counts[i]); msgs < low || msgs > high {
+			t.Fatalf("Messages received for worker [%d] too far off from target of %d, got %d", i, target, msgs)
+		}
+	}
 }

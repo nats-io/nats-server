@@ -1,4 +1,4 @@
-// Copyright 2016-2019 The NATS Authors
+// Copyright 2016-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -36,13 +36,13 @@ const (
 
 // Sublist related errors
 var (
-	ErrInvalidSubject = errors.New("sublist: invalid subject")
-	ErrNotFound       = errors.New("sublist: no matches found")
+	ErrInvalidSubject    = errors.New("sublist: invalid subject")
+	ErrNotFound          = errors.New("sublist: no matches found")
+	ErrNilChan           = errors.New("sublist: nil channel")
+	ErrAlreadyRegistered = errors.New("sublist: notification already registered")
 )
 
 const (
-	// slNoCache for cacheNum means cache is disabled.
-	slNoCache = -22
 	// cacheMax is used to bound limit the frontend cache
 	slCacheMax = 1024
 	// If we run a sweeper we will drain to this count.
@@ -66,10 +66,17 @@ type Sublist struct {
 	inserts   uint64
 	removes   uint64
 	root      *level
-	cache     *sync.Map
-	cacheNum  int32
+	cache     map[string]*SublistResult
 	ccSweep   int32
+	notify    *notifyMaps
 	count     uint32
+}
+
+// notifyMaps holds maps of arrays of channels for notifications
+// on a change of interest.
+type notifyMaps struct {
+	insert map[string][]chan<- bool
+	remove map[string][]chan<- bool
 }
 
 // A node contains subscriptions and a pointer to the next level.
@@ -105,9 +112,9 @@ func newLevel() *level {
 // NewSublist will create a default sublist with caching enabled per the flag.
 func NewSublist(enableCache bool) *Sublist {
 	if enableCache {
-		return &Sublist{root: newLevel(), cache: &sync.Map{}}
+		return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
 	}
-	return &Sublist{root: newLevel(), cacheNum: slNoCache}
+	return &Sublist{root: newLevel()}
 }
 
 // NewSublistWithCache will create a default sublist with caching enabled.
@@ -122,7 +129,168 @@ func NewSublistNoCache() *Sublist {
 
 // CacheEnabled returns whether or not caching is enabled for this sublist.
 func (s *Sublist) CacheEnabled() bool {
-	return atomic.LoadInt32(&s.cacheNum) != slNoCache
+	s.RLock()
+	enabled := s.cache != nil
+	s.RUnlock()
+	return enabled
+}
+
+// RegisterNotification will register for notifications when interest for the given
+// subject changes. The subject must be a literal publish type subject. The
+// notification is true for when the first interest for a subject is inserted,
+// and false when all interest in the subject is removed. The sublist will not
+// block when trying to send the notification. Its up to the caller to make sure
+// the channel send will not block.
+func (s *Sublist) RegisterNotification(subject string, notify chan<- bool) error {
+	if subjectHasWildcard(subject) {
+		return ErrInvalidSubject
+	}
+	if notify == nil {
+		return ErrNilChan
+	}
+
+	r := s.Match(subject)
+	hasInterest := len(r.psubs)+len(r.qsubs) > 0
+
+	s.Lock()
+	if s.notify == nil {
+		s.notify = &notifyMaps{
+			insert: make(map[string][]chan<- bool),
+			remove: make(map[string][]chan<- bool),
+		}
+	}
+
+	var err error
+	if hasInterest {
+		err = s.addRemoveNotify(subject, notify)
+	} else {
+		err = s.addInsertNotify(subject, notify)
+	}
+	s.Unlock()
+	if err == nil {
+		sendNotification(notify, hasInterest)
+	}
+	return err
+}
+
+// Lock should be held.
+func chkAndRemove(subject string, notify chan<- bool, ms map[string][]chan<- bool) bool {
+	chs := ms[subject]
+	for i, ch := range chs {
+		if ch == notify {
+			chs[i] = chs[len(chs)-1]
+			chs = chs[:len(chs)-1]
+			if len(chs) == 0 {
+				delete(ms, subject)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Sublist) ClearNotification(subject string, notify chan<- bool) bool {
+	s.Lock()
+	if s.notify == nil {
+		s.Unlock()
+		return false
+	}
+	// Check both, start with remove.
+	didRemove := chkAndRemove(subject, notify, s.notify.remove)
+	didRemove = didRemove || chkAndRemove(subject, notify, s.notify.insert)
+	// Check if everything is gone
+	if len(s.notify.remove)+len(s.notify.insert) == 0 {
+		s.notify = nil
+	}
+	s.Unlock()
+	return didRemove
+}
+
+func sendNotification(ch chan<- bool, hasInterest bool) {
+	select {
+	case ch <- hasInterest:
+	default:
+	}
+}
+
+// Add a new channel for notification in insert map.
+// Write lock should be held.
+func (s *Sublist) addInsertNotify(subject string, notify chan<- bool) error {
+	return s.addNotify(s.notify.insert, subject, notify)
+}
+
+// Add a new channel for notification in removal map.
+// Write lock should be held.
+func (s *Sublist) addRemoveNotify(subject string, notify chan<- bool) error {
+	return s.addNotify(s.notify.remove, subject, notify)
+}
+
+// Add a new channel for notification.
+// Write lock should be held.
+func (s *Sublist) addNotify(m map[string][]chan<- bool, subject string, notify chan<- bool) error {
+	chs := m[subject]
+	if len(chs) > 0 {
+		// Check to see if this chan is alredy registered.
+		for _, ch := range chs {
+			if ch == notify {
+				return ErrAlreadyRegistered
+			}
+		}
+	}
+	m[subject] = append(chs, notify)
+	return nil
+}
+
+// chkForInsertNotification will check to see if we need to notify on this subject.
+// Write lock should be held.
+func (s *Sublist) chkForInsertNotification(subject string, isLiteral bool) {
+	// If we are a literal, all notify subjects are also literal so just do a
+	// hash lookup here.
+	if isLiteral {
+		chs := s.notify.insert[subject]
+		if len(chs) > 0 {
+			for _, ch := range chs {
+				sendNotification(ch, true)
+			}
+			// Move from the insert map to the remove map.
+			s.notify.remove[subject] = append(s.notify.remove[subject], chs...)
+			delete(s.notify.insert, subject)
+		}
+		return
+	}
+
+	// We are not a literal, so we may match any subject that we want.
+	// Note we could be smarter here and try to make the list smaller, but probably not worth it TBH.
+	for target, chs := range s.notify.insert {
+		r := s.matchNoLock(target)
+		if len(r.psubs)+len(r.qsubs) > 0 {
+			for _, ch := range chs {
+				sendNotification(ch, true)
+			}
+			// Move from the insert map to the remove map.
+			s.notify.remove[target] = append(s.notify.remove[target], chs...)
+			delete(s.notify.insert, target)
+			break
+		}
+	}
+}
+
+// chkForRemoveNotification will check to see if we need to notify on this subject.
+// Write lock should be held.
+func (s *Sublist) chkForRemoveNotification(subject string, isLiteral bool) {
+	for target, chs := range s.notify.remove {
+		// We need to always check that we have no interest anymore.
+		r := s.matchNoLock(target)
+		if len(r.psubs)+len(r.qsubs) == 0 {
+			for _, ch := range chs {
+				sendNotification(ch, false)
+			}
+			// Move from the remove map to the insert map.
+			s.notify.insert[target] = append(s.notify.insert[target], chs...)
+			delete(s.notify.remove, target)
+			break
+		}
+	}
 }
 
 // Insert adds a subscription into the sublist
@@ -142,9 +310,9 @@ func (s *Sublist) Insert(sub *subscription) error {
 
 	s.Lock()
 
-	sfwc := false
-	l := s.root
+	var sfwc, haswc, isnew bool
 	var n *node
+	l := s.root
 
 	for _, t := range tokens {
 		lt := len(t)
@@ -159,14 +327,16 @@ func (s *Sublist) Insert(sub *subscription) error {
 			switch t[0] {
 			case pwc:
 				n = l.pwc
+				haswc = true
 			case fwc:
 				n = l.fwc
-				sfwc = true
+				haswc, sfwc = true, true
 			default:
 				n = l.nodes[t]
 			}
 		}
 		if n == nil {
+			isnew = true
 			n = newNode()
 			if lt > 1 {
 				l.nodes[t] = n
@@ -217,7 +387,11 @@ func (s *Sublist) Insert(sub *subscription) error {
 	s.addToCache(subject, sub)
 	atomic.AddUint64(&s.genid, 1)
 
+	if s.notify != nil && isnew && len(s.notify.insert) > 0 {
+		s.chkForInsertNotification(subject, !haswc)
+	}
 	s.Unlock()
+
 	return nil
 }
 
@@ -250,26 +424,23 @@ func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
 
 // addToCache will add the new entry to the existing cache
 // entries if needed. Assumes write lock is held.
+// Assumes write lock is held.
 func (s *Sublist) addToCache(subject string, sub *subscription) {
 	if s.cache == nil {
 		return
 	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
-		if v, ok := s.cache.Load(subject); ok {
-			r := v.(*SublistResult)
-			s.cache.Store(subject, r.addSubToResult(sub))
+		if r := s.cache[subject]; r != nil {
+			s.cache[subject] = r.addSubToResult(sub)
 		}
 		return
 	}
-	s.cache.Range(func(k, v interface{}) bool {
-		key := k.(string)
-		r := v.(*SublistResult)
+	for key, r := range s.cache {
 		if matchLiteral(key, subject) {
-			s.cache.Store(key, r.addSubToResult(sub))
+			s.cache[key] = r.addSubToResult(sub)
 		}
-		return true
-	})
+	}
 }
 
 // removeFromCache will remove the sub from any active cache entries.
@@ -280,23 +451,15 @@ func (s *Sublist) removeFromCache(subject string, sub *subscription) {
 	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
-		// Load for accounting
-		if _, ok := s.cache.Load(subject); ok {
-			s.cache.Delete(subject)
-			atomic.AddInt32(&s.cacheNum, -1)
-		}
+		delete(s.cache, subject)
 		return
 	}
-	s.cache.Range(func(k, v interface{}) bool {
-		key := k.(string)
+	// Wildcard here.
+	for key := range s.cache {
 		if matchLiteral(key, subject) {
-			// Since someone else may be referecing, can't modify the list
-			// safely, just let it re-populate.
-			s.cache.Delete(key)
-			atomic.AddInt32(&s.cacheNum, -1)
+			delete(s.cache, key)
 		}
-		return true
-	})
+	}
 }
 
 // a place holder for an empty result.
@@ -305,14 +468,27 @@ var emptyResult = &SublistResult{}
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
+	return s.match(subject, true)
+}
+
+func (s *Sublist) matchNoLock(subject string) *SublistResult {
+	return s.match(subject, false)
+}
+
+func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
-	if atomic.LoadInt32(&s.cacheNum) > 0 {
-		if r, ok := s.cache.Load(subject); ok {
-			atomic.AddUint64(&s.cacheHits, 1)
-			return r.(*SublistResult)
-		}
+	if doLock {
+		s.RLock()
+	}
+	r, ok := s.cache[subject]
+	if doLock {
+		s.RUnlock()
+	}
+	if ok {
+		atomic.AddUint64(&s.cacheHits, 1)
+		return r
 	}
 
 	tsa := [32]string{}
@@ -331,19 +507,24 @@ func (s *Sublist) Match(subject string) *SublistResult {
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
-	var n int32
+	var n int
 
-	s.RLock()
+	if doLock {
+		s.Lock()
+	}
+
 	matchLevel(s.root, tokens, result)
 	// Check for empty result.
 	if len(result.psubs) == 0 && len(result.qsubs) == 0 {
 		result = emptyResult
 	}
 	if s.cache != nil {
-		s.cache.Store(subject, result)
-		n = atomic.AddInt32(&s.cacheNum, 1)
+		s.cache[subject] = result
+		n = len(s.cache)
 	}
-	s.RUnlock()
+	if doLock {
+		s.Unlock()
+	}
 
 	// Reduce the cache count if we have exceeded our set maximum.
 	if n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
@@ -359,11 +540,12 @@ func (s *Sublist) reduceCacheCount() {
 	defer atomic.StoreInt32(&s.ccSweep, 0)
 	// If we are over the cache limit randomly drop until under the limit.
 	s.Lock()
-	s.cache.Range(func(k, v interface{}) bool {
-		s.cache.Delete(k.(string))
-		n := atomic.AddInt32(&s.cacheNum, -1)
-		return n >= slCacheSweep
-	})
+	for key := range s.cache {
+		delete(s.cache, key)
+		if len(s.cache) <= slCacheSweep {
+			break
+		}
+	}
 	s.Unlock()
 }
 
@@ -472,7 +654,7 @@ type lnt struct {
 }
 
 // Raw low level remove, can do batches with lock held outside.
-func (s *Sublist) remove(sub *subscription, shouldLock bool) error {
+func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool) error {
 	subject := string(sub.subject)
 	tsa := [32]string{}
 	tokens := tsa[:0]
@@ -490,9 +672,9 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool) error {
 		defer s.Unlock()
 	}
 
-	sfwc := false
-	l := s.root
+	var sfwc, haswc, last bool
 	var n *node
+	l := s.root
 
 	// Track levels for pruning
 	var lnts [32]lnt
@@ -512,9 +694,10 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool) error {
 			switch t[0] {
 			case pwc:
 				n = l.pwc
+				haswc = true
 			case fwc:
 				n = l.fwc
-				sfwc = true
+				haswc, sfwc = true, true
 			default:
 				n = l.nodes[t]
 			}
@@ -536,82 +719,54 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool) error {
 	for i := len(levels) - 1; i >= 0; i-- {
 		l, n, t := levels[i].l, levels[i].n, levels[i].t
 		if n.isEmpty() {
+			last = true
 			l.pruneNode(n, t)
 		}
 	}
-	s.removeFromCache(subject, sub)
-	atomic.AddUint64(&s.genid, 1)
+	if doCacheUpdates {
+		s.removeFromCache(subject, sub)
+		atomic.AddUint64(&s.genid, 1)
+	}
+
+	if s.notify != nil && last && len(s.notify.remove) > 0 {
+		s.chkForRemoveNotification(subject, !haswc)
+	}
 
 	return nil
 }
 
 // Remove will remove a subscription.
 func (s *Sublist) Remove(sub *subscription) error {
-	return s.remove(sub, true)
+	return s.remove(sub, true, true)
 }
 
 // RemoveBatch will remove a list of subscriptions.
 func (s *Sublist) RemoveBatch(subs []*subscription) error {
+	if len(subs) == 0 {
+		return nil
+	}
+
 	s.Lock()
 	defer s.Unlock()
 
+	// TODO(dlc) - We could try to be smarter here for a client going away but the account
+	// has a large number of subscriptions compared to this client. Quick and dirty testing
+	// though said just disabling all the time best for now.
+
+	// Turn off our cache if enabled.
+	wasEnabled := s.cache != nil
+	s.cache = nil
 	for _, sub := range subs {
-		if err := s.remove(sub, false); err != nil {
+		if err := s.remove(sub, false, false); err != nil {
 			return err
 		}
 	}
+	// Turn caching back on here.
+	atomic.AddUint64(&s.genid, 1)
+	if wasEnabled {
+		s.cache = make(map[string]*SublistResult)
+	}
 	return nil
-}
-
-func (s *Sublist) checkNodeForClientSubs(n *node, c *client) {
-	var removed uint32
-	for _, sub := range n.psubs {
-		if sub.client == c {
-			if s.removeFromNode(n, sub) {
-				s.removeFromCache(string(sub.subject), sub)
-				removed++
-			}
-		}
-	}
-	// Queue subscriptions
-	for _, qr := range n.qsubs {
-		for _, sub := range qr {
-			if sub.client == c {
-				if s.removeFromNode(n, sub) {
-					s.removeFromCache(string(sub.subject), sub)
-					removed++
-				}
-			}
-		}
-	}
-	s.count -= removed
-	s.removes += uint64(removed)
-}
-
-func (s *Sublist) removeClientSubs(l *level, c *client) {
-	for _, n := range l.nodes {
-		s.checkNodeForClientSubs(n, c)
-		s.removeClientSubs(n.next, c)
-	}
-	if l.pwc != nil {
-		s.checkNodeForClientSubs(l.pwc, c)
-		s.removeClientSubs(l.pwc.next, c)
-	}
-	if l.fwc != nil {
-		s.checkNodeForClientSubs(l.fwc, c)
-		s.removeClientSubs(l.fwc.next, c)
-	}
-}
-
-// RemoveAllForClient will remove all subscriptions for a given client.
-func (s *Sublist) RemoveAllForClient(c *client) {
-	s.Lock()
-	removes := s.removes
-	s.removeClientSubs(s.root, c)
-	if s.removes != removes {
-		atomic.AddUint64(&s.genid, 1)
-	}
-	s.Unlock()
 }
 
 // pruneNode is used to prune an empty node from the tree.
@@ -687,7 +842,10 @@ func (s *Sublist) Count() uint32 {
 
 // CacheCount returns the number of result sets in the cache.
 func (s *Sublist) CacheCount() int {
-	return int(atomic.LoadInt32(&s.cacheNum))
+	s.RLock()
+	cc := len(s.cache)
+	s.RUnlock()
+	return cc
 }
 
 // SublistStats are public stats for the sublist
@@ -730,14 +888,13 @@ func (s *Sublist) Stats() *SublistStats {
 
 	s.RLock()
 	cache := s.cache
+	cc := len(s.cache)
 	st.NumSubs = s.count
 	st.NumInserts = s.inserts
 	st.NumRemoves = s.removes
 	s.RUnlock()
 
-	if cn := atomic.LoadInt32(&s.cacheNum); cn > 0 {
-		st.NumCache = uint32(cn)
-	}
+	st.NumCache = uint32(cc)
 	st.NumMatches = atomic.LoadUint64(&s.matches)
 	if st.NumMatches > 0 {
 		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
@@ -747,16 +904,16 @@ func (s *Sublist) Stats() *SublistStats {
 	// If this is called frequently, which it should not be, this could hurt performance.
 	if cache != nil {
 		tot, max, clen := 0, 0, 0
-		s.cache.Range(func(k, v interface{}) bool {
+		s.RLock()
+		for _, r := range s.cache {
 			clen++
-			r := v.(*SublistResult)
 			l := len(r.psubs) + len(r.qsubs)
 			tot += l
 			if l > max {
 				max = l
 			}
-			return true
-		})
+		}
+		s.RUnlock()
 		st.totFanout = tot
 		st.cacheCnt = clen
 		st.MaxFanout = uint32(max)
@@ -855,7 +1012,11 @@ func IsValidSubject(subject string) bool {
 
 // IsValidLiteralSubject returns true if a subject is valid and literal (no wildcards), false otherwise
 func IsValidLiteralSubject(subject string) bool {
-	tokens := strings.Split(subject, tsep)
+	return isValidLiteralSubject(strings.Split(subject, tsep))
+}
+
+// isValidLiteralSubject returns true if the tokens are valid and literal (no wildcards), false otherwise
+func isValidLiteralSubject(tokens []string) bool {
 	for _, t := range tokens {
 		if len(t) == 0 {
 			return false
@@ -869,6 +1030,99 @@ func IsValidLiteralSubject(subject string) bool {
 		}
 	}
 	return true
+}
+
+// Will check tokens and report back if the have any partial or full wildcards.
+func analyzeTokens(tokens []string) (hasPWC, hasFWC bool) {
+	for _, t := range tokens {
+		if lt := len(t); lt == 0 || lt > 1 {
+			continue
+		}
+		switch t[0] {
+		case pwc:
+			hasPWC = true
+		case fwc:
+			hasFWC = true
+		}
+	}
+	return
+}
+
+// Check on a token basis if they could match.
+func tokensCanMatch(t1, t2 string) bool {
+	if len(t1) == 0 || len(t2) == 0 {
+		return false
+	}
+	t1c, t2c := t1[0], t2[0]
+	if t1c == pwc || t2c == pwc || t1c == fwc || t2c == fwc {
+		return true
+	}
+	return t1 == t2
+}
+
+// SubjectsCollide will determine if two subjects could both match a single literal subject.
+func SubjectsCollide(subj1, subj2 string) bool {
+	toks1 := strings.Split(subj1, tsep)
+	toks2 := strings.Split(subj2, tsep)
+	pwc1, fwc1 := analyzeTokens(toks1)
+	pwc2, fwc2 := analyzeTokens(toks2)
+	// if both literal just string compare.
+	l1, l2 := !(pwc1 || fwc1), !(pwc2 || fwc2)
+	if l1 && l2 {
+		return subj1 == subj2
+	}
+	// So one or both have wildcards. If one is literal than we can do subset matching.
+	if l1 && !l2 {
+		return isSubsetMatch(toks1, subj2)
+	} else if l2 && !l1 {
+		return isSubsetMatch(toks2, subj1)
+	}
+	// Both have wildcards.
+	stop := len(toks1)
+	if len(toks2) < stop {
+		stop = len(toks2)
+	}
+	// We look for reasons to say no.
+	for i := 0; i < stop; i++ {
+		t1, t2 := toks1[i], toks2[i]
+		if !tokensCanMatch(t1, t2) {
+			return false
+		}
+	}
+	return true
+}
+
+// Returns number of tokens in the subject.
+func numTokens(subject string) int {
+	var numTokens int
+	if len(subject) == 0 {
+		return 0
+	}
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			numTokens++
+		}
+	}
+	return numTokens + 1
+}
+
+// Fast way to return an indexed token.
+// This is one based, so first token is TokenAt(subject, 1)
+func tokenAt(subject string, index uint8) string {
+	ti, start := uint8(1), 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			if ti == index {
+				return subject[start:i]
+			}
+			start = i + 1
+			ti++
+		}
+	}
+	if ti == index {
+		return subject[start:]
+	}
+	return _EMPTY_
 }
 
 // Calls into the function isSubsetMatch()
@@ -915,13 +1169,12 @@ func isSubsetMatch(tokens []string, test string) bool {
 			return true
 		}
 		t1 := tokens[i]
+
 		l = len(t1)
-		if l == 0 {
+		if l == 0 || t1[0] == fwc && l == 1 {
 			return false
 		}
-		if t1[0] == fwc && l == 1 {
-			return false
-		}
+
 		if t1[0] == pwc && len(t1) == 1 {
 			m := t2[0] == pwc && len(t2) == 1
 			if !m {
@@ -1011,7 +1264,8 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil && (sub.client.kind == CLIENT || sub.client.kind == SYSTEM) && sub.im == nil {
+	if sub != nil && sub.client != nil &&
+		(sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM || sub.client.kind == ACCOUNT) && sub.im == nil {
 		*subs = append(*subs, sub)
 	}
 }
@@ -1094,18 +1348,4 @@ func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 		s.addAllNodeToSubs(l.fwc, subs)
 		s.collectAllSubs(l.fwc.next, subs)
 	}
-}
-
-// Helper to get the first result sub.
-func firstSubFromResult(rr *SublistResult) *subscription {
-	if rr == nil {
-		return nil
-	}
-	if len(rr.psubs) > 0 {
-		return rr.psubs[0]
-	}
-	if len(rr.qsubs) > 0 {
-		return rr.qsubs[0][0]
-	}
-	return nil
 }

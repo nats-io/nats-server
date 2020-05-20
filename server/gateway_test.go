@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -237,6 +238,7 @@ func natsUnsub(t *testing.T, sub *nats.Subscription) {
 
 func testDefaultOptionsForGateway(name string) *Options {
 	o := DefaultOptions()
+	o.ServerName = name
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
@@ -429,6 +431,183 @@ func TestGatewayIgnoreSelfReference(t *testing.T) {
 	}
 	if s2.getOutboundGatewayConnection("B") != nil {
 		t.Fatalf("Should not have a gateway connection to B")
+	}
+}
+
+func TestGatewayHeaderInfo(t *testing.T) {
+	o := testDefaultOptionsForGateway("A")
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v\n", err)
+	}
+	defer gwconn.Close()
+	client := bufio.NewReaderSize(gwconn, maxBufSize)
+	l, err := client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	var info serverInfo
+	if err = json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if !info.Headers {
+		t.Fatalf("Expected by default for header support to be enabled")
+	}
+
+	s.Shutdown()
+	gwconn.Close()
+
+	// Now turn headers off.
+	o.NoHeaderSupport = true
+	s = runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v\n", err)
+	}
+	defer gwconn.Close()
+	client = bufio.NewReaderSize(gwconn, maxBufSize)
+	l, err = client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving info from server: %v\n", err)
+	}
+	if err = json.Unmarshal([]byte(l[5:]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Headers {
+		t.Fatalf("Expected header support to be disabled")
+	}
+}
+
+func TestGatewayHeaderSupport(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	o2.Gateway.ConnectRetries = 0
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	// s1 should have an outbound gateway to s2.
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	// s2 should have an inbound gateway
+	waitForInboundGateways(t, s2, 1, time.Second)
+	// and an outbound too
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	c, cr, _ := newClientForServer(s1)
+	defer c.close()
+
+	connect := "CONNECT {\"headers\":true}"
+	subOp := "SUB foo 1"
+	pingOp := "PING\r\n"
+	cmd := strings.Join([]string{connect, subOp, pingOp}, "\r\n")
+	c.parseAsync(cmd)
+	if _, err := cr.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	b, _, _ := newClientForServer(s2)
+	defer b.close()
+
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd = strings.Join([]string{connect, pubOp}, "\r\n")
+	b.parseAsync(cmd)
+
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	am := hmsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 7 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 7)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[HDR_INDEX] != "12" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[HDR_INDEX])
+	}
+	if matches[TLEN_INDEX] != "14" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[TLEN_INDEX])
+	}
+	checkPayload(cr, []byte("Name:Derek\r\nOK\r\n"), t)
+}
+
+func TestGatewayHeaderDeliverStrippedMsg(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	o2.Gateway.ConnectRetries = 0
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	o1.NoHeaderSupport = true
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	// s1 should have an outbound gateway to s2.
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	// s2 should have an inbound gateway
+	waitForInboundGateways(t, s2, 1, time.Second)
+	// and an outbound too
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	c, cr, _ := newClientForServer(s1)
+	defer c.close()
+
+	connect := "CONNECT {\"headers\":true}"
+	subOp := "SUB foo 1"
+	pingOp := "PING\r\n"
+	cmd := strings.Join([]string{connect, subOp, pingOp}, "\r\n")
+	c.parseAsync(cmd)
+	if _, err := cr.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	b, _, _ := newClientForServer(s2)
+	defer b.close()
+
+	pubOp := "HPUB foo 12 14\r\nName:Derek\r\nOK\r\n"
+	cmd = strings.Join([]string{connect, pubOp}, "\r\n")
+	b.parseAsync(cmd)
+
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+	am := smsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a correct match for %q", l)
+	}
+	matches := am[0]
+	if len(matches) != 6 {
+		t.Fatalf("Did not get correct # matches: %d vs %d\n", len(matches), 6)
+	}
+	if matches[SUB_INDEX] != "foo" {
+		t.Fatalf("Did not get correct subject: '%s'\n", matches[SUB_INDEX])
+	}
+	if matches[SID_INDEX] != "1" {
+		t.Fatalf("Did not get correct sid: '%s'\n", matches[SID_INDEX])
+	}
+	if matches[LEN_INDEX] != "2" {
+		t.Fatalf("Did not get correct msg length: '%s'\n", matches[LEN_INDEX])
+	}
+	checkPayload(cr, []byte("OK\r\n"), t)
+	if cr.Buffered() != 0 {
+		t.Fatalf("Expected no extra bytes to be buffered, got %d", cr.Buffered())
 	}
 }
 
@@ -3339,7 +3518,7 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// Check for duplicate message
-		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if msg, err := subB.NextMsg(250 * time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
@@ -3350,13 +3529,14 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client.
+		// and foo.request then send the reply to the client and optimistically
+		// to the other gateway. Also send on _R_
 		if i == 0 {
-			expected = 3
-		} else {
-			// The second time, one of the account will be suppressed, so we will get
-			// only 2 more messages.
 			expected = 5
+		} else {
+			// The second time, one of the accounts will be suppressed and the reply going
+			// back so we should get only 2 more messages.
+			expected = 7
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3372,7 +3552,10 @@ func TestGatewayServiceImport(t *testing.T) {
 	})
 
 	// Speed up exiration
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
+	err := fooA.SetServiceExportResponseThreshold("test.request", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3402,7 +3585,10 @@ func TestGatewayServiceImport(t *testing.T) {
 	// Repeat similar test but without the small TTL and verify
 	// that if B is shutdown, the dangling subs for replies are
 	// cleared from the account sublist.
-	fooA.SetAutoExpireTTL(10 * time.Second)
+	err = fooA.SetServiceExportResponseThreshold("test.request", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	subA = natsSubSync(t, clientA, "test.request")
 	natsFlush(t, clientA)
@@ -3645,7 +3831,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 			t.Fatalf("Unexpected message: %v", msg)
 		}
 		// Check for duplicate message
-		if msg, err := subB.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if msg, err := subB.NextMsg(250 * time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
@@ -3656,13 +3842,14 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 		}
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
-		// and foo.request then send the reply to the client.
+		// and foo.request then send the reply to the client and optimistically
+		// to the other gateway. Also send on _R_.
 		if i == 0 {
-			expected = 3
-		} else {
-			// The second time, one of the account will be suppressed, so we will get
-			// only 2 more messages.
 			expected = 5
+		} else {
+			// The second time, one of the accounts will be suppressed and the reply going
+			// back so we should get only 2 more messages.
+			expected = 7
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {
@@ -3678,7 +3865,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	})
 
 	// Speed up exiration
-	fooA.SetAutoExpireTTL(10 * time.Millisecond)
+	err := fooA.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -3709,7 +3899,10 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	// Repeat similar test but without the small TTL and verify
 	// that if B is shutdown, the dangling subs for replies are
 	// cleared from the account sublist.
-	fooA.SetAutoExpireTTL(10 * time.Second)
+	err = fooA.SetServiceExportResponseThreshold("test.request", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	subA = natsQueueSubSync(t, clientA, "test.request", "queue")
 	natsFlush(t, clientA)
@@ -3887,7 +4080,9 @@ func ensureGWConnectTo(t *testing.T, s *Server, remoteGWName string, remoteGWSer
 				}
 			}
 			rg.Unlock()
-			nc.Close()
+			if nc != nil {
+				nc.Close()
+			}
 		} else {
 			good = true
 		}
@@ -4099,17 +4294,23 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 		})
 	}
 	checkSubs(t, fooA1, "A1", 1)
-	checkSubs(t, barA1, "A1", 0)
+	checkSubs(t, barA1, "A1", 1)
 	checkSubs(t, fooA2, "A2", 1)
-	checkSubs(t, barA2, "A2", 0)
-	checkSubs(t, fooB1, "B1", 0)
-	checkSubs(t, barB1, "B1", 1)
+	checkSubs(t, barA2, "A2", 1)
+	checkSubs(t, fooB1, "B1", 1)
+	checkSubs(t, barB1, "B1", 2)
 	checkSubs(t, fooB2, "B2", 1)
-	checkSubs(t, barB2, "B2", 1)
+	checkSubs(t, barB2, "B2", 2)
 
 	// Speed up exiration
-	fooA2.SetAutoExpireTTL(10 * time.Millisecond)
-	fooB1.SetAutoExpireTTL(10 * time.Millisecond)
+	err = fooA2.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
+	err = fooB1.SetServiceExportResponseThreshold("test.request", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Error setting response threshold: %v", err)
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
@@ -4132,23 +4333,21 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 
 	// We should expire because ttl.
 	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		// Now run prune and make sure we collect the timed-out ones.
-		fooB1.pruneAutoExpireResponseMaps()
-		if nae := fooB1.numAutoExpireResponseMaps(); nae != 0 {
-			return fmt.Errorf("Number of responsemaps is %d", nae)
+		if nr := len(fooA1.exports.responses); nr != 0 {
+			return fmt.Errorf("Number of responses is %d", nr)
 		}
 		return nil
 	})
 
 	checkSubs(t, fooA1, "A1", 0)
 	checkSubs(t, fooA2, "A2", 0)
-	checkSubs(t, fooB1, "B1", 0)
+	checkSubs(t, fooB1, "B1", 1)
 	checkSubs(t, fooB2, "B2", 1)
 
-	checkSubs(t, barA1, "A1", 0)
-	checkSubs(t, barA2, "A2", 0)
-	checkSubs(t, barB1, "B1", 0)
-	checkSubs(t, barB2, "B2", 0)
+	checkSubs(t, barA1, "A1", 1)
+	checkSubs(t, barA2, "A2", 1)
+	checkSubs(t, barB1, "B1", 1)
+	checkSubs(t, barB2, "B2", 1)
 
 	// Check that this all work in interest-only mode.
 
@@ -4467,17 +4666,23 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				})
 			}
 			checkSubs(t, fooA1, "A1", 1)
-			checkSubs(t, barA1, "A1", 0)
+			checkSubs(t, barA1, "A1", 1)
 			checkSubs(t, fooA2, "A2", 1)
-			checkSubs(t, barA2, "A2", 0)
-			checkSubs(t, fooB1, "B1", 0)
-			checkSubs(t, barB1, "B1", 1)
+			checkSubs(t, barA2, "A2", 1)
+			checkSubs(t, fooB1, "B1", 1)
+			checkSubs(t, barB1, "B1", 2)
 			checkSubs(t, fooB2, "B2", 1)
-			checkSubs(t, barB2, "B2", 1)
+			checkSubs(t, barB2, "B2", 2)
 
 			// Speed up exiration
-			fooA2.SetAutoExpireTTL(10 * time.Millisecond)
-			fooB1.SetAutoExpireTTL(10 * time.Millisecond)
+			err = fooA1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Error setting response threshold: %v", err)
+			}
+			err = fooB1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Error setting response threshold: %v", err)
+			}
 
 			// Send 100 requests from clientB on foo.request,
 			for i := 0; i < 100; i++ {
@@ -4500,23 +4705,21 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			// We should expire because ttl.
 			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-				// Now run prune and make sure we collect the timed-out ones.
-				fooB1.pruneAutoExpireResponseMaps()
-				if nae := fooB1.numAutoExpireResponseMaps(); nae != 0 {
-					return fmt.Errorf("Number of responsemaps is %d", nae)
+				if nr := len(fooA1.exports.responses); nr != 0 {
+					return fmt.Errorf("Number of responses is %d", nr)
 				}
 				return nil
 			})
 
 			checkSubs(t, fooA1, "A1", 0)
 			checkSubs(t, fooA2, "A2", 0)
-			checkSubs(t, fooB1, "B1", 0)
+			checkSubs(t, fooB1, "B1", 1)
 			checkSubs(t, fooB2, "B2", 1)
 
-			checkSubs(t, barA1, "A1", 0)
-			checkSubs(t, barA2, "A2", 0)
-			checkSubs(t, barB1, "B1", 0)
-			checkSubs(t, barB2, "B2", 0)
+			checkSubs(t, barA1, "A1", 1)
+			checkSubs(t, barA2, "A2", 1)
+			checkSubs(t, barB1, "B1", 1)
+			checkSubs(t, barB2, "B2", 1)
 
 			// Check that this all work in interest-only mode.
 
@@ -5069,7 +5272,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 		}
 
 		// Send reply
-		natsPub(t, clientBFoo, msg.Reply, []byte("ok"))
+		natsPub(t, clientBFoo, msg.Reply, []byte("ok-42"))
 		natsFlush(t, clientBFoo)
 
 		// Now check that the subscription on the reply receives the message...
@@ -5079,7 +5282,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sub failed to get reply: %v", err)
 			}
-			if msg.Subject != replySubj || string(msg.Data) != "ok" {
+			if msg.Subject != replySubj || string(msg.Data) != "ok-42" {
 				t.Fatalf("Unexpected message: %v", msg)
 			}
 		}
@@ -5093,7 +5296,6 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 	// direct connection between the responder's server to the
 	// requestor's server and also through routes.
 	testServiceImport(t, oa1.Host, oa1.Port)
-
 	testServiceImport(t, oa2.Host, oa2.Port)
 	// sa1 is the one receiving the reply from GW between B and A.
 	// Check that the server routes directly to the the server

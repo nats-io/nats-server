@@ -373,7 +373,8 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 		TLSRequired:  tlsRequired,
 		TLSVerify:    tlsVerify,
 		MaxPayload:   s.info.MaxPayload, // TODO(dlc) - Allow override?
-		Proto:        1,                 // Fixed for now.
+		Headers:      s.supportsHeaders(),
+		Proto:        1, // Fixed for now.
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -861,6 +862,8 @@ func (c *client) processLeafnodeInfo(info *Info) error {
 		if info.TLSRequired && c.leaf.remote != nil {
 			c.leaf.remote.TLS = true
 		}
+		supportsHeaders := c.srv.supportsHeaders()
+		c.headers = supportsHeaders && info.Headers
 	}
 	// For both initial INFO and async INFO protocols, Possibly
 	// update our list of remote leafnode URLs we can connect to.
@@ -1176,7 +1179,8 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	// If we are solicited make sure this is a local client or a non-solicited leaf node
 	skind := sub.client.kind
-	if c.isSpokeLeafNode() && !(skind == CLIENT || skind == SYSTEM || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
+	updateClient := skind == CLIENT || skind == SYSTEM || skind == JETSTREAM || skind == ACCOUNT
+	if c.isSpokeLeafNode() && !(updateClient || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
 		c.mu.Unlock()
 		return
 	}
@@ -1184,14 +1188,14 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
 	update := sub.queue != nil || n == 0 || n+delta <= 0
-
 	n += delta
 	if n > 0 {
 		c.leaf.smap[key] = n
 	} else {
 		delete(c.leaf.smap, key)
 	}
-	if update {
+	// Don't send in front of all subs.
+	if update && c.flags.isSet(allSubsSent) {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
@@ -1238,6 +1242,7 @@ func (c *client) sendAllLeafSubs() {
 		c.queueOutbound(buf)
 		c.flushSignal()
 	}
+	c.flags.set(allSubsSent)
 	c.mu.Unlock()
 }
 
@@ -1441,6 +1446,90 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	return nil
 }
 
+func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_MSG_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	c.pa.arg = arg
+	switch len(args) {
+	case 0, 1, 2:
+		return fmt.Errorf("processLeafHeaderMsgArgs Parse Error: '%s'", args)
+	case 3:
+		c.pa.reply = nil
+		c.pa.queues = nil
+		c.pa.hdb = args[1]
+		c.pa.hdr = parseSize(args[1])
+		c.pa.szb = args[2]
+		c.pa.size = parseSize(args[2])
+	case 4:
+		c.pa.reply = args[1]
+		c.pa.queues = nil
+		c.pa.hdb = args[2]
+		c.pa.hdr = parseSize(args[2])
+		c.pa.szb = args[3]
+		c.pa.size = parseSize(args[3])
+	default:
+		// args[1] is our reply indicator. Should be + or | normally.
+		if len(args[1]) != 1 {
+			return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[1])
+		}
+		switch args[1][0] {
+		case '+':
+			c.pa.reply = args[2]
+		case '|':
+			c.pa.reply = nil
+		default:
+			return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[1])
+		}
+		// Grab header size.
+		c.pa.hdb = args[len(args)-2]
+		c.pa.hdr = parseSize(c.pa.hdb)
+
+		// Grab size.
+		c.pa.szb = args[len(args)-1]
+		c.pa.size = parseSize(c.pa.szb)
+
+		// Grab queue names.
+		if c.pa.reply != nil {
+			c.pa.queues = args[3 : len(args)-2]
+		} else {
+			c.pa.queues = args[2 : len(args)-2]
+		}
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Header Size: '%s'", arg)
+	}
+	if c.pa.size < 0 {
+		return fmt.Errorf("processLeafHeaderMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processLeafHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
+	}
+
+	// Common ones processed after check for arg length
+	c.pa.subject = args[0]
+
+	return nil
+}
+
 func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_MSG_ARGS][]byte{}
@@ -1532,11 +1621,6 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		return
 	}
 
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
-		c.checkForImportServices(acc, msg)
-	}
-
 	// Match the subscriptions. We will use our own L1 map if
 	// it's still valid, avoiding contention on the shared sublist.
 	var r *SublistResult
@@ -1582,7 +1666,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		qnames = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flag)
+		_, qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways

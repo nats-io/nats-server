@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -464,6 +464,7 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 		MaxPayload:   s.info.MaxPayload,
 		Gateway:      opts.Gateway.Name,
 		GatewayNRP:   true,
+		Headers:      s.supportsHeaders(),
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -855,7 +856,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	c.mu.Unlock()
 }
 
-// Builds and sends the CONNET protocol for a gateway.
+// Builds and sends the CONNECT protocol for a gateway.
 func (c *client) sendGatewayConnect() {
 	tlsRequired := c.gw.cfg.TLSConfig != nil
 	url := c.gw.connectURL
@@ -1012,6 +1013,8 @@ func (c *client) processGatewayInfo(info *Info) {
 			infoJSON := s.gateway.infoJSON
 			s.gateway.RUnlock()
 
+			supportsHeaders := s.supportsHeaders()
+
 			// Note, if we want to support NKeys, then we would get the nonce
 			// from this INFO protocol and can sign it in the CONNECT we are
 			// going to send now.
@@ -1021,6 +1024,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			// Send INFO too
 			c.enqueueProto(infoJSON)
 			c.gw.useOldPrefix = !info.GatewayNRP
+			c.headers = supportsHeaders && info.Headers
 			c.mu.Unlock()
 
 			// Register as an outbound gateway.. if we had a protocol to ack our connect,
@@ -2312,11 +2316,11 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 
 // Evaluates if the given reply should be mapped or not.
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
-	// If the reply is a service reply (_R_), we will use the replyClient
-	// instead of the client handed to us. This client holds the wildcard
+	// If the reply is a service reply (_R_), we will use the account's internal
+	// clientinstead of the client handed to us. This client holds the wildcard
 	// for all service replies.
 	if isServiceReply(reply) {
-		c = acc.replyClient()
+		c = acc.internalClient()
 	}
 	// If for this client there is a recent matching subscription interest
 	// then we will map.
@@ -2330,6 +2334,7 @@ func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -2344,10 +2349,10 @@ var subPool = &sync.Pool{
 // it is known that this gateway has no interest in the account or
 // subject, etc..
 // <Invoked from any client connection's readLoop>
-func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) {
+func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) bool {
 	gwsa := [16]*client{}
 	gws := gwsa[:0]
-	// This is in fast path, so avoid calling function when possible.
+	// This is in fast path, so avoid calling functions when possible.
 	// Get the outbound connections in place instead of calling
 	// getOutboundGatewayConnections().
 	gw := c.srv.gateway
@@ -2359,7 +2364,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	thisClusterOldReplyPrefix := gw.oldReplyPfx
 	gw.RUnlock()
 	if len(gws) == 0 {
-		return
+		return false
 	}
 	var (
 		subj       = string(subject)
@@ -2370,13 +2375,11 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		mreply     []byte
 		dstHash    []byte
 		checkReply = len(reply) > 0
+		didDeliver bool
 	)
 
 	// Get a subscription from the pool
 	sub := subPool.Get().(*subscription)
-
-	// Make sure we are an 'R' proto
-	c.msgb[0] = 'R'
 
 	// Check if the subject is on the reply prefix, if so, we
 	// need to send that message directly to the origin cluster.
@@ -2454,6 +2457,9 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				mreply = append(mreply, reply...)
 			}
 		}
+		// Setup the message header.
+		// Make sure we are an 'R' proto by default
+		c.msgb[0] = 'R'
 		mh := c.msgb[:msgHeadProtoLen]
 		mh = append(mh, accName...)
 		mh = append(mh, ' ')
@@ -2472,7 +2478,25 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			mh = append(mh, mreply...)
 			mh = append(mh, ' ')
 		}
-		mh = append(mh, c.pa.szb...)
+		// Headers
+		hasHeader := c.pa.hdr > 0
+		canReceiveHeader := gwc.headers
+
+		if hasHeader {
+			if canReceiveHeader {
+				mh[0] = 'H'
+				mh = append(mh, c.pa.hdb...)
+				mh = append(mh, ' ')
+				mh = append(mh, c.pa.szb...)
+			} else {
+				// If we are here we need to truncate the payload size
+				nsz := strconv.Itoa(c.pa.size - c.pa.hdr)
+				mh = append(mh, nsz...)
+			}
+		} else {
+			mh = append(mh, c.pa.szb...)
+		}
+
 		mh = append(mh, CR_LF...)
 
 		// We reuse the subscription object that we pass to deliverMsg.
@@ -2480,11 +2504,12 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		c.deliverMsg(sub, subject, mh, msg, false)
+		didDeliver = c.deliverMsg(sub, subject, mh, msg, false) || didDeliver
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
 	subPool.Put(sub)
+	return didDeliver
 }
 
 // Possibly sends an A- to the remote gateway `c`.
@@ -2701,15 +2726,12 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		}
 		return true
 	}
+
 	// If route is nil, we will process the incoming message locally.
 	if route == nil {
 		// Check if this is a service reply subject (_R_)
-		if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-			// This will map the _R_ back to a real subject and get
-			// the interest for that subject and process the message.
-			c.checkForImportServices(acc, msg)
-			return true
-		}
+		isServiceReply := len(acc.imports.services) > 0 && isServiceReply(c.pa.subject)
+
 		var queues [][]byte
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			flags := pmrCollectQueueNames | pmrIgnoreEmptyQueueFilter
@@ -2719,12 +2741,14 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 			if c.kind == ROUTER {
 				flags |= pmrAllowSendFromRouteToRoute
 			}
-			queues = c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, flags)
+			_, queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags)
 		}
 		// Since this was a reply that made it to the origin cluster,
 		// we now need to send the message with the real subject to
 		// gateways in case they have interest on that reply subject.
-		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+		if !isServiceReply {
+			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+		}
 	} else if c.kind == GATEWAY {
 		// Only if we are a gateway connection should we try to route
 		// to the server where the request originated.
@@ -2789,12 +2813,24 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	}
 
 	// Check if this is a service reply subject (_R_)
+	noInterest := len(r.psubs) == 0
 	checkNoInterest := true
-	if acc.imports.services != nil && isServiceReply(c.pa.subject) {
-		c.checkForImportServices(acc, msg)
-		checkNoInterest = false
+	if acc.imports.services != nil {
+		if isServiceReply(c.pa.subject) {
+			checkNoInterest = false
+		} else {
+			// We need to eliminate the subject interest from the service imports here to
+			// make sure we send the proper no interest if the service import is the only interest.
+			noInterest = true
+			for _, sub := range r.psubs {
+				if sub.client.kind != ACCOUNT {
+					noInterest = false
+					break
+				}
+			}
+		}
 	}
-	if checkNoInterest && len(r.psubs) == 0 {
+	if checkNoInterest && noInterest {
 		// If there is no interest on plain subs, possibly send an RS-,
 		// even if there is qsubs interest.
 		c.srv.gatewayHandleSubjectNoInterest(c, acc, c.pa.account, c.pa.subject)
@@ -2805,7 +2841,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			return
 		}
 	}
-	c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+	c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
 }
 
 // Indicates that the remote which we are sending messages to

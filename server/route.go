@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -86,6 +86,7 @@ type connectInfo struct {
 	User     string `json:"user,omitempty"`
 	Pass     string `json:"pass,omitempty"`
 	TLS      bool   `json:"tls_required"`
+	Headers  bool   `json:"headers"`
 	Name     string `json:"name"`
 	Gateway  string `json:"gateway,omitempty"`
 }
@@ -154,10 +155,97 @@ func (c *client) processAccountUnsub(arg []byte) {
 	}
 }
 
+// Process an inbound HMSG specification from the remote route.
+func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_HMSG_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	c.pa.arg = arg
+	switch len(args) {
+	case 0, 1, 2, 3:
+		return fmt.Errorf("processRoutedHeaderMsgArgs Parse Error: '%s'", args)
+	case 4:
+		c.pa.reply = nil
+		c.pa.queues = nil
+		c.pa.hdb = args[2]
+		c.pa.hdr = parseSize(args[2])
+		c.pa.szb = args[3]
+		c.pa.size = parseSize(args[3])
+	case 5:
+		c.pa.reply = args[2]
+		c.pa.queues = nil
+		c.pa.hdb = args[3]
+		c.pa.hdr = parseSize(args[3])
+		c.pa.szb = args[4]
+		c.pa.size = parseSize(args[4])
+	default:
+		// args[2] is our reply indicator. Should be + or | normally.
+		if len(args[2]) != 1 {
+			return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[2])
+		}
+		switch args[2][0] {
+		case '+':
+			c.pa.reply = args[3]
+		case '|':
+			c.pa.reply = nil
+		default:
+			return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[2])
+		}
+
+		// Grab header size.
+		c.pa.hdb = args[len(args)-2]
+		c.pa.hdr = parseSize(c.pa.hdb)
+
+		// Grab size.
+		c.pa.szb = args[len(args)-1]
+		c.pa.size = parseSize(c.pa.szb)
+
+		// Grab queue names.
+		if c.pa.reply != nil {
+			c.pa.queues = args[4 : len(args)-2]
+		} else {
+			c.pa.queues = args[3 : len(args)-2]
+		}
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Header Size: '%s'", arg)
+	}
+	if c.pa.size < 0 {
+		return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processRoutedHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
+	}
+
+	// Common ones processed after check for arg length
+	c.pa.account = args[0]
+	c.pa.subject = args[1]
+	c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+	return nil
+}
+
 // Process an inbound RMSG specification from the remote route.
 func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_MSG_ARGS][]byte{}
+	a := [MAX_RMSG_ARGS][]byte{}
 	args := a[:0]
 	start := -1
 	for i, b := range arg {
@@ -254,15 +342,10 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
-	// Check to see if we need to map/route to another account.
-	if acc.imports.services != nil {
-		c.checkForImportServices(acc, msg)
-	}
-
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		c.processMsgResults(acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+		c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
 	}
 }
 
@@ -281,6 +364,7 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		Pass:     pass,
 		TLS:      tlsRequired,
 		Name:     c.srv.info.ID,
+		Headers:  c.srv.supportsHeaders(),
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -303,6 +387,8 @@ func (c *client) processRouteInfo(info *Info) {
 	gacc.mu.RLock()
 	sl := gacc.sl
 	gacc.mu.RUnlock()
+
+	supportsHeaders := c.srv.supportsHeaders()
 
 	c.mu.Lock()
 	// Connection can be closed at any time (by auth timeout, etc).
@@ -353,6 +439,9 @@ func (c *client) processRouteInfo(info *Info) {
 		c.closeConnection(DuplicateRoute)
 		return
 	}
+
+	// Headers
+	c.headers = supportsHeaders && info.Headers
 
 	// Copy over important information.
 	c.route.authRequired = info.AuthRequired
@@ -1224,7 +1313,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 
 	// We only store state on local subs for transmission across all other routes.
-	if sub.client == nil || (sub.client.kind != CLIENT && sub.client.kind != SYSTEM && sub.client.kind != LEAF) {
+	if sub.client == nil || sub.client.kind == ROUTER || sub.client.kind == GATEWAY {
 		return
 	}
 
@@ -1401,6 +1490,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		MaxPayload:   s.info.MaxPayload,
 		Proto:        proto,
 		GatewayURL:   s.getGatewayURL(),
+		Headers:      s.supportsHeaders(),
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
@@ -1623,10 +1713,14 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	if srv != nil {
 		perms = srv.getOpts().Cluster.Permissions
 	}
+
+	supportsHeaders := c.srv.supportsHeaders()
+
 	// Grab connection name of remote route.
 	c.mu.Lock()
 	c.route.remoteID = c.opts.Name
 	c.setRoutePermissions(perms)
+	c.headers = supportsHeaders && proto.Headers
 	c.mu.Unlock()
 	return nil
 }

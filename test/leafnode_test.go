@@ -85,8 +85,12 @@ func TestLeafNodeInfo(t *testing.T) {
 	if !info.AuthRequired {
 		t.Fatalf("AuthRequired should always be true for leaf nodes")
 	}
-	sendProto(t, lc, "CONNECT {}\r\n")
+	// By default headers should be true.
+	if !info.Headers {
+		t.Fatalf("Expected to have headers on by default")
+	}
 
+	sendProto(t, lc, "CONNECT {}\r\n")
 	checkLeafNodeConnected(t, s)
 
 	// Now close connection, make sure we are doing the right accounting in the server.
@@ -548,6 +552,65 @@ func TestLeafNodeNoEcho(t *testing.T) {
 
 	leafSend("LMSG foo 2\r\nOK\r\n")
 	expectNothing(t, lc)
+}
+
+func TestLeafNodeHeaderSupport(t *testing.T) {
+	srvA, optsA := runLeafServer()
+	defer srvA.Shutdown()
+
+	srvB, optsB := runSolicitLeafServer(optsA)
+	defer srvB.Shutdown()
+
+	clientA := createClientConn(t, optsA.Host, optsA.Port)
+	defer clientA.Close()
+
+	clientB := createClientConn(t, optsB.Host, optsB.Port)
+	defer clientB.Close()
+
+	sendA, expectA := setupHeaderConn(t, clientA)
+	sendA("SUB foo bar 22\r\n")
+	sendA("SUB bar 11\r\n")
+	sendA("PING\r\n")
+	expectA(pongRe)
+
+	if err := checkExpectedSubs(3, srvB); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	sendB, expectB := setupHeaderConn(t, clientB)
+	// Can not have \r\n in payload fyi for regex.
+	// With reply
+	sendB("HPUB foo reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	expectHeaderMsgs := expectHeaderMsgsCommand(t, expectA)
+	matches := expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "foo", "22", "reply", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without reply
+	sendB("HPUB foo 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "foo", "22", "", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without queues or reply
+	sendB("HPUB bar 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "bar", "11", "", "12", "14", "K1:V1,K2:V2 ", "ok")
+
+	// Without queues but with reply
+	sendB("HPUB bar reply 12 14\r\nK1:V1,K2:V2 ok\r\n")
+	sendB("PING\r\n")
+	expectB(pongRe)
+
+	matches = expectHeaderMsgs(1)
+	checkHmsg(t, matches[0], "bar", "11", "reply", "12", "14", "K1:V1,K2:V2 ", "ok")
 }
 
 // Used to setup clusters of clusters for tests.
@@ -1033,6 +1096,8 @@ func TestLeafNodeLocalizedDQ(t *testing.T) {
 
 func TestLeafNodeBasicAuth(t *testing.T) {
 	content := `
+    listen: "127.0.0.1:-1"
+
 	leafnodes {
 		listen: "127.0.0.1:-1"
 		authorization {
@@ -1097,6 +1162,8 @@ func runTLSSolicitLeafServer(lso *server.Options) (*server.Server, *server.Optio
 
 func TestLeafNodeTLS(t *testing.T) {
 	content := `
+	listen: "127.0.0.1:-1"
+
 	leafnodes {
 		listen: "127.0.0.1:-1"
 		tls {
@@ -1207,6 +1274,7 @@ func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, s
 	port: -1
 	operator = "./configs/nkeys/op.jwt"
 	resolver = MEMORY
+	listen: "127.0.0.1:-1"
 	leafnodes {
 		listen: "127.0.0.1:-1"
 	}
@@ -1524,9 +1592,9 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// So everything should be setup here. So let's test streams first.
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
-	// Wait for the subs to propagate.
+	// Wait for all subs to propagate.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 2 {
+		if subs := s.NumSubscriptions(); subs < 3 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
@@ -2027,10 +2095,28 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 		})
 	}
 
+	checkAccNLF := func(n int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if nln := acc.NumLeafNodes(); nln != n {
+				return fmt.Errorf("Expected %d leaf node, got %d", n, nln)
+			}
+			return nil
+		})
+	}
+
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf)
 	defer sl.Shutdown()
+
 	checkLeafNodeConnections(t, s, 1)
+
+	// Make sure we are accounting properly here.
+	checkAccNLF(1)
+	// clients and leafnodes counted together.
+	if nc := acc.NumConnections(); nc != 1 {
+		t.Fatalf("Expected 1 for total connections, got %d", nc)
+	}
 
 	s2, _, lnconf2 := runSolicitWithCredentials(t, opts, mycreds)
 	defer os.Remove(lnconf2)
@@ -2040,8 +2126,14 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 
 	s2.Shutdown()
 	checkLeafNodeConnections(t, s, 1)
-
 	checkAccConnectionCounts(t, 1)
+
+	// Make sure we are accounting properly here.
+	checkAccNLF(1)
+	// clients and leafnodes counted together.
+	if nc := acc.NumConnections(); nc != 1 {
+		t.Fatalf("Expected 1 for total connections, got %d", nc)
+	}
 
 	// Now add back the second one as #3.
 	s3, _, lnconf3 := runSolicitWithCredentials(t, opts, mycreds)
@@ -3240,12 +3332,13 @@ func TestStreamExportWithMultipleAccounts(t *testing.T) {
 
 	nc2.Publish("foo", nil)
 
-	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
-		if nmsgs, _, err := wcsub.Pending(); err != nil || nmsgs != 1 {
-			return fmt.Errorf("Did not receive the message: %v", err)
-		}
-		return nil
-	})
+	msg, err := wcsub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatalf("Did not receive the message: %v", err)
+	}
+	if msg.Subject != "bar.foo" {
+		t.Fatalf("Received on wrong subject: %q", msg.Subject)
+	}
 }
 
 // This will test for a bug in service export/import with leafnodes.
@@ -3303,6 +3396,8 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 
 	srvB, optsB := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
+
+	checkLeafNodeConnected(t, srvB)
 
 	// connect to confA, and offer a service
 	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port))

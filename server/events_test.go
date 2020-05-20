@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -230,8 +230,17 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &cem); err != nil {
 		t.Fatalf("Error unmarshalling connect event message: %v", err)
 	}
+	if cem.Type != ConnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
+	}
+	if cem.Time.IsZero() {
+		t.Fatalf("Event time is not set")
+	}
+	if len(cem.ID) != 22 {
+		t.Fatalf("Event ID is incorrectly set to len %d", len(cem.ID))
+	}
 	if cem.Server.ID != s.ID() {
-		t.Fatalf("Expected server to be %q, got %q", s.ID(), cem.Server)
+		t.Fatalf("Expected server to be %q, got %q", s.ID(), cem.Server.ID)
 	}
 	if cem.Server.Seq == 0 {
 		t.Fatalf("Expected sequence to be non-zero")
@@ -277,9 +286,17 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &dem); err != nil {
 		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
 	}
-
+	if dem.Type != DisconnectEventMsgType {
+		t.Fatalf("Incorrect schema in connect event: %s", cem.Type)
+	}
+	if dem.Time.IsZero() {
+		t.Fatalf("Event time is not set")
+	}
+	if len(dem.ID) != 22 {
+		t.Fatalf("Event ID is incorrectly set to len %d", len(cem.ID))
+	}
 	if dem.Server.ID != s.ID() {
-		t.Fatalf("Expected server to be %q, got %q", s.ID(), dem.Server)
+		t.Fatalf("Expected server to be %q, got %q", s.ID(), dem.Server.ID)
 	}
 	if dem.Server.Seq == 0 {
 		t.Fatalf("Expected sequence to be non-zero")
@@ -1367,8 +1384,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.ActiveAccounts != 2 {
 		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
 	}
-	if m3.Stats.Sent.Msgs < 5 {
-		t.Fatalf("Did not match sent msgs of >= 5, got %d", m3.Stats.Sent.Msgs)
+	if m3.Stats.Sent.Msgs < 4 {
+		t.Fatalf("Did not match sent msgs of >= 4, got %d", m3.Stats.Sent.Msgs)
 	}
 	if m3.Stats.Received.Msgs < 2 {
 		t.Fatalf("Did not match received msgs of >= 2, got %d", m3.Stats.Received.Msgs)

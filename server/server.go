@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -24,6 +24,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+
+	// Allow dynamic profiling.
+	_ "net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
@@ -34,12 +37,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	// Allow dynamic profiling.
-	_ "net/http/pprof"
-
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
+
+	"github.com/nats-io/nats-server/v2/logger"
 )
 
 const (
@@ -67,10 +69,12 @@ type Info struct {
 	GoVersion         string   `json:"go"`
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
+	Headers           bool     `json:"headers"`
 	AuthRequired      bool     `json:"auth_required,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
 	MaxPayload        int32    `json:"max_payload"`
+	JetStream         bool     `json:"jetstream,omitempty"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	ClientIP          string   `json:"client_ip,omitempty"`
@@ -107,9 +111,11 @@ type Server struct {
 	opts             *Options
 	running          bool
 	shutdown         bool
+	reloading        bool
 	listener         net.Listener
 	gacc             *Account
 	sys              *internal
+	js               *jetStream
 	accounts         sync.Map
 	tmpAccounts      sync.Map // Temporarily stores accounts that are being built
 	activeAccounts   int32
@@ -185,7 +191,7 @@ type Server struct {
 	// Trusted public operator keys.
 	trustedKeys []string
 
-	// We use this to minimize mem copies for request to monitoring
+	// We use this to minimize mem copies for requests to monitoring
 	// endpoint /varz (when it comes from http).
 	varzMu sync.Mutex
 	varz   *Varz
@@ -205,6 +211,9 @@ type Server struct {
 		ch chan time.Duration
 		m  sync.Map
 	}
+
+	// For eventIDs
+	eventIds *nuid.NUID
 }
 
 // Make sure all are 64bits for atomic use
@@ -264,9 +273,12 @@ func NewServer(opts *Options) (*Server, error) {
 		TLSRequired:  tlsReq,
 		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
+		JetStream:    opts.JetStream,
+		Headers:      !opts.NoHeaderSupport,
 	}
 
 	now := time.Now()
+
 	s := &Server{
 		kp:           kp,
 		configFile:   opts.ConfigFile,
@@ -278,6 +290,7 @@ func NewServer(opts *Options) (*Server, error) {
 		configTime:   now,
 		gwLeafSubs:   NewSublistWithCache(),
 		httpBasePath: httpBasePath,
+		eventIds:     nuid.New(),
 	}
 
 	// Trusted root operator keys.
@@ -475,18 +488,23 @@ func (s *Server) configureAccounts() error {
 			ea.approved[sub] = acc
 		}
 	}
-
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Exports
-		for _, ea := range acc.exports.streams {
-			if ea != nil {
-				swapApproved(&ea.exportAuth)
+		for _, se := range acc.exports.streams {
+			if se != nil {
+				swapApproved(&se.exportAuth)
 			}
 		}
-		for _, ea := range acc.exports.services {
-			if ea != nil {
-				swapApproved(&ea.exportAuth)
+		for _, se := range acc.exports.services {
+			if se != nil {
+				// Swap over the bound account for service exports.
+				if se.acc != nil {
+					if v, ok := s.accounts.Load(se.acc.Name); ok {
+						se.acc = v.(*Account)
+					}
+				}
+				swapApproved(&se.exportAuth)
 			}
 		}
 		// Imports
@@ -498,8 +516,16 @@ func (s *Server) configureAccounts() error {
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+				si.se = si.acc.getServiceExport(si.to)
 			}
 		}
+		// Make sure the subs are running, but only if not reloading.
+		if len(acc.imports.services) > 0 && acc.ic == nil && !s.reloading {
+			acc.ic = s.createInternalAccountClient()
+			acc.ic.acc = acc
+			acc.addAllServiceImportSubs()
+		}
+
 		return true
 	})
 
@@ -592,6 +618,31 @@ func (s *Server) generateRouteInfoJSON() {
 	b, _ := json.Marshal(s.routeInfo)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
+}
+
+// Determines if we are in pre NATS 2.0 setup with no accounts.
+func (s *Server) globalAccountOnly() bool {
+	var hasOthers bool
+
+	s.mu.Lock()
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		// Ignore global and system
+		if acc == s.gacc || (s.sys != nil && acc == s.sys.account) {
+			return true
+		}
+		hasOthers = true
+		return false
+	})
+	s.mu.Unlock()
+
+	return !hasOthers
+}
+
+// Determines if this server is in standalone mode, meaning no routes or gateways or leafnodes.
+func (s *Server) standAloneMode() bool {
+	opts := s.getOpts()
+	return opts.Cluster.Port == 0 && opts.LeafNode.Port == 0 && opts.Gateway.Port == 0
 }
 
 // isTrustedIssuer will check that the issuer is a trusted public key.
@@ -809,8 +860,25 @@ func (s *Server) SystemAccount() *Account {
 	return sacc
 }
 
+// GlobalAccount returns the global account.
+// Default clients will use the global account.
+func (s *Server) GlobalAccount() *Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gacc
+}
+
+// SetDefaultSystemAccount will create a default system account if one is not present.
+func (s *Server) SetDefaultSystemAccount() error {
+	if _, isNew := s.LookupOrRegisterAccount(DEFAULT_SYSTEM_ACCOUNT); !isNew {
+		return nil
+	}
+	s.Debugf("Created system account: %q", DEFAULT_SYSTEM_ACCOUNT)
+	return s.SetSystemAccount(DEFAULT_SYSTEM_ACCOUNT)
+}
+
 // For internal sends.
-const internalSendQLen = 4096
+const internalSendQLen = 8192
 
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
@@ -844,14 +912,12 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	}
 	acc.mu.Unlock()
 
-	now := time.Now()
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now},
+		client:  s.createInternalSystemClient(),
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
-		subs:    make(map[string]msgHandler),
 		replies: make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, internalSendQLen),
 		resetCh: make(chan struct{}),
@@ -859,8 +925,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
-	s.sys.client.initClient()
-	s.sys.client.echo = false
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -892,6 +956,34 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// Creates an internal system client.
+func (s *Server) createInternalSystemClient() *client {
+	return s.createInternalClient(SYSTEM)
+}
+
+// Creates an internal jetstream client.
+func (s *Server) createInternalJetStreamClient() *client {
+	return s.createInternalClient(JETSTREAM)
+}
+
+// Creates an internal client for Account.
+func (s *Server) createInternalAccountClient() *client {
+	return s.createInternalClient(ACCOUNT)
+}
+
+// Internal clients. kind should be SYSTEM or JETSTREAM
+func (s *Server) createInternalClient(kind int) *client {
+	if kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT {
+		return nil
+	}
+	now := time.Now()
+	c := &client{srv: s, kind: kind, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
+	c.initClient()
+	c.echo = false
+	c.flags.set(noReconnect)
+	return c
 }
 
 // Determine if accounts should track subscriptions for
@@ -937,18 +1029,11 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	}
 	// Finish account setup and store.
 	s.setAccountSublist(acc)
-	if acc.maxnae == 0 {
-		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
-	}
-	if acc.maxaettl == 0 {
-		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
-	}
-	if acc.maxnrm == 0 {
-		acc.maxnrm = DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS
-	}
+
 	if acc.clients == nil {
 		acc.clients = make(map[*client]struct{})
 	}
+
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
 	// During config reload, it is possible that account was
@@ -1036,7 +1121,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.claimJWT = claimJWT
-		s.updateAccountClaims(acc, accClaims)
+		s.UpdateAccountClaims(acc, accClaims)
 		return nil
 	}
 	return err
@@ -1101,13 +1186,21 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		// registered and we should use this one.
 		if racc := s.registerAccount(acc); racc != nil {
 			// Update with the new claims in case they are new.
-			// Following call will return ErrAccountResolverSameClaims
+			// Following call will ignore ErrAccountResolverSameClaims
 			// if claims are the same.
 			err = s.updateAccountWithClaimJWT(racc, claimJWT)
 			if err != nil && err != ErrAccountResolverSameClaims {
 				return nil, err
 			}
+			//fmt.Printf("Fetch returning racc\n")
 			return racc, nil
+		}
+		// The sub imports may have been setup but will not have had their
+		// subscriptions properly setup. Do that here.
+		if len(acc.imports.services) > 0 && acc.ic == nil {
+			acc.ic = s.createInternalAccountClient()
+			acc.ic.acc = acc
+			acc.addAllServiceImportSubs()
 		}
 		return acc, nil
 	}
@@ -1167,12 +1260,6 @@ func (s *Server) Start() {
 		}
 	}
 
-	// Start monitoring if needed
-	if err := s.StartMonitoring(); err != nil {
-		s.Fatalf("Can't start monitoring: %v", err)
-		return
-	}
-
 	// Setup system account which will start the eventing stack.
 	if sa := opts.SystemAccount; sa != _EMPTY_ {
 		if err := s.SetSystemAccount(sa); err != nil {
@@ -1184,6 +1271,27 @@ func (s *Server) Start() {
 	// Start expiration of mapped GW replies, regardless if
 	// this server is configured with gateway or not.
 	s.startGWReplyMapExpiration()
+
+	// Check if JetStream has been enabled. This needs to be after
+	// the system account setup above. JetStream will create its
+	// own system account if one is not present.
+	if opts.JetStream {
+		cfg := &JetStreamConfig{
+			StoreDir:  opts.StoreDir,
+			MaxMemory: opts.JetStreamMaxMemory,
+			MaxStore:  opts.JetStreamMaxStore,
+		}
+		if err := s.EnableJetStream(cfg); err != nil {
+			s.Fatalf("Can't start jetstream: %v", err)
+			return
+		}
+	}
+
+	// Start monitoring if needed
+	if err := s.StartMonitoring(); err != nil {
+		s.Fatalf("Can't start monitoring: %v", err)
+		return
+	}
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
@@ -1239,6 +1347,9 @@ func (s *Server) Shutdown() {
 	// account status. We will also clean up any
 	// eventing items associated with accounts.
 	s.shutdownEventing()
+
+	// Now check jetstream.
+	s.shutdownJetStream()
 
 	s.mu.Lock()
 	// Prevent issues with multiple calls.
@@ -2164,11 +2275,26 @@ func (s *Server) ReadyForConnections(dur time.Duration) bool {
 	return false
 }
 
+// Quick utility to function to tell if the server supports headers.
+func (s *Server) supportsHeaders() bool {
+	if s == nil {
+		return false
+	}
+	return !(s.getOpts().NoHeaderSupport)
+}
+
 // ID returns the server's ID
 func (s *Server) ID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.info.ID
+}
+
+// Name returns the server's name. This will be the same as the ID if it was not set.
+func (s *Server) Name() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.info.Name
 }
 
 func (s *Server) startGoRoutine(f func()) {
@@ -2270,7 +2396,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 				ip = nil
 				continue
 			}
-			s.Debugf(" ip=%s", ipStr)
+			s.Debugf("  ip=%s", ipStr)
 			ips = append(ips, ipStr)
 			if !all {
 				break

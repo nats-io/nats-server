@@ -179,6 +179,12 @@ func createAccount(t *testing.T, s *server.Server) (*server.Account, nkeys.KeyPa
 
 func createUserCreds(t *testing.T, s *server.Server, akp nkeys.KeyPair) nats.Option {
 	t.Helper()
+	opt, _ := createUserCredsOption(t, s, akp)
+	return opt
+}
+
+func createUserCredsOption(t *testing.T, s *server.Server, akp nkeys.KeyPair) (nats.Option, string) {
+	t.Helper()
 	kp, _ := nkeys.CreateUser()
 	pub, _ := kp.PublicKey()
 	nuc := jwt.NewUserClaims(pub)
@@ -193,7 +199,7 @@ func createUserCreds(t *testing.T, s *server.Server, akp nkeys.KeyPair) nats.Opt
 		sig, _ := kp.Sign(nonce)
 		return sig, nil
 	}
-	return nats.UserJWT(userCB, sigCB)
+	return nats.UserJWT(userCB, sigCB), pub
 }
 
 func TestOperatorServer(t *testing.T) {

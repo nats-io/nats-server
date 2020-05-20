@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -67,11 +67,10 @@ type internal struct {
 	account  *Account
 	client   *client
 	seq      uint64
-	sid      uint64
+	sid      int
 	servers  map[string]*serverUpdate
 	sweeper  *time.Timer
 	stmr     *time.Timer
-	subs     map[string]msgHandler
 	replies  map[string]msgHandler
 	sendq    chan *pubMsg
 	resetCh  chan struct{}
@@ -89,21 +88,37 @@ type ServerStatsMsg struct {
 	Stats  ServerStats `json:"statsz"`
 }
 
+// TypedEvent is a event or advisory sent by the server that has nats type hints
+// typically used for events that might be consumed by 3rd party event systems
+type TypedEvent struct {
+	Type string    `json:"type"`
+	ID   string    `json:"id"`
+	Time time.Time `json:"timestamp"`
+}
+
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
+	TypedEvent
 	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
 }
 
+// ConnectEventMsgType is the schema type for ConnectEventMsg
+const ConnectEventMsgType = "io.nats.server.advisory.v1.client_connect"
+
 // DisconnectEventMsg is sent when a new connection previously defined from a
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
+	TypedEvent
 	Server   ServerInfo `json:"server"`
 	Client   ClientInfo `json:"client"`
 	Sent     DataStats  `json:"sent"`
 	Received DataStats  `json:"received"`
 	Reason   string     `json:"reason"`
 }
+
+// DisconnectEventMsgType is the schema type for DisconnectEventMsg
+const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 
 // AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
@@ -125,13 +140,14 @@ type accNumConnsReq struct {
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name    string    `json:"name"`
-	Host    string    `json:"host"`
-	ID      string    `json:"id"`
-	Cluster string    `json:"cluster,omitempty"`
-	Version string    `json:"ver"`
-	Seq     uint64    `json:"seq"`
-	Time    time.Time `json:"time"`
+	Name      string    `json:"name"`
+	Host      string    `json:"host"`
+	ID        string    `json:"id"`
+	Cluster   string    `json:"cluster,omitempty"`
+	Version   string    `json:"ver"`
+	Seq       uint64    `json:"seq"`
+	JetStream bool      `json:"jetstream"`
+	Time      time.Time `json:"time"`
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -145,6 +161,7 @@ type ClientInfo struct {
 	Lang    string     `json:"lang,omitempty"`
 	Version string     `json:"ver,omitempty"`
 	RTT     string     `json:"rtt,omitempty"`
+	Server  string     `json:"server,omitempty"`
 	Stop    *time.Time `json:"stop,omitempty"`
 }
 
@@ -224,6 +241,7 @@ RESET:
 	host := s.info.Host
 	servername := s.info.Name
 	seqp := &s.sys.seq
+	js := s.js != nil
 	var cluster string
 	if s.gateway.enabled {
 		cluster = s.getGatewayName()
@@ -252,10 +270,18 @@ RESET:
 				pm.si.Seq = atomic.AddUint64(seqp, 1)
 				pm.si.Version = VERSION
 				pm.si.Time = time.Now()
+				pm.si.JetStream = js
 			}
 			var b []byte
 			if pm.msg != nil {
-				b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
+				switch v := pm.msg.(type) {
+				case string:
+					b = []byte(v)
+				case []byte:
+					b = v
+				default:
+					b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
+				}
 			}
 			c.mu.Lock()
 			// We can have an override for account here.
@@ -312,7 +338,6 @@ func (s *Server) sendShutdownEvent() {
 	// Stop any more messages from queueing up.
 	s.sys.sendq = nil
 	// Unhook all msgHandlers. Normal client cleanup will deal with subs, etc.
-	s.sys.subs = nil
 	s.sys.replies = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
@@ -968,15 +993,21 @@ func (s *Server) accConnsUpdate(a *Account) {
 	s.sendAccConnsUpdate(a, subj)
 }
 
+// server lock should be held
+func (s *Server) nextEventID() string {
+	return s.eventIds.Next()
+}
+
 // accountConnectEvent will send an account client connect event if there is interest.
 // This is a billing event.
 func (s *Server) accountConnectEvent(c *client) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -987,12 +1018,17 @@ func (s *Server) accountConnectEvent(c *client) {
 	}
 
 	m := ConnectEventMsg{
+		TypedEvent: TypedEvent{
+			Type: ConnectEventMsgType,
+			ID:   eid,
+			Time: time.Now().UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1008,11 +1044,12 @@ func (s *Server) accountConnectEvent(c *client) {
 // This is a billing event.
 func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string) {
 	s.mu.Lock()
-	gacc := s.gacc
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
+	gacc := s.gacc
+	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
@@ -1024,13 +1061,18 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	}
 
 	m := DisconnectEventMsg{
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now.UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1058,17 +1100,23 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 		s.mu.Unlock()
 		return
 	}
+	eid := s.nextEventID()
 	s.mu.Unlock()
 	now := time.Now()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now.UTC(),
+		},
 		Client: ClientInfo{
 			Start:   c.start,
 			Stop:    &now,
 			Host:    c.host,
 			ID:      c.cid,
 			Account: accForClient(c),
-			User:    nameForClient(c),
+			User:    c.getRawAuthUser(),
 			Name:    c.opts.Name,
 			Lang:    c.opts.Lang,
 			Version: c.opts.Version,
@@ -1096,19 +1144,6 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 // required to be copied.
 type msgHandler func(sub *subscription, client *client, subject, reply string, msg []byte)
 
-func (s *Server) deliverInternalMsg(sub *subscription, c *client, subject, reply, msg []byte) {
-	s.mu.Lock()
-	if !s.eventsEnabled() || s.sys.subs == nil {
-		s.mu.Unlock()
-		return
-	}
-	cb := s.sys.subs[string(sub.sid)]
-	s.mu.Unlock()
-	if cb != nil {
-		cb(sub, c, string(subject), string(reply), msg)
-	}
-}
-
 // Create an internal subscription. No support for queue groups atm.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
 	return s.systemSubscribe(subject, false, cb)
@@ -1127,11 +1162,10 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 		return nil, fmt.Errorf("undefined message handler")
 	}
 	s.mu.Lock()
-	sid := strconv.FormatInt(int64(s.sys.sid), 10)
-	s.sys.subs[sid] = cb
-	s.sys.sid++
 	c := s.sys.client
 	trace := c.trace
+	s.sys.sid++
+	sid := strconv.Itoa(s.sys.sid)
 	s.mu.Unlock()
 
 	arg := []byte(subject + " " + sid)
@@ -1140,7 +1174,14 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	}
 
 	// Now create the subscription
-	return c.processSub(arg, internalOnly)
+	sub, err := c.processSub(arg, internalOnly)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	sub.icb = cb
+	c.mu.Unlock()
+	return sub, nil
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {
@@ -1150,7 +1191,6 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	s.mu.Lock()
 	acc := s.sys.account
 	c := s.sys.client
-	delete(s.sys.subs, string(sub.sid))
 	s.mu.Unlock()
 	c.unsubscribe(acc, sub, true, true)
 }
@@ -1172,7 +1212,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 	}
 	rl := remoteLatency{}
 	if err := json.Unmarshal(msg, &rl); err != nil {
-		s.Errorf("Error unmarshalling remot elatency measurement: %v", err)
+		s.Errorf("Error unmarshalling remote latency measurement: %v", err)
 		return
 	}
 	// Now we need to look up the responseServiceImport associated with this measurement.
@@ -1187,13 +1227,14 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 		reply = string(getSubjectFromGWRoutedReply([]byte(reply), old))
 	}
 	acc.mu.RLock()
-	si := acc.imports.services[reply]
+	si := acc.exports.responses[reply]
 	if si == nil {
 		acc.mu.RUnlock()
 		return
 	}
 	m1 := si.m1
 	m2 := rl.M2
+
 	lsub := si.latency.subject
 	acc.mu.RUnlock()
 
@@ -1212,16 +1253,18 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 		}
 	}
 
-	// Calculate the correct latency given M1 and M2.
-	// M2 ServiceLatency is correct, so use that.
-	// M1 TotalLatency is correct, so use that.
-	// Will use those to back into NATS latency.
+	// Calculate the correct latencies given M1 and M2.
 	m1.merge(&m2)
+
+	// Clear the requesting client since we send the result here.
+	acc.mu.Lock()
+	si.rc = nil
+	acc.mu.Unlock()
 
 	// Make sure we remove the entry here.
 	acc.removeServiceImport(si.from)
 	// Send the metrics
-	s.sendInternalAccountMsg(acc, lsub, &m1)
+	s.sendInternalAccountMsg(acc, lsub, m1)
 }
 
 // This is used for all inbox replies so that we do not send supercluster wide interest
@@ -1242,8 +1285,7 @@ func (s *Server) inboxReply(sub *subscription, c *client, subject, reply string,
 
 // Copied from go client.
 // We could use serviceReply here instead to save some code.
-// I prefer these semantics for the moment, when tracing you know
-// what this is.
+// I prefer these semantics for the moment, when tracing you know what this is.
 const (
 	InboxPrefix        = "$SYS._INBOX."
 	inboxPrefixLen     = len(InboxPrefix)
@@ -1433,14 +1475,6 @@ func (s *Server) nsubsRequest(sub *subscription, _ *client, subject, reply strin
 		}
 	}
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
-}
-
-// Helper to grab name for a client.
-func nameForClient(c *client) string {
-	if c.user != nil {
-		return c.user.Nkey
-	}
-	return "N/A"
 }
 
 // Helper to grab account name for a client.

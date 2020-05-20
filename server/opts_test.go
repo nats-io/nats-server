@@ -65,6 +65,8 @@ func TestDefaultOptions(t *testing.T) {
 		ConnectErrorReports:   DEFAULT_CONNECT_ERROR_REPORTS,
 		ReconnectErrorReports: DEFAULT_RECONNECT_ERROR_REPORTS,
 		MaxTracedMsgLen:       0,
+		JetStreamMaxMemory:    -1,
+		JetStreamMaxStore:     -1,
 	}
 
 	opts := &Options{}

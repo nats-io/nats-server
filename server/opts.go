@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -34,8 +34,9 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt"
-	"github.com/nats-io/nats-server/v2/conf"
 	"github.com/nats-io/nkeys"
+
+	"github.com/nats-io/nats-server/v2/conf"
 )
 
 var allowUnknownTopLevelField = int32(0)
@@ -157,6 +158,7 @@ type Options struct {
 	NoLog                 bool          `json:"-"`
 	NoSigs                bool          `json:"-"`
 	NoSublistCache        bool          `json:"-"`
+	NoHeaderSupport       bool          `json:"-"`
 	DisableShortFirstPing bool          `json:"-"`
 	Logtime               bool          `json:"-"`
 	MaxConn               int           `json:"max_connections"`
@@ -183,6 +185,10 @@ type Options struct {
 	Cluster               ClusterOpts   `json:"cluster,omitempty"`
 	Gateway               GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
+	JetStream             bool          `json:"jetstream"`
+	JetStreamMaxMemory    int64         `json:"-"`
+	JetStreamMaxStore     int64         `json:"-"`
+	StoreDir              string        `json:"-"`
 	ProfPort              int           `json:"-"`
 	PidFile               string        `json:"-"`
 	PortsFileDir          string        `json:"-"`
@@ -203,6 +209,7 @@ type Options struct {
 	WriteDeadline         time.Duration `json:"-"`
 	MaxClosedClients      int           `json:"-"`
 	LameDuckDuration      time.Duration `json:"-"`
+
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
 
@@ -610,6 +617,12 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 	case "leaf", "leafnodes":
 		err := parseLeafNodes(tk, o, errors, warnings)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "jetstream":
+		err := parseJetStream(tk, o, errors, warnings)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -1121,6 +1134,130 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
+var dynamicJSAccountLimits = &JetStreamAccountLimits{-1, -1, -1, -1}
+
+// Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
+// use dynamic account limits.
+func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+	var lt token
+
+	tk, v := unwrapValue(v, &lt)
+
+	// Value here can be bool, or string "enabled" or a map.
+	switch vv := v.(type) {
+	case bool:
+		if vv {
+			acc.jsLimits = dynamicJSAccountLimits
+		}
+	case string:
+		switch strings.ToLower(vv) {
+		case "enabled", "enable":
+			acc.jsLimits = dynamicJSAccountLimits
+		case "disabled", "disable":
+			acc.jsLimits = nil
+		default:
+			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+		}
+	case map[string]interface{}:
+		jsLimits := &JetStreamAccountLimits{-1, -1, -1, -1}
+		for mk, mv := range vv {
+			tk, mv = unwrapValue(mv, &lt)
+			switch strings.ToLower(mk) {
+			case "max_memory", "max_mem", "mem", "memory":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxMemory = int64(vv)
+			case "max_store", "max_file", "max_disk", "store", "disk":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxStore = int64(vv)
+			case "max_streams", "streams":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxStreams = int(vv)
+			case "max_consumers", "consumers":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxConsumers = int(vv)
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: mk,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		acc.jsLimits = jsLimits
+	default:
+		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
+	}
+
+	return nil
+}
+
+// Parse enablement of jetstream for a server.
+func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+	var lt token
+
+	tk, v := unwrapValue(v, &lt)
+
+	// Value here can be bool, or string "enabled" or a map.
+	switch vv := v.(type) {
+	case bool:
+		opts.JetStream = v.(bool)
+	case string:
+		switch strings.ToLower(vv) {
+		case "enabled", "enable":
+			opts.JetStream = true
+		case "disabled", "disable":
+			opts.JetStream = false
+		default:
+			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+		}
+	case map[string]interface{}:
+		for mk, mv := range vv {
+			tk, mv = unwrapValue(mv, &lt)
+			switch strings.ToLower(mk) {
+			case "store_dir", "storedir":
+				opts.StoreDir = mv.(string)
+			case "max_memory_store", "max_mem_store":
+				opts.JetStreamMaxMemory = mv.(int64)
+			case "max_file_store":
+				opts.JetStreamMaxStore = mv.(int64)
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: mk,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		opts.JetStream = true
+	default:
+		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
+	}
+
+	return nil
+}
+
 // parseLeafNodes will parse the leaf node config.
 func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
@@ -1529,6 +1666,7 @@ type export struct {
 	accs []string
 	rt   ServiceRespType
 	lat  *serviceLatency
+	rthr time.Duration
 }
 
 type importStream struct {
@@ -1539,10 +1677,11 @@ type importStream struct {
 }
 
 type importService struct {
-	acc *Account
-	an  string
-	sub string
-	to  string
+	acc   *Account
+	an    string
+	sub   string
+	to    string
+	share bool
 }
 
 // Checks if an account name is reserved.
@@ -1638,6 +1777,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 					exportStreams = append(exportStreams, streams...)
 					exportServices = append(exportServices, services...)
+				case "jetstream":
+					err := parseJetStreamForAccount(mv, acc, errors, warnings)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
+					}
 				case "users":
 					nkeys, users, err := parseUsers(mv, opts, errors, warnings)
 					if err != nil {
@@ -1731,6 +1876,15 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			continue
 		}
 
+		if service.rthr != 0 {
+			// Response threshold was set in options.
+			if err := service.acc.SetServiceExportResponseThreshold(service.sub, service.rthr); err != nil {
+				msg := fmt.Sprintf("Error adding service export response threshold for %q: %v", service.sub, err)
+				*errors = append(*errors, &configErr{tk, msg})
+				continue
+			}
+		}
+
 		if service.lat != nil {
 			if opts.SystemAccount == "" {
 				msg := fmt.Sprintf("Error adding service latency sampling for %q: %v", service.sub, ErrNoSysAccount.Error())
@@ -1770,6 +1924,11 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 		}
 		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
 			msg := fmt.Sprintf("Error adding service import %q: %v", service.sub, err)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
+		if err := service.acc.SetServiceImportSharing(ta, service.sub, service.share); err != nil {
+			msg := fmt.Sprintf("Error setting service import sharing %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
@@ -1899,6 +2058,8 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		rtSeen     bool
 		rtToken    token
 		lat        *serviceLatency
+		threshSeen bool
+		thresh     time.Duration
 		latToken   token
 		lt         token
 	)
@@ -1938,34 +2099,6 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			if accounts != nil {
 				curStream.accs = accounts
 			}
-		case "response", "response_type":
-			rtSeen = true
-			rtToken = tk
-			mvs, ok := mv.(string)
-			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected response type to be string, got %T", mv)}
-				*errors = append(*errors, err)
-				continue
-			}
-			switch strings.ToLower(mvs) {
-			case "single", "singleton":
-				rt = Singleton
-			case "stream":
-				rt = Stream
-			case "chunk", "chunked":
-				rt = Chunked
-			default:
-				err := &configErr{tk, fmt.Sprintf("Unknown response type: %q", mvs)}
-				*errors = append(*errors, err)
-				continue
-			}
-			if curService != nil {
-				curService.rt = rt
-			}
-			if curStream != nil {
-				err := &configErr{tk, "Detected response directive on non-service"}
-				*errors = append(*errors, err)
-			}
 		case "service":
 			if curStream != nil {
 				err := &configErr{tk, fmt.Sprintf("Detected service %q but already saw a stream", mv)}
@@ -1987,6 +2120,69 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			}
 			if lat != nil {
 				curService.lat = lat
+			}
+			if threshSeen {
+				curService.rthr = thresh
+			}
+		case "response", "response_type":
+			if rtSeen {
+				err := &configErr{tk, "Duplicate response type definition"}
+				*errors = append(*errors, err)
+				continue
+			}
+			rtSeen = true
+			rtToken = tk
+			mvs, ok := mv.(string)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("Expected response type to be string, got %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			switch strings.ToLower(mvs) {
+			case "single", "singleton":
+				rt = Singleton
+			case "stream":
+				rt = Streamed
+			case "chunk", "chunked":
+				rt = Chunked
+			default:
+				err := &configErr{tk, fmt.Sprintf("Unknown response type: %q", mvs)}
+				*errors = append(*errors, err)
+				continue
+			}
+			if curService != nil {
+				curService.rt = rt
+			}
+			if curStream != nil {
+				err := &configErr{tk, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
+			}
+		case "threshold", "response_threshold", "response_max_time", "response_time":
+			if threshSeen {
+				err := &configErr{tk, "Duplicate response threshold detected"}
+				*errors = append(*errors, err)
+				continue
+			}
+			threshSeen = true
+			mvs, ok := mv.(string)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			var err error
+			thresh, err = time.ParseDuration(mvs)
+			if err != nil {
+				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %q", mvs)}
+				*errors = append(*errors, err)
+				continue
+			}
+			if curService != nil {
+				curService.rthr = thresh
+			}
+			if curStream != nil {
+				err := &configErr{tk, "Detected response directive on non-service"}
+				*errors = append(*errors, err)
 			}
 		case "accounts":
 			for _, iv := range mv.([]interface{}) {
@@ -2109,6 +2305,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 		curStream  *importStream
 		curService *importService
 		pre, to    string
+		share      bool
 		lt         token
 	)
 	defer convertPanicToErrorList(&lt, errors)
@@ -2174,7 +2371,10 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			curService = &importService{an: accountName, sub: subject}
 			if to != "" {
 				curService.to = to
+			} else {
+				curService.to = subject
 			}
+			curService.share = share
 		case "prefix":
 			pre = mv.(string)
 			if curStream != nil {
@@ -2184,6 +2384,11 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			to = mv.(string)
 			if curService != nil {
 				curService.to = to
+			}
+		case "share":
+			share = mv.(bool)
+			if curService != nil {
+				curService.share = share
 			}
 		default:
 			if !tk.IsUsedVariable() {
@@ -3070,6 +3275,13 @@ func setBaselineOptions(opts *Options) {
 	if opts.ReconnectErrorReports == 0 {
 		opts.ReconnectErrorReports = DEFAULT_RECONNECT_ERROR_REPORTS
 	}
+	// JetStream
+	if opts.JetStreamMaxMemory == 0 {
+		opts.JetStreamMaxMemory = -1
+	}
+	if opts.JetStreamMaxStore == 0 {
+		opts.JetStreamMaxStore = -1
+	}
 }
 
 // ConfigureOptions accepts a flag set and augment it with NATS Server
@@ -3117,34 +3329,38 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&configFile, "c", "", "Configuration file.")
 	fs.StringVar(&configFile, "config", "", "Configuration file.")
 	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
-	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
-	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload)")
+	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
+	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports)")
+	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
 	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
-	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method..")
+	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
 	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")
 	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://127.0.0.1:514).")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
-	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port")
+	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port.")
 	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
-	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries")
+	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
-	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited")
+	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
+	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
+	fs.BoolVar(&opts.JetStream, "jetstream", false, "Enable JetStream.")
+	fs.StringVar(&opts.StoreDir, "sd", "", "Storage directory.")
+	fs.StringVar(&opts.StoreDir, "store_dir", "", "Storage directory.")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
