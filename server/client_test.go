@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -72,7 +72,7 @@ func (c *testAsyncClient) parseAndClose(proto []byte) {
 func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 	s.grWG.Add(1)
 	go func() {
-		c := s.createClient(cli)
+		c := s.createClient(cli, nil)
 		// Must be here to suppress +OK
 		c.opts.Verbose = false
 		go c.writeLoop()
@@ -2163,6 +2163,10 @@ func (c *testConnWritePartial) Write(p []byte) (int, error) {
 	return c.buf.Write(p[:n])
 }
 
+func (c *testConnWritePartial) RemoteAddr() net.Addr {
+	return nil
+}
+
 func (c *testConnWritePartial) SetWriteDeadline(_ time.Time) error {
 	return nil
 }
@@ -2279,7 +2283,7 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 	// Call again with this closed connection. Alternatively, we
 	// would have to call with a fake connection that implements
 	// net.Conn but returns an error on Write.
-	s.createClient(c)
+	s.createClient(c, nil)
 
 	// This connection should not have been added to the server.
 	checkClientsCount(t, s, 0)

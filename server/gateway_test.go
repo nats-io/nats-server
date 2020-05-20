@@ -154,7 +154,7 @@ func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	}
 }
 
-func natsConnect(t *testing.T, url string, options ...nats.Option) *nats.Conn {
+func natsConnect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 	t.Helper()
 	nc, err := nats.Connect(url, options...)
 	if err != nil {
@@ -215,7 +215,7 @@ func natsFlush(t *testing.T, nc *nats.Conn) {
 	}
 }
 
-func natsPub(t *testing.T, nc *nats.Conn, subj string, payload []byte) {
+func natsPub(t testing.TB, nc *nats.Conn, subj string, payload []byte) {
 	t.Helper()
 	if err := nc.Publish(subj, payload); err != nil {
 		t.Fatalf("Error on publish: %v", err)
