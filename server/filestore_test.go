@@ -594,7 +594,6 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	fs.Stop()
-	time.Sleep(2 * maxAge)
 
 	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
 	if err != nil {
@@ -602,13 +601,17 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	}
 	defer fs.Stop()
 
-	state = fs.State()
-	if state.Msgs != 0 {
-		t.Fatalf("Expected no msgs, got %d", state.Msgs)
-	}
-	if state.Bytes != 0 {
-		t.Fatalf("Expected no bytes, got %d", state.Bytes)
-	}
+	// Make sure they expire.
+	checkFor(t, time.Second, 2*maxAge, func() error {
+		state = fs.State()
+		if state.Msgs != 0 {
+			return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
+		}
+		if state.Bytes != 0 {
+			return fmt.Errorf("Expected no bytes, got %d", state.Bytes)
+		}
+		return nil
+	})
 }
 
 func TestFileStoreBitRot(t *testing.T) {
