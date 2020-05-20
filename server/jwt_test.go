@@ -2449,3 +2449,49 @@ func TestJWTAccountLimitsMaxConnsAfterExpired(t *testing.T) {
 		return nil
 	})
 }
+
+func TestBearerToken(t *testing.T) {
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	nuc := newJWTTestUserClaims()
+	nuc.Subject = pub
+	// Set bearer token.
+	nuc.BearerToken = true
+	jwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	c, cr, _ := newClientForServer(s)
+	defer c.close()
+
+	// Skip nonce signature...
+
+	// PING needed to flush the +OK/-ERR to us.
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		c.parse([]byte(cs))
+		wg.Done()
+	}()
+	l, _ := cr.ReadString('\n')
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected +OK, got %s", l)
+	}
+	wg.Wait()
+}

@@ -427,28 +427,32 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 			c.Debugf("Account JWT has expired")
 			return false
 		}
-		// Verify the signature against the nonce.
-		if c.opts.Sig == "" {
-			c.Debugf("Signature missing")
-			return false
-		}
-		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
-		if err != nil {
-			// Allow fallback to normal base64.
-			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
-			if err != nil {
-				c.Debugf("Signature not valid base64")
+		// skip validation of nonce when presented with a bearer token
+		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
+		if !juc.BearerToken {
+			// Verify the signature against the nonce.
+			if c.opts.Sig == "" {
+				c.Debugf("Signature missing")
 				return false
 			}
-		}
-		pub, err := nkeys.FromPublicKey(juc.Subject)
-		if err != nil {
-			c.Debugf("User nkey not valid: %v", err)
-			return false
-		}
-		if err := pub.Verify(c.nonce, sig); err != nil {
-			c.Debugf("Signature not verified")
-			return false
+			sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				// Allow fallback to normal base64.
+				sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+				if err != nil {
+					c.Debugf("Signature not valid base64")
+					return false
+				}
+			}
+			pub, err := nkeys.FromPublicKey(juc.Subject)
+			if err != nil {
+				c.Debugf("User nkey not valid: %v", err)
+				return false
+			}
+			if err := pub.Verify(c.nonce, sig); err != nil {
+				c.Debugf("Signature not verified")
+				return false
+			}
 		}
 		if acc.checkUserRevoked(juc.Subject) {
 			c.Debugf("User authentication revoked")
