@@ -2257,7 +2257,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 
 	checkSubPending := func(numExpected int) {
 		t.Helper()
-		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
 				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 			}
@@ -3747,7 +3747,13 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 				now := time.Now()
-				if now.Sub(last) > 5*time.Millisecond {
+				// Delivery from AddConsumer starts in a go routine, so be
+				// more tolerant for the first message.
+				limit := 5 * time.Millisecond
+				if i == 0 {
+					limit = 10 * time.Millisecond
+				}
+				if now.Sub(last) > limit {
 					t.Fatalf("Expected firehose/instant delivery, got message gap of %v", now.Sub(last))
 				}
 				last = now

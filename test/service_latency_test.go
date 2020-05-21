@@ -182,7 +182,9 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	serviceTime = serviceTime.Round(time.Millisecond)
 
 	startDelta := sl.RequestStart.Sub(start)
-	if startDelta > 5*time.Millisecond {
+	// Original test was 5ms, but got GitHub Action failure with "Bad start delta 5.033929ms",
+	// so be more generous.
+	if startDelta > 10*time.Millisecond {
 		t.Fatalf("Bad start delta %v", startDelta)
 	}
 	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.8) {
@@ -422,6 +424,8 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
 	defer nc.Close()
 
+	subsBefore := int(sc.clusters[0].servers[0].NumSubscriptions())
+
 	// The service listener.
 	serviceTime := 25 * time.Millisecond
 	nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
@@ -431,6 +435,11 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
+	nc.Flush()
+
+	if err := checkExpectedSubs(subsBefore+2, sc.clusters[0].servers...); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Same Cluster Requestor
 	nc2 := clientConnect(t, sc.clusters[0].opts[2], "bar")
@@ -685,12 +694,12 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 
 	numResponders := 5
 
-	// Create 10 queue subscribers for the service. Randomly select the server.
+	// Create 5 queue subscribers for the service. Randomly select the server.
 	for i := 0; i < numResponders; i++ {
 		nc := clientConnectWithName(t, selectServer(), "foo", sname(i))
 		defer nc.Close()
 		nc.QueueSubscribe("ngs.usage.*", "SERVICE", func(msg *nats.Msg) {
-			time.Sleep(time.Duration(rand.Int63n(10)) * time.Millisecond)
+			time.Sleep(2*time.Millisecond + time.Duration(rand.Int63n(10))*time.Millisecond)
 			msg.Respond([]byte("22 msgs"))
 		})
 		nc.Flush()
@@ -710,8 +719,9 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	defer nc.Close()
 
 	results := make(map[string]time.Duration)
+	serviced := make(map[string]struct{})
 	var rlock sync.Mutex
-	ch := make(chan (bool))
+	ch := make(chan (bool), 1)
 	received := int32(0)
 	toSend := int32(100)
 
@@ -721,20 +731,28 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		json.Unmarshal(msg.Data, &sl)
 		rlock.Lock()
 		results[sl.Responder.Name] += sl.ServiceLatency
+		serviced[sl.Responder.Name] = struct{}{}
 		rlock.Unlock()
 		if r := atomic.AddInt32(&received, 1); r >= toSend {
-			ch <- true
+			select {
+			case ch <- true:
+			default:
+			}
 		}
 	})
 	nc.Flush()
 
-	// Send 200 requests from random locations.
-	for i := 0; i < 200; i++ {
+	// Send requests from random locations.
+	for i := 0; i < int(toSend); i++ {
 		doRequest()
 	}
 
 	// Wait on all results.
-	<-ch
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not receive all results in time")
+	}
 
 	rlock.Lock()
 	defer rlock.Unlock()
@@ -742,8 +760,12 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	// Make sure each total is generally over 10ms
 	thresh := 10 * time.Millisecond
 	for i := 0; i < numResponders; i++ {
-		if rl := results[sname(i)]; rl < thresh {
-			t.Fatalf("Total for %q is less then threshold: %v vs %v", sname(i), thresh, rl)
+		sn := sname(i)
+		if _, ok := serviced[sn]; !ok {
+			continue
+		}
+		if rl := results[sn]; rl < thresh {
+			t.Fatalf("Total for %q is less then threshold: %v vs %v", sn, thresh, rl)
 		}
 	}
 }
@@ -1181,6 +1203,9 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 		if sl.Status != 400 {
 			t.Fatalf("Test %q, Expected to get a bad request status [400], got %d", cs.desc, sl.Status)
 		}
+
+		// We wait here for the gateways to report no interest b/c optimistic mode.
+		time.Sleep(50 * time.Millisecond)
 
 		// Proper request, but no responders.
 		nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)

@@ -1392,6 +1392,10 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			sendA("SUB ngs.update.* 1\r\nPING\r\n")
 			expectA(pongRe)
 
+			if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+				t.Fatal(err.Error())
+			}
+
 			// Now setup client B on srvB who will do a sub from account $bar
 			// that should map account $foo's foo subject.
 			clientB := createClientConn(t, optsB.Host, optsB.Port)

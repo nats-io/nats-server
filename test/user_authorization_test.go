@@ -309,7 +309,7 @@ func TestUserAuthorizationAllowResponses(t *testing.T) {
 	matches = msgRe.FindAllSubmatch(expectResult(t, c, msgRe), -1)
 	checkMsg(t, matches[0], "my.service.req", "1", "resp.bar.11", "2", "ok")
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	sendProto(t, c, "PUB resp.bar.11 2\r\nok\r\n")
 	expectResult(t, c, errRe)

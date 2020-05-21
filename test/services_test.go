@@ -430,9 +430,13 @@ func TestServiceExportsPruningCleanup(t *testing.T) {
 
 	expectedPending := func(expected int) {
 		t.Helper()
-		if nre := acc.NumPendingResponses("foo"); nre != expected {
-			t.Fatalf("Expected %d entries, got %d", expected, nre)
-		}
+		// Caller is sleeping a bit before, but avoid flappers.
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if nre := acc.NumPendingResponses("foo"); nre != expected {
+				return fmt.Errorf("Expected %d entries, got %d", expected, nre)
+			}
+			return nil
+		})
 	}
 
 	// Requestor
@@ -461,7 +465,7 @@ func TestServiceExportsPruningCleanup(t *testing.T) {
 	nc2.Flush()
 
 	expectedPending(10)
-	time.Sleep(2 * newRt)
+	time.Sleep(4 * newRt)
 	expectedPending(0)
 }
 
