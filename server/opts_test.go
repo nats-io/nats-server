@@ -2563,6 +2563,7 @@ func TestNoAuthUserCode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Received unexpected error %s", err)
 			} else {
+				opts.NoLog = true
 				srv := RunServer(opts)
 				nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port))
 				if err != nil {
