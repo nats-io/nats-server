@@ -705,6 +705,9 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		nc.Flush()
 	}
 
+	// Wait for them all to propagate.
+	time.Sleep(100 * time.Millisecond)
+
 	doRequest := func() {
 		nc := clientConnect(t, selectServer(), "bar")
 		defer nc.Close()
@@ -731,6 +734,13 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		json.Unmarshal(msg.Data, &sl)
 		rlock.Lock()
 		results[sl.Responder.Name] += sl.ServiceLatency
+		// This test is measuring for sampling and service latency.
+		// In a loaded test, like on Travis, our RTT estimation for
+		// the responder may be off slightly. So we check and compensate
+		// for that here.
+		if sl.Responder.RTT > 25*time.Millisecond {
+			results[sl.Responder.Name] += sl.Responder.RTT
+		}
 		serviced[sl.Responder.Name]++
 		rlock.Unlock()
 		if r := atomic.AddInt32(&received, 1); r >= toSend {
