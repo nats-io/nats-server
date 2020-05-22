@@ -60,34 +60,6 @@ type CreateConsumerRequest struct {
 	Config ConsumerConfig `json:"config"`
 }
 
-// ConsumerAckMetric is a metric published when a user acknowledges a message, the
-// number of these that will be published is dependent on SampleFrequency
-type ConsumerAckMetric struct {
-	TypedEvent
-	Stream      string `json:"stream"`
-	Consumer    string `json:"consumer"`
-	ConsumerSeq uint64 `json:"consumer_seq"`
-	StreamSeq   uint64 `json:"stream_seq"`
-	Delay       int64  `json:"ack_time"`
-	Deliveries  uint64 `json:"deliveries"`
-}
-
-// ConsumerAckMetricType is the schema type for ConsumerAckMetricType
-const ConsumerAckMetricType = "io.nats.jetstream.metric.v1.consumer_ack"
-
-// ConsumerDeliveryExceededAdvisory is an advisory informing that a message hit
-// its MaxDeliver threshold and so might be a candidate for DLQ handling
-type ConsumerDeliveryExceededAdvisory struct {
-	TypedEvent
-	Stream     string `json:"stream"`
-	Consumer   string `json:"consumer"`
-	StreamSeq  uint64 `json:"stream_seq"`
-	Deliveries uint64 `json:"deliveries"`
-}
-
-// ConsumerDeliveryExceededAdvisoryType is the schema type for ConsumerDeliveryExceededAdvisory
-const ConsumerDeliveryExceededAdvisoryType = "io.nats.jetstream.advisory.v1.max_deliver"
-
 // DeliverPolicy determines how the consumer should select the first message to deliver.
 type DeliverPolicy int
 
@@ -472,7 +444,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 		if sub, err := mset.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			mset.mu.Unlock()
-			o.Delete()
+			o.deleteWithoutAdvisory()
 			return nil, err
 		} else {
 			o.reqSub = sub
@@ -489,7 +461,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		o.active = o.hasDeliveryInterest(<-o.inch)
 		// Check if we are not durable that the delivery subject has interest.
 		if !o.isDurable() && !o.active {
-			o.Delete()
+			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer requires interest for delivery subject when ephemeral")
 		}
 	}
@@ -504,7 +476,59 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// Startup our state update loop.
 	go o.updateStateLoop()
 
+	o.sendCreateAdvisory()
+
 	return o, nil
+}
+
+func (o *Consumer) sendDeleteAdvisoryLocked() {
+	e := JSConsumerActionAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerActionAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   o.stream,
+		Consumer: o.name,
+		Action:   DeleteEvent,
+	}
+
+	j, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return
+	}
+
+	// can be nil during shutdown, locks are held in the caller
+	if o.mset != nil && o.mset.sendq != nil {
+		subj := JSAdvisoryConsumerDeletedPre + "." + o.stream + "." + o.name
+		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+	}
+}
+
+func (o *Consumer) sendCreateAdvisory() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	e := JSConsumerActionAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerActionAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   o.stream,
+		Consumer: o.name,
+		Action:   CreateEvent,
+	}
+
+	j, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return
+	}
+
+	if o.mset != nil && o.mset.sendq != nil {
+		subj := JSAdvisoryConsumerCreatedPre + "." + o.stream + "." + o.name
+		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+	}
 }
 
 // Created returns created time.
@@ -800,9 +824,9 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 	now := time.Now().UTC()
 	unow := now.UnixNano()
 
-	e := &ConsumerAckMetric{
+	e := JSConsumerAckMetric{
 		TypedEvent: TypedEvent{
-			Type: ConsumerAckMetricType,
+			Type: JSConsumerAckMetricType,
 			ID:   nuid.Next(),
 			Time: now,
 		},
@@ -951,9 +975,9 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 }
 
 func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
-	e := &ConsumerDeliveryExceededAdvisory{
+	e := JSConsumerDeliveryExceededAdvisory{
 		TypedEvent: TypedEvent{
-			Type: ConsumerDeliveryExceededAdvisoryType,
+			Type: JSConsumerDeliveryExceededAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
@@ -1503,21 +1527,30 @@ func stopAndClearTimer(tp **time.Timer) {
 
 // Stop will shutdown  the consumer for the associated stream.
 func (o *Consumer) Stop() error {
-	return o.stop(false, true)
+	return o.stop(false, true, false)
 }
 
-// Delete will delete the consumer for the associated stream.
+func (o *Consumer) deleteWithoutAdvisory() error {
+	return o.stop(true, true, false)
+}
+
+// Delete will delete the consumer for the associated stream and send advisories.
 func (o *Consumer) Delete() error {
-	return o.stop(true, true)
+	return o.stop(true, true, true)
 }
 
-func (o *Consumer) stop(dflag, doSignal bool) error {
+func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil {
 		o.mu.Unlock()
 		return nil
 	}
+
+	if dflag && advisory {
+		o.sendDeleteAdvisoryLocked()
+	}
+
 	a := o.acc
 	close(o.qch)
 

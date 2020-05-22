@@ -88,14 +88,6 @@ type ServerStatsMsg struct {
 	Stats  ServerStats `json:"statsz"`
 }
 
-// TypedEvent is a event or advisory sent by the server that has nats type hints
-// typically used for events that might be consumed by 3rd party event systems
-type TypedEvent struct {
-	Type string    `json:"type"`
-	ID   string    `json:"id"`
-	Time time.Time `json:"timestamp"`
-}
-
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
 	TypedEvent
@@ -220,6 +212,14 @@ type pubMsg struct {
 type serverUpdate struct {
 	seq   uint64
 	ltime time.Time
+}
+
+// TypedEvent is a event or advisory sent by the server that has nats type hints
+// typically used for events that might be consumed by 3rd party event systems
+type TypedEvent struct {
+	Type string    `json:"type"`
+	ID   string    `json:"id"`
+	Time time.Time `json:"timestamp"`
 }
 
 // internalSendLoop will be responsible for serializing all messages that

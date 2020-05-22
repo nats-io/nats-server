@@ -14,6 +14,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"path"
@@ -21,6 +22,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/nats-io/nuid"
 )
 
 // StreamConfig will determine the name, subjects and retention policy
@@ -164,7 +167,86 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, OK...)
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
+	mset.sendCreateAdvisory()
+
 	return mset, nil
+}
+
+func (mset *Stream) sendCreateAdvisory() {
+	mset.mu.Lock()
+	name := mset.config.Name
+	template := mset.config.Template
+	sendq := mset.sendq
+	mset.mu.Unlock()
+
+	if sendq == nil {
+		return
+	}
+
+	// finally send an event that this stream was created
+	m := JSStreamActionAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamActionAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   name,
+		Action:   CreateEvent,
+		Template: template,
+	}
+
+	j, err := json.MarshalIndent(m, "", "  ")
+	if err == nil {
+		subj := JSAdvisoryStreamCreatedPre + "." + name
+		sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+	}
+}
+
+func (mset *Stream) sendDeleteAdvisoryLocked() {
+	if mset.sendq == nil {
+		return
+	}
+
+	m := JSStreamActionAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamActionAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   mset.config.Name,
+		Action:   DeleteEvent,
+		Template: mset.config.Template,
+	}
+
+	j, err := json.MarshalIndent(m, "", "  ")
+	if err == nil {
+		subj := JSAdvisoryStreamDeletedPre + "." + mset.config.Name
+		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+	}
+}
+
+func (mset *Stream) sendUpdateAdvisoryLocked(old, new StreamConfig) {
+	if mset.sendq == nil {
+		return
+	}
+
+	m := JSStreamActionAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamActionAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:                mset.config.Name,
+		Action:                ModifyEvent,
+		OriginalConfiguration: &old,
+		NewConfiguration:      &new,
+	}
+
+	j, err := json.MarshalIndent(m, "", "  ")
+	if err == nil {
+		subj := JSAdvisoryStreamUpdatedPre + "." + mset.config.Name
+		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+	}
 }
 
 // Created returns created time.
@@ -353,6 +435,8 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	// Now update config and store's version of our config.
 	mset.config = cfg
 	mset.store.UpdateConfig(&cfg)
+
+	mset.sendUpdateAdvisoryLocked(o_cfg, cfg)
 
 	return nil
 }
@@ -670,9 +754,15 @@ func (mset *Stream) delete() error {
 // Internal function to stop or delete the stream.
 func (mset *Stream) stop(delete bool) error {
 	mset.mu.Lock()
+
+	if delete {
+		mset.sendDeleteAdvisoryLocked()
+	}
+
 	if mset.sendq != nil {
 		mset.sendq <- nil
 	}
+
 	c := mset.client
 	mset.client = nil
 	if c == nil {
@@ -691,7 +781,7 @@ func (mset *Stream) stop(delete bool) error {
 	// Clean up consumers.
 	for _, o := range obs {
 		// Second flag says do not broadcast to signal.
-		if err := o.stop(delete, false); err != nil {
+		if err := o.stop(delete, false, delete); err != nil {
 			return err
 		}
 	}
