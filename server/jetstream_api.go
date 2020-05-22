@@ -146,6 +146,21 @@ const (
 	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
 	JSAdvisoryConsumerMaxDeliveryExceedPre = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES"
 
+	// JSAdvisoryStreamCreatedPre notification that a stream was created
+	JSAdvisoryStreamCreatedPre = "$JS.EVENT.ADVISORY.STREAM.CREATED"
+
+	// JSAdvisoryStreamDeletedPre notification that a stream was deleted
+	JSAdvisoryStreamDeletedPre = "$JS.EVENT.ADVISORY.STREAM.DELETED"
+
+	// JSAdvisoryStreamUpdatedPre notification that a stream was updated
+	JSAdvisoryStreamUpdatedPre = "$JS.EVENT.ADVISORY.STREAM.UPDATED"
+
+	// JSAdvisoryConsumerCreatedPre notification that a template created
+	JSAdvisoryConsumerCreatedPre = "$JS.EVENT.ADVISORY.CONSUMER.CREATED"
+
+	// JSAdvisoryConsumerDeletedPre notification that a template deleted
+	JSAdvisoryConsumerDeletedPre = "$JS.EVENT.ADVISORY.CONSUMER.DELETED"
+
 	// JetStreamAPIAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
@@ -1284,32 +1299,6 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
-// For delivering advisories for API calls.
-
-// ClientAPIAudit is for identifying a client who initiated an API call to the system.
-type ClientAPIAudit struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	CID      uint64 `json:"cid"`
-	Account  string `json:"account"`
-	User     string `json:"user,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Language string `json:"lang,omitempty"`
-	Version  string `json:"version,omitempty"`
-}
-
-// JetStreamAPIAudit is an advisory about administrative actions taken on JetStream
-type JetStreamAPIAudit struct {
-	TypedEvent
-	Server   string         `json:"server"`
-	Client   ClientAPIAudit `json:"client"`
-	Subject  string         `json:"subject"`
-	Request  string         `json:"request,omitempty"`
-	Response string         `json:"response"`
-}
-
-const auditType = "io.nats.jetstream.advisory.v1.api_audit"
-
 // sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
 func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
 	c.mu.Lock()
@@ -1321,9 +1310,9 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, resp
 	cid := c.cid
 	c.mu.Unlock()
 
-	e := &JetStreamAPIAudit{
+	e := JSAPIAudit{
 		TypedEvent: TypedEvent{
-			Type: auditType,
+			Type: JSAPIAuditType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
