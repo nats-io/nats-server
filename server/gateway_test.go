@@ -674,17 +674,28 @@ func TestGatewaySolicitDelayWithImplicitOutbounds(t *testing.T) {
 	waitForInboundGateways(t, s1, 1, time.Second)
 }
 
-type slowResolver struct{}
+type slowResolver struct {
+	inLookupCh chan struct{}
+	releaseCh  chan struct{}
+}
 
 func (r *slowResolver) LookupHost(ctx context.Context, h string) ([]string, error) {
-	time.Sleep(500 * time.Millisecond)
+	if r.inLookupCh != nil {
+		select {
+		case r.inLookupCh <- struct{}{}:
+		default:
+		}
+		<-r.releaseCh
+	} else {
+		time.Sleep(500 * time.Millisecond)
+	}
 	return []string{h}, nil
 }
 
 func TestGatewaySolicitShutdown(t *testing.T) {
 	var urls []string
 	for i := 0; i < 5; i++ {
-		u := fmt.Sprintf("nats://127.0.0.1:%d", 1234+i)
+		u := fmt.Sprintf("nats://localhost:%d", 1234+i)
 		urls = append(urls, u)
 	}
 	o1 := testGatewayOptionsFromToWithURLs(t, "A", "B", urls)
@@ -1232,6 +1243,55 @@ func TestGatewayImplicitReconnect(t *testing.T) {
 	if s2.getRemoteGateway("A") == nil {
 		t.Fatal("Gateway A should be in s2")
 	}
+}
+
+func TestGatewayImplicitReconnectRace(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	resolver := &slowResolver{
+		inLookupCh: make(chan struct{}, 1),
+		releaseCh:  make(chan struct{}),
+	}
+	ob.Gateway.resolver = resolver
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa1 := runGatewayServer(oa1)
+	defer sa1.Shutdown()
+
+	// Wait for the proper connections
+	waitForOutboundGateways(t, sa1, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa1, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// On sb, change the URL to sa1 so that it is a name, instead of an IP,
+	// so that we hit the slow resolver.
+	cfg := sb.getRemoteGateway("A")
+	cfg.updateURLs([]string{fmt.Sprintf("localhost:%d", sa1.GatewayAddr().Port)})
+
+	// Shutdown sa1 now...
+	sa1.Shutdown()
+
+	// Wait to be notified that B has detected the connection close
+	// and it is trying to resolve the host during the reconnect.
+	<-resolver.inLookupCh
+
+	// Start a new "A" server (sa2).
+	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa2 := runGatewayServer(oa2)
+	defer sa2.Shutdown()
+
+	// Make sure we have our outbound to sb registered on sa2 and inbound
+	// from sa2 on sb before releasing the resolver.
+	waitForOutboundGateways(t, sa2, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// Now release the resolver and ensure we have all connections.
+	close(resolver.releaseCh)
+
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sa2, 1, 2*time.Second)
 }
 
 func TestGatewayURLsFromClusterSentInINFO(t *testing.T) {
