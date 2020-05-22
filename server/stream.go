@@ -225,7 +225,7 @@ func (mset *Stream) sendDeleteAdvisoryLocked() {
 	}
 }
 
-func (mset *Stream) sendUpdateAdvisoryLocked(old, new StreamConfig) {
+func (mset *Stream) sendUpdateAdvisoryLocked() {
 	if mset.sendq == nil {
 		return
 	}
@@ -236,10 +236,8 @@ func (mset *Stream) sendUpdateAdvisoryLocked(old, new StreamConfig) {
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
-		Stream:                mset.config.Name,
-		Action:                ModifyEvent,
-		OriginalConfiguration: &old,
-		NewConfiguration:      &new,
+		Stream: mset.config.Name,
+		Action: ModifyEvent,
 	}
 
 	j, err := json.MarshalIndent(m, "", "  ")
@@ -436,7 +434,7 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	mset.config = cfg
 	mset.store.UpdateConfig(&cfg)
 
-	mset.sendUpdateAdvisoryLocked(o_cfg, cfg)
+	mset.sendUpdateAdvisoryLocked()
 
 	return nil
 }
