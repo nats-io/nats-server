@@ -457,6 +457,7 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 	authRequired := opts.Gateway.Username != ""
 	info := &Info{
 		ID:           s.info.ID,
+		Name:         opts.ServerName,
 		Version:      s.info.Version,
 		AuthRequired: authRequired,
 		TLSRequired:  tlsReq,
@@ -685,6 +686,12 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 		if isImplicit {
 			if opts.Gateway.ConnectRetries == 0 || attempts > opts.Gateway.ConnectRetries {
 				s.gateway.Lock()
+				// We could have just accepted an inbound for this remote gateway.
+				// So if there is an inbound, let's try again to connect.
+				if len(s.gateway.in) > 0 {
+					s.gateway.Unlock()
+					continue
+				}
 				delete(s.gateway.remotes, cfg.Name)
 				s.gateway.Unlock()
 				return
@@ -1131,6 +1138,7 @@ func (s *Server) forwardNewGatewayToLocalCluster(oinfo *Info) {
 	// the sent protocol will not have host/port defined.
 	info := &Info{
 		ID:          "GW" + s.info.ID,
+		Name:        s.getOpts().ServerName,
 		Gateway:     oinfo.Gateway,
 		GatewayURLs: oinfo.GatewayURLs,
 		GatewayCmd:  gatewayCmdGossip,

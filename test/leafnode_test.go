@@ -677,6 +677,7 @@ func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, wai
 	// All of these need system accounts.
 	o.Accounts, o.Users = createAccountsAndUsers()
 	o.SystemAccount = "$SYS"
+	o.ServerName = fmt.Sprintf("%s1", clusterName)
 	// Run the server
 	s := RunServer(o)
 	bindGlobal(s)
@@ -698,6 +699,7 @@ func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, wai
 		// All of these need system accounts.
 		o.Accounts, o.Users = createAccountsAndUsers()
 		o.SystemAccount = "$SYS"
+		o.ServerName = fmt.Sprintf("%s%d", clusterName, i+1)
 		s := RunServer(o)
 		bindGlobal(s)
 
