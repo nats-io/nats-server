@@ -4230,6 +4230,7 @@ func TestConfigReloadAccounts(t *testing.T) {
 	// Below tests use connection names so that they can be checked for.
 	// The test subscribes to ACC only. This avoids receiving own messages.
 	subscribe := func(name string) (*nats.Conn, *nats.Subscription, *nats.Subscription) {
+		t.Helper()
 		c, err := nats.Connect(urlSys, nats.Name(name))
 		if err != nil {
 			t.Fatalf("Error on connect: %v", err)
@@ -4242,9 +4243,11 @@ func TestConfigReloadAccounts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error on subscribe DISCONNECT: %v", err)
 		}
+		c.Flush()
 		return c, subCon, subDis
 	}
 	recv := func(name string, sub *nats.Subscription) {
+		t.Helper()
 		if msg, err := sub.NextMsg(1 * time.Second); err != nil {
 			t.Fatalf("%s Error on next: %v", name, err)
 		} else {
@@ -4256,6 +4259,7 @@ func TestConfigReloadAccounts(t *testing.T) {
 		}
 	}
 	triggerSysEvent := func(name string, subs []*nats.Subscription) {
+		t.Helper()
 		ncs1, err := nats.Connect(urlUsr, nats.Name(name))
 		if err != nil {
 			t.Fatalf("Error on connect: %v", err)
@@ -4263,6 +4267,10 @@ func TestConfigReloadAccounts(t *testing.T) {
 		ncs1.Close()
 		for _, sub := range subs {
 			recv(name, sub)
+			// Make sure they are empty.
+			if pending, _, _ := sub.Pending(); pending != 0 {
+				t.Fatalf("Expected no pending, got %d for %+v", pending, sub)
+			}
 		}
 	}
 
