@@ -36,11 +36,9 @@ const (
 // JSStreamActionAdvisory indicates that a stream was created, edited or deleted
 type JSStreamActionAdvisory struct {
 	TypedEvent
-	Stream                string             `json:"stream"`
-	Action                ActionAdvisoryType `json:"action"`
-	Template              string             `json:"template,omitempty"`
-	OriginalConfiguration *StreamConfig      `json:"original,omitempty"`
-	NewConfiguration      *StreamConfig      `json:"new,omitempty"`
+	Stream   string             `json:"stream"`
+	Action   ActionAdvisoryType `json:"action"`
+	Template string             `json:"template,omitempty"`
 }
 
 const JSStreamActionAdvisoryType = "io.nats.jetstream.advisory.v1.stream_action"
