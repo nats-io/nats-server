@@ -341,7 +341,7 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 
 		rtt := 10 * time.Millisecond
-		sp, opts := newSlowProxy(rtt, sopts)
+		sp, opts := newSlowProxy(rtt+5*time.Millisecond, sopts)
 		defer sp.Stop()
 
 		nc2 := clientConnect(t, opts, "bar")
