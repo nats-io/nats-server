@@ -1436,3 +1436,53 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 		t.Fatalf("Unexpected reply: %q", msg.Data)
 	}
 }
+
+func TestLeafNodeTmpClients(t *testing.T) {
+	ao := DefaultOptions()
+	ao.LeafNode.Host = "127.0.0.1"
+	ao.LeafNode.Port = -1
+	a := RunServer(ao)
+	defer a.Shutdown()
+
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", ao.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error connecting: %v", err)
+	}
+	defer c.Close()
+	// Read info
+	br := bufio.NewReader(c)
+	br.ReadLine()
+
+	checkTmp := func(expected int) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			a.grMu.Lock()
+			l := len(a.grTmpClients)
+			a.grMu.Unlock()
+			if l != expected {
+				return fmt.Errorf("Expected tmp map to have %v entries, got %v", expected, l)
+			}
+			return nil
+		})
+	}
+	checkTmp(1)
+
+	// Close client and wait check that it is removed.
+	c.Close()
+	checkTmp(0)
+
+	// Check with normal leafnode connection that once connected,
+	// the tmp map is also emptied.
+	bo := DefaultOptions()
+	bo.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ao.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error creating url: %v", err)
+	}
+	bo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	b := RunServer(bo)
+	defer a.Shutdown()
+
+	checkLeafNodeConnected(t, b)
+	checkTmp(0)
+}

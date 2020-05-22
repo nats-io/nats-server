@@ -794,6 +794,14 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 	}
 
+	// Keep track in case server is shutdown before we can successfully register.
+	if !s.addToTempClients(c.cid, c) {
+		c.mu.Unlock()
+		c.setNoReconnect()
+		c.closeConnection(ServerShutdown)
+		return nil
+	}
+
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })
 
@@ -955,6 +963,7 @@ func (s *Server) addLeafNodeConnection(c *client) {
 	s.mu.Lock()
 	s.leafs[cid] = c
 	s.mu.Unlock()
+	s.removeFromTempClients(cid)
 }
 
 func (s *Server) removeLeafNodeConnection(c *client) {
@@ -964,6 +973,7 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 	s.mu.Lock()
 	delete(s.leafs, cid)
 	s.mu.Unlock()
+	s.removeFromTempClients(cid)
 }
 
 type leafConnectInfo struct {
