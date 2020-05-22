@@ -719,7 +719,7 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	defer nc.Close()
 
 	results := make(map[string]time.Duration)
-	serviced := make(map[string]struct{})
+	serviced := make(map[string]int)
 	var rlock sync.Mutex
 	ch := make(chan (bool), 1)
 	received := int32(0)
@@ -731,7 +731,7 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 		json.Unmarshal(msg.Data, &sl)
 		rlock.Lock()
 		results[sl.Responder.Name] += sl.ServiceLatency
-		serviced[sl.Responder.Name] = struct{}{}
+		serviced[sl.Responder.Name]++
 		rlock.Unlock()
 		if r := atomic.AddInt32(&received, 1); r >= toSend {
 			select {
@@ -757,11 +757,15 @@ func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
 	rlock.Lock()
 	defer rlock.Unlock()
 
-	// Make sure each total is generally over 10ms
+	// Make sure each total is generally over 10ms.
 	thresh := 10 * time.Millisecond
+	// Make sure we have a minimum number of measurements.
+	minMeasurements := 5
 	for i := 0; i < numResponders; i++ {
 		sn := sname(i)
-		if _, ok := serviced[sn]; !ok {
+		// If distributed queues off do not let this effect our test.
+		if serviced[sn] < minMeasurements {
+			t.Logf("Subscriber only serviced %d requests, min is %d, measurement ignored", serviced[sn], minMeasurements)
 			continue
 		}
 		if rl := results[sn]; rl < thresh {
