@@ -894,10 +894,7 @@ func (c *client) readLoop() {
 	// Check the per-account-cache for closed subscriptions
 	cpacc := c.kind == ROUTER || c.kind == GATEWAY
 	// Last per-account-cache check for closed subscriptions
-	now := time.Now()
-	lpacc := now
-	// Update our notion of when we started. Useful for better initial RTT estimation.
-	c.start = now
+	lpacc := time.Now()
 	c.mu.Unlock()
 
 	defer func() {
