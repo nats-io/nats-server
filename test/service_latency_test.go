@@ -20,7 +20,6 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -672,116 +671,6 @@ func TestServiceLatencyWithNameMultiServer(t *testing.T) {
 	extendedCheck(t, &sl.Responder, "foo", "dlc22", rs.Name())
 	// Normally requestor's don't share
 	noShareCheck(t, &sl.Requestor)
-}
-
-func TestServiceLatencyWithQueueSubscribersAndNames(t *testing.T) {
-	numServers := 3
-	numClusters := 3
-	sc := createSuperCluster(t, numServers, numClusters)
-	defer sc.shutdown()
-
-	// Now add in new service export to FOO and have bar import that with tracking enabled.
-	sc.setupLatencyTracking(t, 100)
-
-	selectServer := func() *server.Options {
-		si, ci := rand.Int63n(int64(numServers)), rand.Int63n(int64(numClusters))
-		return sc.clusters[ci].opts[si]
-	}
-
-	sname := func(i int) string {
-		return fmt.Sprintf("SERVICE-%d", i+1)
-	}
-
-	numResponders := 5
-
-	// Create 5 queue subscribers for the service. Randomly select the server.
-	for i := 0; i < numResponders; i++ {
-		nc := clientConnectWithName(t, selectServer(), "foo", sname(i))
-		defer nc.Close()
-		nc.QueueSubscribe("ngs.usage.*", "SERVICE", func(msg *nats.Msg) {
-			time.Sleep(2*time.Millisecond + time.Duration(rand.Int63n(10))*time.Millisecond)
-			msg.Respond([]byte("22 msgs"))
-		})
-		nc.Flush()
-	}
-
-	// Wait for them all to propagate.
-	time.Sleep(100 * time.Millisecond)
-
-	doRequest := func() {
-		nc := clientConnect(t, selectServer(), "bar")
-		defer nc.Close()
-		if _, err := nc.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
-			t.Fatalf("Failed to get request response: %v", err)
-		}
-		nc.Close()
-	}
-
-	// To collect the metrics
-	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
-	defer nc.Close()
-
-	results := make(map[string]time.Duration)
-	serviced := make(map[string]int)
-	var rlock sync.Mutex
-	ch := make(chan (bool), 1)
-	received := int32(0)
-	toSend := int32(100)
-
-	// Capture the results.
-	nc.Subscribe("results", func(msg *nats.Msg) {
-		var sl server.ServiceLatency
-		json.Unmarshal(msg.Data, &sl)
-		rlock.Lock()
-		results[sl.Responder.Name] += sl.ServiceLatency
-		// This test is measuring for sampling and service latency.
-		// In a loaded test, like on Travis, our RTT estimation for
-		// the responder may be off slightly. So we check and compensate
-		// for that here.
-		if sl.Responder.RTT > 25*time.Millisecond {
-			results[sl.Responder.Name] += sl.Responder.RTT
-		}
-		serviced[sl.Responder.Name]++
-		rlock.Unlock()
-		if r := atomic.AddInt32(&received, 1); r >= toSend {
-			select {
-			case ch <- true:
-			default:
-			}
-		}
-	})
-	nc.Flush()
-
-	// Send requests from random locations.
-	for i := 0; i < int(toSend); i++ {
-		doRequest()
-	}
-
-	// Wait on all results.
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("Did not receive all results in time")
-	}
-
-	rlock.Lock()
-	defer rlock.Unlock()
-
-	// Make sure each total is generally over 10ms.
-	thresh := 10 * time.Millisecond
-	// Make sure we have a minimum number of measurements.
-	minMeasurements := 5
-	for i := 0; i < numResponders; i++ {
-		sn := sname(i)
-		// If distributed queues off do not let this effect our test.
-		if serviced[sn] < minMeasurements {
-			t.Logf("Subscriber only serviced %d requests, min is %d, measurement ignored", serviced[sn], minMeasurements)
-			continue
-		}
-		if rl := results[sn]; rl < thresh {
-			t.Fatalf("Total for %q is less then threshold: %v vs %v", sn, thresh, rl)
-		}
-	}
 }
 
 func createAccountWithJWT(t *testing.T) (string, nkeys.KeyPair, *jwt.AccountClaims) {
