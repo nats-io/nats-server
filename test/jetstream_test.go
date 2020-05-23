@@ -4367,12 +4367,14 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 
 	// Shutdown the server. Restart and make sure things come back.
 	s.Shutdown()
-	time.Sleep(200 * time.Millisecond)
-	delta := (runtime.NumGoroutine() - base)
-	if delta > 3 {
-		t.Logf("%d Go routines still exist post Shutdown()", delta)
-		time.Sleep(10 * time.Second)
-	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		delta := (runtime.NumGoroutine() - base)
+		if delta > 3 {
+			return fmt.Errorf("%d Go routines still exist post Shutdown()", delta)
+		}
+		return nil
+	})
 
 	s = RunBasicJetStreamServer()
 	defer s.Shutdown()
