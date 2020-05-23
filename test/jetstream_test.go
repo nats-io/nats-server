@@ -1248,7 +1248,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 				t.Fatalf("Expected to be starting at sequence 1")
 			}
 
-			nc := clientConnectToServer(t, s)
+			nc := clientConnectWithOldRequest(t, s)
 			defer nc.Close()
 
 			// Now load up some messages.
@@ -1301,7 +1301,6 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 				time.Sleep(nextDelay)
 				for i := 0; i < toSend; i++ {
 					nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-					time.Sleep(time.Millisecond)
 				}
 			}()
 
