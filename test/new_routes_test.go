@@ -1305,6 +1305,11 @@ func TestNewRouteServiceImport(t *testing.T) {
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
 
+	// Wait for all subs to be propagated. (1 on foo, 2 on bar)
+	if err := checkExpectedSubs(3, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// Send the request from clientB on foo.request,
 	sendB("PUB foo.request reply 2\r\nhi\r\nPING\r\n")
 	expectB(pongRe)
@@ -1392,10 +1397,6 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			sendA("SUB ngs.update.* 1\r\nPING\r\n")
 			expectA(pongRe)
 
-			if err := checkExpectedSubs(2, srvA, srvB); err != nil {
-				t.Fatal(err.Error())
-			}
-
 			// Now setup client B on srvB who will do a sub from account $bar
 			// that should map account $foo's foo subject.
 			clientB := createClientConn(t, optsB.Host, optsB.Port)
@@ -1404,6 +1405,11 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
 			sendB("SUB reply 1\r\nPING\r\n")
 			expectB(pongRe)
+
+			// Wait for all subs to be propagated. (1 on foo, 2 on bar)
+			if err := checkExpectedSubs(3, srvA, srvB); err != nil {
+				t.Fatal(err.Error())
+			}
 
 			// Send the request from clientB on foo.request,
 			sendB("PUB ngs.update reply 2\r\nhi\r\nPING\r\n")
@@ -1480,6 +1486,11 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	sendB("SUB reply QGROUP_TOO 1\r\nPING\r\n")
 	expectB(pongRe)
 
+	// Wait for all subs to be propagated. (1 on foo, 2 on bar)
+	if err := checkExpectedSubs(3, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// Send the request from clientB on foo.request,
 	sendB("PUB foo.request reply 2\r\nhi\r\nPING\r\n")
 	expectB(pongRe)
@@ -1554,6 +1565,16 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
+
+	// Wait for all subs to be propagated (1 on foo and 1 on bar on srvA)
+	// (note that srvA is not importing)
+	if err := checkExpectedSubs(2, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+	// Wait for all subs to be propagated (1 on foo and 2 on bar)
+	if err := checkExpectedSubs(3, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {
