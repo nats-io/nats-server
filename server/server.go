@@ -2687,8 +2687,6 @@ func (s *Server) lameDuckMode() {
 	s.ldmCh = make(chan bool, 1)
 	s.listener.Close()
 	s.listener = nil
-	s.sendLDMToRoutes()
-	s.sendLDMToClients()
 	s.mu.Unlock()
 
 	// Wait for accept loop to be done to make sure that no new
@@ -2732,6 +2730,10 @@ func (s *Server) lameDuckMode() {
 	for _, client := range s.clients {
 		clients = append(clients, client)
 	}
+	// Now that we know that no new client can be accepted,
+	// send INFO to routes and clients to notify this state.
+	s.sendLDMToRoutes()
+	s.sendLDMToClients()
 	s.mu.Unlock()
 
 	t := time.NewTimer(time.Duration(atomic.LoadInt64(&lameDuckModeInitialDelay)))
@@ -2742,6 +2744,7 @@ func (s *Server) lameDuckMode() {
 	case <-t.C:
 		s.Noticef("Closing existing clients")
 	case <-s.quitCh:
+		t.Stop()
 		return
 	}
 	for i, client := range clients {

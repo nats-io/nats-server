@@ -1015,11 +1015,20 @@ func TestLameDuckModeInfo(t *testing.T) {
 		t.Fatalf("Did not get the expected events prior of server A and C shutting down")
 	}
 
+	// Now explicitly shutdown srvA. When a server shutdown, it closes all its
+	// connections. For routes, it means that it is going to remove the remote's
+	// URL from its map. We want to make sure that in that case, server does not
+	// actually send an updated INFO to its clients.
+	srvA.Shutdown()
+
+	// Expect nothing to be received on the client connection.
+	if l, err := client.ReadString('\n'); err == nil {
+		t.Fatalf("Expected connection to fail, instead got %q", l)
+	}
+
 	c.Close()
 	nc.Close()
-	// Don't need to wait for actual disconnect of clients,
-	// so shutdown the servers now.
-	srvA.Shutdown()
+	// Don't need to wait for actual disconnect of clients.
 	srvC.Shutdown()
 	wg.Wait()
 }
