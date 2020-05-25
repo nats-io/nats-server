@@ -186,13 +186,13 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	if startDelta > 10*time.Millisecond {
 		t.Fatalf("Bad start delta %v", startDelta)
 	}
-	if sl.ServiceLatency < time.Duration(float64(serviceTime)*0.8) {
+	// Since RTT during tests is estimate we remove from calculation.
+	if (sl.ServiceLatency + sl.Responder.RTT) < time.Duration(float64(serviceTime)*0.8) {
 		t.Fatalf("Bad service latency: %v (%v)", sl.ServiceLatency, serviceTime)
 	}
 	if sl.TotalLatency < sl.ServiceLatency {
 		t.Fatalf("Bad total latency: %v (%v)", sl.TotalLatency, sl.ServiceLatency)
 	}
-
 	// We should have NATS latency here that is non-zero with real clients.
 	if sl.Requestor.RTT == 0 {
 		t.Fatalf("Expected non-zero NATS Requestor latency")
