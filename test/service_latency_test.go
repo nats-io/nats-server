@@ -623,13 +623,17 @@ func TestServiceLatencyWithName(t *testing.T) {
 
 	// Listen for metrics
 	rsub, _ := nc.SubscribeSync("results")
+	nc.Flush()
 
 	nc2 := clientConnect(t, opts, "bar")
 	defer nc2.Close()
 	nc2.Request("ngs.usage", []byte("1h"), time.Second)
 
 	var sl server.ServiceLatency
-	rmsg, _ := rsub.NextMsg(time.Second)
+	rmsg, err := rsub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error getting message: %v", err)
+	}
 	json.Unmarshal(rmsg.Data, &sl)
 
 	// Make sure we have AppName set.
