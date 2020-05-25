@@ -1202,7 +1202,6 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 			if err != nil && err != ErrAccountResolverSameClaims {
 				return nil, err
 			}
-			//fmt.Printf("Fetch returning racc\n")
 			return racc, nil
 		}
 		// The sub imports may have been setup but will not have had their
@@ -1286,15 +1285,33 @@ func (s *Server) Start() {
 	// the system account setup above. JetStream will create its
 	// own system account if one is not present.
 	if opts.JetStream {
+		// Make sure someone is not trying to enable on the system account.
+		if sa := s.SystemAccount(); sa != nil && sa.jsLimits != nil {
+			s.Fatalf("Not allowed to enable JetStream on the system account")
+		}
 		cfg := &JetStreamConfig{
 			StoreDir:  opts.StoreDir,
 			MaxMemory: opts.JetStreamMaxMemory,
 			MaxStore:  opts.JetStreamMaxStore,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
-			s.Fatalf("Can't start jetstream: %v", err)
+			s.Fatalf("Can't start JetStream: %v", err)
 			return
 		}
+	} else {
+		// Check to see if any configured accounts have JetStream enabled
+		// and warn if they do.
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
+			acc.mu.RLock()
+			hasJs := acc.jsLimits != nil
+			name := acc.Name
+			acc.mu.RUnlock()
+			if hasJs {
+				s.Warnf("Account [%q] has JetStream configuration but JetStream not enabled", name)
+			}
+			return true
+		})
 	}
 
 	// Start monitoring if needed

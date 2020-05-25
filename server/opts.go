@@ -1243,7 +1243,6 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 	default:
 		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}
-
 	return nil
 }
 
