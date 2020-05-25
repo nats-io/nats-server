@@ -726,6 +726,28 @@ func (o *Consumer) readStoredState() error {
 	return err
 }
 
+// Update our state to the store.
+func (o *Consumer) writeState() {
+	o.mu.Lock()
+	if o.store != nil {
+		state := &ConsumerState{
+			Delivered: SequencePair{
+				ConsumerSeq: o.dseq,
+				StreamSeq:   o.sseq,
+			},
+			AckFloor: SequencePair{
+				ConsumerSeq: o.adflr,
+				StreamSeq:   o.asflr,
+			},
+			Pending:     o.pending,
+			Redelivered: o.rdc,
+		}
+		// FIXME(dlc) - Hold onto any errors.
+		o.store.Update(state)
+	}
+	o.mu.Unlock()
+}
+
 func (o *Consumer) updateStateLoop() {
 	o.mu.Lock()
 	fch := o.fch
@@ -744,24 +766,7 @@ func (o *Consumer) updateStateLoop() {
 		case <-fch:
 			// FIXME(dlc) - Check for fast changes at quick intervals.
 			time.Sleep(25 * time.Millisecond)
-			o.mu.Lock()
-			if o.store != nil {
-				state := &ConsumerState{
-					Delivered: SequencePair{
-						ConsumerSeq: o.dseq,
-						StreamSeq:   o.sseq,
-					},
-					AckFloor: SequencePair{
-						ConsumerSeq: o.adflr,
-						StreamSeq:   o.asflr,
-					},
-					Pending:     o.pending,
-					Redelivered: o.rdc,
-				}
-				// FIXME(dlc) - Hold onto any errors.
-				o.store.Update(state)
-			}
-			o.mu.Unlock()
+			o.writeState()
 		}
 	}
 }
@@ -1582,6 +1587,11 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	mset.unsubscribe(reqSub)
 	delete(mset.consumers, o.name)
 	mset.mu.Unlock()
+
+	// Make sure we stamp our update state
+	if !dflag {
+		o.writeState()
+	}
 
 	var err error
 	if store != nil {
