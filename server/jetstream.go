@@ -551,10 +551,19 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("    Error unmarshalling Consumer metafile: %v", err)
 				continue
 			}
+			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
+			if isEphemeral {
+				// This is an ephermal consumer and this could fail on restart until
+				// the consumer can reconnect. We will create it as a durable and switch it.
+				cfg.ConsumerConfig.Durable = ofi.Name()
+			}
 			obs, err := mset.AddConsumer(&cfg.ConsumerConfig)
 			if err != nil {
 				s.Warnf("    Error adding Consumer: %v", err)
 				continue
+			}
+			if isEphemeral {
+				obs.switchToEphemeral()
 			}
 			if !cfg.Created.IsZero() {
 				obs.setCreated(cfg.Created)

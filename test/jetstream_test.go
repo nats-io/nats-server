@@ -2208,13 +2208,111 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	}
 }
 
-func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
+func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
 	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.AddConsumer(&server.ConsumerConfig{
+		DeliverSubject: sub.Subject,
+		AckPolicy:      server.AckExplicit,
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+	defer o.Delete()
+
+	// Snapshot our name.
+	oname := o.Name()
+
+	// Send 100 messages
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, mname, "Hello World!")
+	}
+	if state := mset.State(); state.Msgs != 100 {
+		t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
+	}
+
+	// Read 6 messages
+	for i := 0; i <= 6; i++ {
+		if m, err := sub.NextMsg(time.Second); err == nil {
+			m.Respond(nil)
+		} else {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+
+	restartServer := func() {
+		t.Helper()
+		// Stop current server.
+		s.Shutdown()
+		// Restart.
+		s = RunJetStreamServerOnPort(port)
+	}
+
+	// Do twice
+	for i := 0; i < 2; i++ {
+		// Restart.
+		restartServer()
+		defer s.Shutdown()
+
+		mset, err = s.GlobalAccount().LookupStream(mname)
+		if err != nil {
+			t.Fatalf("Expected to find a stream for %q", mname)
+		}
+		o = mset.LookupConsumer(oname)
+		if o == nil {
+			t.Fatalf("Error looking up consumer %q", oname)
+		}
+		// Make sure config does not have durable.
+		if cfg := o.Config(); cfg.Durable != "" {
+			t.Fatalf("Expected no durable to be set")
+		}
+		// Wait for it to become active
+		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+			if !o.Active() {
+				return fmt.Errorf("Consumer not active")
+			}
+			return nil
+		})
+	}
+
+	// Now close the connection. Make sure this acts like an ephemeral and goes away.
+	o.SetInActiveDeleteThreshold(10 * time.Millisecond)
+	nc.Close()
+
+	checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+		if o := mset.LookupConsumer(oname); o != nil {
+			return fmt.Errorf("Consumer still active")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
