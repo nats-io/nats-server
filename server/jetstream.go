@@ -366,6 +366,9 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	if js == nil {
 		return fmt.Errorf("jetstream not enabled")
 	}
+	if s.SystemAccount() == a {
+		return fmt.Errorf("jetstream can not be enabled on the system account")
+	}
 
 	// No limits means we dynamically set up limits.
 	if limits == nil {

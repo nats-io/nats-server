@@ -5907,6 +5907,20 @@ func clientConnectToServerWithUP(t *testing.T, opts *server.Options, user, pass 
 	return nc
 }
 
+func TestJetStreamCanNotEnableOnSystemAccount(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sa := s.SystemAccount()
+	if err := sa.EnableJetStream(nil); err == nil {
+		t.Fatalf("Expected an error trying to enable on the system account")
+	}
+}
+
 func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
@@ -5930,12 +5944,12 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	if !s.JetStreamEnabled() {
-		t.Fatalf("Expected JetStream to be enabled")
-	}
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
+	}
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
 	}
 
 	nca := clientConnectToServerWithUP(t, opts, "ua", "pwd")
