@@ -1644,6 +1644,22 @@ func (o *Consumer) SetInActiveDeleteThreshold(dthresh time.Duration) error {
 	return nil
 }
 
+// switchToEphemeral is called on startup when recovering ephemerals.
+func (o *Consumer) switchToEphemeral() {
+	o.mu.Lock()
+	o.config.Durable = _EMPTY_
+	store, ok := o.store.(*consumerFileStore)
+	rr := o.acc.sl.Match(o.config.DeliverSubject)
+	o.mu.Unlock()
+
+	// Update interest
+	o.updateDeliveryInterest(len(rr.psubs)+len(rr.qsubs) > 0)
+	// Write out new config
+	if ok {
+		store.updateConfig(o.config)
+	}
+}
+
 // RequestNextMsgSubject returns the subject to request the next message when in pull or worker mode.
 // Returns empty otherwise.
 func (o *Consumer) RequestNextMsgSubject() string {

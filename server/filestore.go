@@ -58,6 +58,7 @@ type FileStreamInfo struct {
 // File ConsumerInfo is used for creating consumer stores.
 type FileConsumerInfo struct {
 	Created time.Time
+	Name    string
 	ConsumerConfig
 }
 
@@ -2244,6 +2245,14 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.mu.Unlock()
 
 	return err
+}
+
+// Will upodate the config. Only used when recovering ephemerals.
+func (o *consumerFileStore) updateConfig(cfg ConsumerConfig) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cfg = &FileConsumerInfo{ConsumerConfig: cfg}
+	return o.writeConsumerMeta()
 }
 
 // Write out the consumer meta data, i.e. state.
