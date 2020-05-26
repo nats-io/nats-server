@@ -1070,6 +1070,8 @@ func TestLeafNodeRemoteIsHub(t *testing.T) {
 	checkClusterFormed(t, sb1, sb2)
 	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
 
+	expectedSubs := ln.NumSubscriptions() + 2
+
 	// Create sub on "foo" connected to sa
 	ncA := natsConnect(t, sa.ClientURL())
 	defer ncA.Close()
@@ -1079,6 +1081,14 @@ func TestLeafNodeRemoteIsHub(t *testing.T) {
 	ncB2 := natsConnect(t, sb2.ClientURL())
 	defer ncB2.Close()
 	subBar := natsSubSync(t, ncB2, "bar")
+
+	// Make sure subscriptions have propagated to the leafnode.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if subs := ln.NumSubscriptions(); subs < expectedSubs {
+			return fmt.Errorf("Number of subs is %d", subs)
+		}
+		return nil
+	})
 
 	// Create pub connection on leafnode
 	ncLN := natsConnect(t, ln.ClientURL())

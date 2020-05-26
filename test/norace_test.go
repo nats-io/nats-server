@@ -340,7 +340,12 @@ func TestNoRaceLargeClusterMem(t *testing.T) {
 // Make sure we have the correct remote state when dealing with queue subscribers
 // across many client connections.
 func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
-	s, opts := runNewRouteServer(t)
+	opts, err := server.ProcessConfigFile("./configs/new_cluster.conf")
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.DisableShortFirstPing = true
+	s := RunServer(opts)
 	defer s.Shutdown()
 
 	// Create 100 connections to s
@@ -368,7 +373,12 @@ func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	// Send our INFO and wait for a PONG. This will prevent a race
+	// where server will have started processing queue subscriptions
+	// and then processes the route's INFO (sending its current subs)
+	// followed by updates.
+	routeSend(fmt.Sprintf("INFO %s\r\nPING\r\n", b))
+	routeExpect(pongRe)
 
 	start := make(chan bool)
 	for _, nc := range clients {

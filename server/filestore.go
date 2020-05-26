@@ -1470,9 +1470,9 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, uint64, int64, erro
 
 	hdr := buf[:msgHdrSize]
 	dlen := int(le.Uint32(hdr[0:])) - msgHdrSize
-	slen := le.Uint16(hdr[20:])
+	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
-	if dlen < 0 || int(slen) > dlen {
+	if dlen < 0 || slen > dlen {
 		return "", nil, 0, 0, errBadMsg
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
@@ -1488,7 +1488,11 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, uint64, int64, erro
 	}
 	seq := le.Uint64(hdr[4:])
 	ts := int64(le.Uint64(hdr[12:]))
-	return string(data[:slen]), data[slen : dlen-8], seq, ts, nil
+	// FIXME(dlc) - We need to not allow appends to the underlying buffer, so we will
+	// fix the capacity. This will cause a copy though in stream:internalSendLoop when
+	// we append CRLF but this was causing a race. Need to rethink more to avoid this copy.
+	end := dlen - 8
+	return string(data[:slen]), data[slen:end:end], seq, ts, nil
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.

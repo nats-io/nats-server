@@ -1511,6 +1511,12 @@ func TestWSFailureToStartServer(t *testing.T) {
 	defer l.Close()
 
 	o := testWSOptions()
+	// Make sure we don't have unnecessary listen ports opened.
+	o.HTTPPort = 0
+	o.Cluster.Port = 0
+	o.Gateway.Name = ""
+	o.Gateway.Port = 0
+	o.LeafNode.Port = 0
 	o.Websocket.Port = l.Addr().(*net.TCPAddr).Port
 	s, err := NewServer(o)
 	if err != nil {
@@ -1535,6 +1541,19 @@ func TestWSFailureToStartServer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Should have reported a fatal error")
 	}
+	// Since this is a test and the process does not actually
+	// exit on Fatal error, wait for the client port to be
+	// ready so when we shutdown we don't leave the accept
+	// loop hanging.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		s.mu.Lock()
+		ready := s.listener != nil
+		s.mu.Unlock()
+		if !ready {
+			return fmt.Errorf("client accept loop not started yet")
+		}
+		return nil
+	})
 	s.Shutdown()
 	wg.Wait()
 }

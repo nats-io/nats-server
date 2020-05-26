@@ -1248,7 +1248,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 				t.Fatalf("Expected to be starting at sequence 1")
 			}
 
-			nc := clientConnectToServer(t, s)
+			nc := clientConnectWithOldRequest(t, s)
 			defer nc.Close()
 
 			// Now load up some messages.
@@ -1301,7 +1301,6 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 				time.Sleep(nextDelay)
 				for i := 0; i < toSend; i++ {
 					nc.Request(sendSubj, []byte("Hello World!"), 50*time.Millisecond)
-					time.Sleep(time.Millisecond)
 				}
 			}()
 
@@ -2355,7 +2354,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 
 	checkSubPending := func(numExpected int) {
 		t.Helper()
-		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
 				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 			}
@@ -2859,7 +2858,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			sub, _ := nc.SubscribeSync(subj1)
 			defer sub.Unsubscribe()
 
-			checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+			checkFor(t, 500*time.Millisecond, 10*time.Millisecond, func() error {
 				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
 					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
 				}
@@ -3845,7 +3844,13 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 				now := time.Now()
-				if now.Sub(last) > 5*time.Millisecond {
+				// Delivery from AddConsumer starts in a go routine, so be
+				// more tolerant for the first message.
+				limit := 5 * time.Millisecond
+				if i == 0 {
+					limit = 10 * time.Millisecond
+				}
+				if now.Sub(last) > limit {
 					t.Fatalf("Expected firehose/instant delivery, got message gap of %v", now.Sub(last))
 				}
 				last = now
@@ -4460,12 +4465,14 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 
 	// Shutdown the server. Restart and make sure things come back.
 	s.Shutdown()
-	time.Sleep(200 * time.Millisecond)
-	delta := (runtime.NumGoroutine() - base)
-	if delta > 3 {
-		t.Logf("%d Go routines still exist post Shutdown()", delta)
-		time.Sleep(10 * time.Second)
-	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		delta := (runtime.NumGoroutine() - base)
+		if delta > 3 {
+			return fmt.Errorf("%d Go routines still exist post Shutdown()", delta)
+		}
+		return nil
+	})
 
 	s = RunBasicJetStreamServer()
 	defer s.Shutdown()

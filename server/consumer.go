@@ -303,9 +303,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			if reflect.DeepEqual(&ocfg, config) {
 				return eo, nil
 			} else {
-				// If we are a push mode and not active  and only difference is
-				// deliver subject then update and return.
-				if config.DeliverSubject != "" && !eo.Active() && configsEqualSansDelivery(ocfg, *config) {
+				// If we are a push mode and not active and the only difference
+				// is deliver subject then update and return.
+				if configsEqualSansDelivery(ocfg, *config) && eo.hasNoLocalInterest() {
 					eo.updateDeliverSubject(config.DeliverSubject)
 					return eo, nil
 				} else {
@@ -1490,6 +1490,14 @@ func (o *Consumer) Active() bool {
 	active := o.active && o.mset != nil
 	o.mu.Unlock()
 	return active
+}
+
+// hasNoLocalInterest return true if we have no local interest.
+func (o *Consumer) hasNoLocalInterest() bool {
+	o.mu.Lock()
+	rr := o.acc.sl.Match(o.config.DeliverSubject)
+	o.mu.Unlock()
+	return len(rr.psubs)+len(rr.qsubs) == 0
 }
 
 // This is when the underlying stream has been purged.
