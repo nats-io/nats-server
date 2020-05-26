@@ -105,6 +105,24 @@ func validateTrustedOperators(o *Options) error {
 			return fmt.Errorf("system_account in config and operator JWT must be identical")
 		}
 	}
+	srvMajor, srvMinor, srvUpdate, _ := jwt.ParseServerVersion(strings.Split(VERSION, "-")[0])
+	for _, opc := range o.TrustedOperators {
+		if major, minor, update, err := jwt.ParseServerVersion(opc.AssertServerVersion); err != nil {
+			return fmt.Errorf("operator %s expects version %s got error instead: %s",
+				opc.Subject, opc.AssertServerVersion, err)
+		} else if major > srvMajor {
+			return fmt.Errorf("operator %s expected major version %d > server major version %d",
+				opc.Subject, major, srvMajor)
+		} else if srvMajor > major {
+		} else if minor > srvMinor {
+			return fmt.Errorf("operator %s expected minor version %d > server minor version %d",
+				opc.Subject, minor, srvMinor)
+		} else if srvMinor > minor {
+		} else if update > srvUpdate {
+			return fmt.Errorf("operator %s expected update version %d > server update version %d",
+				opc.Subject, update, srvUpdate)
+		}
+	}
 	// If we have operators, fill in the trusted keys.
 	// FIXME(dlc) - We had TrustedKeys before TrustedOperators. The jwt.OperatorClaims
 	// has a DidSign(). Use that longer term. For now we can expand in place.
