@@ -36,14 +36,16 @@ import (
 )
 
 type serverInfo struct {
-	ID           string `json:"server_id"`
-	Host         string `json:"host"`
-	Port         uint   `json:"port"`
-	Version      string `json:"version"`
-	AuthRequired bool   `json:"auth_required"`
-	TLSRequired  bool   `json:"tls_required"`
-	MaxPayload   int64  `json:"max_payload"`
-	Headers      bool   `json:"headers"`
+	ID           string   `json:"server_id"`
+	Host         string   `json:"host"`
+	Port         uint     `json:"port"`
+	Version      string   `json:"version"`
+	AuthRequired bool     `json:"auth_required"`
+	TLSRequired  bool     `json:"tls_required"`
+	MaxPayload   int64    `json:"max_payload"`
+	Headers      bool     `json:"headers"`
+	ConnectURLs  []string `json:"connect_urls,omitempty"`
+	LameDuckMode bool     `json:"ldm,omitempty"`
 }
 
 type testAsyncClient struct {

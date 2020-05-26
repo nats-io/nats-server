@@ -82,6 +82,7 @@ type Info struct {
 	Cluster           string   `json:"cluster,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
+	LameDuckMode      bool     `json:"ldm,omitempty"`
 
 	// Route Specific
 	Import *SubjectPermission `json:"import,omitempty"`
@@ -620,11 +621,6 @@ func (s *Server) checkResolvePreloads() {
 }
 
 func (s *Server) generateRouteInfoJSON() {
-	// New proto wants a nonce.
-	var raw [nonceLen]byte
-	nonce := raw[:]
-	s.generateNonce(nonce)
-	s.routeInfo.Nonce = string(nonce)
 	b, _ := json.Marshal(s.routeInfo)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
@@ -1852,13 +1848,6 @@ func (s *Server) copyInfo() Info {
 	if len(info.WSConnectURLs) > 0 {
 		info.WSConnectURLs = append([]string(nil), s.info.WSConnectURLs...)
 	}
-	if s.nonceRequired() {
-		// Nonce handling
-		var raw [nonceLen]byte
-		nonce := raw[:]
-		s.generateNonce(nonce)
-		info.Nonce = string(nonce)
-	}
 	return info
 }
 
@@ -1881,6 +1870,13 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.copyInfo()
+	if s.nonceRequired() {
+		// Nonce handling
+		var raw [nonceLen]byte
+		nonce := raw[:]
+		s.generateNonce(nonce)
+		info.Nonce = string(nonce)
+	}
 	c.nonce = []byte(info.Nonce)
 	s.totalClients++
 	s.mu.Unlock()
@@ -2751,6 +2747,10 @@ func (s *Server) lameDuckMode() {
 	for _, client := range s.clients {
 		clients = append(clients, client)
 	}
+	// Now that we know that no new client can be accepted,
+	// send INFO to routes and clients to notify this state.
+	s.sendLDMToRoutes()
+	s.sendLDMToClients()
 	s.mu.Unlock()
 
 	t := time.NewTimer(time.Duration(atomic.LoadInt64(&lameDuckModeInitialDelay)))
@@ -2761,6 +2761,7 @@ func (s *Server) lameDuckMode() {
 	case <-t.C:
 		s.Noticef("Closing existing clients")
 	case <-s.quitCh:
+		t.Stop()
 		return
 	}
 	for i, client := range clients {
@@ -2785,6 +2786,50 @@ func (s *Server) lameDuckMode() {
 		}
 	}
 	s.Shutdown()
+}
+
+// Send an INFO update to routes with the indication that this server is in LDM mode.
+// Server lock is held on entry.
+func (s *Server) sendLDMToRoutes() {
+	s.routeInfo.LameDuckMode = true
+	s.generateRouteInfoJSON()
+	for _, r := range s.routes {
+		r.mu.Lock()
+		r.enqueueProto(s.routeInfoJSON)
+		r.mu.Unlock()
+	}
+	// Clear now so that we notify only once, should we have to send other INFOs.
+	s.routeInfo.LameDuckMode = false
+}
+
+// Send an INFO update to clients with the indication that this server is in
+// LDM mode and with only URLs of other nodes.
+// Server lock is held on entry.
+func (s *Server) sendLDMToClients() {
+	s.info.LameDuckMode = true
+	// Clear this so that if there are further updates, we don't send our URLs.
+	s.clientConnectURLs = s.clientConnectURLs[:0]
+	if s.websocket.connectURLs != nil {
+		s.websocket.connectURLs = s.websocket.connectURLs[:0]
+	}
+	// Reset content first.
+	s.info.ClientConnectURLs = s.info.ClientConnectURLs[:0]
+	s.info.WSConnectURLs = s.info.WSConnectURLs[:0]
+	// Only add the other nodes if we are allowed to.
+	if !s.getOpts().Cluster.NoAdvertise {
+		for url := range s.clientConnectURLsMap {
+			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
+		}
+		for url := range s.websocket.connectURLsMap {
+			s.info.WSConnectURLs = append(s.info.WSConnectURLs, url)
+		}
+	}
+	// Send to all registered clients that support async INFO protocols.
+	s.sendAsyncInfoToClients(true, true)
+	// We now clear the info.LameDuckMode flag so that if there are
+	// cluster updates and we send the INFO, we don't have the boolean
+	// set which would cause multiple LDM notifications to clients.
+	s.info.LameDuckMode = false
 }
 
 // If given error is a net.Error and is temporary, sleeps for the given

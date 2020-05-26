@@ -3961,13 +3961,11 @@ func (c *client) teardownConn() {
 	}
 
 	if srv != nil {
-		// This is a route that disconnected, but we are not in lame duck mode...
-		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !srv.isLameDuckMode() {
-			// Unless disabled, possibly update the server's INFO protocol
-			// and send to clients that know how to handle async INFOs.
-			if !srv.getOpts().Cluster.NoAdvertise {
-				srv.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
-			}
+		// If this is a route that disconnected, possibly send an INFO with
+		// the updated list of connect URLs to clients that know how to
+		// handle async INFOs.
+		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !srv.getOpts().Cluster.NoAdvertise {
+			srv.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
 		}
 
 		// Unregister
