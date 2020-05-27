@@ -1271,9 +1271,9 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			switch strings.ToLower(mk) {
 			case "store_dir", "storedir":
 				opts.StoreDir = mv.(string)
-			case "max_memory_store", "max_mem_store":
+			case "max_memory_store", "max_mem_store", "max_mem":
 				opts.JetStreamMaxMemory = mv.(int64)
-			case "max_file_store":
+			case "max_file_store", "max_file":
 				opts.JetStreamMaxStore = mv.(int64)
 			default:
 				if !tk.IsUsedVariable() {
