@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -728,11 +729,11 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 }
 
 // Support for bcrypt stored passwords and tokens.
-const bcryptPrefix = "$2a$"
+var validBcryptPrefix = regexp.MustCompile(`^\$2[a,b,x,y]{1}\$\d{2}\$.*`)
 
 // isBcrypt checks whether the given password or token is bcrypted.
 func isBcrypt(password string) bool {
-	return strings.HasPrefix(password, bcryptPrefix)
+	return validBcryptPrefix.MatchString(password)
 }
 
 func comparePasswords(serverPassword, clientPassword string) bool {
