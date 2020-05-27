@@ -382,7 +382,7 @@ func (ms *memStore) ConsumerStore(_ string, _ *ConsumerConfig) (ConsumerStore, e
 	return &consumerMemStore{ms}, nil
 }
 
-func (ms *memStore) Snapshot() (io.ReadCloser, error) {
+func (ms *memStore) Snapshot(_ time.Duration, _ bool) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("no impl")
 }
 
