@@ -1263,3 +1263,136 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 		})
 	}
 }
+
+func TestTLSClientSVIDAuth(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+		certs  nats.Option
+		err    error
+		rerr   error
+	}{
+		{
+			"connect with tls using certificate with URIs",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { 
+                                      user = "spiffe://localhost/my-nats-service/user-a"
+                                    }
+				  ]
+				}
+			`,
+			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls using certificate with limited different permissions",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { 
+                                      user = "spiffe://localhost/my-nats-service/user-a"
+                                    },
+				    { 
+                                      user = "spiffe://localhost/my-nats-service/user-b"
+                                      permissions = { subscribe = { deny = ">" }} 
+                                    }
+				  ]
+				}
+			`,
+			nats.ClientCert("./configs/certs/svid/svid-user-b.pem", "./configs/certs/svid/svid-user-b.key"),
+			nil,
+			errors.New("nats: timeout"),
+		},
+		{
+			"connect with tls without URIs in permissions will still match SAN",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { 
+                                      user = "O=SPIRE,C=US" 
+                                    }
+				  ]
+				}
+			`,
+			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls but no permissions",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { 
+                                      user = "spiffe://localhost/my-nats-service/user-c"
+                                    }
+				  ]
+				}
+			`,
+			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			errors.New("nats: Authorization Violation"),
+			nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := fmt.Sprintf(test.config, `
+				tls {
+					cert_file: "configs/certs/svid/server.pem"
+					key_file: "configs/certs/svid/server.key"
+					ca_file: "configs/certs/svid/ca.pem"
+					timeout: 5
+                                        insecure: true
+					verify_and_map: true
+				}
+			`)
+			conf := createConfFile(t, []byte(content))
+			defer os.Remove(conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+				test.certs,
+				nats.RootCAs("./configs/certs/svid/ca.pem"),
+			)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+		})
+	}
+}
