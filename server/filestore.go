@@ -1086,18 +1086,18 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	fs.wmb.Write(msg)
 
 	// Calculate hash.
-	hh := fs.lmb.hh
-	hh.Reset()
-	hh.Write(hdr[4:20])
-	hh.Write([]byte(subj))
-	hh.Write(msg)
-	checksum := hh.Sum(nil)
-	// Write to msg record.
-	fs.wmb.Write(checksum)
-	// Grab last checksum
 	mb.mu.Lock()
+	mb.hh.Reset()
+	mb.hh.Write(hdr[4:20])
+	mb.hh.Write([]byte(subj))
+	mb.hh.Write(msg)
+	checksum := mb.hh.Sum(nil)
+	// Grab last checksum
 	copy(mb.lchk[0:], checksum)
 	mb.mu.Unlock()
+
+	// Write to msg record.
+	fs.wmb.Write(checksum)
 
 	return rl, ts, nil
 }
