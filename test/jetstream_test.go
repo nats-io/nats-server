@@ -4243,8 +4243,8 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 
 			for i := 0; i < totalMsgs; i++ {
 				gaps = append(gaps, time.Since(lst))
-				nc.Request("DC", []byte("OK!"), time.Second)
 				lst = time.Now()
+				nc.Publish("DC", []byte("OK!"))
 				// Calculate a gap between messages.
 				gap := 10*time.Millisecond + time.Duration(rand.Intn(20))*time.Millisecond
 				time.Sleep(gap)
@@ -4298,8 +4298,9 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 				}
 				gap := time.Since(start)
 				// 10ms is high but on macs time.Sleep(delay) does not sleep only delay.
-				if gap < gaps[i] || gap > gaps[i]+10*time.Millisecond {
-					t.Fatalf("Gap is incorrect for %d, expected %v got %v", i, gaps[i], gap)
+				gl, gh := gaps[i]-5*time.Millisecond, gaps[i]+10*time.Millisecond
+				if gap < gl || gap > gh {
+					t.Fatalf("Gap is off for %d, expected %v got %v", i, gaps[i], gap)
 				}
 			}
 
