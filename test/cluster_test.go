@@ -72,6 +72,20 @@ func checkExpectedSubs(expected int, servers ...*server.Server) error {
 	return nil
 }
 
+func checkSubInterest(t *testing.T, s *server.Server, accName, subject string, timeout time.Duration) {
+	t.Helper()
+	checkFor(t, timeout, 15*time.Millisecond, func() error {
+		acc, err := s.LookupAccount(accName)
+		if err != nil {
+			return fmt.Errorf("error looking up account %q: %v", accName, err)
+		}
+		if acc.SubscriptionInterest(subject) {
+			return nil
+		}
+		return fmt.Errorf("no subscription interest for account %q on %q", accName, subject)
+	})
+}
+
 func runThreeServers(t *testing.T) (srvA, srvB, srvC *server.Server, optsA, optsB, optsC *server.Options) {
 	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")
