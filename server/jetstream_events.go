@@ -80,3 +80,17 @@ type JSConsumerDeliveryExceededAdvisory struct {
 
 // JSConsumerDeliveryExceededAdvisoryType is the schema type for JSConsumerDeliveryExceededAdvisory
 const JSConsumerDeliveryExceededAdvisoryType = "io.nats.jetstream.advisory.v1.max_deliver"
+
+// JSConsumerDeliveryTerminatedAdvisory is an advisory informing that a message was
+// terminated by the consumer, so might be a candidate for DLQ handling
+type JSConsumerDeliveryTerminatedAdvisory struct {
+	TypedEvent
+	Stream      string `json:"stream"`
+	Consumer    string `json:"consumer"`
+	ConsumerSeq uint64 `json:"consumer_seq"`
+	StreamSeq   uint64 `json:"stream_seq"`
+	Deliveries  uint64 `json:"deliveries"`
+}
+
+// JSConsumerDeliveryTerminatedAdvisoryType is the schema type for JSConsumerDeliveryTerminatedAdvisory
+const JSConsumerDeliveryTerminatedAdvisoryType = "io.nats.jetstream.advisory.v1.terminated"
