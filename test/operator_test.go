@@ -381,12 +381,16 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 
 	// Use this to check for message.
 	checkForMsg := func() {
+		t.Helper()
 		select {
 		case <-ch:
 		case <-time.After(2 * time.Second):
 			t.Fatal("Timeout waiting for message across route")
 		}
 	}
+
+	// Wait for "foo" interest to be propagated to s2's account `accPub`
+	checkSubInterest(t, s2, accPub, "foo", 2*time.Second)
 
 	// Create second client and send message from this one. Interest should be here.
 	url2 := fmt.Sprintf("nats://%s:%d/", opts2.Host, opts2.Port)
@@ -422,6 +426,8 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	defer s2.Shutdown()
 
 	checkClusterFormed(t, s, s2)
+
+	checkSubInterest(t, s2, accPub, "foo", 2*time.Second)
 
 	// Reconnect and make sure this works. If accounts blown away this will fail.
 	url2 = fmt.Sprintf("nats://%s:%d/", opts2.Host, opts2.Port)
