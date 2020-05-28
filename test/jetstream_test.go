@@ -2788,7 +2788,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
 	json.Unmarshal(rmsg.Data, &resp)
-	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "deliver subject not valid" {
 		t.Fatalf("Did not get correct error response: %+v", resp.Error)
 	}
 
@@ -2801,8 +2801,9 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
+	resp.Error = nil
 	json.Unmarshal(rmsg.Data, &resp)
-	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+	if resp.Error != nil {
 		t.Fatalf("Did not get correct error response: %+v", resp.Error)
 	}
 
@@ -2827,7 +2828,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	// Wait to receive the snapshot.
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("Did not receive our snapshot in time")
 	}
 

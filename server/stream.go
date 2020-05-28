@@ -1001,7 +1001,7 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
 		}
 		fpath := path.Join(sdir, filepath.Clean(hdr.Name))
 		pdir := filepath.Dir(fpath)
-		os.MkdirAll(pdir, 0755)
+		os.MkdirAll(pdir, 0750)
 		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return nil, err

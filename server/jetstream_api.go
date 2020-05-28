@@ -138,6 +138,10 @@ const (
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
+	// For snapshots and restores
+	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
+	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
+
 	///////////////////////
 	// FIXME(dlc)
 	///////////////////////
@@ -1113,7 +1117,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	}
 
 	// Create our internal subscription to accept the snapshot.
-	restoreSubj := fmt.Sprintf("_restore_.%s", nuid.Next())
+	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
 
 	// FIXME(dlc) - Can't recover well here if something goes wrong. Could use channels and at least time
 	// things out. Note that this is tied to the requesting client, so if it is a tool this goes away when
@@ -1169,7 +1173,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	if !IsValidSubject(req.DeliverSubject) {
-		resp.Error = jsBadRequestErr
+		resp.Error = &ApiError{Code: 400, Description: "deliver subject not valid"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1189,7 +1193,8 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 	go s.streamSnapshot(c, mset, sr, &req)
 }
 
-const defaultSnapshotChunkSize = 64 * 1024
+// Default chunk size for now.
+const defaultSnapshotChunkSize = 128 * 1024
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
@@ -1221,7 +1226,7 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 	acks := make(chan struct{}, 1)
 	acks <- struct{}{}
 
-	ackSubj := fmt.Sprintf("_snapshot_.%s", nuid.Next())
+	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.Name(), nuid.Next())
 	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj, func(_ *subscription, _ *client, _, _ string, _ []byte) {
 		acks <- struct{}{}
 	})
@@ -1255,6 +1260,7 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 				goto done
 			case <-time.After(10 * time.Millisecond):
 			}
+			// TODO(dlc) - Might want these moved off sendq if we have contention.
 			mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackSubj, chunk, nil, 0}
 			// Can't reuse
 			chunk = make([]byte, 0, chunkSize)
