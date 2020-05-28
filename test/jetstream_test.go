@@ -2059,7 +2059,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
 			}
 
-			ackWait := 50 * time.Millisecond
+			ackWait := 100 * time.Millisecond
 
 			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit, AckWait: ackWait})
 			if err != nil {
@@ -2089,16 +2089,14 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 			// We should get 1 back.
 			m := getMsg(1, 2)
-			m.Respond(server.AckProgress)
-			nc.Flush()
 
 			// Now let's take longer than ackWait to process but signal we are working on the message.
-			timeout := time.Now().Add(5 * ackWait)
+			timeout := time.Now().Add(3 * ackWait)
 			for time.Now().Before(timeout) {
-				time.Sleep(ackWait / 4)
 				m.Respond(server.AckProgress)
+				nc.Flush()
+				time.Sleep(ackWait / 5)
 			}
-
 			// We should get 2 here, not 1 since we have indicated we are working on it.
 			m2 := getMsg(2, 3)
 			time.Sleep(ackWait / 2)
@@ -2107,7 +2105,6 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 			// Now should get 1 back then 2.
 			m = getMsg(1, 4)
 			m.Respond(nil)
-
 			getMsg(2, 5)
 		})
 	}
@@ -4320,7 +4317,8 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 				}
 				gap := time.Since(start)
 				// 10ms is high but on macs time.Sleep(delay) does not sleep only delay.
-				if gap < gaps[i] || gap > gaps[i]+10*time.Millisecond {
+				gl, gh := gaps[i]-5*time.Millisecond, gaps[i]+10*time.Millisecond
+				if gap < gl || gap > gh {
 					t.Fatalf("Gap is incorrect for %d, expected %v got %v", i, gaps[i], gap)
 				}
 			}

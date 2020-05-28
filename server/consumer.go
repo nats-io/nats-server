@@ -676,7 +676,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 // Used to process a working update to delay redelivery.
 func (o *Consumer) progressUpdate(seq uint64) {
 	o.mu.Lock()
-	if o.pending != nil {
+	if len(o.pending) > 0 {
 		if _, ok := o.pending[seq]; ok {
 			o.pending[seq] = time.Now().UnixNano()
 		}
@@ -1355,9 +1355,6 @@ func (o *Consumer) removeFromRedeliverQueue(seq uint64) bool {
 
 // Checks the pending messages.
 func (o *Consumer) checkPending() {
-	now := time.Now().UnixNano()
-	shouldSignal := false
-
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil {
@@ -1365,6 +1362,9 @@ func (o *Consumer) checkPending() {
 		return
 	}
 	aw := int64(o.config.AckWait)
+
+	now := time.Now().UnixNano()
+	shouldSignal := false
 
 	// Since we can update timestamps, we have to review all pending.
 	// We may want to unlock here or warn if list is big.
