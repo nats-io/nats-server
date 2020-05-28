@@ -741,7 +741,11 @@ var validBcryptPrefix = regexp.MustCompile(`^\$2[a,b,x,y]{1}\$\d{2}\$.*`)
 
 // isBcrypt checks whether the given password or token is bcrypted.
 func isBcrypt(password string) bool {
-	return validBcryptPrefix.MatchString(password)
+	if strings.HasPrefix(password, "$") {
+		return validBcryptPrefix.MatchString(password)
+	}
+
+	return false
 }
 
 func comparePasswords(serverPassword, clientPassword string) bool {
