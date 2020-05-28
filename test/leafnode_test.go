@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -3593,4 +3594,54 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 	if resp == nil || strings.Compare("world", string(resp.Data)) != 0 {
 		t.Fatal("Did not receive the correct message")
 	}
+}
+
+func TestLeafNodeQueueSubscriberUnsubscribe(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
+	leafSend("PING\r\n")
+	leafExpect(pongRe)
+
+	// Create a client on leaf server and create a queue sub
+	c1 := createClientConn(t, opts.Host, opts.Port)
+	defer c1.Close()
+
+	send1, expect1 := setupConn(t, c1)
+	send1("SUB foo bar 1\r\nPING\r\n")
+	expect1(pongRe)
+
+	// Leaf should receive an LS+ foo bar 1
+	leafExpect(lsubRe)
+
+	// Create a second client on leaf server and create queue sub on same group.
+	c2 := createClientConn(t, opts.Host, opts.Port)
+	defer c2.Close()
+
+	send2, expect2 := setupConn(t, c2)
+	send2("SUB foo bar 1\r\nPING\r\n")
+	expect2(pongRe)
+
+	// Leaf should receive an LS+ foo bar 2
+	leafExpect(lsubRe)
+
+	// Now close c1
+	c1.Close()
+
+	// Leaf should receive an indication that the queue group went to 1.
+	// Which means LS+ foo bar 1.
+	buf := leafExpect(lsubRe)
+	if matches := lsubRe.FindAllSubmatch(buf, -1); len(matches) != 1 {
+		t.Fatalf("Expected only 1 LS+, got %v", len(matches))
+	}
+	// Make sure that we did not get a LS- at the same time.
+	if bytes.Contains(buf, []byte("LS-")) {
+		t.Fatalf("Unexpected LS- in response: %q", buf)
+	}
+	// Make sure we receive nothing...
+	expectNothing(t, lc)
 }

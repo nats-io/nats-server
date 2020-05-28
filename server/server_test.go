@@ -1395,7 +1395,7 @@ func TestConnectErrorReports(t *testing.T) {
 	defer s.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(10 * routeConnectDelay)
+	time.Sleep(50 * routeConnectDelay)
 	s.Shutdown()
 
 	content, err := ioutil.ReadFile(log)
@@ -1444,7 +1444,7 @@ func TestConnectErrorReports(t *testing.T) {
 	defer s.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(10 * opts.LeafNode.ReconnectInterval)
+	time.Sleep(50 * opts.LeafNode.ReconnectInterval)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
@@ -1494,7 +1494,7 @@ func TestConnectErrorReports(t *testing.T) {
 	defer s.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(10 * gatewayConnectDelay)
+	time.Sleep(50 * gatewayConnectDelay)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
@@ -1569,7 +1569,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	cs.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(DEFAULT_ROUTE_RECONNECT + 15*routeConnectDelay)
+	time.Sleep(DEFAULT_ROUTE_RECONNECT + 50*routeConnectDelay)
 	s.Shutdown()
 
 	content, err := ioutil.ReadFile(log)
@@ -1636,7 +1636,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	cs.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(opts.LeafNode.ReconnectInterval + 15*opts.LeafNode.ReconnectInterval)
+	time.Sleep(50 * opts.LeafNode.ReconnectInterval)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
@@ -1699,7 +1699,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	cs.Shutdown()
 
 	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(2*gatewayReconnectDelay + 15*gatewayConnectDelay)
+	time.Sleep(50 * gatewayConnectDelay)
 	s.Shutdown()
 
 	content, err = ioutil.ReadFile(log)
