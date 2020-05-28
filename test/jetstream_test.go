@@ -2699,7 +2699,8 @@ func TestJetStreamSnapshots(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := rand.Intn(100) + 1
+	// Make sure we send some as floor.
+	toSend := rand.Intn(200) + 22
 	for i := 1; i <= toSend; i++ {
 		msg := fmt.Sprintf("Hello World %d", i)
 		subj := subjects[rand.Intn(len(subjects))]
@@ -2716,7 +2717,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Now grab some messages.
-		toReceive := rand.Intn(toSend) + 1
+		toReceive := rand.Intn(toSend/2) + 1
 		for r := 0; r < toReceive; r++ {
 			resp, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 			if err != nil {
@@ -2728,6 +2729,8 @@ func TestJetStreamSnapshots(t *testing.T) {
 		}
 		obs = append(obs, obsi{o.Config(), toReceive})
 	}
+	nc.Flush()
+
 	// Snapshot state of the stream and consumers.
 	info := info{mset.Config(), mset.State(), obs}
 

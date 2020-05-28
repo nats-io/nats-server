@@ -1,5 +1,7 @@
 module github.com/nats-io/nats-server/v2
 
+go 1.14
+
 require (
 	github.com/minio/highwayhash v1.0.0
 	github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
