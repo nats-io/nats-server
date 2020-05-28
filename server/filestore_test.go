@@ -14,8 +14,9 @@
 package server
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -1075,7 +1076,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	subj, msg := "foo", []byte("Hello Snappy!")
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024},
+		FileStoreConfig{StoreDir: storeDir},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
@@ -1115,11 +1116,11 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	snapshot := func() []byte {
 		t.Helper()
-		r, err := fs.Snapshot()
+		r, err := fs.Snapshot(5*time.Second, true)
 		if err != nil {
 			t.Fatalf("Error creating snapshot")
 		}
-		snapshot, err := ioutil.ReadAll(r)
+		snapshot, err := ioutil.ReadAll(r.Reader)
 		if err != nil {
 			t.Fatalf("Error reading snapshot")
 		}
@@ -1130,32 +1131,39 @@ func TestFileStoreSnapshot(t *testing.T) {
 	// We will compare the states for this vs the original one.
 	verifySnapshot := func(snap []byte) {
 		r := bytes.NewReader(snap)
-		zr, _ := zip.NewReader(r, int64(len(snap)))
+		gzr, err := gzip.NewReader(r)
+		if err != nil {
+			t.Fatalf("Error creating gzip reader: %v", err)
+		}
+		defer gzr.Close()
+		tr := tar.NewReader(gzr)
 
 		rstoreDir, _ := ioutil.TempDir("", JetStreamStoreDir)
-		sdir := path.Join(rstoreDir, "$G", "streams")
-		os.MkdirAll(sdir, 0755)
 		defer os.RemoveAll(rstoreDir)
 
-		for _, f := range zr.File {
-			rc, err := f.Open()
-			if err != nil {
-				t.Fatalf("Error opening file in zip file: %v", err)
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				break // End of archive
 			}
-			fpath := path.Join(sdir, filepath.Clean(f.Name))
+			if err != nil {
+				t.Fatalf("Error getting next entry from snapshot: %v", err)
+			}
+			fpath := path.Join(rstoreDir, filepath.Clean(hdr.Name))
 			pdir := filepath.Dir(fpath)
 			os.MkdirAll(pdir, 0755)
-			fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, f.Mode())
+			fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
 			if err != nil {
 				t.Fatalf("Error opening file[%s]: %v", fpath, err)
 			}
-			if _, err := io.Copy(fd, rc); err != nil {
+			if _, err := io.Copy(fd, tr); err != nil {
 				t.Fatalf("Error writing file[%s]: %v", fpath, err)
 			}
-			rc.Close()
+			fd.Close()
 		}
+
 		fsr, err := newFileStore(
-			FileStoreConfig{StoreDir: storeDir},
+			FileStoreConfig{StoreDir: rstoreDir},
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 		)
 		if err != nil {
@@ -1167,6 +1175,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		// FIXME(dlc)
 		// Right now the upper layers in JetStream recover the consumers and do not expect
 		// the lower layers to do that. So for now blank that out of our original state.
+		// Will have more exhaustive tests in jetstream_test.go.
 		state.Consumers = 0
 
 		// FIXME(dlc) - Also the hashes will not match if directory is not the same, so need to
@@ -1203,7 +1212,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
 
-	r, err := fs.Snapshot()
+	sr, err := fs.Snapshot(5*time.Second, true)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
@@ -1215,13 +1224,30 @@ func TestFileStoreSnapshot(t *testing.T) {
 	}
 
 	// Now make sure we can do these when we close the reader and release the snapshot condition.
-	r.Close()
+	sr.Reader.Close()
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		if _, err := fs.RemoveMsg(122); err != nil {
 			return fmt.Errorf("Got an error on remove after snapshot: %v", err)
 		}
 		return nil
 	})
+
+	// Make sure if we do not read properly then it will close the writer and report an error.
+	sr, err = fs.Snapshot(10*time.Millisecond, false)
+	if err != nil {
+		t.Fatalf("Error creating snapshot")
+	}
+	var buf [32]byte
+
+	if n, err := sr.Reader.Read(buf[:]); err != nil || n == 0 {
+		t.Fatalf("Expected to read beginning, got %v and %d", err, n)
+	}
+	// Cause snapshot to timeout.
+	time.Sleep(20 * time.Millisecond)
+	// Read again should fail
+	if _, err := sr.Reader.Read(buf[:]); err != io.EOF {
+		t.Fatalf("Expected read to produce an error, got none")
+	}
 }
 
 func TestFileStoreConsumer(t *testing.T) {

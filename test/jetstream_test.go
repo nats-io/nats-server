@@ -68,11 +68,6 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 			t.Fatalf("Expected memory to be 80 percent of system memory, got %v vs %v", config.MaxMemory, est)
 		}
 	}
-	// Check store path, should be tmpdir.
-	expectedDir := filepath.Join(os.TempDir(), server.JetStreamStoreDir)
-	if config.StoreDir != expectedDir {
-		t.Fatalf("Expected storage directory of %q, but got %q", expectedDir, config.StoreDir)
-	}
 	// Make sure it was created.
 	stat, err := os.Stat(config.StoreDir)
 	if err != nil {
@@ -90,10 +85,11 @@ func RunBasicJetStreamServer() *server.Server {
 	return RunServer(&opts)
 }
 
-func RunJetStreamServerOnPort(port int) *server.Server {
+func RunJetStreamServerOnPort(port int, sd string) *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = port
 	opts.JetStream = true
+	opts.StoreDir = filepath.Dir(sd)
 	return RunServer(&opts)
 }
 
@@ -2265,9 +2261,10 @@ func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 	restartServer := func() {
 		t.Helper()
 		// Stop current server.
+		sd := s.JetStreamConfig().StoreDir
 		s.Shutdown()
 		// Restart.
-		s = RunJetStreamServerOnPort(port)
+		s = RunJetStreamServerOnPort(port, sd)
 	}
 
 	// Do twice
@@ -2390,10 +2387,11 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 
 	restartServer := func() {
 		t.Helper()
+		sd := s.JetStreamConfig().StoreDir
 		// Stop current server.
 		s.Shutdown()
 		// Restart.
-		s = RunJetStreamServerOnPort(port)
+		s = RunJetStreamServerOnPort(port, sd)
 	}
 
 	// Restart.
@@ -2473,11 +2471,16 @@ func TestJetStreamDeleteConsumerAndServerRestart(t *testing.T) {
 		t.Fatalf("Expected to have zero consumers, got %d", numo)
 	}
 
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+	sd := s.JetStreamConfig().StoreDir
+
 	// Stop current server.
 	s.Shutdown()
 
 	// Restart.
-	s = RunBasicJetStreamServer()
+	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()
 
 	mset, err = s.GlobalAccount().LookupStream(sendSubj)
@@ -2540,11 +2543,16 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 		return nil
 	})
 
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+	sd := s.JetStreamConfig().StoreDir
+
 	// Stop current server.
 	s.Shutdown()
 
 	// Restart.
-	s = RunBasicJetStreamServer()
+	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()
 
 	// Don't wait for reconnect from old client.
@@ -2560,6 +2568,319 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamSnapshots(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MY-STREAM"
+	subjects := []string{"foo", "bar", "baz"}
+	cfg := server.StreamConfig{
+		Name:     mname,
+		Storage:  server.FileStorage,
+		Subjects: subjects,
+		MaxMsgs:  1000,
+	}
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStream(&cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := rand.Intn(100) + 1
+	for i := 1; i <= toSend; i++ {
+		msg := fmt.Sprintf("Hello World %d", i)
+		subj := subjects[rand.Intn(len(subjects))]
+		sendStreamMsg(t, nc, subj, msg)
+	}
+
+	// Create up to 10 consumers.
+	numConsumers := rand.Intn(10) + 1
+	var obs []obsi
+	for i := 1; i <= numConsumers; i++ {
+		cname := fmt.Sprintf("WQ-%d", i)
+		o, err := mset.AddConsumer(workerModeConfig(cname))
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Now grab some messages.
+		toReceive := rand.Intn(toSend) + 1
+		for r := 0; r < toReceive; r++ {
+			resp, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if resp != nil {
+				resp.Respond(nil)
+			}
+		}
+		obs = append(obs, obsi{o.Config(), toReceive})
+	}
+	// Snapshot state of the stream and consumers.
+	info := info{mset.Config(), mset.State(), obs}
+
+	sr, err := mset.Snapshot(5*time.Second, true)
+	if err != nil {
+		t.Fatalf("Error getting snapshot: %v", err)
+	}
+	zr := sr.Reader
+	snapshot, err := ioutil.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("Error reading snapshot")
+	}
+	// Try to restore from snapshot with current stream present, should error.
+	r := bytes.NewReader(snapshot)
+	if _, err := acc.RestoreStream(mname, r); err == nil {
+		t.Fatalf("Expected an error trying to restore existing stream")
+	} else if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Incorrect error received: %v", err)
+	}
+	// Now delete so we can restore.
+	pusage := acc.JetStreamUsage()
+	mset.Delete()
+	r.Reset(snapshot)
+
+	// Now send in wrong name
+	if _, err := acc.RestoreStream("foo", r); err == nil {
+		t.Fatalf("Expected an error trying to restore stream with wrong name")
+	}
+
+	r.Reset(snapshot)
+	mset, err = acc.RestoreStream(mname, r)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now compare to make sure they are equal.
+	if nusage := acc.JetStreamUsage(); nusage != pusage {
+		t.Fatalf("Usage does not match after restore: %+v vs %+v", nusage, pusage)
+	}
+	if state := mset.State(); state != info.state {
+		t.Fatalf("State does not match: %+v vs %+v", state, info.state)
+	}
+	if cfg := mset.Config(); !reflect.DeepEqual(cfg, info.cfg) {
+		t.Fatalf("Configs do not match: %+v vs %+v", cfg, info.cfg)
+	}
+	// Consumers.
+	if mset.NumConsumers() != len(info.obs) {
+		t.Fatalf("Number of consumers do not match: %d vs %d", mset.NumConsumers(), len(info.obs))
+	}
+	for _, oi := range info.obs {
+		if o := mset.LookupConsumer(oi.cfg.Durable); o != nil {
+			if uint64(oi.ack+1) != o.NextSeq() {
+				t.Fatalf("Consumer next seq is not correct: %d vs %d", oi.ack+1, o.NextSeq())
+			}
+		} else {
+			t.Fatalf("Expected to get an consumer")
+		}
+	}
+
+	// Now try restoring to a different server.
+	s2 := RunBasicJetStreamServer()
+	defer s2.Shutdown()
+
+	if config := s2.JetStreamConfig(); config != nil && config.StoreDir != "" {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	acc = s2.GlobalAccount()
+	r.Reset(snapshot)
+	mset, err = acc.RestoreStream(mname, r)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	o := mset.LookupConsumer("WQ-1")
+	if o == nil {
+		t.Fatalf("Could not lookup consumer")
+	}
+
+	nc2 := clientConnectToServer(t, s2)
+	defer nc2.Close()
+
+	// Make sure we can read messages.
+	if _, err := nc2.Request(o.RequestNextMsgSubject(), nil, 5*time.Second); err != nil {
+		t.Fatalf("Unexpected error getting next message: %v", err)
+	}
+}
+
+func TestJetStreamSnapshotsAPI(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MY-STREAM"
+	subjects := []string{"foo", "bar", "baz"}
+	cfg := server.StreamConfig{
+		Name:     mname,
+		Storage:  server.FileStorage,
+		Subjects: subjects,
+		MaxMsgs:  1000,
+	}
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStreamWithStore(&cfg, &server.FileStoreConfig{BlockSize: 128})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := rand.Intn(100) + 1
+	for i := 1; i <= toSend; i++ {
+		msg := fmt.Sprintf("Hello World %d", i)
+		subj := subjects[rand.Intn(len(subjects))]
+		sendStreamMsg(t, nc, subj, msg)
+	}
+
+	o, err := mset.AddConsumer(workerModeConfig("WQ"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now grab some messages.
+	toReceive := rand.Intn(toSend) + 1
+	for r := 0; r < toReceive; r++ {
+		resp, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp != nil {
+			resp.Respond(nil)
+		}
+	}
+
+	// Make sure we get proper error for non-existent request, streams,etc,
+	rmsg, err := nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "foo"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	var resp server.JSApiStreamSnapshotResponse
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	sreq := &server.JSApiStreamSnapshotRequest{}
+	req, _ := json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "foo"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 404 || resp.Error.Description != "stream not found" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	req, _ = json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "deliver subject not valid" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	// Set delivery subject, do not subscribe yet. Want this to be an ok pattern.
+	sreq.DeliverSubject = nats.NewInbox()
+	// Just for test, usually left alone.
+	sreq.ChunkSize = 512
+	req, _ = json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	resp.Error = nil
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error != nil {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	// Setup to process snapshot chunks.
+	var snapshot []byte
+	done := make(chan bool)
+
+	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+		// EOF
+		if len(m.Data) == 0 {
+			m.Sub.Unsubscribe()
+			done <- true
+			return
+		}
+		// Could be writing to a file here too.
+		snapshot = append(snapshot, m.Data...)
+		// Flow ack
+		m.Respond(nil)
+	})
+	defer sub.Unsubscribe()
+
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
+	}
+
+	// Now make sure this snapshot is legit.
+
+	var rresp server.JSApiStreamRestoreResponse
+
+	// Make sure we get an error since stream still exists.
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error == nil || rresp.Error.Code != 400 || !strings.Contains(rresp.Error.Description, "already exists") {
+		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
+	}
+
+	// Grab state for comparison.
+	state := mset.State()
+	// Delete this stream.
+	mset.Delete()
+
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+	r := bytes.NewReader(snapshot)
+	// Can be anysize message.
+	var chunk [512]byte
+	for {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		nc.Publish(rresp.DeliverSubject, chunk[:n])
+	}
+	nc.Publish(rresp.DeliverSubject, nil)
+	nc.Flush()
+
+	mset, err = acc.LookupStream(mname)
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", mname)
+	}
+	if mset.State() != state {
+		t.Fatalf("Did not match states, %+v vs %+v", mset.State(), state)
+	}
 }
 
 func TestJetStreamActiveDelivery(t *testing.T) {
@@ -4386,6 +4707,16 @@ func TestJetStreamStreamFileStorageTrackingAndLimits(t *testing.T) {
 	}
 }
 
+type obsi struct {
+	cfg server.ConsumerConfig
+	ack int
+}
+type info struct {
+	cfg   server.StreamConfig
+	state server.StreamState
+	obs   []obsi
+}
+
 func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	base := runtime.NumGoroutine()
 
@@ -4398,15 +4729,6 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 
 	acc := s.GlobalAccount()
 
-	type obsi struct {
-		cfg server.ConsumerConfig
-		ack int
-	}
-	type info struct {
-		cfg   server.StreamConfig
-		state server.StreamState
-		obs   []obsi
-	}
 	ostate := make(map[string]info)
 
 	nid := nuid.New()
@@ -4464,6 +4786,11 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	pusage := acc.JetStreamUsage()
 
 	// Shutdown the server. Restart and make sure things come back.
+	// Capture port since it was dynamic.
+	u, _ := url.Parse(s.ClientURL())
+	port, _ := strconv.Atoi(u.Port())
+	sd := s.JetStreamConfig().StoreDir
+
 	s.Shutdown()
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
@@ -4474,7 +4801,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 		return nil
 	})
 
-	s = RunBasicJetStreamServer()
+	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()
 
 	acc = s.GlobalAccount()
@@ -4490,7 +4817,7 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 			t.Fatalf("Expected to find a stream for %q", mname)
 		}
 		if state := mset.State(); state != info.state {
-			t.Fatalf("Stats do not match: %+v vs %+v", state, info.state)
+			t.Fatalf("State does not match: %+v vs %+v", state, info.state)
 		}
 		if cfg := mset.Config(); !reflect.DeepEqual(cfg, info.cfg) {
 			t.Fatalf("Configs do not match: %+v vs %+v", cfg, info.cfg)
@@ -5382,9 +5709,10 @@ func TestJetStreamUpdateStream(t *testing.T) {
 				port, _ := strconv.Atoi(u.Port())
 
 				// Stop current server.
+				sd := s.JetStreamConfig().StoreDir
 				s.Shutdown()
 				// Restart.
-				s = RunJetStreamServerOnPort(port)
+				s = RunJetStreamServerOnPort(port, sd)
 				defer s.Shutdown()
 
 				mset, err = s.GlobalAccount().LookupStream(cfg.Name)
@@ -5508,10 +5836,15 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 				return
 			}
 
+			// Capture port since it was dynamic.
+			u, _ := url.Parse(s.ClientURL())
+			port, _ := strconv.Atoi(u.Port())
+			sd := s.JetStreamConfig().StoreDir
+
 			// Shutdown the server.
 			s.Shutdown()
 
-			s = RunBasicJetStreamServer()
+			s = RunJetStreamServerOnPort(port, sd)
 			defer s.Shutdown()
 
 			mset, err = s.GlobalAccount().LookupStream("foo")
@@ -5773,10 +6106,11 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 
 	restartServer := func() {
 		t.Helper()
+		sd := s.JetStreamConfig().StoreDir
 		// Stop current server.
 		s.Shutdown()
 		// Restart.
-		s = RunJetStreamServerOnPort(port)
+		s = RunJetStreamServerOnPort(port, sd)
 	}
 
 	// Restart.
@@ -6134,7 +6468,7 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 ////////////////////////////////////////
 
 func TestJetStreamPubPerf(t *testing.T) {
-	// Uncomment to run, holding place for now.
+	// Comment out to run, holding place for now.
 	t.SkipNow()
 
 	s := RunBasicJetStreamServer()
@@ -6159,7 +6493,7 @@ func TestJetStreamPubPerf(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := 2000000
+	toSend := 5000000
 	numProducers := 1
 
 	payload := []byte("Hello World")
@@ -6193,7 +6527,7 @@ func TestJetStreamPubPerf(t *testing.T) {
 }
 
 func TestJetStreamPubSubPerf(t *testing.T) {
-	// Uncomment to run, holding place for now.
+	// Comment out to run, holding place for now.
 	t.SkipNow()
 
 	s := RunBasicJetStreamServer()

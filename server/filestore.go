@@ -14,9 +14,10 @@
 package server
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -27,6 +28,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"net"
 	"os"
 	"path"
 	"sort"
@@ -226,7 +228,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// Create highway hash for message blocks. Use sha256 of directory as key.
-	key := sha256.Sum256([]byte(mdir))
+	key := sha256.Sum256([]byte(cfg.Name))
 	fs.hh, err = highwayhash.New64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
@@ -342,7 +344,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 	mb.ifn = path.Join(mdir, fmt.Sprintf(indexScan, index))
 
 	if mb.hh == nil {
-		key := sha256.Sum256([]byte(mdir))
+		key := sha256.Sum256(fs.hashKeyForBlock(index))
 		mb.hh, _ = highwayhash.New64(key[:])
 	}
 
@@ -364,7 +366,6 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 			fs.blks = append(fs.blks, mb)
 			return mb
 		}
-
 		// Fall back on the data file itself. We will keep the delete map if present.
 		mb.msgs = 0
 		mb.bytes = 0
@@ -421,6 +422,7 @@ func (fs *fileStore) recoverMsgs() error {
 	if err != nil {
 		return fmt.Errorf("storage directory not readable")
 	}
+
 	// Recover all of the msg blocks.
 	// These can come in a random order, so account for that.
 	for _, fi := range fis {
@@ -511,6 +513,12 @@ func (fs *fileStore) StorageBytesUpdate(cb func(int64)) {
 	}
 }
 
+// Helper to get hash key for specific message block.
+// Lock should be held
+func (fs *fileStore) hashKeyForBlock(index uint64) []byte {
+	return []byte(fmt.Sprintf("%s-%d", fs.cfg.Name, index))
+}
+
 // This rolls to a new append msg block.
 // Lock should be held.
 func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
@@ -542,8 +550,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.ifd = ifd
 
 	// Now do local hash.
-	// TODO(dlc) - make specific to the file vs msgDir?
-	key := sha256.Sum256([]byte(mdir))
+	key := sha256.Sum256(fs.hashKeyForBlock(index))
 	mb.hh, err = highwayhash.New64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
@@ -955,9 +962,6 @@ func (fs *fileStore) checkMsgs() []uint64 {
 		return nil
 	}
 
-	key := sha256.Sum256([]byte(mdir))
-	hh, _ := highwayhash.New64(key[:])
-
 	var bad []uint64
 
 	// Check all of the msg blocks.
@@ -967,6 +971,8 @@ func (fs *fileStore) checkMsgs() []uint64 {
 			if fp, err := os.Open(path.Join(mdir, fi.Name())); err != nil {
 				continue
 			} else {
+				key := sha256.Sum256(fs.hashKeyForBlock(index))
+				hh, _ := highwayhash.New64(key[:])
 				bad = append(bad, checkMsgBlockFile(fp, hh)...)
 				fp.Close()
 			}
@@ -1080,17 +1086,18 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	fs.wmb.Write(msg)
 
 	// Calculate hash.
-	fs.hh.Reset()
-	fs.hh.Write(hdr[4:20])
-	fs.hh.Write([]byte(subj))
-	fs.hh.Write(msg)
-	checksum := fs.hh.Sum(nil)
-	// Write to msg record.
-	fs.wmb.Write(checksum)
-	// Grab last checksum
 	mb.mu.Lock()
+	mb.hh.Reset()
+	mb.hh.Write(hdr[4:20])
+	mb.hh.Write([]byte(subj))
+	mb.hh.Write(msg)
+	checksum := mb.hh.Sum(nil)
+	// Grab last checksum
 	copy(mb.lchk[0:], checksum)
 	mb.mu.Unlock()
+
+	// Write to msg record.
+	fs.wmb.Write(checksum)
 
 	return rl, ts, nil
 }
@@ -1129,11 +1136,11 @@ func (fs *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 	wmb.Write(sm.msg)
 
 	// Calculate hash.
-	fs.hh.Reset()
-	fs.hh.Write(hdr[4:20])
-	fs.hh.Write([]byte(sm.subj))
-	fs.hh.Write(sm.msg)
-	checksum := fs.hh.Sum(nil)
+	mb.hh.Reset()
+	mb.hh.Write(hdr[4:20])
+	mb.hh.Write([]byte(sm.subj))
+	mb.hh.Write(sm.msg)
+	checksum := mb.hh.Sum(nil)
 	// Write to msg record.
 	wmb.Write(checksum)
 
@@ -1644,6 +1651,7 @@ func (mb *msgBlock) readIndexInfo() error {
 	mb.last.seq = readSeq()
 	mb.last.ts = readTimeStamp()
 	dmapLen := readCount()
+
 	// Checksum
 	copy(mb.lchk[0:], buf[bi:bi+checksumSize])
 	bi += checksumSize
@@ -1936,22 +1944,39 @@ func (fs *fileStore) Stop() error {
 
 const errFile = "errors.txt"
 
-// Stream our snapshot through zip.
-func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
+// Stream our snapshot through gzip and tar.
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeConsumers bool) {
 	defer w.Close()
-	defer zw.Close()
+
+	gzw := gzip.NewWriter(w)
+	defer gzw.Close()
+
+	tw := tar.NewWriter(gzw)
+	defer tw.Close()
+
 	defer func() {
 		fs.mu.Lock()
 		fs.sips--
 		fs.mu.Unlock()
 	}()
 
-	// We want to grab the stream and consumers to snapshot their state.
-	// We will grab the messages after that.
+	writeFile := func(name string, buf []byte) error {
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0600,
+			Size: int64(len(buf)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write(buf); err != nil {
+			return err
+		}
+		return nil
+	}
 
 	writeErr := func(err string) {
-		f, _ := zw.Create(errFile)
-		f.Write([]byte(err))
+		writeFile(errFile, []byte(err))
 	}
 
 	fs.mu.Lock()
@@ -1975,18 +2000,6 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 	}
 	fs.mu.Unlock()
 
-	writeFile := func(name string, buf []byte) error {
-		f, err := zw.Create(name)
-		if err != nil {
-			return err
-		}
-		_, err = f.Write(meta)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-
 	// Meta first.
 	if writeFile(JetStreamMetaFile, meta) != nil {
 		return
@@ -1995,12 +2008,9 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 		return
 	}
 
-	// FIXME(dlc) - Do templates
-
 	// Now do messages themselves.
 	fs.mu.Lock()
 	lmb := fs.lmb
-	blks := fs.blks
 	fs.mu.Unlock()
 
 	// Can't use join path here, zip only recognizes relative paths with forward slashes.
@@ -2036,6 +2046,12 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 			return
 		}
 	}
+
+	// Bail if no consumers requested.
+	if !includeConsumers {
+		return
+	}
+
 	// Do consumers' state last.
 	fs.mu.Lock()
 	cfs := fs.cfs
@@ -2066,31 +2082,43 @@ func (fs *fileStore) streamSnapshot(w io.Closer, zw *zip.Writer) {
 		o.mu.Unlock()
 
 		// Write all the consumer files.
-		if writeFile(odirPre+"/"+JetStreamMetaFile, meta) != nil {
+		if writeFile(path.Join(odirPre, JetStreamMetaFile), meta) != nil {
 			return
 		}
-		if writeFile(odirPre+"/"+JetStreamMetaFileSum, sum) != nil {
+		if writeFile(path.Join(odirPre, JetStreamMetaFileSum), sum) != nil {
 			return
 		}
-		writeFile(odirPre+"/"+consumerState, state)
+		writeFile(path.Join(odirPre, consumerState), state)
 	}
 }
 
 // Create a snapshot of this stream and its consumer's state along with messages.
-func (fs *fileStore) Snapshot() (io.ReadCloser, error) {
+func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
 		return nil, ErrStoreClosed
 	}
+	// Only allow one at a time.
+	if fs.sips > 0 {
+		fs.mu.Unlock()
+		return nil, ErrStoreSnapshotInProgress
+	}
 	// Mark us as snapshotting
 	fs.sips += 1
+	blks := fs.blks
+	blkSize := int(fs.fcfg.BlockSize)
 	fs.mu.Unlock()
 
-	pr, pw := io.Pipe()
-	go fs.streamSnapshot(pw, zip.NewWriter(pw))
+	pr, pw := net.Pipe()
+	// Set a write deadline here to protect ourselves.
+	if deadline > 0 {
+		pw.SetWriteDeadline(time.Now().Add(deadline))
+	}
+	// Stream in separate Go routine.
+	go fs.streamSnapshot(pw, blks, includeConsumers)
 
-	return pr, nil
+	return &SnapshotResult{pr, blkSize, len(blks)}, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2136,7 +2164,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		fch:  make(chan struct{}),
 		qch:  make(chan struct{}),
 	}
-	key := sha256.Sum256([]byte(odir))
+	key := sha256.Sum256([]byte(fs.cfg.Name + "/" + name))
 	hh, err := highwayhash.New64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
@@ -2466,7 +2494,7 @@ type templateFileStore struct {
 
 func newTemplateFileStore(storeDir string) *templateFileStore {
 	tdir := path.Join(storeDir, tmplsDir)
-	key := sha256.Sum256([]byte(tdir))
+	key := sha256.Sum256([]byte("templates"))
 	hh, err := highwayhash.New64(key[:])
 	if err != nil {
 		return nil

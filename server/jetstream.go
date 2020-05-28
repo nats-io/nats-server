@@ -424,9 +424,10 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.Noticef("  Recovering JetStream state for account %q", a.Name)
 
 	// Check templates first since messsage sets will need proper ownership.
+	// FIXME(dlc) - Make this consistent.
 	tdir := path.Join(jsa.storeDir, tmplsDir)
 	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
-		key := sha256.Sum256([]byte(tdir))
+		key := sha256.Sum256([]byte("templates"))
 		hh, err := highwayhash.New64(key[:])
 		if err != nil {
 			return err
@@ -473,7 +474,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	fis, _ := ioutil.ReadDir(sdir)
 	for _, fi := range fis {
 		mdir := path.Join(sdir, fi.Name())
-		key := sha256.Sum256([]byte(path.Join(mdir, msgDir)))
+		key := sha256.Sum256([]byte(fi.Name()))
 		hh, err := highwayhash.New64(key[:])
 		if err != nil {
 			return err
@@ -576,6 +577,9 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			}
 		}
 	}
+
+	// Make sure to cleanup and old remaining snapshots.
+	os.RemoveAll(path.Join(jsa.storeDir, snapsDir))
 
 	s.Noticef("JetStream state for account %q recovered", a.Name)
 
@@ -921,7 +925,8 @@ func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
 	if storeDir != "" {
 		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
 	} else {
-		jsc.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+		tdir, _ := ioutil.TempDir(os.TempDir(), "nats-jetstream-storedir-")
+		jsc.StoreDir = filepath.Join(tdir, JetStreamStoreDir)
 	}
 	jsc.MaxStore = JetStreamMaxStoreDefault
 	// Estimate to 75% of total memory if we can determine system memory.

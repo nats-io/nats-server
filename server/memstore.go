@@ -15,7 +15,6 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"math/rand"
 	"sort"
 	"sync"
@@ -382,7 +381,7 @@ func (ms *memStore) ConsumerStore(_ string, _ *ConsumerConfig) (ConsumerStore, e
 	return &consumerMemStore{ms}, nil
 }
 
-func (ms *memStore) Snapshot() (io.ReadCloser, error) {
+func (ms *memStore) Snapshot(_ time.Duration, _ bool) (*SnapshotResult, error) {
 	return nil, fmt.Errorf("no impl")
 }
 

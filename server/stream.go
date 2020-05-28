@@ -14,10 +14,16 @@
 package server
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"math"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -515,6 +521,13 @@ func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	return sub, nil
 }
 
+// Helper for unlocked stream.
+func (mset *Stream) subscribeInternalUnlocked(subject string, cb msgHandler) (*subscription, error) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return mset.subscribeInternal(subject, cb)
+}
+
 // This will unsubscribe us from the exact subject given.
 // We do not currently track the subs so do not have the sid.
 // This should be called only on an update.
@@ -551,6 +564,12 @@ func (mset *Stream) unsubscribe(sub *subscription) {
 		return
 	}
 	mset.client.unsubscribe(mset.client.acc, sub, true, true)
+}
+
+func (mset *Stream) unsubscribeUnlocked(sub *subscription) {
+	mset.mu.Lock()
+	mset.unsubscribe(sub)
+	mset.mu.Unlock()
 }
 
 func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
@@ -914,4 +933,167 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 			mset.store.RemoveMsg(seq)
 		}
 	}
+}
+
+// Snapshot creates a snapshot for the stream and possibly consumers.
+func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
+	mset.mu.Lock()
+	if mset.client == nil || mset.store == nil {
+		mset.mu.Unlock()
+		return nil, fmt.Errorf("invalid stream")
+	}
+	store := mset.store
+	var obs []*Consumer
+	for _, o := range mset.consumers {
+		obs = append(obs, o)
+	}
+	mset.mu.Unlock()
+
+	// Make sure to sync their state.
+	for _, o := range obs {
+		o.writeState()
+	}
+
+	return store.Snapshot(deadline, includeConsumers)
+}
+
+const snapsDir = "__snapshots__"
+
+// RestoreStream will restore a stream from a snapshot.
+func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
+	_, jsa, err := a.checkForJetStream()
+	if err != nil {
+		return nil, err
+	}
+
+	sd := path.Join(jsa.storeDir, snapsDir)
+	defer os.RemoveAll(sd)
+
+	if _, err := os.Stat(sd); os.IsNotExist(err) {
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
+		}
+	}
+	sdir, err := ioutil.TempDir(sd, "snap-")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(sdir); os.IsNotExist(err) {
+		if err := os.MkdirAll(sdir, 0755); err != nil {
+			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
+		}
+	}
+
+	gzr, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, err
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break // End of snapshot
+		}
+		if err != nil {
+			return nil, err
+		}
+		fpath := path.Join(sdir, filepath.Clean(hdr.Name))
+		pdir := filepath.Dir(fpath)
+		os.MkdirAll(pdir, 0750)
+		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return nil, err
+		}
+		_, err = io.Copy(fd, tr)
+		fd.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Check metadata
+	var cfg FileStreamInfo
+	b, err := ioutil.ReadFile(path.Join(sdir, JetStreamMetaFile))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, err
+	}
+	// See if names match
+	if cfg.Name != stream {
+		return nil, fmt.Errorf("stream name [%q] does not match snapshot stream [%q]", stream, cfg.Name)
+	}
+
+	// See if this stream already exists.
+	if _, err := a.LookupStream(cfg.Name); err == nil {
+		return nil, fmt.Errorf("stream [%q] already exists", cfg.Name)
+	}
+	// Move into the correct place here.
+	ndir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
+	if err := os.Rename(sdir, ndir); err != nil {
+		return nil, err
+	}
+	if cfg.Template != _EMPTY_ {
+		if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
+			return nil, err
+		}
+	}
+	mset, err := a.AddStream(&cfg.StreamConfig)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Created.IsZero() {
+		mset.setCreated(cfg.Created)
+	}
+
+	// Now do consumers.
+	odir := path.Join(ndir, consumerDir)
+	ofis, _ := ioutil.ReadDir(odir)
+	for _, ofi := range ofis {
+		metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
+		metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+		if _, err := os.Stat(metafile); os.IsNotExist(err) {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+		buf, err := ioutil.ReadFile(metafile)
+		if err != nil {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+		if _, err := os.Stat(metasum); os.IsNotExist(err) {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+		var cfg FileConsumerInfo
+		if err := json.Unmarshal(buf, &cfg); err != nil {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+		isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
+		if isEphemeral {
+			// This is an ephermal consumer and this could fail on restart until
+			// the consumer can reconnect. We will create it as a durable and switch it.
+			cfg.ConsumerConfig.Durable = ofi.Name()
+		}
+		obs, err := mset.AddConsumer(&cfg.ConsumerConfig)
+		if err != nil {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+		if isEphemeral {
+			obs.switchToEphemeral()
+		}
+		if !cfg.Created.IsZero() {
+			obs.setCreated(cfg.Created)
+		}
+		if err := obs.readStoredState(); err != nil {
+			mset.Delete()
+			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
+		}
+	}
+	return mset, nil
 }
