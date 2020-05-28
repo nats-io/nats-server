@@ -780,7 +780,7 @@ func TestSystemAccountConnectionLimits(t *testing.T) {
 		defer ncb1.Close()
 	}
 
-	checkFor(t, 1*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
 		total := sa.NumClients() + sb.NumClients()
 		if total > int(nac.Limits.Conn) {
 			return fmt.Errorf("Expected only %d connections, was allowed to connect %d", nac.Limits.Conn, total)
