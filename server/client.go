@@ -2740,13 +2740,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 	client.outBytes += msgSize
 
 	// Check for internal subscriptions.
-	if client.kind == SYSTEM || client.kind == JETSTREAM || client.kind == ACCOUNT {
-		s := client.srv
+	if sub.icb != nil || client.kind == SYSTEM || client.kind == JETSTREAM || client.kind == ACCOUNT {
 		client.mu.Unlock()
-		if sub.icb == nil {
-			s.Debugf("Received internal callback with no registered handler")
-			return false
-		}
 		// Internal account clients are for service imports and need the
 		// complete raw msg with '\r\n'.
 		if client.kind == ACCOUNT {

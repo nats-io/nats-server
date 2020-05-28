@@ -63,7 +63,7 @@ type StreamStore interface {
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
-	Snapshot(deadline time.Duration, includeConsumers bool) (io.ReadCloser, error)
+	Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error)
 }
 
 // RetentionPolicy determines how messages in a set are retained.
@@ -99,6 +99,13 @@ type StreamState struct {
 	LastSeq   uint64    `json:"last_seq"`
 	LastTime  time.Time `json:"last_ts"`
 	Consumers int       `json:"consumer_count"`
+}
+
+// SnapshotResult contains information about the snapshot.
+type SnapshotResult struct {
+	Reader  io.ReadCloser
+	BlkSize int
+	NumBlks int
 }
 
 // ConsumerStore stores state on consumers for streams.

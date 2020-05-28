@@ -1120,7 +1120,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error creating snapshot")
 		}
-		snapshot, err := ioutil.ReadAll(r)
+		snapshot, err := ioutil.ReadAll(r.Reader)
 		if err != nil {
 			t.Fatalf("Error reading snapshot")
 		}
@@ -1212,7 +1212,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
 
-	r, err := fs.Snapshot(5*time.Second, true)
+	sr, err := fs.Snapshot(5*time.Second, true)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
@@ -1224,7 +1224,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	}
 
 	// Now make sure we can do these when we close the reader and release the snapshot condition.
-	r.Close()
+	sr.Reader.Close()
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		if _, err := fs.RemoveMsg(122); err != nil {
 			return fmt.Errorf("Got an error on remove after snapshot: %v", err)
@@ -1233,19 +1233,19 @@ func TestFileStoreSnapshot(t *testing.T) {
 	})
 
 	// Make sure if we do not read properly then it will close the writer and report an error.
-	r, err = fs.Snapshot(10*time.Millisecond, false)
+	sr, err = fs.Snapshot(10*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
 	var buf [32]byte
 
-	if n, err := r.Read(buf[:]); err != nil || n == 0 {
+	if n, err := sr.Reader.Read(buf[:]); err != nil || n == 0 {
 		t.Fatalf("Expected to read beginning, got %v and %d", err, n)
 	}
 	// Cause snapshot to timeout.
 	time.Sleep(20 * time.Millisecond)
 	// Read again should fail
-	if _, err := r.Read(buf[:]); err != io.EOF {
+	if _, err := sr.Reader.Read(buf[:]); err != io.EOF {
 		t.Fatalf("Expected read to produce an error, got none")
 	}
 }

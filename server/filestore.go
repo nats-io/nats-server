@@ -1945,7 +1945,7 @@ func (fs *fileStore) Stop() error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through gzip and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeConsumers bool) {
 	defer w.Close()
 
 	gzw := gzip.NewWriter(w)
@@ -2011,7 +2011,6 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 	// Now do messages themselves.
 	fs.mu.Lock()
 	lmb := fs.lmb
-	blks := fs.blks
 	fs.mu.Unlock()
 
 	// Can't use join path here, zip only recognizes relative paths with forward slashes.
@@ -2094,7 +2093,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 }
 
 // Create a snapshot of this stream and its consumer's state along with messages.
-func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (io.ReadCloser, error) {
+func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -2107,15 +2106,19 @@ func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (io
 	}
 	// Mark us as snapshotting
 	fs.sips += 1
+	blks := fs.blks
+	blkSize := int(fs.fcfg.BlockSize)
 	fs.mu.Unlock()
 
 	pr, pw := net.Pipe()
 	// Set a write deadline here to protect ourselves.
-	pw.SetWriteDeadline(time.Now().Add(deadline))
+	if deadline > 0 {
+		pw.SetWriteDeadline(time.Now().Add(deadline))
+	}
 	// Stream in separate Go routine.
-	go fs.streamSnapshot(pw, includeConsumers)
+	go fs.streamSnapshot(pw, blks, includeConsumers)
 
-	return pr, nil
+	return &SnapshotResult{pr, blkSize, len(blks)}, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////

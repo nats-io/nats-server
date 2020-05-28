@@ -1289,6 +1289,27 @@ func (a *Account) internalClient() *client {
 	return a.ic
 }
 
+// Internal account scoped subscriptions.
+func (a *Account) subscribeInternal(c *client, subject string, cb msgHandler) (*subscription, error) {
+	a.mu.Lock()
+	sid := strconv.FormatUint(a.isid+1, 10)
+	a.isid++
+	a.mu.Unlock()
+
+	// This will happen in parsing when the account has not been properly setup.
+	if c == nil {
+		return nil, fmt.Errorf("no internal account client")
+	}
+
+	sub, err := c.processSub([]byte(subject+" "+sid), true)
+	if err != nil {
+		return nil, err
+	}
+
+	sub.icb = cb
+	return sub, nil
+}
+
 // This will add an account subscription that matches the "from" from a service import entry.
 func (a *Account) addServiceImportSub(si *serviceImport) error {
 	a.mu.Lock()

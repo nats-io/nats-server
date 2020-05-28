@@ -521,6 +521,13 @@ func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	return sub, nil
 }
 
+// Helper for unlocked stream.
+func (mset *Stream) subscribeInternalUnlocked(subject string, cb msgHandler) (*subscription, error) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return mset.subscribeInternal(subject, cb)
+}
+
 // This will unsubscribe us from the exact subject given.
 // We do not currently track the subs so do not have the sid.
 // This should be called only on an update.
@@ -557,6 +564,12 @@ func (mset *Stream) unsubscribe(sub *subscription) {
 		return
 	}
 	mset.client.unsubscribe(mset.client.acc, sub, true, true)
+}
+
+func (mset *Stream) unsubscribeUnlocked(sub *subscription) {
+	mset.mu.Lock()
+	mset.unsubscribe(sub)
+	mset.mu.Unlock()
 }
 
 func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
@@ -922,8 +935,8 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 	}
 }
 
-// Snapshot creates a snapshot for the stream.
-func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (io.ReadCloser, error) {
+// Snapshot creates a snapshot for the stream and possibly consumers.
+func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
 	mset.mu.Lock()
 	if mset.client == nil || mset.store == nil {
 		mset.mu.Unlock()
@@ -947,7 +960,7 @@ func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (io.
 const snapsDir = "__snapshots__"
 
 // RestoreStream will restore a stream from a snapshot.
-func (a *Account) RestoreStream(r io.Reader) (*Stream, error) {
+func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
 	_, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -1009,6 +1022,11 @@ func (a *Account) RestoreStream(r io.Reader) (*Stream, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, err
 	}
+	// See if names match
+	if cfg.Name != stream {
+		return nil, fmt.Errorf("stream name [%q] does not match snapshot stream [%q]", stream, cfg.Name)
+	}
+
 	// See if this stream already exists.
 	if _, err := a.LookupStream(cfg.Name); err == nil {
 		return nil, fmt.Errorf("stream [%q] already exists", cfg.Name)

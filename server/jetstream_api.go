@@ -17,7 +17,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,7 +34,7 @@ const (
 	// Will return JSON response.
 	JSApiAccountInfo = "$JS.API.INFO"
 
-	// JSApiCreateTemplate is the endpoint to create new stream templates.
+	// JSApiTemplateCreate is the endpoint to create new stream templates.
 	// Will return JSON response.
 	JSApiTemplateCreate  = "$JS.API.STREAM.TEMPLATE.CREATE.*"
 	JSApiTemplateCreateT = "$JS.API.STREAM.TEMPLATE.CREATE.%s"
@@ -46,17 +48,17 @@ const (
 	JSApiTemplateInfo  = "$JS.API.STREAM.TEMPLATE.INFO.*"
 	JSApiTemplateInfoT = "$JS.API.STREAM.TEMPLATE.INFO.%s"
 
-	// JSApiDeleteTemplate is the endpoint to delete stream templates.
+	// JSApiTemplateDelete is the endpoint to delete stream templates.
 	// Will return JSON response.
 	JSApiTemplateDelete  = "$JS.API.STREAM.TEMPLATE.DELETE.*"
 	JSApiTemplateDeleteT = "$JS.API.STREAM.TEMPLATE.DELETE.%s"
 
-	// JSApiCreateStream is the endpoint to create new streams.
+	// JSApiStreamCreate is the endpoint to create new streams.
 	// Will return JSON response.
 	JSApiStreamCreate  = "$JS.API.STREAM.CREATE.*"
 	JSApiStreamCreateT = "$JS.API.STREAM.CREATE.%s"
 
-	// JSApiUpdateStream is the endpoint to update existing streams.
+	// JSApiStreamUpdate is the endpoint to update existing streams.
 	// Will return JSON response.
 	JSApiStreamUpdate  = "$JS.API.STREAM.UPDATE.*"
 	JSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s"
@@ -72,7 +74,7 @@ const (
 	JSApiStreamInfo  = "$JS.API.STREAM.INFO.*"
 	JSApiStreamInfoT = "$JS.API.STREAM.INFO.%s"
 
-	// JSApiDeleteStream is the endpoint to delete streams.
+	// JSApiStreamDelete is the endpoint to delete streams.
 	// Will return JSON response.
 	JSApiStreamDelete  = "$JS.API.STREAM.DELETE.*"
 	JSApiStreamDeleteT = "$JS.API.STREAM.DELETE.%s"
@@ -81,6 +83,18 @@ const (
 	// Will return JSON response.
 	JSApiStreamPurge  = "$JS.API.STREAM.PURGE.*"
 	JSApiStreamPurgeT = "$JS.API.STREAM.PURGE.%s"
+
+	// JSApiStreamSnapshot is the endpoint to snapshot streams.
+	// Will return a stream of chunks with a nil chunk as EOF to
+	// the deliver subject. Caller should respond to each chunk
+	// with a nil body response for ack flow.
+	JSApiStreamSnapshot  = "$JS.API.STREAM.SNAPSHOT.*"
+	JSApiStreamSnapshotT = "$JS.API.STREAM.SNAPSHOT.%s"
+
+	// JSApiStreamRestore is the endpoint to restore a stream from a snapshot.
+	// Caller should resond to each chunk with a nil body response.
+	JSApiStreamRestore  = "$JS.API.STREAM.RESTORE.*"
+	JSApiStreamRestoreT = "$JS.API.STREAM.RESTORE.%s"
 
 	// JSApiDeleteMsg is the endpoint to delete messages from a stream.
 	// Will return JSON response.
@@ -287,6 +301,35 @@ type JSApiMsgDeleteResponse struct {
 
 const JSApiMsgDeleteResponseType = "io.nats.jetstream.api.v1.stream_msg_delete_response"
 
+type JSApiStreamSnapshotRequest struct {
+	// Subject to deliver the chunks to for the snapshot.
+	DeliverSubject string `json:"deliver_subject"`
+	// Do not include consumers in the snapshot.
+	NoConsumers bool `json:"no_consumers,omitempty"`
+	// Optional chunk size preference. Otherwise server selects.
+	ChunkSize int `json:"chunk_size,omitempty"`
+}
+
+// JSApiStreamSnapshotResponse is the direct response to the snapshot request.
+type JSApiStreamSnapshotResponse struct {
+	ApiResponse
+	// Estimate of number of blocks for the messages.
+	NumBlks int `json:"num_blks"`
+	// Block size limit as specified by the stream.
+	BlkSize int `json:"blk_size"`
+}
+
+const JSApiStreamSnapshotResponseType = "io.nats.jetstream.api.v1.stream_snapshot_response"
+
+// JSApiStreamRestoreResponse is the direct response to the restore request.
+type JSApiStreamRestoreResponse struct {
+	ApiResponse
+	// Subject to deliver the chunks to for the snapshot restore.
+	DeliverSubject string `json:"deliver_subject"`
+}
+
+const JSApiStreamRestoreResponseType = "io.nats.jetstream.api.v1.stream_restore_response"
+
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
 	Seq uint64 `json:"seq"`
@@ -406,6 +449,8 @@ var allJsExports = []string{
 	JSApiStreamInfo,
 	JSApiStreamDelete,
 	JSApiStreamPurge,
+	JSApiStreamSnapshot,
+	JSApiStreamRestore,
 	JSApiMsgDelete,
 	JSApiMsgGet,
 	JSApiConsumerCreate,
@@ -433,6 +478,8 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreamInfo, s.jsStreamInfoRequest},
 		{JSApiStreamDelete, s.jsStreamDeleteRequest},
 		{JSApiStreamPurge, s.jsStreamPurgeRequest},
+		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
+		{JSApiStreamRestore, s.jsStreamRestoreRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
 		{JSApiMsgGet, s.jsMsgGetRequest},
 		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
@@ -1031,6 +1078,193 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	resp.Purged = mset.Purge()
 	resp.Success = true
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to restore a stream.
+func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c.acc == nil {
+		return
+	}
+	acc := c.acc
+
+	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if !isEmptyRequest(msg) {
+		resp.Error = jsNotEmptyRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	stream := streamNameFromSubject(subject)
+	if _, err := acc.LookupStream(stream); err == nil {
+		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream [%q] already exists", stream)}
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	tfile, err := ioutil.TempFile("", "jetstream-restore-")
+	if err != nil {
+		resp.Error = &ApiError{Code: 500, Description: "jetstream unable to open temp storage for restore"}
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Create our internal subscription to accept the snapshot.
+	restoreSubj := fmt.Sprintf("_restore_.%s", nuid.Next())
+
+	// FIXME(dlc) - Can't recover well here if something goes wrong. Could use channels and at least time
+	// things out. Note that this is tied to the requesting client, so if it is a tool this goes away when
+	// the client does. Only thing leaking here is the sub on strange failure.
+	acc.subscribeInternal(c, restoreSubj, func(sub *subscription, c *client, _, _ string, msg []byte) {
+		if len(msg) == 0 {
+			tfile.Seek(0, 0)
+			// TODO(dlc) - no way right now to communicate back.
+			acc.RestoreStream(stream, tfile)
+			tfile.Close()
+			os.Remove(tfile.Name())
+			c.processUnsub(sub.sid)
+			return
+		}
+		// Append chunk to temp file.
+		tfile.Write(msg)
+	})
+
+	resp.DeliverSubject = restoreSubj
+	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Process a snapshot request.
+func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c.acc == nil {
+		return
+	}
+	acc := c.acc
+
+	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	stream := streamNameFromSubject(subject)
+	mset, err := acc.LookupStream(stream)
+	if err != nil {
+		resp.Error = jsNotFoundError(err)
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiStreamSnapshotRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if !IsValidSubject(req.DeliverSubject) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	sr, err := mset.Snapshot(0, !req.NoConsumers)
+	if err != nil {
+		resp.Error = jsError(err)
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	resp.NumBlks = sr.NumBlks
+	resp.BlkSize = sr.BlkSize
+	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+
+	// Now do the real streaming in a separate go routine.
+	go s.streamSnapshot(c, mset, sr, &req)
+}
+
+const defaultSnapshotChunkSize = 64 * 1024
+
+// streamSnapshot will stream out our snapshot to the reply subject.
+func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+	chunkSize := req.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = defaultSnapshotChunkSize
+	}
+	// Setup for the chunk stream.
+	acc := c.acc
+	reply := req.DeliverSubject
+	r := sr.Reader
+	defer r.Close()
+
+	// Check interest for the snapshot deliver subject.
+	inch := make(chan bool, 1)
+	acc.sl.RegisterNotification(req.DeliverSubject, inch)
+	defer acc.sl.ClearNotification(req.DeliverSubject, inch)
+	hasInterest := <-inch
+	if !hasInterest {
+		// Allow 2 seconds or so for interest to show up.
+		select {
+		case <-inch:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	// Create our ack flow handler.
+	// This is very simple for now.
+	acks := make(chan struct{}, 1)
+	acks <- struct{}{}
+
+	ackSubj := fmt.Sprintf("_snapshot_.%s", nuid.Next())
+	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj, func(_ *subscription, _ *client, _, _ string, _ []byte) {
+		acks <- struct{}{}
+	})
+	defer mset.unsubscribeUnlocked(ackSub)
+
+	// TODO(dlc) - Add in NATS-Chunked-Sequence header
+
+	// Since this is a pipe we will gather up reads and buffer internally before sending.
+	// bufio will not help here.
+	var frag [512]byte
+	fsize := len(frag)
+	if chunkSize < fsize {
+		fsize = chunkSize
+	}
+	chunk := make([]byte, 0, chunkSize)
+
+	for {
+		n, err := r.Read(frag[:fsize])
+		// Treat all errors the same for now, just break out.
+		// TODO(dlc) - when we use headers do error if not io.EOF
+		if err != nil {
+			break
+		}
+		// Check if we should send.
+		if len(chunk)+n > chunkSize {
+			// Wait on acks for flow control.
+			// Wait up to 10ms for now if none received.
+			select {
+			case <-acks:
+			case <-inch: // Lost interest
+				goto done
+			case <-time.After(10 * time.Millisecond):
+			}
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackSubj, chunk, nil, 0}
+			// Can't reuse
+			chunk = make([]byte, 0, chunkSize)
+		}
+		chunk = append(chunk, frag[:n]...)
+	}
+done:
+	// Send last chunk and nil as EOF
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, chunk, nil, 0}
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, 0}
 }
 
 // Request to create a durable consumer.

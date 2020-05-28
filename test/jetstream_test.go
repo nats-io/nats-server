@@ -2628,17 +2628,18 @@ func TestJetStreamSnapshots(t *testing.T) {
 	// Snapshot state of the stream and consumers.
 	info := info{mset.Config(), mset.State(), obs}
 
-	zr, err := mset.Snapshot(5*time.Second, true)
+	sr, err := mset.Snapshot(5*time.Second, true)
 	if err != nil {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
+	zr := sr.Reader
 	snapshot, err := ioutil.ReadAll(zr)
 	if err != nil {
 		t.Fatalf("Error reading snapshot")
 	}
 	// Try to restore from snapshot with current stream present, should error.
 	r := bytes.NewReader(snapshot)
-	if _, err := acc.RestoreStream(r); err == nil {
+	if _, err := acc.RestoreStream(mname, r); err == nil {
 		t.Fatalf("Expected an error trying to restore existing stream")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("Incorrect error received: %v", err)
@@ -2648,7 +2649,13 @@ func TestJetStreamSnapshots(t *testing.T) {
 	mset.Delete()
 	r.Reset(snapshot)
 
-	mset, err = acc.RestoreStream(r)
+	// Now send in wrong name
+	if _, err := acc.RestoreStream("foo", r); err == nil {
+		t.Fatalf("Expected an error trying to restore stream with wrong name")
+	}
+
+	r.Reset(snapshot)
+	mset, err = acc.RestoreStream(mname, r)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2685,7 +2692,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	}
 	acc = s2.GlobalAccount()
 	r.Reset(snapshot)
-	mset, err = acc.RestoreStream(r)
+	mset, err = acc.RestoreStream(mname, r)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2699,8 +2706,179 @@ func TestJetStreamSnapshots(t *testing.T) {
 	defer nc2.Close()
 
 	// Make sure we can read messages.
-	if _, err := nc2.Request(o.RequestNextMsgSubject(), nil, time.Second); err != nil {
+	if _, err := nc2.Request(o.RequestNextMsgSubject(), nil, 5*time.Second); err != nil {
 		t.Fatalf("Unexpected error getting next message: %v", err)
+	}
+}
+
+func TestJetStreamSnapshotsAPI(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MY-STREAM"
+	subjects := []string{"foo", "bar", "baz"}
+	cfg := server.StreamConfig{
+		Name:     mname,
+		Storage:  server.FileStorage,
+		Subjects: subjects,
+		MaxMsgs:  1000,
+	}
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStreamWithStore(&cfg, &server.FileStoreConfig{BlockSize: 128})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := rand.Intn(100) + 1
+	for i := 1; i <= toSend; i++ {
+		msg := fmt.Sprintf("Hello World %d", i)
+		subj := subjects[rand.Intn(len(subjects))]
+		sendStreamMsg(t, nc, subj, msg)
+	}
+
+	o, err := mset.AddConsumer(workerModeConfig("WQ"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now grab some messages.
+	toReceive := rand.Intn(toSend) + 1
+	for r := 0; r < toReceive; r++ {
+		resp, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp != nil {
+			resp.Respond(nil)
+		}
+	}
+
+	// Make sure we get proper error for non-existent request, streams,etc,
+	rmsg, err := nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "foo"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	var resp server.JSApiStreamSnapshotResponse
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	sreq := &server.JSApiStreamSnapshotRequest{}
+	req, _ := json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "foo"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 404 || resp.Error.Description != "stream not found" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	req, _ = json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	// Set delivery subject, do not subscribe yet. Want this to be an ok pattern.
+	sreq.DeliverSubject = nats.NewInbox()
+	// Just for test, usually left alone.
+	sreq.ChunkSize = 512
+	req, _ = json.Marshal(sreq)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error == nil || resp.Error.Code != 400 || resp.Error.Description != "bad request" {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	// Setup to process snapshot chunks.
+	var snapshot []byte
+	done := make(chan bool)
+
+	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+		// EOF
+		if len(m.Data) == 0 {
+			m.Sub.Unsubscribe()
+			done <- true
+			return
+		}
+		// Could be writing to a file here too.
+		snapshot = append(snapshot, m.Data...)
+		// Flow ack
+		m.Respond(nil)
+	})
+	defer sub.Unsubscribe()
+
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
+	}
+
+	// Now make sure this snapshot is legit.
+
+	var rresp server.JSApiStreamRestoreResponse
+
+	// Make sure we get an error since stream still exists.
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error == nil || rresp.Error.Code != 400 || !strings.Contains(rresp.Error.Description, "already exists") {
+		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
+	}
+
+	// Grab state for comparison.
+	state := mset.State()
+	// Delete this stream.
+	mset.Delete()
+
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+	r := bytes.NewReader(snapshot)
+	// Can be anysize message.
+	var chunk [512]byte
+	for {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		nc.Publish(rresp.DeliverSubject, chunk[:n])
+	}
+	nc.Publish(rresp.DeliverSubject, nil)
+	nc.Flush()
+
+	mset, err = acc.LookupStream(mname)
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", mname)
+	}
+	if mset.State() != state {
+		t.Fatalf("Did not match states, %+v vs %+v", mset.State(), state)
 	}
 }
 
