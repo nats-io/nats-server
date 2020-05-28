@@ -274,7 +274,42 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) {
 	a.strack[m.Server.ID] = sconns{conns: int32(m.Conns), leafs: int32(m.LeafNodes)}
 	a.nrclients += int32(m.Conns) - prev.conns
 	a.nrleafs += int32(m.LeafNodes) - prev.leafs
+
+	mtce := a.mconns != jwt.NoLimit && (len(a.clients)-int(a.sysclients)+int(a.nrclients) > int(a.mconns))
+	// If we are over here some have snuck in and we need to rebalance.
+	// All others will probably be doing the same thing but better to be
+	// conservative and bit harsh here. Clients will reconnect if we over compensate.
+	var clients []*client
+	if mtce {
+		clients = make([]*client, 0, len(a.clients))
+		for c := range a.clients {
+			clients = append(clients, c)
+		}
+		sort.Slice(clients, func(i, j int) bool {
+			return clients[i].start.After(clients[j].start)
+		})
+		over := (len(a.clients) - int(a.sysclients) + int(a.nrclients)) - int(a.mconns)
+		if over < len(clients) {
+			clients = clients[:over]
+		}
+	}
+	// Now check leafnodes.
+	mtlce := a.mleafs != jwt.NoLimit && (a.nleafs+a.nrleafs > a.mleafs)
+	if mtlce {
+		// Take ones from the end.
+		leafs := a.lleafs
+		over := int(a.nleafs + a.nrleafs - a.mleafs)
+		if over < len(leafs) {
+			leafs = leafs[len(leafs)-over:]
+		}
+		clients = append(clients, leafs...)
+	}
 	a.mu.Unlock()
+
+	// If we have exceeded our max clients this will be populated.
+	for _, c := range clients {
+		c.maxAccountConnExceeded()
+	}
 }
 
 // Removes tracking for a remote server that has shutdown.
@@ -373,13 +408,13 @@ func (a *Account) numLocalLeafNodes() int {
 
 // MaxTotalConnectionsReached returns if we have reached our limit for number of connections.
 func (a *Account) MaxTotalConnectionsReached() bool {
-	var mtc bool
+	var mtce bool
 	a.mu.RLock()
 	if a.mconns != jwt.NoLimit {
-		mtc = len(a.clients)-int(a.sysclients)+int(a.nrclients) >= int(a.mconns)
+		mtce = len(a.clients)-int(a.sysclients)+int(a.nrclients) >= int(a.mconns)
 	}
 	a.mu.RUnlock()
-	return mtc
+	return mtce
 }
 
 // MaxActiveConnections return the set limit for the account system
