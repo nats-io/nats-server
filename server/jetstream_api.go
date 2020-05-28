@@ -161,8 +161,11 @@ const (
 	// JSMetricConsumerAckPre is a metric containing ack latency.
 	JSMetricConsumerAckPre = "$JS.EVENT.METRIC.CONSUMER.ACK"
 
-	// JetStreamAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
+	// JSAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
 	JSAdvisoryConsumerMaxDeliveryExceedPre = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES"
+
+	// JSAdvisoryConsumerMsgTerminatedPre is a notification published when a message has been terminated.
+	JSAdvisoryConsumerMsgTerminatedPre = "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED"
 
 	// JSAdvisoryStreamCreatedPre notification that a stream was created
 	JSAdvisoryStreamCreatedPre = "$JS.EVENT.ADVISORY.STREAM.CREATED"
@@ -179,7 +182,7 @@ const (
 	// JSAdvisoryConsumerDeletedPre notification that a template deleted
 	JSAdvisoryConsumerDeletedPre = "$JS.EVENT.ADVISORY.CONSUMER.DELETED"
 
-	// JetStreamAPIAuditAdvisory is a notification about JetStream API access.
+	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )

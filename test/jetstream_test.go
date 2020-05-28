@@ -2113,6 +2113,109 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	}
 }
 
+func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_WQ", Storage: server.MemoryStorage, Retention: server.WorkQueuePolicy}},
+		{"FileStore", &server.StreamConfig{Name: "MY_WQ", Storage: server.FileStorage, Retention: server.WorkQueuePolicy}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Now load up some messages.
+			toSend := 22
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
+			}
+			state := mset.State()
+			if state.Msgs != uint64(toSend) {
+				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
+			}
+
+			ackWait := 25 * time.Millisecond
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "PBO", AckPolicy: server.AckExplicit, AckWait: ackWait})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			getMsg := func(sseq, dseq int) *nats.Msg {
+				t.Helper()
+				m, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				rsseq, rdseq, _, _ := o.ReplyInfo(m.Reply)
+				if rdseq != uint64(dseq) {
+					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
+				}
+				if rsseq != uint64(sseq) {
+					t.Fatalf("Expected store sequence of %d , got %d", sseq, rsseq)
+				}
+				return m
+			}
+
+			// Make sure we get the correct advisory
+			sub, _ := nc.SubscribeSync(server.JSAdvisoryConsumerMsgTerminatedPre + ".>")
+			defer sub.Unsubscribe()
+
+			getMsg(1, 1)
+			// Now wait past ackWait
+			time.Sleep(ackWait * 2)
+
+			// We should get 1 back.
+			m := getMsg(1, 2)
+			// Now terminate
+			m.Respond(server.AckTerm)
+			time.Sleep(ackWait * 2)
+
+			// We should get 2 here, not 1 since we have indicated we wanted to terminate.
+			getMsg(2, 3)
+
+			// Check advisory was delivered.
+			am, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var adv server.JSConsumerDeliveryTerminatedAdvisory
+			json.Unmarshal(am.Data, &adv)
+			if adv.Stream != "MY_WQ" {
+				t.Fatalf("Expected stream of %s, got %s", "MY_WQ", adv.Stream)
+			}
+			if adv.Consumer != "PBO" {
+				t.Fatalf("Expected consumer of %s, got %s", "PBO", adv.Consumer)
+			}
+			if adv.StreamSeq != 1 {
+				t.Fatalf("Expected stream sequence of %d, got %d", 1, adv.StreamSeq)
+			}
+			if adv.ConsumerSeq != 2 {
+				t.Fatalf("Expected consumer sequence of %d, got %d", 2, adv.ConsumerSeq)
+			}
+			if adv.Deliveries != 2 {
+				t.Fatalf("Expected delivery count of %d, got %d", 2, adv.Deliveries)
+			}
+		})
+	}
+}
+
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

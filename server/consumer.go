@@ -150,6 +150,8 @@ var (
 	AckProgress = []byte("+WPI")
 	// Ack + Deliver the next message(s).
 	AckNext = []byte("+NXT")
+	// Terminate delivery of the message.
+	AckTerm = []byte("+TERM")
 )
 
 // Consumer is a jetstream consumer.
@@ -660,6 +662,8 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 		o.processNak(sseq, dseq)
 	case bytes.Equal(msg, AckProgress):
 		o.progressUpdate(sseq)
+	case bytes.Equal(msg, AckTerm):
+		o.processTerm(sseq, dseq, dcount)
 	}
 }
 
@@ -698,6 +702,39 @@ func (o *Consumer) processNak(sseq, dseq uint64) {
 	o.mu.Unlock()
 	if mset != nil {
 		mset.signalConsumers()
+	}
+}
+
+// Process a TERM
+func (o *Consumer) processTerm(sseq, dseq, dcount uint64) {
+	// Treat like an ack to suppress redelivery.
+	o.processAckMsg(sseq, dseq, dcount, false)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Deliver an advisory
+	e := JSConsumerDeliveryTerminatedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerDeliveryTerminatedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:      o.stream,
+		Consumer:    o.name,
+		ConsumerSeq: dseq,
+		StreamSeq:   sseq,
+		Deliveries:  dcount,
+	}
+
+	j, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return
+	}
+
+	subj := JSAdvisoryConsumerMsgTerminatedPre + "." + o.stream + "." + o.name
+	if o.mset != nil && o.mset.sendq != nil {
+		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
 	}
 }
 
@@ -856,12 +893,18 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 
 // Process an ack for a message.
 func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
+	o.processAckMsg(sseq, dseq, dcount, true)
+}
+
+func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 	var sagap uint64
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckExplicit:
 		if _, ok := o.pending[sseq]; ok {
-			o.sampleAck(sseq, dseq, dcount)
+			if doSample {
+				o.sampleAck(sseq, dseq, dcount)
+			}
 			delete(o.pending, sseq)
 		}
 		// Consumers sequence numbers can skip during redlivery since
@@ -979,6 +1022,7 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 	return o.rdc[sseq] + 1
 }
 
+// send a delivery exceeded advisory.
 func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 	e := JSConsumerDeliveryExceededAdvisory{
 		TypedEvent: TypedEvent{
