@@ -3605,6 +3605,7 @@ func (c *client) teardownConn() {
 				// Update route as normal for a normal subscriber.
 				if sub.queue == nil {
 					srv.updateRouteSubscriptionMap(acc, sub, -1)
+					srv.updateLeafNodes(acc, sub, -1)
 				} else {
 					// We handle queue subscribers special in case we
 					// have a bunch we can just send one update to the
@@ -3619,8 +3620,6 @@ func (c *client) teardownConn() {
 				if srv.gateway.enabled {
 					srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 				}
-				// Now check on leafnode updates.
-				srv.updateLeafNodes(acc, sub, -1)
 			}
 			// Process any qsubs here.
 			for _, esub := range qsubs {
