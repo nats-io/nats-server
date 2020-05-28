@@ -1960,11 +1960,17 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeC
 		fs.mu.Unlock()
 	}()
 
+	modTime := time.Now().UTC()
+
 	writeFile := func(name string, buf []byte) error {
 		hdr := &tar.Header{
-			Name: name,
-			Mode: 0600,
-			Size: int64(len(buf)),
+			Name:    name,
+			Mode:    0600,
+			ModTime: modTime,
+			Uname:   "nats",
+			Gname:   "nats",
+			Size:    int64(len(buf)),
+			Format:  tar.FormatPAX,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
