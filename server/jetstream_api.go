@@ -139,7 +139,7 @@ const (
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
-	// For snapshots and restores
+	// For snapshots and restores. The ack will have additional tokens.
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
 
@@ -314,8 +314,11 @@ type JSApiStreamSnapshotRequest struct {
 	DeliverSubject string `json:"deliver_subject"`
 	// Do not include consumers in the snapshot.
 	NoConsumers bool `json:"no_consumers,omitempty"`
-	// Optional chunk size preference. Otherwise server selects.
+	// Optional chunk size preference.
+	// Best to just let server select.
 	ChunkSize int `json:"chunk_size,omitempty"`
+	// Check all message's checksums prior to snapshot.
+	CheckMsgs bool `json:"jsck,omitempty"`
 }
 
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
@@ -1182,7 +1185,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	sr, err := mset.Snapshot(0, !req.NoConsumers)
+	sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))

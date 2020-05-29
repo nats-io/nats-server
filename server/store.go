@@ -63,7 +63,7 @@ type StreamStore interface {
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
-	Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error)
+	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 }
 
 // RetentionPolicy determines how messages in a set are retained.
