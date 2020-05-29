@@ -213,6 +213,13 @@ const (
 )
 
 func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
+	if name := mset.Name(); strings.HasPrefix(name, mqttStreamNamePrefix) {
+		return nil, fmt.Errorf("stream prefix %q is reserved for MQTT, unable to create consumer on %q", mqttStreamNamePrefix, name)
+	}
+	return mset.addConsumerCheckInterest(config, true)
+}
+
+func (mset *Stream) addConsumerCheckInterest(config *ConsumerConfig, checkInterest bool) (*Consumer, error) {
 	if config == nil {
 		return nil, fmt.Errorf("consumer config required")
 	}
@@ -350,7 +357,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			} else {
 				// If we are a push mode and not active and the only difference
 				// is deliver subject then update and return.
-				if configsEqualSansDelivery(ocfg, *config) && eo.hasNoLocalInterest() {
+				if configsEqualSansDelivery(ocfg, *config) && (!checkInterest || eo.hasNoLocalInterest()) {
 					eo.updateDeliverSubject(config.DeliverSubject)
 					return eo, nil
 				} else {
@@ -2177,9 +2184,22 @@ func (mset *Stream) deliveryFormsCycle(deliverySubject string) bool {
 	return false
 }
 
-// This is same as check for delivery cycle.
+// Check that the subject is a subset of the stream's configured subjects,
+// or returns true if the stream has been created with no subject.
 func (mset *Stream) validSubject(partitionSubject string) bool {
-	return mset.deliveryFormsCycle(partitionSubject)
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+
+	if mset.nosubj && len(mset.config.Subjects) == 0 {
+		return true
+	}
+
+	for _, subject := range mset.config.Subjects {
+		if subjectIsSubsetMatch(partitionSubject, subject) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetInActiveDeleteThreshold sets the delete threshold for how long to wait

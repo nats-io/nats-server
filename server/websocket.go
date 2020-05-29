@@ -856,6 +856,7 @@ func (s *Server) startWebsocketServer() {
 	if port == 0 {
 		s.opts.Websocket.Port = hl.Addr().(*net.TCPAddr).Port
 	}
+	s.Noticef("Listening for websocket clients on %s://%s:%d", proto, o.Host, port)
 	s.websocket.connectURLs, err = s.getConnectURLs(o.Advertise, o.Host, o.Port)
 	if err != nil {
 		s.Fatalf("Unable to get websocket connect URLs: %v", err)
@@ -870,7 +871,7 @@ func (s *Server) startWebsocketServer() {
 			s.Errorf(err.Error())
 			return
 		}
-		s.createClient(res.conn, res.ws)
+		s.createClient(res.conn, res.ws, nil)
 	})
 	hs := &http.Server{
 		Addr:        hp,

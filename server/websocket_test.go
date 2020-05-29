@@ -2095,6 +2095,10 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 		{"no filtering, client does not provide cert", false, false},
 		{"filtering, client provides cert", true, true},
 		{"filtering, client does not provide cert", true, false},
+		{"no users override, client provides cert", false, true},
+		{"no users override, client does not provide cert", false, false},
+		{"users override, client provides cert", true, true},
+		{"users override, client does not provide cert", true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()

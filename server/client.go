@@ -178,6 +178,7 @@ const (
 	NoRespondersRequiresHeaders
 	ClusterNameConflict
 	DuplicateRemoteLeafnodeConnection
+	DuplicateClientID
 )
 
 // Some flags passed to processMsgResults
@@ -237,6 +238,7 @@ type client struct {
 	gw    *gateway
 	leaf  *leaf
 	ws    *websocket
+	mqtt  *mqtt
 
 	// To keep track of gateway replies mapping
 	gwrm map[string]*gwReplyMap
@@ -442,6 +444,7 @@ type subscription struct {
 	max     int64
 	qw      int32
 	closed  int32
+	mqtt    *mqttSub
 }
 
 // Indicate that this subscription is closed.
@@ -540,6 +543,8 @@ func (c *client) initClient() {
 		name := "cid"
 		if c.ws != nil {
 			name = "wid"
+		} else if c.mqtt != nil {
+			name = "mid"
 		}
 		c.ncs.Store(fmt.Sprintf("%s - %s:%d", conn, name, c.cid))
 	case ROUTER:
@@ -964,6 +969,9 @@ func (c *client) readLoop(pre []byte) {
 	}
 	nc := c.nc
 	ws := c.ws != nil
+	if c.mqtt != nil {
+		c.mqtt.r = &mqttReader{reader: nc}
+	}
 	c.in.rsz = startBufSize
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
@@ -983,6 +991,9 @@ func (c *client) readLoop(pre []byte) {
 	c.mu.Unlock()
 
 	defer func() {
+		if c.mqtt != nil {
+			s.mqttHandleWill(c)
+		}
 		// These are used only in the readloop, so we can set them to nil
 		// on exit of the readLoop.
 		c.in.results, c.in.pacache = nil, nil
@@ -1683,7 +1694,6 @@ func (c *client) processConnect(arg []byte) error {
 			// By default register with the global account.
 			c.registerWithAccount(srv.globalAccount())
 		}
-
 	}
 
 	switch kind {
@@ -1703,7 +1713,6 @@ func (c *client) processConnect(arg []byte) error {
 			c.sendErr(ErrNoRespondersRequiresHeaders.Error())
 			c.closeConnection(NoRespondersRequiresHeaders)
 			return ErrNoRespondersRequiresHeaders
-
 		}
 		if verbose {
 			c.sendOK()
@@ -1933,6 +1942,9 @@ func (c *client) sendRTTPing() bool {
 // the c.rtt is 0 and wants to force an update by sending a PING.
 // Client lock held on entry.
 func (c *client) sendRTTPingLocked() bool {
+	if c.mqtt != nil {
+		return false
+	}
 	// Most client libs send a CONNECT+PING and wait for a PONG from the
 	// server. So if firstPongSent flag is set, it is ok for server to
 	// send the PING. But in case we have client libs that don't do that,
@@ -1978,7 +1990,9 @@ func (c *client) sendErr(err string) {
 	if c.trace {
 		c.traceOutOp("-ERR", []byte(err))
 	}
-	c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
+	if c.mqtt == nil {
+		c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
+	}
 	c.mu.Unlock()
 }
 
@@ -2212,32 +2226,30 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 	arg := make([]byte, len(argo))
 	copy(arg, argo)
 	args := splitArg(arg)
-	var (
-		subject []byte
-		queue   []byte
-		sid     []byte
-	)
+	sub := &subscription{client: c}
 	switch len(args) {
 	case 2:
-		subject = args[0]
-		queue = nil
-		sid = args[1]
+		sub.subject = args[0]
+		sub.queue = nil
+		sub.sid = args[1]
 	case 3:
-		subject = args[0]
-		queue = args[1]
-		sid = args[2]
+		sub.subject = args[0]
+		sub.queue = args[1]
+		sub.sid = args[2]
 	default:
 		return fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
 	// If there was an error, it has been sent to the client. We don't return an
 	// error here to not close the connection as a parsing error.
-	c.processSub(subject, queue, sid, nil, noForward)
+	c.processSub(sub, noForward)
 	return nil
 }
 
-func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
-	// Create the subscription
-	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb}
+func (c *client) createSub(subject, queue, sid []byte, cb msgHandler) *subscription {
+	return &subscription{client: c, subject: subject, queue: queue, sid: sid, icb: cb}
+}
+
+func (c *client) processSub(sub *subscription, noForward bool) (*subscription, error) {
 
 	c.mu.Lock()
 
@@ -2254,7 +2266,7 @@ func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForwar
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
 	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
 		c.mu.Unlock()
-		return sub, nil
+		return nil, nil
 	}
 
 	// Check permissions if applicable.
@@ -2301,6 +2313,9 @@ func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForwar
 				updateGWs = c.srv.gateway.enabled
 			}
 		}
+	} else if es.mqtt != nil && sub.mqtt != nil {
+		es.mqtt.prm = sub.mqtt.prm
+		es.mqtt.qos = sub.mqtt.qos
 	}
 	// Unlocked from here onward
 	c.mu.Unlock()
@@ -3311,6 +3326,11 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		c.sendOK()
 	}
 
+	// If MQTT client, check for retain flag now that we have passed permissions check
+	if c.mqtt != nil {
+		c.mqttHandlePubRetain()
+	}
+
 	// Check if this client's gateway replies map is not empty
 	if atomic.LoadInt32(&c.cgwrt) > 0 && c.handleGWReplyMap(msg) {
 		return true
@@ -3983,7 +4003,7 @@ func (c *client) processPingTimer() {
 	c.mu.Lock()
 	c.ping.tmr = nil
 	// Check if connection is still opened
-	if c.isClosed() {
+	if c.isClosed() || c.mqtt != nil {
 		c.mu.Unlock()
 		return
 	}
@@ -4042,7 +4062,7 @@ func adjustPingIntervalForGateway(d time.Duration) time.Duration {
 
 // Lock should be held
 func (c *client) setPingTimer() {
-	if c.srv == nil {
+	if c.srv == nil || c.mqtt != nil {
 		return
 	}
 	d := c.srv.getOpts().PingInterval
@@ -4596,7 +4616,7 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 	for _, i := range cts {
 		i = strings.ToUpper(i)
 		switch i {
-		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeMqtt:
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)
@@ -4626,6 +4646,9 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 	}
 	if c.ws != nil {
 		want = jwt.ConnectionTypeWebsocket
+	}
+	if c.mqtt != nil {
+		want = jwt.ConnectionTypeMqtt
 	}
 	_, ok := acts[want]
 	return ok

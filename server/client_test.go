@@ -85,7 +85,7 @@ func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
 		s.grWG.Add(1)
 	}
 	go func() {
-		c := s.createClient(cli, nil)
+		c := s.createClient(cli, nil, nil)
 		// Must be here to suppress +OK
 		c.opts.Verbose = false
 		if startWriteLoop {
@@ -2317,7 +2317,7 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 			// Call again with this closed connection. Alternatively, we
 			// would have to call with a fake connection that implements
 			// net.Conn but returns an error on Write.
-			s.createClient(c, nil)
+			s.createClient(c, nil, nil)
 
 			// This connection should not have been added to the server.
 			checkClientsCount(t, s, 0)
@@ -2354,17 +2354,22 @@ func TestClientConnectionName(t *testing.T) {
 		kind    int
 		kindStr string
 		ws      bool
+		mqtt    bool
 	}{
-		{"client", CLIENT, "cid:", false},
-		{"ws client", CLIENT, "wid:", true},
-		{"route", ROUTER, "rid:", false},
-		{"gateway", GATEWAY, "gid:", false},
-		{"leafnode", LEAF, "lid:", false},
+		{"client", CLIENT, "cid:", false, false},
+		{"ws client", CLIENT, "wid:", true, false},
+		{"mqtt client", CLIENT, "mid:", false, true},
+		{"route", ROUTER, "rid:", false, false},
+		{"gateway", GATEWAY, "gid:", false, false},
+		{"leafnode", LEAF, "lid:", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := &client{srv: s, nc: &connString{}, kind: test.kind}
 			if test.ws {
 				c.ws = &websocket{}
+			}
+			if test.mqtt {
+				c.mqtt = &mqtt{}
 			}
 			c.initClient()
 
