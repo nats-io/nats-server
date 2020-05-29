@@ -800,6 +800,7 @@ func TestFileStoreMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	metafile := path.Join(storeDir, JetStreamMetaFile)
 	metasum := path.Join(storeDir, JetStreamMetaFileSum)
@@ -896,6 +897,7 @@ func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	subj, msg := "foo", []byte("Hello World!")
 
@@ -939,6 +941,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := uint64(1); i <= 20; i++ {
 		if _, _, _, err := fs.LoadMsg(i); err != nil {
@@ -962,6 +965,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := 0; i < 10; i++ {
 		fs.StoreMsg(subj, msg)
@@ -1169,6 +1173,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error restoring from snapshot: %v", err)
 		}
+		defer fsr.Stop()
 		state := fs.State()
 		rstate := fsr.State()
 

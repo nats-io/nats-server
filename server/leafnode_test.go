@@ -1491,7 +1491,7 @@ func TestLeafNodeTmpClients(t *testing.T) {
 	}
 	bo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	b := RunServer(bo)
-	defer a.Shutdown()
+	defer b.Shutdown()
 
 	checkLeafNodeConnected(t, b)
 	checkTmp(0)

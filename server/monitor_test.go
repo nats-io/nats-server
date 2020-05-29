@@ -1979,7 +1979,6 @@ func TestMonitorRoutezRace(t *testing.T) {
 	srvBOpts := nextServerOpts(srvAOpts)
 	srvBOpts.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/", srvA.MonitorAddr().Port)
 	doneCh := make(chan struct{})
 	go func() {
 		defer func() {
@@ -1997,10 +1996,8 @@ func TestMonitorRoutezRace(t *testing.T) {
 	}()
 	done := false
 	for !done {
-		if resp, err := http.Get(url + "routez"); err != nil {
+		if _, err := srvA.Routez(nil); err != nil {
 			time.Sleep(10 * time.Millisecond)
-		} else {
-			resp.Body.Close()
 		}
 		select {
 		case <-doneCh:
