@@ -2898,7 +2898,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	// Set delivery subject, do not subscribe yet. Want this to be an ok pattern.
 	sreq.DeliverSubject = nats.NewInbox()
 	// Just for test, usually left alone.
-	sreq.ChunkSize = 512
+	sreq.ChunkSize = 1024
 	req, _ = json.Marshal(sreq)
 	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
 	if err != nil {
@@ -2936,7 +2936,6 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 
 	// Now make sure this snapshot is legit.
-
 	var rresp server.JSApiStreamRestoreResponse
 
 	// Make sure we get an error since stream still exists.
@@ -2984,6 +2983,81 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if mset.State() != state {
 		t.Fatalf("Did not match states, %+v vs %+v", mset.State(), state)
 	}
+}
+
+func TestJetStreamSnapshotsAPIPerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	cfg := server.StreamConfig{
+		Name:    "snap-perf",
+		Storage: server.FileStorage,
+	}
+
+	acc := s.GlobalAccount()
+	if _, err := acc.AddStream(&cfg); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	msg := make([]byte, 128*1024)
+	// If you don't give gzip some data will spend too much time compressing everything to zero.
+	rand.Read(msg)
+
+	for i := 0; i < 10000; i++ {
+		nc.Publish("snap-perf", msg)
+	}
+	nc.Flush()
+
+	sreq := &server.JSApiStreamSnapshotRequest{DeliverSubject: nats.NewInbox()}
+	req, _ := json.Marshal(sreq)
+	rmsg, err := nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "snap-perf"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+
+	var resp server.JSApiStreamSnapshotResponse
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error != nil {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	done := make(chan bool)
+	total := 0
+	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+		// EOF
+		if len(m.Data) == 0 {
+			m.Sub.Unsubscribe()
+			done <- true
+			return
+		}
+		// We don't do anything with the snapshot, just take
+		// note of the size.
+		total += len(m.Data)
+		// Flow ack
+		m.Respond(nil)
+	})
+	defer sub.Unsubscribe()
+
+	start := time.Now()
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
+	}
+	td := time.Since(start)
+	fmt.Printf("Received %d bytes in %v\n", total, td)
+	fmt.Printf("Rate %.0f MB/s\n", float64(total)/td.Seconds()/(1024*1024))
 }
 
 func TestJetStreamActiveDelivery(t *testing.T) {
