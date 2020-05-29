@@ -1948,7 +1948,10 @@ const errFile = "errors.txt"
 func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeConsumers bool) {
 	defer w.Close()
 
-	gzw := gzip.NewWriter(w)
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	gzw, _ := gzip.NewWriterLevel(bw, gzip.BestSpeed)
 	defer gzw.Close()
 
 	tw := tar.NewWriter(gzw)
@@ -2117,6 +2120,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (*S
 	fs.mu.Unlock()
 
 	pr, pw := net.Pipe()
+
 	// Set a write deadline here to protect ourselves.
 	if deadline > 0 {
 		pw.SetWriteDeadline(time.Now().Add(deadline))

@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nuid"
@@ -1198,6 +1199,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 
 // Default chunk size for now.
 const defaultSnapshotChunkSize = 128 * 1024
+const defaultSnapshotWindowSize = 16 * 1024 * 1024 // 16MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
@@ -1229,50 +1231,52 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 	acks := make(chan struct{}, 1)
 	acks <- struct{}{}
 
+	// Track bytes outstanding.
+	var out int32
+
+	// We will place sequence number and size of chunk sent in the reply.
 	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.Name(), nuid.Next())
-	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj, func(_ *subscription, _ *client, _, _ string, _ []byte) {
-		acks <- struct{}{}
+	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj+".>", func(_ *subscription, _ *client, subject, _ string, _ []byte) {
+		// This is very crude and simple, but ok for now.
+		// This only matters when sending multiple chunks.
+		if atomic.LoadInt32(&out) > defaultSnapshotWindowSize {
+			acks <- struct{}{}
+		}
+		cs, _ := strconv.Atoi(tokenAt(subject, 6))
+		atomic.AddInt32(&out, int32(-cs))
 	})
 	defer mset.unsubscribeUnlocked(ackSub)
 
 	// TODO(dlc) - Add in NATS-Chunked-Sequence header
 
-	// Since this is a pipe we will gather up reads and buffer internally before sending.
-	// bufio will not help here.
-	var frag [512]byte
-	fsize := len(frag)
-	if chunkSize < fsize {
-		fsize = chunkSize
-	}
-	chunk := make([]byte, 0, chunkSize)
-
-	for {
-		n, err := r.Read(frag[:fsize])
-		// Treat all errors the same for now, just break out.
-		// TODO(dlc) - when we use headers do error if not io.EOF
+	for index := 1; ; index++ {
+		chunk := make([]byte, chunkSize)
+		n, err := r.Read(chunk)
+		chunk = chunk[:n]
 		if err != nil {
+			if n > 0 {
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, chunk, nil, 0}
+			}
 			break
 		}
-		// Check if we should send.
-		if len(chunk)+n > chunkSize {
-			// Wait on acks for flow control.
-			// Wait up to 10ms for now if none received.
+
+		// Wait on acks for flow control if past our window size.
+		// Wait up to 1ms for now if no acks received.
+		if atomic.LoadInt32(&out) > defaultSnapshotWindowSize {
 			select {
 			case <-acks:
 			case <-inch: // Lost interest
 				goto done
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(time.Millisecond):
 			}
-			// TODO(dlc) - Might want these moved off sendq if we have contention.
-			mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackSubj, chunk, nil, 0}
-			// Can't reuse
-			chunk = make([]byte, 0, chunkSize)
 		}
-		chunk = append(chunk, frag[:n]...)
+		// TODO(dlc) - Might want these moved off sendq if we have contention.
+		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, chunk, nil, 0}
+		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
-	// Send last chunk and nil as EOF
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, chunk, nil, 0}
+	// Send last EOF
 	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, 0}
 }
 

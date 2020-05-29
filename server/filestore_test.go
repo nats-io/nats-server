@@ -1233,18 +1233,15 @@ func TestFileStoreSnapshot(t *testing.T) {
 	})
 
 	// Make sure if we do not read properly then it will close the writer and report an error.
-	sr, err = fs.Snapshot(10*time.Millisecond, false)
+	sr, err = fs.Snapshot(25*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
-	var buf [32]byte
 
-	if n, err := sr.Reader.Read(buf[:]); err != nil || n == 0 {
-		t.Fatalf("Expected to read beginning, got %v and %d", err, n)
-	}
 	// Cause snapshot to timeout.
-	time.Sleep(20 * time.Millisecond)
-	// Read again should fail
+	time.Sleep(30 * time.Millisecond)
+	// Read should fail
+	var buf [32]byte
 	if _, err := sr.Reader.Read(buf[:]); err != io.EOF {
 		t.Fatalf("Expected read to produce an error, got none")
 	}
