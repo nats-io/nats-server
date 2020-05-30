@@ -988,6 +988,7 @@ func (s *Server) createInternalClient(kind int) *client {
 	c := &client{srv: s, kind: kind, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
 	c.initClient()
 	c.echo = false
+	c.headers = true
 	c.flags.set(noReconnect)
 	return c
 }

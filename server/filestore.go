@@ -121,6 +121,7 @@ type msgId struct {
 
 type fileStoredMsg struct {
 	subj string
+	hdr  []byte
 	msg  []byte
 	seq  uint64
 	ts   int64 // nanoseconds
@@ -578,7 +579,7 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 }
 
 // Store stores a message.
-func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
+func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -599,7 +600,7 @@ func (fs *fileStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 
 	seq := fs.state.LastSeq + 1
 
-	n, ts, err := fs.writeMsgRecord(seq, subj, msg)
+	n, ts, err := fs.writeMsgRecord(seq, subj, hdr, msg)
 	if err != nil {
 		fs.mu.Unlock()
 		return 0, 0, err
@@ -771,7 +772,7 @@ func (mb *msgBlock) selectNextFirst() {
 
 func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStoredMsg, secure bool) {
 	// Update global accounting.
-	msz := fileStoreMsgSize(sm.subj, sm.msg)
+	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
 	fs.mu.Lock()
 	mb.mu.Lock()
@@ -1048,12 +1049,14 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 }
 
 // Lock should be held.
-func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64, int64, error) {
+func (fs *fileStore) writeMsgRecord(seq uint64, subj string, mhdr, msg []byte) (uint64, int64, error) {
 	var err error
 
 	// Get size for this message.
-	rl := fileStoreMsgSize(subj, msg)
-
+	rl := fileStoreMsgSize(subj, mhdr, msg)
+	if rl&hbit == 1 {
+		return 0, 0, ErrMsgTooLarge
+	}
 	// Grab our current last message block.
 	mb := fs.lmb
 	if mb == nil || mb.numBytes()+rl > fs.fcfg.BlockSize {
@@ -1071,11 +1074,23 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	// Update accounting.
 	mb.updateAccounting(seq, ts, rl)
 
+	// Formats
+	// Format with no header
+	// total_len(4) sequence(8) timestamp(8) subj_len(2) subj msg hash(8)
+	// With headers, high bit on total length will be set.
+	// total_len(4) sequence(8) timestamp(8) subj_len(2) subj hdr_len(4) hdr msg hash(8)
+
 	// First write header, etc.
 	var le = binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
-	le.PutUint32(hdr[0:], uint32(rl))
+	l := uint32(rl)
+	hasHeaders := len(mhdr) > 0
+	if hasHeaders {
+		l |= hbit
+	}
+
+	le.PutUint32(hdr[0:], l)
 	le.PutUint64(hdr[4:], seq)
 	le.PutUint64(hdr[12:], uint64(ts))
 	le.PutUint16(hdr[20:], uint16(len(subj)))
@@ -1083,6 +1098,12 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	// Now write to underlying buffer.
 	fs.wmb.Write(hdr[:])
 	fs.wmb.WriteString(subj)
+	if hasHeaders {
+		var hlen [4]byte
+		le.PutUint32(hlen[0:], uint32(len(mhdr)))
+		fs.wmb.Write(hlen[:])
+		fs.wmb.Write(mhdr)
+	}
 	fs.wmb.Write(msg)
 
 	// Calculate hash.
@@ -1090,6 +1111,9 @@ func (fs *fileStore) writeMsgRecord(seq uint64, subj string, msg []byte) (uint64
 	mb.hh.Reset()
 	mb.hh.Write(hdr[4:20])
 	mb.hh.Write([]byte(subj))
+	if hasHeaders {
+		mb.hh.Write(mhdr)
+	}
 	mb.hh.Write(msg)
 	checksum := mb.hh.Sum(nil)
 	// Grab last checksum
@@ -1109,7 +1133,12 @@ func (fs *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 		return fmt.Errorf("bad stored message")
 	}
 	// erase contents and rewrite with new hash.
-	rand.Read(sm.msg)
+	if len(sm.hdr) > 0 {
+		rand.Read(sm.hdr)
+	}
+	if len(sm.msg) > 0 {
+		rand.Read(sm.msg)
+	}
 	sm.seq, sm.ts = 0, 0
 	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 	var b strings.Builder
@@ -1121,7 +1150,7 @@ func (fs *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 	var le = binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
-	rl := fileStoreMsgSize(sm.subj, sm.msg)
+	rl := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
 	le.PutUint32(hdr[0:], uint32(rl))
 	le.PutUint64(hdr[4:], 0)
@@ -1139,6 +1168,9 @@ func (fs *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 	mb.hh.Reset()
 	mb.hh.Write(hdr[4:20])
 	mb.hh.Write([]byte(sm.subj))
+	if len(sm.hdr) > 0 {
+		mb.hh.Write(sm.hdr)
+	}
 	mb.hh.Write(sm.msg)
 	checksum := mb.hh.Sum(nil)
 	// Write to msg record.
@@ -1293,13 +1325,17 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		rl := le.Uint32(hdr[0:])
 		seq := le.Uint64(hdr[4:])
 		slen := le.Uint16(hdr[20:])
+
+		// Clear any headers bit that could be set.
+		rl &^= hbit
+
 		dlen := int(rl) - msgHdrSize
 
 		// Do some quick sanity checks here.
 		if dlen < 0 || int(slen) > dlen || dlen > int(rl) {
 			// This means something is off.
-			// Add into bad list?
-			return fmt.Errorf("malformed or corrupt msg")
+			// TODO(dlc) - Add into bad list?
+			return errBadMsg
 		}
 		// Adjust if we guessed wrong.
 		if seq != 0 && seq < fseq {
@@ -1377,6 +1413,7 @@ var (
 )
 
 // Used for marking messages that have had their checksums checked.
+// Also used to signal a message record with headers
 const hbit = 1 << 31
 
 // Will do a lookup from the cache.
@@ -1419,7 +1456,7 @@ func (mb *msgBlock) cacheLookupLocked(seq uint64) (*fileStoredMsg, error) {
 
 	buf := mb.cache.buf[bi:]
 	// Parse from the raw buffer.
-	subj, msg, mseq, ts, err := msgFromBuf(buf, hh)
+	subj, hdr, msg, mseq, ts, err := msgFromBuf(buf, hh)
 	if err != nil {
 		return nil, err
 	}
@@ -1428,6 +1465,7 @@ func (mb *msgBlock) cacheLookupLocked(seq uint64) (*fileStoredMsg, error) {
 	}
 	sm := &fileStoredMsg{
 		subj: subj,
+		hdr:  hdr,
 		msg:  msg,
 		seq:  seq,
 		ts:   ts,
@@ -1469,18 +1507,21 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 }
 
 // Internal function to return msg parts from a raw buffer.
-func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, uint64, int64, error) {
+func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, []byte, uint64, int64, error) {
 	if len(buf) < msgHdrSize {
-		return "", nil, 0, 0, errBadMsg
+		return _EMPTY_, nil, nil, 0, 0, errBadMsg
 	}
 	var le = binary.LittleEndian
 
 	hdr := buf[:msgHdrSize]
-	dlen := int(le.Uint32(hdr[0:])) - msgHdrSize
+	rl := le.Uint32(hdr[0:])
+	hasHeaders := rl&hbit != 0
+	rl &^= hbit // clear header bit
+	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
 	if dlen < 0 || slen > dlen {
-		return "", nil, 0, 0, errBadMsg
+		return _EMPTY_, nil, nil, 0, 0, errBadMsg
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
@@ -1488,9 +1529,13 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, uint64, int64, erro
 		hh.Reset()
 		hh.Write(hdr[4:20])
 		hh.Write(data[:slen])
-		hh.Write(data[slen : dlen-8])
+		if hasHeaders {
+			hh.Write(data[slen+4 : dlen-8])
+		} else {
+			hh.Write(data[slen : dlen-8])
+		}
 		if !bytes.Equal(hh.Sum(nil), data[len(data)-8:]) {
-			return "", nil, 0, 0, errBadMsg
+			return _EMPTY_, nil, nil, 0, 0, errBadMsg
 		}
 	}
 	seq := le.Uint64(hdr[4:])
@@ -1499,16 +1544,26 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, uint64, int64, erro
 	// fix the capacity. This will cause a copy though in stream:internalSendLoop when
 	// we append CRLF but this was causing a race. Need to rethink more to avoid this copy.
 	end := dlen - 8
-	return string(data[:slen]), data[slen:end:end], seq, ts, nil
+	var mhdr, msg []byte
+	if hasHeaders {
+		hl := le.Uint32(data[slen:])
+		bi := slen + 4
+		li := bi + int(hl)
+		mhdr = data[bi:li:li]
+		msg = data[li:end:end]
+	} else {
+		msg = data[slen:end:end]
+	}
+	return string(data[:slen]), mhdr, msg, seq, ts, nil
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
-func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
+func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
 	sm, err := fs.msgForSeq(seq)
 	if sm != nil {
-		return sm.subj, sm.msg, sm.ts, nil
+		return sm.subj, sm.hdr, sm.msg, sm.ts, nil
 	}
-	return "", nil, 0, err
+	return "", nil, nil, 0, err
 }
 
 func (fs *fileStore) State() StreamState {
@@ -1519,9 +1574,13 @@ func (fs *fileStore) State() StreamState {
 	return state
 }
 
-func fileStoreMsgSize(subj string, msg []byte) uint64 {
-	// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + msg + hash(8)
-	return uint64(4 + 16 + 2 + len(subj) + len(msg) + 8)
+func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
+	if len(hdr) == 0 {
+		// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + msg + hash(8)
+		return uint64(22 + len(subj) + len(msg) + 8)
+	}
+	// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + hdr_len(4) + hdr + msg + hash(8)
+	return uint64(22 + len(subj) + 4 + len(hdr) + len(msg) + 8)
 }
 
 // Lock should not be held.

@@ -489,7 +489,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 func (o *Consumer) sendAdvisory(subj string, msg []byte) {
 	if o.mset != nil && o.mset.sendq != nil {
 		o.mu.Unlock()
-		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, msg, nil, 0}
+		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
 		o.mu.Lock()
 	}
 }
@@ -1000,8 +1000,8 @@ func (o *Consumer) processNextMsgReq(_ *subscription, _ *client, _, reply string
 		if o.replay {
 			o.waiting = append(o.waiting, reply)
 			shouldSignal = true
-		} else if subj, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, msg, seq, dc, ts)
+		} else if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
+			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
 		} else {
 			o.waiting = append(o.waiting, reply)
 		}
@@ -1058,9 +1058,9 @@ func (o *Consumer) isFilteredMatch(subj string) bool {
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
+func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
 	if o.mset == nil {
-		return _EMPTY_, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
+		return _EMPTY_, nil, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
 	}
 	for {
 		seq, dcount := o.sseq, uint64(1)
@@ -1078,7 +1078,7 @@ func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uin
 				continue
 			}
 		}
-		subj, msg, ts, err := o.mset.store.LoadMsg(seq)
+		subj, hdr, msg, ts, err := o.mset.store.LoadMsg(seq)
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
@@ -1087,12 +1087,12 @@ func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uin
 				}
 			}
 			// We have the msg here.
-			return subj, msg, seq, dcount, ts, nil
+			return subj, hdr, msg, seq, dcount, ts, nil
 		}
 		// We got an error here. If this is an EOF we will return, otherwise
 		// we can continue looking.
 		if err == ErrStoreEOF || err == ErrStoreClosed {
-			return "", nil, 0, 0, 0, err
+			return _EMPTY_, nil, nil, 0, 0, 0, err
 		}
 		// Skip since its probably deleted or expired.
 		o.sseq++
@@ -1136,6 +1136,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			mset        *Stream
 			seq, dcnt   uint64
 			subj, dsubj string
+			hdr         []byte
 			msg         []byte
 			err         error
 			ts          int64
@@ -1160,7 +1161,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			goto waitForMsgs
 		}
 
-		subj, msg, seq, dcnt, ts, err = o.getNextMsg()
+		subj, hdr, msg, seq, dcnt, ts, err = o.getNextMsg()
 
 		// On error either wait or return.
 		if err != nil {
@@ -1195,7 +1196,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 		// Track this regardless.
 		lts = ts
 
-		o.deliverMsg(dsubj, subj, msg, seq, dcnt, ts)
+		o.deliverMsg(dsubj, subj, hdr, msg, seq, dcnt, ts)
 
 		o.mu.Unlock()
 		continue
@@ -1217,7 +1218,7 @@ func (o *Consumer) ackReply(sseq, dseq, dcount uint64, ts int64) string {
 
 // deliverCurrentMsg is the hot path to deliver a message that was just received.
 // Will return if the message was delivered or not.
-func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int64) bool {
+func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, ts int64) bool {
 	o.mu.Lock()
 	if seq != o.sseq {
 		o.mu.Unlock()
@@ -1257,7 +1258,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int
 		msg = append(msg[:0:0], msg...)
 	}
 
-	o.deliverMsg(dsubj, subj, msg, seq, 1, ts)
+	o.deliverMsg(dsubj, subj, hdr, msg, seq, 1, ts)
 	o.mu.Unlock()
 
 	return true
@@ -1265,12 +1266,12 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int
 
 // Deliver a msg to the observable.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64, ts int64) {
+func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount uint64, ts int64) {
 	if o.mset == nil {
 		return
 	}
 	sendq := o.mset.sendq
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), msg, o, seq}
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), hdr, msg, o, seq}
 
 	// This needs to be unlocked since the other side may need this lock on failed delivery.
 	o.mu.Unlock()
@@ -1434,7 +1435,7 @@ func (o *Consumer) selectSubjectLast() {
 	}
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
-		subj, _, _, err := o.mset.store.LoadMsg(seq)
+		subj, _, _, _, err := o.mset.store.LoadMsg(seq)
 		if err == ErrStoreMsgNotFound {
 			continue
 		}

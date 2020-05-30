@@ -6155,6 +6155,105 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 	}
 }
 
+func TestJetStreamMsgHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			m := nats.NewMsg("foo")
+			m.Header.Add("Accept-Encoding", "json")
+			m.Header.Add("Authorization", "s3cr3t")
+			m.Data = []byte("Hello JetStream Headers - #1!")
+
+			nc.PublishMsg(m)
+			nc.Flush()
+
+			state := mset.State()
+			if state.Msgs != 1 {
+				t.Fatalf("Expected 1 message, got %d", state.Msgs)
+			}
+			if state.Bytes == 0 {
+				t.Fatalf("Expected non-zero bytes")
+			}
+
+			// Now access raw from stream.
+			sm, err := mset.GetMsg(1)
+			if err != nil {
+				t.Fatalf("Unexpected error getting stored message: %v", err)
+			}
+			// Calculate the []byte version of the headers.
+			var b bytes.Buffer
+			b.WriteString("NATS/1.0\r\n")
+			m.Header.Write(&b)
+			b.WriteString("\r\n")
+			hdr := b.Bytes()
+
+			if !bytes.Equal(sm.Header, hdr) {
+				t.Fatalf("Message headers do not match, %q vs %q", hdr, sm.Header)
+			}
+			if !bytes.Equal(sm.Data, m.Data) {
+				t.Fatalf("Message data do not match, %q vs %q", m.Data, sm.Data)
+			}
+
+			// Now do consumer based.
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			cm, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error getting message: %v", err)
+			}
+			// Remove reply subject and sub for comparison.
+			cm.Sub, cm.Reply = nil, ""
+			if !reflect.DeepEqual(cm, m) {
+				t.Fatalf("Messages do not match: %+v vs %+v", cm, m)
+			}
+		})
+	}
+}
+
 func TestJetStreamTemplateBasics(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
