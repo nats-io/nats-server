@@ -768,6 +768,8 @@ func (mset *Stream) internalSendLoop() {
 				msg = append(pm.hdr, pm.msg...)
 				msg = append(msg, _CRLF_...)
 			} else {
+				c.pa.hdr = -1
+				c.pa.hdb = nil
 				msg = append(pm.msg, _CRLF_...)
 			}
 			didDeliver := c.processInboundClientMsg(msg)

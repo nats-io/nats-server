@@ -87,9 +87,11 @@ func (nc *Conn) parse(buf []byte) error {
 			case 'M', 'm':
 				nc.ps.state = OP_M
 				nc.ps.hdr = -1
+				nc.ps.ma.hdr = -1
 			case 'H', 'h':
 				nc.ps.state = OP_H
 				nc.ps.hdr = 0
+				nc.ps.ma.hdr = 0
 			case 'P', 'p':
 				nc.ps.state = OP_P
 			case '+':

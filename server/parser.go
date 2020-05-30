@@ -1054,6 +1054,7 @@ func (c *client) parse(buf []byte) error {
 		c.state == ASUB_ARG || c.state == AUSUB_ARG ||
 		c.state == MSG_ARG || c.state == HMSG_ARG ||
 		c.state == MINUS_ERR_ARG || c.state == CONNECT_ARG || c.state == INFO_ARG {
+
 		// Setup a holder buffer to deal with split buffer scenario.
 		if c.argBuf == nil {
 			c.argBuf = c.scratch[:0]
@@ -1075,6 +1076,7 @@ func (c *client) parse(buf []byte) error {
 	if (c.state == MSG_PAYLOAD || c.state == MSG_END_R || c.state == MSG_END_N) && c.msgBuf == nil {
 		// We need to clone the pubArg if it is still referencing the
 		// read buffer and we are not able to process the msg.
+
 		if c.argBuf == nil {
 			// Works also for MSG_ARG, when message comes from ROUTE.
 			if err := c.clonePubArg(); err != nil {
@@ -1141,7 +1143,11 @@ func (c *client) clonePubArg() error {
 			return c.processRoutedHeaderMsgArgs(c.argBuf)
 		}
 	case LEAF:
-		return c.processLeafMsgArgs(c.argBuf)
+		if c.pa.hdr < 0 {
+			return c.processLeafMsgArgs(c.argBuf)
+		} else {
+			return c.processLeafHeaderMsgArgs(c.argBuf)
+		}
 	default:
 		if c.pa.hdr < 0 {
 			return c.processPub(c.argBuf)
