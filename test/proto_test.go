@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -27,6 +27,7 @@ func runProtoServer() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = PROTO_TEST_PORT
 	opts.MaxControlLine = 256
+	opts.NoSystemAccount = true
 	return RunServer(&opts)
 }
 

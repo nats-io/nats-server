@@ -238,6 +238,7 @@ func natsUnsub(t *testing.T, sub *nats.Subscription) {
 
 func testDefaultOptionsForGateway(name string) *Options {
 	o := DefaultOptions()
+	o.NoSystemAccount = true
 	o.ServerName = name
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
@@ -393,6 +394,7 @@ func TestGatewayIgnoreSelfReference(t *testing.T) {
 		URLs: []*url.URL{u},
 	}
 	o.Gateway.Gateways = append(o.Gateway.Gateways, cfg)
+	o.NoSystemAccount = true
 	s := runGatewayServer(o)
 	defer s.Shutdown()
 

@@ -471,7 +471,7 @@ func (s *Server) globalAccount() *Account {
 // Used to setup Accounts.
 // Lock is held upon entry.
 func (s *Server) configureAccounts() error {
-	// Create global account.
+	// Create the global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
 		s.registerAccountNoLock(s.gacc)
@@ -546,6 +546,7 @@ func (s *Server) configureAccounts() error {
 	}
 
 	// Set the system account if it was configured.
+	// Otherwise create a default one.
 	if opts.SystemAccount != _EMPTY_ {
 		// Lock may be acquired in lookupAccount, so release to call lookupAccount.
 		s.mu.Unlock()
@@ -768,7 +769,7 @@ func (s *Server) NewAccountsAllowed() bool {
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
-// Currently this is 1 for the global default service.
+// Currently this is 1, one for the global default account.
 func (s *Server) numReservedAccounts() int {
 	return 1
 }
@@ -1223,7 +1224,7 @@ func (s *Server) Start() {
 	}
 	s.Noticef("Git commit [%s]", gc)
 
-	// Check for insecure configurations.op
+	// Check for insecure configurations.
 	s.checkAuthforWarnings()
 
 	// Avoid RACE between Start() and Shutdown()
@@ -1271,6 +1272,9 @@ func (s *Server) Start() {
 			s.Fatalf("Can't set system account: %v", err)
 			return
 		}
+	} else if !opts.NoSystemAccount {
+		// We will create a default system account here.
+		s.SetDefaultSystemAccount()
 	}
 
 	// Start expiration of mapped GW replies, regardless if

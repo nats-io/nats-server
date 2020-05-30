@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -36,6 +36,7 @@ import (
 
 func TestNoRaceAvoidSlowConsumerBigMessages(t *testing.T) {
 	opts := DefaultOptions() // Use defaults to make sure they avoid pending slow consumer.
+	opts.NoSystemAccount = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -96,6 +97,7 @@ func TestNoRaceAvoidSlowConsumerBigMessages(t *testing.T) {
 func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
 	optsA, _ := ProcessConfigFile("./configs/seed.conf")
 	optsA.NoSigs, optsA.NoLog = true, true
+	optsA.NoSystemAccount = true
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -190,6 +192,7 @@ func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
 
 func TestNoRaceClosedSlowConsumerWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
+	opts.NoSystemAccount = true
 	opts.WriteDeadline = 10 * time.Millisecond // Make very small to trip.
 	opts.MaxPending = 500 * 1024 * 1024        // Set high so it will not trip here.
 	s := RunServer(opts)
@@ -237,6 +240,7 @@ func TestNoRaceClosedSlowConsumerWriteDeadline(t *testing.T) {
 
 func TestNoRaceClosedSlowConsumerPendingBytes(t *testing.T) {
 	opts := DefaultOptions()
+	opts.NoSystemAccount = true
 	opts.WriteDeadline = 30 * time.Second // Wait for long time so write deadline does not trigger slow consumer.
 	opts.MaxPending = 1 * 1024 * 1024     // Set to low value (1MB) to allow SC to trip.
 	s := RunServer(opts)
@@ -284,6 +288,7 @@ func TestNoRaceClosedSlowConsumerPendingBytes(t *testing.T) {
 
 func TestNoRaceSlowConsumerPendingBytes(t *testing.T) {
 	opts := DefaultOptions()
+	opts.NoSystemAccount = true
 	opts.WriteDeadline = 30 * time.Second // Wait for long time so write deadline does not trigger slow consumer.
 	opts.MaxPending = 1 * 1024 * 1024     // Set to low value (1MB) to allow SC to trip.
 	s := RunServer(opts)
@@ -615,10 +620,12 @@ func TestNoRaceRouteCache(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 
 			oa := DefaultOptions()
+			oa.NoSystemAccount = true
 			sa := RunServer(oa)
 			defer sa.Shutdown()
 
 			ob := DefaultOptions()
+			ob.NoSystemAccount = true
 			ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
 			sb := RunServer(ob)
 			defer sb.Shutdown()
@@ -811,6 +818,7 @@ func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
 
 func TestNoRaceWriteDeadline(t *testing.T) {
 	opts := DefaultOptions()
+	opts.NoSystemAccount = true
 	opts.WriteDeadline = 30 * time.Millisecond
 	s := RunServer(opts)
 	defer s.Shutdown()

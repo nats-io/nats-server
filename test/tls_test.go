@@ -1,4 +1,4 @@
-// Copyright 2015-2019 The NATS Authors
+// Copyright 2015-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -556,6 +556,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	optsA.Cluster.Host = optsA.Host
 	optsA.Cluster.Port = 9935
 	optsA.Routes = server.RoutesFromStr(routeURLs)
+	optsA.NoSystemAccount = true
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -564,6 +565,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	optsB.Cluster.Host = optsB.Host
 	optsB.Cluster.Port = 9936
 	optsB.Routes = server.RoutesFromStr(routeURLs)
+	optsB.NoSystemAccount = true
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
@@ -572,6 +574,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 	optsC.Cluster.Host = optsC.Host
 	optsC.Cluster.Port = 9937
 	optsC.Routes = server.RoutesFromStr(routeURLs)
+	optsC.NoSystemAccount = true
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
 
@@ -1280,7 +1283,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { 
+				    {
                                       user = "spiffe://localhost/my-nats-service/user-a"
                                     }
 				  ]
@@ -1298,12 +1301,12 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { 
+				    {
                                       user = "spiffe://localhost/my-nats-service/user-a"
                                     },
-				    { 
+				    {
                                       user = "spiffe://localhost/my-nats-service/user-b"
-                                      permissions = { subscribe = { deny = ">" }} 
+                                      permissions = { subscribe = { deny = ">" }}
                                     }
 				  ]
 				}
@@ -1320,8 +1323,8 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { 
-                                      user = "O=SPIRE,C=US" 
+				    {
+                                      user = "O=SPIRE,C=US"
                                     }
 				  ]
 				}
@@ -1338,7 +1341,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { 
+				    {
                                       user = "spiffe://localhost/my-nats-service/user-c"
                                     }
 				  ]

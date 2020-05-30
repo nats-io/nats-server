@@ -169,7 +169,7 @@ func TestActiveAccounts(t *testing.T) {
 	defer s.Shutdown()
 
 	if s.NumActiveAccounts() != 0 {
-		t.Fatalf("Expected no active accounts, got %d", s.NumActiveAccounts())
+		t.Fatalf("Expected no active account, got %d", s.NumActiveAccounts())
 	}
 
 	addClientWithAccount := func(accName string) *testAsyncClient {
@@ -1457,15 +1457,6 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 
 	// Now let's add in tracking
 
-	// This looks ok but should fail because we have not set a system account needed for internal msgs.
-	if err := fooAcc.TrackServiceExport("track.service", "results"); err != ErrNoSysAccount {
-		t.Fatalf("Expected error enabling tracking latency without a system account")
-	}
-
-	if err := s.SetSystemAccount(globalAccountName); err != nil {
-		t.Fatalf("Error setting system account: %v", err)
-	}
-
 	// First check we get an error if service does not exist.
 	if err := fooAcc.TrackServiceExport("track.wrong", "results"); err != ErrMissingService {
 		t.Fatalf("Expected error enabling tracking latency for wrong service")
@@ -1503,7 +1494,7 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 		t.Helper()
 		l, err := crFoo.ReadString('\n')
 		if err != nil {
-			t.Fatalf("Error reading from client 'bar': %v", err)
+			t.Fatalf("Error reading from client 'foo': %v", err)
 		}
 		mraw := msgPat.FindAllStringSubmatch(l, -1)
 		if len(mraw) == 0 {

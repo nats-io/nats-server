@@ -1233,7 +1233,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	})
 
 	// Make sure if we do not read properly then it will close the writer and report an error.
-	sr, err = fs.Snapshot(25*time.Millisecond, false)
+	sr, err = fs.Snapshot(20*time.Millisecond, false)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}

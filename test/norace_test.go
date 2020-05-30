@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -46,6 +46,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 				port: -1
 				%s
 			}
+			no_sys_acc: true
 	`
 	cfa := createConfFile(t, []byte(fmt.Sprintf(template, "")))
 	defer os.Remove(cfa)

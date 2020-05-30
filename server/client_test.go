@@ -46,6 +46,7 @@ type serverInfo struct {
 	Headers      bool     `json:"headers"`
 	ConnectURLs  []string `json:"connect_urls,omitempty"`
 	LameDuckMode bool     `json:"ldm,omitempty"`
+	CID          uint64   `json:"client_id,omitempty"`
 }
 
 type testAsyncClient struct {
@@ -1997,9 +1998,13 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	}
 	defer c.Close()
 
-	var buf [1024]byte
+	var buf [4 * 1024]byte
 	// Wait for INFO...
-	c.Read(buf[:])
+	n, _ := c.Read(buf[:])
+	var info serverInfo
+	if err = json.Unmarshal([]byte(buf[5:n]), &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
 
 	// Send our connect
 	if _, err := c.Write([]byte("CONNECT {}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
@@ -2009,7 +2014,7 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	c.Read(buf[:])
 
 	// Get the client from server map
-	cli := s.GetClient(1)
+	cli := s.GetClient(info.CID)
 	if cli == nil {
 		t.Fatalf("No client registered")
 	}
@@ -2126,7 +2131,8 @@ func TestClientIPv6Address(t *testing.T) {
 	}
 	defer nc.Close()
 
-	c := s.GetClient(1)
+	cid, _ := nc.GetClientID()
+	c := s.GetClient(cid)
 	c.mu.Lock()
 	ncs := c.ncs
 	c.mu.Unlock()

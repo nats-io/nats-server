@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -57,12 +57,14 @@ func DefaultMonitorOptions() *Options {
 func runMonitorServer() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	return RunServer(opts)
 }
 
 func runMonitorServerWithAccounts() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	aA := NewAccount("A")
 	aB := NewAccount("B")
 	opts.Accounts = append(opts.Accounts, aA, aB)
@@ -75,6 +77,7 @@ func runMonitorServerWithAccounts() *Server {
 func runMonitorServerNoHTTPPort() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.HTTPPort = 0
 	return RunServer(opts)
 }
@@ -163,6 +166,7 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 func TestHTTPBasePath(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.HTTPBasePath = "/nats"
 
 	s := RunServer(opts)
@@ -923,6 +927,7 @@ func TestConnzSortedBySubs(t *testing.T) {
 func TestConnzSortedByLast(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -1261,6 +1266,7 @@ func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptio
 func TestConnzWithRoutes(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = CLUSTER_PORT
 
@@ -1274,8 +1280,9 @@ func TestConnzWithRoutes(t *testing.T) {
 			Host: "127.0.0.1",
 			Port: -1,
 		},
-		NoLog:  true,
-		NoSigs: true,
+		NoLog:           true,
+		NoSigs:          true,
+		NoSystemAccount: true,
 	}
 	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", s.ClusterAddr().Port))
 	opts.Routes = []*url.URL{routeURL}
@@ -1808,6 +1815,7 @@ func TestConnzClosedConnsBadTLSClient(t *testing.T) {
 
 	var err error
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.TLSTimeout = 1.5 // 1.5 seconds
 	opts.TLSConfig, err = GenTLSConfig(tc)
 	if err != nil {
@@ -1972,6 +1980,7 @@ func TestMonitorHandler(t *testing.T) {
 func TestMonitorRoutezRace(t *testing.T) {
 	resetPreviousHTTPConnections()
 	srvAOpts := DefaultMonitorOptions()
+	srvAOpts.NoSystemAccount = true
 	srvAOpts.Cluster.Port = -1
 	srvA := RunServer(srvAOpts)
 	defer srvA.Shutdown()
@@ -2019,6 +2028,7 @@ func TestConnzTLSInHandshake(t *testing.T) {
 
 	var err error
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.TLSTimeout = 1.5 // 1.5 seconds
 	opts.TLSConfig, err = GenTLSConfig(tc)
 	if err != nil {
@@ -2125,6 +2135,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 func TestRoutezPermissions(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
 	opts.Cluster.Permissions = &RoutePermissions{
@@ -2355,6 +2366,7 @@ func testMonitorStructPresent(t *testing.T, tag string) {
 
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -2370,6 +2382,7 @@ func TestMonitorCluster(t *testing.T) {
 
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.Cluster.Port = -1
 	opts.Cluster.AuthTimeout = 1
 	opts.Routes = RoutesFromStr("nats://127.0.0.1:1234")
@@ -2513,6 +2526,7 @@ func TestMonitorGateway(t *testing.T) {
 
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.Gateway.Name = "A"
 	opts.Gateway.Port = -1
 	opts.Gateway.AuthTimeout = 1
@@ -2686,6 +2700,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
 	opts.LeafNode.Port = -1
 	opts.LeafNode.AuthTimeout = 1
 	opts.LeafNode.TLSTimeout = 1
@@ -2985,6 +3000,7 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 			name: "B"
 			port: -1
 		}
+		no_sys_acc = true
 	`, accounts)))
 	defer os.Remove(bConf)
 
@@ -3009,6 +3025,7 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 				}
 			]
 		}
+		no_sys_acc = true
 	`, accounts, sb.GatewayAddr().Port)))
 	defer os.Remove(aConf)
 

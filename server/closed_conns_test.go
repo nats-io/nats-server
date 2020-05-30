@@ -1,4 +1,4 @@
-// Copyright 2018-2019 The NATS Authors
+// Copyright 2018-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -46,6 +46,7 @@ func checkTotalClosedConns(t *testing.T, s *Server, num uint64, wait time.Durati
 func TestClosedConnsAccounting(t *testing.T) {
 	opts := DefaultOptions()
 	opts.MaxClosedClients = 10
+	opts.NoSystemAccount = true
 
 	s := RunServer(opts)
 	defer s.Shutdown()
@@ -56,6 +57,7 @@ func TestClosedConnsAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
 	}
+	id, _ := nc.GetClientID()
 	nc.Close()
 
 	checkClosedConns(t, s, 1, wait)
@@ -64,8 +66,8 @@ func TestClosedConnsAccounting(t *testing.T) {
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
-	if conns[0].Cid != 1 {
-		t.Fatalf("Expected CID to be 1, got %d\n", conns[0].Cid)
+	if conns[0].Cid != id {
+		t.Fatalf("Expected CID to be %d, got %d\n", id, conns[0].Cid)
 	}
 
 	// Now create 21 more
