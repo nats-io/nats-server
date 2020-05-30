@@ -2731,7 +2731,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	// Snapshot state of the stream and consumers.
 	info := info{mset.Config(), mset.State(), obs}
 
-	sr, err := mset.Snapshot(5*time.Second, true)
+	sr, err := mset.Snapshot(5*time.Second, true, false)
 	if err != nil {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
@@ -2917,7 +2917,6 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
 		// EOF
 		if len(m.Data) == 0 {
-			m.Sub.Unsubscribe()
 			done <- true
 			return
 		}
@@ -2982,6 +2981,22 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 	if mset.State() != state {
 		t.Fatalf("Did not match states, %+v vs %+v", mset.State(), state)
+	}
+
+	// Now ask that the stream be checked first.
+	sreq.ChunkSize = 0
+	sreq.CheckMsgs = true
+	snapshot = snapshot[:0]
+
+	req, _ = json.Marshal(sreq)
+	if _, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second); err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
 	}
 }
 

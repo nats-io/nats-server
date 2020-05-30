@@ -2102,7 +2102,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeC
 }
 
 // Create a snapshot of this stream and its consumer's state along with messages.
-func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
+func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -2118,6 +2118,13 @@ func (fs *fileStore) Snapshot(deadline time.Duration, includeConsumers bool) (*S
 	blks := fs.blks
 	blkSize := int(fs.fcfg.BlockSize)
 	fs.mu.Unlock()
+
+	if checkMsgs {
+		bad := fs.checkMsgs()
+		if len(bad) > 0 {
+			return nil, fmt.Errorf("snapshot check detected %d bad messages", len(bad))
+		}
+	}
 
 	pr, pw := net.Pipe()
 

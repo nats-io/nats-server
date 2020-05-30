@@ -936,7 +936,7 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.
-func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
+func (mset *Stream) Snapshot(deadline time.Duration, checkMsgs, includeConsumers bool) (*SnapshotResult, error) {
 	mset.mu.Lock()
 	if mset.client == nil || mset.store == nil {
 		mset.mu.Unlock()
@@ -954,7 +954,7 @@ func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*Sn
 		o.writeState()
 	}
 
-	return store.Snapshot(deadline, includeConsumers)
+	return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }
 
 const snapsDir = "__snapshots__"
