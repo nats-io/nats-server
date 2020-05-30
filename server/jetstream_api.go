@@ -1185,19 +1185,23 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
-	if err != nil {
-		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	// We will do the snapshot in a go routine as well since check msgs may
+	// stall this go routine.
+	go func() {
+		sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
+		if err != nil {
+			resp.Error = jsError(err)
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
-	resp.NumBlks = sr.NumBlks
-	resp.BlkSize = sr.BlkSize
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+		resp.NumBlks = sr.NumBlks
+		resp.BlkSize = sr.BlkSize
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 
-	// Now do the real streaming in a separate go routine.
-	go s.streamSnapshot(c, mset, sr, &req)
+		// Now do the real streaming.
+		s.streamSnapshot(c, mset, sr, &req)
+	}()
 }
 
 // Default chunk size for now.
