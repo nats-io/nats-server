@@ -1844,6 +1844,82 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamAckAllRedelivery(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_S22", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "MY_S22", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Now load up some messages.
+			toSend := 100
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
+			}
+			state := mset.State()
+			if state.Msgs != uint64(toSend) {
+				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
+			}
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				DeliverSubject: sub.Subject,
+				AckWait:        20 * time.Millisecond,
+				AckPolicy:      server.AckAll,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error adding consumer: %v", err)
+			}
+			defer o.Delete()
+
+			// Wait for messages.
+			// We will do 5 redeliveries.
+			for i := 1; i <= 5; i++ {
+				checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend*i {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend*i)
+					}
+					return nil
+				})
+			}
+			// Stop redeliveries.
+			o.Delete()
+
+			// Now make sure that they are all redelivered in order for each redelivered batch.
+			for l := 1; l <= 5; l++ {
+				for i := 1; i <= toSend; i++ {
+					m, _ := sub.NextMsg(time.Second)
+					if seq := o.StreamSeqFromReply(m.Reply); seq != uint64(i) {
+						t.Fatalf("Expected stream sequence of %d, got %d", i, seq)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 	cases := []struct {
 		name    string
