@@ -28,7 +28,7 @@ func TestMemStoreBasics(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	now := time.Now().UnixNano()
-	if seq, ts, err := ms.StoreMsg(subj, msg); err != nil {
+	if seq, ts, err := ms.StoreMsg(subj, nil, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	} else if seq != 1 {
 		t.Fatalf("Expected sequence to be 1, got %d", seq)
@@ -40,11 +40,11 @@ func TestMemStoreBasics(t *testing.T) {
 	if state.Msgs != 1 {
 		t.Fatalf("Expected 1 msg, got %d", state.Msgs)
 	}
-	expectedSize := memStoreMsgSize(subj, msg)
+	expectedSize := memStoreMsgSize(subj, nil, msg)
 	if state.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
-	nsubj, nmsg, _, err := ms.LoadMsg(1)
+	nsubj, _, nmsg, _, err := ms.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -63,13 +63,13 @@ func TestMemStoreMsgLimit(t *testing.T) {
 	}
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		ms.StoreMsg(subj, msg)
+		ms.StoreMsg(subj, nil, msg)
 	}
 	state := ms.State()
 	if state.Msgs != 10 {
 		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if _, _, err := ms.StoreMsg(subj, msg); err != nil {
+	if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	state = ms.State()
@@ -83,14 +83,14 @@ func TestMemStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, err := ms.LoadMsg(1); err == nil {
+	if _, _, _, _, err := ms.LoadMsg(1); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
 
 func TestMemStoreBytesLimit(t *testing.T) {
 	subj, msg := "foo", make([]byte, 512)
-	storedMsgSize := memStoreMsgSize(subj, msg)
+	storedMsgSize := memStoreMsgSize(subj, nil, msg)
 
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
@@ -101,7 +101,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	}
 
 	for i := uint64(0); i < toStore; i++ {
-		ms.StoreMsg(subj, msg)
+		ms.StoreMsg(subj, nil, msg)
 	}
 	state := ms.State()
 	if state.Msgs != toStore {
@@ -113,7 +113,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 
 	// Now send 10 more and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		if _, _, err := ms.StoreMsg(subj, msg); err != nil {
+		if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
@@ -142,7 +142,7 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		ms.StoreMsg(subj, msg)
+		ms.StoreMsg(subj, nil, msg)
 	}
 	state := ms.State()
 	if state.Msgs != uint64(toStore) {
@@ -165,7 +165,7 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	checkExpired(t)
 	// Now add some more and make sure that timer will fire again.
 	for i := 0; i < toStore; i++ {
-		ms.StoreMsg(subj, msg)
+		ms.StoreMsg(subj, nil, msg)
 	}
 	state = ms.State()
 	if state.Msgs != uint64(toStore) {
@@ -183,10 +183,10 @@ func TestMemStoreTimeStamps(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
 		time.Sleep(5 * time.Microsecond)
-		ms.StoreMsg(subj, msg)
+		ms.StoreMsg(subj, nil, msg)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, ts, err := ms.LoadMsg(seq)
+		_, _, _, ts, err := ms.LoadMsg(seq)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg: %v", err)
 		}
@@ -204,8 +204,8 @@ func TestMemStoreEraseMsg(t *testing.T) {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
 	subj, msg := "foo", []byte("Hello World")
-	ms.StoreMsg(subj, msg)
-	_, smsg, _, err := ms.LoadMsg(1)
+	ms.StoreMsg(subj, nil, msg)
+	_, _, smsg, _, err := ms.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -214,6 +214,37 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	}
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
+	}
+	if bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected msg to be erased")
+	}
+}
+
+func TestMemStoreMsgHeaders(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+	subj, hdr, msg := "foo", []byte("name:derek"), []byte("Hello World")
+	if sz := int(memStoreMsgSize(subj, hdr, msg)); sz != (len(subj) + len(hdr) + len(msg) + 16) {
+		t.Fatalf("Wrong size for stored msg with header")
+	}
+	ms.StoreMsg(subj, hdr, msg)
+	_, shdr, smsg, _, err := ms.LoadMsg(1)
+	if err != nil {
+		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+	if !bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	}
+	if !bytes.Equal(hdr, shdr) {
+		t.Fatalf("Expected same hdr, got %q vs %q", shdr, hdr)
+	}
+	if removed, _ := ms.EraseMsg(1); !removed {
+		t.Fatalf("Expected erase msg to return success")
+	}
+	if bytes.Equal(hdr, shdr) {
+		t.Fatalf("Expected hdr to be erased")
 	}
 	if bytes.Equal(msg, smsg) {
 		t.Fatalf("Expected msg to be erased")

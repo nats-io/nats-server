@@ -94,7 +94,10 @@ func RunJetStreamServerOnPort(port int, sd string) *server.Server {
 }
 
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
-	nc, err := nats.Connect(s.ClientURL(), nats.Name("JS-TEST"), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
+	nc, err := nats.Connect(s.ClientURL(),
+		nats.Name("JS-TEST"),
+		nats.ReconnectWait(5*time.Millisecond),
+		nats.MaxReconnects(-1))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -793,7 +796,7 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	t.Helper()
 	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
 	if resp == nil {
-		t.Fatalf("No response, possible timeout?")
+		t.Fatalf("No response for %q, possible timeout?", msg)
 	}
 	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
@@ -6165,6 +6168,115 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			ostate := o.Info()
 			if ostate.AckFloor.StreamSeq != 11 || ostate.NumPending > 0 {
 				t.Fatalf("Inconsistent ack state: %+v", ostate)
+			}
+		})
+	}
+}
+
+func TestJetStreamMsgHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			m := nats.NewMsg("foo")
+			m.Header.Add("Accept-Encoding", "json")
+			m.Header.Add("Authorization", "s3cr3t")
+			m.Data = []byte("Hello JetStream Headers - #1!")
+
+			nc.PublishMsg(m)
+			nc.Flush()
+
+			state := mset.State()
+			if state.Msgs != 1 {
+				t.Fatalf("Expected 1 message, got %d", state.Msgs)
+			}
+			if state.Bytes == 0 {
+				t.Fatalf("Expected non-zero bytes")
+			}
+
+			// Now access raw from stream.
+			sm, err := mset.GetMsg(1)
+			if err != nil {
+				t.Fatalf("Unexpected error getting stored message: %v", err)
+			}
+			// Calculate the []byte version of the headers.
+			var b bytes.Buffer
+			b.WriteString("NATS/1.0\r\n")
+			m.Header.Write(&b)
+			b.WriteString("\r\n")
+			hdr := b.Bytes()
+
+			if !bytes.Equal(sm.Header, hdr) {
+				t.Fatalf("Message headers do not match, %q vs %q", hdr, sm.Header)
+			}
+			if !bytes.Equal(sm.Data, m.Data) {
+				t.Fatalf("Message data do not match, %q vs %q", m.Data, sm.Data)
+			}
+
+			// Now do consumer based.
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			cm, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error getting message: %v", err)
+			}
+			// Check the message.
+			// Check out original headers.
+			if cm.Header.Get("Accept-Encoding") != "json" ||
+				cm.Header.Get("Authorization") != "s3cr3t" {
+				t.Fatalf("Original headers not present")
+			}
+			// Now check for jetstream headers.
+			if cm.Header.Get("Jetstream-Stream-Sequence") != "1" ||
+				cm.Header.Get("Jetstream-Sequence") != "1" ||
+				cm.Header.Get("Jetstream-Deliver-Count") != "1" {
+				t.Fatalf("Did not get proper Jetstream headers: %+v", cm.Header)
+			}
+			if !bytes.Equal(m.Data, cm.Data) {
+				t.Fatalf("Message payloads are not the same: %q vs %q", cm.Data, m.Data)
 			}
 		})
 	}

@@ -1047,7 +1047,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	subj, msg, ts, err := mset.store.LoadMsg(req.Seq)
+	subj, hdr, msg, ts, err := mset.store.LoadMsg(req.Seq)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1056,6 +1056,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	resp.Message = &StoredMsg{
 		Subject:  subj,
 		Sequence: req.Seq,
+		Header:   hdr,
 		Data:     msg,
 		Time:     time.Unix(0, ts),
 	}
@@ -1262,7 +1263,7 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 		chunk = chunk[:n]
 		if err != nil {
 			if n > 0 {
-				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, chunk, nil, 0}
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0}
 			}
 			break
 		}
@@ -1279,12 +1280,13 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 		}
 		// TODO(dlc) - Might want these moved off sendq if we have contention.
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, chunk, nil, 0}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, nil, chunk, nil, 0}
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
 	// Send last EOF
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, 0}
+	// TODO(dlc) - place hash in header
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0}
 }
 
 // Request to create a durable consumer.
