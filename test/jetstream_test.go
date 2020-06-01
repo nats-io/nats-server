@@ -94,7 +94,10 @@ func RunJetStreamServerOnPort(port int, sd string) *server.Server {
 }
 
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
-	nc, err := nats.Connect(s.ClientURL(), nats.Name("JS-TEST"), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
+	nc, err := nats.Connect(s.ClientURL(),
+		nats.Name("JS-TEST"),
+		nats.ReconnectWait(5*time.Millisecond),
+		nats.MaxReconnects(-1))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -793,7 +796,7 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	t.Helper()
 	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
 	if resp == nil {
-		t.Fatalf("No response, possible timeout?")
+		t.Fatalf("No response for %q, possible timeout?", msg)
 	}
 	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
 		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
@@ -1841,6 +1844,82 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamAckAllRedelivery(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_S22", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "MY_S22", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Now load up some messages.
+			toSend := 100
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, c.mconfig.Name, "Hello World!")
+			}
+			state := mset.State()
+			if state.Msgs != uint64(toSend) {
+				t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
+			}
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				DeliverSubject: sub.Subject,
+				AckWait:        50 * time.Millisecond,
+				AckPolicy:      server.AckAll,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error adding consumer: %v", err)
+			}
+			defer o.Delete()
+
+			// Wait for messages.
+			// We will do 5 redeliveries.
+			for i := 1; i <= 5; i++ {
+				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend*i {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend*i)
+					}
+					return nil
+				})
+			}
+			// Stop redeliveries.
+			o.Delete()
+
+			// Now make sure that they are all redelivered in order for each redelivered batch.
+			for l := 1; l <= 5; l++ {
+				for i := 1; i <= toSend; i++ {
+					m, _ := sub.NextMsg(time.Second)
+					if seq := o.StreamSeqFromReply(m.Reply); seq != uint64(i) {
+						t.Fatalf("Expected stream sequence of %d, got %d", i, seq)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2731,7 +2810,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	// Snapshot state of the stream and consumers.
 	info := info{mset.Config(), mset.State(), obs}
 
-	sr, err := mset.Snapshot(5*time.Second, true)
+	sr, err := mset.Snapshot(5*time.Second, true, false)
 	if err != nil {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
@@ -2917,7 +2996,6 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
 		// EOF
 		if len(m.Data) == 0 {
-			m.Sub.Unsubscribe()
 			done <- true
 			return
 		}
@@ -2982,6 +3060,22 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 	if mset.State() != state {
 		t.Fatalf("Did not match states, %+v vs %+v", mset.State(), state)
+	}
+
+	// Now ask that the stream be checked first.
+	sreq.ChunkSize = 0
+	sreq.CheckMsgs = true
+	snapshot = snapshot[:0]
+
+	req, _ = json.Marshal(sreq)
+	if _, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second); err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
 	}
 }
 
@@ -6150,6 +6244,115 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			ostate := o.Info()
 			if ostate.AckFloor.StreamSeq != 11 || ostate.NumPending > 0 {
 				t.Fatalf("Inconsistent ack state: %+v", ostate)
+			}
+		})
+	}
+}
+
+func TestJetStreamMsgHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxAge:    time.Hour,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			m := nats.NewMsg("foo")
+			m.Header.Add("Accept-Encoding", "json")
+			m.Header.Add("Authorization", "s3cr3t")
+			m.Data = []byte("Hello JetStream Headers - #1!")
+
+			nc.PublishMsg(m)
+			nc.Flush()
+
+			state := mset.State()
+			if state.Msgs != 1 {
+				t.Fatalf("Expected 1 message, got %d", state.Msgs)
+			}
+			if state.Bytes == 0 {
+				t.Fatalf("Expected non-zero bytes")
+			}
+
+			// Now access raw from stream.
+			sm, err := mset.GetMsg(1)
+			if err != nil {
+				t.Fatalf("Unexpected error getting stored message: %v", err)
+			}
+			// Calculate the []byte version of the headers.
+			var b bytes.Buffer
+			b.WriteString("NATS/1.0\r\n")
+			m.Header.Write(&b)
+			b.WriteString("\r\n")
+			hdr := b.Bytes()
+
+			if !bytes.Equal(sm.Header, hdr) {
+				t.Fatalf("Message headers do not match, %q vs %q", hdr, sm.Header)
+			}
+			if !bytes.Equal(sm.Data, m.Data) {
+				t.Fatalf("Message data do not match, %q vs %q", m.Data, sm.Data)
+			}
+
+			// Now do consumer based.
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub.Subject})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			cm, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error getting message: %v", err)
+			}
+			// Check the message.
+			// Check out original headers.
+			if cm.Header.Get("Accept-Encoding") != "json" ||
+				cm.Header.Get("Authorization") != "s3cr3t" {
+				t.Fatalf("Original headers not present")
+			}
+			// Now check for jetstream headers.
+			if cm.Header.Get("Jetstream-Stream-Sequence") != "1" ||
+				cm.Header.Get("Jetstream-Sequence") != "1" ||
+				cm.Header.Get("Jetstream-Deliver-Count") != "1" {
+				t.Fatalf("Did not get proper Jetstream headers: %+v", cm.Header)
+			}
+			if !bytes.Equal(m.Data, cm.Data) {
+				t.Fatalf("Message payloads are not the same: %q vs %q", cm.Data, m.Data)
 			}
 		})
 	}

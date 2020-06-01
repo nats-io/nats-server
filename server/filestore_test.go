@@ -43,7 +43,7 @@ func TestFileStoreBasics(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	now := time.Now().UnixNano()
 	for i := 1; i <= 5; i++ {
-		if seq, ts, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, ts, err := fs.StoreMsg(subj, nil, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
@@ -56,11 +56,11 @@ func TestFileStoreBasics(t *testing.T) {
 	if state.Msgs != 5 {
 		t.Fatalf("Expected 5 msgs, got %d", state.Msgs)
 	}
-	expectedSize := 5 * fileStoreMsgSize(subj, msg)
+	expectedSize := 5 * fileStoreMsgSize(subj, nil, msg)
 	if state.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
-	nsubj, nmsg, _, err := fs.LoadMsg(2)
+	nsubj, _, nmsg, _, err := fs.LoadMsg(2)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -70,9 +70,44 @@ func TestFileStoreBasics(t *testing.T) {
 	if !bytes.Equal(nmsg, msg) {
 		t.Fatalf("Msgs don't match, original %q vs %q", msg, nmsg)
 	}
-	_, _, _, err = fs.LoadMsg(3)
+	_, _, _, _, err = fs.LoadMsg(3)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+}
+
+func TestFileStoreMsgHeaders(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, hdr, msg := "foo", []byte("name:derek"), []byte("Hello World")
+	elen := 22 + len(subj) + 4 + len(hdr) + len(msg) + 8
+	if sz := int(fileStoreMsgSize(subj, hdr, msg)); sz != elen {
+		t.Fatalf("Wrong size for stored msg with header")
+	}
+	fs.StoreMsg(subj, hdr, msg)
+	_, shdr, smsg, _, err := fs.LoadMsg(1)
+	if err != nil {
+		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+	if !bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	}
+	if !bytes.Equal(hdr, shdr) {
+		t.Fatalf("Expected same hdr, got %q vs %q", shdr, hdr)
+	}
+	if removed, _ := fs.EraseMsg(1); !removed {
+		t.Fatalf("Expected erase msg to return success")
+	}
+	if bytes.Equal(hdr, shdr) {
+		t.Fatalf("Expected hdr to be erased")
+	}
+	if bytes.Equal(msg, smsg) {
+		t.Fatalf("Expected msg to be erased")
 	}
 }
 
@@ -102,7 +137,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	toStore := uint64(100)
 	for i := uint64(1); i <= toStore; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
-		if seq, _, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
@@ -113,7 +148,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 	msg22 := []byte(fmt.Sprintf("[%08d] Hello World!", 22))
-	expectedSize := toStore * fileStoreMsgSize(subj, msg22)
+	expectedSize := toStore * fileStoreMsgSize(subj, nil, msg22)
 
 	if state.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
@@ -122,7 +157,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	fs.Stop()
 
 	// Make sure Store call after does not work.
-	if _, _, err := fs.StoreMsg(subj, []byte("no work")); err == nil {
+	if _, _, err := fs.StoreMsg(subj, nil, []byte("no work")); err == nil {
 		t.Fatalf("Expected an error for StoreMsg call after Stop, got none")
 	}
 
@@ -144,7 +179,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	// Now write 100 more msgs
 	for i := uint64(101); i <= toStore*2; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
-		if seq, _, err := fs.StoreMsg(subj, msg); err != nil {
+		if seq, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		} else if seq != uint64(i) {
 			t.Fatalf("Expected sequence to be %d, got %d", i, seq)
@@ -188,13 +223,13 @@ func TestFileStoreMsgLimit(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != 10 {
 		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if _, _, err := fs.StoreMsg(subj, msg); err != nil {
+	if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	state = fs.State()
@@ -208,14 +243,14 @@ func TestFileStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, err := fs.LoadMsg(1); err == nil {
+	if _, _, _, _, err := fs.LoadMsg(1); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
 
 func TestFileStoreBytesLimit(t *testing.T) {
 	subj, msg := "foo", make([]byte, 512)
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
@@ -231,7 +266,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	defer fs.Stop()
 
 	for i := uint64(0); i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != toStore {
@@ -243,7 +278,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 
 	// Now send 10 more and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		if _, _, err := fs.StoreMsg(subj, msg); err != nil {
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
@@ -279,7 +314,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -302,7 +337,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	checkExpired(t)
 	// Now add some more and make sure that timer will fire again.
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state = fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -326,10 +361,10 @@ func TestFileStoreTimeStamps(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
 		time.Sleep(5 * time.Millisecond)
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, ts, err := fs.LoadMsg(seq)
+		_, _, _, ts, err := fs.LoadMsg(seq)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg: %v", err)
 		}
@@ -354,11 +389,11 @@ func TestFileStorePurge(t *testing.T) {
 	defer fs.Stop()
 
 	subj, msg := "foo", make([]byte, 8*1024)
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	toStore := uint64(1024)
 	for i := uint64(0); i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != toStore {
@@ -414,7 +449,7 @@ func TestFileStorePurge(t *testing.T) {
 
 	// Now make sure we clean up any dangling purged messages.
 	for i := uint64(0); i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state = fs.State()
 	if state.Msgs != toStore {
@@ -473,7 +508,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -519,7 +554,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -538,11 +573,11 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
-	if _, _, _, err := fs.LoadMsg(1); err != nil {
+	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -561,11 +596,11 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected receovered states to be the same, got %+v vs %+v\n", state, state2)
 	}
 
-	if _, _, _, err := fs.LoadMsg(1); err != nil {
+	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -588,7 +623,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -630,7 +665,7 @@ func TestFileStoreBitRot(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -689,8 +724,8 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	defer fs.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
-	fs.StoreMsg(subj, msg)
-	_, smsg, _, err := fs.LoadMsg(1)
+	fs.StoreMsg(subj, nil, msg)
+	_, _, smsg, _, err := fs.LoadMsg(1)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -708,7 +743,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	}
 
 	// Now look on disk as well.
-	rl := fileStoreMsgSize(subj, msg)
+	rl := fileStoreMsgSize(subj, nil, msg)
 	buf := make([]byte, rl)
 	fp, err := os.Open(path.Join(storeDir, msgDir, fmt.Sprintf(blkScan, 1)))
 	if err != nil {
@@ -716,7 +751,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	}
 	defer fp.Close()
 	fp.ReadAt(buf, sm.off)
-	nsubj, nmsg, seq, ts, err := msgFromBuf(buf, nil)
+	nsubj, _, nmsg, seq, ts, err := msgFromBuf(buf, nil)
 	if err != nil {
 		t.Fatalf("error reading message from block: %v", err)
 	}
@@ -748,7 +783,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -783,7 +818,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	}
 
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be erased", i)
 		}
 	}
@@ -800,6 +835,7 @@ func TestFileStoreMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	metafile := path.Join(storeDir, JetStreamMetaFile)
 	metasum := path.Join(storeDir, JetStreamMetaFileSum)
@@ -896,12 +932,13 @@ func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	subj, msg := "foo", []byte("Hello World!")
 
 	for i := uint64(1); i <= 10; i++ {
-		fs.StoreMsg(subj, msg)
-		if _, _, _, err := fs.LoadMsg(i); err != nil {
+		fs.StoreMsg(subj, nil, msg)
+		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -913,7 +950,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	defer os.RemoveAll(storeDir)
 
 	subj, msg := "foo", []byte("Hello World!")
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
@@ -924,7 +961,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != 20 {
@@ -939,9 +976,10 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := uint64(1); i <= 20; i++ {
-		if _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -953,7 +991,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	defer os.RemoveAll(storeDir)
 
 	subj, msg := "foo", []byte("Hello World!")
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 4 * storedMsgSize},
@@ -962,9 +1000,10 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := 0; i < 10; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	state := fs.State()
 	if state.Msgs != 10 {
@@ -1023,7 +1062,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 func TestFileStoreReadCache(t *testing.T) {
 	subj, msg := "foo.bar", make([]byte, 1024)
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
@@ -1039,7 +1078,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	totalBytes := uint64(toStore) * storedMsgSize
 
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 
 	fs.LoadMsg(1)
@@ -1086,7 +1125,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	toSend := 2233
 	for i := 0; i < toSend; i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 
 	// Create a few consumers.
@@ -1116,7 +1155,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	snapshot := func() []byte {
 		t.Helper()
-		r, err := fs.Snapshot(5*time.Second, true)
+		r, err := fs.Snapshot(5*time.Second, true, true)
 		if err != nil {
 			t.Fatalf("Error creating snapshot")
 		}
@@ -1169,6 +1208,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error restoring from snapshot: %v", err)
 		}
+		defer fsr.Stop()
 		state := fs.State()
 		rstate := fsr.State()
 
@@ -1211,8 +1251,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
-
-	sr, err := fs.Snapshot(5*time.Second, true)
+	sr, err := fs.Snapshot(5*time.Second, true, false)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
@@ -1233,7 +1272,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	})
 
 	// Make sure if we do not read properly then it will close the writer and report an error.
-	sr, err = fs.Snapshot(20*time.Millisecond, false)
+	sr, err = fs.Snapshot(25*time.Millisecond, false, false)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
@@ -1372,7 +1411,7 @@ func TestFileStorePerf(t *testing.T) {
 	for i := 0; i < len(msg); i++ {
 		msg[i] = 'D'
 	}
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	// 5GB
 	toStore := 5 * 1024 * 1024 * 1024 / storedMsgSize
@@ -1397,7 +1436,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < int(toStore); i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 	fs.Stop()
 
@@ -1428,7 +1467,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		if _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -1447,7 +1486,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		if _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -1511,7 +1550,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 	subj := "foo"
 	msg := []byte("ABCDEFGH") // Smaller shows problems more.
 
-	storedMsgSize := fileStoreMsgSize(subj, msg)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	// Make sure we store 2 blocks.
 	toStore := defaultStreamBlockSize * 2 / storedMsgSize
@@ -1537,7 +1576,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < int(toStore); i++ {
-		fs.StoreMsg(subj, msg)
+		fs.StoreMsg(subj, nil, msg)
 	}
 
 	tt := time.Since(start)

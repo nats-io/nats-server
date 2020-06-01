@@ -48,11 +48,13 @@ var (
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
+	// ErrMsgTooBig is returned when a message is considered too large.
+	ErrMsgTooLarge = errors.New("message to large")
 )
 
 type StreamStore interface {
-	StoreMsg(subj string, msg []byte) (uint64, int64, error)
-	LoadMsg(seq uint64) (subj string, msg []byte, ts int64, err error)
+	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
+	LoadMsg(seq uint64) (subj string, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() uint64
@@ -63,7 +65,7 @@ type StreamStore interface {
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
-	Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error)
+	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 }
 
 // RetentionPolicy determines how messages in a set are retained.

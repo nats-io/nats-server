@@ -34,6 +34,7 @@ type memStore struct {
 
 type storedMsg struct {
 	subj string
+	hdr  []byte
 	msg  []byte
 	seq  uint64
 	ts   int64 // nanoseconds
@@ -79,7 +80,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 }
 
 // Store stores a message.
-func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
+func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
 	ms.mu.Lock()
 
 	// Check if we are discarding new messages when we reach the limit.
@@ -109,11 +110,14 @@ func (ms *memStore) StoreMsg(subj string, msg []byte) (uint64, int64, error) {
 	if len(msg) > 0 {
 		msg = append(msg[:0:0], msg...)
 	}
+	if len(hdr) > 0 {
+		hdr = append(hdr[:0:0], hdr...)
+	}
 
 	startBytes := int64(ms.state.Bytes)
-	ms.msgs[seq] = &storedMsg{subj, msg, seq, ts}
+	ms.msgs[seq] = &storedMsg{subj, hdr, msg, seq, ts}
 	ms.state.Msgs++
-	ms.state.Bytes += memStoreMsgSize(subj, msg)
+	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
 	ms.state.LastSeq = seq
 	ms.state.LastTime = now.UTC()
 
@@ -254,7 +258,7 @@ func (ms *memStore) deleteFirstMsg() bool {
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
-func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
+func (ms *memStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
 	last := ms.state.LastSeq
@@ -265,9 +269,9 @@ func (ms *memStore) LoadMsg(seq uint64) (string, []byte, int64, error) {
 		if seq <= last {
 			err = ErrStoreMsgNotFound
 		}
-		return "", nil, 0, err
+		return "", nil, nil, 0, err
 	}
-	return sm.subj, sm.msg, sm.ts, nil
+	return sm.subj, sm.hdr, sm.msg, sm.ts, nil
 }
 
 // RemoveMsg will remove the message from this store.
@@ -297,7 +301,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 	delete(ms.msgs, seq)
 	ms.state.Msgs--
-	ss = memStoreMsgSize(sm.subj, sm.msg)
+	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 	ms.state.Bytes -= ss
 	if seq == ms.state.FirstSeq {
 		var nsm *storedMsg
@@ -316,8 +320,14 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 			ms.state.FirstTime = time.Time{}
 		}
 	}
+
 	if secure {
-		rand.Read(sm.msg)
+		if len(sm.hdr) > 0 {
+			rand.Read(sm.hdr)
+		}
+		if len(sm.msg) > 0 {
+			rand.Read(sm.msg)
+		}
 		sm.seq = 0
 	}
 
@@ -337,8 +347,8 @@ func (ms *memStore) State() StreamState {
 	return state
 }
 
-func memStoreMsgSize(subj string, msg []byte) uint64 {
-	return uint64(len(subj) + len(msg) + 16) // 8*2 for seq + age
+func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
+	return uint64(len(subj) + len(hdr) + len(msg) + 16) // 8*2 for seq + age
 }
 
 // Delete is same as Stop for memory store.
@@ -381,7 +391,7 @@ func (ms *memStore) ConsumerStore(_ string, _ *ConsumerConfig) (ConsumerStore, e
 	return &consumerMemStore{ms}, nil
 }
 
-func (ms *memStore) Snapshot(_ time.Duration, _ bool) (*SnapshotResult, error) {
+func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
 	return nil, fmt.Errorf("no impl")
 }
 

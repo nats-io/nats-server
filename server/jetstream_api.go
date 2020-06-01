@@ -139,7 +139,7 @@ const (
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
-	// For snapshots and restores
+	// For snapshots and restores. The ack will have additional tokens.
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
 
@@ -314,8 +314,11 @@ type JSApiStreamSnapshotRequest struct {
 	DeliverSubject string `json:"deliver_subject"`
 	// Do not include consumers in the snapshot.
 	NoConsumers bool `json:"no_consumers,omitempty"`
-	// Optional chunk size preference. Otherwise server selects.
+	// Optional chunk size preference.
+	// Best to just let server select.
 	ChunkSize int `json:"chunk_size,omitempty"`
+	// Check all message's checksums prior to snapshot.
+	CheckMsgs bool `json:"jsck,omitempty"`
 }
 
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
@@ -1044,7 +1047,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	subj, msg, ts, err := mset.store.LoadMsg(req.Seq)
+	subj, hdr, msg, ts, err := mset.store.LoadMsg(req.Seq)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1053,6 +1056,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	resp.Message = &StoredMsg{
 		Subject:  subj,
 		Sequence: req.Seq,
+		Header:   hdr,
 		Data:     msg,
 		Time:     time.Unix(0, ts),
 	}
@@ -1150,51 +1154,56 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	acc := c.acc
+	smsg := string(msg)
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
 	var req JSApiStreamSnapshotRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if !IsValidSubject(req.DeliverSubject) {
 		resp.Error = &ApiError{Code: 400, Description: "deliver subject not valid"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
-	sr, err := mset.Snapshot(0, !req.NoConsumers)
-	if err != nil {
-		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	// We will do the snapshot in a go routine as well since check msgs may
+	// stall this go routine.
+	go func() {
+		sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
+		if err != nil {
+			resp.Error = jsError(err)
+			s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+			return
+		}
 
-	resp.NumBlks = sr.NumBlks
-	resp.BlkSize = sr.BlkSize
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+		resp.NumBlks = sr.NumBlks
+		resp.BlkSize = sr.BlkSize
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(resp))
 
-	// Now do the real streaming in a separate go routine.
-	go s.streamSnapshot(c, mset, sr, &req)
+		// Now do the real streaming.
+		s.streamSnapshot(c, mset, sr, &req)
+	}()
 }
 
 // Default chunk size for now.
@@ -1255,7 +1264,7 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 		chunk = chunk[:n]
 		if err != nil {
 			if n > 0 {
-				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, chunk, nil, 0}
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0}
 			}
 			break
 		}
@@ -1272,12 +1281,13 @@ func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req
 		}
 		// TODO(dlc) - Might want these moved off sendq if we have contention.
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, chunk, nil, 0}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, nil, chunk, nil, 0}
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
 	// Send last EOF
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, 0}
+	// TODO(dlc) - place hash in header
+	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0}
 }
 
 // Request to create a durable consumer.

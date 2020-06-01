@@ -227,7 +227,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 
 	// Setup proper default for ack wait if we are in explicit ack mode.
-	if config.AckPolicy == AckExplicit && config.AckWait == time.Duration(0) {
+	if config.AckWait == 0 && (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) {
 		config.AckWait = JsAckWaitDefault
 	}
 	// Setup default of -1, meaning no limit for MaxDeliver.
@@ -489,7 +489,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 func (o *Consumer) sendAdvisory(subj string, msg []byte) {
 	if o.mset != nil && o.mset.sendq != nil {
 		o.mu.Unlock()
-		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, msg, nil, 0}
+		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
 		o.mu.Lock()
 	}
 }
@@ -742,6 +742,18 @@ func (o *Consumer) processTerm(sseq, dseq, dcount uint64) {
 	o.sendAdvisory(subj, j)
 }
 
+// Introduce a small delay in when timer fires to check pending.
+// Allows bursts to be treated in same time frame.
+const ackWaitDelay = time.Millisecond
+
+// ackWait returns how long to wait to fire the pending timer.
+func (o *Consumer) ackWait(next time.Duration) time.Duration {
+	if next != 0 {
+		return next + ackWaitDelay
+	}
+	return o.config.AckWait + ackWaitDelay
+}
+
 // This will restore the state from disk.
 func (o *Consumer) readStoredState() error {
 	if o.store == nil {
@@ -761,7 +773,7 @@ func (o *Consumer) readStoredState() error {
 	// Setup tracking timer if we have restored pending.
 	if len(o.pending) > 0 && o.ptmr == nil {
 		o.mu.Lock()
-		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
+		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 		o.mu.Unlock()
 	}
 	return err
@@ -1000,8 +1012,8 @@ func (o *Consumer) processNextMsgReq(_ *subscription, _ *client, _, reply string
 		if o.replay {
 			o.waiting = append(o.waiting, reply)
 			shouldSignal = true
-		} else if subj, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, msg, seq, dc, ts)
+		} else if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
+			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
 		} else {
 			o.waiting = append(o.waiting, reply)
 		}
@@ -1058,9 +1070,9 @@ func (o *Consumer) isFilteredMatch(subj string) bool {
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
+func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
 	if o.mset == nil {
-		return _EMPTY_, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
+		return _EMPTY_, nil, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
 	}
 	for {
 		seq, dcount := o.sseq, uint64(1)
@@ -1078,7 +1090,7 @@ func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uin
 				continue
 			}
 		}
-		subj, msg, ts, err := o.mset.store.LoadMsg(seq)
+		subj, hdr, msg, ts, err := o.mset.store.LoadMsg(seq)
 		if err == nil {
 			if dcount == 1 { // First delivery.
 				o.sseq++
@@ -1087,12 +1099,12 @@ func (o *Consumer) getNextMsg() (subj string, msg []byte, seq uint64, dcount uin
 				}
 			}
 			// We have the msg here.
-			return subj, msg, seq, dcount, ts, nil
+			return subj, hdr, msg, seq, dcount, ts, nil
 		}
 		// We got an error here. If this is an EOF we will return, otherwise
 		// we can continue looking.
 		if err == ErrStoreEOF || err == ErrStoreClosed {
-			return "", nil, 0, 0, 0, err
+			return _EMPTY_, nil, nil, 0, 0, 0, err
 		}
 		// Skip since its probably deleted or expired.
 		o.sseq++
@@ -1136,6 +1148,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			mset        *Stream
 			seq, dcnt   uint64
 			subj, dsubj string
+			hdr         []byte
 			msg         []byte
 			err         error
 			ts          int64
@@ -1160,7 +1173,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			goto waitForMsgs
 		}
 
-		subj, msg, seq, dcnt, ts, err = o.getNextMsg()
+		subj, hdr, msg, seq, dcnt, ts, err = o.getNextMsg()
 
 		// On error either wait or return.
 		if err != nil {
@@ -1195,7 +1208,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 		// Track this regardless.
 		lts = ts
 
-		o.deliverMsg(dsubj, subj, msg, seq, dcnt, ts)
+		o.deliverMsg(dsubj, subj, hdr, msg, seq, dcnt, ts)
 
 		o.mu.Unlock()
 		continue
@@ -1217,7 +1230,7 @@ func (o *Consumer) ackReply(sseq, dseq, dcount uint64, ts int64) string {
 
 // deliverCurrentMsg is the hot path to deliver a message that was just received.
 // Will return if the message was delivered or not.
-func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int64) bool {
+func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, ts int64) bool {
 	o.mu.Lock()
 	if seq != o.sseq {
 		o.mu.Unlock()
@@ -1257,30 +1270,58 @@ func (o *Consumer) deliverCurrentMsg(subj string, msg []byte, seq uint64, ts int
 		msg = append(msg[:0:0], msg...)
 	}
 
-	o.deliverMsg(dsubj, subj, msg, seq, 1, ts)
+	o.deliverMsg(dsubj, subj, hdr, msg, seq, 1, ts)
 	o.mu.Unlock()
 
 	return true
 }
 
+// Some constants for headers.
+// TODO(dlc) - Move these to a more generic place.
+const (
+	hdrLine = "NATS/1.0\r\n"
+	crlf    = "\r\n"
+	cHdrsT  = "Jetstream-Stream-Sequence: %d\r\nJetstream-Sequence: %d\r\nJetstream-Deliver-Count: %d\r\n\r\n"
+)
+
+// createMsgHeader will add on custom headers.
+// TODO(dlc) - if we know client can not receive could avoid.
+func createMsgHeader(ohdr []byte, sseq, dseq, dcount uint64) []byte {
+	var hdr []byte
+	if len(ohdr) > 0 {
+		// Strip ending CRLF, will put it back on at end.
+		hdr = ohdr[:len(ohdr)-len(crlf)]
+	} else {
+		hdr = []byte(hdrLine)
+	}
+	// Now add in the consumer fields.
+	// TODO(dlc) - Make more efficient.
+	hdr = append(hdr, []byte(fmt.Sprintf(cHdrsT, sseq, dseq, dcount))...)
+	return hdr
+}
+
 // Deliver a msg to the observable.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *Consumer) deliverMsg(dsubj, subj string, msg []byte, seq, dcount uint64, ts int64) {
+func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount uint64, ts int64) {
 	if o.mset == nil {
 		return
 	}
+	// Create the headers.
+	ahdr := createMsgHeader(hdr, seq, o.dseq, dcount)
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), ahdr, msg, o, seq}
+
 	sendq := o.mset.sendq
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), msg, o, seq}
 
 	// This needs to be unlocked since the other side may need this lock on failed delivery.
 	o.mu.Unlock()
 	sendq <- pmsg
 	o.mu.Lock()
 
-	if o.config.AckPolicy == AckNone {
+	ap := o.config.AckPolicy
+	if ap == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq
-	} else if o.config.AckPolicy == AckExplicit {
+	} else if ap == AckExplicit || ap == AckAll {
 		o.trackPending(seq)
 	}
 	o.dseq++
@@ -1294,7 +1335,7 @@ func (o *Consumer) trackPending(seq uint64) {
 		o.pending = make(map[uint64]int64)
 	}
 	if o.ptmr == nil {
-		o.ptmr = time.AfterFunc(o.config.AckWait, o.checkPending)
+		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 	}
 	o.pending[seq] = time.Now().UnixNano()
 }
@@ -1361,29 +1402,40 @@ func (o *Consumer) checkPending() {
 		o.mu.Unlock()
 		return
 	}
-	aw := int64(o.config.AckWait)
-
+	ttl := int64(o.config.AckWait)
+	next := int64(o.ackWait(0))
 	now := time.Now().UnixNano()
 	shouldSignal := false
 
 	// Since we can update timestamps, we have to review all pending.
 	// We may want to unlock here or warn if list is big.
-	// we also need to sort after.
+	// We also need to sort after.
 	var expired []uint64
 	for seq, ts := range o.pending {
-		if now-ts > aw && !o.onRedeliverQueue(seq) {
+		elapsed := now - ts
+		if elapsed > ttl && !o.onRedeliverQueue(seq) {
 			expired = append(expired, seq)
 			shouldSignal = true
+		} else if elapsed-ttl < next {
+			// Update when we should fire next.
+			next = elapsed - ttl
 		}
 	}
 
 	if len(expired) > 0 {
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
 		o.rdq = append(o.rdq, expired...)
+		// Now we should update the timestamp here since we are redelivering.
+		// We will use an incrementing time to preserve order for any other redelivery.
+		now := time.Now()
+		for _, seq := range expired {
+			now = now.Add(time.Microsecond)
+			o.pending[seq] = now.UnixNano()
+		}
 	}
 
 	if len(o.pending) > 0 {
-		o.ptmr.Reset(o.config.AckWait)
+		o.ptmr.Reset(o.ackWait(time.Duration(next)))
 	} else {
 		o.ptmr.Stop()
 		o.ptmr = nil
@@ -1434,7 +1486,7 @@ func (o *Consumer) selectSubjectLast() {
 	}
 	// FIXME(dlc) - this is linear and can be optimized by store layer.
 	for seq := stats.LastSeq; seq >= stats.FirstSeq; seq-- {
-		subj, _, _, err := o.mset.store.LoadMsg(seq)
+		subj, _, _, _, err := o.mset.store.LoadMsg(seq)
 		if err == ErrStoreMsgNotFound {
 			continue
 		}

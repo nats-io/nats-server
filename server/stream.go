@@ -204,7 +204,7 @@ func (mset *Stream) sendCreateAdvisory() {
 	j, err := json.MarshalIndent(m, "", "  ")
 	if err == nil {
 		subj := JSAdvisoryStreamCreatedPre + "." + name
-		sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
 	}
 }
 
@@ -227,7 +227,7 @@ func (mset *Stream) sendDeleteAdvisoryLocked() {
 	j, err := json.MarshalIndent(m, "", "  ")
 	if err == nil {
 		subj := JSAdvisoryStreamDeletedPre + "." + mset.config.Name
-		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
 	}
 }
 
@@ -249,7 +249,7 @@ func (mset *Stream) sendUpdateAdvisoryLocked() {
 	j, err := json.MarshalIndent(m, "", "  ")
 	if err == nil {
 		subj := JSAdvisoryStreamUpdatedPre + "." + mset.config.Name
-		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, j, nil, 0}
+		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
 	}
 }
 
@@ -598,7 +598,7 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subject, reply string, msg []byte) {
+func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client
@@ -619,17 +619,27 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 		return
 	}
 
-	// Response to send.
-	var response []byte
-	var seq uint64
-	var err error
-	var ts int64
+	// Response Ack.
+	var (
+		response []byte
+		seq      uint64
+		err      error
+		ts       int64
+	)
 
+	// Header support.
+	var hdr []byte
+
+	// Check to see if we are over the account limit.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
 	} else {
-		// Check to see if we are over the account limit.
-		seq, ts, err = store.StoreMsg(subject, msg)
+		// Headers.
+		if pc != nil && pc.pa.hdr > 0 {
+			hdr = msg[:pc.pa.hdr]
+			msg = msg[pc.pa.hdr:]
+		}
+		seq, ts, err = store.StoreMsg(subject, hdr, msg)
 		if err != nil {
 			if err != ErrStoreClosed {
 				c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
@@ -648,14 +658,14 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, _ *client, subje
 
 	// Send response here.
 	if doAck && len(reply) > 0 {
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, response, nil, 0}
+		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 	}
 
 	if err == nil && numConsumers > 0 && seq > 0 {
 		var needSignal bool
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
-			if !o.deliverCurrentMsg(subject, msg, seq, ts) {
+			if !o.deliverCurrentMsg(subject, hdr, msg, seq, ts) {
 				needSignal = true
 			}
 		}
@@ -681,6 +691,7 @@ type jsPubMsg struct {
 	subj  string
 	dsubj string
 	reply string
+	hdr   []byte
 	msg   []byte
 	o     *Consumer
 	seq   uint64
@@ -690,7 +701,8 @@ type jsPubMsg struct {
 type StoredMsg struct {
 	Subject  string    `json:"subject"`
 	Sequence uint64    `json:"seq"`
-	Data     []byte    `json:"data"`
+	Header   []byte    `json:"hdrs,omitempty"`
+	Data     []byte    `json:"data,omitempty"`
 	Time     time.Time `json:"time"`
 }
 
@@ -745,10 +757,21 @@ func (mset *Stream) internalSendLoop() {
 			}
 			c.pa.subject = []byte(pm.subj)
 			c.pa.deliver = []byte(pm.dsubj)
-			c.pa.size = len(pm.msg)
+			c.pa.size = len(pm.msg) + len(pm.hdr)
 			c.pa.szb = []byte(strconv.Itoa(c.pa.size))
 			c.pa.reply = []byte(pm.reply)
-			msg := append(pm.msg, _CRLF_...)
+
+			var msg []byte
+			if len(pm.hdr) > 0 {
+				c.pa.hdr = len(pm.hdr)
+				c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
+				msg = append(pm.hdr, pm.msg...)
+				msg = append(msg, _CRLF_...)
+			} else {
+				c.pa.hdr = -1
+				c.pa.hdb = nil
+				msg = append(pm.msg, _CRLF_...)
+			}
 			didDeliver := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
@@ -824,13 +847,14 @@ func (mset *Stream) stop(delete bool) error {
 }
 
 func (mset *Stream) GetMsg(seq uint64) (*StoredMsg, error) {
-	subj, msg, ts, err := mset.store.LoadMsg(seq)
+	subj, hdr, msg, ts, err := mset.store.LoadMsg(seq)
 	if err != nil {
 		return nil, err
 	}
 	sm := &StoredMsg{
 		Subject:  subj,
 		Sequence: seq,
+		Header:   hdr,
 		Data:     msg,
 		Time:     time.Unix(0, ts).UTC(),
 	}
@@ -936,7 +960,7 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.
-func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*SnapshotResult, error) {
+func (mset *Stream) Snapshot(deadline time.Duration, checkMsgs, includeConsumers bool) (*SnapshotResult, error) {
 	mset.mu.Lock()
 	if mset.client == nil || mset.store == nil {
 		mset.mu.Unlock()
@@ -954,7 +978,7 @@ func (mset *Stream) Snapshot(deadline time.Duration, includeConsumers bool) (*Sn
 		o.writeState()
 	}
 
-	return store.Snapshot(deadline, includeConsumers)
+	return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }
 
 const snapsDir = "__snapshots__"
