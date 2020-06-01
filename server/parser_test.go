@@ -225,6 +225,16 @@ func TestParsePub(t *testing.T) {
 	}
 }
 
+// https://www.twistlock.com/labs-blog/finding-dos-vulnerability-nats-go-fuzz-cve-2019-13126/
+func TestParsePubSizeOverflow(t *testing.T) {
+	c := dummyClient()
+
+	pub := []byte("PUB foo 3333333333333333333333333333333333333333333333333333333333333333\r\n")
+	if err := c.parse(pub); err == nil {
+		t.Fatalf("Expected an error")
+	}
+}
+
 func TestParsePubArg(t *testing.T) {
 	c := dummyClient()
 
