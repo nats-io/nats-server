@@ -1672,7 +1672,7 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 
 	// Create basic work queue mode consumer.
 	oname := "WQ"
-	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname})
+	o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, AckPolicy: server.AckExplicit})
 	if err != nil {
 		b.Fatalf("Expected no error with registered interest, got %v", err)
 	}
