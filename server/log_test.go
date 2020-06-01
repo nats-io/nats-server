@@ -184,6 +184,66 @@ func TestReOpenLogFile(t *testing.T) {
 	}
 }
 
+func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
+	s := &Server{opts: &Options{}}
+	defer s.SetLogger(nil, false, false)
+
+	tmpDir, err := ioutil.TempDir("", "nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
+	file, err := ioutil.TempFile(tmpDir, "log_")
+	if err != nil {
+		t.Fatalf("Could not create the temp file: %v", err)
+	}
+	file.Close()
+
+	// Set a File log
+	s.opts.LogFile = file.Name()
+	s.opts.Logtime = true
+	s.opts.LogSizeLimit = 1000
+	s.ConfigureLogger()
+
+	// Add a trace
+	s.Noticef("this is a notice")
+
+	// Do a re-open...
+	s.ReOpenLogFile()
+
+	// Content should indicate that we have re-opened the log
+	buf, err := ioutil.ReadFile(s.opts.LogFile)
+	if err != nil {
+		t.Fatalf("Error reading file: %v", err)
+	}
+	if strings.HasSuffix(string(buf), "File log-reopened") {
+		t.Fatalf("File should indicate that file log was re-opened, got: %v", string(buf))
+	}
+
+	// Now make sure that the limit is still honored.
+	txt := make([]byte, 800)
+	for i := 0; i < len(txt); i++ {
+		txt[i] = 'A'
+	}
+	s.Noticef(string(txt))
+	for i := 0; i < len(txt); i++ {
+		txt[i] = 'B'
+	}
+	s.Noticef(string(txt))
+
+	buf, err = ioutil.ReadFile(s.opts.LogFile)
+	if err != nil {
+		t.Fatalf("Error reading file: %v", err)
+	}
+	sbuf := string(buf)
+	if strings.Contains(sbuf, "AAAAA") || strings.Contains(sbuf, "BBBBB") {
+		t.Fatalf("Looks like file was not rotated: %s", sbuf)
+	}
+	if !strings.Contains(sbuf, "Rotated log, backup saved") {
+		t.Fatalf("File should have been rotated, was not: %s", sbuf)
+	}
+}
+
 func TestNoPasswordsFromConnectTrace(t *testing.T) {
 	opts := DefaultOptions()
 	opts.NoLog = false
