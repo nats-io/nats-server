@@ -985,6 +985,7 @@ func testWSOptions() *Options {
 	opts.DisableShortFirstPing = true
 	opts.Websocket.Host = "127.0.0.1"
 	opts.Websocket.Port = -1
+	opts.NoSystemAccount = true
 	var err error
 	tc := &TLSConfigOpts{
 		CertFile: "./configs/certs/server.pem",

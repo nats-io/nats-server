@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -310,6 +310,7 @@ func TestSeedSolicitWorks(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
+	optsSeed.NoSystemAccount = true
 
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
@@ -366,6 +367,7 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
+	optsSeed.NoSystemAccount = true
 
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
@@ -422,6 +424,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
+	optsSeed.NoSystemAccount = true
 
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
@@ -480,7 +483,7 @@ func TestChainedSolicitWorks(t *testing.T) {
 // expected number of subscriptions.
 func checkExpectedSubs(t *testing.T, expected int, servers ...*Server) {
 	t.Helper()
-	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+	checkFor(t, 4*time.Second, 10*time.Millisecond, func() error {
 		for _, s := range servers {
 			if numSubs := int(s.NumSubscriptions()); numSubs != expected {
 				return fmt.Errorf("Expected %d subscriptions for server %q, got %d", expected, s.ID(), numSubs)
@@ -494,6 +497,7 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
+	optsSeed.NoSystemAccount = true
 
 	srvSeed := RunServer(optsSeed)
 	defer srvSeed.Shutdown()
@@ -1013,6 +1017,7 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
 	optsA := DefaultOptions()
 	optsA.MaxPending = 1024
+	optsA.NoSystemAccount = true
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -1031,6 +1036,7 @@ func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
 	// Now create a route between B and A
 	optsB := DefaultOptions()
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsB.NoSystemAccount = true
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 

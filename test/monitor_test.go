@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -40,7 +40,7 @@ func runMonitorServer() *server.Server {
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = MONITOR_PORT
 	opts.HTTPHost = "127.0.0.1"
-
+	opts.NoSystemAccount = true
 	return RunServer(&opts)
 }
 
@@ -53,6 +53,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts.HTTPHost = "127.0.0.1"
 	opts.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10223}
 	opts.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10222")
+	opts.NoSystemAccount = true
 
 	s1 := RunServer(&opts)
 
@@ -62,6 +63,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts2.HTTPHost = "127.0.0.1"
 	opts2.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10222}
 	opts2.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10223")
+	opts2.NoSystemAccount = true
 
 	s2 := RunServer(&opts2)
 
@@ -75,6 +77,7 @@ func runMonitorServerNoHTTPPort() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = 0
+	opts.NoSystemAccount = true
 
 	return RunServer(&opts)
 }

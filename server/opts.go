@@ -168,6 +168,7 @@ type Options struct {
 	Accounts              []*Account    `json:"-"`
 	NoAuthUser            string        `json:"-"`
 	SystemAccount         string        `json:"-"`
+	NoSystemAccount       bool          `json:"-"`
 	AllowNewAccounts      bool          `json:"-"`
 	Username              string        `json:"-"`
 	Password              string        `json:"-"`
@@ -841,6 +842,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		// Already processed at the beginning so we just skip them
 		// to not treat them as unknown values.
 		return
+	case "no_system_account", "no_system", "no_sys_acc":
+		o.NoSystemAccount = v.(bool)
 	case "trusted", "trusted_keys":
 		switch v := v.(type) {
 		case string:

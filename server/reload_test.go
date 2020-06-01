@@ -1,4 +1,4 @@
-// Copyright 2017-2019 The NATS Authors
+// Copyright 2017-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2076,6 +2076,7 @@ func TestConfigReloadClusterPerms(t *testing.T) {
 				}
 			}
 		}
+		no_sys_acc: true
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `"foo"`, `"foo"`)))
 	defer os.Remove(confA)
@@ -2098,6 +2099,7 @@ func TestConfigReloadClusterPerms(t *testing.T) {
 				"nats://127.0.0.1:%d"
 			]
 		}
+		no_sys_acc: true
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, `"foo"`, `"foo"`, srva.ClusterAddr().Port)))
 	defer os.Remove(confB)
@@ -2234,6 +2236,7 @@ func TestConfigReloadClusterPerms(t *testing.T) {
 		cluster {
 			listen: 127.0.0.1:-1
 		}
+		no_sys_acc: true
 	`)
 	// Server A should now have baz sub
 	checkExpectedSubs(t, 5, srvb)
@@ -2253,6 +2256,7 @@ func TestConfigReloadClusterPerms(t *testing.T) {
 				"nats://127.0.0.1:%d"
 			]
 		}
+		no_sys_acc: true
 	`, srva.ClusterAddr().Port))
 	// Check expected subscriptions count.
 	checkExpectedSubs(t, 5, srvb)
@@ -2270,6 +2274,7 @@ func TestConfigReloadClusterPermsImport(t *testing.T) {
 				}
 			}
 		}
+		no_sys_acc: true
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `["foo", "bar"]`)))
 	defer os.Remove(confA)
@@ -2284,6 +2289,7 @@ func TestConfigReloadClusterPermsImport(t *testing.T) {
 				"nats://127.0.0.1:%d"
 			]
 		}
+		no_sys_acc: true
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port)))
 	defer os.Remove(confB)
@@ -2326,6 +2332,7 @@ func TestConfigReloadClusterPermsImport(t *testing.T) {
 				export: ">"
 			}
 		}
+		no_sys_acc: true
 	`)
 	checkExpectedSubs(t, 2, srva, srvb)
 
@@ -2340,6 +2347,7 @@ func TestConfigReloadClusterPermsImport(t *testing.T) {
 				}
 			}
 		}
+		no_sys_acc: true
 	`
 	// Now deny all:
 	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
@@ -2363,6 +2371,7 @@ func TestConfigReloadClusterPermsExport(t *testing.T) {
 				}
 			}
 		}
+		no_sys_acc: true
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `["foo", "bar"]`)))
 	defer os.Remove(confA)
@@ -2377,6 +2386,7 @@ func TestConfigReloadClusterPermsExport(t *testing.T) {
 				"nats://127.0.0.1:%d"
 			]
 		}
+		no_sys_acc: true
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port)))
 	defer os.Remove(confB)
@@ -2419,6 +2429,7 @@ func TestConfigReloadClusterPermsExport(t *testing.T) {
 				import: ">"
 			}
 		}
+		no_sys_acc: true
 	`)
 	checkExpectedSubs(t, 2, srva, srvb)
 
@@ -2433,6 +2444,7 @@ func TestConfigReloadClusterPermsExport(t *testing.T) {
 				}
 			}
 		}
+		no_sys_acc: true
 	`
 	// Now deny all:
 	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`))
@@ -2867,6 +2879,7 @@ func TestConfigReloadAccountStreamsImportExport(t *testing.T) {
 			]
 		}
 	}
+	no_sys_acc: true
 	`
 	// synadia account exports "private.>" to nats.io
 	// synadia account exports "foo.*"
@@ -3059,6 +3072,7 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 			]
 		}
 	}
+	no_sys_acc: true
 	`))
 	defer os.Remove(conf)
 	s, opts := RunServerWithConfig(conf)
@@ -3157,6 +3171,7 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 			]
 		}
 	}
+	no_sys_acc: true
 	`)
 	// This still should work
 	req(t, ivan, "foo", "reply1")
@@ -3192,6 +3207,7 @@ func TestConfigReloadNotPreventedByGateways(t *testing.T) {
 				}
 			]
 		}
+		no_sys_acc: true
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, "", "5")))
 	defer os.Remove(conf)

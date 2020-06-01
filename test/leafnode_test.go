@@ -48,6 +48,7 @@ func testDefaultOptionsForLeafNodes() *server.Options {
 	o.Port = -1
 	o.LeafNode.Host = o.Host
 	o.LeafNode.Port = -1
+	o.NoSystemAccount = true
 	return &o
 }
 
@@ -69,6 +70,7 @@ func runSolicitLeafServer(lso *server.Options) (*server.Server, *server.Options)
 func runSolicitLeafServerToURL(surl string) (*server.Server, *server.Options) {
 	o := DefaultTestOptions
 	o.Port = -1
+	o.NoSystemAccount = true
 	rurl, _ := url.Parse(surl)
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond

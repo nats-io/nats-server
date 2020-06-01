@@ -46,6 +46,7 @@ type serverInfo struct {
 	Headers      bool     `json:"headers"`
 	ConnectURLs  []string `json:"connect_urls,omitempty"`
 	LameDuckMode bool     `json:"ldm,omitempty"`
+	CID          uint64   `json:"client_id,omitempty"`
 }
 
 type testAsyncClient struct {
@@ -1997,19 +1998,27 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	}
 	defer c.Close()
 
-	var buf [1024]byte
+	cr := bufio.NewReader(c)
+
 	// Wait for INFO...
-	c.Read(buf[:])
+	line, _, _ := cr.ReadLine()
+	var info serverInfo
+	if err = json.Unmarshal(line[5:], &info); err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
 
 	// Send our connect
-	if _, err := c.Write([]byte("CONNECT {}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
+	if _, err := c.Write([]byte("CONNECT {\"verbose\": false}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
 		t.Fatalf("Error sending CONNECT and SUB: %v", err)
 	}
 	// Wait for PONG
-	c.Read(buf[:])
+	line, _, _ = cr.ReadLine()
+	if string(line) != "PONG" {
+		t.Fatalf("Expected 'PONG' but got %q", line)
+	}
 
 	// Get the client from server map
-	cli := s.GetClient(1)
+	cli := s.GetClient(info.CID)
 	if cli == nil {
 		t.Fatalf("No client registered")
 	}
@@ -2126,7 +2135,8 @@ func TestClientIPv6Address(t *testing.T) {
 	}
 	defer nc.Close()
 
-	c := s.GetClient(1)
+	cid, _ := nc.GetClientID()
+	c := s.GetClient(cid)
 	c.mu.Lock()
 	ncs := c.ncs
 	c.mu.Unlock()
