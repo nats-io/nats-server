@@ -17,7 +17,9 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +30,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
 
@@ -2494,4 +2497,119 @@ func TestBearerToken(t *testing.T) {
 		t.Fatalf("Expected +OK, got %s", l)
 	}
 	wg.Wait()
+}
+
+func TestExpiredUserCredentialsRenewal(t *testing.T) {
+	createTmpFile := func(t *testing.T, content []byte) string {
+		t.Helper()
+		conf, err := ioutil.TempFile("", "")
+		if err != nil {
+			t.Fatalf("Error creating conf file: %v", err)
+		}
+		fName := conf.Name()
+		conf.Close()
+		if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+			os.Remove(fName)
+			t.Fatalf("Error writing conf file: %v", err)
+		}
+		return fName
+	}
+	waitTime := func(ch chan bool, timeout time.Duration) error {
+		select {
+		case <-ch:
+			return nil
+		case <-time.After(timeout):
+		}
+		return errors.New("timeout")
+	}
+
+	okp, _ := nkeys.FromSeed(oSeed)
+	akp, err := nkeys.CreateAccount()
+	if err != nil {
+		t.Fatalf("Error generating account")
+	}
+	aPub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(aPub)
+	aJwt, err := nac.Encode(okp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	kp, _ := nkeys.FromSeed(oSeed)
+	oPub, _ := kp.PublicKey()
+	opts := defaultServerOptions
+	opts.TrustedKeys = []string{oPub}
+	s := RunServer(&opts)
+	if s == nil {
+		t.Fatal("Server did not start")
+	}
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, aPub, aJwt)
+
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+	uSeed, _ := nkp.Seed()
+	nuc := newJWTTestUserClaims()
+	nuc.Subject = pub
+	nuc.Expires = time.Now().Add(time.Second).Unix()
+	uJwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	creds, err := jwt.FormatUserConfig(uJwt, uSeed)
+	if err != nil {
+		t.Fatalf("Error encoding credentials: %v", err)
+	}
+	chainedFile := createTmpFile(t, creds)
+	defer os.Remove(chainedFile)
+
+	rch := make(chan bool)
+
+	url := fmt.Sprintf("nats://%s:%d", s.opts.Host, s.opts.Port)
+	nc, err := nats.Connect(url,
+		nats.UserCredentials(chainedFile),
+		nats.ReconnectWait(25*time.Millisecond),
+		nats.ReconnectJitter(0, 0),
+		nats.MaxReconnects(2),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			rch <- true
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v %s", err, url)
+	}
+	defer nc.Close()
+
+	// Place new credentials underneath.
+	nuc.Expires = time.Now().Add(30 * time.Second).Unix()
+	uJwt, err = nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error encoding user jwt: %v", err)
+	}
+	creds, err = jwt.FormatUserConfig(uJwt, uSeed)
+	if err != nil {
+		t.Fatalf("Error encoding credentials: %v", err)
+	}
+	if err := ioutil.WriteFile(chainedFile, creds, 0666); err != nil {
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+
+	// Make sure we get disconnected and reconnected first.
+	if err := waitTime(rch, 2*time.Second); err != nil {
+		t.Fatal("Should have reconnected.")
+	}
+
+	// We should not have been closed.
+	if nc.IsClosed() {
+		t.Fatal("Got disconnected when we should have reconnected.")
+	}
+
+	// Check that we clear the lastErr that can cause the disconnect.
+	// Our reconnect CB will happen before the clear. So check after a bit.
+	time.Sleep(50 * time.Millisecond)
+	if nc.LastError() != nil {
+		t.Fatalf("Expected lastErr to be cleared, got %q", nc.LastError())
+	}
 }

@@ -10,4 +10,5 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59
 	golang.org/x/sys v0.0.0-20191022100944-742c48ecaeb7
+	google.golang.org/protobuf v1.24.0 // indirect
 )
