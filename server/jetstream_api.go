@@ -1154,35 +1154,36 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	acc := c.acc
+	smsg := string(msg)
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
 	var req JSApiStreamSnapshotRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if !IsValidSubject(req.DeliverSubject) {
 		resp.Error = &ApiError{Code: 400, Description: "deliver subject not valid"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
@@ -1192,13 +1193,13 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
 		if err != nil {
 			resp.Error = jsError(err)
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
 
 		resp.NumBlks = sr.NumBlks
 		resp.BlkSize = sr.BlkSize
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(resp))
 
 		// Now do the real streaming.
 		s.streamSnapshot(c, mset, sr, &req)
