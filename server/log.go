@@ -148,6 +148,9 @@ func (s *Server) ReOpenLogFile() {
 		fileLog := srvlog.NewFileLogger(opts.LogFile,
 			opts.Logtime, opts.Debug, opts.Trace, true)
 		s.SetLogger(fileLog, opts.Debug, opts.Trace)
+		if opts.LogSizeLimit > 0 {
+			fileLog.SetSizeLimit(opts.LogSizeLimit)
+		}
 		s.Noticef("File log re-opened")
 	}
 }
