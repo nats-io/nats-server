@@ -1886,7 +1886,7 @@ func TestJetStreamAckAllRedelivery(t *testing.T) {
 
 			o, err := mset.AddConsumer(&server.ConsumerConfig{
 				DeliverSubject: sub.Subject,
-				AckWait:        20 * time.Millisecond,
+				AckWait:        50 * time.Millisecond,
 				AckPolicy:      server.AckAll,
 			})
 			if err != nil {
@@ -1897,7 +1897,7 @@ func TestJetStreamAckAllRedelivery(t *testing.T) {
 			// Wait for messages.
 			// We will do 5 redeliveries.
 			for i := 1; i <= 5; i++ {
-				checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
 					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend*i {
 						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend*i)
 					}
