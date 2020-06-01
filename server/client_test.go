@@ -1998,20 +1998,24 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	}
 	defer c.Close()
 
-	var buf [4 * 1024]byte
+	cr := bufio.NewReader(c)
+
 	// Wait for INFO...
-	n, _ := c.Read(buf[:])
+	line, _, _ := cr.ReadLine()
 	var info serverInfo
-	if err = json.Unmarshal([]byte(buf[5:n]), &info); err != nil {
+	if err = json.Unmarshal(line[5:], &info); err != nil {
 		t.Fatalf("Could not parse INFO json: %v\n", err)
 	}
 
 	// Send our connect
-	if _, err := c.Write([]byte("CONNECT {}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
+	if _, err := c.Write([]byte("CONNECT {\"verbose\": false}\r\nSUB foo 1\r\nPING\r\n")); err != nil {
 		t.Fatalf("Error sending CONNECT and SUB: %v", err)
 	}
 	// Wait for PONG
-	c.Read(buf[:])
+	line, _, _ = cr.ReadLine()
+	if string(line) != "PONG" {
+		t.Fatalf("Expected 'PONG' but got %q", line)
+	}
 
 	// Get the client from server map
 	cli := s.GetClient(info.CID)
