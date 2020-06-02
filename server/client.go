@@ -1546,7 +1546,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		} else if c.acc == nil {
 			// By default register with the global account.
-			c.registerWithAccount(srv.gacc)
+			c.registerWithAccount(srv.globalAccount())
 		}
 
 	}

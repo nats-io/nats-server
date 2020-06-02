@@ -1095,6 +1095,7 @@ func (s *Server) reloadAuthorization() {
 				// If account exist in latest config, "transfer" the account's
 				// sublist and client map to the new account.
 				acc.mu.RLock()
+				newAcc.mu.Lock()
 				if len(acc.clients) > 0 {
 					newAcc.clients = make(map[*client]struct{}, len(acc.clients))
 					for c := range acc.clients {
@@ -1112,6 +1113,7 @@ func (s *Server) reloadAuthorization() {
 						newAcc.imports.rrMap[k] = v
 					}
 				}
+				newAcc.mu.Unlock()
 				acc.mu.RUnlock()
 
 				// Check if current and new config of this account are same
