@@ -48,9 +48,9 @@ Messages that include a header have a `HPUB` protocol:
 HPUB SUBJECT REPLY 23 30\r\nNATS/1.0\r\nHeader: X\r\n\r\nPAYLOAD\r\n
 HPUB SUBJECT REPLY 23 23\r\nNATS/1.0\r\nHeader: X\r\n\r\n\r\n
 
-HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>`
-`<HEADER><PAYLOAD>`
-`
+HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>
+<HEADER><PAYLOAD>
+
 ```
 
 #### NOTES:
@@ -66,9 +66,8 @@ Clients will see `HMSG` protocol lines for `MSG`s that contain headers
 HMSG SUBJECT 1 REPLY 23 30\r\nNATS/1.0\r\nHeader: X\r\n\r\nPAYLOAD\r\n
 HPUB SUBJECT 1 REPLY 23 23\r\nNATS/1.0\r\nHeader: X\r\n\r\n\r\n
 
-HMSG <SUBJECT> <SID> [REPLY] <HDR_LEN> <TOT_LEN>`
-`<PAYLOAD>`
-`
+HMSG <SUBJECT> <SID> [REPLY] <HDR_LEN> <TOT_LEN>
+<PAYLOAD>
 ```
 
 - `HDR_LEN` includes the entire header
