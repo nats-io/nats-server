@@ -4044,6 +4044,7 @@ func TestLoggingReload(t *testing.T) {
 	}
 
 	check := func(filename string, valid func([]byte) bool) {
+		t.Helper()
 		log, err := ioutil.ReadFile(filename)
 		if err != nil {
 			t.Fatalf("Error reading log file %s: %v\n", filename, err)
@@ -4071,6 +4072,7 @@ func TestLoggingReload(t *testing.T) {
 	defer s.Shutdown()
 
 	reload := func(change string) {
+		t.Helper()
 		changeCurrentConfigContentWithNewContent(t, conf, []byte(commonCfg+`
 			`+change+`
 		`))
@@ -4081,6 +4083,7 @@ func TestLoggingReload(t *testing.T) {
 	}
 
 	traffic := func(cnt int) {
+		t.Helper()
 		// Create client and sub interest on server and create traffic
 		urlSeed := fmt.Sprintf("nats://bar:pwd@%s:%d/", opts.Host, opts.Port)
 		nc, err := nats.Connect(urlSeed)
@@ -4088,7 +4091,7 @@ func TestLoggingReload(t *testing.T) {
 			t.Fatalf("Error creating client: %v\n", err)
 		}
 
-		msgs := make(chan *nats.Msg)
+		msgs := make(chan *nats.Msg, 1)
 		defer close(msgs)
 
 		sub, err := nc.ChanSubscribe("foo", msgs)
