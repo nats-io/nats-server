@@ -34,8 +34,10 @@ const (
 // parseSize expects decimal positive numbers. We
 // return -1 to signal error.
 func parseSize(d []byte) (n int) {
+	const maxParseSizeLen = 9 //999M
+
 	l := len(d)
-	if l == 0 {
+	if l == 0 || l > maxParseSizeLen {
 		return -1
 	}
 	var (

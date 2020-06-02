@@ -112,7 +112,7 @@ func TestMaxPayloadOverrun(t *testing.T) {
 	defer c.Close()
 
 	send, expect := setupConn(t, c)
-	send("PUB foo 380571791000988\r\n")
+	send("PUB foo 199380988\r\n")
 	expect(errRe)
 
 	// Now overrun an int64, parseSize will have returned -1,
