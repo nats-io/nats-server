@@ -1637,7 +1637,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 
 // sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
 func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
-	s.publishAdvisory(c.acc, subject, JSAPIAudit{
+	s.publishAdvisory(c.acc, JSAuditAdvisory, JSAPIAudit{
 		TypedEvent: TypedEvent{
 			Type: JSAPIAuditType,
 			ID:   nuid.Next(),
