@@ -1791,6 +1791,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			var (
 				users   []*User
 				nkeyUsr []*NkeyUser
+				usersTk token
 			)
 			acc := NewAccount(aname)
 			opts.Accounts = append(opts.Accounts, acc)
@@ -1830,6 +1831,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 				case "users":
 					var err error
+					usersTk = tk
 					nkeyUsr, users, err = parseUsers(mv, opts, errors, warnings)
 					if err != nil {
 						*errors = append(*errors, err)
@@ -1857,7 +1859,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			applyDefaultPermissions(users, nkeyUsr, acc.defaultPerms)
 			for _, u := range nkeyUsr {
 				if _, ok := uorn[u.Nkey]; ok {
-					err := &configErr{tk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
+					err := &configErr{usersTk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -1867,7 +1869,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			opts.Nkeys = append(opts.Nkeys, nkeyUsr...)
 			for _, u := range users {
 				if _, ok := uorn[u.Username]; ok {
-					err := &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+					err := &configErr{usersTk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
 					*errors = append(*errors, err)
 					continue
 				}

@@ -750,8 +750,8 @@ func TestConfigCheck(t *testing.T) {
                 http_port = 8222
 				`,
 			err:       errors.New(`Duplicate user "foo" detected`),
-			errorLine: 5,
-			errorPos:  19,
+			errorLine: 6,
+			errorPos:  21,
 		},
 		{
 			name: "when accounts block imports are not a list",
