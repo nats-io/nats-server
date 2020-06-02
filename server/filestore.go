@@ -1134,9 +1134,11 @@ func (fs *fileStore) eraseMsg(mb *msgBlock, sm *fileStoredMsg) error {
 	}
 	// erase contents and rewrite with new hash.
 	if len(sm.hdr) > 0 {
+		sm.hdr = make([]byte, len(sm.hdr))
 		rand.Read(sm.hdr)
 	}
 	if len(sm.msg) > 0 {
+		sm.msg = make([]byte, len(sm.msg))
 		rand.Read(sm.msg)
 	}
 	sm.seq, sm.ts = 0, 0

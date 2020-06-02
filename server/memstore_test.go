@@ -215,9 +215,6 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
 	}
-	if bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected msg to be erased")
-	}
 }
 
 func TestMemStoreMsgHeaders(t *testing.T) {
@@ -242,11 +239,5 @@ func TestMemStoreMsgHeaders(t *testing.T) {
 	}
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
-	}
-	if bytes.Equal(hdr, shdr) {
-		t.Fatalf("Expected hdr to be erased")
-	}
-	if bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected msg to be erased")
 	}
 }

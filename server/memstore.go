@@ -323,12 +323,14 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 	if secure {
 		if len(sm.hdr) > 0 {
+			sm.hdr = make([]byte, len(sm.hdr))
 			rand.Read(sm.hdr)
 		}
 		if len(sm.msg) > 0 {
+			sm.msg = make([]byte, len(sm.msg))
 			rand.Read(sm.msg)
 		}
-		sm.seq = 0
+		sm.seq, sm.ts = 0, 0
 	}
 
 	if ms.scb != nil {
