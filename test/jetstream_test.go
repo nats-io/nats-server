@@ -6345,12 +6345,6 @@ func TestJetStreamMsgHeaders(t *testing.T) {
 				cm.Header.Get("Authorization") != "s3cr3t" {
 				t.Fatalf("Original headers not present")
 			}
-			// Now check for jetstream headers.
-			if cm.Header.Get("Jetstream-Stream-Sequence") != "1" ||
-				cm.Header.Get("Jetstream-Sequence") != "1" ||
-				cm.Header.Get("Jetstream-Deliver-Count") != "1" {
-				t.Fatalf("Did not get proper Jetstream headers: %+v", cm.Header)
-			}
 			if !bytes.Equal(m.Data, cm.Data) {
 				t.Fatalf("Message payloads are not the same: %q vs %q", cm.Data, m.Data)
 			}
