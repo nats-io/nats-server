@@ -1,15 +1,15 @@
 # github.com/minio/highwayhash v1.0.0
 ## explicit
 github.com/minio/highwayhash
-# github.com/nats-io/jwt v0.3.3-0.20200519195258-f2bf5ce574c7
+# github.com/nats-io/jwt/v2 v2.0.0-20200601202241-430770d434ee
 ## explicit
-github.com/nats-io/jwt
-# github.com/nats-io/nats.go v1.10.1-0.20200531124210-96f2130e4d55
+github.com/nats-io/jwt/v2
+# github.com/nats-io/nats.go v1.10.1-0.20200601214746-e93e18d0ed6f
 ## explicit
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
 github.com/nats-io/nats.go/util
-# github.com/nats-io/nkeys v0.1.4
+# github.com/nats-io/nkeys v0.2.0
 ## explicit
 github.com/nats-io/nkeys
 # github.com/nats-io/nuid v1.0.1
@@ -29,3 +29,5 @@ golang.org/x/sys/windows/registry
 golang.org/x/sys/windows/svc
 golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc/mgr
+# google.golang.org/protobuf v1.24.0
+## explicit

@@ -49,7 +49,7 @@ func (o *OperatorLimits) IsUnlimited() bool {
 }
 
 // Validate checks that the operator limits contain valid values
-func (o *OperatorLimits) Validate(vr *ValidationResults) {
+func (o *OperatorLimits) Validate(_ *ValidationResults) {
 	// negative values mean unlimited, so all numbers are valid
 }
 
@@ -61,6 +61,7 @@ type Account struct {
 	Limits      OperatorLimits `json:"limits,omitempty"`
 	SigningKeys StringList     `json:"signing_keys,omitempty"`
 	Revocations RevocationList `json:"revocations,omitempty"`
+	GenericFields
 }
 
 // Validate checks if the account is valid, based on the wrapper
@@ -130,17 +131,21 @@ func (a *AccountClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	}
 	sort.Sort(a.Exports)
 	sort.Sort(a.Imports)
-	a.ClaimsData.Type = AccountClaim
+	a.Type = AccountClaim
 	return a.ClaimsData.Encode(pair, a)
 }
 
 // DecodeAccountClaims decodes account claims from a JWT string
 func DecodeAccountClaims(token string) (*AccountClaims, error) {
-	v := AccountClaims{}
-	if err := Decode(token, &v); err != nil {
+	claims, err := Decode(token)
+	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	ac, ok := claims.(*AccountClaims)
+	if !ok {
+		return nil, errors.New("not account claim")
+	}
+	return ac, nil
 }
 
 func (a *AccountClaims) String() string {
@@ -167,6 +172,14 @@ func (a *AccountClaims) Validate(vr *ValidationResults) {
 	}
 }
 
+func (a *AccountClaims) ClaimType() ClaimType {
+	return a.Type
+}
+
+func (a *AccountClaims) updateVersion() {
+	a.GenericFields.Version = libVersion
+}
+
 // ExpectedPrefixes defines the types that can encode an account jwt, account and operator
 func (a *AccountClaims) ExpectedPrefixes() []nkeys.PrefixByte {
 	return []nkeys.PrefixByte{nkeys.PrefixByteAccount, nkeys.PrefixByteOperator}
@@ -189,12 +202,12 @@ func (a *AccountClaims) DidSign(op Claims) bool {
 	return false
 }
 
-// Revoke enters a revocation by publickey using time.Now().
+// Revoke enters a revocation by public key using time.Now().
 func (a *AccountClaims) Revoke(pubKey string) {
 	a.RevokeAt(pubKey, time.Now())
 }
 
-// RevokeAt enters a revocation by publickey and timestamp into this export
+// RevokeAt enters a revocation by public key and timestamp into this export
 // If there is already a revocation for this public key that is newer, it is kept.
 func (a *AccountClaims) RevokeAt(pubKey string, timestamp time.Time) {
 	if a.Revocations == nil {

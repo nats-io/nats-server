@@ -2664,3 +2664,51 @@ func TestReadOperatorJWTSystemAccountMismatch(t *testing.T) {
 		t.Fatalf("Received unexpected error %s", err)
 	}
 }
+
+const operatorJwtAssertVersion_1_2_3 = `
+	listen: "127.0.0.1:-1"
+	// Operator "TESTOP"
+	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJYWFhGNEREQTdRSEtCSU5MUlBSNTZPUFFTUjc0RFdLSjZCQkZWN1BSVEpMNUtDUUdCUFhBIiwiaWF0IjoxNTkwNTI4NTI1LCJpc3MiOiJPRDRYSkwyM0haSlozTzZKQ0FGUTZSVk9ZR0JZWUtGU0tIRlJFWkRaUEJGN1I0SlpQSTVWNzNLTSIsInN1YiI6Ik9ENFhKTDIzSFpKWjNPNkpDQUZRNlJWT1lHQllZS0ZTS0hGUkVaRFpQQkY3UjRKWlBJNVY3M0tNIiwibmF0cyI6eyJhc3NlcnRfc2VydmVyX3ZlcnNpb24iOiIxLjIuMyIsInR5cGUiOiJvcGVyYXRvciIsInZlcnNpb24iOjJ9fQ.ERRsFUekK7W5tZbeYlkLlwU3AGMpZTtlh5jKIj2rWoLnoWLlWcjXYD4uKdaT-tNGbsahiQZV82C5_K89BCWODA
+	resolver: MEMORY
+	resolver_preload: {
+	}
+`
+
+func TestReadOperatorAssertVersion(t *testing.T) {
+	confFileName := createConfFile(t, []byte(operatorJwtAssertVersion_1_2_3))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	s, err := NewServer(opts)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	s.Shutdown()
+}
+
+const operatorJwtAssertVersion_10_20_30 = `
+	listen: "127.0.0.1:-1"
+	// Operator "TESTOP"
+	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJJRjNXQkFENk9JWE5HTzRWUFkzQ0hTS1ZMUDJXT0ZLQkZPR0RMUFRHSERVR0hRV1BUVlNRIiwiaWF0IjoxNTkwNTI4NTI1LCJpc3MiOiJPQ0laQUFVN0dDNkREU0QyTk1VQU9VQ0JRS09SQlNEQUxPSVBNRDRSVEM0SUhCRUZQRVE0TjZERSIsInN1YiI6Ik9DSVpBQVU3R0M2RERTRDJOTVVBT1VDQlFLT1JCU0RBTE9JUE1ENFJUQzRJSEJFRlBFUTRONkRFIiwibmF0cyI6eyJhc3NlcnRfc2VydmVyX3ZlcnNpb24iOiIxMC4yMC4zMCIsInR5cGUiOiJvcGVyYXRvciIsInZlcnNpb24iOjJ9fQ.bGFUCQIa2D5GjluEbXYJQGZnsM_O1r46b_xq2AUp4cEYGqCqvBAJZp9coBTgXL-4MPjyoPZSj2RglC1yUy9aDQ
+	resolver: MEMORY
+	resolver_preload: {
+	}
+`
+
+func TestReadOperatorAssertVersionFail(t *testing.T) {
+	confFileName := createConfFile(t, []byte(operatorJwtAssertVersion_10_20_30))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	s, err := NewServer(opts)
+	if err == nil {
+		s.Shutdown()
+		t.Fatalf("Received no error")
+	} else if !strings.Contains(err.Error(), "expected major version 10 > server major version") {
+		t.Fatal("expected different error got: ", err)
+	}
+}

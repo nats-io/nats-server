@@ -28,8 +28,12 @@ import (
 // Activation defines the custom parts of an activation claim
 type Activation struct {
 	ImportSubject Subject    `json:"subject,omitempty"`
-	ImportType    ExportType `json:"type,omitempty"`
+	ImportType    ExportType `json:"kind,omitempty"`
+	// IssuerAccount stores the public key for the account the issuer represents.
+	// When set, the claim was issued by a signing key.
+	IssuerAccount string `json:"issuer_account,omitempty"`
 	Limits
+	GenericFields
 }
 
 // IsService returns true if an Activation is for a service
@@ -62,9 +66,6 @@ func (a *Activation) Validate(vr *ValidationResults) {
 type ActivationClaims struct {
 	ClaimsData
 	Activation `json:"nats,omitempty"`
-	// IssuerAccount stores the public key for the account the issuer represents.
-	// When set, the claim was issued by a signing key.
-	IssuerAccount string `json:"issuer_account,omitempty"`
 }
 
 // NewActivationClaims creates a new activation claim with the provided sub
@@ -82,17 +83,21 @@ func (a *ActivationClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(a.ClaimsData.Subject) {
 		return "", errors.New("expected subject to be an account")
 	}
-	a.ClaimsData.Type = ActivationClaim
+	a.Type = ActivationClaim
 	return a.ClaimsData.Encode(pair, a)
 }
 
 // DecodeActivationClaims tries to create an activation claim from a JWT string
 func DecodeActivationClaims(token string) (*ActivationClaims, error) {
-	v := ActivationClaims{}
-	if err := Decode(token, &v); err != nil {
+	claims, err := Decode(token)
+	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	ac, ok := claims.(*ActivationClaims)
+	if !ok {
+		return nil, errors.New("not activation claim")
+	}
+	return ac, nil
 }
 
 // Payload returns the activation specific part of the JWT
@@ -107,6 +112,14 @@ func (a *ActivationClaims) Validate(vr *ValidationResults) {
 	if a.IssuerAccount != "" && !nkeys.IsValidPublicAccountKey(a.IssuerAccount) {
 		vr.AddError("account_id is not an account public key")
 	}
+}
+
+func (a *ActivationClaims) ClaimType() ClaimType {
+	return a.Type
+}
+
+func (a *ActivationClaims) updateVersion() {
+	a.GenericFields.Version = libVersion
 }
 
 // ExpectedPrefixes defines the types that can sign an activation jwt, account and oeprator

@@ -228,7 +228,7 @@ type ResponsePermission struct {
 }
 
 // Validate the response permission.
-func (p *ResponsePermission) Validate(vr *ValidationResults) {
+func (p *ResponsePermission) Validate(_ *ValidationResults) {
 	// Any values can be valid for now.
 }
 
@@ -327,6 +327,6 @@ type Identity struct {
 }
 
 // Validate checks the values in an Identity
-func (u *Identity) Validate(vr *ValidationResults) {
+func (u *Identity) Validate(_ *ValidationResults) {
 	//Fixme identity validation
 }

@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nkeys"
@@ -32,18 +31,14 @@ import (
 type ClaimType string
 
 const (
-	// AccountClaim is the type of an Account JWT
-	AccountClaim = "account"
-	//ActivationClaim is the type of an activation JWT
-	ActivationClaim = "activation"
-	//UserClaim is the type of an user JWT
-	UserClaim = "user"
-	//ServerClaim is the type of an server JWT
-	ServerClaim = "server"
-	//ClusterClaim is the type of an cluster JWT
-	ClusterClaim = "cluster"
 	//OperatorClaim is the type of an operator JWT
 	OperatorClaim = "operator"
+	// AccountClaim is the type of an Account JWT
+	AccountClaim = "account"
+	//UserClaim is the type of an user JWT
+	UserClaim = "user"
+	//ActivationClaim is the type of an activation JWT
+	ActivationClaim = "activation"
 )
 
 // Claims is a JWT claims
@@ -55,20 +50,26 @@ type Claims interface {
 	String() string
 	Validate(vr *ValidationResults)
 	Verify(payload string, sig []byte) bool
+	ClaimType() ClaimType
+	updateVersion()
+}
+
+type GenericFields struct {
+	Tags    TagList   `json:"tags,omitempty"`
+	Type    ClaimType `json:"type,omitempty"`
+	Version int       `json:"version,omitempty"`
 }
 
 // ClaimsData is the base struct for all claims
 type ClaimsData struct {
-	Audience  string    `json:"aud,omitempty"`
-	Expires   int64     `json:"exp,omitempty"`
-	ID        string    `json:"jti,omitempty"`
-	IssuedAt  int64     `json:"iat,omitempty"`
-	Issuer    string    `json:"iss,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	NotBefore int64     `json:"nbf,omitempty"`
-	Subject   string    `json:"sub,omitempty"`
-	Tags      TagList   `json:"tags,omitempty"`
-	Type      ClaimType `json:"type,omitempty"`
+	Audience  string `json:"aud,omitempty"`
+	Expires   int64  `json:"exp,omitempty"`
+	ID        string `json:"jti,omitempty"`
+	IssuedAt  int64  `json:"iat,omitempty"`
+	Issuer    string `json:"iss,omitempty"`
+	Name      string `json:"name,omitempty"`
+	NotBefore int64  `json:"nbf,omitempty"`
+	Subject   string `json:"sub,omitempty"`
 }
 
 // Prefix holds the prefix byte for an NKey
@@ -147,13 +148,15 @@ func (c *ClaimsData) doEncode(header *Header, kp nkeys.KeyPair, claim Claims) (s
 		}
 	}
 
-	c.Issuer = string(issuerBytes)
+	c.Issuer = issuerBytes
 	c.IssuedAt = time.Now().UTC().Unix()
 
 	c.ID, err = c.hash()
 	if err != nil {
 		return "", err
 	}
+
+	claim.updateVersion()
 
 	payload, err := serialize(claim)
 	if err != nil {
@@ -234,69 +237,4 @@ func (c *ClaimsData) Validate(vr *ValidationResults) {
 // IsSelfSigned returns true if the claims issuer is the subject
 func (c *ClaimsData) IsSelfSigned() bool {
 	return c.Issuer == c.Subject
-}
-
-// Decode takes a JWT string decodes it and validates it
-// and return the embedded Claims. If the token header
-// doesn't match the expected algorithm, or the claim is
-// not valid or verification fails an error is returned.
-func Decode(token string, target Claims) error {
-	// must have 3 chunks
-	chunks := strings.Split(token, ".")
-	if len(chunks) != 3 {
-		return errors.New("expected 3 chunks")
-	}
-
-	_, err := parseHeaders(chunks[0])
-	if err != nil {
-		return err
-	}
-
-	if err := parseClaims(chunks[1], target); err != nil {
-		return err
-	}
-
-	sig, err := decodeString(chunks[2])
-	if err != nil {
-		return err
-	}
-
-	if !target.Verify(chunks[1], sig) {
-		return errors.New("claim failed signature verification")
-	}
-
-	prefixes := target.ExpectedPrefixes()
-	if prefixes != nil {
-		ok := false
-		issuer := target.Claims().Issuer
-		for _, p := range prefixes {
-			switch p {
-			case nkeys.PrefixByteAccount:
-				if nkeys.IsValidPublicAccountKey(issuer) {
-					ok = true
-				}
-			case nkeys.PrefixByteOperator:
-				if nkeys.IsValidPublicOperatorKey(issuer) {
-					ok = true
-				}
-			case nkeys.PrefixByteServer:
-				if nkeys.IsValidPublicServerKey(issuer) {
-					ok = true
-				}
-			case nkeys.PrefixByteCluster:
-				if nkeys.IsValidPublicClusterKey(issuer) {
-					ok = true
-				}
-			case nkeys.PrefixByteUser:
-				if nkeys.IsValidPublicUserKey(issuer) {
-					ok = true
-				}
-			}
-		}
-		if !ok {
-			return fmt.Errorf("unable to validate expected prefixes - %v", prefixes)
-		}
-	}
-
-	return nil
 }

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/jwt"
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
 )

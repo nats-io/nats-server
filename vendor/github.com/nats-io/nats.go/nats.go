@@ -39,7 +39,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nats-io/jwt"
 	"github.com/nats-io/nats.go/util"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -4304,7 +4303,7 @@ func userFromFile(userFile string) (string, error) {
 		return _EMPTY_, fmt.Errorf("nats: %v", err)
 	}
 	defer wipeSlice(contents)
-	return jwt.ParseDecoratedJWT(contents)
+	return nkeys.ParseDecoratedJWT(contents)
 }
 
 func homeDir() (string, error) {
@@ -4353,7 +4352,7 @@ func nkeyPairFromSeedFile(seedFile string) (nkeys.KeyPair, error) {
 		return nil, fmt.Errorf("nats: %v", err)
 	}
 	defer wipeSlice(contents)
-	return jwt.ParseDecoratedNKey(contents)
+	return nkeys.ParseDecoratedNKey(contents)
 }
 
 // Sign authentication challenges from the server.

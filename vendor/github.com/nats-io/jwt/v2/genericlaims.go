@@ -15,7 +15,13 @@
 
 package jwt
 
-import "github.com/nats-io/nkeys"
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+
+	"github.com/nats-io/nkeys"
+)
 
 // GenericClaims can be used to read a JWT as a map for any non-generic fields
 type GenericClaims struct {
@@ -36,11 +42,37 @@ func NewGenericClaims(subject string) *GenericClaims {
 
 // DecodeGeneric takes a JWT string and decodes it into a ClaimsData and map
 func DecodeGeneric(token string) (*GenericClaims, error) {
-	v := GenericClaims{}
-	if err := Decode(token, &v); err != nil {
+	// must have 3 chunks
+	chunks := strings.Split(token, ".")
+	if len(chunks) != 3 {
+		return nil, errors.New("expected 3 chunks")
+	}
+
+	// header
+	if _, err := parseHeaders(chunks[0]); err != nil {
 		return nil, err
 	}
-	return &v, nil
+	// claim
+	data, err := decodeString(chunks[1])
+	if err != nil {
+		return nil, err
+	}
+
+	var gc GenericClaims
+	if err := json.Unmarshal(data, &gc); err != nil {
+		return nil, err
+	}
+
+	// sig
+	sig, err := decodeString(chunks[2])
+	if err != nil {
+		return nil, err
+	}
+	if !gc.Verify(chunks[1], sig) {
+		return nil, errors.New("claim failed signature verification")
+	}
+
+	return &gc, nil
 }
 
 // Claims returns the standard part of the generic claim
@@ -70,4 +102,32 @@ func (gc *GenericClaims) String() string {
 // ExpectedPrefixes returns the types allowed to encode a generic JWT, which is nil for all
 func (gc *GenericClaims) ExpectedPrefixes() []nkeys.PrefixByte {
 	return nil
+}
+
+func (gc *GenericClaims) ClaimType() ClaimType {
+	v, ok := gc.Data["type"]
+	if !ok {
+		v, ok = gc.Data["nats"]
+		if ok {
+			m, ok := v.(map[string]interface{})
+			if ok {
+				v = m["type"]
+			}
+		}
+	}
+	ct, ctok := v.(ClaimType)
+	if ctok {
+		return ct
+	}
+	return ""
+}
+
+func (gc *GenericClaims) updateVersion() {
+	v, ok := gc.Data["nats"]
+	if ok {
+		m, ok := v.(map[string]interface{})
+		if ok {
+			m["version"] = libVersion
+		}
+	}
 }
