@@ -978,7 +978,7 @@ func (mset *Stream) Snapshot(deadline time.Duration, checkMsgs, includeConsumers
 		o.writeState()
 	}
 
-	return store.Snapshot(deadline, includeConsumers, checkMsgs)
+	return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }
 
 const snapsDir = "__snapshots__"

@@ -1245,7 +1245,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
-	sr, err := fs.Snapshot(5*time.Second, true, false)
+	sr, err := fs.Snapshot(5*time.Second, false, true)
 	if err != nil {
 		t.Fatalf("Error creating snapshot")
 	}
