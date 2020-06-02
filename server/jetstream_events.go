@@ -1,5 +1,22 @@
 package server
 
+import (
+	"encoding/json"
+	"time"
+)
+
+func (s *Server) publishAdvisory(acc *Account, subject string, adv interface{}) {
+	ej, err := json.MarshalIndent(adv, "", "  ")
+	if err == nil {
+		err = s.sendInternalAccountMsg(acc, subject, ej)
+		if err != nil {
+			s.Warnf("Advisory could not be sent for account %q: %v", acc.Name, err)
+		}
+	} else {
+		s.Warnf("Advisory could not be serialized for account %q: %v", acc.Name, err)
+	}
+}
+
 // ClientAPIAudit is for identifying a client who initiated an API call to the system.
 type ClientAPIAudit struct {
 	Host     string `json:"host"`
@@ -94,3 +111,50 @@ type JSConsumerDeliveryTerminatedAdvisory struct {
 
 // JSConsumerDeliveryTerminatedAdvisoryType is the schema type for JSConsumerDeliveryTerminatedAdvisory
 const JSConsumerDeliveryTerminatedAdvisoryType = "io.nats.jetstream.advisory.v1.terminated"
+
+// JSSnapshotCreateAdvisory is an advisory sent after a snapshot is successfully started
+type JSSnapshotCreateAdvisory struct {
+	TypedEvent
+	Stream  string          `json:"stream"`
+	NumBlks int             `json:"blocks"`
+	BlkSize int             `json:"block_size"`
+	Client  *ClientAPIAudit `json:"client"`
+}
+
+// JSSnapshotCreatedAdvisoryType is the schema type for JSSnapshotCreateAdvisory
+const JSSnapshotCreatedAdvisoryType = "io.nats.jetstream.advisory.v1.snapshot_create"
+
+// JSSnapshotCompleteAdvisory is an advisory sent after a snapshot is successfully started
+type JSSnapshotCompleteAdvisory struct {
+	TypedEvent
+	Stream string          `json:"stream"`
+	Start  time.Time       `json:"start"`
+	End    time.Time       `json:"end"`
+	Client *ClientAPIAudit `json:"client"`
+}
+
+// JSSnapshotCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
+const JSSnapshotCompleteAdvisoryType = "io.nats.jetstream.advisory.v1.snapshot_complete"
+
+// JSRestoreCreateAdvisory is an advisory sent after a snapshot is successfully started
+type JSRestoreCreateAdvisory struct {
+	TypedEvent
+	Stream string          `json:"stream"`
+	Client *ClientAPIAudit `json:"client"`
+}
+
+// JSRestoreCreateAdvisory is the schema type for JSSnapshotCreateAdvisory
+const JSRestoreCreateAdvisoryType = "io.nats.jetstream.advisory.v1.restore_create"
+
+// JSRestoreCompleteAdvisory is an advisory sent after a snapshot is successfully started
+type JSRestoreCompleteAdvisory struct {
+	TypedEvent
+	Stream string          `json:"stream"`
+	Start  time.Time       `json:"start"`
+	End    time.Time       `json:"end"`
+	Bytes  int64           `json:"bytes"`
+	Client *ClientAPIAudit `json:"client"`
+}
+
+// JSRestoreCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
+const JSRestoreCompleteAdvisoryType = "io.nats.jetstream.advisory.v1.restore_complete"
