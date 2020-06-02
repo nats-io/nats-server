@@ -1235,10 +1235,15 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 	// We will do the snapshot in a go routine as well since check msgs may
 	// stall this go routine.
 	go func() {
-		s.Noticef("Starting snapshot for stream %q in account %q", mset.Name(), mset.jsa.account.Name)
+		if req.CheckMsgs {
+			s.Noticef("Starting health check and snapshot for stream %q in account %q", mset.Name(), mset.jsa.account.Name)
+		} else {
+			s.Noticef("Starting snapshot for stream %q in account %q", mset.Name(), mset.jsa.account.Name)
+		}
+
 		start := time.Now()
 
-		sr, err := mset.Snapshot(0, !req.NoConsumers, req.CheckMsgs)
+		sr, err := mset.Snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
 			s.Noticef("Snapshot of %q in account %q failed: %s", mset.Name(), mset.jsa.account.Name, err)
 			resp.Error = jsError(err)

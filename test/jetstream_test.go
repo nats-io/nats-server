@@ -2810,7 +2810,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	// Snapshot state of the stream and consumers.
 	info := info{mset.Config(), mset.State(), obs}
 
-	sr, err := mset.Snapshot(5*time.Second, true, false)
+	sr, err := mset.Snapshot(5*time.Second, false, true)
 	if err != nil {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
