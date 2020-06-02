@@ -1788,6 +1788,11 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				*errors = append(*errors, err)
 				continue
 			}
+			var (
+				users   []*User
+				nkeyUsr []*NkeyUser
+				usersTk token
+			)
 			acc := NewAccount(aname)
 			opts.Accounts = append(opts.Accounts, acc)
 
@@ -1825,32 +1830,20 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						continue
 					}
 				case "users":
-					nkeys, users, err := parseUsers(mv, opts, errors, warnings)
+					var err error
+					usersTk = tk
+					nkeyUsr, users, err = parseUsers(mv, opts, errors, warnings)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
-					for _, u := range users {
-						if _, ok := uorn[u.Username]; ok {
-							err := &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
-							*errors = append(*errors, err)
-							continue
-						}
-						uorn[u.Username] = struct{}{}
-						u.Account = acc
+				case "default_permissions":
+					permissions, err := parseUserPermissions(tk, errors, warnings)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
 					}
-					opts.Users = append(opts.Users, users...)
-
-					for _, u := range nkeys {
-						if _, ok := uorn[u.Nkey]; ok {
-							err := &configErr{tk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
-							*errors = append(*errors, err)
-							continue
-						}
-						uorn[u.Nkey] = struct{}{}
-						u.Account = acc
-					}
-					opts.Nkeys = append(opts.Nkeys, nkeys...)
+					acc.defaultPerms = permissions
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{
@@ -1863,6 +1856,27 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 				}
 			}
+			applyDefaultPermissions(users, nkeyUsr, acc.defaultPerms)
+			for _, u := range nkeyUsr {
+				if _, ok := uorn[u.Nkey]; ok {
+					err := &configErr{usersTk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
+					*errors = append(*errors, err)
+					continue
+				}
+				uorn[u.Nkey] = struct{}{}
+				u.Account = acc
+			}
+			opts.Nkeys = append(opts.Nkeys, nkeyUsr...)
+			for _, u := range users {
+				if _, ok := uorn[u.Username]; ok {
+					err := &configErr{usersTk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+					*errors = append(*errors, err)
+					continue
+				}
+				uorn[u.Username] = struct{}{}
+				u.Account = acc
+			}
+			opts.Users = append(opts.Users, users...)
 		}
 	}
 	lt = tk
@@ -2447,6 +2461,23 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 	return curStream, curService, nil
 }
 
+// Apply permission defaults to users/nkeyuser that don't have their own.
+func applyDefaultPermissions(users []*User, nkeys []*NkeyUser, defaultP *Permissions) {
+	if defaultP == nil {
+		return
+	}
+	for _, user := range users {
+		if user.Permissions == nil {
+			user.Permissions = defaultP
+		}
+	}
+	for _, user := range nkeys {
+		if user.Permissions == nil {
+			user.Permissions = defaultP
+		}
+	}
+}
+
 // Helper function to parse Authorization configs.
 func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings *[]error) (*authorization, error) {
 	var (
@@ -2505,23 +2536,7 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 			continue
 		}
 
-		// Now check for permission defaults with multiple users, etc.
-		if auth.defaultPermissions != nil {
-			if auth.users != nil {
-				for _, user := range auth.users {
-					if user.Permissions == nil {
-						user.Permissions = auth.defaultPermissions
-					}
-				}
-			}
-			if auth.nkeys != nil {
-				for _, user := range auth.nkeys {
-					if user.Permissions == nil {
-						user.Permissions = auth.defaultPermissions
-					}
-				}
-			}
-		}
+		applyDefaultPermissions(auth.users, auth.nkeys, auth.defaultPermissions)
 	}
 	return auth, nil
 }

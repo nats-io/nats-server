@@ -17,6 +17,7 @@ package jwt
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -71,13 +72,14 @@ func (sl *ServiceLatency) Validate(vr *ValidationResults) {
 
 // Export represents a single export
 type Export struct {
-	Name         string          `json:"name,omitempty"`
-	Subject      Subject         `json:"subject,omitempty"`
-	Type         ExportType      `json:"type,omitempty"`
-	TokenReq     bool            `json:"token_req,omitempty"`
-	Revocations  RevocationList  `json:"revocations,omitempty"`
-	ResponseType ResponseType    `json:"response_type,omitempty"`
-	Latency      *ServiceLatency `json:"service_latency,omitempty"`
+	Name                 string          `json:"name,omitempty"`
+	Subject              Subject         `json:"subject,omitempty"`
+	Type                 ExportType      `json:"type,omitempty"`
+	TokenReq             bool            `json:"token_req,omitempty"`
+	Revocations          RevocationList  `json:"revocations,omitempty"`
+	ResponseType         ResponseType    `json:"response_type,omitempty"`
+	Latency              *ServiceLatency `json:"service_latency,omitempty"`
+	AccountTokenPosition uint            `json:"account_token_position,omitempty"`
 }
 
 // IsService returns true if an export is for a service
@@ -124,6 +126,22 @@ func (e *Export) Validate(vr *ValidationResults) {
 		e.Latency.Validate(vr)
 	}
 	e.Subject.Validate(vr)
+	if e.AccountTokenPosition > 0 {
+		if !e.Subject.HasWildCards() {
+			vr.AddError("Account Token Position can only be used with wildcard subjects: %s", e.Subject)
+		} else {
+			subj := string(e.Subject)
+			token := strings.Split(subj, ".")
+			tkCnt := uint(len(token))
+			if e.AccountTokenPosition > tkCnt {
+				vr.AddError("Account Token Position %d exceeds length of subject '%s'",
+					e.AccountTokenPosition, e.Subject)
+			} else if tk := token[e.AccountTokenPosition-1]; tk != "*" {
+				vr.AddError("Account Token Position %d matches '%s' but must match a * in: %s",
+					e.AccountTokenPosition, tk, e.Subject)
+			}
+		}
+	}
 }
 
 // Revoke enters a revocation by publickey using time.Now().
