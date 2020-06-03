@@ -1283,7 +1283,7 @@ func (c *client) markConnAsClosed(reason ClosedState) bool {
 	if c.srv != nil {
 		if c.kind == ROUTER || c.kind == GATEWAY {
 			c.Noticef("%s connection closed: %s", c.typeString(), reason)
-		} else { // Client and Leaf Node connections.
+		} else { // Client, System, Jetstream, Account and Leafnode connections.
 			c.Debugf("%s connection closed: %s", c.typeString(), reason)
 		}
 	}
@@ -3879,16 +3879,6 @@ func (c *client) closeConnection(reason ClosedState) {
 // been started.
 func (c *client) teardownConn() {
 	c.mu.Lock()
-
-	// Be consistent with the creation: for routes and gateways,
-	// we use Noticef on create, so use that too for delete.
-	if c.srv != nil {
-		if c.kind == ROUTER || c.kind == GATEWAY {
-			c.Noticef("%s connection closed", c.typeString())
-		} else { // Client, System, Jetstream, Account and Leafnode connections.
-			c.Debugf("%s connection closed", c.typeString())
-		}
-	}
 
 	c.clearAuthTimer()
 	c.clearPingTimer()
