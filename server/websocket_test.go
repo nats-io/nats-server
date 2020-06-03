@@ -1623,7 +1623,7 @@ func testWSCreateClient(t testing.TB, compress, web bool, host string, port int)
 	}
 	// Wait for the PONG
 	if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
-		t.Fatalf("Expected INFO, got %s", msg)
+		t.Fatalf("Expected PONG, got %s", msg)
 	}
 	return wsc, br
 }
@@ -2350,20 +2350,17 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 		t.Fatal("Did not get the ping response")
 	}
 
-	ws.mu.Lock()
-	pb := ws.out.pb
-	wf := ws.ws.frames
-	fs := ws.ws.fs
-	ws.mu.Unlock()
-	if pb != 0 {
-		t.Fatalf("Expected pb to be 0, got %v", pb)
-	}
-	if len(wf) != 0 {
-		t.Fatalf("Should not be any frames left to send, got %v", wf)
-	}
-	if fs != 0 {
-		t.Fatalf("Frame size should be 0, got %v", fs)
-	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		ws.mu.Lock()
+		pb := ws.out.pb
+		wf := ws.ws.frames
+		fs := ws.ws.fs
+		ws.mu.Unlock()
+		if pb != 0 || len(wf) != 0 || fs != 0 {
+			return fmt.Errorf("Expected pb, wf and fs to be 0, got %v, %v, %v", pb, wf, fs)
+		}
+		return nil
+	})
 }
 
 func TestWSCompressionFrameSizeLimit(t *testing.T) {

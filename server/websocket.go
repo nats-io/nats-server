@@ -836,6 +836,13 @@ func (s *Server) startWebsocketServer() {
 		if err := hs.Serve(hl); err != http.ErrServerClosed {
 			s.Fatalf("websocket listener error: %v", err)
 		}
+		if s.isLameDuckMode() {
+			// Signal that we are not accepting new clients
+			s.ldmCh <- true
+			// Now wait for the Shutdown...
+			<-s.quitCh
+			return
+		}
 		s.done <- true
 	})
 }

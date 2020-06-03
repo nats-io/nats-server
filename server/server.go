@@ -2706,14 +2706,23 @@ func (s *Server) lameDuckMode() {
 	}
 	s.Noticef("Entering lame duck mode, stop accepting new clients")
 	s.ldm = true
-	s.ldmCh = make(chan bool, 1)
+	expected := 1
 	s.listener.Close()
 	s.listener = nil
+	if s.websocket.server != nil {
+		expected++
+		s.websocket.server.Close()
+		s.websocket.server = nil
+		s.websocket.listener = nil
+	}
+	s.ldmCh = make(chan bool, expected)
 	s.mu.Unlock()
 
-	// Wait for accept loop to be done to make sure that no new
+	// Wait for accept loops to be done to make sure that no new
 	// client can connect
-	<-s.ldmCh
+	for i := 0; i < expected; i++ {
+		<-s.ldmCh
+	}
 
 	s.mu.Lock()
 	// Need to recheck few things
