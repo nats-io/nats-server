@@ -1152,8 +1152,6 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		Client: caudit,
 	})
 
-	// Track errors writing to temp files.
-	var tfileError error
 	// Create our internal subscription to accept the snapshot.
 	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
 
@@ -1170,9 +1168,6 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		if len(msg) == 0 {
 			tfile.Seek(0, 0)
 			mset, err := acc.RestoreStream(stream, tfile)
-			if err != nil && tfileError != nil {
-				err = tfileError
-			}
 			tfile.Close()
 			os.Remove(tfile.Name())
 			c.processUnsub(sub.sid)
@@ -1211,10 +1206,17 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		}
 		// Append chunk to temp file. Mark as issue if we encounter an error.
 		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
-			tfileError = err
+			s.Warnf("Storage failure for restore at %s for stream in account %q: %v",
+				FriendlyBytes(int64(received)), stream, c.acc.Name, err)
+			tfile.Close()
+			os.Remove(tfile.Name())
+			c.processUnsub(sub.sid)
+			if reply != _EMPTY_ {
+				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
+			}
+			return
 		}
 		received += len(msg)
-
 		if reply != _EMPTY_ {
 			s.sendInternalAccountMsg(acc, reply, nil)
 		}
