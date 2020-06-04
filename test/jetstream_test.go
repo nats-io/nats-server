@@ -2894,8 +2894,26 @@ func TestJetStreamSnapshots(t *testing.T) {
 }
 
 func TestJetStreamSnapshotsAPI(t *testing.T) {
-	s := RunBasicJetStreamServer()
+	lopts := DefaultTestOptions
+	lopts.ServerName = "LS"
+	lopts.Port = -1
+	lopts.LeafNode.Host = lopts.Host
+	lopts.LeafNode.Port = -1
+
+	ls := RunServer(&lopts)
+	defer ls.Shutdown()
+
+	opts := DefaultTestOptions
+	opts.ServerName = "S"
+	opts.Port = -1
+	opts.JetStream = true
+	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lopts.LeafNode.Host, lopts.LeafNode.Port))
+	opts.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
+
+	s := RunServer(&opts)
 	defer s.Shutdown()
+
+	checkLeafNodeConnected(t, s)
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
@@ -3041,18 +3059,16 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if rresp.Error != nil {
 		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 	}
-	r := bytes.NewReader(snapshot)
-	// Can be anysize message.
+	// Can be any size message.
 	var chunk [512]byte
-	for {
+	for r := bytes.NewReader(snapshot); ; {
 		n, err := r.Read(chunk[:])
 		if err != nil {
 			break
 		}
-		nc.Publish(rresp.DeliverSubject, chunk[:n])
+		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 	}
-	nc.Publish(rresp.DeliverSubject, nil)
-	nc.Flush()
+	nc.Request(rresp.DeliverSubject, nil, time.Second)
 
 	mset, err = acc.LookupStream(mname)
 	if err != nil {
@@ -3076,6 +3092,75 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Did not receive our snapshot in time")
+	}
+
+	// Now connect through a cluster server and make sure we can get things to work this way as well.
+	nc2 := clientConnectToServer(t, ls)
+	defer nc2.Close()
+
+	snapshot = snapshot[:0]
+
+	req, _ = json.Marshal(sreq)
+	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	resp.Error = nil
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error != nil {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
+	}
+
+	// Now do a restore through the new client connection.
+	// Delete this stream first.
+	mset, err = acc.LookupStream(mname)
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", mname)
+	}
+	state = mset.State()
+	mset.Delete()
+
+	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+	for r := bytes.NewReader(snapshot); ; {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		// Make sure other side responds to reply subjects for ack flow. Optional.
+		if _, err := nc2.Request(rresp.DeliverSubject, chunk[:n], time.Second); err != nil {
+			t.Fatalf("Restore not honoring reply subjects for ack flow")
+		}
+	}
+	// For EOF this will send back stream info or an error.
+	si, err := nc2.Request(rresp.DeliverSubject, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Got an error restoring stream: %v", err)
+	}
+	var scResp server.JSApiStreamCreateResponse
+	if err := json.Unmarshal(si.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.Error != nil {
+		t.Fatalf("Got an unexpected error from EOF omn restore: %+v", scResp.Error)
+	}
+
+	if scResp.StreamInfo.State != state {
+		t.Fatalf("Did not match states, %+v vs %+v", scResp.StreamInfo.State, state)
 	}
 }
 
