@@ -3066,10 +3066,9 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		if err != nil {
 			break
 		}
-		nc.Publish(rresp.DeliverSubject, chunk[:n])
+		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 	}
-	nc.Publish(rresp.DeliverSubject, nil)
-	nc.Flush()
+	nc.Request(rresp.DeliverSubject, nil, time.Second)
 
 	mset, err = acc.LookupStream(mname)
 	if err != nil {
