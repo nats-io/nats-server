@@ -2494,7 +2494,7 @@ func (c *client) processUnsub(arg []byte) error {
 
 	if unsub {
 		c.unsubscribe(acc, sub, false, true)
-		if acc != nil && kind == CLIENT || kind == SYSTEM {
+		if acc != nil && kind == CLIENT || kind == SYSTEM || kind == ACCOUNT {
 			srv.updateRouteSubscriptionMap(acc, sub, -1)
 			if updateGWs {
 				srv.gatewayUpdateSubInterest(acc.Name, sub, -1)

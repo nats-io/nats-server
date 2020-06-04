@@ -1164,7 +1164,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		if reply == _EMPTY_ {
 			tfile.Close()
 			os.Remove(tfile.Name())
-			c.processUnsub(sub.sid)
+			sub.client.processUnsub(sub.sid)
 			s.Warnf("Restore for stream %q in account %q requires reply subject for each chunk", stream, c.acc.Name)
 			return
 		}
@@ -1179,7 +1179,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 			mset, err := acc.RestoreStream(stream, tfile)
 			tfile.Close()
 			os.Remove(tfile.Name())
-			c.processUnsub(sub.sid)
+			sub.client.processUnsub(sub.sid)
 
 			end := time.Now()
 
@@ -1217,7 +1217,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 				FriendlyBytes(int64(received)), stream, c.acc.Name, err)
 			tfile.Close()
 			os.Remove(tfile.Name())
-			c.processUnsub(sub.sid)
+			sub.client.processUnsub(sub.sid)
 			if reply != _EMPTY_ {
 				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
 			}

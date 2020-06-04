@@ -1344,8 +1344,8 @@ func (a *Account) internalClient() *client {
 func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
 	a.mu.Lock()
 	c := a.internalClient()
-	sid := strconv.FormatUint(a.isid+1, 10)
 	a.isid++
+	sid := strconv.FormatUint(a.isid, 10)
 	a.mu.Unlock()
 
 	// This will happen in parsing when the account has not been properly setup.
