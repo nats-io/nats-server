@@ -3136,6 +3136,28 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if rresp.Error != nil {
 		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 	}
+
+	// Make sure when we send something without a reply subject the subscription is shutoff.
+	r := bytes.NewReader(snapshot)
+	n, _ := r.Read(chunk[:])
+	nc2.Publish(rresp.DeliverSubject, chunk[:n])
+	nc2.Flush()
+	n, _ = r.Read(chunk[:])
+	if _, err := nc2.Request(rresp.DeliverSubject, chunk[:n], 50*time.Millisecond); err == nil {
+		t.Fatalf("Expected restore subscriptionm to be closed")
+	}
+
+	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+
 	for r := bytes.NewReader(snapshot); ; {
 		n, err := r.Read(chunk[:])
 		if err != nil {
