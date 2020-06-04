@@ -1341,8 +1341,9 @@ func (a *Account) internalClient() *client {
 }
 
 // Internal account scoped subscriptions.
-func (a *Account) subscribeInternal(c *client, subject string, cb msgHandler) (*subscription, error) {
+func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
 	a.mu.Lock()
+	c := a.internalClient()
 	sid := strconv.FormatUint(a.isid+1, 10)
 	a.isid++
 	a.mu.Unlock()
@@ -1352,7 +1353,7 @@ func (a *Account) subscribeInternal(c *client, subject string, cb msgHandler) (*
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	sub, err := c.processSub([]byte(subject+" "+sid), true)
+	sub, err := c.processSub([]byte(subject+" "+sid), false)
 	if err != nil {
 		return nil, err
 	}

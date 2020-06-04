@@ -1129,15 +1129,13 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
+	// FIXME(dlc) - Need to close these up if we fail for some reason.
 	tfile, err := ioutil.TempFile("", "jetstream-restore-")
 	if err != nil {
 		resp.Error = &ApiError{Code: 500, Description: "jetstream unable to open temp storage for restore"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
-	// Create our internal subscription to accept the snapshot.
-	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
 
 	s.Noticef("Starting restore for stream %q in account %q", stream, c.acc.Name)
 	start := time.Now()
@@ -1154,19 +1152,34 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		Client: caudit,
 	})
 
+	// Track errors writing to temp files.
+	var tfileError error
+	// Create our internal subscription to accept the snapshot.
+	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
+
 	// FIXME(dlc) - Can't recover well here if something goes wrong. Could use channels and at least time
 	// things out. Note that this is tied to the requesting client, so if it is a tool this goes away when
 	// the client does. Only thing leaking here is the sub on strange failure.
-	acc.subscribeInternal(c, restoreSubj, func(sub *subscription, c *client, _, _ string, msg []byte) {
+	acc.subscribeInternal(restoreSubj, func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		// Account client messages have \r\n on end.
+		if len(msg) < LEN_CR_LF {
+			return
+		}
+		msg = msg[:len(msg)-LEN_CR_LF]
+
 		if len(msg) == 0 {
 			tfile.Seek(0, 0)
-			// TODO(dlc) - no way right now to communicate back.
-			acc.RestoreStream(stream, tfile)
+			mset, err := acc.RestoreStream(stream, tfile)
+			if err != nil && tfileError != nil {
+				err = tfileError
+			}
 			tfile.Close()
 			os.Remove(tfile.Name())
 			c.processUnsub(sub.sid)
 
 			end := time.Now()
+
+			// TODO(rip) - Should this have the error code in it??
 			s.publishAdvisory(c.acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
 				TypedEvent: TypedEvent{
 					Type: JSRestoreCompleteAdvisoryType,
@@ -1180,13 +1193,31 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 				Client: caudit,
 			})
 
-			s.Noticef("Completed %s restore for stream %q in account %q in %v", FriendlyBytes(int64(received)), stream, c.acc.Name, end.Sub(start))
+			s.Noticef("Completed %s restore for stream %q in account %q in %v",
+				FriendlyBytes(int64(received)), stream, c.acc.Name, end.Sub(start))
+
+			// If there is a reply subject on the last EOF, send back the stream info or error status.
+			if reply != _EMPTY_ {
+				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+				if err != nil {
+					resp.Error = jsError(err)
+				} else {
+					resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+				}
+				s.sendInternalAccountMsg(acc, reply, s.jsonResponse(&resp))
+			}
 
 			return
 		}
-		// Append chunk to temp file.
-		tfile.Write(msg)
+		// Append chunk to temp file. Mark as issue if we encounter an error.
+		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
+			tfileError = err
+		}
 		received += len(msg)
+
+		if reply != _EMPTY_ {
+			s.sendInternalAccountMsg(acc, reply, nil)
+		}
 	})
 
 	resp.DeliverSubject = restoreSubj
@@ -1286,7 +1317,11 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Client: caudit,
 		})
 
-		s.Noticef("Completed %s snapshot for stream %q in account %q in %v", FriendlyBytes(int64(resp.NumBlks*resp.BlkSize)), mset.Name(), mset.jsa.account.Name, end.Sub(start))
+		s.Noticef("Completed %s snapshot for stream %q in account %q in %v",
+			FriendlyBytes(int64(resp.NumBlks*resp.BlkSize)),
+			mset.Name(),
+			mset.jsa.account.Name,
+			end.Sub(start))
 	}()
 }
 
