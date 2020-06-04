@@ -1,0 +1,33 @@
+project_name: nats-server
+
+builds:
+  - main: ./main.go
+    id: nats-server
+    binary: nats-server
+    ldflags:
+      - -s -w -X github.com/nats-io/nats-server/server.gitCommit={{.ShortCommit}}
+    env:
+      - GO111MODULE=off
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+dockers:
+  - goos: linux
+    goarch: amd64
+    skip_push: true
+    dockerfile: docker/Dockerfile.nightly
+    image_templates:
+      - synadia/nats-server:{{.Version}}
+      - synadia/nats-server:nightly
+    extra_files:
+      - docker/nats-server.conf
+
+checksum:
+  name_template: 'SHA256SUMS'
+  algorithm: sha256
+
+snapshot:
+  name_template: 'nightly-{{ time "20060102" }}'

@@ -1,0 +1,17 @@
+FROM golang:1.14-alpine AS builder
+
+RUN apk add --update git
+RUN go get github.com/nats-io/jetstream/nats
+
+FROM alpine:latest
+
+RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
+
+COPY docker/nats-server.conf /nats/conf/nats-server.conf
+COPY nats-server /bin/nats-server
+COPY --from=builder /go/bin/nats /bin/nats
+
+EXPOSE 4222 8222 6222 5222
+
+ENTRYPOINT ["/bin/nats-server"]
+CMD ["-c", "/nats/conf/nats-server.conf"]
