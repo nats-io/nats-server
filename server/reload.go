@@ -1128,6 +1128,10 @@ func (s *Server) reloadAuthorization() {
 			}
 			return true
 		})
+		// Check if we had a default system account.
+		if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
+			s.accounts.Store(s.sys.account.Name, s.sys.account)
+		}
 		// Double check any JetStream configs.
 		checkJetStream = true
 	} else if s.opts.AccountResolver != nil {
