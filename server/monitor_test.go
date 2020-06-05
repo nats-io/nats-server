@@ -1547,6 +1547,28 @@ func TestSubszMultiAccount(t *testing.T) {
 		if len(sl.Subs) != 6 {
 			t.Fatalf("Expected subscription details for 6 subs, got %d\n", len(sl.Subs))
 		}
+		for _, sd := range sl.Subs {
+			if sd.Account != "A" && sd.Account != "B" {
+				t.Fatalf("Expected account information to be present and be 'A' or 'B', got %q", sd.Account)
+			}
+		}
+
+		// Now make sure we can filter on account.
+		sl = pollSubsz(t, s, mode, url+"subsz?subs=1&acc=A", &SubszOptions{Account: "A", Subscriptions: true})
+		if sl.NumSubs != 3 {
+			t.Fatalf("Expected NumSubs of 3, got %d\n", sl.NumSubs)
+		}
+		if sl.Total != 3 {
+			t.Fatalf("Expected Total of 6, got %d\n", sl.Total)
+		}
+		if len(sl.Subs) != 3 {
+			t.Fatalf("Expected subscription details for 6 subs, got %d\n", len(sl.Subs))
+		}
+		for _, sd := range sl.Subs {
+			if sd.Account != "A" {
+				t.Fatalf("Expected account information to be present and be 'A', got %q", sd.Account)
+			}
+		}
 	}
 }
 
