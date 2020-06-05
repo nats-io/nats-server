@@ -795,15 +795,11 @@ type SubDetail struct {
 
 // Subscription client should be locked and guaranteed to be present.
 func newSubDetail(sub *subscription) SubDetail {
-	return SubDetail{
-		Account: sub.client.acc.GetName(),
-		Subject: string(sub.subject),
-		Queue:   string(sub.queue),
-		Sid:     string(sub.sid),
-		Msgs:    sub.nm,
-		Max:     sub.max,
-		Cid:     sub.client.cid,
+	sd := newClientSubDetail(sub)
+	if sub.client.acc != nil {
+		sd.Account = sub.client.acc.GetName()
 	}
+	return sd
 }
 
 // For subs details under clients.
@@ -814,6 +810,7 @@ func newClientSubDetail(sub *subscription) SubDetail {
 		Sid:     string(sub.sid),
 		Msgs:    sub.nm,
 		Max:     sub.max,
+		Cid:     sub.client.cid,
 	}
 }
 
