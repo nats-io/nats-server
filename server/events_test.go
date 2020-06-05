@@ -1059,7 +1059,7 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	sacc, sakp := createAccount(s)
 	s.setSystemAccount(sacc)
 
-	// Let's create a normal  account with limits we can update.
+	// Let's create a normal account with limits we can update.
 	okp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	pub, _ := akp.PublicKey()
@@ -1099,6 +1099,62 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	acc, _ = s.LookupAccount(pub)
 	if acc.MaxActiveConnections() != 8 {
 		t.Fatalf("Account was not updated")
+	}
+}
+
+func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sacc, sakp := createAccount(s)
+	s.setSystemAccount(sacc)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	// Let's create an account with service export.
+	akp, _ := nkeys.CreateAccount()
+	pub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	nac.Exports.Add(&jwt.Export{Subject: "req.*", Type: jwt.Service})
+	ajwt, _ := nac.Encode(okp)
+	addAccountToMemResolver(s, pub, ajwt)
+	s.LookupAccount(pub)
+
+	// Now add an account with multiple service imports.
+	akp2, _ := nkeys.CreateAccount()
+	pub2, _ := akp2.PublicKey()
+	nac2 := jwt.NewAccountClaims(pub2)
+	nac2.Imports.Add(&jwt.Import{Account: pub, Subject: "req.1", Type: jwt.Service})
+	ajwt2, _ := nac2.Encode(okp)
+
+	addAccountToMemResolver(s, pub2, ajwt2)
+	s.LookupAccount(pub2)
+
+	startSubs := s.NumSubscriptions()
+
+	// Simulate a systems publisher so we can do an account claims update.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, sakp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Update the account several times
+	for i := 1; i <= 10; i++ {
+		nac2 = jwt.NewAccountClaims(pub2)
+		nac2.Limits.Conn = int64(i)
+		nac2.Imports.Add(&jwt.Import{Account: pub, Subject: "req.1", Type: jwt.Service})
+		ajwt2, _ = nac2.Encode(okp)
+
+		// Publish to the system update subject.
+		claimUpdateSubj := fmt.Sprintf(accUpdateEventSubj, pub2)
+		nc.Publish(claimUpdateSubj, []byte(ajwt2))
+	}
+	nc.Flush()
+
+	if startSubs != s.NumSubscriptions() {
+		t.Fatalf("Subscriptions leaked: %d vs %d", startSubs, s.NumSubscriptions())
 	}
 }
 

@@ -2437,6 +2437,20 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		})
 	}
 
+	// Now make sure we shutdown the old service import subscriptions.
+	var sids [][]byte
+	a.mu.RLock()
+	c := a.ic
+	for _, si := range old.imports.services {
+		if c != nil && si.sub != nil && si.sub.sid != nil {
+			sids = append(sids, si.sub.sid)
+		}
+	}
+	a.mu.RUnlock()
+	for _, sid := range sids {
+		c.processUnsub(sid)
+	}
+
 	// Now do limits if they are present.
 	a.mu.Lock()
 	a.msubs = int32(ac.Limits.Subs)
