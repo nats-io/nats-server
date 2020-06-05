@@ -1,19 +1,22 @@
 name: NATS Server Nightly
 on:
   schedule:
-    - cron: "0 40 * * *"
+    - cron: "40 4 * * *"
+
 
 jobs:
   nightly_release:
     runs-on: ubuntu-latest
+
+    env:
+      GOPATH: /home/runner/work/nats-server
+      GO111MODULE: "off"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v1
-
-      - name: Setup Go
-        uses: actions/setup-go@v1
         with:
-          go-version: 1.14
+          path: src/github.com/nats-io/nats-server
 
       - name: goreleaser
         uses: goreleaser/goreleaser-action@v2
