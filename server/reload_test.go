@@ -4327,3 +4327,56 @@ func TestConfigReloadAccounts(t *testing.T) {
 	triggerSysEvent("AFTER1", []*nats.Subscription{s1C, s1D, s2C, s2D})
 	triggerSysEvent("AFTER2", []*nats.Subscription{s1C, s1D, s2C, s2D})
 }
+
+func TestConfigReloadDefaultSystemAccount(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	accounts {
+		ACC {
+			users = [
+				{user: usr, password: pwd}
+			]
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	sysAcc := s.SystemAccount()
+	if sysAcc == nil {
+		t.Fatalf("Expected system account to be present")
+	}
+	numSubs := sysAcc.TotalSubs()
+
+	sname := sysAcc.GetName()
+	testInAccounts := func() {
+		t.Helper()
+		var found bool
+		s.accounts.Range(func(k, v interface{}) bool {
+			acc := v.(*Account)
+			if acc.GetName() == sname {
+				found = true
+				return false
+			}
+			return true
+		})
+		if !found {
+			t.Fatalf("System account not found in accounts list")
+		}
+	}
+	testInAccounts()
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Unexpected error reloading: %v", err)
+	}
+
+	sysAcc = s.SystemAccount()
+	if sysAcc == nil {
+		t.Fatalf("Expected system account to still be present")
+	}
+	if sysAcc.TotalSubs() != numSubs {
+		t.Fatalf("Expected %d subs, got %d", numSubs, sysAcc.TotalSubs())
+	}
+	testInAccounts()
+}
