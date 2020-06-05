@@ -139,7 +139,7 @@ const defaultStackBufSize = 10000
 func newSubsDetailList(client *client) []SubDetail {
 	subsDetail := make([]SubDetail, 0, len(client.subs))
 	for _, sub := range client.subs {
-		subsDetail = append(subsDetail, newSubDetail(sub))
+		subsDetail = append(subsDetail, newClientSubDetail(sub))
 	}
 	return subsDetail
 }
@@ -771,8 +771,11 @@ type SubszOptions struct {
 	// Limit is the maximum number of subscriptions that should be returned by Subsz().
 	Limit int `json:"limit"`
 
-	// Subscriptions indicates if subscriptions should be included in the results.
+	// Subscriptions indicates if subscription details should be included in the results.
 	Subscriptions bool `json:"subscriptions"`
+
+	// Filter based on this account name.
+	Account string `json:"account,omitempty"`
 
 	// Test the list against this subject. Needs to be literal since it signifies a publish subject.
 	// We will only return subscriptions that would match if a message was sent to this subject.
@@ -781,6 +784,7 @@ type SubszOptions struct {
 
 // SubDetail is for verbose information for subscriptions.
 type SubDetail struct {
+	Account string `json:"account,omitempty"`
 	Subject string `json:"subject"`
 	Queue   string `json:"qgroup,omitempty"`
 	Sid     string `json:"sid"`
@@ -789,7 +793,17 @@ type SubDetail struct {
 	Cid     uint64 `json:"cid"`
 }
 
+// Subscription client should be locked and guaranteed to be present.
 func newSubDetail(sub *subscription) SubDetail {
+	sd := newClientSubDetail(sub)
+	if sub.client.acc != nil {
+		sd.Account = sub.client.acc.GetName()
+	}
+	return sd
+}
+
+// For subs details under clients.
+func newClientSubDetail(sub *subscription) SubDetail {
 	return SubDetail{
 		Subject: string(sub.subject),
 		Queue:   string(sub.queue),
@@ -808,6 +822,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		offset    int
 		limit     = DefaultSubListSize
 		testSub   = ""
+		filterAcc = ""
 	)
 
 	if opts != nil {
@@ -827,6 +842,9 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 				return nil, fmt.Errorf("invalid test subject, must be valid publish subject: %s", testSub)
 			}
 		}
+		if opts.Account != "" {
+			filterAcc = opts.Account
+		}
 	}
 
 	slStats := &SublistStats{}
@@ -839,6 +857,9 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		subs := raw[:0]
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
+			if filterAcc != "" && acc.GetName() != filterAcc {
+				return true
+			}
 			slStats.add(acc.sl.Stats())
 			acc.sl.localSubs(&subs)
 			return true
@@ -877,6 +898,9 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	} else {
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
+			if filterAcc != "" && acc.GetName() != filterAcc {
+				return true
+			}
 			slStats.add(acc.sl.Stats())
 			return true
 		})
@@ -904,11 +928,14 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	testSub := r.URL.Query().Get("test")
+	// Filtered account.
+	filterAcc := r.URL.Query().Get("acc")
 
 	subszOpts := &SubszOptions{
 		Subscriptions: subs,
 		Offset:        offset,
 		Limit:         limit,
+		Account:       filterAcc,
 		Test:          testSub,
 	}
 
