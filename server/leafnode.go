@@ -61,6 +61,15 @@ type leaf struct {
 	// isSpoke tells us what role we are playing.
 	// Used when we receive a connection but otherside tells us they are a hub.
 	isSpoke bool
+	// This map will contain all the subscriptions that have been added to the smap
+	// during initLeafNodeSmapAndSendSubs. It is short lived and is there to avoid
+	// race between processing of a sub where sub is added to account sublist but
+	// updateSmap has not be called on that "thread", while in the LN readloop,
+	// when processing CONNECT, initLeafNodeSmapAndSendSubs is invoked and add
+	// this subscription to smap. When processing of the sub then calls updateSmap,
+	// we would add it a second time in the smap causing later unsub to suppress the LS-.
+	tsub  map[*subscription]struct{}
+	tsubt *time.Timer
 }
 
 // Used for remote (solicited) leafnodes.
@@ -589,7 +598,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	now := time.Now()
 
 	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
-	c.leaf = &leaf{smap: map[string]int32{}}
+	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs
+	c.leaf = &leaf{}
 
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
@@ -821,8 +831,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// Make sure we register with the account here.
 		c.registerWithAccount(c.acc)
 		s.addLeafNodeConnection(c)
-		s.initLeafNodeSmap(c)
-		c.sendAllLeafSubs()
+		s.initLeafNodeSmapAndSendSubs(c)
 		if sendSysConnectEvent {
 			s.sendLeafNodeConnect(c.acc)
 		}
@@ -969,6 +978,10 @@ func (s *Server) addLeafNodeConnection(c *client) {
 func (s *Server) removeLeafNodeConnection(c *client) {
 	c.mu.Lock()
 	cid := c.cid
+	if c.leaf != nil && c.leaf.tsubt != nil {
+		c.leaf.tsubt.Stop()
+		c.leaf.tsubt = nil
+	}
 	c.mu.Unlock()
 	s.mu.Lock()
 	delete(s.leafs, cid)
@@ -1028,16 +1041,8 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// Create and initialize the smap since we know our bound account now.
-	lm := s.initLeafNodeSmap(c)
-	// We are good to go, send over all the bound account subscriptions.
-	if lm <= 128 {
-		c.sendAllLeafSubs()
-	} else {
-		s.startGoRoutine(func() {
-			c.sendAllLeafSubs()
-			s.grWG.Done()
-		})
-	}
+	// This will send all registered subs too.
+	s.initLeafNodeSmapAndSendSubs(c)
 
 	// Add in the leafnode here since we passed through auth at this point.
 	s.addLeafNodeConnection(c)
@@ -1051,11 +1056,12 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 // Snapshot the current subscriptions from the sublist into our smap which
 // we will keep updated from now on.
-func (s *Server) initLeafNodeSmap(c *client) int {
+// Also send the registered subscriptions.
+func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	acc := c.acc
 	if acc == nil {
 		c.Debugf("Leafnode does not have an account bound")
-		return 0
+		return
 	}
 	// Collect all account subs here.
 	_subs := [32]*subscription{}
@@ -1113,10 +1119,15 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 
 	// Now walk the results and add them to our smap
 	c.mu.Lock()
+	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
 		// We ignore ourselves here.
 		if c != sub.client {
 			c.leaf.smap[keyFromSub(sub)]++
+			if c.leaf.tsub == nil {
+				c.leaf.tsub = make(map[*subscription]struct{})
+			}
+			c.leaf.tsub[sub] = struct{}{}
 		}
 	}
 	// FIXME(dlc) - We need to update appropriately on an account claims update.
@@ -1140,10 +1151,28 @@ func (s *Server) initLeafNodeSmap(c *client) int {
 		wcsub := append(siReply, '>')
 		c.leaf.smap[string(wcsub)]++
 	}
-
-	lenMap := len(c.leaf.smap)
+	// Queue all protocols. There is no max pending limit for LN connection,
+	// so we don't need chunking. The writes will happen from the writeLoop.
+	var b bytes.Buffer
+	for key, n := range c.leaf.smap {
+		c.writeLeafSub(&b, key, n)
+	}
+	if b.Len() > 0 {
+		c.queueOutbound(b.Bytes())
+		c.flushSignal()
+	}
+	if c.leaf.tsub != nil {
+		// Clear the tsub map after 5 seconds.
+		c.leaf.tsubt = time.AfterFunc(5*time.Second, func() {
+			c.mu.Lock()
+			if c.leaf != nil {
+				c.leaf.tsub = nil
+				c.leaf.tsubt = nil
+			}
+			c.mu.Unlock()
+		})
+	}
 	c.mu.Unlock()
-	return lenMap
 }
 
 // updateInterestForAccountOnGateway called from gateway code when processing RS+ and RS-.
@@ -1186,6 +1215,10 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	key := keyFromSub(sub)
 
 	c.mu.Lock()
+	if c.leaf.smap == nil {
+		c.mu.Unlock()
+		return
+	}
 
 	// If we are solicited make sure this is a local client or a non-solicited leaf node
 	skind := sub.client.kind
@@ -1193,6 +1226,20 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	if c.isSpokeLeafNode() && !(updateClient || (skind == LEAF && !sub.client.isSpokeLeafNode())) {
 		c.mu.Unlock()
 		return
+	}
+
+	// For additions, check if that sub has just been processed during initLeafNodeSmapAndSendSubs
+	if delta > 0 && c.leaf.tsub != nil {
+		if _, present := c.leaf.tsub[sub]; present {
+			delete(c.leaf.tsub, sub)
+			if len(c.leaf.tsub) == 0 {
+				c.leaf.tsub = nil
+				c.leaf.tsubt.Stop()
+				c.leaf.tsubt = nil
+			}
+			c.mu.Unlock()
+			return
+		}
 	}
 
 	n := c.leaf.smap[key]
@@ -1204,8 +1251,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 	} else {
 		delete(c.leaf.smap, key)
 	}
-	// Don't send in front of all subs.
-	if update && c.flags.isSet(allSubsSent) {
+	if update {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
@@ -1235,25 +1281,6 @@ func keyFromSub(sub *subscription) string {
 		key = sub.subject
 	}
 	return string(key)
-}
-
-// Send all subscriptions for this account that include local
-// and possibly all other remote subscriptions.
-func (c *client) sendAllLeafSubs() {
-	// Hold all at once for now.
-	var b bytes.Buffer
-
-	c.mu.Lock()
-	for key, n := range c.leaf.smap {
-		c.writeLeafSub(&b, key, n)
-	}
-	buf := b.Bytes()
-	if len(buf) > 0 {
-		c.queueOutbound(buf)
-		c.flushSignal()
-	}
-	c.flags.set(allSubsSent)
-	c.mu.Unlock()
 }
 
 // Lock should be held.
