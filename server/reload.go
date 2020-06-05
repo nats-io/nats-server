@@ -1148,9 +1148,7 @@ func (s *Server) reloadAuthorization() {
 				if acc == s.gacc {
 					return true
 				}
-				acc.mu.RLock()
-				accName := acc.Name
-				acc.mu.RUnlock()
+				accName := acc.GetName()
 				// Release server lock for following actions
 				s.mu.Unlock()
 				accClaims, claimJWT, _ := s.fetchAccountClaims(accName)
