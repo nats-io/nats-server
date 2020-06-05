@@ -37,6 +37,8 @@ import (
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
+//            The test name should be prefixed with TestNoRace so we can run only
+//            those tests: go test -run=TestNoRace ...
 
 func TestNoRaceRouteSendSubs(t *testing.T) {
 	template := `
@@ -340,7 +342,7 @@ func TestNoRaceLargeClusterMem(t *testing.T) {
 
 // Make sure we have the correct remote state when dealing with queue subscribers
 // across many client connections.
-func TestQueueSubWeightOrderMultipleConnections(t *testing.T) {
+func TestNoRaceQueueSubWeightOrderMultipleConnections(t *testing.T) {
 	opts, err := server.ProcessConfigFile("./configs/new_cluster.conf")
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -547,7 +549,7 @@ func TestNoRaceClusterLeaksSubscriptions(t *testing.T) {
 	})
 }
 
-func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
+func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
@@ -630,4 +632,89 @@ func TestJetStreamWorkQueueLoadBalance(t *testing.T) {
 			t.Fatalf("Messages received for worker [%d] too far off from target of %d, got %d", i, target, msgs)
 		}
 	}
+}
+
+func TestNoRaceLeafNodeSmapUpdate(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	// Create a client on leaf server
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	csend, cexpect := setupConn(t, c)
+
+	numSubs := make(chan int, 1)
+	doneCh := make(chan struct{}, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		for i := 1; ; i++ {
+			csend(fmt.Sprintf("SUB foo.%d %d\r\n", i, i))
+			select {
+			case <-doneCh:
+				numSubs <- i
+				return
+			default:
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+	// Create leaf node
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	setupConn(t, lc)
+	checkLeafNodeConnected(t, s)
+
+	close(doneCh)
+	ns := <-numSubs
+	csend("PING\r\n")
+	cexpect(pongRe)
+	wg.Wait()
+
+	// Make sure we receive as many LS+ protocols (since all subs are unique).
+	// But we also have to count for LDS subject.
+	// There may be so many protocols and partials, that expectNumberOfProtos may
+	// not work. Do a manual search here.
+	checkLS := func(proto string, expected int) {
+		t.Helper()
+		p := []byte(proto)
+		cur := 0
+		buf := make([]byte, 32768)
+		for ls := 0; ls < expected; {
+			lc.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, err := lc.Read(buf)
+			lc.SetReadDeadline(time.Time{})
+			if err == nil && n > 0 {
+				for i := 0; i < n; i++ {
+					if buf[i] == p[cur] {
+						cur++
+						if cur == len(p) {
+							ls++
+							cur = 0
+						}
+					} else {
+						cur = 0
+					}
+				}
+			}
+			if err != nil || ls > expected {
+				t.Fatalf("Expected %v %sgot %v, err: %v", expected, proto, ls, err)
+			}
+		}
+	}
+	checkLS("LS+ ", ns+1)
+
+	// Now unsub all those subs...
+	for i := 1; i <= ns; i++ {
+		csend(fmt.Sprintf("UNSUB %d\r\n", i))
+	}
+	csend("PING\r\n")
+	cexpect(pongRe)
+
+	// Expect that many LS-
+	checkLS("LS- ", ns)
 }
