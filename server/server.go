@@ -73,6 +73,7 @@ type Info struct {
 	AuthRequired      bool     `json:"auth_required,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
+	TLSAvailable      bool     `json:"tls_available,omitempty"`
 	MaxPayload        int32    `json:"max_payload"`
 	JetStream         bool     `json:"jetstream,omitempty"`
 	IP                string   `json:"ip,omitempty"`
@@ -275,11 +276,15 @@ func NewServer(opts *Options) (*Server, error) {
 		Host:         opts.Host,
 		Port:         opts.Port,
 		AuthRequired: false,
-		TLSRequired:  tlsReq,
+		TLSRequired:  tlsReq && !opts.AllowNonTLS,
 		TLSVerify:    verify,
 		MaxPayload:   opts.MaxPayload,
 		JetStream:    opts.JetStream,
 		Headers:      !opts.NoHeaderSupport,
+	}
+
+	if tlsReq && !info.TLSRequired {
+		info.TLSAvailable = true
 	}
 
 	now := time.Now()
@@ -1856,6 +1861,24 @@ func (s *Server) copyInfo() Info {
 	return info
 }
 
+// tlsMixConn is used when we can receive both TLS and non-TLS connections on same port.
+type tlsMixConn struct {
+	net.Conn
+	pre *bytes.Buffer
+}
+
+// Read for our mixed multi-reader.
+func (c *tlsMixConn) Read(b []byte) (int, error) {
+	if c.pre != nil {
+		n, err := c.pre.Read(b)
+		if c.pre.Len() == 0 {
+			c.pre = nil
+		}
+		return n, err
+	}
+	return c.Conn.Read(b)
+}
+
 func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
@@ -1902,7 +1925,6 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// TLS handshake is done (if applicable).
 	c.sendProtoNow(c.generateClientInfoJSON(info))
 
-	tlsRequired := ws == nil && info.TLSRequired
 	// Unlock to register
 	c.mu.Unlock()
 
@@ -1930,9 +1952,34 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Re-Grab lock
 	c.mu.Lock()
 
+	tlsRequired := ws == nil && info.TLSRequired
+	var pre []byte
+	// If we have both TLS and non-TLS allowed we need to see which
+	// one the client wants.
+	if opts.TLSConfig != nil && opts.AllowNonTLS {
+		pre = make([]byte, 8)
+		c.nc.SetReadDeadline(time.Now().Add(25 * time.Millisecond))
+		n, err := c.nc.Read(pre[:])
+		c.nc.SetReadDeadline(time.Time{})
+		pre = pre[:n]
+		// Assume TLS unless we see nothing or CONNECT.
+		if err != nil || bytes.Contains(pre, []byte("CONNECT")) {
+			tlsRequired = false
+		} else {
+			tlsRequired = true
+		}
+	}
+
 	// Check for TLS
 	if tlsRequired {
 		c.Debugf("Starting TLS client connection handshake")
+		// If we have a prebuffer create a multi-reader.
+		if len(pre) > 0 {
+			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+			// Clear pre so it is not parsed.
+			pre = nil
+		}
+
 		c.nc = tls.Server(c.nc, opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
 
@@ -1983,7 +2030,7 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	c.setPingTimer()
 
 	// Spin up the read loop.
-	s.startGoRoutine(func() { c.readLoop() })
+	s.startGoRoutine(func() { c.readLoop(pre) })
 
 	// Spin up the write loop.
 	s.startGoRoutine(func() { c.writeLoop() })
