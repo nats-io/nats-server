@@ -1960,14 +1960,13 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	if opts.TLSConfig != nil && opts.AllowNonTLS {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
-		n, err := io.ReadFull(c.nc, pre[:])
+		n, _ := io.ReadFull(c.nc, pre[:])
 		c.nc.SetReadDeadline(time.Time{})
 		pre = pre[:n]
-		// Assume TLS unless we see nothing or start of CONNECT.
-		if err != nil || bytes.Contains(pre, []byte("CO")) {
-			tlsRequired = false
-		} else {
+		if n > 0 && pre[0] == 0x16 {
 			tlsRequired = true
+		} else {
+			tlsRequired = false
 		}
 	}
 
