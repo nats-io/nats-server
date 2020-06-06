@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -1957,13 +1958,13 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// If we have both TLS and non-TLS allowed we need to see which
 	// one the client wants.
 	if opts.TLSConfig != nil && opts.AllowNonTLS {
-		pre = make([]byte, 8)
-		c.nc.SetReadDeadline(time.Now().Add(25 * time.Millisecond))
-		n, err := c.nc.Read(pre[:])
+		pre = make([]byte, 4)
+		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
+		n, err := io.ReadFull(c.nc, pre[:])
 		c.nc.SetReadDeadline(time.Time{})
 		pre = pre[:n]
-		// Assume TLS unless we see nothing or CONNECT.
-		if err != nil || bytes.Contains(pre, []byte("CONNECT")) {
+		// Assume TLS unless we see nothing or start of CONNECT.
+		if err != nil || bytes.Contains(pre, []byte("CO")) {
 			tlsRequired = false
 		} else {
 			tlsRequired = true
