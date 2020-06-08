@@ -859,6 +859,55 @@ func TestTLSAuthorizationShortTimeout(t *testing.T) {
 	}
 }
 
+func TestClientTLSAndNonTLSConnections(t *testing.T) {
+	s, opts := RunServerWithConfig("./configs/tls_mixed.conf")
+	defer s.Shutdown()
+
+	surl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(surl, nats.RootCAs("./configs/certs/ca.pem"))
+	if err != nil {
+		t.Fatalf("Failed to connect with TLS: %v", err)
+	}
+	defer nc.Close()
+
+	// Now also make sure we can connect through plain text.
+	nurl := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc2, err := nats.Connect(nurl)
+	if err != nil {
+		t.Fatalf("Failed to connect without TLS: %v", err)
+	}
+	defer nc2.Close()
+
+	// Make sure they can go back and forth.
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	sub2, err := nc2.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	nc.Flush()
+	nc2.Flush()
+
+	nmsgs := 100
+	for i := 0; i < nmsgs; i++ {
+		nc2.Publish("foo", []byte("HELLO FROM PLAINTEXT"))
+		nc.Publish("bar", []byte("HELLO FROM TLS"))
+	}
+	// Now wait for the messages.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if msgs, _, err := sub.Pending(); err != nil || msgs != nmsgs {
+			return fmt.Errorf("Did not receive the correct number of messages: %d", msgs)
+		}
+		if msgs, _, err := sub2.Pending(); err != nil || msgs != nmsgs {
+			return fmt.Errorf("Did not receive the correct number of messages: %d", msgs)
+		}
+		return nil
+	})
+
+}
+
 func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url string, index int) {
 	defer wg.Done()
 

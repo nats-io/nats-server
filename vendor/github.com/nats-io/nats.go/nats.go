@@ -510,6 +510,31 @@ type Msg struct {
 	barrier *barrierInfo
 }
 
+func (m *Msg) headerBytes() ([]byte, error) {
+	var hdr []byte
+	if len(m.Header) == 0 {
+		return hdr, nil
+	}
+
+	var b bytes.Buffer
+	_, err := b.WriteString(hdrLine)
+	if err != nil {
+		return nil, ErrBadHeaderMsg
+	}
+
+	err = m.Header.Write(&b)
+	if err != nil {
+		return nil, ErrBadHeaderMsg
+	}
+
+	_, err = b.WriteString(crlf)
+	if err != nil {
+		return nil, ErrBadHeaderMsg
+	}
+
+	return b.Bytes(), nil
+}
+
 type barrierInfo struct {
 	refs int64
 	f    func()
@@ -543,6 +568,7 @@ type serverInfo struct {
 	Version      string   `json:"version"`
 	AuthRequired bool     `json:"auth_required"`
 	TLSRequired  bool     `json:"tls_required"`
+	TLSAvailable bool     `json:"tls_available"`
 	Headers      bool     `json:"headers"`
 	MaxPayload   int64    `json:"max_payload"`
 	ConnectURLs  []string `json:"connect_urls,omitempty"`
@@ -1576,7 +1602,7 @@ func (nc *Conn) checkForSecure() error {
 	o := nc.Opts
 
 	// Check for mismatch in setups
-	if o.Secure && !nc.info.TLSRequired {
+	if o.Secure && !nc.info.TLSRequired && !nc.info.TLSAvailable {
 		return ErrSecureConnWanted
 	} else if nc.info.TLSRequired && !o.Secure {
 		// Switch to Secure since server needs TLS.
@@ -2687,18 +2713,21 @@ func (nc *Conn) PublishMsg(m *Msg) error {
 	if m == nil {
 		return ErrInvalidMsg
 	}
+
 	var hdr []byte
+	var err error
+
 	if len(m.Header) > 0 {
 		if !nc.info.Headers {
 			return ErrHeadersNotSupported
 		}
-		// FIXME(dlc) - Optimize
-		var b bytes.Buffer
-		b.WriteString(hdrLine)
-		m.Header.Write(&b)
-		b.WriteString(crlf)
-		hdr = b.Bytes()
+
+		hdr, err = m.headerBytes()
+		if err != nil {
+			return err
+		}
 	}
+
 	return nc.publish(m.Subject, m.Reply, hdr, m.Data)
 }
 
@@ -2874,7 +2903,7 @@ func (nc *Conn) respHandler(m *Msg) {
 }
 
 // Helper to setup and send new request style requests. Return the chan to receive the response.
-func (nc *Conn) createNewRequestAndSend(subj string, data []byte) (chan *Msg, string, error) {
+func (nc *Conn) createNewRequestAndSend(subj string, hdr, data []byte) (chan *Msg, string, error) {
 	// Do setup for the new style if needed.
 	if nc.respMap == nil {
 		nc.initNewResp()
@@ -2898,28 +2927,55 @@ func (nc *Conn) createNewRequestAndSend(subj string, data []byte) (chan *Msg, st
 	}
 	nc.mu.Unlock()
 
-	if err := nc.PublishRequest(subj, respInbox, data); err != nil {
+	if err := nc.publish(subj, respInbox, hdr, data); err != nil {
 		return nil, token, err
 	}
 
 	return mch, token, nil
 }
 
+// RequestMsg will send a request payload including optional headers and deliver
+// the response message, or an error, including a timeout if no message was received properly.
+func (nc *Conn) RequestMsg(msg *Msg, timeout time.Duration) (*Msg, error) {
+	var hdr []byte
+	var err error
+
+	if len(msg.Header) > 0 {
+		if !nc.info.Headers {
+			return nil, ErrHeadersNotSupported
+		}
+
+		hdr, err = msg.headerBytes()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return nc.request(msg.Subject, hdr, msg.Data, timeout)
+}
+
 // Request will send a request payload and deliver the response message,
 // or an error, including a timeout if no message was received properly.
 func (nc *Conn) Request(subj string, data []byte, timeout time.Duration) (*Msg, error) {
+	return nc.request(subj, nil, data, timeout)
+}
+
+func (nc *Conn) request(subj string, hdr, data []byte, timeout time.Duration) (*Msg, error) {
 	if nc == nil {
 		return nil, ErrInvalidConnection
 	}
 
 	nc.mu.Lock()
-	// If user wants the old style.
 	if nc.Opts.UseOldRequestStyle {
 		nc.mu.Unlock()
-		return nc.oldRequest(subj, data, timeout)
+		return nc.oldRequest(subj, hdr, data, timeout)
 	}
 
-	mch, token, err := nc.createNewRequestAndSend(subj, data)
+	return nc.newRequest(subj, hdr, data, timeout)
+}
+
+func (nc *Conn) newRequest(subj string, hdr, data []byte, timeout time.Duration) (*Msg, error) {
+	mch, token, err := nc.createNewRequestAndSend(subj, hdr, data)
 	if err != nil {
 		return nil, err
 	}
@@ -2948,7 +3004,7 @@ func (nc *Conn) Request(subj string, data []byte, timeout time.Duration) (*Msg, 
 // oldRequest will create an Inbox and perform a Request() call
 // with the Inbox reply and return the first reply received.
 // This is optimized for the case of multiple responses.
-func (nc *Conn) oldRequest(subj string, data []byte, timeout time.Duration) (*Msg, error) {
+func (nc *Conn) oldRequest(subj string, hdr, data []byte, timeout time.Duration) (*Msg, error) {
 	inbox := NewInbox()
 	ch := make(chan *Msg, RequestChanLen)
 
@@ -2959,10 +3015,11 @@ func (nc *Conn) oldRequest(subj string, data []byte, timeout time.Duration) (*Ms
 	s.AutoUnsubscribe(1)
 	defer s.Unsubscribe()
 
-	err = nc.PublishRequest(subj, inbox, data)
+	err = nc.publish(subj, inbox, hdr, data)
 	if err != nil {
 		return nil, err
 	}
+
 	return s.NextMsg(timeout)
 }
 
@@ -3651,6 +3708,21 @@ func (m *Msg) Respond(data []byte) error {
 	m.Sub.mu.Unlock()
 	// No need to check the connection here since the call to publish will do all the checking.
 	return nc.Publish(m.Reply, data)
+}
+
+// RespondMsg allows a convenient way to respond to requests in service based subscriptions that might include headers
+func (m *Msg) RespondMsg(msg *Msg) error {
+	if m == nil || m.Sub == nil {
+		return ErrMsgNotBound
+	}
+	if m.Reply == "" {
+		return ErrMsgNoReply
+	}
+	m.Sub.mu.Lock()
+	nc := m.Sub.conn
+	m.Sub.mu.Unlock()
+	// No need to check the connection here since the call to publish will do all the checking.
+	return nc.PublishMsg(msg)
 }
 
 // FIXME: This is a hack

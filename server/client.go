@@ -868,7 +868,7 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 
 // readLoop is the main socket read functionality.
 // Runs in its own Go routine.
-func (c *client) readLoop() {
+func (c *client) readLoop(pre []byte) {
 	// Grab the connection off the client, it will be cleared on a close.
 	// We check for that after the loop, but want to avoid a nil dereference
 	c.mu.Lock()
@@ -916,6 +916,11 @@ func (c *client) readLoop() {
 	if ws {
 		wsr = &wsReadInfo{}
 		wsr.init()
+	}
+
+	// If we have a pre parse that first.
+	if len(pre) > 0 {
+		c.parse(pre)
 	}
 
 	for {
