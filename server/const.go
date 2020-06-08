@@ -146,6 +146,10 @@ const (
 	// the closing of clients when signaled to go in lame duck mode.
 	DEFAULT_LAME_DUCK_DURATION = 2 * time.Minute
 
+	// DEFAULT_LAME_DUCK_GRACE_PERIOD is the duration the server waits, after entering
+	// lame duck mode, before starting closing client connections.
+	DEFAULT_LAME_DUCK_GRACE_PERIOD = 10 * time.Second
+
 	// DEFAULT_LEAFNODE_INFO_WAIT Route dial timeout.
 	DEFAULT_LEAFNODE_INFO_WAIT = 1 * time.Second
 

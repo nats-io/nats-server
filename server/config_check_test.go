@@ -1090,11 +1090,38 @@ func TestConfigCheck(t *testing.T) {
 		{
 			name: "invalid lame_duck_duration type",
 			config: `
-		lame_duck_duration: abc
+				lame_duck_duration: abc
 			`,
 			err:       errors.New(`error parsing lame_duck_duration: time: invalid duration abc`),
 			errorLine: 2,
-			errorPos:  3,
+			errorPos:  5,
+		},
+		{
+			name: "lame_duck_duration too small",
+			config: `
+				lame_duck_duration: "5s"
+			`,
+			err:       errors.New(`invalid lame_duck_duration of 5s, minimum is 30 seconds`),
+			errorLine: 2,
+			errorPos:  5,
+		},
+		{
+			name: "invalid lame_duck_grace_period type",
+			config: `
+				lame_duck_grace_period: abc
+			`,
+			err:       errors.New(`error parsing lame_duck_grace_period: time: invalid duration abc`),
+			errorLine: 2,
+			errorPos:  5,
+		},
+		{
+			name: "lame_duck_grace_period should be positive",
+			config: `
+				lame_duck_grace_period: "-5s"
+			`,
+			err:       errors.New(`invalid lame_duck_grace_period, needs to be positive`),
+			errorLine: 2,
+			errorPos:  5,
 		},
 		{
 			name: "when only setting TLS timeout for a leafnode remote",
