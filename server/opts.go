@@ -211,6 +211,7 @@ type Options struct {
 	WriteDeadline         time.Duration `json:"-"`
 	MaxClosedClients      int           `json:"-"`
 	LameDuckDuration      time.Duration `json:"-"`
+	LameDuckGracePeriod   time.Duration `json:"-"`
 
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
@@ -729,6 +730,19 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			return
 		}
 		o.LameDuckDuration = dur
+	case "lame_duck_grace_period":
+		dur, err := time.ParseDuration(v.(string))
+		if err != nil {
+			err := &configErr{tk, fmt.Sprintf("error parsing lame_duck_grace_period: %v", err)}
+			*errors = append(*errors, err)
+			return
+		}
+		if dur < 0 {
+			err := &configErr{tk, "invalid lame_duck_grace_period, needs to be positive"}
+			*errors = append(*errors, err)
+			return
+		}
+		o.LameDuckGracePeriod = dur
 	case "operator", "operators", "roots", "root", "root_operators", "root_operator":
 		opFiles := []string{}
 		switch v := v.(type) {
@@ -3407,6 +3421,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.LameDuckDuration == 0 {
 		opts.LameDuckDuration = DEFAULT_LAME_DUCK_DURATION
+	}
+	if opts.LameDuckGracePeriod == 0 {
+		opts.LameDuckGracePeriod = DEFAULT_LAME_DUCK_GRACE_PERIOD
 	}
 	if opts.Gateway.Port != 0 {
 		if opts.Gateway.Host == "" {

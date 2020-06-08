@@ -665,11 +665,30 @@ func TestProfilingNoTimeout(t *testing.T) {
 	}
 }
 
-func TestLameDuckMode(t *testing.T) {
-	atomic.StoreInt64(&lameDuckModeInitialDelay, 0)
-	defer atomic.StoreInt64(&lameDuckModeInitialDelay, lameDuckModeDefaultInitialDelay)
+func TestLameDuckOptionsValidation(t *testing.T) {
+	o := DefaultOptions()
+	o.LameDuckDuration = 5 * time.Second
+	o.LameDuckGracePeriod = 10 * time.Second
+	s, err := NewServer(o)
+	if s != nil {
+		s.Shutdown()
+	}
+	if err == nil || !strings.Contains(err.Error(), "should be strictly lower") {
+		t.Fatalf("Expected error saying that ldm grace period should be lower than ldm duration, got %v", err)
+	}
+}
 
+func testSetLDMGracePeriod(o *Options, val time.Duration) {
+	// For tests, we set the grace period as a negative value
+	// so we can have a grace period bigger than the total duration.
+	// When validating options, we would not be able to run the
+	// server without this trick.
+	o.LameDuckGracePeriod = val * -1
+}
+
+func TestLameDuckMode(t *testing.T) {
 	optsA := DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
 	optsA.Cluster.Host = "127.0.0.1"
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -830,19 +849,21 @@ func TestLameDuckMode(t *testing.T) {
 	// Now test that we introduce delay before starting closing client connections.
 	// This allow to "signal" multiple servers and avoid their clients to reconnect
 	// to a server that is going to be going in LD mode.
-	atomic.StoreInt64(&lameDuckModeInitialDelay, int64(100*time.Millisecond))
-
+	testSetLDMGracePeriod(optsA, 100*time.Millisecond)
 	optsA.LameDuckDuration = 10 * time.Millisecond
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	testSetLDMGracePeriod(optsB, 100*time.Millisecond)
 	optsB.LameDuckDuration = 10 * time.Millisecond
 	srvB = RunServer(optsB)
 	defer srvB.Shutdown()
 
 	optsC := DefaultOptions()
 	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
+	testSetLDMGracePeriod(optsC, 100*time.Millisecond)
+	optsC.LameDuckGracePeriod = -100 * time.Millisecond
 	optsC.LameDuckDuration = 10 * time.Millisecond
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
@@ -878,15 +899,13 @@ func TestLameDuckMode(t *testing.T) {
 }
 
 func TestLameDuckModeInfo(t *testing.T) {
-	// Ensure that initial delay is set very high so that we can
-	// check that some events occur as expected before the client
-	// is disconnected.
-	atomic.StoreInt64(&lameDuckModeInitialDelay, int64(5*time.Second))
-	defer atomic.StoreInt64(&lameDuckModeInitialDelay, lameDuckModeDefaultInitialDelay)
-
 	optsA := testWSOptions()
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.Cluster.Port = -1
+	// Ensure that initial delay is set very high so that we can
+	// check that some events occur as expected before the client
+	// is disconnected.
+	testSetLDMGracePeriod(optsA, 5*time.Second)
 	optsA.LameDuckDuration = 50 * time.Millisecond
 	optsA.DisableShortFirstPing = true
 	srvA := RunServer(optsA)
@@ -954,6 +973,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	checkConnectURLs(expected)
 
 	optsC := testWSOptions()
+	testSetLDMGracePeriod(optsA, 5*time.Second)
 	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()

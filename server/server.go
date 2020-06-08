@@ -45,18 +45,12 @@ import (
 )
 
 const (
-	// Time to wait before starting closing clients when in LD mode.
-	lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
-
 	// Interval for the first PING for non client connections.
 	firstPingInterval = time.Second
 
 	// This is for the first ping for client connections.
 	firstClientPingInterval = 2 * time.Second
 )
-
-// Make this a variable so that we can change during tests
-var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
 
 // Info is the information sent to clients, routes, gateways, and leaf nodes,
 // to help them understand information about this server.
@@ -427,6 +421,10 @@ func (s *Server) ClientURL() string {
 }
 
 func validateOptions(o *Options) error {
+	if o.LameDuckDuration > 0 && o.LameDuckGracePeriod >= o.LameDuckDuration {
+		return fmt.Errorf("lame duck grace period (%v) should be strictly lower than lame duck duration (%v)",
+			o.LameDuckGracePeriod, o.LameDuckDuration)
+	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
 		return err
@@ -2716,6 +2714,14 @@ func (s *Server) lameDuckMode() {
 		s.websocket.listener = nil
 	}
 	s.ldmCh = make(chan bool, expected)
+	opts := s.getOpts()
+	gp := opts.LameDuckGracePeriod
+	// For tests, we want the grace period to be in some cases bigger
+	// than the ldm duration, so to by-pass the validateOptions() check,
+	// we use negative number and flip it here.
+	if gp < 0 {
+		gp *= -1
+	}
 	s.mu.Unlock()
 
 	// Wait for accept loops to be done to make sure that no new
@@ -2734,8 +2740,8 @@ func (s *Server) lameDuckMode() {
 		s.Shutdown()
 		return
 	}
-	dur := int64(s.getOpts().LameDuckDuration)
-	dur -= atomic.LoadInt64(&lameDuckModeInitialDelay)
+	dur := int64(opts.LameDuckDuration)
+	dur -= int64(gp)
 	if dur <= 0 {
 		dur = int64(time.Second)
 	}
@@ -2767,7 +2773,7 @@ func (s *Server) lameDuckMode() {
 	s.sendLDMToClients()
 	s.mu.Unlock()
 
-	t := time.NewTimer(time.Duration(atomic.LoadInt64(&lameDuckModeInitialDelay)))
+	t := time.NewTimer(gp)
 	// Delay start of closing of client connections in case
 	// we have several servers that we want to signal to enter LD mode
 	// and not have their client reconnect to each other.
