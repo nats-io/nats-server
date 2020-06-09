@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nkeys"
 )
 
 type testReader struct {
@@ -1581,7 +1584,7 @@ func TestWSAbnormalFailureOfWebServer(t *testing.T) {
 	}
 }
 
-func testWSCreateClient(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader) {
+func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader, []byte) {
 	t.Helper()
 	addr := fmt.Sprintf("%s:%d", host, port)
 	wsc, err := net.Dial("tcp", addr)
@@ -1613,9 +1616,15 @@ func testWSCreateClient(t testing.TB, compress, web bool, host string, port int)
 		t.Fatalf("Expected response status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
 	// Wait for the INFO
-	if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("INFO {")) {
-		t.Fatalf("Expected INFO, got %s", msg)
+	info := testWSReadFrame(t, br)
+	if !bytes.HasPrefix(info, []byte("INFO {")) {
+		t.Fatalf("Expected INFO, got %s", info)
 	}
+	return wsc, br, info
+}
+
+func testWSCreateClient(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader) {
+	wsc, br, _ := testWSCreateClientGetInfo(t, compress, web, host, port)
 	// Send CONNECT and PING
 	wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
 	if _, err := wsc.Write(wsmsg); err != nil {
@@ -1787,6 +1796,187 @@ func TestWSTLSConnection(t *testing.T) {
 			defer resp.Body.Close()
 			if resp.StatusCode != test.status {
 				t.Fatalf("Expected status %v, got %v", test.status, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestWSTLSVerifyClientCert(t *testing.T) {
+	o := testWSOptions()
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+		Verify:   true,
+	}
+	tlsc, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating tls config: %v", err)
+	}
+	o.Websocket.TLSConfig = tlsc
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+
+	for _, test := range []struct {
+		name        string
+		provideCert bool
+	}{
+		{"client provides cert", true},
+		{"client does not provide cert", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wsc, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatalf("Error creating ws connection: %v", err)
+			}
+			defer wsc.Close()
+			tlsc := &tls.Config{}
+			if test.provideCert {
+				tc := &TLSConfigOpts{
+					CertFile: "../test/configs/certs/client-cert.pem",
+					KeyFile:  "../test/configs/certs/client-key.pem",
+				}
+				var err error
+				tlsc, err = GenTLSConfig(tc)
+				if err != nil {
+					t.Fatalf("Error generating tls config: %v", err)
+				}
+			}
+			tlsc.InsecureSkipVerify = true
+			wsc = tls.Client(wsc, tlsc)
+			if err := wsc.(*tls.Conn).Handshake(); err != nil {
+				t.Fatalf("Error during handshake: %v", err)
+			}
+			req := testWSCreateValidReq()
+			req.URL, _ = url.Parse("wss://" + addr)
+			if err := req.Write(wsc); err != nil {
+				t.Fatalf("Error sending request: %v", err)
+			}
+			br := bufio.NewReader(wsc)
+			resp, err := http.ReadResponse(br, req)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			if !test.provideCert {
+				if err == nil {
+					t.Fatal("Expected error, did not get one")
+				} else if !strings.Contains(err.Error(), "bad certificate") {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("Expected status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestWSTLSVerifyAndMap(t *testing.T) {
+	o := testWSOptions()
+	certUserName := "CN=example.com,OU=NATS.io"
+	o.Users = []*User{&User{Username: certUserName}}
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/server.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+		CaFile:   "../test/configs/certs/tlsauth/ca.pem",
+		Verify:   true,
+	}
+	tlsc, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating tls config: %v", err)
+	}
+	o.Websocket.TLSConfig = tlsc
+	o.Websocket.TLSMap = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+
+	for _, test := range []struct {
+		name        string
+		provideCert bool
+	}{
+		{"client provides cert", true},
+		{"client does not provide cert", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wsc, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatalf("Error creating ws connection: %v", err)
+			}
+			defer wsc.Close()
+			tlsc := &tls.Config{}
+			if test.provideCert {
+				tc := &TLSConfigOpts{
+					CertFile: "../test/configs/certs/tlsauth/client.pem",
+					KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+				}
+				var err error
+				tlsc, err = GenTLSConfig(tc)
+				if err != nil {
+					t.Fatalf("Error generating tls config: %v", err)
+				}
+			}
+			tlsc.InsecureSkipVerify = true
+			wsc = tls.Client(wsc, tlsc)
+			if err := wsc.(*tls.Conn).Handshake(); err != nil {
+				t.Fatalf("Error during handshake: %v", err)
+			}
+			req := testWSCreateValidReq()
+			req.URL, _ = url.Parse("wss://" + addr)
+			if err := req.Write(wsc); err != nil {
+				t.Fatalf("Error sending request: %v", err)
+			}
+			br := bufio.NewReader(wsc)
+			resp, err := http.ReadResponse(br, req)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			if !test.provideCert {
+				if err == nil {
+					t.Fatal("Expected error, did not get one")
+				} else if !strings.Contains(err.Error(), "bad certificate") {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("Expected status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
+			}
+			// Wait for the INFO
+			l := testWSReadFrame(t, br)
+			if !bytes.HasPrefix(l, []byte("INFO {")) {
+				t.Fatalf("Expected INFO, got %s", l)
+			}
+			var info serverInfo
+			if err := json.Unmarshal(l[5:], &info); err != nil {
+				t.Fatalf("Unable to unmarshal info: %v", err)
+			}
+			// Send CONNECT and PING
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			// Wait for the PONG
+			if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Expected PONG, got %s", msg)
+			}
+
+			c := s.getClient(info.CID)
+			c.mu.Lock()
+			un := c.opts.Username
+			c.mu.Unlock()
+			if un != certUserName {
+				t.Fatalf("Expected client's assigned username to be %q, got %q", certUserName, un)
 			}
 		})
 	}
@@ -2403,6 +2593,521 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 	}
 	if !bytes.Equal(uncompressed, uncompressedPayload) {
 		t.Fatalf("Unexpected uncomressed data: %q", uncompressed)
+	}
+}
+
+func TestWSBasicAuth(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		opts func() *Options
+		user string
+		pass string
+		err  string
+	}{
+		{
+			"top level auth, no override, wrong u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				return o
+			},
+			"websocket", "client", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, no override, correct u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				return o
+			},
+			"normal", "client", "",
+		},
+		{
+			"no top level auth, ws auth, wrong u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Username = "websocket"
+				o.Websocket.Password = "client"
+				return o
+			},
+			"normal", "client", "-ERR 'Authorization Violation'",
+		},
+		{
+			"no top level auth, ws auth, correct u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Username = "websocket"
+				o.Websocket.Password = "client"
+				return o
+			},
+			"websocket", "client", "",
+		},
+		{
+			"top level auth, ws override, wrong u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				o.Websocket.Username = "websocket"
+				o.Websocket.Password = "client"
+				return o
+			},
+			"normal", "client", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, ws override, correct u/p",
+			func() *Options {
+				o := testWSOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				o.Websocket.Username = "websocket"
+				o.Websocket.Password = "client"
+				return o
+			},
+			"websocket", "client", "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := test.opts()
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
+				test.user, test.pass)
+
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if test.err == "" && !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Expected to receive PONG, got %q", msg)
+			} else if test.err != "" && !bytes.HasPrefix(msg, []byte(test.err)) {
+				t.Fatalf("Expected to receive %q, got %q", test.err, msg)
+			}
+		})
+	}
+}
+
+func TestWSAuthTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		at   float64
+		wat  float64
+		err  string
+	}{
+		{"use top-level auth timeout", 10.0, 0.0, ""},
+		{"use websocket auth timeout", 10.0, 0.05, "-ERR 'Authentication Timeout'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := testWSOptions()
+			o.AuthTimeout = test.at
+			o.Websocket.Username = "websocket"
+			o.Websocket.Password = "client"
+			o.Websocket.AuthTimeout = test.wat
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, l := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			var info serverInfo
+			json.Unmarshal([]byte(l[5:]), &info)
+			// Make sure that we are told that auth is required.
+			if !info.AuthRequired {
+				t.Fatalf("Expected auth required, was not: %q", l)
+			}
+			start := time.Now()
+			// Wait before sending connect
+			time.Sleep(100 * time.Millisecond)
+			connectProto := "CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"websocket\",\"pass\":\"client\"}\r\nPING\r\n"
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if test.err != "" && !bytes.HasPrefix(msg, []byte(test.err)) {
+				t.Fatalf("Expected to receive %q error, got %q", test.err, msg)
+			} else if test.err == "" && !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Unexpected error: %q", msg)
+			}
+			if dur := time.Since(start); dur > time.Second {
+				t.Fatalf("Too long to get timeout error: %v", dur)
+			}
+		})
+	}
+}
+
+func TestWSTokenAuth(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		opts  func() *Options
+		token string
+		err   string
+	}{
+		{
+			"top level auth, no override, wrong token",
+			func() *Options {
+				o := testWSOptions()
+				o.Authorization = "goodtoken"
+				return o
+			},
+			"badtoken", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, no override, correct token",
+			func() *Options {
+				o := testWSOptions()
+				o.Authorization = "goodtoken"
+				return o
+			},
+			"goodtoken", "",
+		},
+		{
+			"no top level auth, ws auth, wrong token",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Token = "goodtoken"
+				return o
+			},
+			"badtoken", "-ERR 'Authorization Violation'",
+		},
+		{
+			"no top level auth, ws auth, correct token",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Token = "goodtoken"
+				return o
+			},
+			"goodtoken", "",
+		},
+		{
+			"top level auth, ws override, wrong token",
+			func() *Options {
+				o := testWSOptions()
+				o.Authorization = "clienttoken"
+				o.Websocket.Token = "websockettoken"
+				return o
+			},
+			"clienttoken", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, ws override, correct token",
+			func() *Options {
+				o := testWSOptions()
+				o.Authorization = "clienttoken"
+				o.Websocket.Token = "websockettoken"
+				return o
+			},
+			"websockettoken", "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := test.opts()
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"auth_token\":\"%s\"}\r\nPING\r\n",
+				test.token)
+
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if test.err == "" && !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Expected to receive PONG, got %q", msg)
+			} else if test.err != "" && !bytes.HasPrefix(msg, []byte(test.err)) {
+				t.Fatalf("Expected to receive %q, got %q", test.err, msg)
+			}
+		})
+	}
+}
+
+func TestWSUsersAuth(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		opts func() *Options
+		user string
+		pass string
+		err  string
+	}{
+		{
+			"top level auth, no override, wrong user",
+			func() *Options {
+				o := testWSOptions()
+				o.Users = []*User{
+					&User{Username: "normal1", Password: "client1"},
+					&User{Username: "normal2", Password: "client2"},
+				}
+				return o
+			},
+			"websocket", "client", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, no override, correct user",
+			func() *Options {
+				o := testWSOptions()
+				o.Users = []*User{
+					&User{Username: "normal1", Password: "client1"},
+					&User{Username: "normal2", Password: "client2"},
+				}
+				return o
+			},
+			"normal2", "client2", "",
+		},
+		{
+			"no top level auth, ws auth, wrong user",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Users = []*User{
+					&User{Username: "websocket1", Password: "client1"},
+					&User{Username: "websocket2", Password: "client2"},
+				}
+				return o
+			},
+			"websocket", "client", "-ERR 'Authorization Violation'",
+		},
+		{
+			"no top level auth, ws auth, correct token",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Users = []*User{
+					&User{Username: "websocket1", Password: "client1"},
+					&User{Username: "websocket2", Password: "client2"},
+				}
+				return o
+			},
+			"websocket1", "client1", "",
+		},
+		{
+			"top level auth, ws override, wrong user",
+			func() *Options {
+				o := testWSOptions()
+				o.Users = []*User{
+					&User{Username: "normal1", Password: "client1"},
+					&User{Username: "normal2", Password: "client2"},
+				}
+				o.Websocket.Users = []*User{
+					&User{Username: "websocket1", Password: "client1"},
+					&User{Username: "websocket2", Password: "client2"},
+				}
+				return o
+			},
+			"normal2", "client2", "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, ws override, correct token",
+			func() *Options {
+				o := testWSOptions()
+				o.Users = []*User{
+					&User{Username: "normal1", Password: "client1"},
+					&User{Username: "normal2", Password: "client2"},
+				}
+				o.Websocket.Users = []*User{
+					&User{Username: "websocket1", Password: "client1"},
+					&User{Username: "websocket2", Password: "client2"},
+				}
+				return o
+			},
+			"websocket2", "client2", "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := test.opts()
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
+				test.user, test.pass)
+
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if test.err == "" && !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Expected to receive PONG, got %q", msg)
+			} else if test.err != "" && !bytes.HasPrefix(msg, []byte(test.err)) {
+				t.Fatalf("Expected to receive %q, got %q", test.err, msg)
+			}
+		})
+	}
+}
+
+func TestWSNoAuthUser(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		noAuthUser    string
+		wsNoAuthUser  string
+		user          string
+		acc           string
+		createWSUsers bool
+	}{
+		{"use top-level no_auth_user", "user1", "", "user1", "normal", false},
+		{"use websocket no_auth_user no ws users", "user1", "user2", "user2", "normal", false},
+		{"use websocket no_auth_user with ws users", "user1", "wsuser1", "wsuser1", "websocket", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := testWSOptions()
+			normalAcc := NewAccount("normal")
+			websocketAcc := NewAccount("websocket")
+			o.Accounts = []*Account{normalAcc, websocketAcc}
+			o.Users = []*User{
+				&User{Username: "user1", Password: "pwd1", Account: normalAcc},
+				&User{Username: "user2", Password: "pwd2", Account: normalAcc},
+			}
+			o.NoAuthUser = test.noAuthUser
+			o.Websocket.NoAuthUser = test.wsNoAuthUser
+			if test.createWSUsers {
+				o.Websocket.Users = []*User{
+					&User{Username: "wsuser1", Password: "pwd1", Account: websocketAcc},
+					&User{Username: "wsuser2", Password: "pwd2", Account: websocketAcc},
+				}
+			}
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, l := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			var info serverInfo
+			json.Unmarshal([]byte(l[5:]), &info)
+
+			connectProto := "CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Unexpected error: %q", msg)
+			}
+
+			c := s.getClient(info.CID)
+			c.mu.Lock()
+			uname := c.opts.Username
+			aname := c.acc.GetName()
+			c.mu.Unlock()
+			if uname != test.user {
+				t.Fatalf("Expected selected user to be %q, got %q", test.user, uname)
+			}
+			if aname != test.acc {
+				t.Fatalf("Expected selected account to be %q, got %q", test.acc, aname)
+			}
+		})
+	}
+}
+
+func TestWSNkeyAuth(t *testing.T) {
+	nkp, _ := nkeys.CreateUser()
+	pub, _ := nkp.PublicKey()
+
+	wsnkp, _ := nkeys.CreateUser()
+	wspub, _ := wsnkp.PublicKey()
+
+	for _, test := range []struct {
+		name string
+		opts func() *Options
+		nkey string
+		kp   nkeys.KeyPair
+		err  string
+	}{
+		{
+			"top level auth, no override, wrong nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				return o
+			},
+			wspub, wsnkp, "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, no override, correct nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				return o
+			},
+			pub, nkp, "",
+		},
+		{
+			"no top level auth, ws auth, wrong nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Nkeys = []*NkeyUser{&NkeyUser{Nkey: wspub}}
+				return o
+			},
+			pub, nkp, "-ERR 'Authorization Violation'",
+		},
+		{
+			"no top level auth, ws auth, correct nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.Nkeys = []*NkeyUser{&NkeyUser{Nkey: wspub}}
+				return o
+			},
+			wspub, wsnkp, "",
+		},
+		{
+			"top level auth, ws override, wrong nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				o.Websocket.Nkeys = []*NkeyUser{&NkeyUser{Nkey: wspub}}
+				return o
+			},
+			pub, nkp, "-ERR 'Authorization Violation'",
+		},
+		{
+			"top level auth, ws override, correct nkey",
+			func() *Options {
+				o := testWSOptions()
+				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				o.Websocket.Nkeys = []*NkeyUser{&NkeyUser{Nkey: wspub}}
+				return o
+			},
+			wspub, wsnkp, "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := test.opts()
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			wsc, br, infoMsg := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			defer wsc.Close()
+
+			// Sign Nonce
+			var info nonceInfo
+			json.Unmarshal([]byte(infoMsg[5:]), &info)
+			sigraw, _ := test.kp.Sign([]byte(info.Nonce))
+			sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"nkey\":\"%s\",\"sig\":\"%s\"}\r\nPING\r\n", test.nkey, sig)
+
+			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			if _, err := wsc.Write(wsmsg); err != nil {
+				t.Fatalf("Error sending message: %v", err)
+			}
+			msg := testWSReadFrame(t, br)
+			if test.err == "" && !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+				t.Fatalf("Expected to receive PONG, got %q", msg)
+			} else if test.err != "" && !bytes.HasPrefix(msg, []byte(test.err)) {
+				t.Fatalf("Expected to receive %q, got %q", test.err, msg)
+			}
+		})
 	}
 }
 

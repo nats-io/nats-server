@@ -278,6 +278,9 @@ func (s *Server) configureAuthorization() {
 		s.users = nil
 		s.info.AuthRequired = false
 	}
+
+	// Do similar for websocket config
+	s.wsConfigAuth(&opts.Websocket)
 }
 
 // checkAuthentication will check based on client type and
@@ -309,10 +312,64 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		return opts.CustomClientAuthentication.Check(c)
 	}
 
-	return s.processClientOrLeafAuthentication(c)
+	return s.processClientOrLeafAuthentication(c, opts)
 }
 
-func (s *Server) processClientOrLeafAuthentication(c *client) bool {
+type authOpts struct {
+	username   string
+	password   string
+	token      string
+	noAuthUser string
+	tlsMap     bool
+	users      map[string]*User
+	nkeys      map[string]*NkeyUser
+}
+
+func (s *Server) getAuthOpts(c *client, o *Options, auth *authOpts) bool {
+	// c.ws is immutable, but may need lock if we get race reports.
+	wsClient := c.ws != nil
+
+	authRequired := s.info.AuthRequired
+	// For websocket clients, if there is no top-level auth, then we
+	// check for websocket specifically.
+	if !authRequired && wsClient {
+		authRequired = s.websocket.authRequired
+	}
+	if !authRequired {
+		return false
+	}
+	auth.noAuthUser = o.NoAuthUser
+	auth.tlsMap = o.TLSMap
+	if wsClient {
+		wo := &o.Websocket
+		// If those are specified, override, regardless if there is
+		// auth configuration (like user/pwd, etc..) in websocket section.
+		if wo.NoAuthUser != _EMPTY_ {
+			auth.noAuthUser = wo.NoAuthUser
+		}
+		if wo.TLSMap {
+			auth.tlsMap = true
+		}
+		// Now check for websocket auth specific override
+		if s.websocket.authRequired {
+			auth.username = wo.Username
+			auth.password = wo.Password
+			auth.token = wo.Token
+			auth.users = s.websocket.users
+			auth.nkeys = s.websocket.nkeys
+			return true
+		}
+		// else fallback to regular auth config
+	}
+	auth.username = o.Username
+	auth.password = o.Password
+	auth.token = o.Authorization
+	auth.users = s.users
+	auth.nkeys = s.nkeys
+	return true
+}
+
+func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) bool {
 	var (
 		nkey *NkeyUser
 		juc  *jwt.UserClaims
@@ -320,11 +377,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 		user *User
 		ok   bool
 		err  error
-		opts = s.getOpts()
+		auth authOpts
 	)
 
 	s.mu.Lock()
-	authRequired := s.info.AuthRequired
+	authRequired := s.getAuthOpts(c, opts, &auth)
 	if !authRequired {
 		// TODO(dlc) - If they send us credentials should we fail?
 		s.mu.Unlock()
@@ -355,21 +412,21 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 	}
 
 	// Check if we have nkeys or users for client.
-	hasNkeys := s.nkeys != nil
-	hasUsers := s.users != nil
+	hasNkeys := auth.nkeys != nil
+	hasUsers := auth.users != nil
 	if hasNkeys && c.opts.Nkey != "" {
-		nkey, ok = s.nkeys[c.opts.Nkey]
+		nkey, ok = auth.nkeys[c.opts.Nkey]
 		if !ok {
 			s.mu.Unlock()
 			return false
 		}
 	} else if hasUsers {
 		// Check if we are tls verify and are mapping users from the client_certificate
-		if opts.TLSMap {
+		if auth.tlsMap {
 			var euser string
 			authorized := checkClientTLSCertSubject(c, func(u string) bool {
 				var ok bool
-				user, ok = s.users[u]
+				user, ok = auth.users[u]
 				if !ok {
 					c.Debugf("User in cert [%q], not found", u)
 					return false
@@ -388,14 +445,14 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 			// but we set it here to be able to identify it in the logs.
 			c.opts.Username = euser
 		} else {
-			if c.kind == CLIENT && c.opts.Username == "" && s.opts.NoAuthUser != "" {
-				if u, exists := s.users[s.opts.NoAuthUser]; exists {
+			if c.kind == CLIENT && c.opts.Username == "" && auth.noAuthUser != "" {
+				if u, exists := auth.users[auth.noAuthUser]; exists {
 					c.opts.Username = u.Username
 					c.opts.Password = u.Password
 				}
 			}
 			if c.opts.Username != "" {
-				user, ok = s.users[c.opts.Username]
+				user, ok = auth.users[c.opts.Username]
 				if !ok {
 					s.mu.Unlock()
 					return false
@@ -517,13 +574,13 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 	}
 
 	if c.kind == CLIENT {
-		if opts.Authorization != "" {
-			return comparePasswords(opts.Authorization, c.opts.Token)
-		} else if opts.Username != "" {
-			if opts.Username != c.opts.Username {
+		if auth.token != "" {
+			return comparePasswords(auth.token, c.opts.Token)
+		} else if auth.username != "" {
+			if auth.username != c.opts.Username {
 				return false
 			}
-			return comparePasswords(opts.Password, c.opts.Password)
+			return comparePasswords(auth.password, c.opts.Password)
 		}
 	} else if c.kind == LEAF {
 		// There is no required username/password to connect and
@@ -733,7 +790,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// Still, if the CONNECT has some user info, we will bind to the
 	// user's account or to the specified default account (if provided)
 	// or to the global account.
-	return s.processClientOrLeafAuthentication(c)
+	return s.processClientOrLeafAuthentication(c, opts)
 }
 
 // Support for bcrypt stored passwords and tokens.

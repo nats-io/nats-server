@@ -101,6 +101,9 @@ type srvWebsocket struct {
 	sameOrigin     bool
 	connectURLs    []string
 	connectURLsMap map[string]struct{}
+	users          map[string]*User
+	nkeys          map[string]*NkeyUser
+	authRequired   bool // indicate if there is auth override in websocket config
 }
 
 type allowedOrigin struct {
@@ -763,6 +766,55 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 	}
 }
 
+// Given the websocket options, we check if any auth configuration
+// has been provided. If so, possibly create users/nkey users and
+// store them in s.websocket.users/nkeys.
+// Also update a boolean that indicates if auth is required for
+// websocket clients.
+func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
+	if opts.Nkeys != nil || opts.Users != nil {
+		// Support both at the same time.
+		if opts.Nkeys != nil {
+			s.websocket.nkeys = make(map[string]*NkeyUser)
+			for _, u := range opts.Nkeys {
+				copy := u.clone()
+				if u.Account != nil {
+					if v, ok := s.accounts.Load(u.Account.Name); ok {
+						copy.Account = v.(*Account)
+					}
+				}
+				if copy.Permissions != nil {
+					validateResponsePermissions(copy.Permissions)
+				}
+				s.websocket.nkeys[u.Nkey] = copy
+			}
+		}
+		if opts.Users != nil {
+			s.websocket.users = make(map[string]*User)
+			for _, u := range opts.Users {
+				copy := u.clone()
+				if u.Account != nil {
+					if v, ok := s.accounts.Load(u.Account.Name); ok {
+						copy.Account = v.(*Account)
+					}
+				}
+				if copy.Permissions != nil {
+					validateResponsePermissions(copy.Permissions)
+				}
+				s.websocket.users[u.Username] = copy
+			}
+		}
+		s.assignGlobalAccountToOrphanUsers()
+		s.websocket.authRequired = true
+	} else if opts.Username != "" || opts.Token != "" {
+		s.websocket.authRequired = true
+	} else {
+		s.websocket.users = nil
+		s.websocket.nkeys = nil
+		s.websocket.authRequired = false
+	}
+}
+
 func (s *Server) startWebsocketServer() {
 	sopts := s.getOpts()
 	o := &sopts.Websocket
@@ -787,7 +839,6 @@ func (s *Server) startWebsocketServer() {
 	if o.TLSConfig != nil {
 		proto = "wss"
 		config := o.TLSConfig.Clone()
-		config.ClientAuth = tls.NoClientCert
 		hl, err = tls.Listen("tcp", hp, config)
 	} else {
 		proto = "ws"
