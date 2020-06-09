@@ -257,8 +257,26 @@ type WebsocketOpts struct {
 	// The host:port to advertise to websocket clients in the cluster.
 	Advertise string
 
+	// If no user is provided when a client connects, will default to this
+	// user and associated account. This user has to exist either in the
+	// Users defined here or in the global options.
+	NoAuthUser string
+
+	// Authentication section. If anything is configured in this section,
+	// it will override the authorization configuration for regular clients.
+	Username string
+	Password string
+	Token    string
+	Users    []*User
+	Nkeys    []*NkeyUser
+
+	// Timeout for the authentication process.
+	AuthTimeout float64
+
 	// TLS configuration is required.
 	TLSConfig *tls.Config
+	// If true, map certificate values for authentication purposes.
+	TLSMap bool
 
 	// If true, the Origin header must match the request's host.
 	SameOrigin bool
@@ -3025,12 +3043,17 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "advertise":
 			o.Websocket.Advertise = mv.(string)
 		case "tls":
-			config, _, err := getTLSConfig(tk)
+			tc, err := parseTLS(tk)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
-			o.Websocket.TLSConfig = config
+			if o.Websocket.TLSConfig, err = GenTLSConfig(tc); err != nil {
+				err := &configErr{tk, err.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Websocket.TLSMap = tc.Map
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
@@ -3074,6 +3097,42 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			o.Websocket.HandshakeTimeout = ht
 		case "compression":
 			o.Websocket.Compression = mv.(bool)
+		case "authorization", "authentication":
+			auth, err := parseAuthorization(tk, o, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Websocket.Username = auth.user
+			o.Websocket.Password = auth.pass
+			o.Websocket.Token = auth.token
+			if (auth.user != "" || auth.pass != "") && auth.token != "" {
+				err := &configErr{tk, "Cannot have a user/pass and token"}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Websocket.AuthTimeout = auth.timeout
+			// Check for multiple users defined
+			if auth.users != nil {
+				if auth.user != "" {
+					err := &configErr{tk, "Can not have a single user/pass and a users array"}
+					*errors = append(*errors, err)
+					continue
+				}
+				if auth.token != "" {
+					err := &configErr{tk, "Can not have a token and a users array"}
+					*errors = append(*errors, err)
+					continue
+				}
+				// Users may have been added from Accounts parsing, so do an append here
+				o.Websocket.Users = append(o.Websocket.Users, auth.users...)
+			}
+			// Check for nkeys
+			if auth.nkeys != nil {
+				o.Websocket.Nkeys = append(o.Websocket.Nkeys, auth.nkeys...)
+			}
+		case "no_auth_user":
+			o.Websocket.NoAuthUser = mv.(string)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

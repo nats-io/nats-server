@@ -1875,6 +1875,12 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Grab JSON info string
 	s.mu.Lock()
 	info := s.copyInfo()
+	// If this is a websocket client and there is no top-level auth specified,
+	// then we use the websocket's specific boolean that will be set to true
+	// if there is any auth{} configured in websocket{}.
+	if ws != nil && !info.AuthRequired {
+		info.AuthRequired = s.websocket.authRequired
+	}
 	if s.nonceRequired() {
 		// Nonce handling
 		var raw [nonceLen]byte
@@ -1974,7 +1980,15 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// the race where the timer fires during the handshake and causes the
 	// server to write bad data to the socket. See issue #432.
 	if info.AuthRequired {
-		c.setAuthTimer(secondsToDuration(opts.AuthTimeout))
+		timeout := opts.AuthTimeout
+		// For websocket, possibly override only if set. We make sure that
+		// opts.AuthTimeout is set to a default value if not configured,
+		// but we don't do the same for websocket's one so that we know
+		// if user has explicitly set or not.
+		if ws != nil && opts.Websocket.AuthTimeout != 0 {
+			timeout = opts.Websocket.AuthTimeout
+		}
+		c.setAuthTimer(secondsToDuration(timeout))
 	}
 
 	// Do final client initialization
