@@ -1021,14 +1021,14 @@ func TestServiceLatencyFailureReportingSingleServer(t *testing.T) {
 		t.Fatalf("Expected to get a service unavailable status [503], got %d", sl.Status)
 	}
 
-	// The service listener. Make it slow. 10ms is respThreshold, so take 2X
+	// The service listener. Make it slow. 20ms is respThreshold, so take 2X
 	sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(40 * time.Millisecond)
 		msg.Respond([]byte("22 msgs"))
 	})
 	nc.Flush()
 
-	nc2.Request("ngs.usage", []byte("1h"), 10*time.Millisecond)
+	nc2.Request("ngs.usage", []byte("1h"), 20*time.Millisecond)
 	sl = getMetricResult()
 	if sl.Status != 504 {
 		t.Fatalf("Expected to get a service timeout status [504], got %d", sl.Status)

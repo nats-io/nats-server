@@ -1275,6 +1275,7 @@ func TestClientWriteLoopStall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	nc.Flush()
 	cid, _ := nc.GetClientID()
 
 	sender, err := nats.Connect(url)
