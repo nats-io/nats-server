@@ -772,46 +772,16 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 // Also update a boolean that indicates if auth is required for
 // websocket clients.
 func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
-	if opts.Nkeys != nil || opts.Users != nil {
-		// Support both at the same time.
-		if opts.Nkeys != nil {
-			s.websocket.nkeys = make(map[string]*NkeyUser)
-			for _, u := range opts.Nkeys {
-				copy := u.clone()
-				if u.Account != nil {
-					if v, ok := s.accounts.Load(u.Account.Name); ok {
-						copy.Account = v.(*Account)
-					}
-				}
-				if copy.Permissions != nil {
-					validateResponsePermissions(copy.Permissions)
-				}
-				s.websocket.nkeys[u.Nkey] = copy
-			}
-		}
-		if opts.Users != nil {
-			s.websocket.users = make(map[string]*User)
-			for _, u := range opts.Users {
-				copy := u.clone()
-				if u.Account != nil {
-					if v, ok := s.accounts.Load(u.Account.Name); ok {
-						copy.Account = v.(*Account)
-					}
-				}
-				if copy.Permissions != nil {
-					validateResponsePermissions(copy.Permissions)
-				}
-				s.websocket.users[u.Username] = copy
-			}
-		}
-		s.assignGlobalAccountToOrphanUsers()
-		s.websocket.authRequired = true
+	ws := &s.websocket
+	if len(opts.Nkeys) > 0 || len(opts.Users) > 0 {
+		ws.nkeys, ws.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
+		ws.authRequired = true
 	} else if opts.Username != "" || opts.Token != "" {
-		s.websocket.authRequired = true
+		ws.authRequired = true
 	} else {
-		s.websocket.users = nil
-		s.websocket.nkeys = nil
-		s.websocket.authRequired = false
+		ws.users = nil
+		ws.nkeys = nil
+		ws.authRequired = false
 	}
 }
 

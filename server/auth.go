@@ -181,16 +181,16 @@ func (s *Server) checkAuthforWarnings() {
 	}
 }
 
-// If opts.Users or opts.Nkeys have definitions without an account
-// defined assign them to the default global account.
+// If Users or Nkeys options have definitions without an account defined,
+// assign them to the default global account.
 // Lock should be held.
-func (s *Server) assignGlobalAccountToOrphanUsers() {
-	for _, u := range s.users {
+func (s *Server) assignGlobalAccountToOrphanUsers(nkeys map[string]*NkeyUser, users map[string]*User) {
+	for _, u := range users {
 		if u.Account == nil {
 			u.Account = s.gacc
 		}
 	}
-	for _, u := range s.nkeys {
+	for _, u := range nkeys {
 		if u.Account == nil {
 			u.Account = s.gacc
 		}
@@ -225,12 +225,10 @@ func validateResponsePermissions(p *Permissions) {
 // configureAuthorization will do any setup needed for authorization.
 // Lock is assumed held.
 func (s *Server) configureAuthorization() {
-	if s.opts == nil {
+	opts := s.getOpts()
+	if opts == nil {
 		return
 	}
-
-	// Snapshot server options.
-	opts := s.getOpts()
 
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
@@ -239,48 +237,62 @@ func (s *Server) configureAuthorization() {
 	} else if len(s.trustedKeys) > 0 {
 		s.info.AuthRequired = true
 	} else if opts.Nkeys != nil || opts.Users != nil {
-		// Support both at the same time.
-		if opts.Nkeys != nil {
-			s.nkeys = make(map[string]*NkeyUser)
-			for _, u := range opts.Nkeys {
-				copy := u.clone()
-				if u.Account != nil {
-					if v, ok := s.accounts.Load(u.Account.Name); ok {
-						copy.Account = v.(*Account)
-					}
-				}
-				if copy.Permissions != nil {
-					validateResponsePermissions(copy.Permissions)
-				}
-				s.nkeys[u.Nkey] = copy
-			}
-		}
-		if opts.Users != nil {
-			s.users = make(map[string]*User)
-			for _, u := range opts.Users {
-				copy := u.clone()
-				if u.Account != nil {
-					if v, ok := s.accounts.Load(u.Account.Name); ok {
-						copy.Account = v.(*Account)
-					}
-				}
-				if copy.Permissions != nil {
-					validateResponsePermissions(copy.Permissions)
-				}
-				s.users[u.Username] = copy
-			}
-		}
-		s.assignGlobalAccountToOrphanUsers()
+		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
 		s.info.AuthRequired = true
 	} else if opts.Username != "" || opts.Authorization != "" {
 		s.info.AuthRequired = true
 	} else {
 		s.users = nil
+		s.nkeys = nil
 		s.info.AuthRequired = false
 	}
 
 	// Do similar for websocket config
 	s.wsConfigAuth(&opts.Websocket)
+}
+
+// Takes the given slices of NkeyUser and User options and build
+// corresponding maps used by the server. The users are cloned
+// so that server does not reference options.
+// The global account is assigned to users that don't have an
+// existing account.
+// Server lock is held on entry.
+func (s *Server) buildNkeysAndUsersFromOptions(nko []*NkeyUser, uo []*User) (map[string]*NkeyUser, map[string]*User) {
+	var nkeys map[string]*NkeyUser
+	var users map[string]*User
+
+	if len(nko) > 0 {
+		nkeys = make(map[string]*NkeyUser, len(nko))
+		for _, u := range nko {
+			copy := u.clone()
+			if u.Account != nil {
+				if v, ok := s.accounts.Load(u.Account.Name); ok {
+					copy.Account = v.(*Account)
+				}
+			}
+			if copy.Permissions != nil {
+				validateResponsePermissions(copy.Permissions)
+			}
+			nkeys[u.Nkey] = copy
+		}
+	}
+	if len(uo) > 0 {
+		users = make(map[string]*User, len(uo))
+		for _, u := range uo {
+			copy := u.clone()
+			if u.Account != nil {
+				if v, ok := s.accounts.Load(u.Account.Name); ok {
+					copy.Account = v.(*Account)
+				}
+			}
+			if copy.Permissions != nil {
+				validateResponsePermissions(copy.Permissions)
+			}
+			users[u.Username] = copy
+		}
+	}
+	s.assignGlobalAccountToOrphanUsers(nkeys, users)
+	return nkeys, users
 }
 
 // checkAuthentication will check based on client type and
