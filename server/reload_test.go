@@ -3897,6 +3897,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 
 	// Use this to check for message.
 	checkForMsg := func() {
+		t.Helper()
 		select {
 		case <-ch:
 		case <-time.After(2 * time.Second):
@@ -3913,6 +3914,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, s, sa)
+	checkSubInterest(t, sa, globalAccountName, "foo", time.Second)
 
 	// Create second client and send message from this one. Interest should be here.
 	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
@@ -3938,6 +3940,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, s, sa)
+	checkSubInterest(t, sa, globalAccountName, "foo", time.Second)
 
 	nc2, err = nats.Connect(urlA)
 	if err != nil {

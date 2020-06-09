@@ -3797,6 +3797,7 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			}
 
 			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			sub.SetPendingLimits(-1, -1)
 			defer sub.Unsubscribe()
 			nc.Flush()
 
