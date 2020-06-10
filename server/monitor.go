@@ -566,6 +566,10 @@ func decodeSubs(w http.ResponseWriter, r *http.Request) (subs bool, subsDet bool
 
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 	auth, err := decodeBool(w, r, "auth")
 	if err != nil {
@@ -728,6 +732,10 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 // HandleRoutez process HTTP requests for route information.
 func (s *Server) HandleRoutez(w http.ResponseWriter, r *http.Request) {
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	subs, subsDetail, err := decodeSubs(w, r)
 	if err != nil {
 		return
@@ -911,6 +919,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 
 // HandleSubsz processes HTTP requests for subjects stats.
 func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
+
 	s.mu.Lock()
 	s.httpReqStats[SubszPath]++
 	s.mu.Unlock()
@@ -961,8 +970,25 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
+func (s *Server) isMonitoringAllowed(r *http.Request) bool {
+	if r.URL.Query() == nil && s.opts.IsSecureMonitoring() {
+		s.Errorf("unauthorized access: %v")
+		return false
+	}
+	if !s.opts.IsMonitoringAllowed(r.URL.Query()["token"][0]) {
+		s.Errorf("unauthorized access: %v")
+		return false
+	}
+	return true
+}
+
 // HandleStacksz processes HTTP requests for getting stacks
 func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
+
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	// Do not get any lock here that would prevent getting the stacks
 	// if we were to have a deadlock somewhere.
 	var defaultBuf [defaultStackBufSize]byte
@@ -1035,6 +1061,7 @@ type Varz struct {
 	Subscriptions     uint32            `json:"subscriptions"`
 	HTTPReqStats      map[string]uint64 `json:"http_req_stats"`
 	ConfigLoadTime    time.Time         `json:"config_load_time"`
+	MonitoringSecured bool              `json:"monitoring_secured"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1123,6 +1150,11 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	s.mu.Lock()
 	s.httpReqStats[RootPath]++
 	s.mu.Unlock()
@@ -1219,11 +1251,13 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSTimeout:  ln.TLSTimeout,
 			Remotes:     []RemoteLeafOptsVarz{},
 		},
-		Start:    s.start,
-		MaxSubs:  opts.MaxSubs,
-		Cores:    numCores,
-		MaxProcs: maxProcs,
+		Start:             s.start,
+		MaxSubs:           opts.MaxSubs,
+		Cores:             numCores,
+		MaxProcs:          maxProcs,
+		MonitoringSecured: opts.IsSecureMonitoring(),
 	}
+
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)
 	}
@@ -1375,6 +1409,11 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 
 // HandleVarz will process HTTP requests for server information.
 func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
+
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	var rss, vss int64
 	var pcpu float64
 
@@ -1689,6 +1728,10 @@ func createInboundAccountGatewayz(name string, e *insie) *AccountGatewayz {
 
 // HandleGatewayz process HTTP requests for route information.
 func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	s.mu.Lock()
 	s.httpReqStats[GatewayzPath]++
 	s.mu.Unlock()
@@ -1800,6 +1843,10 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 
 // HandleLeafz process HTTP requests for leafnode information.
 func (s *Server) HandleLeafz(w http.ResponseWriter, r *http.Request) {
+	if !s.isMonitoringAllowed(r) {
+		return
+	}
+
 	s.mu.Lock()
 	s.httpReqStats[LeafzPath]++
 	s.mu.Unlock()
