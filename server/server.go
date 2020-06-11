@@ -1901,7 +1901,7 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// then we use the websocket's specific boolean that will be set to true
 	// if there is any auth{} configured in websocket{}.
 	if ws != nil && !info.AuthRequired {
-		info.AuthRequired = s.websocket.authRequired
+		info.AuthRequired = s.websocket.authOverride
 	}
 	if s.nonceRequired() {
 		// Nonce handling

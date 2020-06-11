@@ -103,7 +103,7 @@ type srvWebsocket struct {
 	connectURLsMap map[string]struct{}
 	users          map[string]*User
 	nkeys          map[string]*NkeyUser
-	authRequired   bool // indicate if there is auth override in websocket config
+	authOverride   bool // indicate if there is auth override in websocket config
 }
 
 type allowedOrigin struct {
@@ -735,6 +735,19 @@ func validateWebsocketOptions(o *Options) error {
 			return fmt.Errorf("unable to parse allowed origin: %v", err)
 		}
 	}
+	// If there is a NoAuthUser, we need to have Users defined and
+	// the user to be present.
+	if wo.NoAuthUser != _EMPTY_ {
+		if wo.Users == nil {
+			return fmt.Errorf("websocket no_auth_user %q configured, but users are not", wo.NoAuthUser)
+		}
+		for _, u := range wo.Users {
+			if u.Username == wo.NoAuthUser {
+				return nil
+			}
+		}
+		return fmt.Errorf("websocket no_auth_user %q not found in users configuration", wo.NoAuthUser)
+	}
 	return nil
 }
 
@@ -771,17 +784,18 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 // store them in s.websocket.users/nkeys.
 // Also update a boolean that indicates if auth is required for
 // websocket clients.
+// Server lock is held on entry.
 func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 	ws := &s.websocket
 	if len(opts.Nkeys) > 0 || len(opts.Users) > 0 {
 		ws.nkeys, ws.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
-		ws.authRequired = true
+		ws.authOverride = true
 	} else if opts.Username != "" || opts.Token != "" {
-		ws.authRequired = true
+		ws.authOverride = true
 	} else {
 		ws.users = nil
 		ws.nkeys = nil
-		ws.authRequired = false
+		ws.authOverride = false
 	}
 }
 
