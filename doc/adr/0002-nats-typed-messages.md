@@ -1,6 +1,7 @@
 # 2. NATS Typed Messages
 
 Date: 2020-05-06
+Author: @ripienaar
 
 ## Status
 

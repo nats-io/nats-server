@@ -1,10 +1,13 @@
 # 1. JetStream JSON API Design
 
 Date: 2020-04-30
+Author: @ripienaar
 
 ## Status
 
-Proposed
+Partially Implemented
+
+The JSON API has been updated, however the urlencoded replies have not been adopted.
 
 ## Context
 
