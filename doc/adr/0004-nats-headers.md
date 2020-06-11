@@ -22,7 +22,7 @@ The reference NATS Go client uses the `http.Header` infrastructure for serializi
 
 NATS Headers:
 
-The only difference between a NATS header and HTTP is the first line. Instead of an HTTP method followed by a resource and the HTTP version (`GET / HTTP/1.1`), NATS will provide a string identifying the header version (`NATS/X.x\r\n`), currently 1.0, so it is rendered as `NATS/1.0\r\n`.
+The only difference between a NATS header and HTTP is the first line. Instead of an HTTP method followed by a resource and the HTTP version (`GET / HTTP/1.1`), NATS will provide a string identifying the header version (`NATS/X.x`), currently 1.0, so it is rendered as `NATS/1.0␍␊`.
 
 Please refer to the [specification](https://tools.ietf.org/html/rfc7230#section-3.2) for information on how to encode/decode HTTP headers, and the [Go implementation](https://golang.org/src/net/http/header.go).
 
@@ -45,8 +45,8 @@ The server that is able to send and receive headers will specify so in it's [`IN
 Messages that include a header have a `HPUB` protocol:
 
 ```
-HPUB SUBJECT REPLY 23 30\r\nNATS/1.0\r\nHeader: X\r\n\r\nPAYLOAD\r\n
-HPUB SUBJECT REPLY 23 23\r\nNATS/1.0\r\nHeader: X\r\n\r\n\r\n
+HPUB SUBJECT REPLY 23 30␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
+HPUB SUBJECT REPLY 23 23␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
 
 HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>
 <HEADER><PAYLOAD>
@@ -63,8 +63,8 @@ HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>
 Clients will see `HMSG` protocol lines for `MSG`s that contain headers
 
 ```
-HMSG SUBJECT 1 REPLY 23 30\r\nNATS/1.0\r\nHeader: X\r\n\r\nPAYLOAD\r\n
-HPUB SUBJECT 1 REPLY 23 23\r\nNATS/1.0\r\nHeader: X\r\n\r\n\r\n
+HMSG SUBJECT 1 REPLY 23 30␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
+HPUB SUBJECT 1 REPLY 23 23␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
 
 HMSG <SUBJECT> <SID> [REPLY] <HDR_LEN> <TOT_LEN>
 <PAYLOAD>
