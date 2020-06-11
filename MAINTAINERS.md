@@ -8,4 +8,4 @@ Maintainership is on a per project basis.
   
 ### Maintainers
   - Waldemar Quevedo <wally@nats.io> [@wallyqs](https://github.com/wallyqs)
-  - Oleg Shaldybin <olegsh@google.com> [@olegshaldibin](https://github.com/olegshaldibin)
+  - Oleg Shaldybin <olegsh@google.com> [@olegshaldybin](https://github.com/olegshaldybin)
