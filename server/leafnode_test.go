@@ -1566,10 +1566,10 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 			if !test.provideCert {
 				// Wait a bit and make sure we are not connecting
 				time.Sleep(100 * time.Millisecond)
-				checkLeafNodeConnectedCount(t, sl, 0)
+				checkLeafNodeConnectedCount(t, s, 0)
 				return
 			}
-			checkLeafNodeConnected(t, sl)
+			checkLeafNodeConnected(t, s)
 
 			var uname string
 			var accname string
