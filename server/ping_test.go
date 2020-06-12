@@ -14,11 +14,11 @@
 package server
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats.go"
 )
 
 const PING_CLIENT_PORT = 11228
@@ -28,17 +28,41 @@ var DefaultPingOptions = Options{
 	Port:         PING_CLIENT_PORT,
 	NoLog:        true,
 	NoSigs:       true,
-	PingInterval: 5 * time.Millisecond,
+	PingInterval: 50 * time.Millisecond,
 }
 
 func TestPing(t *testing.T) {
-	s := RunServer(&DefaultPingOptions)
+	o := DefaultPingOptions
+	o.DisableShortFirstPing = true
+	s := RunServer(&o)
 	defer s.Shutdown()
 
-	nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", PING_CLIENT_PORT))
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", PING_CLIENT_PORT))
 	if err != nil {
-		t.Fatalf("Error creating client: %v\n", err)
+		t.Fatalf("Error connecting: %v", err)
 	}
-	defer nc.Close()
-	time.Sleep(10 * time.Millisecond)
+	defer c.Close()
+	br := bufio.NewReader(c)
+	// Wait for INFO
+	br.ReadLine()
+	// Send CONNECT
+	c.Write([]byte("CONNECT {\"verbose\":false}\r\nPING\r\n"))
+	// Wait for first PONG
+	br.ReadLine()
+	// Wait for PING
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		l, _, err := br.ReadLine()
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		if string(l) != "PING" {
+			t.Fatalf("Expected PING, got %q", l)
+		}
+		if dur := time.Since(start); dur < 25*time.Millisecond || dur > 75*time.Millisecond {
+			t.Fatalf("Pings duration off: %v", dur)
+		}
+		c.Write([]byte(pongProto))
+		start = time.Now()
+	}
 }
