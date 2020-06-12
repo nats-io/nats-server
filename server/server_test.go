@@ -1747,3 +1747,37 @@ func TestReconnectErrorReports(t *testing.T) {
 		})
 	}
 }
+
+func TestServerLogsConfigurationFile(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "_nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
+
+	file, err := ioutil.TempFile(tmpDir, "nats_server_log_")
+	if err != nil {
+		t.Fatalf("Could not create the temp file: %v", err)
+	}
+	file.Close()
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	port: -1
+	logfile: "%s"
+	`, file.Name())))
+	defer os.Remove(conf)
+
+	o := LoadConfig(conf)
+	o.ConfigFile = file.Name()
+	o.NoLog = false
+	s := RunServer(o)
+	s.Shutdown()
+
+	log, err := ioutil.ReadFile(file.Name())
+	if err != nil {
+		t.Fatalf("Error reading log file: %v", err)
+	}
+	if !bytes.Contains(log, []byte(fmt.Sprintf("Using configuration file: %s", file.Name()))) {
+		t.Fatalf("Config file location was not reported in log: %s", log)
+	}
+}

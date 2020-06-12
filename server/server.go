@@ -1244,6 +1244,10 @@ func (s *Server) Start() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	if opts.ConfigFile != _EMPTY_ {
+		s.Noticef("Using configuration file: %s", opts.ConfigFile)
+	}
+
 	hasOperators := len(opts.TrustedOperators) > 0
 	if hasOperators {
 		s.Noticef("Trusted Operators")
