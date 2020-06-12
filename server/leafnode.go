@@ -603,6 +603,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
 	var sendSysConnectEvent bool
+	var acc *Account
 
 	c.mu.Lock()
 	c.initClient()
@@ -624,7 +625,8 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// TODO: Decide what should be the optimal behavior here.
 		// For now, if lookup fails, we will constantly try
 		// to recreate this LN connection.
-		acc, err := s.LookupAccount(remote.LocalAccount)
+		var err error
+		acc, err = s.LookupAccount(remote.LocalAccount)
 		if err != nil {
 			c.Errorf("No local account %q for leafnode: %v", remote.LocalAccount, err)
 			c.closeConnection(MissingAccount)
@@ -725,18 +727,16 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			// Force handshake
 			c.mu.Unlock()
 			if err = conn.Handshake(); err != nil {
-				if solicited {
-					// If we overrode and used the saved tlsName but that failed
-					// we will clear that here. This is for the case that another server
-					// does not have the same tlsName, maybe only IPs.
-					// https://github.com/nats-io/nats-server/issues/1256
-					if _, ok := err.(x509.HostnameError); ok {
-						remote.Lock()
-						if host == remote.tlsName {
-							remote.tlsName = ""
-						}
-						remote.Unlock()
+				// If we overrode and used the saved tlsName but that failed
+				// we will clear that here. This is for the case that another server
+				// does not have the same tlsName, maybe only IPs.
+				// https://github.com/nats-io/nats-server/issues/1256
+				if _, ok := err.(x509.HostnameError); ok {
+					remote.Lock()
+					if host == remote.tlsName {
+						remote.tlsName = ""
 					}
+					remote.Unlock()
 				}
 				c.Errorf("TLS handshake error: %v", err)
 				c.closeConnection(TLSHandshakeError)
@@ -828,11 +828,28 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Also send our local subs.
 	if solicited {
 		// Make sure we register with the account here.
-		c.registerWithAccount(c.acc)
+		c.registerWithAccount(acc)
 		s.addLeafNodeConnection(c)
 		s.initLeafNodeSmapAndSendSubs(c)
 		if sendSysConnectEvent {
-			s.sendLeafNodeConnect(c.acc)
+			s.sendLeafNodeConnect(acc)
+		}
+
+		// The above functions are not atomically under the client
+		// lock doing those operations. It is possible - since we
+		// have started the read/write loops - that the connection
+		// is closed before or in between. This would leave the
+		// closed LN connection possible registered with the account
+		// and/or the server's leafs map. So check if connection
+		// is closed, and if so, manually cleanup.
+		c.mu.Lock()
+		closed := c.isClosed()
+		c.mu.Unlock()
+		if closed {
+			s.removeLeafNodeConnection(c)
+			if prev := acc.removeClient(c); prev == 1 {
+				s.decActiveAccounts()
+			}
 		}
 	}
 
