@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,10 @@ package test
 import (
 	"errors"
 	"fmt"
+	"math/rand"
+	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -513,5 +516,161 @@ func TestAutoUnsubscribePropagationOnClientDisconnect(t *testing.T) {
 	// No subs should be on the cluster when all clients is disconnected
 	if err := checkExpectedSubs(0, cluster...); err != nil {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestClusterNameOption(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: MyCluster
+			listen: 127.0.0.1:-1
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	si := checkInfoMsg(t, c)
+	if si.Cluster != "MyCluster" {
+		t.Fatalf("Expected a cluster name of %q, got %q", "MyCluster", si.Cluster)
+	}
+}
+
+func TestClusterNameAndGatewayName(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: A
+			listen: 127.0.0.1:-1
+		}
+		gateway {
+			name: B
+			listen: 127.0.0.1:-1
+		}
+	`))
+	defer os.Remove(conf)
+
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), "cluster name conflicts") {
+		t.Fatalf("Expected an error with conflicting cluster names")
+	}
+}
+
+func TestEphemeralClusterName(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			listen: 127.0.0.1:-1
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	si := checkInfoMsg(t, c)
+	if si.Cluster == "" {
+		t.Fatalf("Expected an ephemeral cluster name to be set")
+	}
+}
+
+type captureErrLogger struct {
+	dummyLogger
+	ch chan string
+}
+
+func (c *captureErrLogger) Errorf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	select {
+	case c.ch <- msg:
+	default:
+	}
+}
+
+func TestClusterNameConflictsDropRoutes(t *testing.T) {
+	ll := &captureErrLogger{ch: make(chan string, 4)}
+
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: MyCluster33
+			listen: 127.0.0.1:5244
+		}
+	`))
+	defer os.Remove(conf)
+
+	s1, _ := RunServerWithConfig(conf)
+	defer s1.Shutdown()
+	s1.SetLogger(ll, false, false)
+
+	conf2 := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: MyCluster22
+			listen: 127.0.0.1:-1
+			routes = [nats-route://127.0.0.1:5244]
+		}
+	`))
+	defer os.Remove(conf2)
+
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+	s2.SetLogger(ll, false, false)
+
+	select {
+	case msg := <-ll.ch:
+		if !strings.Contains(msg, "Rejecting connection") || !strings.Contains(msg, "does not match") {
+			t.Fatalf("Got bad error about cluster name mismatch")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Expected an error, timed out")
+	}
+}
+
+func TestClusterNameDynamicNegotiation(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {listen: 127.0.0.1:5244}
+	`))
+	defer os.Remove(conf)
+
+	seed, _ := RunServerWithConfig(conf)
+	defer seed.Shutdown()
+
+	oconf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			listen: 127.0.0.1:-1
+			routes = [nats-route://127.0.0.1:5244]
+		}
+	`))
+	defer os.Remove(oconf)
+
+	// Create a random number of additional servers, up to 20.
+	numServers := rand.Intn(20) + 1
+	servers := make([]*server.Server, 0, numServers+1)
+	servers = append(servers, seed)
+
+	for i := 0; i < numServers; i++ {
+		s, _ := RunServerWithConfig(oconf)
+		defer s.Shutdown()
+		servers = append(servers, s)
+	}
+
+	// If this passes we should have all the same name.
+	checkClusterFormed(t, servers...)
+
+	clusterName := seed.ClusterName()
+	for _, s := range servers {
+		if s.ClusterName() != clusterName {
+			t.Fatalf("Expected the cluster names to all be the same as %q, got %q", clusterName, s.ClusterName())
+		}
 	}
 }

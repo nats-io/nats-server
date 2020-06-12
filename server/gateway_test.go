@@ -1100,6 +1100,7 @@ func TestGatewayWrongDestination(t *testing.T) {
 	cfg.resetConnAttempts()
 
 	o2.Gateway.Name = "B"
+	o2.Cluster.Name = "B"
 	s2 = runGatewayServer(o2)
 	defer s2.Shutdown()
 
@@ -2883,6 +2884,7 @@ func TestGatewayRoutedServerWithoutGatewayConfigured(t *testing.T) {
 	waitForOutboundGateways(t, s2, 1, time.Second)
 
 	o3 := DefaultOptions()
+	o3.Cluster.Name = "B"
 	o3.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", s2.ClusterAddr().Port))
 	s3 := New(o3)
 	defer s3.Shutdown()

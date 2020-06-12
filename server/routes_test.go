@@ -70,6 +70,7 @@ func TestRouteConfig(t *testing.T) {
 		Password:    "porkchop",
 		AuthTimeout: 1.0,
 		Cluster: ClusterOpts{
+			Name:           "abc",
 			Host:           "127.0.0.1",
 			Port:           4244,
 			Username:       "route_user",

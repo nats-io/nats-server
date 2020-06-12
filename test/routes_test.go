@@ -603,6 +603,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		sendRouteINFO := func(routeSend sendFun, routeExpect expectFun, urls []string) {
 			routeInfo := server.Info{}
 			routeInfo.ID = routeID
+			routeInfo.Cluster = "xyz"
 			routeInfo.Host = "127.0.0.1"
 			routeInfo.Port = 5222
 			routeInfo.ClientConnectURLs = urls

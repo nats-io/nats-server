@@ -322,8 +322,22 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
+	if opts.Cluster.Name != "" {
+		s.info.Cluster = opts.Cluster.Name
+	}
 	if s.gateway.enabled {
-		s.info.Cluster = s.getGatewayName()
+		gn := s.getGatewayName()
+		if s.info.Cluster != "" && s.info.Cluster != gn {
+			return nil, ErrClusterNameConfigConflict
+		}
+		// Set this here so we do not consider it dynamic.
+		opts.Cluster.Name = gn
+		s.info.Cluster = gn
+	}
+
+	// If we have a cluster definition but do not have a cluster name, create one.
+	if opts.Cluster.Port != 0 && opts.Cluster.Name == "" {
+		s.info.Cluster = nuid.Next()
 	}
 
 	// This is normally done in the AcceptLoop, once the
@@ -412,6 +426,23 @@ func NewServer(opts *Options) (*Server, error) {
 	s.handleSignals()
 
 	return s, nil
+}
+
+// clusterName returns our cluster name which could be dynamic.
+func (s *Server) ClusterName() string {
+	s.mu.Lock()
+	cn := s.info.Cluster
+	s.mu.Unlock()
+	return cn
+}
+
+// setClusterName will update the cluster name for this server.
+func (s *Server) setClusterName(name string) {
+	s.mu.Lock()
+	s.info.Cluster = name
+	s.routeInfo.Cluster = name
+	s.mu.Unlock()
+	s.Noticef("Cluster name updated to %s", name)
 }
 
 // ClientURL returns the URL used to connect clients. Helpful in testing

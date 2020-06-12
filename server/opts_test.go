@@ -344,6 +344,7 @@ func TestRouteFlagOverride(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       7222,
 		Cluster: ClusterOpts{
+			Name:        "abc",
 			Host:        "127.0.0.1",
 			Port:        7244,
 			Username:    "ruser",
@@ -383,6 +384,7 @@ func TestClusterFlagsOverride(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       7222,
 		Cluster: ClusterOpts{
+			Name:        "abc",
 			Host:        "127.0.0.1",
 			Port:        7244,
 			ListenStr:   "nats://127.0.0.1:8224",
@@ -419,6 +421,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 		Port:       7222,
 		Cluster: ClusterOpts{
 			Host:        "127.0.0.1",
+			Name:        "abc",
 			Port:        7244,
 			Username:    "ruser",
 			Password:    "top_secret",
@@ -922,7 +925,7 @@ func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 					}
 				}
 			]
-		}	
+		}
 	}
 	`))
 	checkPerms := func(permsDef *Permissions, permsNonDef *Permissions) {

@@ -1633,6 +1633,7 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 	}
 	leafnodes {
 		listen: "127.0.0.1:-1"
@@ -1649,6 +1650,7 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 		routes: ["nats://%s:%d"]
 	}
 	leafnodes {
@@ -2175,6 +2177,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 	}
 	leafnodes {
 		listen: "127.0.0.1:-1"
@@ -2195,6 +2198,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 		routes: ["nats://%s:%d"]
 	}
 	leafnodes {
@@ -2353,9 +2357,10 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 // route connections to simulate.
 func TestLeafNodeResetsMSGProto(t *testing.T) {
 	opts := testDefaultOptionsForLeafNodes()
+	opts.Cluster.Name = "xyz"
 	opts.Cluster.Host = opts.Host
 	opts.Cluster.Port = -1
-	opts.Gateway.Name = "lproto"
+	opts.Gateway.Name = "xyz"
 	opts.Gateway.Host = opts.Host
 	opts.Gateway.Port = -1
 	opts.Accounts = []*server.Account{server.NewAccount("$SYS")}
@@ -2376,7 +2381,7 @@ func TestLeafNodeResetsMSGProto(t *testing.T) {
 	gw := createGatewayConn(t, opts.Gateway.Host, opts.Gateway.Port)
 	defer gw.Close()
 
-	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "lproto")
+	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "xyz")
 	gwSend("PING\r\n")
 	gwExpect(pongRe)
 
@@ -3212,6 +3217,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 		}
 		cluster {
 			listen: "127.0.0.1:-1"
+			name: xyz
 		}
 	`))
 	srvA, optsA := RunServerWithConfig(confA)
@@ -3230,6 +3236,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 		}
 		cluster {
 			listen: "127.0.0.1:-1"
+			name: xyz
 			routes [
 				"nats://%s:%d"
 			]

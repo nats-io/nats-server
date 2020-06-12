@@ -89,6 +89,8 @@ type connectInfo struct {
 	TLS      bool   `json:"tls_required"`
 	Headers  bool   `json:"headers"`
 	Name     string `json:"name"`
+	Cluster  string `json:"cluster"`
+	Dynamic  bool   `json:"cluster_dynamic,omitempty"`
 	Gateway  string `json:"gateway,omitempty"`
 }
 
@@ -366,6 +368,8 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		TLS:      tlsRequired,
 		Name:     c.srv.info.ID,
 		Headers:  c.srv.supportsHeaders(),
+		Cluster:  c.srv.ClusterName(),
+		Dynamic:  c.srv.getOpts().Cluster.Name == "",
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -390,6 +394,7 @@ func (c *client) processRouteInfo(info *Info) {
 	gacc.mu.RUnlock()
 
 	supportsHeaders := c.srv.supportsHeaders()
+	clusterName := c.srv.ClusterName()
 
 	c.mu.Lock()
 	// Connection can be closed at any time (by auth timeout, etc).
@@ -408,6 +413,20 @@ func (c *client) processRouteInfo(info *Info) {
 		c.mu.Unlock()
 		c.closeConnection(DuplicateRoute)
 		return
+	}
+
+	// Detect if we have a mismatch of cluster names.
+	if info.Cluster != "" && info.Cluster != clusterName {
+		c.mu.Unlock()
+		// If we are dynamic we may update our cluster name.
+		if c.srv.getOpts().Cluster.Name == "" && strings.Compare(clusterName, info.Cluster) < 0 {
+			s.setClusterName(info.Cluster)
+			s.removeAllRoutesExcept(c)
+			c.mu.Lock()
+		} else {
+			c.closeConnection(ClusterNameConflict)
+			return
+		}
 	}
 
 	// If this is an async INFO from an existing route...
@@ -1489,6 +1508,11 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		port = 0
 	}
 
+	s.Noticef("Cluster name is %s", s.ClusterName())
+	if opts.Cluster.Name == "" {
+		s.Warnf("Cluster name was dynamically generated, consider setting one")
+	}
+
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
@@ -1524,6 +1548,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		Proto:        proto,
 		GatewayURL:   s.getGatewayURL(),
 		Headers:      s.supportsHeaders(),
+		Cluster:      s.info.Cluster,
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
@@ -1615,8 +1640,8 @@ func (s *Server) setRouteInfoHostPortAndIP() error {
 func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	defer s.grWG.Done()
 
-	// Wait for the client listen port to be opened, and
-	// the possible ephemeral port to be selected.
+	// Wait for the client and and leafnode listen ports to be opened,
+	// and the possible ephemeral ports to be selected.
 	<-clientListenReady
 
 	// Spin up the accept loop
@@ -1731,6 +1756,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	}
 	// Unmarshal as a route connect protocol
 	proto := &connectInfo{}
+
 	if err := json.Unmarshal(arg, proto); err != nil {
 		return err
 	}
@@ -1748,6 +1774,29 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 		perms = srv.getOpts().Cluster.Permissions
 	}
 
+	clusterName := srv.ClusterName()
+
+	// If we have a cluster name set, make sure it matches ours.
+	if proto.Cluster != clusterName {
+		shouldReject := true
+		// If we have a dynamic name we will do additional checks.
+		if srv.getOpts().Cluster.Name == "" {
+			if !proto.Dynamic || strings.Compare(clusterName, proto.Cluster) < 0 {
+				// We will take on their name since theirs is configured or higher then ours.
+				srv.setClusterName(proto.Cluster)
+				srv.removeAllRoutesExcept(c)
+				shouldReject = false
+			}
+		}
+		if shouldReject {
+			errTxt := fmt.Sprintf("Rejecting connection, cluster name %q does not match %q", proto.Cluster, srv.info.Cluster)
+			c.Errorf(errTxt)
+			c.sendErr(errTxt)
+			c.closeConnection(ClusterNameConflict)
+			return ErrClusterNameRemoteConflict
+		}
+	}
+
 	supportsHeaders := c.srv.supportsHeaders()
 
 	// Grab connection name of remote route.
@@ -1757,6 +1806,22 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	c.headers = supportsHeaders && proto.Headers
 	c.mu.Unlock()
 	return nil
+}
+
+// Called when we update our cluster name during negotiations with remotes.
+func (s *Server) removeAllRoutesExcept(c *client) {
+	s.mu.Lock()
+	routes := make([]*client, 0, len(s.routes))
+	for _, r := range s.routes {
+		if r != c {
+			routes = append(routes, r)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, r := range routes {
+		r.closeConnection(ClusterNameConflict)
+	}
 }
 
 func (s *Server) removeRoute(c *client) {

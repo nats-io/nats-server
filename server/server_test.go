@@ -900,6 +900,7 @@ func TestLameDuckMode(t *testing.T) {
 
 func TestLameDuckModeInfo(t *testing.T) {
 	optsA := testWSOptions()
+	optsA.Cluster.Name = "abc"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.Cluster.Port = -1
 	// Ensure that initial delay is set very high so that we can
@@ -947,6 +948,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	client.ReadString('\n')
 
 	optsB := testWSOptions()
+	optsB.Cluster.Name = "abc"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
@@ -974,6 +976,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 
 	optsC := testWSOptions()
 	testSetLDMGracePeriod(optsA, 5*time.Second)
+	optsC.Cluster.Name = "abc"
 	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvC := RunServer(optsC)
 	defer srvC.Shutdown()
@@ -986,6 +989,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	checkConnectURLs(expected)
 
 	optsD := testWSOptions()
+	optsD.Cluster.Name = "abc"
 	optsD.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvD := RunServer(optsD)
 	defer srvD.Shutdown()
@@ -1341,6 +1345,7 @@ func TestInsecureSkipVerifyWarning(t *testing.T) {
 	}
 
 	o := DefaultOptions()
+	o.Cluster.Name = "A"
 	o.Cluster.Port = -1
 	o.Cluster.TLSConfig = config.Clone()
 	checkWarnReported(t, o, clusterTLSInsecureWarning)
