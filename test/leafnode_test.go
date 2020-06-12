@@ -2061,10 +2061,15 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 
 	checkAccConnectionCounts(t, 2)
 
-	// Make sure s4 has 0 still.
-	if nln := s4.NumLeafNodes(); nln != 0 {
-		t.Fatalf("Expected no leafnodes accounted for in s4, got %d", nln)
-	}
+	// Make sure s4 has 0 still. We need checkFor because it is possible
+	// that when we check we have actually the connection registered for
+	// a short period before it is closed due to limit.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if nln := s4.NumLeafNodes(); nln != 0 {
+			return fmt.Errorf("Expected no leafnodes accounted for in s4, got %d", nln)
+		}
+		return nil
+	})
 
 	// Make sure this is still 2.
 	checkLeafNodeConnections(t, s, 2)
