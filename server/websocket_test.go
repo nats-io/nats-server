@@ -1878,53 +1878,64 @@ func TestWSTLSVerifyClientCert(t *testing.T) {
 }
 
 func TestWSTLSVerifyAndMap(t *testing.T) {
-	o := testWSOptions()
+	accName := "MyAccount"
+	acc := NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
-	o.Users = []*User{&User{Username: certUserName}}
-	tc := &TLSConfigOpts{
-		CertFile: "../test/configs/certs/tlsauth/server.pem",
-		KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
-		CaFile:   "../test/configs/certs/tlsauth/ca.pem",
-		Verify:   true,
-	}
-	tlsc, err := GenTLSConfig(tc)
-	if err != nil {
-		t.Fatalf("Error creating tls config: %v", err)
-	}
-	o.Websocket.TLSConfig = tlsc
-	o.Websocket.TLSMap = true
-	s := RunServer(o)
-	defer s.Shutdown()
-
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	users := []*User{&User{Username: certUserName, Account: acc}}
 
 	for _, test := range []struct {
 		name        string
+		wsUsers     bool
 		provideCert bool
 	}{
-		{"client provides cert", true},
-		{"client does not provide cert", false},
+		{"no users override, client provides cert", false, true},
+		{"no users override, client does not provide cert", false, false},
+		{"sers override, client provides cert", true, true},
+		{"users override, client does not provide cert", true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			o := testWSOptions()
+			o.Accounts = []*Account{acc}
+			if test.wsUsers {
+				o.Websocket.Users = users
+			} else {
+				o.Users = users
+			}
+			tc := &TLSConfigOpts{
+				CertFile: "../test/configs/certs/tlsauth/server.pem",
+				KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+				CaFile:   "../test/configs/certs/tlsauth/ca.pem",
+				Verify:   true,
+			}
+			tlsc, err := GenTLSConfig(tc)
+			if err != nil {
+				t.Fatalf("Error creating tls config: %v", err)
+			}
+			o.Websocket.TLSConfig = tlsc
+			o.Websocket.TLSMap = true
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
 			wsc, err := net.Dial("tcp", addr)
 			if err != nil {
 				t.Fatalf("Error creating ws connection: %v", err)
 			}
 			defer wsc.Close()
-			tlsc := &tls.Config{}
+			tlscc := &tls.Config{}
 			if test.provideCert {
 				tc := &TLSConfigOpts{
 					CertFile: "../test/configs/certs/tlsauth/client.pem",
 					KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
 				}
 				var err error
-				tlsc, err = GenTLSConfig(tc)
+				tlscc, err = GenTLSConfig(tc)
 				if err != nil {
 					t.Fatalf("Error generating tls config: %v", err)
 				}
 			}
-			tlsc.InsecureSkipVerify = true
-			wsc = tls.Client(wsc, tlsc)
+			tlscc.InsecureSkipVerify = true
+			wsc = tls.Client(wsc, tlscc)
 			if err := wsc.(*tls.Conn).Handshake(); err != nil {
 				t.Fatalf("Error during handshake: %v", err)
 			}
@@ -1971,12 +1982,22 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 				t.Fatalf("Expected PONG, got %s", msg)
 			}
 
+			var uname string
+			var accname string
 			c := s.getClient(info.CID)
-			c.mu.Lock()
-			un := c.opts.Username
-			c.mu.Unlock()
-			if un != certUserName {
-				t.Fatalf("Expected client's assigned username to be %q, got %q", certUserName, un)
+			if c != nil {
+				c.mu.Lock()
+				uname = c.opts.Username
+				if c.acc != nil {
+					accname = c.acc.GetName()
+				}
+				c.mu.Unlock()
+			}
+			if uname != certUserName {
+				t.Fatalf("Expected username %q, got %q", certUserName, uname)
+			}
+			if accname != accName {
+				t.Fatalf("Expected account %q, got %v", accName, accname)
 			}
 		})
 	}
@@ -2946,18 +2967,37 @@ func TestWSUsersAuth(t *testing.T) {
 	}
 }
 
+func TestWSNoAuthUserValidation(t *testing.T) {
+	// It is illegal to configure a websocket's NoAuthUser if websocket's
+	// auth config does not have a matching User.
+	// Create regular clients's User to make sure that we fail even if
+	// the websocket's NoAuthUser is found in opts.Users.
+	o := testWSOptions()
+	o.Users = []*User{&User{Username: "user", Password: "pwd"}}
+	o.Websocket.NoAuthUser = "user"
+	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "users are not") {
+		t.Fatalf("Expected error saying that users are not configured, got %v", err)
+	}
+
+	o.Websocket.Users = []*User{&User{Username: "wsuser", Password: "pwd"}}
+	o.Websocket.NoAuthUser = "notfound"
+	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Expected error saying no auth user not found, got %v", err)
+	}
+}
+
 func TestWSNoAuthUser(t *testing.T) {
 	for _, test := range []struct {
 		name          string
-		noAuthUser    string
-		wsNoAuthUser  string
-		user          string
-		acc           string
 		createWSUsers bool
+		useAuth       bool
+		expectedUser  string
+		expectedAcc   string
 	}{
-		{"use top-level no_auth_user", "user1", "", "user1", "normal", false},
-		{"use websocket no_auth_user no ws users", "user1", "user2", "user2", "normal", false},
-		{"use websocket no_auth_user with ws users", "user1", "wsuser1", "wsuser1", "websocket", true},
+		{"no override, no user provided", false, false, "noauth", "normal"},
+		{"no override, user povided", false, true, "user", "normal"},
+		{"override, no user provided", true, false, "wsnoauth", "websocket"},
+		{"override, user provided", true, true, "wsuser", "websocket"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
@@ -2965,16 +3005,16 @@ func TestWSNoAuthUser(t *testing.T) {
 			websocketAcc := NewAccount("websocket")
 			o.Accounts = []*Account{normalAcc, websocketAcc}
 			o.Users = []*User{
-				&User{Username: "user1", Password: "pwd1", Account: normalAcc},
-				&User{Username: "user2", Password: "pwd2", Account: normalAcc},
+				&User{Username: "noauth", Password: "pwd", Account: normalAcc},
+				&User{Username: "user", Password: "pwd", Account: normalAcc},
 			}
-			o.NoAuthUser = test.noAuthUser
-			o.Websocket.NoAuthUser = test.wsNoAuthUser
+			o.NoAuthUser = "noauth"
 			if test.createWSUsers {
 				o.Websocket.Users = []*User{
-					&User{Username: "wsuser1", Password: "pwd1", Account: websocketAcc},
-					&User{Username: "wsuser2", Password: "pwd2", Account: websocketAcc},
+					&User{Username: "wsnoauth", Password: "pwd", Account: websocketAcc},
+					&User{Username: "wsuser", Password: "pwd", Account: websocketAcc},
 				}
+				o.Websocket.NoAuthUser = "wsnoauth"
 			}
 			s := RunServer(o)
 			defer s.Shutdown()
@@ -2985,7 +3025,13 @@ func TestWSNoAuthUser(t *testing.T) {
 			var info serverInfo
 			json.Unmarshal([]byte(l[5:]), &info)
 
-			connectProto := "CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"
+			var connectProto string
+			if test.useAuth {
+				connectProto = fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"pwd\"}\r\nPING\r\n",
+					test.expectedUser)
+			} else {
+				connectProto = "CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"
+			}
 			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
@@ -3000,11 +3046,11 @@ func TestWSNoAuthUser(t *testing.T) {
 			uname := c.opts.Username
 			aname := c.acc.GetName()
 			c.mu.Unlock()
-			if uname != test.user {
-				t.Fatalf("Expected selected user to be %q, got %q", test.user, uname)
+			if uname != test.expectedUser {
+				t.Fatalf("Expected selected user to be %q, got %q", test.expectedUser, uname)
 			}
-			if aname != test.acc {
-				t.Fatalf("Expected selected account to be %q, got %q", test.acc, aname)
+			if aname != test.expectedAcc {
+				t.Fatalf("Expected selected account to be %q, got %q", test.expectedAcc, aname)
 			}
 		})
 	}
