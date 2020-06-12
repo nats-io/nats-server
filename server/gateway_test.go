@@ -2501,16 +2501,17 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	// Server sb1 should not have qsub in its sub interest map
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		var entry *sitally
+		var err error
 		sb1.gateway.pasi.Lock()
 		asim := sb1.gateway.pasi.m[globalAccountName]
 		if asim != nil {
 			entry = asim["foo bar"]
 		}
-		sb1.gateway.pasi.Unlock()
 		if entry != nil {
-			return fmt.Errorf("Map should not have an entry, got %#v", entry)
+			err = fmt.Errorf("Map should not have an entry, got %#v", entry)
 		}
-		return nil
+		sb1.gateway.pasi.Unlock()
+		return err
 	})
 
 	// Let's wait for A to receive the unsubscribe
