@@ -370,7 +370,7 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		Name:     s.info.ID,
 		Headers:  s.supportsHeaders(),
 		Cluster:  s.info.Cluster,
-		Dynamic:  s.getOpts().Cluster.Name == "",
+		Dynamic:  s.isClusterNameDynamic(),
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -420,7 +420,7 @@ func (c *client) processRouteInfo(info *Info) {
 	if info.Cluster != "" && info.Cluster != clusterName {
 		c.mu.Unlock()
 		// If we are dynamic we may update our cluster name.
-		if c.srv.getOpts().Cluster.Name == "" && strings.Compare(clusterName, info.Cluster) < 0 {
+		if s.isClusterNameDynamic() && strings.Compare(clusterName, info.Cluster) < 0 {
 			s.setClusterName(info.Cluster)
 			s.removeAllRoutesExcept(c)
 			c.mu.Lock()
@@ -1510,7 +1510,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	}
 
 	s.Noticef("Cluster name is %s", s.ClusterName())
-	if opts.Cluster.Name == "" {
+	if s.isClusterNameDynamic() {
 		s.Warnf("Cluster name was dynamically generated, consider setting one")
 	}
 
@@ -1781,7 +1781,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	if proto.Cluster != clusterName {
 		shouldReject := true
 		// If we have a dynamic name we will do additional checks.
-		if srv.getOpts().Cluster.Name == "" {
+		if srv.isClusterNameDynamic() {
 			if !proto.Dynamic || strings.Compare(clusterName, proto.Cluster) < 0 {
 				// We will take on their name since theirs is configured or higher then ours.
 				srv.setClusterName(proto.Cluster)

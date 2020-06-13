@@ -276,6 +276,7 @@ func NewServer(opts *Options) (*Server, error) {
 		MaxPayload:   opts.MaxPayload,
 		JetStream:    opts.JetStream,
 		Headers:      !opts.NoHeaderSupport,
+		Cluster:      opts.Cluster.Name,
 	}
 
 	if tlsReq && !info.TLSRequired {
@@ -320,19 +321,6 @@ func NewServer(opts *Options) (*Server, error) {
 	// it to be nil or not in various places in the code.
 	if err := s.newGateway(opts); err != nil {
 		return nil, err
-	}
-
-	if opts.Cluster.Name != "" {
-		s.info.Cluster = opts.Cluster.Name
-	}
-	if s.gateway.enabled {
-		gn := s.getGatewayName()
-		if s.info.Cluster != "" && s.info.Cluster != gn {
-			return nil, ErrClusterNameConfigConflict
-		}
-		// Set this here so we do not consider it dynamic.
-		opts.Cluster.Name = gn
-		s.info.Cluster = gn
 	}
 
 	// If we have a cluster definition but do not have a cluster name, create one.
@@ -445,6 +433,11 @@ func (s *Server) setClusterName(name string) {
 	s.Noticef("Cluster name updated to %s", name)
 }
 
+// Return whether the cluster name is dynamic.
+func (s *Server) isClusterNameDynamic() bool {
+	return s.getOpts().Cluster.Name == ""
+}
+
 // ClientURL returns the URL used to connect clients. Helpful in testing
 // when we designate a random client port (-1).
 func (s *Server) ClientURL() string {
@@ -455,6 +448,18 @@ func (s *Server) ClientURL() string {
 		scheme = "tls://"
 	}
 	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+}
+
+func validateClusterName(o *Options) error {
+	// Check that cluster name if defined matches any gateway name.
+	if o.Gateway.Name != "" && o.Gateway.Name != o.Cluster.Name {
+		if o.Cluster.Name != "" {
+			return ErrClusterNameConfigConflict
+		}
+		// Set this here so we do not consider it dynamic.
+		o.Cluster.Name = o.Gateway.Name
+	}
+	return nil
 }
 
 func validateOptions(o *Options) error {
@@ -481,12 +486,10 @@ func validateOptions(o *Options) error {
 		return err
 	}
 	// Check that cluster name if defined matches any gateway name.
-	if o.Gateway.Name != "" && o.Gateway.Name != o.Cluster.Name {
-		if o.Cluster.Name != "" {
-			return ErrClusterNameConfigConflict
-		}
-		o.Cluster.Name = o.Gateway.Name
+	if err := validateClusterName(o); err != nil {
+		return err
 	}
+	// Finally check websocket options.
 	return validateWebsocketOptions(o)
 }
 
