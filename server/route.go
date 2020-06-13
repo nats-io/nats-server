@@ -359,6 +359,7 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		user = userInfo.Username()
 		pass, _ = userInfo.Password()
 	}
+	s := c.srv
 	cinfo := connectInfo{
 		Echo:     true,
 		Verbose:  false,
@@ -366,10 +367,10 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		User:     user,
 		Pass:     pass,
 		TLS:      tlsRequired,
-		Name:     c.srv.info.ID,
-		Headers:  c.srv.supportsHeaders(),
-		Cluster:  c.srv.ClusterName(),
-		Dynamic:  c.srv.getOpts().Cluster.Name == "",
+		Name:     s.info.ID,
+		Headers:  s.supportsHeaders(),
+		Cluster:  s.info.Cluster,
+		Dynamic:  s.getOpts().Cluster.Name == "",
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -1784,6 +1785,9 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 			if !proto.Dynamic || strings.Compare(clusterName, proto.Cluster) < 0 {
 				// We will take on their name since theirs is configured or higher then ours.
 				srv.setClusterName(proto.Cluster)
+				if !proto.Dynamic {
+					srv.getOpts().Cluster.Name = proto.Cluster
+				}
 				srv.removeAllRoutesExcept(c)
 				shouldReject = false
 			}

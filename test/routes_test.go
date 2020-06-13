@@ -1123,6 +1123,7 @@ func TestRoutesOnlyImportOrExport(t *testing.T) {
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 			port: -1
 			cluster {
+				name: "Z"
 				port: -1
 				authorization {
 					user: ivan

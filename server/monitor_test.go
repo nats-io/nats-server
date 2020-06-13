@@ -1267,6 +1267,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.NoSystemAccount = true
+	opts.Cluster.Name = "A"
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = CLUSTER_PORT
 
@@ -1277,6 +1278,7 @@ func TestConnzWithRoutes(t *testing.T) {
 		Host: "127.0.0.1",
 		Port: -1,
 		Cluster: ClusterOpts{
+			Name: "A",
 			Host: "127.0.0.1",
 			Port: -1,
 		},
@@ -2003,6 +2005,7 @@ func TestMonitorRoutezRace(t *testing.T) {
 	resetPreviousHTTPConnections()
 	srvAOpts := DefaultMonitorOptions()
 	srvAOpts.NoSystemAccount = true
+	srvAOpts.Cluster.Name = "B"
 	srvAOpts.Cluster.Port = -1
 	srvA := RunServer(srvAOpts)
 	defer srvA.Shutdown()
@@ -2155,6 +2158,7 @@ func TestRoutezPermissions(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.NoSystemAccount = true
+	opts.Cluster.Name = "A"
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
 	opts.Cluster.Permissions = &RoutePermissions{
@@ -2172,6 +2176,7 @@ func TestRoutezPermissions(t *testing.T) {
 
 	opts = DefaultMonitorOptions()
 	opts.Cluster.Host = "127.0.0.1"
+	opts.Cluster.Name = "A"
 	opts.Cluster.Port = -1
 	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", s1.ClusterAddr().Port))
 	opts.Routes = []*url.URL{routeURL}
@@ -2402,6 +2407,7 @@ func TestMonitorCluster(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.NoSystemAccount = true
+	opts.Cluster.Name = "A"
 	opts.Cluster.Port = -1
 	opts.Cluster.AuthTimeout = 1
 	opts.Routes = RoutesFromStr("nats://127.0.0.1:1234")
@@ -2447,6 +2453,8 @@ func TestMonitorClusterURLs(t *testing.T) {
 
 	o2 := DefaultOptions()
 	o2.Cluster.Host = "127.0.0.1"
+	o2.Cluster.Name = "A"
+
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
@@ -2456,6 +2464,7 @@ func TestMonitorClusterURLs(t *testing.T) {
 		port: -1
 		http: -1
 		cluster: {
+			name: "A"
 			port: -1
 			routes [
 				%s

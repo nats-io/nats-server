@@ -2760,3 +2760,27 @@ func TestReadOperatorAssertVersionFail(t *testing.T) {
 		t.Fatal("expected different error got: ", err)
 	}
 }
+
+func TestClusterNameAndGatewayNameConflict(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: A
+			listen: 127.0.0.1:-1
+		}
+		gateway {
+			name: B
+			listen: 127.0.0.1:-1
+		}
+	`))
+	defer os.Remove(conf)
+
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if err := validateOptions(opts); err != ErrClusterNameConfigConflict {
+		t.Fatalf("Expected ErrClusterNameConfigConflict got %v", err)
+	}
+}

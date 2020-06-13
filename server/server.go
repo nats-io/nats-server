@@ -480,6 +480,13 @@ func validateOptions(o *Options) error {
 	if err := validateGatewayOptions(o); err != nil {
 		return err
 	}
+	// Check that cluster name if defined matches any gateway name.
+	if o.Gateway.Name != "" && o.Gateway.Name != o.Cluster.Name {
+		if o.Cluster.Name != "" {
+			return ErrClusterNameConfigConflict
+		}
+		o.Cluster.Name = o.Gateway.Name
+	}
 	return validateWebsocketOptions(o)
 }
 

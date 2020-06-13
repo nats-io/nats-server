@@ -541,25 +541,6 @@ func TestClusterNameOption(t *testing.T) {
 	}
 }
 
-func TestClusterNameAndGatewayName(t *testing.T) {
-	conf := createConfFile(t, []byte(`
-		listen: 127.0.0.1:-1
-		cluster {
-			name: A
-			listen: 127.0.0.1:-1
-		}
-		gateway {
-			name: B
-			listen: 127.0.0.1:-1
-		}
-	`))
-	defer os.Remove(conf)
-
-	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), "cluster name conflicts") {
-		t.Fatalf("Expected an error with conflicting cluster names")
-	}
-}
-
 func TestEphemeralClusterName(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1

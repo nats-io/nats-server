@@ -58,7 +58,7 @@ func DefaultOptions() *Options {
 		Host:     "127.0.0.1",
 		Port:     -1,
 		HTTPPort: -1,
-		Cluster:  ClusterOpts{Port: -1},
+		Cluster:  ClusterOpts{Port: -1, Name: "abc"},
 		NoLog:    true,
 		NoSigs:   true,
 		Debug:    true,
@@ -1521,6 +1521,7 @@ func TestConnectErrorReports(t *testing.T) {
 
 	// Now try with gateways
 	opts.LeafNode.Remotes = nil
+	opts.Cluster.Name = "A"
 	opts.Gateway.Name = "A"
 	opts.Gateway.Port = -1
 	opts.Gateway.Gateways = []*RemoteGatewayOpts{
@@ -1700,11 +1701,13 @@ func TestReconnectErrorReports(t *testing.T) {
 
 	// Now try with gateways
 	csOpts.LeafNode.Port = 0
+	csOpts.Cluster.Name = "B"
 	csOpts.Gateway.Name = "B"
 	csOpts.Gateway.Port = -1
 	cs = RunServer(csOpts)
 
 	opts.LeafNode.Remotes = nil
+	opts.Cluster.Name = "A"
 	opts.Gateway.Name = "A"
 	opts.Gateway.Port = -1
 	remoteGWPort := cs.GatewayAddr().Port

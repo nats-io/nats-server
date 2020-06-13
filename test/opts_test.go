@@ -13,7 +13,9 @@
 
 package test
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestServerConfig(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/override.conf")

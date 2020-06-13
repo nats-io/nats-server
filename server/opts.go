@@ -1012,11 +1012,6 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		switch strings.ToLower(mk) {
 		case "name":
 			opts.Cluster.Name = mv.(string)
-			// Check to see if a cluster name has been defined in gateway section and if so and they do not match err.
-			if opts.Gateway.Name != "" && opts.Cluster.Name != opts.Gateway.Name {
-				*errors = append(*errors, ErrClusterNameConfigConflict)
-				continue
-			}
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
@@ -1157,11 +1152,6 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 		switch strings.ToLower(mk) {
 		case "name":
 			o.Gateway.Name = mv.(string)
-			// Check to see if a cluster name has been defined. And if so and they do not match err.
-			if o.Cluster.Name != "" && o.Cluster.Name != o.Gateway.Name {
-				*errors = append(*errors, ErrClusterNameConfigConflict)
-				continue
-			}
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
