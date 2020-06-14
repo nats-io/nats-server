@@ -90,6 +90,7 @@ type websocket struct {
 	closeSent  bool
 	browser    bool
 	compressor *flate.Writer
+	cookieJwt  string
 }
 
 type srvWebsocket struct {
@@ -597,6 +598,11 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "Mozilla/") {
 		ws.browser = true
 	}
+	if opts.Websocket.JWTCookie != "" {
+		if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
+			ws.cookieJwt = c.Value
+		}
+	}
 	return &wsUpgradeResult{conn: conn, ws: ws}, nil
 }
 
@@ -747,6 +753,12 @@ func validateWebsocketOptions(o *Options) error {
 			}
 		}
 		return fmt.Errorf("websocket no_auth_user %q not found in users configuration", wo.NoAuthUser)
+	}
+	// Using JWT requires Trusted Keys
+	if wo.JWTCookie != "" {
+		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
+			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
+		}
 	}
 	return nil
 }
