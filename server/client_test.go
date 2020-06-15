@@ -194,6 +194,36 @@ func TestClientCreateAndInfo(t *testing.T) {
 	}
 }
 
+func TestClientNoResponderSupport(t *testing.T) {
+	opts := defaultServerOptions
+	opts.Port = -1
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	// Force header support if you want to do no_responders. Make sure headers are set.
+	if err := c.parse([]byte("CONNECT {\"no_responders\":true}\r\n")); err == nil {
+		t.Fatalf("Expected error")
+	}
+
+	c, cr, _ := newClientForServer(s)
+	defer c.close()
+
+	c.parseAsync("CONNECT {\"headers\":true, \"no_responders\":true}\r\nSUB reply 1\r\nPUB foo reply 2\r\nok\r\n")
+
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Error receiving msg from server: %v\n", err)
+	}
+
+	am := hmsgPat.FindAllStringSubmatch(l, -1)
+	if len(am) == 0 {
+		t.Fatalf("Did not get a match for %q", l)
+	}
+	checkPayload(cr, []byte("NATS/1.0 503\r\n\r\n"), t)
+}
+
 func TestServerHeaderSupport(t *testing.T) {
 	opts := defaultServerOptions
 	opts.Port = -1

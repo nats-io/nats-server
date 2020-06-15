@@ -144,6 +144,10 @@ var (
 	// ErrMsgHeadersNotSupported signals the parser detected a message header
 	// but they are not supported on this server.
 	ErrMsgHeadersNotSupported = errors.New("message headers not supported")
+
+	// ErrNoRespondersRequiresHeaders signals that a client needs to have headers
+	// on if they want no responders behavior.
+	ErrNoRespondersRequiresHeaders = errors.New("no responders requires headers support")
 )
 
 // configErr is a configuration error.

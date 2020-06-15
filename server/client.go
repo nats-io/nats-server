@@ -173,6 +173,7 @@ const (
 	Revocation
 	InternalClient
 	MsgHeaderViolation
+	NoRespondersRequiresHeaders
 )
 
 // Some flags passed to processMsgResultsEx
@@ -419,23 +420,24 @@ func (s *subscription) isClosed() bool {
 }
 
 type clientOpts struct {
-	Echo        bool   `json:"echo"`
-	Verbose     bool   `json:"verbose"`
-	Pedantic    bool   `json:"pedantic"`
-	TLSRequired bool   `json:"tls_required"`
-	Nkey        string `json:"nkey,omitempty"`
-	JWT         string `json:"jwt,omitempty"`
-	Sig         string `json:"sig,omitempty"`
-	Token       string `json:"auth_token,omitempty"`
-	Username    string `json:"user,omitempty"`
-	Password    string `json:"pass,omitempty"`
-	Name        string `json:"name"`
-	Lang        string `json:"lang"`
-	Version     string `json:"version"`
-	Protocol    int    `json:"protocol"`
-	Account     string `json:"account,omitempty"`
-	AccountNew  bool   `json:"new_account,omitempty"`
-	Headers     bool   `json:"headers,omitempty"`
+	Echo         bool   `json:"echo"`
+	Verbose      bool   `json:"verbose"`
+	Pedantic     bool   `json:"pedantic"`
+	TLSRequired  bool   `json:"tls_required"`
+	Nkey         string `json:"nkey,omitempty"`
+	JWT          string `json:"jwt,omitempty"`
+	Sig          string `json:"sig,omitempty"`
+	Token        string `json:"auth_token,omitempty"`
+	Username     string `json:"user,omitempty"`
+	Password     string `json:"pass,omitempty"`
+	Name         string `json:"name"`
+	Lang         string `json:"lang"`
+	Version      string `json:"version"`
+	Protocol     int    `json:"protocol"`
+	Account      string `json:"account,omitempty"`
+	AccountNew   bool   `json:"new_account,omitempty"`
+	Headers      bool   `json:"headers,omitempty"`
+	NoResponders bool   `json:"no_responders,omitempty"`
 
 	// Routes only
 	Import *SubjectPermission `json:"import,omitempty"`
@@ -1562,6 +1564,17 @@ func (c *client) processConnect(arg []byte) error {
 			c.sendErr(ErrBadClientProtocol.Error())
 			c.closeConnection(BadClientProtocolVersion)
 			return ErrBadClientProtocol
+		}
+		// Check to see that if no_responders is requested
+		// they have header support on as well.
+		c.mu.Lock()
+		misMatch := c.opts.NoResponders && !c.headers
+		c.mu.Unlock()
+		if misMatch {
+			c.sendErr(ErrNoRespondersRequiresHeaders.Error())
+			c.closeConnection(NoRespondersRequiresHeaders)
+			return ErrNoRespondersRequiresHeaders
+
 		}
 		if verbose {
 			c.sendOK()
@@ -3164,7 +3177,31 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames) || didDeliver
 	}
 
+	// Check to see if we did not deliver to anyone and the client has a reply subject set
+	// and wants notification of no_responders.
+	if !didDeliver && len(c.pa.reply) > 0 {
+		c.mu.Lock()
+		if c.opts.NoResponders {
+			if sub := c.subForReply(c.pa.reply); sub != nil {
+				proto := fmt.Sprintf("HMSG %s %s 16 16\r\nNATS/1.0 503\r\n\r\n", c.pa.reply, sub.sid)
+				c.queueOutbound([]byte(proto))
+			}
+		}
+		c.mu.Unlock()
+	}
+
 	return didDeliver
+}
+
+// Return the subscription for this reply subject. Only look at normal subs for this client.
+func (c *client) subForReply(reply []byte) *subscription {
+	r := c.acc.sl.Match(string(reply))
+	for _, sub := range r.psubs {
+		if sub.client == c {
+			return sub
+		}
+	}
+	return nil
 }
 
 // This is invoked knowing that this client has some GW replies
