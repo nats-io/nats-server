@@ -145,6 +145,10 @@ var (
 	// but they are not supported on this server.
 	ErrMsgHeadersNotSupported = errors.New("message headers not supported")
 
+	// ErrNoRespondersRequiresHeaders signals that a client needs to have headers
+	// on if they want no responders behavior.
+	ErrNoRespondersRequiresHeaders = errors.New("no responders requires headers support")
+
 	// ErrClusterNameConfigConflict signals that the options for cluster name in cluster and gateway are in conflict.
 	ErrClusterNameConfigConflict = errors.New("cluster name conflicts between cluster and gateway definitions")
 
