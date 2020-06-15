@@ -57,6 +57,7 @@ func NoErrOnUnknownFields(noError bool) {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type ClusterOpts struct {
+	Name           string            `json:"-"`
 	Host           string            `json:"addr,omitempty"`
 	Port           int               `json:"cluster_port,omitempty"`
 	Username       string            `json:"-"`
@@ -1009,6 +1010,8 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		// Again, unwrap token value if line check is required.
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
+		case "name":
+			opts.Cluster.Name = mv.(string)
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
@@ -3519,7 +3522,7 @@ func setBaselineOptions(opts *Options) {
 	}
 }
 
-// ConfigureOptions accepts a flag set and augment it with NATS Server
+// ConfigureOptions accepts a flag set and augments it with NATS Server
 // specific flags. On success, an options structure is returned configured
 // based on the selected flags and/or configuration file.
 // The command line options take precedence to the ones in the configuration file.

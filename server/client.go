@@ -173,6 +173,7 @@ const (
 	Revocation
 	InternalClient
 	MsgHeaderViolation
+	ClusterNameConflict
 )
 
 // Some flags passed to processMsgResultsEx

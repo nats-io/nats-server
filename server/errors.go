@@ -144,6 +144,12 @@ var (
 	// ErrMsgHeadersNotSupported signals the parser detected a message header
 	// but they are not supported on this server.
 	ErrMsgHeadersNotSupported = errors.New("message headers not supported")
+
+	// ErrClusterNameConfigConflict signals that the options for cluster name in cluster and gateway are in conflict.
+	ErrClusterNameConfigConflict = errors.New("cluster name conflicts between cluster and gateway definitions")
+
+	// ErrClusterNameRemoteConflict signals that a remote server has a different cluster name.
+	ErrClusterNameRemoteConflict = errors.New("cluster name from remote server conflicts")
 )
 
 // configErr is a configuration error.

@@ -276,6 +276,7 @@ func NewServer(opts *Options) (*Server, error) {
 		MaxPayload:   opts.MaxPayload,
 		JetStream:    opts.JetStream,
 		Headers:      !opts.NoHeaderSupport,
+		Cluster:      opts.Cluster.Name,
 	}
 
 	if tlsReq && !info.TLSRequired {
@@ -322,8 +323,9 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 
-	if s.gateway.enabled {
-		s.info.Cluster = s.getGatewayName()
+	// If we have a cluster definition but do not have a cluster name, create one.
+	if opts.Cluster.Port != 0 && opts.Cluster.Name == "" {
+		s.info.Cluster = nuid.Next()
 	}
 
 	// This is normally done in the AcceptLoop, once the
@@ -414,6 +416,28 @@ func NewServer(opts *Options) (*Server, error) {
 	return s, nil
 }
 
+// clusterName returns our cluster name which could be dynamic.
+func (s *Server) ClusterName() string {
+	s.mu.Lock()
+	cn := s.info.Cluster
+	s.mu.Unlock()
+	return cn
+}
+
+// setClusterName will update the cluster name for this server.
+func (s *Server) setClusterName(name string) {
+	s.mu.Lock()
+	s.info.Cluster = name
+	s.routeInfo.Cluster = name
+	s.mu.Unlock()
+	s.Noticef("Cluster name updated to %s", name)
+}
+
+// Return whether the cluster name is dynamic.
+func (s *Server) isClusterNameDynamic() bool {
+	return s.getOpts().Cluster.Name == ""
+}
+
 // ClientURL returns the URL used to connect clients. Helpful in testing
 // when we designate a random client port (-1).
 func (s *Server) ClientURL() string {
@@ -424,6 +448,18 @@ func (s *Server) ClientURL() string {
 		scheme = "tls://"
 	}
 	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+}
+
+func validateClusterName(o *Options) error {
+	// Check that cluster name if defined matches any gateway name.
+	if o.Gateway.Name != "" && o.Gateway.Name != o.Cluster.Name {
+		if o.Cluster.Name != "" {
+			return ErrClusterNameConfigConflict
+		}
+		// Set this here so we do not consider it dynamic.
+		o.Cluster.Name = o.Gateway.Name
+	}
+	return nil
 }
 
 func validateOptions(o *Options) error {
@@ -449,6 +485,11 @@ func validateOptions(o *Options) error {
 	if err := validateGatewayOptions(o); err != nil {
 		return err
 	}
+	// Check that cluster name if defined matches any gateway name.
+	if err := validateClusterName(o); err != nil {
+		return err
+	}
+	// Finally check websocket options.
 	return validateWebsocketOptions(o)
 }
 

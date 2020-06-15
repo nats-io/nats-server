@@ -346,6 +346,7 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 	content := `
 	listen: "127.0.0.1:-1"
 	cluster {
+		name: "abc"
 		listen: "127.0.0.1:-1"
 		%s
 	}
@@ -948,6 +949,7 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 			// Make sure we have all ports (client, route, gateway) and we will try
 			// to create a leafnode to connection to each and make sure we get the error.
 			oa.Cluster.NoAdvertise = test1.clusterAdvertise
+			oa.Cluster.Name = "A"
 			oa.Cluster.Host = "127.0.0.1"
 			oa.Cluster.Port = -1
 			oa.Gateway.Host = "127.0.0.1"
@@ -963,6 +965,7 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 
 			ob := DefaultOptions()
 			ob.Cluster.NoAdvertise = test1.clusterAdvertise
+			ob.Cluster.Name = "A"
 			ob.Cluster.Host = "127.0.0.1"
 			ob.Cluster.Port = -1
 			ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
@@ -1271,6 +1274,7 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 	lo1 := DefaultOptions()
 	lo1.Accounts = []*Account{NewAccount("SYS")}
 	lo1.SystemAccount = "SYS"
+	lo1.Cluster.Name = "A"
 	lo1.Gateway.Name = "A"
 	lo1.Gateway.Port = -1
 	lo1.LeafNode.Host = "127.0.0.1"

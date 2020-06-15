@@ -603,6 +603,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		sendRouteINFO := func(routeSend sendFun, routeExpect expectFun, urls []string) {
 			routeInfo := server.Info{}
 			routeInfo.ID = routeID
+			routeInfo.Cluster = "xyz"
 			routeInfo.Host = "127.0.0.1"
 			routeInfo.Port = 5222
 			routeInfo.ClientConnectURLs = urls
@@ -1122,6 +1123,7 @@ func TestRoutesOnlyImportOrExport(t *testing.T) {
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 			port: -1
 			cluster {
+				name: "Z"
 				port: -1
 				authorization {
 					user: ivan

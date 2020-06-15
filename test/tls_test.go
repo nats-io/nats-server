@@ -553,6 +553,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 
 	optsA.Host = "127.0.0.1"
 	optsA.Port = 9335
+	optsA.Cluster.Name = "xyz"
 	optsA.Cluster.Host = optsA.Host
 	optsA.Cluster.Port = 9935
 	optsA.Routes = server.RoutesFromStr(routeURLs)
@@ -562,6 +563,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 
 	optsB.Host = "127.0.0.1"
 	optsB.Port = 9336
+	optsB.Cluster.Name = "xyz"
 	optsB.Cluster.Host = optsB.Host
 	optsB.Cluster.Port = 9936
 	optsB.Routes = server.RoutesFromStr(routeURLs)
@@ -571,6 +573,7 @@ func TestTLSRoutesCertificateCNBasedAuth(t *testing.T) {
 
 	optsC.Host = "127.0.0.1"
 	optsC.Port = 9337
+	optsC.Cluster.Name = "xyz"
 	optsC.Cluster.Host = optsC.Host
 	optsC.Cluster.Port = 9937
 	optsC.Routes = server.RoutesFromStr(routeURLs)

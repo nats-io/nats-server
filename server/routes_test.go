@@ -70,6 +70,7 @@ func TestRouteConfig(t *testing.T) {
 		Password:    "porkchop",
 		AuthTimeout: 1.0,
 		Cluster: ClusterOpts{
+			Name:           "abc",
 			Host:           "127.0.0.1",
 			Port:           4244,
 			Username:       "route_user",
@@ -1204,6 +1205,7 @@ func TestRouteRTT(t *testing.T) {
 func TestRouteCloseTLSConnection(t *testing.T) {
 	opts := DefaultOptions()
 	opts.DisableShortFirstPing = true
+	opts.Cluster.Name = "A"
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Port = -1
 	opts.Cluster.TLSTimeout = 100
@@ -1234,7 +1236,7 @@ func TestRouteCloseTLSConnection(t *testing.T) {
 	if err := tlsConn.Handshake(); err != nil {
 		t.Fatalf("Unexpected error during handshake: %v", err)
 	}
-	connectOp := []byte("CONNECT {\"name\":\"route\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	connectOp := []byte("CONNECT {\"name\":\"route\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true,\"cluster\":\"A\"}\r\n")
 	if _, err := tlsConn.Write(connectOp); err != nil {
 		t.Fatalf("Unexpected error writing CONNECT: %v", err)
 	}
