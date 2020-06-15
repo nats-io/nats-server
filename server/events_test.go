@@ -95,6 +95,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	mr.Store(apub, jwt)
 
 	optsA := DefaultOptions()
+	optsA.Cluster.Name = "TEST CLUSTER 22"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
@@ -138,6 +139,7 @@ func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nke
 	mr.Store(apub, jwt)
 
 	optsA := testDefaultOptionsForGateway("A")
+	optsA.Cluster.Name = "A"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
@@ -146,6 +148,7 @@ func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nke
 	sa := RunServer(optsA)
 
 	optsB := testGatewayOptionsFromToWithServers(t, "B", "A", sa)
+	optsB.Cluster.Name = "B"
 	optsB.TrustedKeys = []string{pub}
 	optsB.AccountResolver = mr
 	optsB.SystemAccount = apub

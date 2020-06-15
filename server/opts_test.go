@@ -344,6 +344,7 @@ func TestRouteFlagOverride(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       7222,
 		Cluster: ClusterOpts{
+			Name:        "abc",
 			Host:        "127.0.0.1",
 			Port:        7244,
 			Username:    "ruser",
@@ -383,6 +384,7 @@ func TestClusterFlagsOverride(t *testing.T) {
 		Host:       "127.0.0.1",
 		Port:       7222,
 		Cluster: ClusterOpts{
+			Name:        "abc",
 			Host:        "127.0.0.1",
 			Port:        7244,
 			ListenStr:   "nats://127.0.0.1:8224",
@@ -419,6 +421,7 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 		Port:       7222,
 		Cluster: ClusterOpts{
 			Host:        "127.0.0.1",
+			Name:        "abc",
 			Port:        7244,
 			Username:    "ruser",
 			Password:    "top_secret",
@@ -922,7 +925,7 @@ func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 					}
 				}
 			]
-		}	
+		}
 	}
 	`))
 	checkPerms := func(permsDef *Permissions, permsNonDef *Permissions) {
@@ -2755,5 +2758,29 @@ func TestReadOperatorAssertVersionFail(t *testing.T) {
 		t.Fatalf("Received no error")
 	} else if !strings.Contains(err.Error(), "expected major version 10 > server major version") {
 		t.Fatal("expected different error got: ", err)
+	}
+}
+
+func TestClusterNameAndGatewayNameConflict(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: A
+			listen: 127.0.0.1:-1
+		}
+		gateway {
+			name: B
+			listen: 127.0.0.1:-1
+		}
+	`))
+	defer os.Remove(conf)
+
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if err := validateOptions(opts); err != ErrClusterNameConfigConflict {
+		t.Fatalf("Expected ErrClusterNameConfigConflict got %v", err)
 	}
 }

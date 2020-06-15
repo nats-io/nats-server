@@ -51,7 +51,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts.Port = CLIENT_PORT
 	opts.HTTPPort = MONITOR_PORT
 	opts.HTTPHost = "127.0.0.1"
-	opts.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10223}
+	opts.Cluster = server.ClusterOpts{Name: "M", Host: "127.0.0.1", Port: 10223}
 	opts.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10222")
 	opts.NoSystemAccount = true
 
@@ -61,7 +61,7 @@ func runMonitorServerClusteredPair(t *testing.T) (*server.Server, *server.Server
 	opts2.Port = CLIENT_PORT + 1
 	opts2.HTTPPort = MONITOR_PORT + 1
 	opts2.HTTPHost = "127.0.0.1"
-	opts2.Cluster = server.ClusterOpts{Host: "127.0.0.1", Port: 10222}
+	opts2.Cluster = server.ClusterOpts{Name: "M", Host: "127.0.0.1", Port: 10222}
 	opts2.Routes = server.RoutesFromStr("nats-route://127.0.0.1:10223")
 	opts2.NoSystemAccount = true
 

@@ -333,6 +333,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	cf := `
 	listen: 127.0.0.1:-1
 	cluster {
+		name: "A"
 		listen: 127.0.0.1:-1
 		authorization {
 			timeout: 2.2
@@ -456,6 +457,7 @@ func TestReloadDoesUpdateAccountsWithMemoryResolver(t *testing.T) {
 	cf := `
 	listen: 127.0.0.1:-1
 	cluster {
+		name: "A"
 		listen: 127.0.0.1:-1
 		authorization {
 			timeout: 2.2
@@ -547,6 +549,7 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 	cf := `
 	listen: 127.0.0.1:-1
 	cluster {
+		name: "A"
 		listen: 127.0.0.1:-1
 		authorization {
 			timeout: 2.2
@@ -610,6 +613,7 @@ func TestConnsRequestDoesNotLoadAccountCheckingConnLimits(t *testing.T) {
 	cf := `
 	listen: 127.0.0.1:-1
 	cluster {
+		name: "A"
 		listen: 127.0.0.1:-1
 		authorization {
 			timeout: 2.2

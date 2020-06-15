@@ -1568,11 +1568,12 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) 
 	return "", nil, nil, 0, err
 }
 
+// State returns the current state of the stream.
 func (fs *fileStore) State() StreamState {
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
 	state := fs.state
 	state.Consumers = len(fs.cfs)
+	fs.mu.RUnlock()
 	return state
 }
 

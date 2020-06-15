@@ -151,6 +151,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
+			Name: "abc",
 			Host: "127.0.0.1",
 			Port: -1,
 		},
@@ -224,6 +225,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
+			Name: "abc",
 			Host: "127.0.0.1",
 			Port: -1,
 		},
@@ -289,6 +291,7 @@ func TestConfigReload(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  2 * time.Second,
 		Cluster: ClusterOpts{
+			Name: "abc",
 			Host: "127.0.0.1",
 			Port: server.ClusterAddr().Port,
 		},

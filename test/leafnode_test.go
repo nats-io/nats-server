@@ -1633,6 +1633,7 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 	}
 	leafnodes {
 		listen: "127.0.0.1:-1"
@@ -1649,6 +1650,7 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 		routes: ["nats://%s:%d"]
 	}
 	leafnodes {
@@ -1811,6 +1813,7 @@ func TestLeafNodeInfoURLs(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := testDefaultOptionsForLeafNodes()
+			opts.Cluster.Name = "A"
 			opts.Cluster.Port = -1
 			opts.LeafNode.Host = "127.0.0.1"
 			if test.useAdvertise {
@@ -1837,6 +1840,7 @@ func TestLeafNodeInfoURLs(t *testing.T) {
 			lc.Close()
 
 			opts2 := testDefaultOptionsForLeafNodes()
+			opts2.Cluster.Name = "A"
 			opts2.Cluster.Port = -1
 			opts2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", opts.Cluster.Host, opts.Cluster.Port))
 			opts2.LeafNode.Host = "127.0.0.1"
@@ -2022,11 +2026,13 @@ func TestLeafNodeAdvertise(t *testing.T) {
 
 	o2 := testDefaultOptionsForLeafNodes()
 	o2.LeafNode.Advertise = fmt.Sprintf("127.0.0.1:%d", port)
+	o2.Cluster.Name = "A"
 	o2.Cluster.Port = -1
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
 	o1 := testDefaultOptionsForLeafNodes()
+	o1.Cluster.Name = "A"
 	o1.Cluster.Port = -1
 	o1.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o2.Cluster.Port))
 	s1 := RunServer(o1)
@@ -2180,6 +2186,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 	}
 	leafnodes {
 		listen: "127.0.0.1:-1"
@@ -2200,6 +2207,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	resolver = MEMORY
 	cluster {
 		port: -1
+		name: xyz
 		routes: ["nats://%s:%d"]
 	}
 	leafnodes {
@@ -2358,9 +2366,10 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 // route connections to simulate.
 func TestLeafNodeResetsMSGProto(t *testing.T) {
 	opts := testDefaultOptionsForLeafNodes()
+	opts.Cluster.Name = "xyz"
 	opts.Cluster.Host = opts.Host
 	opts.Cluster.Port = -1
-	opts.Gateway.Name = "lproto"
+	opts.Gateway.Name = "xyz"
 	opts.Gateway.Host = opts.Host
 	opts.Gateway.Port = -1
 	opts.Accounts = []*server.Account{server.NewAccount("$SYS")}
@@ -2381,7 +2390,7 @@ func TestLeafNodeResetsMSGProto(t *testing.T) {
 	gw := createGatewayConn(t, opts.Gateway.Host, opts.Gateway.Port)
 	defer gw.Close()
 
-	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "lproto")
+	gwSend, gwExpect := setupGatewayConn(t, gw, "A", "xyz")
 	gwSend("PING\r\n")
 	gwExpect(pongRe)
 
@@ -2964,6 +2973,7 @@ func runSolicitLeafCluster(t *testing.T, clusterName string, d1, d2 *cluster) *c
 	rurl, _ := url.Parse(surl)
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	o.Cluster.Name = clusterName
 	o.Cluster.Host = o.Host
 	o.Cluster.Port = -1
 	s := RunServer(&o)
@@ -2989,6 +2999,7 @@ func runSolicitLeafCluster(t *testing.T, clusterName string, d1, d2 *cluster) *c
 	rurl, _ = url.Parse(surl)
 	o2.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 	o2.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	o2.Cluster.Name = clusterName
 	o2.Cluster.Host = o.Host
 	o2.Cluster.Port = -1
 	o2.Routes = []*url.URL{curl}
@@ -3107,6 +3118,7 @@ func TestLeafNodeCycleWithSolicited(t *testing.T) {
 func TestLeafNodeNoRaceGeneratingNonce(t *testing.T) {
 	opts := testDefaultOptionsForLeafNodes()
 	opts.Cluster.Port = -1
+	opts.Cluster.Name = "xyz"
 	s := RunServer(opts)
 	defer s.Shutdown()
 
@@ -3217,6 +3229,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 		}
 		cluster {
 			listen: "127.0.0.1:-1"
+			name: xyz
 		}
 	`))
 	srvA, optsA := RunServerWithConfig(confA)
@@ -3235,6 +3248,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 		}
 		cluster {
 			listen: "127.0.0.1:-1"
+			name: xyz
 			routes [
 				"nats://%s:%d"
 			]

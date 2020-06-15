@@ -216,10 +216,10 @@ func doDefaultConnect(t tLogger, c net.Conn) {
 	doConnect(t, c, false, false, false)
 }
 
-const connectProto = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\"}\r\n"
+const routeConnectProto = "CONNECT {\"verbose\":false,\"user\":\"%s\",\"pass\":\"%s\",\"name\":\"%s\",\"cluster\":\"xyz\"}\r\n"
 
 func doRouteAuthConnect(t tLogger, c net.Conn, user, pass, id string) {
-	cs := fmt.Sprintf(connectProto, user, pass, id)
+	cs := fmt.Sprintf(routeConnectProto, user, pass, id)
 	sendProto(t, c, cs)
 }
 

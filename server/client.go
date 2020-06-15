@@ -174,6 +174,7 @@ const (
 	InternalClient
 	MsgHeaderViolation
 	NoRespondersRequiresHeaders
+	ClusterNameConflict
 )
 
 // Some flags passed to processMsgResultsEx
