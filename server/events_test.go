@@ -1512,6 +1512,50 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 }
 
+func TestServerEventsPingStatsZFilter(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Receive both manually.
+	if _, err := nc.Request(serverStatsPingReqSubj, []byte(`{"cluster":"DOESNOTEXIST"}`), time.Second/4); err != nats.ErrTimeout {
+		t.Fatalf("Error, expected timeout: %v", err)
+	}
+}
+
+func TestServerEventsPingStatsZFailFilter(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Receive both manually.
+	if msg, err := nc.Request(serverStatsPingReqSubj, []byte(`{MALFORMEDJSON`), time.Second/4); err != nil {
+		t.Fatalf("Error: %v", err)
+	} else {
+		resp := make(map[string]map[string]interface{})
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			t.Fatalf("Error unmarshalling the response json: %v", err)
+		}
+		if resp["error"]["code"].(float64) != http.StatusBadRequest {
+			t.Fatal("bad error code")
+		}
+	}
+}
+
 func TestServerEventsPingMonitorz(t *testing.T) {
 	sa, _, sb, optsB, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
@@ -1566,6 +1610,17 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "outbound_gateways", "inbound_gateways"}},
 		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
 			[]string{"now", "leafs"}},
+
+		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22"}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
+			[]string{"now", "routes"}},
 	}
 
 	for i, test := range tests {
