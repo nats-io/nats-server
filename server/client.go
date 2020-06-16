@@ -2707,8 +2707,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 		return false
 	}
 
-	// Check if we are a spoke leafnode and have perms to check.
-	if client.isSpokeLeafNode() && client.perms != nil {
+	// Check if we are a leafnode and have perms to check.
+	if client.kind == LEAF && client.perms != nil {
 		if !client.pubAllowed(string(subject)) {
 			client.mu.Unlock()
 			return false
