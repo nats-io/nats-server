@@ -177,10 +177,10 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	if len(remote.DenyExports) > 0 || len(remote.DenyImports) > 0 {
 		perms := &Permissions{}
 		if len(remote.DenyExports) > 0 {
-			perms.Subscribe = &SubjectPermission{Deny: remote.DenyExports}
+			perms.Publish = &SubjectPermission{Deny: remote.DenyExports}
 		}
 		if len(remote.DenyImports) > 0 {
-			perms.Publish = &SubjectPermission{Deny: remote.DenyImports}
+			perms.Subscribe = &SubjectPermission{Deny: remote.DenyImports}
 		}
 		cfg.perms = perms
 	}
@@ -1310,7 +1310,7 @@ func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 	// If we are a spoke, we need to check if we are allowed to send this subscription over to the hub.
 	if c.isSpokeLeafNode() {
 		checkPerms := true
-		if len(key) > 0 && key[0] == '$' || key[0] == '_' {
+		if len(key) > 0 && (key[0] == '$' || key[0] == '_') {
 			if strings.HasPrefix(key, leafNodeLoopDetectionSubjectPrefix) ||
 				strings.HasPrefix(key, oldGWReplyPrefix) ||
 				strings.HasPrefix(key, gwReplyPrefix) {
