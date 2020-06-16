@@ -808,7 +808,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 		return false
 	}
 
-	// We are here if we accept leafnode connections without any credential.
+	// We are here if we accept leafnode connections without any credentials.
 
 	// Still, if the CONNECT has some user info, we will bind to the
 	// user's account or to the specified default account (if provided)

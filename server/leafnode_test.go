@@ -1186,46 +1186,11 @@ func TestLeafNodePermissions(t *testing.T) {
 	// Goes down to 1 (the $LDS one)
 	checkSubs(ln2.globalAccount(), 1)
 
-	// Check that deny export clause prevents subs from LN1 on matching
-	// subjects in the deny list to be registered on LN2. Furthermore,
-	// LN1 will receive a permission violation and the connection will
-	// be closed.
-	for _, test := range []struct {
-		name    string
-		subject string
-		ok      bool
-	}{
-		{"reject remote sub on export.*", "export.*", false},
-		{"reject remote sub on export", "export", false},
-		{"accepts remote sub on foo", "foo", true},
-		{"accepts remote sub on export.this.one.ok", "export.this.one.ok", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			sub := natsSubSync(t, nc1, test.subject)
-			if !test.ok {
-				select {
-				case e := <-errLog.errCh:
-					if !strings.Contains(e, "Permissions Violation for Subscription to") {
-						t.Fatalf("Unexpected error: %q", e)
-					}
-				case <-time.After(time.Second):
-					t.Fatalf("Should have got an error")
-				}
-				sub.Unsubscribe()
-				// Should have disconnected
-				checkLeafNodeConnectedCount(t, ln2, 0)
-				checkSubs(ln2.globalAccount(), 0)
-				// But will reconnect after the connect delay
-				checkLeafNodeConnectedCount(t, ln2, 1)
-			} else {
-				checkSubs(ln2.globalAccount(), 2)
-				nc2.Publish(test.subject, []byte("msg"))
-				natsNexMsg(t, sub, time.Second)
-				sub.Unsubscribe()
-				checkSubs(ln2.globalAccount(), 1)
-			}
-		})
-	}
+	// We used to make sure we would not do subscriptions however that
+	// was incorrect. We need to check publishes, not the subscriptions.
+	// For instance if we can publish across a leafnode to foo, and the
+	// other side has a subsxcription for '*' the message should cross
+	// the leafnode. The old way would not allow this.
 
 	// Now check deny import clause.
 	// As of now, we don't suppress forwarding of subscriptions on LN2 that
@@ -1244,28 +1209,21 @@ func TestLeafNodePermissions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sub := natsSubSync(t, nc2, test.subSubject)
-			checkSubs(ln1.globalAccount(), 2)
-			nc1.Publish(test.pubSubject, []byte("msg"))
+			checkSubs(ln2.globalAccount(), 2)
+
 			if !test.ok {
-				select {
-				case e := <-errLog.errCh:
-					if !strings.Contains(e, "Permissions Violation for Publish to") {
-						t.Fatalf("Unexpected error: %q", e)
-					}
-				case <-time.After(time.Second):
-					t.Fatalf("Should have got an error")
+				nc1.Publish(test.pubSubject, []byte("msg"))
+				if _, err := sub.NextMsg(50 * time.Millisecond); err == nil {
+					t.Fatalf("Did not expect to get the message")
 				}
-				sub.Unsubscribe()
-				// Should have disconnected
-				checkLeafNodeConnectedCount(t, ln2, 0)
-				checkSubs(ln1.globalAccount(), 0)
-				// But will reconnect after the connect delay
-				checkLeafNodeConnectedCount(t, ln2, 1)
 			} else {
+				checkSubs(ln1.globalAccount(), 2)
+				nc1.Publish(test.pubSubject, []byte("msg"))
 				natsNexMsg(t, sub, time.Second)
-				sub.Unsubscribe()
-				checkSubs(ln1.globalAccount(), 1)
 			}
+			sub.Unsubscribe()
+			checkSubs(ln1.globalAccount(), 1)
+
 		})
 	}
 }
