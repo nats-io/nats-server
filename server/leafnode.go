@@ -907,6 +907,14 @@ func (c *client) processLeafnodeInfo(info *Info) error {
 		c.updateLeafNodeURLs(info)
 	}
 
+	// Check to see if we have permissions updates here.
+	if info.Import != nil || info.Export != nil {
+		c.setPermissions(&Permissions{
+			Publish:   info.Export,
+			Subscribe: info.Import,
+		})
+	}
+
 	return nil
 }
 
@@ -1057,6 +1065,10 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.isSpoke = true
 	}
 
+	// If we have permissions bound to this leafnode we need to send then back to the
+	// origin server for local enforcement.
+	s.sendPermsInfo(c)
+
 	// Create and initialize the smap since we know our bound account now.
 	// This will send all registered subs too.
 	s.initLeafNodeSmapAndSendSubs(c)
@@ -1069,6 +1081,24 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	s.sendLeafNodeConnect(c.acc)
 
 	return nil
+}
+
+// Sends back an info block to the soliciting leafnode to let it know about
+// its permission settings for local enforcement.
+func (s *Server) sendPermsInfo(c *client) {
+	if c.perms == nil {
+		return
+	}
+	// Copy
+	info := s.copyLeafNodeInfo()
+	c.mu.Lock()
+	info.CID = c.cid
+	info.Import = c.opts.Import
+	info.Export = c.opts.Export
+	b, _ := json.Marshal(info)
+	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+	c.enqueueProto(bytes.Join(pcs, []byte(" ")))
+	c.mu.Unlock()
 }
 
 // Snapshot the current subscriptions from the sublist into our smap which
@@ -1277,6 +1307,21 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 // Send the subscription interest change to the other side.
 // Lock should be held.
 func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
+	// If we are a spoke, we need to check if we are allowed to send this subscription over to the hub.
+	if c.isSpokeLeafNode() {
+		checkPerms := true
+		if len(key) > 0 && key[0] == '$' || key[0] == '_' {
+			if strings.HasPrefix(key, leafNodeLoopDetectionSubjectPrefix) ||
+				strings.HasPrefix(key, oldGWReplyPrefix) ||
+				strings.HasPrefix(key, gwReplyPrefix) {
+				checkPerms = false
+			}
+		}
+		if checkPerms && !c.canSubscribe(key) {
+			return
+		}
+	}
+	// If we are here we can send over to the other side.
 	_b := [64]byte{}
 	b := bytes.NewBuffer(_b[:0])
 	c.writeLeafSub(b, key, n)
@@ -1385,7 +1430,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 			checkPerms = false
 		}
 	}
-	if checkPerms && !c.canExport(string(sub.subject)) {
+	if checkPerms && c.isHubLeafNode() && !c.canSubscribe(string(sub.subject)) {
 		c.mu.Unlock()
 		c.leafSubPermViolation(sub.subject)
 		return nil
@@ -1662,7 +1707,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && c.isHubLeafNode() && !c.pubAllowed(string(c.pa.subject)) {
 		c.leafPubPermViolation(c.pa.subject)
 		return
 	}
@@ -1745,6 +1790,12 @@ func (c *client) leafSubPermViolation(subj []byte) {
 // Sends the permission violation error to the remote, logs it and closes the connection.
 // If this is from a server soliciting, the reconnection will be delayed.
 func (c *client) leafPermViolation(pub bool, subj []byte) {
+	if c.isSpokeLeafNode() {
+		// For spokes these are no-ops since the hub server told us our permissions.
+		// We just need to not send these over to the other side since we will get cutoff.
+		return
+	}
+	// FIXME(dlc) ?
 	c.setLeafConnectDelayIfSoliciting(leafNodeReconnectAfterPermViolation)
 	var action string
 	if pub {

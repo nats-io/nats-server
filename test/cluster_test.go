@@ -89,6 +89,22 @@ func checkSubInterest(t *testing.T, s *server.Server, accName, subject string, t
 	})
 }
 
+func checkNoSubInterest(t *testing.T, s *server.Server, accName, subject string, timeout time.Duration) {
+	t.Helper()
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		t.Fatalf("error looking up account %q: %v", accName, err)
+	}
+
+	start := time.Now()
+	for time.Now().Before(start.Add(timeout)) {
+		if acc.SubscriptionInterest(subject) {
+			t.Fatalf("Did not expect interest for %q", subject)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func runThreeServers(t *testing.T) (srvA, srvB, srvC *server.Server, optsA, optsB, optsC *server.Options) {
 	srvA, optsA = RunServerWithConfig("./configs/srv_a.conf")
 	srvB, optsB = RunServerWithConfig("./configs/srv_b.conf")

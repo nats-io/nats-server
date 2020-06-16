@@ -440,7 +440,7 @@ type clientOpts struct {
 	Headers      bool   `json:"headers,omitempty"`
 	NoResponders bool   `json:"no_responders,omitempty"`
 
-	// Routes only
+	// Routes and Leafnodes only
 	Import *SubjectPermission `json:"import,omitempty"`
 	Export *SubjectPermission `json:"export,omitempty"`
 }
@@ -747,6 +747,15 @@ func (c *client) setPermissions(perms *Permissions) {
 			}
 			c.perms.sub.deny.Insert(sub)
 		}
+	}
+
+	// If we are a leafnode and we are the hub copy the extracted perms
+	// to resend back to soliciting server. These are reversed from the
+	// way routes interpret them since this is how the soliciting server
+	// will receive these back in an update INFO.
+	if c.isHubLeafNode() {
+		c.opts.Import = perms.Subscribe
+		c.opts.Export = perms.Publish
 	}
 }
 
@@ -2698,6 +2707,14 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 		return false
 	}
 
+	// Check if we are a spoke leafnode and have perms to check.
+	if client.isSpokeLeafNode() && client.perms != nil {
+		if !client.pubAllowed(string(subject)) {
+			client.mu.Unlock()
+			return false
+		}
+	}
+
 	srv := client.srv
 
 	sub.nm++
@@ -3803,7 +3820,7 @@ func (c *client) typeString() string {
 	case GATEWAY:
 		return "Gateway"
 	case LEAF:
-		return "LeafNode"
+		return "Leafnode"
 	case JETSTREAM:
 		return "JetStream"
 	case ACCOUNT:

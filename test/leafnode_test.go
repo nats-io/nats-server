@@ -1364,6 +1364,73 @@ func TestLeafNodeOperatorModel(t *testing.T) {
 	checkLeafNodeConnected(t, s)
 }
 
+func TestLeafNodeUserPermsForConnection(t *testing.T) {
+	s, opts, conf := runLeafNodeOperatorServer(t)
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	// Setup account and a user that will be used by the remote leaf node server.
+	// createAccount automatically registers with resolver etc..
+	acc, akp := createAccount(t, s)
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	nuc.Permissions.Pub.Allow.Add("foo.>")
+	nuc.Permissions.Pub.Allow.Add("baz.>")
+	nuc.Permissions.Sub.Allow.Add("foo.>")
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	seed, _ := kp.Seed()
+	mycreds := genCredsFile(t, ujwt, seed)
+	defer os.Remove(mycreds)
+
+	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
+	defer os.Remove(lnconf)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	// Create credentials for a normal unrestricted user that we will connect to the op server.
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Create a user on the leafnode server that solicited.
+	nc2, err := nats.Connect(sl.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Make sure subscriptions properly do or do not make it to the hub.
+	// Note that all hub subscriptions will make it to the leafnode.
+	nc2.SubscribeSync("bar")
+	checkNoSubInterest(t, s, acc.GetName(), "bar", 20*time.Millisecond)
+	// This one should.
+	nc2.SubscribeSync("foo.22")
+	checkSubInterest(t, s, acc.GetName(), "foo.22", 20*time.Millisecond)
+
+	// Capture everything.
+	sub, _ := nc.SubscribeSync(">")
+	nc.Flush()
+
+	// Now check local pubs are not forwarded.
+	nc2.Publish("baz.22", nil)
+	m, err := sub.NextMsg(1 * time.Second)
+	if err != nil || m.Subject != "baz.22" {
+		t.Fatalf("Expected to received this message")
+	}
+	nc2.Publish("bar.22", nil)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Did not expect to receive this message")
+	}
+}
+
 func TestLeafNodeMultipleAccounts(t *testing.T) {
 	// So we will create a main server with two accounts. The remote server, acting as a leaf node, will simply have
 	// the $G global account and no auth. Make sure things work properly here.
