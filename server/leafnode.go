@@ -909,10 +909,20 @@ func (c *client) processLeafnodeInfo(info *Info) error {
 
 	// Check to see if we have permissions updates here.
 	if info.Import != nil || info.Export != nil {
-		c.setPermissions(&Permissions{
+		perms := &Permissions{
 			Publish:   info.Export,
 			Subscribe: info.Import,
-		})
+		}
+		// Check if we have local deny clauses that we need to merge.
+		if remote := c.leaf.remote; remote != nil {
+			if len(remote.DenyExports) > 0 {
+				perms.Publish.Deny = append(perms.Publish.Deny, remote.DenyExports...)
+			}
+			if len(remote.DenyImports) > 0 {
+				perms.Subscribe.Deny = append(perms.Subscribe.Deny, remote.DenyImports...)
+			}
+		}
+		c.setPermissions(perms)
 	}
 
 	return nil

@@ -1386,8 +1386,23 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	mycreds := genCredsFile(t, ujwt, seed)
 	defer os.Remove(mycreds)
 
-	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
+	content := `
+		port: -1
+		leafnodes {
+			remotes = [
+				{
+					url: nats-leaf://127.0.0.1:%d
+					credentials: '%s'
+					deny_import: "foo.33"
+					deny_export: "foo.33"
+				}
+			]
+		}
+		`
+	config := fmt.Sprintf(content, opts.LeafNode.Port, mycreds)
+	lnconf := createConfFile(t, []byte(config))
 	defer os.Remove(lnconf)
+	sl, _ := RunServerWithConfig(lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1429,6 +1444,19 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
 		t.Fatalf("Did not expect to receive this message")
 	}
+
+	// Check local overrides work.
+	nc2.Publish("foo.33", nil)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Did not expect to receive this message")
+	}
+
+	// This would trigger the sub interest below.
+	sub.Unsubscribe()
+	nc.Flush()
+
+	nc2.SubscribeSync("foo.33")
+	checkNoSubInterest(t, s, acc.GetName(), "foo.33", 20*time.Millisecond)
 }
 
 func TestLeafNodeMultipleAccounts(t *testing.T) {
