@@ -3201,7 +3201,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		c.mu.Lock()
 		if c.opts.NoResponders {
 			if sub := c.subForReply(c.pa.reply); sub != nil {
-				proto := fmt.Sprintf("HMSG %s %s 15 15\r\nNATS/1.0 503\r\n\r\n", c.pa.reply, sub.sid)
+				proto := fmt.Sprintf("HMSG %s %s 16 16\r\nNATS/1.0 503\r\n\r\n\r\n", c.pa.reply, sub.sid)
 				c.sendProtoNow([]byte(proto))
 			}
 		}
