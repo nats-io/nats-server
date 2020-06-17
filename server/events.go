@@ -834,8 +834,9 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type ZFilterOptions struct {
-	Name    string `json:"server"`
+	Name    string `json:"name"`
 	Cluster string `json:"cluster"`
+	Host    string `json:"host"`
 }
 
 // returns true if the request does NOT apply to this server and can be ignored.
@@ -850,6 +851,9 @@ func (s *Server) filterRequest(msg []byte) (bool, error) {
 		return false, err
 	}
 	if fOpts.Name != "" && !strings.Contains(s.info.Name, fOpts.Name) {
+		return true, nil
+	}
+	if fOpts.Host != "" && !strings.Contains(s.info.Host, fOpts.Host) {
 		return true, nil
 	}
 	if fOpts.Cluster != "" {
