@@ -100,7 +100,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
-	optsA.ServerName = "A"
+	optsA.ServerName = "A_SRV"
 	// Add in dummy gateway
 	optsA.Gateway.Name = "TEST CLUSTER 22"
 	optsA.Gateway.Host = "127.0.0.1"
@@ -110,7 +110,7 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	sa := RunServer(optsA)
 
 	optsB := nextServerOpts(optsA)
-	optsB.ServerName = "B"
+	optsB.ServerName = "B_SRV"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
 	sb := RunServer(optsB)
 
@@ -1452,7 +1452,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if lr := len(m3.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)
 	}
-	if sr := m3.Stats.Routes[0]; sr.Name != "B" {
+	if sr := m3.Stats.Routes[0]; sr.Name != "B_SRV" {
 		t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
 	}
 
@@ -1470,8 +1470,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if lr := len(m.Stats.Routes); lr != 1 {
 		t.Fatalf("Expected a route, but got %d", lr)
 	}
-	if sr := m.Stats.Routes[0]; sr.Name != "A" {
-		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A", sr.Name)
+	if sr := m.Stats.Routes[0]; sr.Name != "A_SRV" {
+		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
 	}
 }
 
@@ -1487,28 +1487,94 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 	defer nc.Close()
 
-	reply := nc.NewRespInbox()
-	sub, _ := nc.SubscribeSync(reply)
+	requestTbl := []string{
+		`{"cluster":"TEST"}`,
+		`{"cluster":"CLUSTER"}`,
+		`{"name":"SRV"}`,
+		`{"name":"_"}`,
+		fmt.Sprintf(`{"host":"%s"}`, optsB.Host),
+		fmt.Sprintf(`{"host":"%s", "cluster":"CLUSTER", "name":"SRV"}`, optsB.Host),
+	}
 
-	nc.PublishRequest(serverStatsPingReqSubj, reply, nil)
+	for _, msg := range requestTbl {
+		t.Run(msg, func(t *testing.T) {
+			reply := nc.NewRespInbox()
+			sub, _ := nc.SubscribeSync(reply)
 
-	// Make sure its a statsz
-	m := ServerStatsMsg{}
+			nc.PublishRequest(serverStatsPingReqSubj, reply, []byte(msg))
+
+			// Make sure its a statsz
+			m := ServerStatsMsg{}
+
+			// Receive both manually.
+			msg, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error receiving msg: %v", err)
+			}
+			if err := json.Unmarshal(msg.Data, &m); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Error receiving msg: %v", err)
+			}
+			if err := json.Unmarshal(msg.Data, &m); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerEventsPingStatsZFilter(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	requestTbl := []string{
+		`{"cluster":"DOESNOTEXIST"}`,
+		`{"host":"DOESNOTEXIST"}`,
+		`{"name":"DOESNOTEXIST"}`,
+	}
+	for _, msg := range requestTbl {
+		t.Run(msg, func(t *testing.T) {
+			// Receive both manually.
+			if _, err := nc.Request(serverStatsPingReqSubj, []byte(msg), time.Second/4); err != nats.ErrTimeout {
+				t.Fatalf("Error, expected timeout: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerEventsPingStatsZFailFilter(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
 
 	// Receive both manually.
-	msg, err := sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Error receiving msg: %v", err)
-	}
-	if err := json.Unmarshal(msg.Data, &m); err != nil {
-		t.Fatalf("Error unmarshalling the statz json: %v", err)
-	}
-	msg, err = sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Error receiving msg: %v", err)
-	}
-	if err := json.Unmarshal(msg.Data, &m); err != nil {
-		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	if msg, err := nc.Request(serverStatsPingReqSubj, []byte(`{MALFORMEDJSON`), time.Second/4); err != nil {
+		t.Fatalf("Error: %v", err)
+	} else {
+		resp := make(map[string]map[string]interface{})
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			t.Fatalf("Error unmarshalling the response json: %v", err)
+		}
+		if resp["error"]["code"].(float64) != http.StatusBadRequest {
+			t.Fatal("bad error code")
+		}
 	}
 }
 
@@ -1566,6 +1632,17 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "outbound_gateways", "inbound_gateways"}},
 		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
 			[]string{"now", "leafs"}},
+
+		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22"}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
+			[]string{"now", "routes"}},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
+			[]string{"now", "routes"}},
 	}
 
 	for i, test := range tests {
@@ -1595,10 +1672,10 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			}
 
 			serverName := ""
-			if response1["server"]["name"] == "A" {
-				serverName = "B"
-			} else if response1["server"]["name"] == "B" {
-				serverName = "A"
+			if response1["server"]["name"] == "A_SRV" {
+				serverName = "B_SRV"
+			} else if response1["server"]["name"] == "B_SRV" {
+				serverName = "A_SRV"
 			} else {
 				t.Fatalf("Error finding server in %s", string(msg.Data))
 			}

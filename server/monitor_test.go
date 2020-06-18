@@ -2415,6 +2415,7 @@ func TestMonitorCluster(t *testing.T) {
 	defer s.Shutdown()
 
 	expected := ClusterOptsVarz{
+		"A",
 		opts.Cluster.Host,
 		opts.Cluster.Port,
 		opts.Cluster.AuthTimeout,
@@ -2434,11 +2435,12 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", 0, 0, nil}
+		_ = ClusterOptsVarz{"", "", 0, 0, nil}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
 		// should not affect the next returned value.
+		v.Cluster.Name = "wrong"
 		v.Cluster.Host = "wrong"
 		v.Cluster.Port = 0
 		v.Cluster.AuthTimeout = 0

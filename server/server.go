@@ -427,9 +427,17 @@ func (s *Server) ClusterName() string {
 // setClusterName will update the cluster name for this server.
 func (s *Server) setClusterName(name string) {
 	s.mu.Lock()
+	var resetCh chan struct{}
+	if s.sys != nil && s.info.Cluster != name {
+		// can't hold the lock as go routine reading it may be waiting for lock as well
+		resetCh = s.sys.resetCh
+	}
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
 	s.mu.Unlock()
+	if resetCh != nil {
+		resetCh <- struct{}{}
+	}
 	s.Noticef("Cluster name updated to %s", name)
 }
 

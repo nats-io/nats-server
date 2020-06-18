@@ -242,7 +242,7 @@ RESET:
 	servername := s.info.Name
 	seqp := &s.sys.seq
 	js := s.js != nil
-	var cluster string
+	cluster := s.info.Cluster
 	if s.gateway.enabled {
 		cluster = s.getGatewayName()
 	}
@@ -832,14 +832,61 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 	}
 }
 
+// Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
+type ZFilterOptions struct {
+	Name    string `json:"name"`
+	Cluster string `json:"cluster"`
+	Host    string `json:"host"`
+}
+
+// returns true if the request does NOT apply to this server and can be ignored.
+// DO NOT hold the server lock when
+func (s *Server) filterRequest(msg []byte) (bool, error) {
+	if len(msg) == 0 {
+		return false, nil
+	}
+	var fOpts ZFilterOptions
+	err := json.Unmarshal(msg, &fOpts)
+	if err != nil {
+		return false, err
+	}
+	if fOpts.Name != "" && !strings.Contains(s.info.Name, fOpts.Name) {
+		return true, nil
+	}
+	if fOpts.Host != "" && !strings.Contains(s.info.Host, fOpts.Host) {
+		return true, nil
+	}
+	if fOpts.Cluster != "" {
+		s.mu.Lock()
+		cluster := s.info.Cluster
+		s.mu.Unlock()
+		if !strings.Contains(cluster, fOpts.Cluster) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // statszReq is a request for us to respond with current statz.
 func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, msg []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() || reply == _EMPTY_ {
+	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
+	if ignore, err := s.filterRequest(msg); err != nil {
+		server := &ServerInfo{}
+		response := map[string]interface{}{"server": server}
+		response["error"] = map[string]interface{}{
+			"code":        http.StatusBadRequest,
+			"description": err.Error(),
+		}
+		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+		return
+	} else if ignore {
+		return
+	}
+	s.mu.Lock()
 	s.sendStatsz(reply)
+	s.mu.Unlock()
 }
 
 func (s *Server) zReq(reply string, msg []byte, optz interface{}, respf func() (interface{}, error)) {
@@ -851,7 +898,12 @@ func (s *Server) zReq(reply string, msg []byte, optz interface{}, respf func() (
 	var err error
 	status := 0
 	if len(msg) != 0 {
-		err = json.Unmarshal(msg, optz)
+		filter := false
+		if filter, err = s.filterRequest(msg); filter {
+			return
+		} else if err == nil {
+			err = json.Unmarshal(msg, optz)
+		}
 		status = http.StatusBadRequest // status is only included on error, so record how far execution got
 	}
 	if err == nil {
