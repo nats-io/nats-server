@@ -607,7 +607,10 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, ReadCacheExpire: 1 * time.Millisecond},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -615,7 +618,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 
 	// Store some messages. Does not really matter how many.
 	subj, msg := "foo", []byte("Hello World")
-	toStore := 100
+	toStore := 1000
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, nil, msg)
 	}
