@@ -215,11 +215,17 @@ func (ms *memStore) expireMsgs() {
 			ms.deleteFirstMsgOrPanic()
 		} else {
 			if !ok {
-				ms.ageChk.Stop()
-				ms.ageChk = nil
+				if ms.ageChk != nil {
+					ms.ageChk.Stop()
+					ms.ageChk = nil
+				}
 			} else {
 				fireIn := time.Duration(sm.ts-now) + ms.cfg.MaxAge
-				ms.ageChk.Reset(fireIn)
+				if ms.ageChk != nil {
+					ms.ageChk.Reset(fireIn)
+				} else {
+					ms.ageChk = time.AfterFunc(fireIn, ms.expireMsgs)
+				}
 			}
 			return
 		}
