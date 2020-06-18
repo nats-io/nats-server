@@ -1497,7 +1497,13 @@ func (c *client) processConnect(arg []byte) error {
 	lang := c.opts.Lang
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
+
+	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
+	if ws := c.ws; ws != nil && c.opts.JWT == "" {
+		c.opts.JWT = ws.cookieJwt
+	}
 	ujwt := c.opts.JWT
+
 	// For headers both client and server need to support.
 	c.headers = supportsHeaders && c.opts.Headers
 	c.mu.Unlock()

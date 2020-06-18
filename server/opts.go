@@ -265,6 +265,11 @@ type WebsocketOpts struct {
 	// Users defined here or in the global options.
 	NoAuthUser string
 
+	// Name of the cookie, which if present in WebSocket upgrade headers,
+	// will be treated as JWT during CONNECT phase as long as
+	// "jwt" specified in the CONNECT options is missing or empty.
+	JWTCookie string
+
 	// Authentication section. If anything is configured in this section,
 	// it will override the authorization configuration for regular clients.
 	Username string
@@ -3152,6 +3157,8 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			if auth.nkeys != nil {
 				o.Websocket.Nkeys = append(o.Websocket.Nkeys, auth.nkeys...)
 			}
+		case "jwt_cookie":
+			o.Websocket.JWTCookie = mv.(string)
 		case "no_auth_user":
 			o.Websocket.NoAuthUser = mv.(string)
 		default:
