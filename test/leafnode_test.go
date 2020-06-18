@@ -1428,12 +1428,13 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	checkNoSubInterest(t, s, acc.GetName(), "bar", 20*time.Millisecond)
 	// This one should.
 	nc2.SubscribeSync("foo.22")
-	checkSubInterest(t, s, acc.GetName(), "foo.22", 20*time.Millisecond)
+	checkSubInterest(t, s, acc.GetName(), "foo.22", 100*time.Millisecond)
 
 	// Capture everything.
 	sub, _ := nc.SubscribeSync(">")
 	nc.Flush()
 
+	checkSubInterest(t, sl, "$G", ">", 100*time.Millisecond)
 	// Now check local pubs are not forwarded.
 	nc2.Publish("baz.22", nil)
 	m, err := sub.NextMsg(1 * time.Second)
