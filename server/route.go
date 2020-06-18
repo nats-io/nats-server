@@ -353,7 +353,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 }
 
 // Lock should be held entering here.
-func (c *client) sendRouteConnect(tlsRequired bool) {
+func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
 		user = userInfo.Username()
@@ -369,7 +369,7 @@ func (c *client) sendRouteConnect(tlsRequired bool) {
 		TLS:      tlsRequired,
 		Name:     s.info.ID,
 		Headers:  s.supportsHeaders(),
-		Cluster:  s.info.Cluster,
+		Cluster:  clusterName,
 		Dynamic:  s.isClusterNameDynamic(),
 	}
 
@@ -1145,6 +1145,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	infoJSON := s.routeInfoJSON
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
+	clusterName := s.info.Cluster
 	s.mu.Unlock()
 
 	// Grab lock
@@ -1256,7 +1257,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		c.Debugf("Route connect msg sent")
-		c.sendRouteConnect(tlsRequired)
+		c.sendRouteConnect(clusterName, tlsRequired)
 	}
 
 	// Send our info to the other side.
