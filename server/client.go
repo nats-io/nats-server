@@ -2685,7 +2685,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, gwrply bool) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -2846,8 +2846,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 
 	// If we are tracking dynamic publish permissions that track reply subjects,
 	// do that accounting here. We only look at client.replies which will be non-nil.
-	if client.replies != nil && len(c.pa.reply) > 0 {
-		client.replies[string(c.pa.reply)] = &resp{time.Now(), 0}
+	if client.replies != nil && len(reply) > 0 {
+		client.replies[string(reply)] = &resp{time.Now(), 0}
 		if len(client.replies) > replyPermLimit {
 			client.pruneReplyPerms()
 		}
@@ -3518,7 +3518,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
-		didDeliver = c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix) || didDeliver
+		didDeliver = c.deliverMsg(sub, subj, creply, mh, msg, rplyHasGWPrefix) || didDeliver
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -3631,7 +3631,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// "rreply" will be stripped of the $GNR prefix (if present)
 			// for client connections only.
 			mh := c.msgHeader(dsubj, rreply, sub)
-			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
+			if c.deliverMsg(sub, subject, rreply, mh, msg, rplyHasGWPrefix) {
 				didDeliver = true
 				// Clear rsub
 				rsub = nil
@@ -3673,7 +3673,7 @@ sendToRoutesOrLeafs:
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
-		didDeliver = c.deliverMsg(rt.sub, subject, mh, msg, false) || didDeliver
+		didDeliver = c.deliverMsg(rt.sub, subject, reply, mh, msg, false) || didDeliver
 	}
 	return didDeliver, queues
 }
