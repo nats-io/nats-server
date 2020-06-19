@@ -618,7 +618,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 
 	// Store some messages. Does not really matter how many.
 	subj, msg := "foo", []byte("Hello World")
-	toStore := 1000
+	toStore := 100
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, nil, msg)
 	}
