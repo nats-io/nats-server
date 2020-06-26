@@ -20,6 +20,7 @@ import (
 type parserState int
 type parseState struct {
 	state   parserState
+	op      byte
 	as      int
 	drop    int
 	pa      pubArg
@@ -31,6 +32,7 @@ type parseState struct {
 type pubArg struct {
 	arg     []byte
 	pacache []byte
+	origin  []byte
 	account []byte
 	subject []byte
 	deliver []byte
@@ -142,6 +144,7 @@ func (c *client) parse(buf []byte) error {
 
 		switch c.state {
 		case OP_START:
+			c.op = b
 			if b != 'C' && b != 'c' {
 				if authSet {
 					goto authErr
@@ -170,7 +173,7 @@ func (c *client) parse(buf []byte) error {
 					c.state = OP_R
 				}
 			case 'L', 'l':
-				if c.kind != LEAF {
+				if c.kind != LEAF && c.kind != ROUTER {
 					goto parseErr
 				} else {
 					c.state = OP_L
@@ -442,7 +445,7 @@ func (c *client) parse(buf []byte) error {
 			c.argBuf, c.msgBuf = nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
-			c.pa.arg, c.pa.pacache, c.pa.account, c.pa.subject = nil, nil, nil, nil
+			c.pa.arg, c.pa.pacache, c.pa.origin, c.pa.account, c.pa.subject = nil, nil, nil, nil, nil
 			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.hdb, c.pa.queues = nil, -1, 0, nil, nil, nil
 		case OP_A:
 			switch b {
@@ -579,10 +582,18 @@ func (c *client) parse(buf []byte) error {
 					}
 					_, err = c.processSub(arg, false)
 				case ROUTER:
-					if trace {
-						c.traceInOp("RS+", arg)
+					switch c.op {
+					case 'R', 'r':
+						if trace {
+							c.traceInOp("RS+", arg)
+						}
+						err = c.processRemoteSub(arg, false)
+					case 'L', 'l':
+						if trace {
+							c.traceInOp("LS+", arg)
+						}
+						err = c.processRemoteSub(arg, true)
 					}
-					err = c.processRemoteSub(arg)
 				case GATEWAY:
 					if trace {
 						c.traceInOp("RS+", arg)
@@ -895,10 +906,18 @@ func (c *client) parse(buf []byte) error {
 				}
 				var err error
 				if c.kind == ROUTER || c.kind == GATEWAY {
-					if trace {
-						c.traceInOp("RMSG", arg)
+					switch c.op {
+					case 'R', 'r':
+						if trace {
+							c.traceInOp("RMSG", arg)
+						}
+						err = c.processRoutedMsgArgs(arg)
+					case 'L', 'l':
+						if trace {
+							c.traceInOp("LMSG", arg)
+						}
+						err = c.processRoutedOriginClusterMsgArgs(arg)
 					}
-					err = c.processRoutedMsgArgs(arg)
 				} else if c.kind == LEAF {
 					if trace {
 						c.traceInOp("LMSG", arg)

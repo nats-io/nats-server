@@ -402,6 +402,7 @@ type subscription struct {
 	subject []byte
 	queue   []byte
 	sid     []byte
+	origin  []byte
 	nm      int64
 	max     int64
 	qw      int32
@@ -2559,16 +2560,28 @@ func (c *client) checkDenySub(subject string) bool {
 	return false
 }
 
-// Create a message header for routes or leafnodes. Header aware.
+// Create a message header for routes or leafnodes. Header and origin cluster aware.
 func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
 	hasHeader := c.pa.hdr > 0
 	canReceiveHeader := rt.sub.client.headers
 
-	kind := rt.sub.client.kind
 	mh := c.msgb[:msgHeadProtoLen]
+	kind := rt.sub.client.kind
+	var lnoc bool
+
 	if kind == ROUTER {
-		// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
-		mh[0] = 'R'
+		// If we are coming from a leaf with an origin cluster we need to handle differently
+		// if we can. We will send a route based LMSG which has origin cluster and headers
+		// by default.
+		if c.kind == LEAF && c.remoteCluster() != _EMPTY_ && rt.sub.client.route.lnoc {
+			mh[0] = 'L'
+			mh = append(mh, c.remoteCluster()...)
+			mh = append(mh, ' ')
+			lnoc = true
+		} else {
+			// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
+			mh[0] = 'R'
+		}
 		mh = append(mh, acc.Name...)
 		mh = append(mh, ' ')
 	} else {
@@ -2595,7 +2608,17 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		mh = append(mh, reply...)
 		mh = append(mh, ' ')
 	}
-	if hasHeader {
+
+	if lnoc {
+		// leafnode origin LMSG always have a header entry even if zero.
+		if c.pa.hdr <= 0 {
+			mh = append(mh, '0')
+		} else {
+			mh = append(mh, c.pa.hdb...)
+		}
+		mh = append(mh, ' ')
+		mh = append(mh, c.pa.szb...)
+	} else if hasHeader {
 		if canReceiveHeader {
 			mh[0] = 'H'
 			mh = append(mh, c.pa.hdb...)
@@ -2609,8 +2632,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 	} else {
 		mh = append(mh, c.pa.szb...)
 	}
-	mh = append(mh, _CRLF_...)
-	return mh
+	return append(mh, _CRLF_...)
 }
 
 // Create a message header for clients. Header aware.
@@ -3672,6 +3694,25 @@ sendToRoutesOrLeafs:
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
+		// Check if we have an origin cluster set from a leafnode message.
+		// If so make sure we do not send it back to the same cluster for a different
+		// leafnode. Cluster wide no echo.
+		if rt.sub.client.kind == LEAF {
+			// Check two scenarios. One is inbound from a route (c.pa.origin)
+			if c.kind == ROUTER && len(c.pa.origin) > 0 {
+				if string(c.pa.origin) == rt.sub.client.remoteCluster() {
+					continue
+				}
+			}
+			// The other is leaf to leaf.
+			if c.kind == LEAF {
+				src, dest := c.remoteCluster(), rt.sub.client.remoteCluster()
+				if src != _EMPTY_ && src == dest {
+					continue
+				}
+			}
+		}
+
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
 		didDeliver = c.deliverMsg(rt.sub, subject, reply, mh, msg, false) || didDeliver
 	}

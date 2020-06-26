@@ -56,6 +56,8 @@ var (
 	aUnsubBytes = []byte{'A', '-', ' '}
 	rSubBytes   = []byte{'R', 'S', '+', ' '}
 	rUnsubBytes = []byte{'R', 'S', '-', ' '}
+	lSubBytes   = []byte{'L', 'S', '+', ' '}
+	lUnsubBytes = []byte{'L', 'S', '-', ' '}
 )
 
 // Used by tests
@@ -68,6 +70,7 @@ type route struct {
 	remoteName   string
 	didSolicit   bool
 	retry        bool
+	lnoc         bool
 	routeType    RouteType
 	url          *url.URL
 	authRequired bool
@@ -91,6 +94,7 @@ type connectInfo struct {
 	Name     string `json:"name"`
 	Cluster  string `json:"cluster"`
 	Dynamic  bool   `json:"cluster_dynamic,omitempty"`
+	LNOC     bool   `json:"lnoc,omitempty"`
 	Gateway  string `json:"gateway,omitempty"`
 }
 
@@ -156,6 +160,96 @@ func (c *client) processAccountUnsub(arg []byte) {
 	if c.kind == GATEWAY {
 		c.processGatewayAccountUnsub(accName)
 	}
+}
+
+// Process an inbound LMSG specification from the remote route. This means
+// we have an origin cluster and we force header semantics.
+func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
+	// Unroll splitArgs to avoid runtime/heap issues
+	a := [MAX_HMSG_ARGS + 1][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	c.pa.arg = arg
+	switch len(args) {
+	case 0, 1, 2, 3, 4:
+		return fmt.Errorf("processRoutedOriginClusterMsgArgs Parse Error: '%s'", args)
+	case 5:
+		c.pa.reply = nil
+		c.pa.queues = nil
+		c.pa.hdb = args[3]
+		c.pa.hdr = parseSize(args[3])
+		c.pa.szb = args[4]
+		c.pa.size = parseSize(args[4])
+	case 6:
+		c.pa.reply = args[3]
+		c.pa.queues = nil
+		c.pa.hdb = args[4]
+		c.pa.hdr = parseSize(args[4])
+		c.pa.szb = args[5]
+		c.pa.size = parseSize(args[5])
+	default:
+		// args[2] is our reply indicator. Should be + or | normally.
+		if len(args[3]) != 1 {
+			return fmt.Errorf("processRoutedOriginClusterMsgArgs Bad or Missing Reply Indicator: '%s'", args[3])
+		}
+		switch args[3][0] {
+		case '+':
+			c.pa.reply = args[4]
+		case '|':
+			c.pa.reply = nil
+		default:
+			return fmt.Errorf("processRoutedOriginClusterMsgArgs Bad or Missing Reply Indicator: '%s'", args[3])
+		}
+
+		// Grab header size.
+		c.pa.hdb = args[len(args)-2]
+		c.pa.hdr = parseSize(c.pa.hdb)
+
+		// Grab size.
+		c.pa.szb = args[len(args)-1]
+		c.pa.size = parseSize(c.pa.szb)
+
+		// Grab queue names.
+		if c.pa.reply != nil {
+			c.pa.queues = args[5 : len(args)-2]
+		} else {
+			c.pa.queues = args[4 : len(args)-2]
+		}
+	}
+	if c.pa.hdr < 0 {
+		return fmt.Errorf("processRoutedOriginClusterMsgArgs Bad or Missing Header Size: '%s'", arg)
+	}
+	if c.pa.size < 0 {
+		return fmt.Errorf("processRoutedOriginClusterMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	if c.pa.hdr > c.pa.size {
+		return fmt.Errorf("processRoutedOriginClusterMsgArgs Header Size larger then TotalSize: '%s'", arg)
+	}
+
+	// Common ones processed after check for arg length
+	c.pa.origin = args[0]
+	c.pa.account = args[1]
+	c.pa.subject = args[2]
+	c.pa.pacache = arg[len(args[0])+1 : len(args[0])+len(args[1])+len(args[2])+2]
+
+	return nil
 }
 
 // Process an inbound HMSG specification from the remote route.
@@ -245,7 +339,7 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 	return nil
 }
 
-// Process an inbound RMSG specification from the remote route.
+// Process an inbound RMSG or LMSG specification from the remote route.
 func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_RMSG_ARGS][]byte{}
@@ -371,6 +465,7 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) {
 		Headers:  s.supportsHeaders(),
 		Cluster:  clusterName,
 		Dynamic:  s.isClusterNameDynamic(),
+		LNOC:     true,
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -497,6 +592,8 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
+	c.route.lnoc = info.LNOC
+
 	// When sent through route INFO, if the field is set, it should be of size 1.
 	if len(info.LeafNodeURLs) == 1 {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
@@ -859,7 +956,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	return nil
 }
 
-func (c *client) processRemoteSub(argo []byte) (err error) {
+func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// Indicate activity.
 	c.in.subs++
 
@@ -875,21 +972,27 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	args := splitArg(arg)
 	sub := &subscription{client: c}
 
+	var off int
+	if hasOrigin {
+		off = 1
+		sub.origin = args[0]
+	}
+
 	switch len(args) {
-	case 2:
+	case 2 + off:
 		sub.queue = nil
-	case 4:
-		sub.queue = args[2]
-		sub.qw = int32(parseSize(args[3]))
+	case 4 + off:
+		sub.queue = args[2+off]
+		sub.qw = int32(parseSize(args[3+off]))
 	default:
 		return fmt.Errorf("processRemoteSub Parse Error: '%s'", arg)
 	}
-	sub.subject = args[1]
+	sub.subject = args[1+off]
 
 	// Lookup the account
 	// FIXME(dlc) - This may start having lots of contention?
-	accountName := string(args[0])
-	acc, _ := c.srv.LookupAccount(accountName)
+	accountName := string(args[0+off])
+	acc, _ := srv.LookupAccount(accountName)
 	if acc == nil {
 		if !srv.NewAccountsAllowed() {
 			c.Debugf("Unknown account %q for subject %q", accountName, sub.subject)
@@ -921,11 +1024,12 @@ func (c *client) processRemoteSub(argo []byte) (err error) {
 	// We store local subs by account and subject and optionally queue name.
 	// If we have a queue it will have a trailing weight which we do not want.
 	if sub.queue != nil {
-		sub.sid = arg[:len(arg)-len(args[3])-1]
+		sub.sid = arg[:len(arg)-len(args[3+off])-1]
 	} else {
 		sub.sid = arg
 	}
 	key := string(sub.sid)
+
 	osub := c.subs[key]
 	updateGWs := false
 	if osub == nil {
@@ -1055,6 +1159,7 @@ func (c *client) sendRouteUnSubProtos(subs []*subscription, trace bool, filter f
 }
 
 // Low-level function that sends RS+ or RS- protocols for the given subscriptions.
+// This can now also send LS+ and LS- for origin cluster based leafnode subscriptions for cluster no-echo.
 // Use sendRouteSubProtos or sendRouteUnSubProtos instead for clarity.
 // Lock is held on entry.
 func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, trace bool, filter func(sub *subscription) bool) {
@@ -1086,10 +1191,23 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		}
 
 		as := len(buf)
-		if isSubProto {
-			buf = append(buf, rSubBytes...)
+
+		// If we have an origin cluster and the other side supports leafnode origin clusters
+		// send an LS+/LS- version instead.
+		if len(sub.origin) > 0 && c.route.lnoc {
+			if isSubProto {
+				buf = append(buf, lSubBytes...)
+			} else {
+				buf = append(buf, lUnsubBytes...)
+			}
+			buf = append(buf, sub.origin...)
+			buf = append(buf, ' ')
 		} else {
-			buf = append(buf, rUnsubBytes...)
+			if isSubProto {
+				buf = append(buf, rSubBytes...)
+			} else {
+				buf = append(buf, rUnsubBytes...)
+			}
 		}
 		buf = append(buf, accName...)
 		buf = append(buf, ' ')
@@ -1114,6 +1232,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		}
 		buf = append(buf, CR_LF...)
 	}
+
 	c.queueOutbound(buf)
 	c.flushSignal()
 }
@@ -1381,7 +1500,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		// Not required for code correctness, but helps reduce the number of
 		// updates sent to the routes when processing high number of concurrent
 		// queue subscriptions updates (sub/unsub).
-		// See https://github.com/nats-io/nats-server/pull/1126 ffor more details.
+		// See https://github.com/nats-io/nats-server/pull/1126 for more details.
 		if isq {
 			acc.sqmu.Lock()
 		}
@@ -1551,6 +1670,7 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		GatewayURL:   s.getGatewayURL(),
 		Headers:      s.supportsHeaders(),
 		Cluster:      s.info.Cluster,
+		LNOC:         true,
 	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
@@ -1807,6 +1927,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	// Grab connection name of remote route.
 	c.mu.Lock()
 	c.route.remoteID = c.opts.Name
+	c.route.lnoc = proto.LNOC
 	c.setRoutePermissions(perms)
 	c.headers = supportsHeaders && proto.Headers
 	c.mu.Unlock()

@@ -1902,6 +1902,11 @@ func (reason ClosedState) String() string {
 		return "Internal Client"
 	case MsgHeaderViolation:
 		return "Message Header Violation"
+	case NoRespondersRequiresHeaders:
+		return "No Responders Requires Headers"
+	case ClusterNameConflict:
+		return "Cluster Name Conflict"
 	}
+
 	return "Unknown State"
 }

@@ -500,6 +500,18 @@ func (a *Account) SubscriptionInterest(subject string) bool {
 	return interest
 }
 
+// Interest returns the number of subscriptions for a given subject that match.
+func (a *Account) Interest(subject string) int {
+	var nms int
+	a.mu.RLock()
+	if a.sl != nil {
+		res := a.sl.Match(subject)
+		nms = len(res.psubs) + len(res.qsubs)
+	}
+	a.mu.RUnlock()
+	return nms
+}
+
 // addClient keeps our accounting of local active clients or leafnodes updated.
 // Returns previous total.
 func (a *Account) addClient(c *client) int {
