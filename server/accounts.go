@@ -489,15 +489,7 @@ func (a *Account) TotalSubs() int {
 // for the given `subject`. Works only for literal subjects.
 // TODO: Add support for wildcards
 func (a *Account) SubscriptionInterest(subject string) bool {
-	var interest bool
-	a.mu.RLock()
-	if a.sl != nil {
-		if res := a.sl.Match(subject); len(res.psubs)+len(res.qsubs) > 0 {
-			interest = true
-		}
-	}
-	a.mu.RUnlock()
-	return interest
+	return a.Interest(subject) > 0
 }
 
 // Interest returns the number of subscriptions for a given subject that match.

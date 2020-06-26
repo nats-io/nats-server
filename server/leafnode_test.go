@@ -1639,6 +1639,7 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 	// Make sure we disconnect and reconnect.
 	checkLeafNodeConnectedCount(t, s, 0)
 	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, hub)
 
 	l = grabLeaf()
 	if rc := l.remoteCluster(); rc != "xyz" {

@@ -3986,7 +3986,7 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 	defer nc3.Close()
 
 	wcSubj := "foo.*"
-	nc3.SubscribeSync(wcSubj)
+	wcsub, _ := nc3.SubscribeSync(wcSubj)
 	// This is a placeholder that we can use to check all interest has propagated.
 	nc3.SubscribeSync("bar")
 	waitForInterest("bar", ln1, ln2, ln3, ca.servers[0], ca.servers[1], ca.servers[2])
@@ -4006,6 +4006,11 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 	if n, _, _ := sub.Pending(); n != 1 {
 		t.Fatalf("Expected only one message, got %d", n)
 	}
+	// Also for wc
+	if n, _, _ := wcsub.Pending(); n != 1 {
+		t.Fatalf("Expected only one message, got %d", n)
+	}
+
 	// grab the msg
 	msg, _ := sub.NextMsg(time.Second)
 	if !bytes.Equal(m.Data, msg.Data) {
