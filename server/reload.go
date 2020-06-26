@@ -297,25 +297,28 @@ type clusterOption struct {
 }
 
 // Apply the cluster change.
-func (c *clusterOption) Apply(server *Server) {
+func (c *clusterOption) Apply(s *Server) {
 	// TODO: support enabling/disabling clustering.
-	server.mu.Lock()
+	s.mu.Lock()
 	tlsRequired := c.newValue.TLSConfig != nil
-	server.routeInfo.TLSRequired = tlsRequired
-	server.routeInfo.TLSVerify = tlsRequired
-	server.routeInfo.AuthRequired = c.newValue.Username != ""
+	s.routeInfo.TLSRequired = tlsRequired
+	s.routeInfo.TLSVerify = tlsRequired
+	s.routeInfo.AuthRequired = c.newValue.Username != ""
 	if c.newValue.NoAdvertise {
-		server.routeInfo.ClientConnectURLs = nil
-		server.routeInfo.WSConnectURLs = nil
+		s.routeInfo.ClientConnectURLs = nil
+		s.routeInfo.WSConnectURLs = nil
 	} else {
-		server.routeInfo.ClientConnectURLs = server.clientConnectURLs
-		server.routeInfo.WSConnectURLs = server.websocket.connectURLs
+		s.routeInfo.ClientConnectURLs = s.clientConnectURLs
+		s.routeInfo.WSConnectURLs = s.websocket.connectURLs
 	}
-	server.setRouteInfoHostPortAndIP()
-	server.mu.Unlock()
-	server.Noticef("Reloaded: cluster")
+	s.setRouteInfoHostPortAndIP()
+	s.mu.Unlock()
+	if c.newValue.Name != "" && c.newValue.Name != s.ClusterName() {
+		s.setClusterName(c.newValue.Name)
+	}
+	s.Noticef("Reloaded: cluster")
 	if tlsRequired && c.newValue.TLSConfig.InsecureSkipVerify {
-		server.Warnf(clusterTLSInsecureWarning)
+		s.Warnf(clusterTLSInsecureWarning)
 	}
 }
 

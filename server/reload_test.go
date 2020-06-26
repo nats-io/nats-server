@@ -1762,6 +1762,31 @@ func TestConfigReloadClusterNoAdvertise(t *testing.T) {
 	}
 }
 
+func TestConfigReloadClusterName(t *testing.T) {
+	s, _, conf := runReloadServerWithContent(t, []byte(`
+		listen: "0.0.0.0:-1"
+		cluster: {
+			name: "abc"
+			listen: "0.0.0.0:-1"
+		}
+	`))
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	// Update config with a new cluster name.
+	reloadUpdateConfig(t, s, conf, `
+	listen: "0.0.0.0:-1"
+	cluster: {
+		name: "xyz"
+		listen: "0.0.0.0:-1"
+	}
+	`)
+
+	if s.ClusterName() != "xyz" {
+		t.Fatalf("Expected update clustername of \"xyz\", got %q", s.ClusterName())
+	}
+}
+
 func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
 	s, _, conf := runReloadServerWithContent(t, []byte(`max_subs: 1`))
 	defer os.Remove(conf)
