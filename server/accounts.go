@@ -489,15 +489,19 @@ func (a *Account) TotalSubs() int {
 // for the given `subject`. Works only for literal subjects.
 // TODO: Add support for wildcards
 func (a *Account) SubscriptionInterest(subject string) bool {
-	var interest bool
+	return a.Interest(subject) > 0
+}
+
+// Interest returns the number of subscriptions for a given subject that match.
+func (a *Account) Interest(subject string) int {
+	var nms int
 	a.mu.RLock()
 	if a.sl != nil {
-		if res := a.sl.Match(subject); len(res.psubs)+len(res.qsubs) > 0 {
-			interest = true
-		}
+		res := a.sl.Match(subject)
+		nms = len(res.psubs) + len(res.qsubs)
 	}
 	a.mu.RUnlock()
-	return interest
+	return nms
 }
 
 // addClient keeps our accounting of local active clients or leafnodes updated.

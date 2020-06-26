@@ -52,15 +52,17 @@ const leafNodeReconnectAfterPermViolation = 30 * time.Second
 const leafNodeLoopDetectionSubjectPrefix = "$LDS."
 
 type leaf struct {
-	// Used to suppress sub and unsub interest. Same as routes but our audience
-	// here is tied to this leaf node. This will hold all subscriptions except this
-	// leaf nodes. This represents all the interest we want to send to the other side.
-	smap map[string]int32
 	// We have any auth stuff here for solicited connections.
 	remote *leafNodeCfg
 	// isSpoke tells us what role we are playing.
 	// Used when we receive a connection but otherside tells us they are a hub.
 	isSpoke bool
+	// remoteCluster is when we are a hub but the spoke leafnode is part of a cluster.
+	remoteCluster string
+	// Used to suppress sub and unsub interest. Same as routes but our audience
+	// here is tied to this leaf node. This will hold all subscriptions except this
+	// leaf nodes. This represents all the interest we want to send to the other side.
+	smap map[string]int32
 	// This map will contain all the subscriptions that have been added to the smap
 	// during initLeafNodeSmapAndSendSubs. It is short lived and is there to avoid
 	// race between processing of a sub where sub is added to account sublist but
@@ -452,12 +454,13 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))`)
 
 // Lock should be held entering here.
-func (c *client) sendLeafConnect(tlsRequired bool) {
+func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
-		TLS:  tlsRequired,
-		Name: c.srv.info.ID,
-		Hub:  c.leaf.remote.Hub,
+		TLS:     tlsRequired,
+		Name:    c.srv.info.ID,
+		Hub:     c.leaf.remote.Hub,
+		Cluster: clusterName,
 	}
 
 	// Check for credentials first, that will take precedence..
@@ -648,6 +651,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	if !solicited {
 		s.generateNonce(nonce[:])
 	}
+	clusterName := s.info.Cluster
 	s.mu.Unlock()
 
 	// Grab lock
@@ -750,7 +754,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Lock()
 		}
 
-		c.sendLeafConnect(tlsRequired)
+		c.sendLeafConnect(clusterName, tlsRequired)
 		c.Debugf("Remote leafnode connect msg sent")
 
 	} else {
@@ -1025,14 +1029,16 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 }
 
 type leafConnectInfo struct {
-	JWT  string `json:"jwt,omitempty"`
-	Sig  string `json:"sig,omitempty"`
-	User string `json:"user,omitempty"`
-	Pass string `json:"pass,omitempty"`
-	TLS  bool   `json:"tls_required"`
-	Comp bool   `json:"compression,omitempty"`
-	Name string `json:"name,omitempty"`
-	Hub  bool   `json:"is_hub,omitempty"`
+	JWT     string `json:"jwt,omitempty"`
+	Sig     string `json:"sig,omitempty"`
+	User    string `json:"user,omitempty"`
+	Pass    string `json:"pass,omitempty"`
+	TLS     bool   `json:"tls_required"`
+	Comp    bool   `json:"compression,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Hub     bool   `json:"is_hub,omitempty"`
+	Cluster string `json:"cluster,omitempty"`
+
 	// Just used to detect wrong connection attempts.
 	Gateway string `json:"gateway,omitempty"`
 }
@@ -1075,6 +1081,11 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.isSpoke = true
 	}
 
+	// The soliciting side is part of a cluster.
+	if proto.Cluster != "" {
+		c.leaf.remoteCluster = proto.Cluster
+	}
+
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.
 	s.sendPermsInfo(c)
@@ -1091,6 +1102,14 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	s.sendLeafNodeConnect(c.acc)
 
 	return nil
+}
+
+// Returns the remote cluster name. This is set only once so does not require a lock.
+func (c *client) remoteCluster() string {
+	if c.leaf == nil {
+		return ""
+	}
+	return c.leaf.remoteCluster
 }
 
 // Sends back an info block to the soliciting leafnode to let it know about
@@ -1262,6 +1281,10 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 	acc.mu.RUnlock()
 
 	for _, ln := range leafs {
+		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
+		if sub.origin != nil && string(sub.origin) == ln.remoteCluster() {
+			continue
+		}
 		ln.updateSmap(sub, delta)
 	}
 }
@@ -1451,6 +1474,11 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
 		return nil
+	}
+
+	// If we have an origin cluster associated mark that in the sub.
+	if rc := c.remoteCluster(); rc != _EMPTY_ {
+		sub.origin = []byte(rc)
 	}
 
 	// Like Routes, we store local subs by account and subject and optionally queue name.
@@ -1846,4 +1874,17 @@ func (c *client) setLeafConnectDelayIfSoliciting(delay time.Duration) (string, t
 	accName := c.acc.Name
 	c.mu.Unlock()
 	return accName, delay
+}
+
+// updatedSolicitedLeafnodes will disconnect any solicited leafnodes such
+// that the reconnect will establish the proper origin cluster for the hub.
+func (s *Server) updatedSolicitedLeafnodes() {
+	for _, c := range s.leafs {
+		c.mu.Lock()
+		shouldClose := c.leaf != nil && c.leaf.remote != nil
+		c.mu.Unlock()
+		if shouldClose {
+			c.closeConnection(ClusterNameConflict)
+		}
+	}
 }

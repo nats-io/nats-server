@@ -787,10 +787,12 @@ func TestLeafNodeLoop(t *testing.T) {
 
 func TestLeafNodeLoopFromDAG(t *testing.T) {
 	// We want B & C to point to A, A itself does not point to any other server.
+	// We need to cancel clustering since now this will suppress on its own.
 	oa := DefaultOptions()
 	oa.ServerName = "A"
 	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oa.LeafNode.Port = -1
+	oa.Cluster = ClusterOpts{}
 	sa := RunServer(oa)
 	defer sa.Shutdown()
 
@@ -802,6 +804,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	ob.LeafNode.Port = -1
 	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
+	ob.Cluster = ClusterOpts{}
 	sb := RunServer(ob)
 	defer sb.Shutdown()
 
@@ -816,6 +819,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	oc.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}, {URLs: []*url.URL{ub}}}
 	oc.LeafNode.connDelay = 100 * time.Millisecond // Allow logger to be attached before connecting.
+	oc.Cluster = ClusterOpts{}
 	sc := RunServer(oc)
 
 	lc := &captureErrorLogger{errCh: make(chan string, 10)}
@@ -1460,7 +1464,6 @@ func TestLeafNodeTmpClients(t *testing.T) {
 }
 
 func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
-
 	accName := "MyAccount"
 	acc := NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
@@ -1552,5 +1555,98 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 				t.Fatalf("Expected account %q, got %v", accName, accname)
 			}
 		})
+	}
+}
+
+func TestLeafNodeOriginClusterInfo(t *testing.T) {
+	hopts := DefaultOptions()
+	hopts.ServerName = "hub"
+	hopts.LeafNode.Port = -1
+
+	hub := RunServer(hopts)
+	defer hub.Shutdown()
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [ { url: "nats://127.0.0.1:%d" } ]
+		}
+	`, hopts.LeafNode.Port)))
+
+	defer os.Remove(conf)
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoLog, opts.NoSigs = true, true
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	// Check the info on the leadnode client in the hub.
+	grabLeaf := func() *client {
+		var l *client
+		hub.mu.Lock()
+		for _, l = range hub.leafs {
+			break
+		}
+		hub.mu.Unlock()
+		return l
+	}
+
+	l := grabLeaf()
+	if rc := l.remoteCluster(); rc != "" {
+		t.Fatalf("Expected an empty remote cluster, got %q", rc)
+	}
+
+	s.Shutdown()
+
+	// Now make our leafnode part of a cluster.
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [ { url: "nats://127.0.0.1:%d" } ]
+		}
+		cluster {
+			name: "abc"
+			listen: "127.0.0.1:-1"
+		}
+	`, hopts.LeafNode.Port)))
+
+	defer os.Remove(conf)
+	opts, err = ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	opts.NoLog, opts.NoSigs = true, true
+
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	l = grabLeaf()
+	if rc := l.remoteCluster(); rc != "abc" {
+		t.Fatalf("Expected a remote cluster name of \"abc\", got %q", rc)
+	}
+	pcid := l.cid
+
+	// Now make sure that if we update our cluster name, simulating the settling
+	// of dynamic cluster names between competing servers.
+	s.setClusterName("xyz")
+	// Make sure we disconnect and reconnect.
+	checkLeafNodeConnectedCount(t, s, 0)
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, hub)
+
+	l = grabLeaf()
+	if rc := l.remoteCluster(); rc != "xyz" {
+		t.Fatalf("Expected a remote cluster name of \"xyz\", got %q", rc)
+	}
+	// Make sure we reconnected and have a new CID.
+	if l.cid == pcid {
+		t.Fatalf("Expected a different id, got the same")
 	}
 }

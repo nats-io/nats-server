@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -53,6 +54,10 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 	// By default headers should be true.
 	if !info.Headers {
 		t.Fatalf("Expected to have headers on by default")
+	}
+	// Leafnode origin cluster support.
+	if !info.LNOC {
+		t.Fatalf("Expected to have leafnode origin cluster support")
 	}
 }
 
@@ -825,7 +830,7 @@ func TestNewRouteProcessRoutedMsgs(t *testing.T) {
 	matches := expectMsgs(1)
 	checkMsg(t, matches[0], "foo", "1", "", "2", "ok")
 
-	// Now send in a RMSG to the route witha reply and make sure its delivered to the client.
+	// Now send in a RMSG to the route with a reply and make sure its delivered to the client.
 	routeSend("RMSG $G foo reply 2\r\nok\r\nPING\r\n")
 	routeExpect(pongRe)
 
@@ -1714,4 +1719,117 @@ func TestNewRouteLargeDistinctQueueSubscribers(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
+	content := `
+	listen: 127.0.0.1:-1
+	cluster { name: xyz, listen: 127.0.0.1:-1 }
+	leafnodes { listen: 127.0.0.1:-1 }
+	no_sys_acc: true
+	`
+	conf := createConfFile(t, []byte(content))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	gacc, _ := s.LookupAccount("$G")
+
+	lcontent := `
+	listen: 127.0.0.1:-1
+	cluster { name: ln1, listen: 127.0.0.1:-1 }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	no_sys_acc: true
+	`
+	lconf := createConfFile(t, []byte(fmt.Sprintf(lcontent, opts.LeafNode.Port)))
+	defer os.Remove(lconf)
+
+	ln, _ := RunServerWithConfig(lconf)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	lgacc, _ := ln.LookupAccount("$G")
+
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+
+	routeID := "LNOC:22"
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
+
+	pingPong := func() {
+		t.Helper()
+		routeSend("PING\r\n")
+		routeExpect(pongRe)
+	}
+
+	info := checkInfoMsg(t, rc)
+	info.ID = routeID
+	info.LNOC = true
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeExpect(rsubRe)
+	pingPong()
+
+	// Make sure it can process and LS+
+	routeSend("LS+ ln1 $G foo\r\n")
+	pingPong()
+
+	if !gacc.SubscriptionInterest("foo") {
+		t.Fatalf("Expected interest on \"foo\"")
+	}
+
+	// This should not have been sent to the leafnode since same origin cluster.
+	time.Sleep(10 * time.Millisecond)
+	if lgacc.SubscriptionInterest("foo") {
+		t.Fatalf("Did not expect interest on \"foo\"")
+	}
+
+	// Create a connection on the leafnode server.
+	nc, err := nats.Connect(ln.ClientURL())
+	if err != nil {
+		t.Fatalf("Unexpected error connecting %v", err)
+	}
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync("bar")
+	// Let it propagate to the main server
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if !gacc.SubscriptionInterest("bar") {
+			return fmt.Errorf("No interest")
+		}
+		return nil
+	})
+	// For "bar"
+	routeExpect(rlsubRe)
+
+	// Now pretend like we send a message to the main server over the
+	// route but from the same origin cluster, should not be delivered
+	// to the leafnode.
+
+	// Make sure it can process and LMSG.
+	// LMSG for routes is like HMSG with an origin cluster before the account.
+	routeSend("LMSG ln1 $G bar 0 2\r\nok\r\n")
+	pingPong()
+
+	// Let it propagate if not properly truncated.
+	time.Sleep(10 * time.Millisecond)
+	if n, _, _ := sub.Pending(); n != 0 {
+		t.Fatalf("Should not have received the message on bar")
+	}
+
+	// Try one with all the bells and whistles.
+	routeSend("LMSG ln1 $G foo + reply bar baz 0 2\r\nok\r\n")
+	pingPong()
+
+	// Let it propagate if not properly truncated.
+	time.Sleep(10 * time.Millisecond)
+	if n, _, _ := sub.Pending(); n != 0 {
+		t.Fatalf("Should not have received the message on bar")
+	}
 }

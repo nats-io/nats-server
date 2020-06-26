@@ -315,6 +315,7 @@ var (
 	lsubRe    = regexp.MustCompile(`LS\+\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
 	lunsubRe  = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)?\r\n`)
 	lmsgRe    = regexp.MustCompile(`(?:(?:LMSG\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
+	rlsubRe   = regexp.MustCompile(`LS\+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
 )
 
 const (

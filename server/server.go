@@ -83,6 +83,7 @@ type Info struct {
 	// Route Specific
 	Import *SubjectPermission `json:"import,omitempty"`
 	Export *SubjectPermission `json:"export,omitempty"`
+	LNOC   bool               `json:"lnoc,omitempty"`
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
@@ -434,11 +435,13 @@ func (s *Server) setClusterName(name string) {
 	}
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
+	s.updatedSolicitedLeafnodes()
 	s.mu.Unlock()
 	if resetCh != nil {
 		resetCh <- struct{}{}
 	}
 	s.Noticef("Cluster name updated to %s", name)
+
 }
 
 // Return whether the cluster name is dynamic.

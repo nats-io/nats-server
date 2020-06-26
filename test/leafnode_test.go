@@ -3145,7 +3145,6 @@ func TestLeafNodeCycleWithSolicited(t *testing.T) {
 		atomic.AddInt32(&requestsReceived, 1)
 		m.Respond([]byte("22"))
 	})
-	nc.Flush()
 
 	nc = clientForCluster(t, cb)
 	defer nc.Close()
@@ -3153,11 +3152,34 @@ func TestLeafNodeCycleWithSolicited(t *testing.T) {
 		atomic.AddInt32(&requestsReceived, 1)
 		m.Respond([]byte("33"))
 	})
-	nc.Flush()
 
 	// Soliciting cluster, both solicited connected to the "A" cluster
 	sc := runSolicitLeafCluster(t, "SC", ca, ca)
 	defer shutdownCluster(sc)
+
+	checkInterest := func(s *server.Server, subject string) bool {
+		t.Helper()
+		acc, _ := s.LookupAccount("$G")
+		return acc.SubscriptionInterest(subject)
+	}
+
+	waitForInterest := func(subject string, servers ...*server.Server) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			for _, s := range servers {
+				if !checkInterest(s, subject) {
+					return fmt.Errorf("No interest")
+				}
+			}
+			return nil
+		})
+	}
+
+	waitForInterest("request",
+		sc.servers[0], sc.servers[1],
+		ca.servers[0], ca.servers[1], ca.servers[2],
+		cb.servers[0], cb.servers[1], cb.servers[2],
+	)
 
 	// Connect a client to a random server in sc
 	createClientAndRequest := func(c *cluster) (*nats.Conn, *nats.Subscription) {
@@ -3761,4 +3783,243 @@ func TestLeafNodeQueueSubscriberUnsubscribe(t *testing.T) {
 	}
 	// Make sure we receive nothing...
 	expectNothing(t, lc)
+}
+
+func TestLeafNodeOriginClusterSingleHub(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	c1 := `
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1 }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf1 := createConfFile(t, []byte(fmt.Sprintf(c1, opts.LeafNode.Port)))
+	defer os.Remove(lconf1)
+
+	ln1, lopts1 := RunServerWithConfig(lconf1)
+	defer ln1.Shutdown()
+
+	c2 := `
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1, routes = [ nats-route://127.0.0.1:%d] }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf2 := createConfFile(t, []byte(fmt.Sprintf(c2, lopts1.Cluster.Port, opts.LeafNode.Port)))
+	defer os.Remove(lconf2)
+
+	ln2, _ := RunServerWithConfig(lconf2)
+	defer ln2.Shutdown()
+
+	ln3, _ := RunServerWithConfig(lconf2)
+	defer ln3.Shutdown()
+
+	checkClusterFormed(t, ln1, ln2, ln3)
+	checkLeafNodeConnections(t, s, 3)
+
+	// So now we are setup with 3 solicited leafnodes all connected to a hub.
+	// We will create two clients, one on each leafnode server.
+	nc1, err := nats.Connect(ln1.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(ln2.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	checkInterest := func(s *server.Server, subject string) bool {
+		t.Helper()
+		acc, _ := s.LookupAccount("$G")
+		return acc.SubscriptionInterest(subject)
+	}
+
+	waitForInterest := func(subject string, servers ...*server.Server) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			for _, s := range servers {
+				if !checkInterest(s, subject) {
+					return fmt.Errorf("No interest")
+				}
+			}
+			return nil
+		})
+	}
+
+	subj := "foo.bar"
+
+	sub, _ := nc2.SubscribeSync(subj)
+	waitForInterest(subj, ln1, ln2, ln3, s)
+
+	// Make sure we truncated the subscription bouncing through the hub and back to other leafnodes.
+	for _, s := range []*server.Server{ln1, ln3} {
+		acc, _ := s.LookupAccount("$G")
+		if nms := acc.Interest(subj); nms != 1 {
+			t.Fatalf("Expected only one active subscription, got %d", nms)
+		}
+	}
+
+	// Send a message.
+	nc1.Publish(subj, nil)
+	nc1.Flush()
+	// Wait to propagate
+	time.Sleep(25 * time.Millisecond)
+
+	// Make sure we only get it once.
+	if n, _, _ := sub.Pending(); n != 1 {
+		t.Fatalf("Expected only one message, got %d", n)
+	}
+}
+
+func TestLeafNodeOriginCluster(t *testing.T) {
+	ca := createClusterWithName(t, "A", 3)
+	defer shutdownCluster(ca)
+
+	c1 := `
+	server_name: L1
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1 }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf1 := createConfFile(t, []byte(fmt.Sprintf(c1, ca.opts[0].LeafNode.Port)))
+	defer os.Remove(lconf1)
+
+	ln1, lopts1 := RunServerWithConfig(lconf1)
+	defer ln1.Shutdown()
+
+	c2 := `
+	server_name: L2
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1, routes = [ nats-route://127.0.0.1:%d] }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf2 := createConfFile(t, []byte(fmt.Sprintf(c2, lopts1.Cluster.Port, ca.opts[1].LeafNode.Port)))
+	defer os.Remove(lconf2)
+
+	ln2, _ := RunServerWithConfig(lconf2)
+	defer ln2.Shutdown()
+
+	c3 := `
+	server_name: L3
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1, routes = [ nats-route://127.0.0.1:%d] }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf3 := createConfFile(t, []byte(fmt.Sprintf(c3, lopts1.Cluster.Port, ca.opts[2].LeafNode.Port)))
+	defer os.Remove(lconf3)
+
+	ln3, _ := RunServerWithConfig(lconf3)
+	defer ln3.Shutdown()
+
+	checkClusterFormed(t, ln1, ln2, ln3)
+	checkLeafNodeConnections(t, ca.servers[0], 1)
+	checkLeafNodeConnections(t, ca.servers[1], 1)
+	checkLeafNodeConnections(t, ca.servers[2], 1)
+
+	// So now we are setup with 3 solicited leafnodes connected to different servers in the hub cluster.
+	// We will create two clients, one on each leafnode server.
+	nc1, err := nats.Connect(ln1.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(ln2.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	checkInterest := func(s *server.Server, subject string) bool {
+		t.Helper()
+		acc, _ := s.LookupAccount("$G")
+		return acc.SubscriptionInterest(subject)
+	}
+
+	waitForInterest := func(subject string, servers ...*server.Server) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			for _, s := range servers {
+				if !checkInterest(s, subject) {
+					return fmt.Errorf("No interest")
+				}
+			}
+			return nil
+		})
+	}
+
+	subj := "foo.bar"
+
+	sub, _ := nc2.SubscribeSync(subj)
+	waitForInterest(subj, ln1, ln2, ln3, ca.servers[0], ca.servers[1], ca.servers[2])
+
+	// Make sure we truncated the subscription bouncing through the hub and back to other leafnodes.
+	for _, s := range []*server.Server{ln1, ln3} {
+		acc, _ := s.LookupAccount("$G")
+		if nms := acc.Interest(subj); nms != 1 {
+			t.Fatalf("Expected only one active subscription, got %d", nms)
+		}
+	}
+
+	// Send a message.
+	nc1.Publish(subj, nil)
+	nc1.Flush()
+	// Wait to propagate
+	time.Sleep(25 * time.Millisecond)
+
+	// Make sure we only get it once.
+	if n, _, _ := sub.Pending(); n != 1 {
+		t.Fatalf("Expected only one message, got %d", n)
+	}
+	// eat the msg
+	sub.NextMsg(time.Second)
+
+	// Now create interest on the hub side. This will draw the message from a leafnode
+	// to the hub. We want to make sure that message does not bounce back to other leafnodes.
+	nc3, err := nats.Connect(ca.servers[0].ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc3.Close()
+
+	wcSubj := "foo.*"
+	wcsub, _ := nc3.SubscribeSync(wcSubj)
+	// This is a placeholder that we can use to check all interest has propagated.
+	nc3.SubscribeSync("bar")
+	waitForInterest("bar", ln1, ln2, ln3, ca.servers[0], ca.servers[1], ca.servers[2])
+
+	// Send another message.
+	m := nats.NewMsg(subj)
+	m.Header.Add("Accept-Encoding", "json")
+	m.Header.Add("Authorization", "s3cr3t")
+	m.Data = []byte("Hello Headers!")
+
+	nc1.PublishMsg(m)
+	nc1.Flush()
+	// Wait to propagate
+	time.Sleep(25 * time.Millisecond)
+
+	// Make sure we only get it once.
+	if n, _, _ := sub.Pending(); n != 1 {
+		t.Fatalf("Expected only one message, got %d", n)
+	}
+	// Also for wc
+	if n, _, _ := wcsub.Pending(); n != 1 {
+		t.Fatalf("Expected only one message, got %d", n)
+	}
+
+	// grab the msg
+	msg, _ := sub.NextMsg(time.Second)
+	if !bytes.Equal(m.Data, msg.Data) {
+		t.Fatalf("Expected the payloads to match, wanted %q, got %q", m.Data, msg.Data)
+	}
+	if len(msg.Header) != 2 {
+		t.Fatalf("Expected 2 header entries, got %d", len(msg.Header))
+	}
+	if msg.Header.Get("Authorization") != "s3cr3t" {
+		t.Fatalf("Expected auth header to match, wanted %q, got %q", "s3cr3t", msg.Header.Get("Authorization"))
+	}
 }
