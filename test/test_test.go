@@ -1,4 +1,4 @@
-// Copyright 2016-2018 The NATS Authors
+// Copyright 2016-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,6 +14,7 @@
 package test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"golang.org/x/time/rate"
 )
 
 func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
@@ -41,13 +43,15 @@ func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
 	}
 }
 
-// Slow Proxy - really crude but works for introducing simple RTT delays.
+// Slow Proxy - For introducing RTT and BW constraints.
 type slowProxy struct {
 	listener net.Listener
 	conns    []net.Conn
+	opts     *server.Options
+	u        string
 }
 
-func newSlowProxy(latency time.Duration, opts *server.Options) (*slowProxy, *server.Options) {
+func newSlowProxy(rtt time.Duration, up, down int, opts *server.Options) *slowProxy {
 	saddr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	hp := net.JoinHostPort("127.0.0.1", "0")
 	l, e := net.Listen("tcp", hp)
@@ -66,22 +70,44 @@ func newSlowProxy(latency time.Duration, opts *server.Options) (*slowProxy, *ser
 			panic("Can't connect to server")
 		}
 		sp.conns = append(sp.conns, client, server)
-		go sp.loop(latency, client, server)
-		go sp.loop(latency, server, client)
+		go sp.loop(rtt, up, client, server)
+		go sp.loop(rtt, down, server, client)
 	}()
-	sopts := &server.Options{Host: "127.0.0.1", Port: port}
-	return sp, sopts
+	sp.opts = &server.Options{Host: "127.0.0.1", Port: port}
+	sp.u = fmt.Sprintf("nats://%s:%d", sp.opts.Host, sp.opts.Port)
+	return sp
 }
 
-func (sp *slowProxy) loop(latency time.Duration, r, w net.Conn) {
-	delay := latency / 2
-	for {
-		var buf [1024]byte
+func (sp *slowProxy) Opts() *server.Options {
+	return sp.opts
+}
+
+func (sp *slowProxy) ClientURL() string {
+	return sp.u
+}
+
+func (sp *slowProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
+	delay := rtt / 2
+	const rbl = 1024
+	var buf [rbl]byte
+	ctx := context.Background()
+
+	rl := rate.NewLimiter(rate.Limit(tbw), rbl)
+
+	for fr := true; ; {
+		sr := time.Now()
 		n, err := r.Read(buf[:])
 		if err != nil {
 			return
 		}
-		time.Sleep(delay)
+		// RTT delays
+		if fr || time.Since(sr) > 2*time.Millisecond {
+			fr = false
+			time.Sleep(delay)
+		}
+		if err := rl.WaitN(ctx, n); err != nil {
+			return
+		}
 		if _, err = w.Write(buf[:n]); err != nil {
 			return
 		}

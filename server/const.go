@@ -92,7 +92,7 @@ const (
 	LEN_CR_LF = len(CR_LF)
 
 	// DEFAULT_FLUSH_DEADLINE is the write/flush deadlines.
-	DEFAULT_FLUSH_DEADLINE = 2 * time.Second
+	DEFAULT_FLUSH_DEADLINE = 10 * time.Second
 
 	// DEFAULT_HTTP_PORT is the default monitoring port.
 	DEFAULT_HTTP_PORT = 8222

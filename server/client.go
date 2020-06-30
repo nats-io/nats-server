@@ -868,7 +868,7 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 			continue
 		}
 
-		if budget > 0 && cp.flushOutbound() {
+		if budget > 0 && cp.out.lft < 2*budget && cp.flushOutbound() {
 			budget -= cp.out.lft
 		} else {
 			cp.flushSignal()
