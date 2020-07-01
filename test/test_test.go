@@ -47,7 +47,7 @@ func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
 type slowProxy struct {
 	listener net.Listener
 	conns    []net.Conn
-	opts     *server.Options
+	o        *server.Options
 	u        string
 }
 
@@ -73,16 +73,17 @@ func newSlowProxy(rtt time.Duration, up, down int, opts *server.Options) *slowPr
 		go sp.loop(rtt, up, client, server)
 		go sp.loop(rtt, down, server, client)
 	}()
-	sp.opts = &server.Options{Host: "127.0.0.1", Port: port}
-	sp.u = fmt.Sprintf("nats://%s:%d", sp.opts.Host, sp.opts.Port)
+	sp.o = &server.Options{Host: "127.0.0.1", Port: port}
+	sp.u = fmt.Sprintf("nats://%s:%d", sp.o.Host, sp.o.Port)
 	return sp
 }
 
-func (sp *slowProxy) Opts() *server.Options {
-	return sp.opts
+func (sp *slowProxy) opts() *server.Options {
+	return sp.o
 }
 
-func (sp *slowProxy) ClientURL() string {
+//lint:ignore U1000 Referenced in norace_test.go
+func (sp *slowProxy) clientURL() string {
 	return sp.u
 }
 
@@ -114,7 +115,7 @@ func (sp *slowProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
 	}
 }
 
-func (sp *slowProxy) Stop() {
+func (sp *slowProxy) stop() {
 	if sp.listener != nil {
 		sp.listener.Close()
 		sp.listener = nil

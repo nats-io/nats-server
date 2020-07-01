@@ -732,9 +732,9 @@ func TestNoRaceSlowProxy(t *testing.T) {
 	bwTarget := 10 * 1024 * 1024 / 8 // 10mbit
 
 	sp := newSlowProxy(rttTarget, bwTarget, bwTarget, &opts)
-	defer sp.Stop()
+	defer sp.stop()
 
-	nc, err := nats.Connect(sp.ClientURL())
+	nc, err := nats.Connect(sp.clientURL())
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
