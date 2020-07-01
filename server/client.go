@@ -192,43 +192,42 @@ type client struct {
 	// when processing inbound messages and requires the lock we want to
 	// check only when needed. This is set/get using atomic, so needs to
 	// be memory aligned.
-	cgwrt   int32
-	mpay    int32
-	msubs   int32
-	mcl     int32
-	mu      sync.Mutex
-	kind    int
-	cid     uint64
-	opts    clientOpts
-	start   time.Time
-	nonce   []byte
-	pubKey  string
-	nc      net.Conn
-	ncs     string
-	out     outbound
-	srv     *Server
-	acc     *Account
-	user    *NkeyUser
-	host    string
-	port    uint16
-	subs    map[string]*subscription
-	perms   *permissions
-	replies map[string]*resp
-	mperms  *msgDeny
-	darray  []string
-	in      readCache
-	pcd     map[*client]struct{}
-	atmr    *time.Timer
-	ping    pinfo
-	msgb    [msgScratchSize]byte
-	last    time.Time
+	cgwrt int32
+	kind  int
+	srv   *Server
+	acc   *Account
+	perms *permissions
+	in    readCache
 	parseState
-	headers bool
+	opts       clientOpts
+	rrTracking *rrTracking
+	mpay       int32
+	msubs      int32
+	mcl        int32
+	mu         sync.Mutex
+	cid        uint64
+	start      time.Time
+	nonce      []byte
+	pubKey     string
+	nc         net.Conn
+	ncs        string
+	out        outbound
+	user       *NkeyUser
+	host       string
+	port       uint16
+	subs       map[string]*subscription
+	replies    map[string]*resp
+	mperms     *msgDeny
+	darray     []string
+	pcd        map[*client]struct{}
+	atmr       *time.Timer
+	ping       pinfo
+	msgb       [msgScratchSize]byte
+	last       time.Time
+	headers    bool
 
 	rtt      time.Duration
 	rttStart time.Time
-
-	rrTracking *rrTracking
 
 	route *route
 	gw    *gateway
