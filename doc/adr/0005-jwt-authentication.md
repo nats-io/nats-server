@@ -14,9 +14,11 @@ flow in a way which clients can safely handle.  This architecture design note
 provides for a check which clients can safely add now, to be compatible with
 such future changes and to be proof against certain attacks.
 
-Upon connection, the NATS server sends an `INFO` line with various fields; the
-NATS client processes that, performs a TLS upgrade if appropriate, and then
-sends a `CONNECT` line with various fields.
+Upon connection, in classic mode the NATS server sends an `INFO` line with
+various fields; the NATS client processes that, performs a TLS upgrade if
+appropriate, and then sends a `CONNECT` line with various fields.
+Some protocol variations adjust this (for websockets, for example) but this is
+the core flow which all normal NATS protocol clients are expected to support.
 
 At present, if a server supports JWT authentication then it generates a strong
 random nonce, presented as the `nonce` field of the `INFO` line.  If a client
@@ -29,7 +31,7 @@ contains the base64-encoded result of signing the nonce.
 This protects the server against replay attacks, since a strongly random nonce
 is chosen each time.  It provides no inherent protection against
 man-in-the-middle attacks, relying instead upon TLS checks.  The server can
-enforce mutual-TLS, but not all deployment scenarios encoforce this.
+enforce mutual-TLS, but not all deployment scenarios enforce this.
 
 A well-behaved client with a competent TLS stack, configured to only proceed
 with TLS, will verify the NATS server's certificate before proceeding, so will
