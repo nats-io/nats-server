@@ -23,6 +23,7 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,12 +74,21 @@ func (c *testAsyncClient) parseAndClose(proto []byte) {
 }
 
 func createClientAsync(ch chan *client, s *Server, cli net.Conn) {
-	s.grWG.Add(1)
+	// Normally, those type of clients are used against non running servers.
+	// However, some don't, which would then cause the writeLoop to be
+	// started twice for the same client (since createClient() start both
+	// read and write loop if it is detected as running).
+	startWriteLoop := !s.isRunning()
+	if startWriteLoop {
+		s.grWG.Add(1)
+	}
 	go func() {
 		c := s.createClient(cli, nil)
 		// Must be here to suppress +OK
 		c.opts.Verbose = false
-		go c.writeLoop()
+		if startWriteLoop {
+			go c.writeLoop()
+		}
 		ch <- c
 	}()
 }
@@ -164,6 +174,23 @@ func checkAccClientsCount(t *testing.T, acc *Account, expected int) {
 		}
 		return nil
 	})
+}
+
+func TestAsyncClientWithRunningServer(t *testing.T) {
+	o := DefaultOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	buf := make([]byte, 1000000)
+	n := runtime.Stack(buf, true)
+
+	writeLoopTxt := fmt.Sprintf("writeLoop(%p)", c.client)
+	if count := strings.Count(string(buf[:n]), writeLoopTxt); count != 1 {
+		t.Fatalf("writeLoop for client started more than once: %v", count)
+	}
 }
 
 func TestClientCreateAndInfo(t *testing.T) {
