@@ -104,6 +104,20 @@ written today into that future.  Future-proofing is impossible in the general
 case but that should not prevent reasonable accommodation now for sufficiently
 plausible futures.
 
+An impediment to any future which requires signing "something else" is that
+the "something else" can be provided today in a nonce field and a compliant
+client will sign it.
+
+Moving the signature to another field instead of `sig` might help with
+protocol handling but provides no security benefit.  A MitM can present
+todays' clients with a `nonce` consisting of whatever needs to be signed, take
+the `sig` field from the compliant client, and put that data into whatever
+field the legitimate future server expects.
+
+Our core problem requiring action now is that we will currently sign anything,
+without structure, so future structured signatures can be coerced from
+today's unstructured signers.
+
 
 ## Proposal
 
