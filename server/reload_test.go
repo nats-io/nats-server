@@ -149,7 +149,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		MaxConn:        65536,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
-		WriteDeadline:  2 * time.Second,
+		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
 			Name: "abc",
 			Host: "127.0.0.1",
@@ -223,7 +223,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		MaxConn:        65536,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
-		WriteDeadline:  2 * time.Second,
+		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
 			Name: "abc",
 			Host: "127.0.0.1",
@@ -289,7 +289,7 @@ func TestConfigReload(t *testing.T) {
 		MaxConn:        65536,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
-		WriteDeadline:  2 * time.Second,
+		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
 			Name: "abc",
 			Host: "127.0.0.1",

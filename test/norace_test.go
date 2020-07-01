@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -717,4 +718,62 @@ func TestNoRaceLeafNodeSmapUpdate(t *testing.T) {
 
 	// Expect that many LS-
 	checkLS("LS- ", ns)
+}
+
+func TestNoRaceSlowProxy(t *testing.T) {
+	t.Skip()
+
+	opts := DefaultTestOptions
+	opts.Port = -1
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	rttTarget := 22 * time.Millisecond
+	bwTarget := 10 * 1024 * 1024 / 8 // 10mbit
+
+	sp := newSlowProxy(rttTarget, bwTarget, bwTarget, &opts)
+	defer sp.stop()
+
+	nc, err := nats.Connect(sp.clientURL())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer nc.Close()
+
+	doRTT := func() time.Duration {
+		t.Helper()
+		const samples = 5
+		var total time.Duration
+		for i := 0; i < samples; i++ {
+			rtt, _ := nc.RTT()
+			total += rtt
+		}
+		return total / samples
+	}
+
+	rtt := doRTT()
+	if rtt < rttTarget || rtt > (rttTarget*3/2) {
+		t.Fatalf("rtt is out of range, target of %v, actual %v", rttTarget, rtt)
+	}
+
+	// Now test send BW.
+	const payloadSize = 64 * 1024
+	var payload [payloadSize]byte
+	rand.Read(payload[:])
+
+	// 5MB total.
+	bytesSent := (5 * 1024 * 1024)
+	toSend := bytesSent / payloadSize
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		nc.Publish("z", payload[:])
+	}
+	nc.Flush()
+	tt := time.Since(start)
+	bps := float64(bytesSent) / tt.Seconds()
+	min, max := float64(bwTarget)*0.8, float64(bwTarget)*1.25
+	if bps < min || bps > max {
+		t.Fatalf("bps is off, target is %v, actual is %v", bwTarget, bps)
+	}
 }
