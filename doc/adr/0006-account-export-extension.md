@@ -59,7 +59,7 @@ ADY4IBKZZ7VTHGO5SBGUJ6BK3WMHTOQU347M7MUFD5J632EKTQCKPZRS {
 
 ## nats-server runtime behavior
 
-As is currently the case for for all forms of import/export, both account jwt are downloaded.
+As is currently the case for all forms of import/export, both account jwt are downloaded.
 The server checks if the importing subject matches the export. 
 It also checks if the importing account's id matches the n-th subject token specified by the exporting accounts `account_token_position`.
 This ensures that no other account can publish/subscribe to that particular subject.
