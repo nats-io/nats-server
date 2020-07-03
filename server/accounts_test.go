@@ -1208,7 +1208,6 @@ func TestAccountAddServiceImportRace(t *testing.T) {
 		go func(i int) {
 			err := barAcc.AddServiceImport(fooAcc, fmt.Sprintf("foo.%d", i), "")
 			errCh <- err // nil is a valid value.
-
 		}(i)
 	}
 
@@ -1391,12 +1390,9 @@ func TestCrossAccountRequestReply(t *testing.T) {
 		t.Fatalf("Error adding account service export to client foo: %v", err)
 	}
 
-	// Test addServiceImport to make sure it requires accounts, and literalsubjects for both from and to subjects.
+	// Test addServiceImport to make sure it requires accounts.
 	if err := cbar.acc.AddServiceImport(nil, "foo", "test.request"); err != ErrMissingAccount {
 		t.Fatalf("Expected ErrMissingAccount but received %v.", err)
-	}
-	if err := cbar.acc.AddServiceImport(fooAcc, "*", "test.request"); err != ErrInvalidSubject {
-		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
 	}
 	if err := cbar.acc.AddServiceImport(fooAcc, "foo", "test..request."); err != ErrInvalidSubject {
 		t.Fatalf("Expected ErrInvalidSubject but received %v.", err)
@@ -2334,6 +2330,443 @@ func TestMultipleStreamImportsWithSameSubject(t *testing.T) {
 	readMsg()
 }
 
+func TestAccountBasicRouteMapping(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
+	acc.AddMapping("foo", "bar")
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	fsub, _ := nc.SubscribeSync("foo")
+	bsub, _ := nc.SubscribeSync("bar")
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		if n, _, _ := sub.Pending(); n != expected {
+			t.Fatalf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+		}
+	}
+
+	checkPending(fsub, 0)
+	checkPending(bsub, 1)
+
+	acc.RemoveMapping("foo")
+
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending(fsub, 1)
+	checkPending(bsub, 1)
+}
+
+func TestAccountWildcardRouteMapping(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
+
+	addMap := func(src, dest string) {
+		t.Helper()
+		if err := acc.AddMapping(src, dest); err != nil {
+			t.Fatalf("Error adding mapping: %v", err)
+		}
+	}
+
+	addMap("foo.*.*", "bar.$2.$1")
+	addMap("bar.*.>", "baz.$1.>")
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	pub := func(subj string) {
+		t.Helper()
+		err := nc.Publish(subj, nil)
+		if err == nil {
+			err = nc.Flush()
+		}
+		if err != nil {
+			t.Fatalf("Error publishing: %v", err)
+		}
+	}
+
+	fsub, _ := nc.SubscribeSync("foo.>")
+	bsub, _ := nc.SubscribeSync("bar.>")
+	zsub, _ := nc.SubscribeSync("baz.>")
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		if n, _, _ := sub.Pending(); n != expected {
+			t.Fatalf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+		}
+	}
+
+	pub("foo.1.2")
+
+	checkPending(fsub, 0)
+	checkPending(bsub, 1)
+	checkPending(zsub, 0)
+}
+
+func TestAccountRouteMappingChangesAfterClientStart(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create the client first then add in mapping.
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	nc.Flush()
+
+	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
+	acc.AddMapping("foo", "bar")
+
+	fsub, _ := nc.SubscribeSync("foo")
+	bsub, _ := nc.SubscribeSync("bar")
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		if n, _, _ := sub.Pending(); n != expected {
+			t.Fatalf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+		}
+	}
+
+	checkPending(fsub, 0)
+	checkPending(bsub, 1)
+
+	acc.RemoveMapping("foo")
+
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending(fsub, 1)
+	checkPending(bsub, 1)
+}
+
+func TestAccountSimpleWeightedRouteMapping(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
+	acc.AddWeightedMappings("foo", &MapDest{"bar", 50})
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	fsub, _ := nc.SubscribeSync("foo")
+	bsub, _ := nc.SubscribeSync("bar")
+
+	total := 500
+	for i := 0; i < total; i++ {
+		nc.Publish("foo", nil)
+	}
+	nc.Flush()
+
+	fpending, _, _ := fsub.Pending()
+	bpending, _, _ := bsub.Pending()
+
+	h := total / 2
+	tp := h / 5
+	min, max := h-tp, h+tp
+	if fpending < min || fpending > max {
+		t.Fatalf("Expected about %d msgs, got %d and %d", h, fpending, bpending)
+	}
+}
+
+func TestAccountMultiWeightedRouteMappings(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
+
+	// Check failures for bad weights.
+	shouldErr := func(rds ...*MapDest) {
+		t.Helper()
+		if acc.AddWeightedMappings("foo", rds...) == nil {
+			t.Fatalf("Expected an error, got none")
+		}
+	}
+	shouldNotErr := func(rds ...*MapDest) {
+		t.Helper()
+		if err := acc.AddWeightedMappings("foo", rds...); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	shouldErr(&MapDest{"bar", 150})
+	shouldNotErr(&MapDest{"bar", 50})
+	shouldNotErr(&MapDest{"bar", 50}, &MapDest{"baz", 50})
+	// Same dest duplicated should error.
+	shouldErr(&MapDest{"bar", 50}, &MapDest{"bar", 50})
+	// total over 100
+	shouldErr(&MapDest{"bar", 50}, &MapDest{"baz", 60})
+
+	acc.RemoveMapping("foo")
+
+	// 20 for original, you can leave it off will be auto-added.
+	shouldNotErr(&MapDest{"bar", 50}, &MapDest{"baz", 30})
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	fsub, _ := nc.SubscribeSync("foo")
+	bsub, _ := nc.SubscribeSync("bar")
+	zsub, _ := nc.SubscribeSync("baz")
+
+	// For checking later.
+	rds := []struct {
+		sub *nats.Subscription
+		w   uint8
+	}{
+		{fsub, 20},
+		{bsub, 50},
+		{zsub, 30},
+	}
+
+	total := 5000
+	for i := 0; i < total; i++ {
+		nc.Publish("foo", nil)
+	}
+	nc.Flush()
+
+	for _, rd := range rds {
+		pending, _, _ := rd.sub.Pending()
+		expected := total / int(100/rd.w)
+		tp := expected / 5 // 20%
+		min, max := expected-tp, expected+tp
+		if pending < min || pending > max {
+			t.Fatalf("Expected about %d msgs for %q, got %d", expected, rd.sub.Subject, pending)
+		}
+	}
+}
+
+func TestGlobalAccountRouteMappingsConfiguration(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	mappings = {
+		foo: bar
+		foo.*: [ { dest: bar.v1.$1, weight: 40% }, { destination: baz.v2.$1, weight: 20 } ]
+		bar.*.*: RAB.$2.$1
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	bsub, _ := nc.SubscribeSync("bar")
+	fsub1, _ := nc.SubscribeSync("bar.v1.>")
+	fsub2, _ := nc.SubscribeSync("baz.v2.>")
+	zsub, _ := nc.SubscribeSync("RAB.>")
+	f22sub, _ := nc.SubscribeSync("foo.*")
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		if n, _, _ := sub.Pending(); n != expected {
+			t.Fatalf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+		}
+	}
+
+	nc.Publish("foo", nil)
+	nc.Publish("bar.11.22", nil)
+
+	total := 500
+	for i := 0; i < total; i++ {
+		nc.Publish("foo.22", nil)
+	}
+	nc.Flush()
+
+	checkPending(bsub, 1)
+	checkPending(zsub, 1)
+
+	fpending, _, _ := f22sub.Pending()
+	fpending1, _, _ := fsub1.Pending()
+	fpending2, _, _ := fsub2.Pending()
+
+	if fpending1 < fpending2 || fpending < fpending2 {
+		t.Fatalf("Loadbalancing seems off for the foo.* mappings: %d and %d and %d", fpending, fpending1, fpending2)
+	}
+}
+
+func TestAccountRouteMappingsConfiguration(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	accounts {
+		synadia {
+			users = [{user: derek, password: foo}]
+			mappings = {
+				foo: bar
+				foo.*: [ { dest: bar.v1.$1, weight: 40% }, { destination: baz.v2.$1, weight: 20 } ]
+				bar.*.*: RAB.$2.$1
+		    }
+		}
+	}
+    `))
+	defer os.Remove(cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	// We test functionality above, so for this one just make sure we have mappings for the account.
+	acc, _ := s.LookupAccount("synadia")
+	if !acc.hasMappings() {
+		t.Fatalf("Account %q does not have mappings", "synadia")
+	}
+}
+
+func TestAccountServiceImportWithRouteMappings(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+    accounts {
+      foo {
+        users = [{user: derek, password: foo}]
+        exports = [{service: "request"}]
+      }
+      bar {
+        users = [{user: ivan, password: bar}]
+        imports = [{service: {account: "foo", subject:"request"}}]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	acc, _ := s.LookupAccount("foo")
+	acc.AddMapping("request", "request.v2")
+
+	// Create the service client first.
+	ncFoo := natsConnect(t, fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
+	defer ncFoo.Close()
+
+	fooSub := natsSubSync(t, ncFoo, "request.v2")
+
+	// Requestor
+	ncBar := natsConnect(t, fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port))
+	defer ncBar.Close()
+
+	ncBar.Publish("request", nil)
+	ncBar.Flush()
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if n, _, _ := fooSub.Pending(); n != 1 {
+			return fmt.Errorf("Expected a request for %q, but got %d", fooSub.Subject, n)
+		}
+		return nil
+	})
+}
+
+func TestAccountImportsWithWildcardSupport(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+    accounts {
+      foo {
+        users = [{user: derek, password: foo}]
+        exports = [
+          { service: "request.*" }
+          { stream: "events.>" }
+          { stream: "info.*.*.>" }
+        ]
+      }
+      bar {
+        users = [{user: ivan, password: bar}]
+        imports = [
+          { service: {account: "foo", subject:"request.*"}, to:"my.request.*"}
+          { stream:  {account: "foo", subject:"events.>"}, to:"foo.events.>"}
+          { stream:  {account: "foo", subject:"info.*.*.>"}, to:"foo.info.$2.$1.>"}
+        ]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	ncFoo := natsConnect(t, fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
+	defer ncFoo.Close()
+
+	ncBar := natsConnect(t, fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port))
+	defer ncBar.Close()
+
+	// Create subscriber for the service endpoint in foo.
+	_, err := ncFoo.QueueSubscribe("request.*", "t22", func(m *nats.Msg) {
+		if m.Subject != "request.22" {
+			t.Fatalf("Expected literal subject for request, got %q", m.Subject)
+		}
+		m.Respond([]byte("yes!"))
+	})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	ncFoo.Flush()
+
+	// Now test service import.
+	resp, err := ncBar.Request("my.request.22", []byte("yes?"), time.Second)
+	if err != nil {
+		t.Fatalf("Expected a response")
+	}
+	if string(resp.Data) != "yes!" {
+		t.Fatalf("Expected a response of %q, got %q", "yes!", resp.Data)
+	}
+
+	// Now test stream imports.
+	esub, _ := ncBar.SubscribeSync("foo.events.*") // subset
+	isub, _ := ncBar.SubscribeSync("foo.info.>")
+	ncBar.Flush()
+
+	// Now publish some stream events.
+	ncFoo.Publish("events.22", nil)
+	ncFoo.Publish("info.11.22.bar", nil)
+	ncFoo.Flush()
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if n, _, _ := sub.Pending(); n != expected {
+				return fmt.Errorf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+			}
+			return nil
+		})
+	}
+
+	checkPending(esub, 1)
+	checkPending(isub, 1)
+
+	// Now check to make sure the subjects are correct etc.
+	m, err := esub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Subject != "foo.events.22" {
+		t.Fatalf("Incorrect subject for stream import, expected %q, got %q", "foo.events.22", m.Subject)
+	}
+
+	m, err = isub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Subject != "foo.info.22.11.bar" {
+		t.Fatalf("Incorrect subject for stream import, expected %q, got %q", "foo.info.22.11.bar", m.Subject)
+	}
+}
+
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)
@@ -2402,4 +2835,57 @@ func TestSamplingHeader(t *testing.T) {
 
 	test(true, http.Header{"traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}})
 	test(false, http.Header{"traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"}})
+}
+
+func TestSubjectTransforms(t *testing.T) {
+	shouldErr := func(src, dest string) {
+		t.Helper()
+		if _, err := newTransform(src, dest); err != ErrBadSubject {
+			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
+		}
+	}
+
+	// Must be valid subjects.
+	shouldErr("foo", "")
+	shouldErr("foo..", "bar")
+
+	// Wildcards are allowed in src, but must be matched by token placements on the other side.
+	// e.g. foo.* -> bar.$1.
+	// Need to have as many pwcs as placements on other side.
+	shouldErr("foo.*", "bar.*")
+	shouldErr("foo.*", "bar.$2")   // Bad pwc token identifier
+	shouldErr("foo.*", "bar.$1.>") // fwcs have to match.
+	shouldErr("foo.>", "bar.baz")  // fwcs have to match.
+	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
+
+	shouldBeOK := func(src, dest string) *transform {
+		t.Helper()
+		tr, err := newTransform(src, dest)
+		if err != nil {
+			t.Fatalf("Got an error %v for src=%q and dest=%q", err, src, dest)
+		}
+		return tr
+	}
+
+	shouldBeOK("foo", "bar")
+	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1")
+	shouldBeOK("baz.>", "mybaz.>")
+
+	shouldMatch := func(src, dest, sample, expected string) {
+		t.Helper()
+		tr := shouldBeOK(src, dest)
+		s, err := tr.match(sample)
+		if err != nil {
+			t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
+		}
+		if s != expected {
+			t.Fatalf("Dest does not match what was expected. Got %q, expected %q", s, expected)
+		}
+	}
+
+	shouldMatch("foo", "bar", "foo", "bar")
+	shouldMatch("foo.*.bar.*.baz", "req.$2.$1", "foo.A.bar.B.baz", "req.B.A")
+	shouldMatch("baz.>", "my.pre.>", "baz.1.2.3", "my.pre.1.2.3")
+	shouldMatch("baz.>", "foo.bar.>", "baz.1.2.3", "foo.bar.1.2.3")
+	shouldMatch("*", "foo.bar.$1", "foo", "foo.bar.foo")
 }

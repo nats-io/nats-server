@@ -2035,16 +2035,12 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	imports := []ExtImport{}
 	for _, v := range a.imports.streams {
-		to := ""
-		if v.prefix != "" {
-			to = v.prefix + "." + v.from
-		}
 		imports = append(imports, ExtImport{
 			Import: jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Stream,
-				To:      jwt.Subject(to),
+				To:      jwt.Subject(v.to),
 			},
 			Invalid: v.invalid,
 		})

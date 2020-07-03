@@ -64,6 +64,7 @@ type Account struct {
 	lqws         map[string]int32
 	usersRevoked map[string]int64
 	actsRevoked  map[string]int64
+	mappings     []*mapping
 	lleafs       []*client
 	imports      importMap
 	exports      exportMap
@@ -100,8 +101,11 @@ type sconns struct {
 type streamImport struct {
 	acc     *Account
 	from    string
-	prefix  string
+	to      string
+	tr      *transform
+	rtr     *transform
 	claim   *jwt.Import
+	usePub  bool
 	invalid bool
 }
 
@@ -114,12 +118,13 @@ type serviceImport struct {
 	from        string
 	to          string
 	exsub       string
+	tr          *transform
 	ts          int64
 	rt          ServiceRespType
 	latency     *serviceLatency
 	m1          *ServiceLatency
 	rc          *client
-	hasWC       bool
+	usePub      bool
 	response    bool
 	invalid     bool
 	share       bool
@@ -209,7 +214,6 @@ func NewAccount(name string) *Account {
 		limits:   limits{-1, -1, -1, -1},
 		eventIds: nuid.New(),
 	}
-
 	return a
 }
 
@@ -488,6 +492,244 @@ func (a *Account) TotalSubs() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return int(a.sl.Count())
+}
+
+// MapDest is for mapping published subjects for clients.
+type MapDest struct {
+	Subject string
+	Weight  uint8
+}
+
+// destination is for internal representation for a weighted mapped destination.
+type destination struct {
+	tr     *transform
+	weight uint8
+}
+
+// mapping is an internal entry for mapping subjects.
+type mapping struct {
+	src   string
+	wc    bool
+	dests []*destination
+}
+
+// AddMapping adds in a simple route mapping from src subject to dest subject
+// for inbound client messages.
+func (a *Account) AddMapping(src, dest string) error {
+	return a.AddWeightedMappings(src, &MapDest{dest, 100})
+}
+
+// AddWeightedMapping will add in a weighted mappings for the destinations.
+// TODO(dlc) - Allow cluster filtering
+func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !IsValidSubject(src) {
+		return ErrBadSubject
+	}
+
+	m := &mapping{src: src, wc: subjectHasWildcard(src), dests: make([]*destination, 0, len(dests)+1)}
+	seen := make(map[string]struct{})
+
+	var tw uint8
+	for _, d := range dests {
+		if _, ok := seen[d.Subject]; ok {
+			return fmt.Errorf("duplicate entry for %q", d.Subject)
+		}
+		seen[d.Subject] = struct{}{}
+		if d.Weight > 100 {
+			return fmt.Errorf("individual weights need to be <= 100")
+		}
+		tw += d.Weight
+		if tw > 100 {
+			return fmt.Errorf("total weight needs to be <= 100")
+		}
+		if !IsValidSubject(d.Subject) {
+			return ErrBadSubject
+		}
+		tr, err := newTransform(src, d.Subject)
+		if err != nil {
+			return err
+		}
+
+		m.dests = append(m.dests, &destination{tr, d.Weight})
+	}
+
+	// Auto add in original at weight if all entries weight does not total to 100.
+	if tw != 100 {
+		dest := src
+		if m.wc {
+			// We need to make the appropriate markers for the wildcards etc.
+			dest = transformTokenize(dest)
+		}
+		tr, err := newTransform(src, dest)
+		if err != nil {
+			return err
+		}
+		m.dests = append(m.dests, &destination{tr, 100 - tw})
+	}
+	sort.Slice(m.dests, func(i, j int) bool { return m.dests[i].weight < m.dests[j].weight })
+
+	var lw uint8
+	for _, d := range m.dests {
+		d.weight += lw
+		lw = d.weight
+	}
+	// Replace an old one if it exists.
+	for i, m := range a.mappings {
+		if m.src == src {
+			a.mappings[i] = m
+			return nil
+		}
+	}
+	// If we did not replace add to the end.
+	a.mappings = append(a.mappings, m)
+
+	return nil
+}
+
+// Helper function to tokenize subjects with partial wildcards into formal transform destinations.
+// e.g. foo.*.* -> foo.$1.$2
+func transformTokenize(subject string) string {
+	// We need to make the appropriate markers for the wildcards etc.
+	i := 1
+	var nda []string
+	for _, token := range strings.Split(subject, tsep) {
+		if token == "*" {
+			nda = append(nda, fmt.Sprintf("$%d", i))
+			i++
+		} else {
+			nda = append(nda, token)
+		}
+	}
+	return strings.Join(nda, tsep)
+}
+
+func transformUntokenize(subject string) (string, []string) {
+	var phs []string
+	var nda []string
+
+	for _, token := range strings.Split(subject, tsep) {
+		if len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9' {
+			phs = append(phs, token)
+			nda = append(nda, "*")
+		} else {
+			nda = append(nda, token)
+		}
+	}
+	return strings.Join(nda, tsep), phs
+}
+
+// RemoveMapping will remove an existing mapping.
+func (a *Account) RemoveMapping(src string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, m := range a.mappings {
+		if m.src == src {
+			// Swap last one into this spot. Its ok to change order.
+			a.mappings[i] = a.mappings[len(a.mappings)-1]
+			a.mappings[len(a.mappings)-1] = nil // gc
+			a.mappings = a.mappings[:len(a.mappings)-1]
+			return true
+		}
+	}
+	return false
+}
+
+// Indicates we have mapping entries.
+func (a *Account) hasMappings() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	n := len(a.mappings)
+	a.mu.RUnlock()
+	return n > 0
+}
+
+// This performs the logic to map to a new dest subject based on mappings.
+// Should only be called from processInboundClientMsg or service import processing.
+func (a *Account) selectMappedSubject(dest string) (string, bool) {
+	a.mu.RLock()
+	if len(a.mappings) == 0 {
+		a.mu.RUnlock()
+		return dest, false
+	}
+
+	// In case we have to tokenize for subset matching.
+	tsa := [32]string{}
+	tts := tsa[:0]
+
+	var m *mapping
+	for _, rm := range a.mappings {
+		if !rm.wc && rm.src == dest {
+			m = rm
+			break
+		} else {
+			// tokenize and reuse for subset matching.
+			if len(tts) == 0 {
+				start := 0
+				subject := dest
+				for i := 0; i < len(subject); i++ {
+					if subject[i] == btsep {
+						tts = append(tts, subject[start:i])
+						start = i + 1
+					}
+				}
+				tts = append(tts, subject[start:])
+			}
+			if isSubsetMatch(tts, rm.src) {
+				m = rm
+				break
+			}
+		}
+	}
+
+	if m == nil {
+		a.mu.RUnlock()
+		return dest, false
+	}
+
+	// The selected destination for the mapping.
+	var d *destination
+
+	// Optimize for single entry case.
+	if len(m.dests) == 1 && m.dests[0].weight == 100 {
+		d = m.dests[0]
+	} else {
+		if a.prand == nil {
+			a.makeRand()
+		}
+		w := uint8(a.prand.Int31n(100))
+		for _, rm := range m.dests {
+			if w <= rm.weight {
+				d = rm
+				break
+			}
+		}
+	}
+
+	if d != nil {
+		if len(d.tr.dtpi) == 0 {
+			dest = d.tr.dest
+		} else if nsubj, err := d.tr.transform(tts); err == nil {
+			dest = nsubj
+		}
+	}
+
+	a.mu.RUnlock()
+	return dest, true
+}
+
+// Small helper function.
+// Read lock assumed held.
+func (a *Account) makeRand() {
+	a.mu.RUnlock()
+	a.mu.Lock()
+	a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	a.mu.Unlock()
+	a.mu.RLock()
 }
 
 // SubscriptionInterest returns true if this account has a matching subscription
@@ -1040,15 +1282,14 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 	if destination == nil {
 		return ErrMissingAccount
 	}
-	// Empty means use from. Also means we can use wildcards since we are not doing remapping.
-	if !IsValidSubject(from) || (to != "" && (!IsValidLiteralSubject(from) || !IsValidLiteralSubject(to))) {
-		return ErrInvalidSubject
-	}
-
 	// Empty means use from.
 	if to == "" {
 		to = from
 	}
+	if !IsValidSubject(from) || !IsValidSubject(to) {
+		return ErrInvalidSubject
+	}
+
 	// First check to see if the account has authorized us to route to the "to" subject.
 	if !destination.checkServiceImportAuthorized(a, to, imClaim) {
 		return ErrServiceImportAuthorization
@@ -1332,9 +1573,27 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	if to == "" {
 		to = from
 	}
-	hasWC := subjectHasWildcard(from)
+	// Check to see if we have a wildcard
+	var (
+		usePub bool
+		tr     *transform
+		err    error
+	)
+	if subjectHasWildcard(to) {
+		// If to and from match, then we use the published subject.
+		if to == from {
+			usePub = true
+		} else {
+			// Create a transform
+			if tr, err = newTransform(from, transformTokenize(to)); err != nil {
+				a.mu.Unlock()
+				return nil, fmt.Errorf("failed to create mapping transform for service import subject %q to %q: %v",
+					from, to, err)
+			}
+		}
+	}
 
-	si := &serviceImport{dest, claim, se, nil, from, to, "", 0, rt, lat, nil, nil, hasWC, false, false, false, false, nil}
+	si := &serviceImport{dest, claim, se, nil, from, to, "", tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, nil}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
@@ -1748,7 +2007,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, 0, rt, nil, nil, nil, false, true, false, osi.share, false, nil}
+	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)
@@ -1800,12 +2059,51 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 			prefix = prefix + string(btsep)
 		}
 	}
+	return a.AddMappedStreamImportWithClaim(account, from, prefix+from, imClaim)
+}
+
+// AddMappedStreamImport helper for AddMappedStreamImportWithClaim
+func (a *Account) AddMappedStreamImport(account *Account, from, to string) error {
+	return a.AddMappedStreamImportWithClaim(account, from, to, nil)
+}
+
+// AddMappedStreamImportWithClaim will add in the stream import from a specific account with optional token.
+func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to string, imClaim *jwt.Import) error {
+	if account == nil {
+		return ErrMissingAccount
+	}
+
+	// First check to see if the account has authorized export of the subject.
+	if !account.checkStreamImportAuthorized(a, from, imClaim) {
+		return ErrStreamImportAuthorization
+	}
+
+	if to == "" {
+		to = from
+	}
+	var (
+		usePub bool
+		tr     *transform
+		err    error
+	)
+	if subjectHasWildcard(from) {
+		if to == from {
+			usePub = true
+		} else {
+			// Create a transform
+			if tr, err = newTransform(from, transformTokenize(to)); err != nil {
+				return fmt.Errorf("failed to create mapping transform for stream import subject %q to %q: %v",
+					from, to, err)
+			}
+		}
+	}
+
 	a.mu.Lock()
 	if a.isStreamImportDuplicate(account, from) {
 		a.mu.Unlock()
 		return ErrStreamImportDuplicate
 	}
-	a.imports.streams = append(a.imports.streams, &streamImport{account, from, prefix, imClaim, false})
+	a.imports.streams = append(a.imports.streams, &streamImport{account, from, to, tr, nil, imClaim, usePub, false})
 	a.mu.Unlock()
 	return nil
 }
@@ -2150,10 +2448,10 @@ func (a *Account) checkStreamImportsEqual(b *Account) bool {
 	// Load the b imports into a map index by what we are looking for.
 	bm := make(map[string]*streamImport, len(b.imports.streams))
 	for _, bim := range b.imports.streams {
-		bm[bim.acc.Name+bim.from+bim.prefix] = bim
+		bm[bim.acc.Name+bim.from+bim.to] = bim
 	}
 	for _, aim := range a.imports.streams {
-		if _, ok := bm[aim.acc.Name+aim.from+aim.prefix]; !ok {
+		if _, ok := bm[aim.acc.Name+aim.from+aim.to]; !ok {
 			return false
 		}
 	}
@@ -3280,4 +3578,186 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	}
 	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
 	return nil
+}
+
+func (dr *CacheDirAccResolver) Reload() error {
+	return dr.DirAccResolver.Reload()
+}
+
+// Transforms for arbitrarily mapping subjects from one to another for maps, tees and filters.
+// These can also be used for proper mapping on wildcard exports/imports.
+// These will be grouped and caching and locking are assumed to be in the upper layers.
+type transform struct {
+	src, dest string
+	dtoks     []string
+	stoks     []string
+	dtpi      []int8
+}
+
+// Helper to pull raw place holder index. Returns -1 if not a place holder.
+func placeHolderIndex(token string) int {
+	if len(token) > 1 && token[0] == '$' {
+		var tp int
+		if n, err := fmt.Sscanf(token, "$%d", &tp); err == nil && n == 1 {
+			return tp
+		}
+	}
+	return -1
+}
+
+// newTransform will create a new transform checking the src and dest subjects for accuracy.
+func newTransform(src, dest string) (*transform, error) {
+	// Both entries need to be valid subjects.
+	sv, stokens, npwcs, hasFwc := subjectInfo(src)
+	dv, dtokens, dnpwcs, dHasFwc := subjectInfo(dest)
+
+	// Make sure both are valid, match fwc if present and there are no pwcs in the dest subject.
+	if !sv || !dv || dnpwcs > 0 || hasFwc != dHasFwc {
+		return nil, ErrBadSubject
+	}
+
+	var dtpi []int8
+
+	// If the src has partial wildcards then the dest needs to have the token place markers.
+	if npwcs > 0 || hasFwc {
+		// We need to count to make sure that the dest has token holders for the pwcs.
+		sti := make(map[int]int)
+		for i, token := range stokens {
+			if len(token) == 1 && token[0] == pwc {
+				sti[len(sti)+1] = i
+			}
+		}
+
+		nphs := 0
+		for _, token := range dtokens {
+			tp := placeHolderIndex(token)
+			if tp >= 0 {
+				if tp > npwcs {
+					return nil, ErrBadSubject
+				}
+				nphs++
+				// Now build up our runtime mapping from dest to source tokens.
+				dtpi = append(dtpi, int8(sti[tp]))
+			} else {
+				dtpi = append(dtpi, -1)
+			}
+		}
+
+		if nphs != npwcs {
+			return nil, ErrBadSubject
+		}
+	}
+
+	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi}, nil
+}
+
+// match will take a literal published subject that is associated with a client and will match and transform
+// the subject if possible.
+// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
+func (tr *transform) match(subject string) (string, error) {
+	// Tokenize the subject. This should always be a literal subject.
+	tsa := [32]string{}
+	tts := tsa[:0]
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, subject[start:])
+	if !isValidLiteralSubject(tts) {
+		return "", ErrBadSubject
+	}
+
+	if isSubsetMatch(tts, tr.src) {
+		return tr.transform(tts)
+	}
+	return "", ErrNoTransforms
+}
+
+// Do not need to match, just transform.
+func (tr *transform) transformSubject(subject string) (string, error) {
+	// Tokenize the subject.
+	tsa := [32]string{}
+	tts := tsa[:0]
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, subject[start:])
+	return tr.transform(tts)
+}
+
+// Do a transform on the subject to the dest subject.
+func (tr *transform) transform(tokens []string) (string, error) {
+	if len(tr.dtpi) == 0 {
+		return tr.dest, nil
+	}
+
+	var b strings.Builder
+	var token string
+
+	// We need to walk destination tokens and create the mapped subject pulling tokens from src.
+	// This is slow and that is ok, transforms should have caching layer in front for mapping transforms
+	// and export/import semantics with streams and services.
+	li := len(tr.dtpi) - 1
+	for i, index := range tr.dtpi {
+		// <0 means use destination token.
+		if index < 0 {
+			token = tr.dtoks[i]
+			// Break if fwc
+			if len(token) == 1 && token[0] == fwc {
+				break
+			}
+		} else {
+			// >= 0 means use source map index to figure out which source token to pull.
+			token = tokens[index]
+		}
+		b.WriteString(token)
+		if i < li {
+			b.WriteByte(btsep)
+		}
+	}
+
+	// We may have more source tokens available. This happens with ">".
+	if tr.dtoks[len(tr.dtoks)-1] == ">" {
+		for sli, i := len(tokens)-1, len(tr.stoks)-1; i < len(tokens); i++ {
+			b.WriteString(tokens[i])
+			if i < sli {
+				b.WriteByte(btsep)
+			}
+		}
+	}
+	return b.String(), nil
+}
+
+// Reverse a transform.
+func (tr *transform) reverse() *transform {
+	if len(tr.dtpi) == 0 {
+		rtr, _ := newTransform(tr.dest, tr.src)
+		return rtr
+	}
+	// If we are here we need to dynamically get the correct reverse
+	// of this transform.
+	nsrc, phs := transformUntokenize(tr.dest)
+	var nda []string
+	for _, token := range tr.stoks {
+		if token == "*" {
+			if len(phs) == 0 {
+				// TODO(dlc) - Should not happen
+				return nil
+			}
+			nda = append(nda, phs[0])
+			phs = phs[1:]
+		} else {
+			nda = append(nda, token)
+		}
+	}
+	ndest := strings.Join(nda, tsep)
+	rtr, _ := newTransform(nsrc, ndest)
+	return rtr
 }

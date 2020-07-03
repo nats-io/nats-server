@@ -322,6 +322,13 @@ const (
 	replyPermLimit       = 4096
 )
 
+// Represent read cache booleans with a bitmask
+type readCacheFlag uint16
+
+const (
+	hasMappings readCacheFlag = 1 << iota // For account subject mappings.
+)
+
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
 	// These are for clients who are bound to a single account.
@@ -344,6 +351,24 @@ type readCache struct {
 
 	rsz int32 // Read buffer size
 	srs int32 // Short reads, used for dynamic buffer resizing.
+
+	// These are for readcache flags to avoind locks.
+	flags readCacheFlag
+}
+
+// set the flag (would be equivalent to set the boolean to true)
+func (rcf *readCacheFlag) set(c readCacheFlag) {
+	*rcf |= c
+}
+
+// clear the flag (would be equivalent to set the boolean to false)
+func (rcf *readCacheFlag) clear(c readCacheFlag) {
+	*rcf &= ^c
+}
+
+// isSet returns true if the flag is set, false otherwise
+func (rcf readCacheFlag) isSet(c readCacheFlag) bool {
+	return rcf&c != 0
 }
 
 const (
@@ -947,6 +972,7 @@ func (c *client) readLoop(pre []byte) {
 			c.mcl = int32(opts.MaxControlLine)
 		}
 	}
+
 	// Check the per-account-cache for closed subscriptions
 	cpacc := c.kind == ROUTER || c.kind == GATEWAY
 	// Last per-account-cache check for closed subscriptions
@@ -975,7 +1001,7 @@ func (c *client) readLoop(pre []byte) {
 		wsr.init()
 	}
 
-	// If we have a pre parse that first.
+	// If we have a pre buffer parse that first.
 	if len(pre) > 0 {
 		c.parse(pre)
 	}
@@ -1001,6 +1027,16 @@ func (c *client) readLoop(pre []byte) {
 			bufs[0] = b[:n]
 		}
 		start := time.Now()
+
+		// Check if the account has mappings and if so set the local readcache flag.
+		// We check here to make sure any changes such as config reload are reflected here.
+		if c.kind == CLIENT {
+			if c.acc.hasMappings() {
+				c.in.flags.set(hasMappings)
+			} else {
+				c.in.flags.clear(hasMappings)
+			}
+		}
 
 		// Clear inbound stats cache
 		c.in.msgs = 0
@@ -2302,6 +2338,12 @@ func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForwar
 	return sub, nil
 }
 
+// Used to pass stream import matches to addShadowSub
+type ime struct {
+	im  *streamImport
+	dyn bool
+}
+
 // If the client's account has stream imports and there are matches for
 // this subscription's subject, then add shadow subscriptions in the
 // other accounts that export this subject.
@@ -2311,29 +2353,25 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	}
 
 	var (
-		rims   [32]*streamImport
-		ims    = rims[:0]
-		rfroms [32]*streamImport
-		froms  = rfroms[:0]
+		_ims   [16]ime
+		ims    = _ims[:0]
 		tokens []string
 		tsa    [32]string
 		hasWC  bool
 	)
 
 	acc.mu.RLock()
-	// Loop over the import subjects. We have 3 scenarios. If we exact
-	// match or we know the proposed subject is a strict subset of the
-	// import we can subscribe to the subscription's subject directly.
-	// The third scenario is where the proposed subject has a wildcard
-	// and may not be an exact subset, but is a match. Therefore we have to
-	// subscribe to the import subject, not the subscription's subject.
+	// Loop over the import subjects. We have 3 scenarios. If we have an
+	// exact match or a superset match we should use the from field from
+	// the import. If we are a subset, we have to dynamically calculate
+	// the subject.
 	for _, im := range acc.imports.streams {
 		if im.invalid {
 			continue
 		}
 		subj := string(sub.subject)
-		if subj == im.prefix+im.from {
-			ims = append(ims, im)
+		if subj == im.to {
+			ims = append(ims, ime{im, false})
 			continue
 		}
 		if tokens == nil {
@@ -2352,36 +2390,24 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 			}
 			tokens = append(tokens, subj[start:])
 		}
-		if isSubsetMatch(tokens, im.prefix+im.from) {
-			ims = append(ims, im)
-		} else if hasWC {
-			if subjectIsSubsetMatch(im.prefix+im.from, subj) {
-				froms = append(froms, im)
-			}
+		if isSubsetMatch(tokens, im.to) {
+			ims = append(ims, ime{im, true})
+		} else if hasWC && subjectIsSubsetMatch(im.to, subj) {
+			ims = append(ims, ime{im, false})
 		}
 	}
 	acc.mu.RUnlock()
 
 	var shadow []*subscription
 
-	if len(ims) > 0 || len(froms) > 0 {
-		shadow = make([]*subscription, 0, len(ims)+len(froms))
+	if len(ims) > 0 {
+		shadow = make([]*subscription, 0, len(ims))
 	}
 
-	// Now walk through collected importMaps
-	for _, im := range ims {
+	// Now walk through collected stream imports that matched.
+	for _, ime := range ims {
 		// We will create a shadow subscription.
-		nsub, err := c.addShadowSub(sub, im, false)
-		if err != nil {
-			return err
-		}
-		shadow = append(shadow, nsub)
-	}
-	// Now walk through importMaps that we need to subscribe
-	// exactly to the "from" property.
-	for _, im := range froms {
-		// We will create a shadow subscription.
-		nsub, err := c.addShadowSub(sub, im, true)
+		nsub, err := c.addShadowSub(sub, &ime)
 		if err != nil {
 			return err
 		}
@@ -2398,17 +2424,26 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 }
 
 // Add in the shadow subscription.
-func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool) (*subscription, error) {
+func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error) {
+	im := ime.im
 	nsub := *sub // copy
 	nsub.im = im
-	if useFrom {
-		nsub.subject = []byte(im.from)
-	} else if im.prefix != "" {
-		// redo subject here to match subject in the publisher account space.
-		// Just remove prefix from what they gave us. That maps into other space.
-		nsub.subject = sub.subject[len(im.prefix):]
-	}
 
+	// Check if we need to change shadow subscription's subject.
+	if !im.usePub {
+		if ime.dyn {
+			if im.rtr == nil {
+				im.rtr = im.tr.reverse()
+			}
+			subj, err := im.rtr.transformSubject(string(nsub.subject))
+			if err != nil {
+				return nil, err
+			}
+			nsub.subject = []byte(subj)
+		} else {
+			nsub.subject = []byte(im.from)
+		}
+	}
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
 
 	if err := im.acc.sl.Insert(&nsub); err != nil {
@@ -2690,8 +2725,13 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// Leaf nodes are LMSG
 		mh[0] = 'L'
 		// Remap subject if its a shadow subscription, treat like a normal client.
-		if rt.sub.im != nil && rt.sub.im.prefix != "" {
-			mh = append(mh, rt.sub.im.prefix...)
+		if rt.sub.im != nil {
+			if rt.sub.im.tr != nil {
+				to, _ := rt.sub.im.tr.transformSubject(string(subj))
+				subj = []byte(to)
+			} else {
+				subj = []byte(rt.sub.im.to)
+			}
 		}
 	}
 	mh = append(mh, subj...)
@@ -3216,6 +3256,15 @@ func (c *client) processInboundMsg(msg []byte) {
 	}
 }
 
+// selectMappedSubject will chose the mapped subject based on the client's inbound subject.
+func (c *client) selectMappedSubject() bool {
+	nsubj, changed := c.acc.selectMappedSubject(string(c.pa.subject))
+	if changed {
+		c.pa.subject = []byte(nsubj)
+	}
+	return changed
+}
+
 // processInboundClientMsg is called to process an inbound msg from a client.
 func (c *client) processInboundClientMsg(msg []byte) bool {
 	// Update statistics
@@ -3226,6 +3275,11 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
+		return false
+	}
+
+	// Mostly under testing scenarios.
+	if c.srv == nil || c.acc == nil {
 		return false
 	}
 
@@ -3243,11 +3297,6 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 
 	if c.opts.Verbose {
 		c.sendOK()
-	}
-
-	// Mostly under testing scenarios.
-	if c.srv == nil || c.acc == nil {
-		return false
 	}
 
 	// Check if this client's gateway replies map is not empty
@@ -3468,9 +3517,17 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
 	to := si.to
-	if si.hasWC {
+	if si.tr != nil {
+		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
+		to, _ = si.tr.transformSubject(string(c.pa.subject))
+	} else if si.usePub {
 		to = string(c.pa.subject)
 	}
+
+	// Now check to see if this account has mappings that could affect the service import.
+	// Can't use non locked trick like in processInboundClientMsg, so just call into selectMappedSubject
+	// so we only lock once.
+	to, _ = si.acc.selectMappedSubject(to)
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
@@ -3645,10 +3702,16 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 		// Assume delivery subject is normal subject to this point.
 		dsubj = subj
-		// Check for stream import mapped subs. These apply to local subs only.
-		if sub.im != nil && sub.im.prefix != "" {
-			dsubj = append(_dsubj[:0], sub.im.prefix...)
-			dsubj = append(dsubj, subj...)
+		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
+		if sub.im != nil {
+			if sub.im.tr != nil {
+				to, _ := sub.im.tr.transformSubject(string(subj))
+				dsubj = append(_dsubj[:0], to...)
+			} else if sub.im.usePub {
+				dsubj = append(_dsubj[:0], subj...)
+			} else {
+				dsubj = append(_dsubj[:0], sub.im.to...)
+			}
 		}
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
@@ -3755,9 +3818,15 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// Assume delivery subject is normal subject to this point.
 			dsubj = subj
 			// Check for stream import mapped subs. These apply to local subs only.
-			if sub.im != nil && sub.im.prefix != "" {
-				dsubj = append(_dsubj[:0], sub.im.prefix...)
-				dsubj = append(dsubj, subj...)
+			if sub.im != nil {
+				if sub.im.tr != nil {
+					to, _ := sub.im.tr.transformSubject(string(subj))
+					dsubj = append(_dsubj[:0], to...)
+				} else if sub.im.usePub {
+					dsubj = append(_dsubj[:0], subj...)
+				} else {
+					dsubj = append(_dsubj[:0], sub.im.to...)
+				}
 			}
 
 			var rreply = reply

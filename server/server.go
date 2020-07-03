@@ -586,7 +586,17 @@ func (s *Server) configureAccounts() error {
 	// Check opts and walk through them. We need to copy them here
 	// so that we do not keep a real one sitting in the options.
 	for _, acc := range s.opts.Accounts {
-		a := acc.shallowCopy()
+		var a *Account
+		if acc.Name == globalAccountName {
+			a = s.gacc
+		} else {
+			a = acc.shallowCopy()
+		}
+		if acc.hasMappings() {
+			// For now just move and wipe from opts.Accounts version.
+			a.mappings = acc.mappings
+			acc.mappings = nil
+		}
 		acc.sl = nil
 		acc.clients = nil
 		s.registerAccountNoLock(a)
