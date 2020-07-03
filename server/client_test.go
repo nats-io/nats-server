@@ -185,12 +185,14 @@ func TestAsyncClientWithRunningServer(t *testing.T) {
 	defer c.close()
 
 	buf := make([]byte, 1000000)
-	n := runtime.Stack(buf, true)
-
 	writeLoopTxt := fmt.Sprintf("writeLoop(%p)", c.client)
-	if count := strings.Count(string(buf[:n]), writeLoopTxt); count != 1 {
-		t.Fatalf("writeLoop for client started more than once: %v", count)
-	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		n := runtime.Stack(buf, true)
+		if count := strings.Count(string(buf[:n]), writeLoopTxt); count != 1 {
+			return fmt.Errorf("writeLoop for client should have been started only once: %v", count)
+		}
+		return nil
+	})
 }
 
 func TestClientCreateAndInfo(t *testing.T) {

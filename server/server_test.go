@@ -401,16 +401,18 @@ func TestClientAdvertiseErrorOnStartup(t *testing.T) {
 	opts.ClientAdvertise = "addr:::123"
 	s := New(opts)
 	defer s.Shutdown()
-	dl := &DummyLogger{}
-	s.SetLogger(dl, false, false)
+	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
+	s.SetLogger(l, false, false)
 
 	// Expect this to return due to failure
 	s.Start()
-	dl.Lock()
-	msg := dl.msg
-	dl.Unlock()
-	if !strings.Contains(msg, "ClientAdvertise") {
-		t.Fatalf("Unexpected error: %v", msg)
+	select {
+	case msg := <-l.fatalCh:
+		if !strings.Contains(msg, "ClientAdvertise") {
+			t.Fatalf("Unexpected error: %v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Should have failed to start")
 	}
 }
 
