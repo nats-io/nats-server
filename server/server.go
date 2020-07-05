@@ -1390,18 +1390,24 @@ func (s *Server) Start() {
 
 	// Start up listen if we want to accept leaf node connections.
 	if opts.LeafNode.Port != 0 {
-		// Spin up the accept loop if needed
-		ch := make(chan struct{})
-		go s.leafNodeAcceptLoop(ch)
-		// This ensure that we have resolved or assigned the advertise
-		// address for the leafnode listener. We need that in StartRouting().
-		<-ch
+		// Will resolve or assign the advertise address for the leafnode listener.
+		// We need that in StartRouting().
+		s.startLeafNodeAcceptLoop()
 	}
 
 	// Solicit remote servers for leaf node connections.
 	if len(opts.LeafNode.Remotes) > 0 {
 		s.solicitLeafNodeRemotes(opts.LeafNode.Remotes)
 	}
+
+	// TODO (ik): I wanted to refactor this by starting the client
+	// accept loop first, that is, it would resolve listen spec
+	// in place, but start the accept-for-loop in a different go
+	// routine. This would get rid of the synchronization between
+	// this function and StartRouting, which I also would have wanted
+	// to refactor, but both AcceptLoop() and StartRouting() have
+	// been exported and not sure if that would break users using them.
+	// We could mark them as deprecated and remove in a release or two...
 
 	// The Routing routine needs to wait for the client listen
 	// port to be opened and potential ephemeral port selected.
@@ -1596,9 +1602,16 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	// Setup state that can enable shutdown
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
+		s.mu.Unlock()
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
@@ -1612,9 +1625,6 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	s.Noticef("Server id is %s", s.info.ID)
 	s.Noticef("Server is ready")
-
-	// Setup state that can enable shutdown
-	s.mu.Lock()
 
 	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
 	// to 0 at the beginning this function. So we need to get the actual port
@@ -1635,33 +1645,48 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Keep track of client connect URLs. We may need them later.
 	s.clientConnectURLs = s.getClientConnectURLs()
 	s.listener = l
-	s.mu.Unlock()
 
-	// Let the caller know that we are ready
-	close(clr)
-	clr = nil
-
-	tmpDelay := ACCEPT_MIN_SLEEP
-
-	for s.isRunning() {
-		conn, err := l.Accept()
-		if err != nil {
+	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.createClient(conn, nil) },
+		func(_ error) bool {
 			if s.isLameDuckMode() {
 				// Signal that we are not accepting new clients
 				s.ldmCh <- true
 				// Now wait for the Shutdown...
 				<-s.quitCh
+				return true
+			}
+			return false
+		})
+	s.mu.Unlock()
+
+	// Let the caller know that we are ready
+	close(clr)
+	clr = nil
+}
+
+func (s *Server) acceptConnections(l net.Listener, acceptName string, createFunc func(conn net.Conn), errFunc func(err error) bool) {
+	tmpDelay := ACCEPT_MIN_SLEEP
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			if errFunc != nil && errFunc(err) {
 				return
 			}
-			tmpDelay = s.acceptError("Client", err, tmpDelay)
+			if tmpDelay = s.acceptError(acceptName, err, tmpDelay); tmpDelay < 0 {
+				break
+			}
 			continue
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
-		s.startGoRoutine(func() {
-			s.createClient(conn, nil)
+		if !s.startGoRoutine(func() {
+			createFunc(conn)
 			s.grWG.Done()
-		})
+		}) {
+			conn.Close()
+		}
 	}
+	s.Debugf(acceptName + " accept loop exiting..")
 	s.done <- true
 }
 
@@ -1699,13 +1724,20 @@ func (s *Server) StartProfiler() {
 		port = 0
 	}
 
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 
 	l, err := net.Listen("tcp", hp)
 	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
 
 	if err != nil {
+		s.mu.Unlock()
 		s.Fatalf("error starting profiler: %s", err)
+		return
 	}
 
 	srv := &http.Server{
@@ -1713,11 +1745,8 @@ func (s *Server) StartProfiler() {
 		Handler:        http.DefaultServeMux,
 		MaxHeaderBytes: 1 << 20,
 	}
-
-	s.mu.Lock()
 	s.profiler = l
 	s.profilingServer = srv
-	s.mu.Unlock()
 
 	// Enable blocking profile
 	runtime.SetBlockProfileRate(1)
@@ -1736,6 +1765,7 @@ func (s *Server) StartProfiler() {
 		srv.Close()
 		s.done <- true
 	}()
+	s.mu.Unlock()
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
@@ -1996,6 +2026,14 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// to bail out now otherwise the readLoop started down there would not
 	// be interrupted. Skip also if in lame duck mode.
 	if !s.running || s.ldm {
+		// There are some tests that create a server but don't start it,
+		// and use "async" clients and perform the parsing manually. Such
+		// clients would branch here (since server is not running). However,
+		// when a server was really running and has been shutdown, we must
+		// close this connection.
+		if s.shutdown {
+			conn.Close()
+		}
 		s.mu.Unlock()
 		return c
 	}
@@ -2471,13 +2509,16 @@ func (s *Server) Name() string {
 	return s.info.Name
 }
 
-func (s *Server) startGoRoutine(f func()) {
+func (s *Server) startGoRoutine(f func()) bool {
+	var started bool
 	s.grMu.Lock()
 	if s.grRunning {
 		s.grWG.Add(1)
 		go f()
+		started = true
 	}
 	s.grMu.Unlock()
+	return started
 }
 
 func (s *Server) numClosedConns() int {
@@ -2973,20 +3014,24 @@ func (s *Server) sendLDMToClients() {
 // delay and double it, but cap it to ACCEPT_MAX_SLEEP. The sleep is
 // interrupted if the server is shutdown.
 // An error message is displayed depending on the type of error.
-// Returns the new (or unchanged) delay.
+// Returns the new (or unchanged) delay, or a negative value if the
+// server has been or is being shutdown.
 func (s *Server) acceptError(acceptName string, err error, tmpDelay time.Duration) time.Duration {
+	if !s.isRunning() {
+		return -1
+	}
 	if ne, ok := err.(net.Error); ok && ne.Temporary() {
 		s.Errorf("Temporary %s Accept Error(%v), sleeping %dms", acceptName, ne, tmpDelay/time.Millisecond)
 		select {
 		case <-time.After(tmpDelay):
 		case <-s.quitCh:
-			return tmpDelay
+			return -1
 		}
 		tmpDelay *= 2
 		if tmpDelay > ACCEPT_MAX_SLEEP {
 			tmpDelay = ACCEPT_MAX_SLEEP
 		}
-	} else if s.isRunning() {
+	} else {
 		s.Errorf("%s Accept error: %v", acceptName, err)
 	}
 	return tmpDelay

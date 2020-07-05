@@ -342,18 +342,9 @@ func (cfg *leafNodeCfg) saveUserPassword(u *url.URL) {
 	}
 }
 
-// This is the leafnode's accept loop. This runs as a go-routine.
-// The listen specification is resolved (if use of random port),
-// then a listener is started. After that, this routine enters
-// a loop (until the server is shutdown) accepting incoming
-// leaf node connections from remote servers.
-func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
-	defer func() {
-		if ch != nil {
-			close(ch)
-		}
-	}()
-
+// This starts the leafnode accept loop in a go routine, unless it
+// is detected that the server has already been shutdown.
+func (s *Server) startLeafNodeAcceptLoop() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -362,9 +353,15 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 		port = 0
 	}
 
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	hp := net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(port))
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
+		s.mu.Unlock()
 		s.Fatalf("Error listening on leafnode port: %d - %v", opts.LeafNode.Port, e)
 		return
 	}
@@ -372,7 +369,6 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 	s.Noticef("Listening for leafnode connections on %s",
 		net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
-	s.mu.Lock()
 	tlsRequired := opts.LeafNode.TLSConfig != nil
 	tlsVerify := tlsRequired && opts.LeafNode.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
 	info := Info{
@@ -426,28 +422,8 @@ func (s *Server) leafNodeAcceptLoop(ch chan struct{}) {
 	if warn {
 		s.Warnf(leafnodeTLSInsecureWarning)
 	}
+	go s.acceptConnections(l, "Leafnode", func(conn net.Conn) { s.createLeafNode(conn, nil) }, nil)
 	s.mu.Unlock()
-
-	// Let them know we are up
-	close(ch)
-	ch = nil
-
-	tmpDelay := ACCEPT_MIN_SLEEP
-
-	for s.isRunning() {
-		conn, err := l.Accept()
-		if err != nil {
-			tmpDelay = s.acceptError("LeafNode", err, tmpDelay)
-			continue
-		}
-		tmpDelay = ACCEPT_MIN_SLEEP
-		s.startGoRoutine(func() {
-			s.createLeafNode(conn, nil)
-			s.grWG.Done()
-		})
-	}
-	s.Debugf("Leafnode accept loop exiting..")
-	s.done <- true
 }
 
 // RegEx to match a creds file with user JWT and Seed.

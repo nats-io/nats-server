@@ -715,6 +715,30 @@ func TestGatewaySolicitShutdown(t *testing.T) {
 	}
 }
 
+func testFatalErrorOnStart(t *testing.T, o *Options, errTxt string) {
+	t.Helper()
+	s := New(o)
+	defer s.Shutdown()
+	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
+	s.SetLogger(l, false, false)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		s.Start()
+		wg.Done()
+	}()
+	select {
+	case e := <-l.fatalCh:
+		if !strings.Contains(e, errTxt) {
+			t.Fatalf("Error should contain %q, got %s", errTxt, e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Should have got a fatal error")
+	}
+	s.Shutdown()
+	wg.Wait()
+}
+
 func TestGatewayListenError(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
 	s2 := runGatewayServer(o2)
@@ -722,23 +746,7 @@ func TestGatewayListenError(t *testing.T) {
 
 	o1 := testDefaultOptionsForGateway("A")
 	o1.Gateway.Port = s2.GatewayAddr().Port
-	s1 := New(o1)
-	defer s1.Shutdown()
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		s1.Start()
-		wg.Done()
-	}()
-	// We call Fatalf on listen error, but since there is no actual logger
-	// associated, we just check that the listener is not created.
-	time.Sleep(100 * time.Millisecond)
-	addr := s1.GatewayAddr()
-	if addr != nil {
-		t.Fatal("Listener should not have been created")
-	}
-	s1.Shutdown()
-	wg.Wait()
+	testFatalErrorOnStart(t, o1, "listening on")
 }
 
 func TestGatewayWithListenToAny(t *testing.T) {
@@ -874,23 +882,7 @@ func TestGatewayAdvertise(t *testing.T) {
 func TestGatewayAdvertiseErr(t *testing.T) {
 	o1 := testDefaultOptionsForGateway("A")
 	o1.Gateway.Advertise = "wrong:address"
-	s1 := New(o1)
-	defer s1.Shutdown()
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		s1.Start()
-		wg.Done()
-	}()
-	// We call Fatalf on listen error, but since there is no actual logger
-	// associated, we just check that the listener is not created.
-	time.Sleep(100 * time.Millisecond)
-	addr := s1.GatewayAddr()
-	if addr != nil {
-		t.Fatal("Listener should not have been created")
-	}
-	s1.Shutdown()
-	wg.Wait()
+	testFatalErrorOnStart(t, o1, "Gateway.Advertise")
 }
 
 func TestGatewayAuth(t *testing.T) {
