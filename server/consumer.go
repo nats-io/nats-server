@@ -748,7 +748,7 @@ const ackWaitDelay = time.Millisecond
 
 // ackWait returns how long to wait to fire the pending timer.
 func (o *Consumer) ackWait(next time.Duration) time.Duration {
-	if next != 0 {
+	if next > 0 {
 		return next + ackWaitDelay
 	}
 	return o.config.AckWait + ackWaitDelay
@@ -1387,12 +1387,14 @@ func (o *Consumer) checkPending() {
 	var expired []uint64
 	for seq, ts := range o.pending {
 		elapsed := now - ts
-		if elapsed > ttl && !o.onRedeliverQueue(seq) {
-			expired = append(expired, seq)
-			shouldSignal = true
-		} else if elapsed-ttl < next {
+		if elapsed >= ttl {
+			if !o.onRedeliverQueue(seq) {
+				expired = append(expired, seq)
+				shouldSignal = true
+			}
+		} else if ttl-elapsed < next {
 			// Update when we should fire next.
-			next = elapsed - ttl
+			next = ttl - elapsed
 		}
 	}
 
@@ -1401,10 +1403,9 @@ func (o *Consumer) checkPending() {
 		o.rdq = append(o.rdq, expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
-		now := time.Now()
+		off := now - o.pending[expired[0]]
 		for _, seq := range expired {
-			now = now.Add(time.Microsecond)
-			o.pending[seq] = now.UnixNano()
+			o.pending[seq] += off
 		}
 	}
 
