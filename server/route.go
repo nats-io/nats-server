@@ -1612,13 +1612,10 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 }
 
-func (s *Server) routeAcceptLoop(ch chan struct{}) {
-	defer func() {
-		if ch != nil {
-			close(ch)
-		}
-	}()
-
+// This starts the route accept loop in a go routine, unless it
+// is detected that the server has already been shutdown.
+// It will also start soliciting explicit routes.
+func (s *Server) startRouteAcceptLoop() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -1629,7 +1626,15 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 		port = 0
 	}
 
-	s.Noticef("Cluster name is %s", s.ClusterName())
+	// This requires lock, so do this outside of may block.
+	clusterName := s.ClusterName()
+
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
+	s.Noticef("Cluster name is %s", clusterName)
 	if s.isClusterNameDynamic() {
 		s.Warnf("Cluster name was dynamically generated, consider setting one")
 	}
@@ -1637,13 +1642,13 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
+		s.mu.Unlock()
 		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
 		return
 	}
 	s.Noticef("Listening for route connections on %s",
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
-	s.mu.Lock()
 	proto := RouteProtoV2
 	// For tests, we want to be able to make this server behave
 	// as an older server so check this option to see if we should override
@@ -1713,28 +1718,14 @@ func (s *Server) routeAcceptLoop(ch chan struct{}) {
 	if tlsReq && opts.Cluster.TLSConfig.InsecureSkipVerify {
 		s.Warnf(clusterTLSInsecureWarning)
 	}
+
+	// Start the accept loop in a different go routine.
+	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil) }, nil)
+
+	// Solicit Routes if applicable. This will not block.
+	s.solicitRoutes(opts.Routes)
+
 	s.mu.Unlock()
-
-	// Let them know we are up
-	close(ch)
-	ch = nil
-
-	tmpDelay := ACCEPT_MIN_SLEEP
-
-	for s.isRunning() {
-		conn, err := l.Accept()
-		if err != nil {
-			tmpDelay = s.acceptError("Route", err, tmpDelay)
-			continue
-		}
-		tmpDelay = ACCEPT_MIN_SLEEP
-		s.startGoRoutine(func() {
-			s.createRoute(conn, nil)
-			s.grWG.Done()
-		})
-	}
-	s.Debugf("Router accept loop exiting..")
-	s.done <- true
 }
 
 // Similar to setInfoHostPortAndGenerateJSON, but for routeInfo.
@@ -1766,13 +1757,9 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	// and the possible ephemeral ports to be selected.
 	<-clientListenReady
 
-	// Spin up the accept loop
-	ch := make(chan struct{})
-	go s.routeAcceptLoop(ch)
-	<-ch
+	// Start the accept loop and solicitation of explicit routes (if applicable)
+	s.startRouteAcceptLoop()
 
-	// Solicit Routes if needed.
-	s.solicitRoutes(s.getOpts().Routes)
 }
 
 func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {

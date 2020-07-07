@@ -82,6 +82,9 @@ var decompressorPool sync.Pool
 // From https://tools.ietf.org/html/rfc6455#section-1.3
 var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 
+// Can be set for tests
+var testWebsocketAllowNonTLS = false
+
 type websocket struct {
 	frames     net.Buffers
 	fs         int64
@@ -732,7 +735,7 @@ func validateWebsocketOptions(o *Options) error {
 		return nil
 	}
 	// Enforce TLS...
-	if wo.TLSConfig == nil {
+	if !testWebsocketAllowNonTLS && wo.TLSConfig == nil {
 		return errors.New("websocket requires TLS configuration")
 	}
 	// Make sure that allowed origins, if specified, can be parsed.
@@ -832,6 +835,11 @@ func (s *Server) startWebsocketServer() {
 	// that we expect users to send JWTs with bearer tokens and we want to
 	// avoid the possibility of it being "intercepted".
 
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	if o.TLSConfig != nil {
 		proto = "wss"
 		config := o.TLSConfig.Clone()
@@ -841,12 +849,12 @@ func (s *Server) startWebsocketServer() {
 		hl, err = net.Listen("tcp", hp)
 	}
 	if err != nil {
+		s.mu.Unlock()
 		s.Fatalf("Unable to listen for websocket connections: %v", err)
 		return
 	}
 	s.Noticef("Listening for websocket clients on %s://%s:%d", proto, o.Host, port)
 
-	s.mu.Lock()
 	s.websocket.tls = proto == "wss"
 	if port == 0 {
 		s.opts.Websocket.Port = hl.Addr().(*net.TCPAddr).Port
@@ -875,11 +883,7 @@ func (s *Server) startWebsocketServer() {
 	}
 	s.websocket.server = hs
 	s.websocket.listener = hl
-	s.mu.Unlock()
-
-	s.startGoRoutine(func() {
-		defer s.grWG.Done()
-
+	go func() {
 		if err := hs.Serve(hl); err != http.ErrServerClosed {
 			s.Fatalf("websocket listener error: %v", err)
 		}
@@ -891,7 +895,8 @@ func (s *Server) startWebsocketServer() {
 			return
 		}
 		s.done <- true
-	})
+	}()
+	s.mu.Unlock()
 }
 
 type wsCaptureHTTPServerLog struct {

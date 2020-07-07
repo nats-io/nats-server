@@ -398,10 +398,7 @@ func (g *srvGateway) rejectUnknown() bool {
 // the cluster to form and this server gathers gateway URLs for this
 // cluster in order to send that as part of the connect/info process.
 func (s *Server) startGateways() {
-	// Spin up the accept loop
-	ch := make(chan struct{})
-	go s.gatewayAcceptLoop(ch)
-	<-ch
+	s.startGatewayAcceptLoop()
 
 	// Delay start of creation of gateways to give a chance
 	// to the local cluster to form.
@@ -422,18 +419,9 @@ func (s *Server) startGateways() {
 	})
 }
 
-// This is the gateways accept loop. This runs as a go-routine.
-// The listen specification is resolved (if use of random port),
-// then a listener is started. After that, this routine enters
-// a loop (until the server is shutdown) accepting incoming
-// gateway connections.
-func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
-	defer func() {
-		if ch != nil {
-			close(ch)
-		}
-	}()
-
+// This starts the gateway accept loop in a go routine, unless it
+// is detected that the server has already been shutdown.
+func (s *Server) startGatewayAcceptLoop() {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -442,9 +430,15 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 		port = 0
 	}
 
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	hp := net.JoinHostPort(opts.Gateway.Host, strconv.Itoa(port))
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
+		s.mu.Unlock()
 		s.Fatalf("Error listening on gateway port: %d - %v", opts.Gateway.Port, e)
 		return
 	}
@@ -452,7 +446,6 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 	s.Noticef("Listening for gateways connections on %s",
 		net.JoinHostPort(opts.Gateway.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
-	s.mu.Lock()
 	tlsReq := opts.Gateway.TLSConfig != nil
 	authRequired := opts.Gateway.Username != ""
 	info := &Info{
@@ -497,28 +490,8 @@ func (s *Server) gatewayAcceptLoop(ch chan struct{}) {
 	if warn {
 		s.Warnf(gatewayTLSInsecureWarning)
 	}
+	go s.acceptConnections(l, "Gateway", func(conn net.Conn) { s.createGateway(nil, nil, conn) }, nil)
 	s.mu.Unlock()
-
-	// Let them know we are up
-	close(ch)
-	ch = nil
-
-	tmpDelay := ACCEPT_MIN_SLEEP
-
-	for s.isRunning() {
-		conn, err := l.Accept()
-		if err != nil {
-			tmpDelay = s.acceptError("Gateway", err, tmpDelay)
-			continue
-		}
-		tmpDelay = ACCEPT_MIN_SLEEP
-		s.startGoRoutine(func() {
-			s.createGateway(nil, nil, conn)
-			s.grWG.Done()
-		})
-	}
-	s.Debugf("Gateway accept loop exiting..")
-	s.done <- true
 }
 
 // Similar to setInfoHostPortAndGenerateJSON, but for gatewayInfo.

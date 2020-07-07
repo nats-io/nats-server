@@ -399,21 +399,7 @@ func TestClientAdvertiseErrorOnStartup(t *testing.T) {
 	opts := DefaultOptions()
 	// Set invalid address
 	opts.ClientAdvertise = "addr:::123"
-	s := New(opts)
-	defer s.Shutdown()
-	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
-	s.SetLogger(l, false, false)
-
-	// Expect this to return due to failure
-	s.Start()
-	select {
-	case msg := <-l.fatalCh:
-		if !strings.Contains(msg, "ClientAdvertise") {
-			t.Fatalf("Unexpected error: %v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("Should have failed to start")
-	}
+	testFatalErrorOnStart(t, opts, "ClientAdvertise")
 }
 
 func TestNoDeadlockOnStartFailure(t *testing.T) {
@@ -428,7 +414,16 @@ func TestNoDeadlockOnStartFailure(t *testing.T) {
 
 	// This should return since it should fail to start a listener
 	// on x.x.x.x:4222
-	s.Start()
+	ch := make(chan struct{})
+	go func() {
+		s.Start()
+		close(ch)
+	}()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("Start() should have returned due to failure to start listener")
+	}
 
 	// We should be able to shutdown
 	s.Shutdown()
@@ -1182,6 +1177,175 @@ func TestAcceptError(t *testing.T) {
 	if dur := time.Since(start); dur >= ACCEPT_MAX_SLEEP {
 		t.Fatalf("Shutdown took too long: %v", dur)
 	}
+	wg.Wait()
+	if d := s.acceptError("Test", ne, orgDelay); d >= 0 {
+		t.Fatalf("Expected delay to be negative, got %v", d)
+	}
+}
+
+func TestAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
+	testWebsocketAllowNonTLS = true
+	defer func() { testWebsocketAllowNonTLS = false }()
+
+	for _, test := range []struct {
+		name string
+		url  func(o *Options) (string, int)
+	}{
+		{"client", func(o *Options) (string, int) { return o.Host, o.Port }},
+		{"route", func(o *Options) (string, int) { return o.Cluster.Host, o.Cluster.Port }},
+		{"gateway", func(o *Options) (string, int) { return o.Gateway.Host, o.Gateway.Port }},
+		{"leafnode", func(o *Options) (string, int) { return o.LeafNode.Host, o.LeafNode.Port }},
+		{"websocket", func(o *Options) (string, int) { return o.Websocket.Host, o.Websocket.Port }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.DisableShortFirstPing = true
+			o.Accounts = []*Account{NewAccount("$SYS")}
+			o.SystemAccount = "$SYS"
+			o.Cluster.Name = "abc"
+			o.Cluster.Host = "127.0.0.1"
+			o.Cluster.Port = -1
+			o.Gateway.Name = "abc"
+			o.Gateway.Host = "127.0.0.1"
+			o.Gateway.Port = -1
+			o.LeafNode.Host = "127.0.0.1"
+			o.LeafNode.Port = -1
+			o.Websocket.Host = "127.0.0.1"
+			o.Websocket.Port = -1
+			o.Websocket.HandshakeTimeout = 1
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			host, port := test.url(o)
+			url := fmt.Sprintf("%s:%d", host, port)
+			var conns []net.Conn
+
+			wg := sync.WaitGroup{}
+			wg.Add(1)
+			done := make(chan struct{}, 1)
+			go func() {
+				defer wg.Done()
+				for {
+					c, err := net.Dial("tcp", url)
+					if err != nil {
+						return
+					}
+					conns = append(conns, c)
+					select {
+					case <-done:
+						return
+					default:
+					}
+				}
+			}()
+			time.Sleep(15 * time.Millisecond)
+			s.Shutdown()
+			close(done)
+			wg.Wait()
+			for _, c := range conns {
+				c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				br := bufio.NewReader(c)
+				// Read INFO for connections that were accepted
+				_, _, err := br.ReadLine()
+				if err == nil {
+					// After that, the connection should be closed,
+					// so we should get an error here.
+					_, _, err = br.ReadLine()
+				}
+				// We expect an io.EOF or any other error indicating the use of a closed
+				// connection, but we should not get the timeout error.
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					err = nil
+				}
+				if err == nil {
+					var buf [10]byte
+					c.SetDeadline(time.Now().Add(2 * time.Second))
+					c.Write([]byte("C"))
+					_, err = c.Read(buf[:])
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						err = nil
+					}
+				}
+				if err == nil {
+					t.Fatalf("Connection should have been closed")
+				}
+				c.Close()
+			}
+		})
+	}
+}
+
+func TestServerShutdownDuringStart(t *testing.T) {
+	testWebsocketAllowNonTLS = true
+	defer func() { testWebsocketAllowNonTLS = false }()
+
+	o := DefaultOptions()
+	o.DisableShortFirstPing = true
+	o.Accounts = []*Account{NewAccount("$SYS")}
+	o.SystemAccount = "$SYS"
+	o.Cluster.Name = "abc"
+	o.Cluster.Host = "127.0.0.1"
+	o.Cluster.Port = -1
+	o.Gateway.Name = "abc"
+	o.Gateway.Host = "127.0.0.1"
+	o.Gateway.Port = -1
+	o.LeafNode.Host = "127.0.0.1"
+	o.LeafNode.Port = -1
+	o.Websocket.Host = "127.0.0.1"
+	o.Websocket.Port = -1
+	o.Websocket.HandshakeTimeout = 1
+
+	// We are going to test that if the server is shutdown
+	// while Start() runs (in this case, before), we don't
+	// start the listeners and therefore leave accept loops
+	// hanging.
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Error creating server: %v", err)
+	}
+	s.Shutdown()
+
+	// Start() should not block, but just in case, start in
+	// different go routine.
+	ch := make(chan struct{}, 1)
+	go func() {
+		s.Start()
+		close(ch)
+	}()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("Start appear to have blocked after server was shutdown")
+	}
+	// Now make sure that none of the listeners have been created
+	listeners := []string{}
+	s.mu.Lock()
+	if s.listener != nil {
+		listeners = append(listeners, "client")
+	}
+	if s.routeListener != nil {
+		listeners = append(listeners, "route")
+	}
+	if s.gatewayListener != nil {
+		listeners = append(listeners, "gateway")
+	}
+	if s.leafNodeListener != nil {
+		listeners = append(listeners, "leafnode")
+	}
+	if s.websocket.listener != nil {
+		listeners = append(listeners, "websocket")
+	}
+	s.mu.Unlock()
+	if len(listeners) > 0 {
+		lst := ""
+		for i, l := range listeners {
+			if i > 0 {
+				lst += ", "
+			}
+			lst += l
+		}
+		t.Fatalf("Following listeners have been created: %s", lst)
+	}
 }
 
 type myDummyDNSResolver struct {
@@ -1324,6 +1488,9 @@ func TestInsecureSkipVerifyWarning(t *testing.T) {
 			s.Start()
 			wg.Done()
 		}()
+		if !s.ReadyForConnections(time.Second) {
+			t.Fatal("Unable to start the server")
+		}
 		select {
 		case w := <-l.warn:
 			if !strings.Contains(w, expectedWarn) {

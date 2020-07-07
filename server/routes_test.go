@@ -147,29 +147,7 @@ func TestClusterAdvertiseErrorOnStartup(t *testing.T) {
 	opts := DefaultOptions()
 	// Set invalid address
 	opts.Cluster.Advertise = "addr:::123"
-	s := New(opts)
-	defer s.Shutdown()
-	dl := &DummyLogger{}
-	s.SetLogger(dl, false, false)
-
-	// Start will keep running, so start in a go-routine.
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		s.Start()
-		wg.Done()
-	}()
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		dl.Lock()
-		msg := dl.msg
-		dl.Unlock()
-		if strings.Contains(msg, "Cluster.Advertise") {
-			return nil
-		}
-		return fmt.Errorf("Did not get expected error, got %v", msg)
-	})
-	s.Shutdown()
-	wg.Wait()
+	testFatalErrorOnStart(t, opts, "Cluster.Advertise")
 }
 
 func TestClientAdvertise(t *testing.T) {
