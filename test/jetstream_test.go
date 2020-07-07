@@ -1897,7 +1897,7 @@ func TestJetStreamAckAllRedelivery(t *testing.T) {
 			// Wait for messages.
 			// We will do 5 redeliveries.
 			for i := 1; i <= 5; i++ {
-				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
+				checkFor(t, 500*time.Millisecond, 10*time.Millisecond, func() error {
 					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend*i {
 						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend*i)
 					}
@@ -4041,6 +4041,56 @@ func TestJetStreamRedeliverAndLateAck(t *testing.T) {
 	if _, err := nc.Request(nextSubj, nil, 10*time.Millisecond); err == nil {
 		t.Fatalf("Message should not have been sent back")
 	}
+}
+
+// https://github.com/nats-io/nats-server/issues/1502
+func TestJetStreamPendingNextTimer(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "NT", Storage: server.MemoryStorage, Subjects: []string{"ORDERS.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	o, err := mset.AddConsumer(&server.ConsumerConfig{
+		Durable:       "DDD",
+		AckPolicy:     server.AckExplicit,
+		FilterSubject: "ORDERS.test",
+		AckWait:       100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.Delete()
+
+	sendAndReceive := func() {
+		nc := clientConnectToServer(t, s)
+		defer nc.Close()
+
+		// Queue up message
+		sendStreamMsg(t, nc, "ORDERS.test", "Hello World! #1")
+		sendStreamMsg(t, nc, "ORDERS.test", "Hello World! #2")
+
+		nextSubj := o.RequestNextMsgSubject()
+		for i := 0; i < 2; i++ {
+			if _, err := nc.Request(nextSubj, nil, time.Second); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		}
+		nc.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	sendAndReceive()
+	sendAndReceive()
+	sendAndReceive()
 }
 
 func TestJetStreamCanNotNakAckd(t *testing.T) {
