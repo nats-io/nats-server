@@ -492,6 +492,9 @@ func (c *client) initClient() {
 				host, port, _ := net.SplitHostPort(conn)
 				iPort, _ := strconv.Atoi(port)
 				c.host, c.port = host, uint16(iPort)
+				// Now that we have extracted host and port, escape
+				// the string because it is going to be used in Sprintf
+				conn = strings.ReplaceAll(conn, "%", "%%")
 			}
 		}
 	}

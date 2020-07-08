@@ -2360,3 +2360,81 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 	// This connection should not have been added to the server.
 	checkClientsCount(t, s, 0)
 }
+
+type connAddrString struct {
+	net.Addr
+}
+
+func (a *connAddrString) String() string {
+	return "[fe80::abc:def:ghi:123%utun0]:4222"
+}
+
+type connString struct {
+	net.Conn
+}
+
+func (c *connString) RemoteAddr() net.Addr {
+	return &connAddrString{}
+}
+
+func TestClientConnectionName(t *testing.T) {
+	s, err := NewServer(DefaultOptions())
+	if err != nil {
+		t.Fatalf("Error creating server: %v", err)
+	}
+	l := &DummyLogger{}
+	s.SetLogger(l, true, true)
+
+	for _, test := range []struct {
+		name    string
+		kind    int
+		kindStr string
+		ws      bool
+	}{
+		{"client", CLIENT, "cid:", false},
+		{"ws client", CLIENT, "wid:", true},
+		{"route", ROUTER, "rid:", false},
+		{"gateway", GATEWAY, "gid:", false},
+		{"leafnode", LEAF, "lid:", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := &client{srv: s, nc: &connString{}, kind: test.kind}
+			if test.ws {
+				c.ws = &websocket{}
+			}
+			c.initClient()
+
+			if host := "fe80::abc:def:ghi:123%utun0"; host != c.host {
+				t.Fatalf("expected host to be %q, got %q", host, c.host)
+			}
+			if port := uint16(4222); port != c.port {
+				t.Fatalf("expected port to be %v, got %v", port, c.port)
+			}
+
+			checkLog := func(suffix string) {
+				t.Helper()
+				l.Lock()
+				msg := l.msg
+				l.Unlock()
+				if strings.Contains(msg, "(MISSING)") {
+					t.Fatalf("conn name was not escaped properly, got MISSING: %s", msg)
+				}
+				if !strings.Contains(l.msg, test.kindStr) {
+					t.Fatalf("expected kind to be %q, got: %s", test.kindStr, msg)
+				}
+				if !strings.HasSuffix(l.msg, suffix) {
+					t.Fatalf("expected statement to end with %q, got %s", suffix, msg)
+				}
+			}
+
+			c.Debugf("debug: %v", 1)
+			checkLog(" 1")
+			c.Tracef("trace: %s", "2")
+			checkLog(" 2")
+			c.Warnf("warn: %s %d", "3", 4)
+			checkLog(" 3 4")
+			c.Errorf("error: %v %s", 5, "6")
+			checkLog(" 5 6")
+		})
+	}
+}
