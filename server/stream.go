@@ -15,6 +15,7 @@ package server
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -48,6 +49,7 @@ type StreamConfig struct {
 	Replicas     int             `json:"num_replicas"`
 	NoAck        bool            `json:"no_ack,omitempty"`
 	Template     string          `json:"template_owner,omitempty"`
+	Duplicates   time.Duration   `json:"duplicates,omitempty"`
 }
 
 // PubAck is the detail you get back from a publish to a stream that was successful.
@@ -79,11 +81,27 @@ type Stream struct {
 	consumers map[string]*Consumer
 	config    StreamConfig
 	created   time.Time
+	ddmap     map[string]*ddentry
+	ddarr     []*ddentry
+	ddindex   int
+	ddtmr     *time.Timer
 }
 
+// JSPubId is used for identifying published messages and performing de-duplication.
+const JSPubId = "Msg-Id"
+const StreamDefaultDuplicatesWindow = 2 * time.Minute
+
+// Dedupe entry
+type ddentry struct {
+	id  string
+	seq uint64
+	ts  int64
+}
+
+// Replicas Range
 const (
 	StreamDefaultReplicas = 1
-	StreamMaxReplicas     = 8
+	StreamMaxReplicas     = 7
 )
 
 // AddStream adds a stream for the given account.
@@ -318,6 +336,9 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if cfg.MaxConsumers == 0 {
 		cfg.MaxConsumers = -1
 	}
+	if cfg.Duplicates == 0 {
+		cfg.Duplicates = StreamDefaultDuplicatesWindow
+	}
 	if len(cfg.Subjects) == 0 {
 		cfg.Subjects = append(cfg.Subjects, cfg.Name)
 	} else {
@@ -436,6 +457,11 @@ func (mset *Stream) Update(config *StreamConfig) error {
 		}
 	}
 
+	// Check for the Duplicates
+	if cfg.Duplicates != o_cfg.Duplicates && mset.ddtmr != nil {
+		// Let it fire right away, it will adjust properly on purge.
+		mset.ddtmr.Reset(time.Microsecond)
+	}
 	// Now update config and store's version of our config.
 	mset.config = cfg
 	mset.store.UpdateConfig(&cfg)
@@ -597,6 +623,91 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 	return nil
 }
 
+// NumMsgIds returns the number of message ids being tracked for duplicate suppression.
+func (mset *Stream) NumMsgIds() int {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return len(mset.ddmap)
+}
+
+// checkMsgId will process and check for duplicates.
+// Lock should be held.
+func (mset *Stream) checkMsgId(id string) *ddentry {
+	if id == "" || mset.ddmap == nil {
+		return nil
+	}
+	return mset.ddmap[id]
+}
+
+// Will purge the entries that are past the window.
+// Should be called from a timer.
+func (mset *Stream) purgeMsgIds() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	now := time.Now().UnixNano()
+	tmrNext := mset.config.Duplicates
+	window := int64(tmrNext)
+
+	for i, dde := range mset.ddarr[mset.ddindex:] {
+		if now-dde.ts >= window {
+			delete(mset.ddmap, dde.id)
+		} else {
+			mset.ddindex += i
+			// Check if we should garbage collect here if we are 1/3 total size.
+			if cap(mset.ddarr) > 3*(len(mset.ddarr)-mset.ddindex) {
+				mset.ddarr = append([]*ddentry(nil), mset.ddarr[mset.ddindex:]...)
+				mset.ddindex = 0
+			}
+			tmrNext = time.Duration(window - (now - dde.ts))
+			break
+		}
+	}
+	if len(mset.ddmap) > 0 {
+		// Make sure to not fire too quick
+		const minFire = 50 * time.Millisecond
+		if tmrNext < minFire {
+			tmrNext = minFire
+		}
+		mset.ddtmr.Reset(tmrNext)
+	} else {
+		mset.ddtmr.Stop()
+		mset.ddtmr = nil
+	}
+}
+
+// storeMsgId will store the message id for duplicate detection.
+func (mset *Stream) storeMsgId(dde *ddentry) {
+	mset.mu.Lock()
+	if mset.ddmap == nil {
+		mset.ddmap = make(map[string]*ddentry)
+	}
+	if mset.ddtmr == nil {
+		mset.ddtmr = time.AfterFunc(mset.config.Duplicates, mset.purgeMsgIds)
+	}
+	mset.ddmap[dde.id] = dde
+	mset.ddarr = append(mset.ddarr, dde)
+	mset.mu.Unlock()
+}
+
+// Will return the value for the header denoted by key or nil if it does not exists.
+// This function ignores errors and tries to achieve speed and no additional allocations.
+func getHdrVal(key string, hdr []byte) []byte {
+	var value []byte
+	for i := bytes.Index(hdr, []byte(key)) + len(key) + 2; i > 0 && i < len(hdr); i++ {
+		if hdr[i] == '\r' && i < len(hdr)-1 && hdr[i+1] == '\n' {
+			break
+		}
+		value = append(value, hdr[i])
+	}
+	return value
+}
+
+// Fast lookup of msgId.
+func getMsgId(hdr []byte) string {
+	return string(getHdrVal(JSPubId, hdr))
+}
+
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
@@ -613,6 +724,21 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	name := mset.config.Name
 	maxMsgSize := int(mset.config.MaxMsgSize)
 	numConsumers := len(mset.consumers)
+
+	// Process msgId if we have headers.
+	var msgId string
+	if pc != nil && pc.pa.hdr > 0 {
+		msgId = getMsgId(msg[:pc.pa.hdr])
+		if dde := mset.checkMsgId(msgId); dde != nil {
+			if doAck && len(reply) > 0 {
+				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
+				response = append(response, '}')
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			}
+			mset.mu.Unlock()
+			return
+		}
+	}
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -650,9 +776,15 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			response = []byte("-ERR 'resource limits exceeded for account'")
 			store.RemoveMsg(seq)
 			seq = 0
-		} else if err == nil && doAck && len(reply) > 0 {
-			response = append(pubAck, strconv.FormatUint(seq, 10)...)
-			response = append(response, '}')
+		} else if err == nil {
+			if doAck && len(reply) > 0 {
+				response = append(pubAck, strconv.FormatUint(seq, 10)...)
+				response = append(response, '}')
+			}
+			// If we have a msgId make sure to save.
+			if msgId != "" {
+				mset.storeMsgId(&ddentry{msgId, seq, ts})
+			}
 		}
 	}
 
@@ -814,6 +946,14 @@ func (mset *Stream) stop(delete bool) error {
 		obs = append(obs, o)
 	}
 	mset.consumers = nil
+
+	// Cleanup duplicate timer if running.
+	if mset.ddtmr != nil {
+		mset.ddtmr.Stop()
+		mset.ddtmr = nil
+		mset.ddarr = nil
+		mset.ddmap = nil
+	}
 	mset.mu.Unlock()
 
 	c.closeConnection(ClientClosed)
