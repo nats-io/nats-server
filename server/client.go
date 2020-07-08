@@ -1971,7 +1971,8 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	var err error
 
 	// Subscribe here.
-	if c.subs[sid] == nil {
+	es := c.subs[sid]
+	if es == nil {
 		c.subs[sid] = sub
 		if acc != nil && acc.sl != nil {
 			err = acc.sl.Insert(sub)
@@ -1990,6 +1991,11 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 		return nil, nil
 	} else if c.opts.Verbose && kind != SYSTEM {
 		c.sendOK()
+	}
+
+	// If it was already registered, return it.
+	if es != nil {
+		return es, nil
 	}
 
 	// No account just return.
