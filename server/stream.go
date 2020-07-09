@@ -693,8 +693,12 @@ func (mset *Stream) storeMsgId(dde *ddentry) {
 // Will return the value for the header denoted by key or nil if it does not exists.
 // This function ignores errors and tries to achieve speed and no additional allocations.
 func getHdrVal(key string, hdr []byte) []byte {
+	index := bytes.Index(hdr, []byte(key))
+	if index < 0 {
+		return nil
+	}
 	var value []byte
-	for i := bytes.Index(hdr, []byte(key)) + len(key) + 2; i > 0 && i < len(hdr); i++ {
+	for i := index + len(key) + 2; i > 0 && i < len(hdr); i++ {
 		if hdr[i] == '\r' && i < len(hdr)-1 && hdr[i+1] == '\n' {
 			break
 		}
