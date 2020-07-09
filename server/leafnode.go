@@ -1210,8 +1210,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 		c.writeLeafSub(&b, key, n)
 	}
 	if b.Len() > 0 {
-		c.queueOutbound(b.Bytes())
-		c.flushSignal()
+		c.enqueueProto(b.Bytes())
 	}
 	if c.leaf.tsub != nil {
 		// Clear the tsub map after 5 seconds.

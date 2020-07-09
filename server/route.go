@@ -1233,8 +1233,7 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		buf = append(buf, CR_LF...)
 	}
 
-	c.queueOutbound(buf)
-	c.flushSignal()
+	c.enqueueProto(buf)
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
