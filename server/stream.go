@@ -49,7 +49,7 @@ type StreamConfig struct {
 	Replicas     int             `json:"num_replicas"`
 	NoAck        bool            `json:"no_ack,omitempty"`
 	Template     string          `json:"template_owner,omitempty"`
-	Duplicates   time.Duration   `json:"duplicates,omitempty"`
+	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
 }
 
 // PubAck is the detail you get back from a publish to a stream that was successful.
