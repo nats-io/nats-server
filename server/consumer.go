@@ -654,6 +654,13 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 	return a == b
 }
 
+// Helper to send a reply to an ack.
+func (o *Consumer) sendAckReply(subj string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sendAdvisory(subj, nil)
+}
+
 // Process a message for the ack reply subject delivered with a message.
 func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
 	sseq, dseq, dcount, _ := o.ReplyInfo(subject)
@@ -670,6 +677,11 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 		o.progressUpdate(sseq)
 	case bytes.Equal(msg, AckTerm):
 		o.processTerm(sseq, dseq, dcount)
+	}
+
+	// Ack the ack if requested.
+	if len(reply) > 0 {
+		o.sendAckReply(reply)
 	}
 }
 
