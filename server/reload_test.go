@@ -3832,6 +3832,64 @@ func TestConfigReloadLeafNodeWithTLS(t *testing.T) {
 	}
 }
 
+func TestConfigReloadLeafNodeWithRemotesNoChanges(t *testing.T) {
+	template := `
+          port: -1
+	  %s
+	  leaf {
+	    listen: "127.0.0.1:-1"
+	  }
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(conf1)
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", o1.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error creating url: %v", err)
+	}
+
+	template2 := `
+          port: -1
+          cluster {
+            port: -1
+            name: "%s"
+          }
+          leaf {
+            remotes [
+              {
+                url: "%s"
+              }
+            ]
+          }
+	`
+	config := fmt.Sprintf(template2, "A", u.String())
+	conf2 := createConfFile(t, []byte(config))
+	defer os.Remove(conf2)
+	o2, err := ProcessConfigFile(conf2)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	o2.NoLog, o2.NoSigs = true, false
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
+		if n := s1.NumLeafNodes(); n != 1 {
+			return fmt.Errorf("Expected 1 leaf node, got %v", n)
+		}
+		return nil
+	})
+
+	config = fmt.Sprintf(template2, "B", u.String())
+	changeCurrentConfigContentWithNewContent(t, conf2, []byte(config))
+
+	if err := s2.Reload(); err != nil {
+		t.Fatalf("Error during reload: %v", err)
+	}
+}
+
 func TestConfigReloadAndVarz(t *testing.T) {
 	template := `
 		port: -1

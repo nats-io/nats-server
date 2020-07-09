@@ -909,6 +909,44 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(LeafNodeOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+
+			// Special check for leafnode remotes changes which are not supported right now.
+			leafRemotesChanged := func(a, b LeafNodeOpts) bool {
+				if len(tmpOld.Remotes) != len(tmpNew.Remotes) {
+					return true
+				}
+
+				// Check whether all remotes URLs are still the same.
+				for _, oldRemote := range tmpOld.Remotes {
+					var found bool
+
+					for _, newRemote := range tmpNew.Remotes {
+						// Bind to global account in case not defined.
+						if newRemote.LocalAccount == _EMPTY_ {
+							newRemote.LocalAccount = globalAccountName
+						}
+
+						if reflect.DeepEqual(oldRemote, newRemote) {
+							found = true
+							break
+						}
+					}
+
+					if !found {
+						return true
+					}
+				}
+
+				return false
+			}
+
+			// First check whether remotes changed at all. If they did not,
+			// skip them in the complete equal check.
+			if !leafRemotesChanged(tmpOld, tmpNew) {
+				tmpOld.Remotes = nil
+				tmpNew.Remotes = nil
+			}
+
 			// If there is really a change prevents reload.
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
