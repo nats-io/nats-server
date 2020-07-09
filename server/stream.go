@@ -177,12 +177,6 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
 
-	// Setup subscriptions
-	if err := mset.subscribeToStream(); err != nil {
-		mset.Delete()
-		return nil, err
-	}
-
 	// Create our pubAck here. This will be reused and for +OK will contain JSON
 	// for stream name and sequence.
 	longestSeq := strconv.FormatUint(math.MaxUint64, 10)
@@ -191,9 +185,44 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, OK...)
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
+	// Rebuild dedupe as needed.
+	mset.rebuildDedupe()
+
+	// Setup subscriptions
+	if err := mset.subscribeToStream(); err != nil {
+		mset.Delete()
+		return nil, err
+	}
+
+	// Send advisory.
 	mset.sendCreateAdvisory()
 
 	return mset, nil
+}
+
+// rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
+// Lock not needed, only called during initialization.
+// TODO(dlc) - Might be good to know if this should be checked at all for streams with no
+// headers and msgId in them. Would need signaling from the storage layer.
+func (mset *Stream) rebuildDedupe() {
+	state := mset.store.State()
+	if state.Msgs == 0 {
+		return
+	}
+	// We have some messages. Lookup starting sequence by duplicate time window.
+	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.config.Duplicates))
+	if sseq == 0 {
+		return
+	}
+
+	for seq := sseq; seq <= state.LastSeq; seq++ {
+		_, hdr, _, ts, err := mset.store.LoadMsg(seq)
+		if err == nil && len(hdr) > 0 {
+			if msgId := getMsgId(hdr); msgId != "" {
+				mset.storeMsgId(&ddentry{msgId, seq, ts})
+			}
+		}
+	}
 }
 
 func (mset *Stream) sendCreateAdvisory() {

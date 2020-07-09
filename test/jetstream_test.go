@@ -2353,7 +2353,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	}
 
 	mname := "DeDupe"
-	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.MemoryStorage, Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
@@ -2430,10 +2430,54 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	sendMsg(5, "AAA", "Hello DeDupe!")
 	sendMsg(6, "BBB", "Hello DeDupe!")
 	sendMsg(7, "CCC", "Hello DeDupe!")
-	sendMsg(8, "ZZZ", "Hello DeDupe!")
-	nmids(4)
+	sendMsg(8, "DDD", "Hello DeDupe!")
+	sendMsg(9, "ZZZ", "Hello DeDupe!")
+	nmids(5)
 	// Eventually will drop to zero.
 	nmids(0)
+
+	// Now test server restart
+	cfg.Duplicates = 30 * time.Minute
+	if err := mset.Update(&cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	mset.Purge()
+
+	// Send 5 new messages.
+	sendMsg(10, "AAAA", "Hello DeDupe!")
+	sendMsg(11, "BBBB", "Hello DeDupe!")
+	sendMsg(12, "CCCC", "Hello DeDupe!")
+	sendMsg(13, "DDDD", "Hello DeDupe!")
+	sendMsg(14, "EEEE", "Hello DeDupe!")
+
+	// Stop current server.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	mset, _ = s.GlobalAccount().LookupStream(mname)
+	if nms := mset.State().Msgs; nms != 5 {
+		t.Fatalf("Expected 5 restored messages, got %d", nms)
+	}
+	nmids(5)
+
+	// Send same and make sure duplicate detection still works.
+	// Send 5 duplicate messages.
+	sendMsg(10, "AAAA", "Hello DeDupe!")
+	sendMsg(11, "BBBB", "Hello DeDupe!")
+	sendMsg(12, "CCCC", "Hello DeDupe!")
+	sendMsg(13, "DDDD", "Hello DeDupe!")
+	sendMsg(14, "EEEE", "Hello DeDupe!")
+
+	if nms := mset.State().Msgs; nms != 5 {
+		t.Fatalf("Expected 5 restored messages, got %d", nms)
+	}
+	nmids(5)
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
