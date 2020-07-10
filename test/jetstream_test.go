@@ -2353,7 +2353,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	}
 
 	mname := "DeDupe"
-	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, Subjects: []string{"foo.*"}})
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, MaxAge: time.Hour, Subjects: []string{"foo.*"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
@@ -2365,10 +2365,22 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		t.Fatalf("Expected a default of %v, got %v", server.StreamDefaultDuplicatesWindow, duplicates)
 	}
 
+	cfg := mset.Config()
+	// Make sure can't be negative.
+	cfg.Duplicates = -25 * time.Millisecond
+	if err := mset.Update(&cfg); err == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+	// Make sure can't be longer than age if its set.
+	cfg.Duplicates = 2 * time.Hour
+	if err := mset.Update(&cfg); err == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	sendMsg := func(seq uint64, id, msg string) {
+	sendMsg := func(seq uint64, id, msg string) *server.PubAck {
 		t.Helper()
 		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
 		m.Header.Add(server.JSPubId, id)
@@ -2387,6 +2399,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		if pubAck.Seq != seq {
 			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Seq)
 		}
+		return &pubAck
 	}
 
 	expect := func(n uint64) {
@@ -2408,7 +2421,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	sendMsg(4, "ZZ", "Hello DeDupe!")
 	expect(4)
 
-	cfg := mset.Config()
+	cfg = mset.Config()
 	cfg.Duplicates = 25 * time.Millisecond
 	if err := mset.Update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2478,6 +2491,12 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		t.Fatalf("Expected 5 restored messages, got %d", nms)
 	}
 	nmids(5)
+
+	// Check we set duplicate properly.
+	pa := sendMsg(10, "AAAA", "Hello DeDupe!")
+	if !pa.Duplicate {
+		t.Fatalf("Expected duplicate to be set")
+	}
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
