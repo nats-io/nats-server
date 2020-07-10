@@ -55,8 +55,9 @@ type StreamConfig struct {
 // PubAck is the detail you get back from a publish to a stream that was successful.
 // e.g. +OK {"stream": "Orders", "seq": 22}
 type PubAck struct {
-	Stream string `json:"stream"`
-	Seq    uint64 `json:"seq"`
+	Stream    string `json:"stream"`
+	Seq       uint64 `json:"seq"`
+	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
 // StreamInfo shows config and current state for this stream.
@@ -366,8 +367,19 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 		cfg.MaxConsumers = -1
 	}
 	if cfg.Duplicates == 0 {
-		cfg.Duplicates = StreamDefaultDuplicatesWindow
+		if cfg.MaxAge != 0 && cfg.MaxAge < StreamDefaultDuplicatesWindow {
+			cfg.Duplicates = cfg.MaxAge
+		} else {
+			cfg.Duplicates = StreamDefaultDuplicatesWindow
+		}
+	} else if cfg.Duplicates < 0 {
+		return StreamConfig{}, fmt.Errorf("duplicates window can not be negative")
 	}
+	// Check that duplicates is not larger then age if set.
+	if cfg.MaxAge != 0 && cfg.Duplicates > cfg.MaxAge {
+		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then max age")
+	}
+
 	if len(cfg.Subjects) == 0 {
 		cfg.Subjects = append(cfg.Subjects, cfg.Name)
 	} else {
@@ -765,7 +777,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		if dde := mset.checkMsgId(msgId); dde != nil {
 			if doAck && len(reply) > 0 {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-				response = append(response, '}')
+				response = append(response, ", \"duplicate\": true}"...)
 				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 			}
 			mset.mu.Unlock()
