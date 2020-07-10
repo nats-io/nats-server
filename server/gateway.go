@@ -1208,8 +1208,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName []byte) {
 	}
 	// Send
 	c.mu.Lock()
-	c.queueOutbound(buf)
-	c.flushSignal()
+	c.enqueueProto(buf)
 	c.Debugf("Sent queue subscriptions to gateway")
 	c.mu.Unlock()
 }

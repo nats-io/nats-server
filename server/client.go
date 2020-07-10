@@ -1878,7 +1878,6 @@ func (c *client) sendOK() {
 		c.traceOutOp("OK", nil)
 	}
 	c.enqueueProto([]byte(okProto))
-	c.pcd[c] = needFlush
 	c.mu.Unlock()
 }
 
@@ -2894,10 +2893,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 	// Add the data size we are responsible for here. This will be processed when we
 	// return to the top of the readLoop.
-	if _, ok := c.pcd[client]; !ok {
-		client.out.fsp++
-		c.pcd[client] = needFlush
-	}
+	c.addToPCD(client)
 
 	if client.trace {
 		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
@@ -2906,6 +2902,17 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	client.mu.Unlock()
 
 	return true
+}
+
+// Add the given sub's client to the list of clients that need flushing.
+// This must be invoked from `c`'s readLoop. No lock for c is required,
+// however, `client` lock must be held on entry. This holds true even
+// if `client` is same than `c`.
+func (c *client) addToPCD(client *client) {
+	if _, ok := c.pcd[client]; !ok {
+		client.out.fsp++
+		c.pcd[client] = needFlush
+	}
 }
 
 // This will track a remote reply for an exported service that has requested
@@ -3238,7 +3245,8 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		if c.opts.NoResponders {
 			if sub := c.subForReply(c.pa.reply); sub != nil {
 				proto := fmt.Sprintf("HMSG %s %s 16 16\r\nNATS/1.0 503\r\n\r\n\r\n", c.pa.reply, sub.sid)
-				c.sendProtoNow([]byte(proto))
+				c.queueOutbound([]byte(proto))
+				c.addToPCD(c)
 			}
 		}
 		c.mu.Unlock()
