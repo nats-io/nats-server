@@ -1958,3 +1958,47 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 		t.Fatalf("Config file location was not reported in log: %s", log)
 	}
 }
+
+func TestServerInfoUpdateReordering(t *testing.T) {
+	t.SkipNow()
+	o := DefaultOptions()
+	o.ClientAdvertise = "host:4222"
+	url := []string{o.ClientAdvertise}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	// Not sure why ClientAdvertise for self does not appear if there is no other server yet.
+	if len(s.info.ClientConnectURLs) != 0 || len(s.copyInfo().ClientConnectURLs) != 0 {
+		t.Fatal("Expected 0 entries got:", s.info.ClientConnectURLs, s.copyInfo().ClientConnectURLs)
+	}
+
+	// simulate other server connecting
+	// a) CONNECT of other server
+	s.addConnectURLsAndSendINFOToClients(url, url)
+	// There are two identical entries instead of one because the current server is included as well
+	// duplicate or not.
+	if len(s.info.ClientConnectURLs) != 2 || len(s.copyInfo().ClientConnectURLs) != 2 {
+		t.Fatal("Expected 2 entries got:", s.info.ClientConnectURLs, s.copyInfo().ClientConnectURLs)
+	}
+	if s.info.ClientConnectURLs[0] != s.info.ClientConnectURLs[1] {
+		t.Fatal("expected both entries to be identical", s.info.ClientConnectURLs)
+	}
+
+	// b) RECONNECT of other server
+	// if a server re-connect is happening before the disconnect is detected we drop
+	s.addConnectURLsAndSendINFOToClients(url, url)
+	// we only filter duplicates for other server
+	if len(s.info.ClientConnectURLs) != 2 || len(s.copyInfo().ClientConnectURLs) != 2 {
+		t.Fatal("Expected 2 entries got:", s.info.ClientConnectURLs, s.copyInfo().ClientConnectURLs)
+	}
+
+	// c) DISCONNECT corresponding to a. (this causes the issue)
+	s.removeConnectURLsAndSendINFOToClients(url, url)
+	if len(s.info.ClientConnectURLs) != 2 || len(s.copyInfo().ClientConnectURLs) != 2 {
+		t.Fatal("Expected 2 entries got:", s.info.ClientConnectURLs, s.copyInfo().ClientConnectURLs)
+	}
+
+	// d) DISCONNECT corresponding to b.
+	s.removeConnectURLsAndSendINFOToClients(url, url)
+	// did not add a check here yet.
+}
