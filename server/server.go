@@ -436,8 +436,10 @@ func (s *Server) setClusterName(name string) {
 	}
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
+
 	// Regenerate the info byte array
 	s.generateRouteInfoJSON()
+
 	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
 	var leafs []*client
 	for _, c := range s.leafs {
@@ -447,6 +449,7 @@ func (s *Server) setClusterName(name string) {
 		}
 		c.mu.Unlock()
 	}
+
 	s.mu.Unlock()
 	for _, l := range leafs {
 		l.closeConnection(ClusterNameConflict)
@@ -2481,6 +2484,16 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 		return nil
 	}
 	return s.profiler.Addr().(*net.TCPAddr)
+}
+
+// LeafnodeAddr returns the net.Addr object for the leafnode listener.
+func (s *Server) LeafnodeAddr() *net.TCPAddr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.leafNodeListener == nil {
+		return nil
+	}
+	return s.leafNodeListener.Addr().(*net.TCPAddr)
 }
 
 // ReadyForConnections returns `true` if the server is ready to accept clients
