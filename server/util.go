@@ -150,3 +150,37 @@ func comma(v int64) string {
 	parts[j] = strconv.Itoa(int(v))
 	return sign + strings.Join(parts[j:], ",")
 }
+
+// Adds urlStr to the given map. If the string was already present, simply
+// bumps the reference count.
+// Returns true only if it was added for the first time.
+func addUrlToMap(m gossipURLs, urlStr string) bool {
+	m[urlStr]++
+	return m[urlStr] == 1
+}
+
+// Removes urlStr from the given map. If the string is not present, nothing
+// is done and false is returned.
+// If the string was present, its reference count is decreased. Returns true
+// if this was the last reference, false otherwise.
+func removeUrlFromMap(m gossipURLs, urlStr string) bool {
+	removed := false
+	if ref, ok := m[urlStr]; ok {
+		if ref == 1 {
+			removed = true
+			delete(m, urlStr)
+		} else {
+			m[urlStr]--
+		}
+	}
+	return removed
+}
+
+// Returns the unique URLs in this map as a slice
+func getUrlsAsStringSlice(m gossipURLs) []string {
+	a := make([]string, 0, len(m))
+	for u := range m {
+		a = append(a, u)
+	}
+	return a
+}

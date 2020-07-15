@@ -397,9 +397,8 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		s.mu.Unlock()
 		return
 	}
-	// Add our LeafNode URL to the list that we send to servers connecting
-	// to our LeafNode accept URL. This call also regenerates leafNodeInfoJSON.
-	s.addLeafNodeURL(s.leafNodeInfo.IP)
+	s.leafURLsMap[s.leafNodeInfo.IP]++
+	s.generateLeafNodeInfoJSON()
 
 	// Setup state that can enable shutdown
 	s.leafNodeListener = l
@@ -506,15 +505,11 @@ func (s *Server) copyLeafNodeInfo() *Info {
 // Returns a boolean indicating if the URL was added or not.
 // Server lock is held on entry
 func (s *Server) addLeafNodeURL(urlStr string) bool {
-	// Make sure we already don't have it.
-	for _, url := range s.leafNodeInfo.LeafNodeURLs {
-		if url == urlStr {
-			return false
-		}
+	if addUrlToMap(s.leafURLsMap, urlStr) {
+		s.generateLeafNodeInfoJSON()
+		return true
 	}
-	s.leafNodeInfo.LeafNodeURLs = append(s.leafNodeInfo.LeafNodeURLs, urlStr)
-	s.generateLeafNodeInfoJSON()
-	return true
+	return false
 }
 
 // Removes a LeafNode URL of the route that is disconnecting from the Info structure.
@@ -527,27 +522,16 @@ func (s *Server) removeLeafNodeURL(urlStr string) bool {
 	if s.shutdown {
 		return false
 	}
-	removed := false
-	urls := s.leafNodeInfo.LeafNodeURLs
-	for i, url := range urls {
-		if url == urlStr {
-			// If not last, move last into the position we remove.
-			last := len(urls) - 1
-			if i != last {
-				urls[i] = urls[last]
-			}
-			s.leafNodeInfo.LeafNodeURLs = urls[0:last]
-			removed = true
-			break
-		}
-	}
-	if removed {
+	if removeUrlFromMap(s.leafURLsMap, urlStr) {
 		s.generateLeafNodeInfoJSON()
+		return true
 	}
-	return removed
+	return false
 }
 
+// Server lock is held on entry
 func (s *Server) generateLeafNodeInfoJSON() {
+	s.leafNodeInfo.LeafNodeURLs = getUrlsAsStringSlice(s.leafURLsMap)
 	b, _ := json.Marshal(s.leafNodeInfo)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	s.leafNodeInfoJSON = bytes.Join(pcs, []byte(" "))

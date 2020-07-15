@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -31,6 +32,7 @@ import (
 func testDefaultOptionsForGateway(name string) *server.Options {
 	o := DefaultTestOptions
 	o.Port = -1
+	o.Cluster.Name = name
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
 	o.Gateway.Port = -1
@@ -661,4 +663,64 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 
 	// Make sure this works.
 	waitForOutboundGateways(t, srvB, 1, 10*time.Second)
+}
+
+func TestGatewayAdvertiseInCluster(t *testing.T) {
+	ob1 := testDefaultOptionsForGateway("B")
+	ob1.Cluster.Name = "B"
+	ob1.Cluster.Host = "127.0.0.1"
+	ob1.Cluster.Port = -1
+	sb1 := runGatewayServer(ob1)
+	defer sb1.Shutdown()
+
+	gA := createGatewayConn(t, ob1.Gateway.Host, ob1.Gateway.Port)
+	defer gA.Close()
+
+	gASend, gAExpect := setupGatewayConn(t, gA, "A", "B")
+	gASend("PING\r\n")
+	gAExpect(pongRe)
+
+	ob2 := testDefaultOptionsForGateway("B")
+	ob2.Cluster.Name = "B"
+	ob2.Cluster.Host = "127.0.0.1"
+	ob2.Cluster.Port = -1
+	ob2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ob1.Cluster.Port))
+	ob2.Gateway.Advertise = "srvB:7222"
+	sb2 := runGatewayServer(ob2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+
+	buf := gAExpect(infoRe)
+	si := &server.Info{}
+	json.Unmarshal(buf[5:], si)
+	var ok bool
+	for _, u := range si.GatewayURLs {
+		if u == "srvB:7222" {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("Url srvB:7222 was not found: %q", si.GatewayURLs)
+	}
+
+	ob3 := testDefaultOptionsForGateway("B")
+	ob3.Cluster.Name = "B"
+	ob3.Cluster.Host = "127.0.0.1"
+	ob3.Cluster.Port = -1
+	ob3.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ob1.Cluster.Port))
+	ob3.Gateway.Advertise = "srvB:7222"
+	sb3 := runGatewayServer(ob3)
+	defer sb3.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2, sb3)
+
+	// Since it is the save srvB:7222 url, we should not get an update.
+	expectNothing(t, gA)
+
+	// Now shutdown sb2 and make sure that we are not getting an update
+	// with srvB:7222 missing.
+	sb2.Shutdown()
+	expectNothing(t, gA)
 }
