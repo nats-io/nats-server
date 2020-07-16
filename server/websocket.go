@@ -104,7 +104,7 @@ type srvWebsocket struct {
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	connectURLs    []string
-	connectURLsMap map[string]struct{}
+	connectURLsMap refCountedUrlSet
 	users          map[string]*User
 	nkeys          map[string]*NkeyUser
 	authOverride   bool // indicate if there is auth override in websocket config

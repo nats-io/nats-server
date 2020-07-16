@@ -1460,6 +1460,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 			// If we upgrade to solicited, we still want to keep the remote's
 			// connectURLs. So transfer those.
 			r.connectURLs = remote.route.connectURLs
+			r.wsConnURLs = remote.route.wsConnURLs
 			remote.route = r
 		}
 		// This is to mitigate the issue where both sides add the route

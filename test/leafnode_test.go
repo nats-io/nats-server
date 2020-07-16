@@ -4023,3 +4023,63 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 		t.Fatalf("Expected auth header to match, wanted %q, got %q", "s3cr3t", msg.Header.Get("Authorization"))
 	}
 }
+
+func TestLeafNodeAdvertiseInCluster(t *testing.T) {
+	o1 := testDefaultOptionsForLeafNodes()
+	o1.Cluster.Name = "abc"
+	o1.Cluster.Host = "127.0.0.1"
+	o1.Cluster.Port = -1
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	lc := createLeafConn(t, o1.LeafNode.Host, o1.LeafNode.Port)
+	defer lc.Close()
+
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
+	leafSend("PING\r\n")
+	leafExpect(pongRe)
+
+	o2 := testDefaultOptionsForLeafNodes()
+	o2.Cluster.Name = "abc"
+	o2.Cluster.Host = "127.0.0.1"
+	o2.Cluster.Port = -1
+	o2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	o2.LeafNode.Advertise = "srvB:7222"
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	buf := leafExpect(infoRe)
+	si := &server.Info{}
+	json.Unmarshal(buf[5:], si)
+	var ok bool
+	for _, u := range si.LeafNodeURLs {
+		if u == "srvB:7222" {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("Url srvB:7222 was not found: %q", si.GatewayURLs)
+	}
+
+	o3 := testDefaultOptionsForLeafNodes()
+	o3.Cluster.Name = "abc"
+	o3.Cluster.Host = "127.0.0.1"
+	o3.Cluster.Port = -1
+	o3.Routes = server.RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	o3.LeafNode.Advertise = "srvB:7222"
+	s3 := runGatewayServer(o3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	// Since it is the save srvB:7222 url, we should not get an update.
+	expectNothing(t, lc)
+
+	// Now shutdown s2 and make sure that we are not getting an update
+	// with srvB:7222 missing.
+	s2.Shutdown()
+	expectNothing(t, lc)
+}

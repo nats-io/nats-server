@@ -123,7 +123,7 @@ type srvGateway struct {
 	outo     []*client              // outbound gateways maintained in an order suitable for sending msgs (currently based on RTT)
 	in       map[uint64]*client     // inbound gateways
 	remotes  map[string]*gatewayCfg // Config of remote gateways
-	URLs     map[string]struct{}    // Set of all Gateway URLs in the cluster
+	URLs     refCountedUrlSet       // Set of all Gateway URLs in the cluster
 	URL      string                 // This server gateway URL (after possible random port is resolved)
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
@@ -298,7 +298,7 @@ func (s *Server) newGateway(opts *Options) error {
 		outo:     make([]*client, 0, 4),
 		in:       make(map[uint64]*client),
 		remotes:  make(map[string]*gatewayCfg),
-		URLs:     make(map[string]struct{}),
+		URLs:     make(refCountedUrlSet),
 		resolver: opts.Gateway.resolver,
 		runknown: opts.Gateway.RejectUnknown,
 		oldHash:  getOldHash(opts.Gateway.Name),
@@ -371,17 +371,6 @@ func (g *srvGateway) getName() string {
 	n := g.name
 	g.RUnlock()
 	return n
-}
-
-// Returns the Gateway URLs of all servers in the local cluster.
-// This is used to send to other cluster this server connects to.
-// The gateway read-lock is held on entry
-func (g *srvGateway) getURLs() []string {
-	a := make([]string, 0, len(g.URLs))
-	for u := range g.URLs {
-		a = append(a, u)
-	}
-	return a
 }
 
 // Returns if this server rejects connections from gateways that are not
@@ -499,7 +488,7 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 	gw := s.gateway
 	gw.Lock()
 	defer gw.Unlock()
-	delete(gw.URLs, gw.URL)
+	gw.URLs.removeUrl(gw.URL)
 	if o.Gateway.Advertise != "" {
 		advHost, advPort, err := parseHostPort(o.Gateway.Advertise, o.Gateway.Port)
 		if err != nil {
@@ -539,7 +528,7 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 	} else {
 		s.Noticef("Address for gateway %q is %s", gw.name, gw.URL)
 	}
-	gw.URLs[gw.URL] = struct{}{}
+	gw.URLs[gw.URL]++
 	gw.info = info
 	info.GatewayURL = gw.URL
 	// (re)generate the gatewayInfoJSON byte array
@@ -556,7 +545,7 @@ func (g *srvGateway) generateInfoJSON() {
 	if !g.enabled {
 		return
 	}
-	g.info.GatewayURLs = g.getURLs()
+	g.info.GatewayURLs = g.URLs.getAsStringSlice()
 	b, err := json.Marshal(g.info)
 	if err != nil {
 		panic(err)
@@ -1466,13 +1455,12 @@ func (g *gatewayCfg) addURLs(infoURLs []string) {
 // Server lock held on entry
 func (s *Server) addGatewayURL(urlStr string) bool {
 	s.gateway.Lock()
-	_, present := s.gateway.URLs[urlStr]
-	if !present {
-		s.gateway.URLs[urlStr] = struct{}{}
+	added := s.gateway.URLs.addUrl(urlStr)
+	if added {
 		s.gateway.generateInfoJSON()
 	}
 	s.gateway.Unlock()
-	return !present
+	return added
 }
 
 // Removes this URL from the set of gateway URLs.
@@ -1483,9 +1471,8 @@ func (s *Server) removeGatewayURL(urlStr string) bool {
 		return false
 	}
 	s.gateway.Lock()
-	_, removed := s.gateway.URLs[urlStr]
+	removed := s.gateway.URLs.removeUrl(urlStr)
 	if removed {
-		delete(s.gateway.URLs, urlStr)
 		s.gateway.generateInfoJSON()
 	}
 	s.gateway.Unlock()

@@ -25,6 +25,10 @@ import (
 	"time"
 )
 
+// This map is used to store URLs string as the key with a reference count as
+// the value. This is used to handle gossiped URLs such as connect_urls, etc..
+type refCountedUrlSet map[string]int
+
 // Ascii numbers 0-9
 const (
 	asciiZero = 48
@@ -149,4 +153,38 @@ func comma(v int64) string {
 	}
 	parts[j] = strconv.Itoa(int(v))
 	return sign + strings.Join(parts[j:], ",")
+}
+
+// Adds urlStr to the given map. If the string was already present, simply
+// bumps the reference count.
+// Returns true only if it was added for the first time.
+func (m refCountedUrlSet) addUrl(urlStr string) bool {
+	m[urlStr]++
+	return m[urlStr] == 1
+}
+
+// Removes urlStr from the given map. If the string is not present, nothing
+// is done and false is returned.
+// If the string was present, its reference count is decreased. Returns true
+// if this was the last reference, false otherwise.
+func (m refCountedUrlSet) removeUrl(urlStr string) bool {
+	removed := false
+	if ref, ok := m[urlStr]; ok {
+		if ref == 1 {
+			removed = true
+			delete(m, urlStr)
+		} else {
+			m[urlStr]--
+		}
+	}
+	return removed
+}
+
+// Returns the unique URLs in this map as a slice
+func (m refCountedUrlSet) getAsStringSlice() []string {
+	a := make([]string, 0, len(m))
+	for u := range m {
+		a = append(a, u)
+	}
+	return a
 }
