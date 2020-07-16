@@ -97,8 +97,6 @@ type Info struct {
 	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
 }
 
-type gossipURLs map[string]int
-
 // Server is our main struct.
 type Server struct {
 	gcid uint64
@@ -144,7 +142,7 @@ type Server struct {
 	leafNodeListener net.Listener
 	leafNodeInfo     Info
 	leafNodeInfoJSON []byte
-	leafURLsMap      gossipURLs
+	leafURLsMap      refCountedUrlSet
 	leafNodeOpts     struct {
 		resolver    netResolver
 		dialTimeout time.Duration
@@ -173,7 +171,7 @@ type Server struct {
 	clientConnectURLs []string
 
 	// Used internally for quick look-ups.
-	clientConnectURLsMap gossipURLs
+	clientConnectURLsMap refCountedUrlSet
 
 	lastCURLsUpdate int64
 
@@ -312,9 +310,9 @@ func NewServer(opts *Options) (*Server, error) {
 	defer s.mu.Unlock()
 
 	// Used internally for quick look-ups.
-	s.clientConnectURLsMap = make(gossipURLs)
-	s.websocket.connectURLsMap = make(gossipURLs)
-	s.leafURLsMap = make(gossipURLs)
+	s.clientConnectURLsMap = make(refCountedUrlSet)
+	s.websocket.connectURLsMap = make(refCountedUrlSet)
+	s.leafURLsMap = make(refCountedUrlSet)
 
 	// Ensure that non-exported options (used in tests) are properly set.
 	s.setLeafNodeNonExportedOptions()
@@ -2213,12 +2211,12 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 
 	remove := !add
 	// Will return true if we need alter the server's Info object.
-	updateMap := func(urls []string, m gossipURLs) bool {
+	updateMap := func(urls []string, m refCountedUrlSet) bool {
 		wasUpdated := false
 		for _, url := range urls {
-			if add && addUrlToMap(m, url) {
+			if add && m.addUrl(url) {
 				wasUpdated = true
-			} else if remove && removeUrlFromMap(m, url) {
+			} else if remove && m.removeUrl(url) {
 				wasUpdated = true
 			}
 		}
@@ -2227,7 +2225,7 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 	cliUpdated := updateMap(curls, s.clientConnectURLsMap)
 	wsUpdated := updateMap(wsurls, s.websocket.connectURLsMap)
 
-	updateInfo := func(infoURLs *[]string, urls []string, m gossipURLs) {
+	updateInfo := func(infoURLs *[]string, urls []string, m refCountedUrlSet) {
 		// Recreate the info's slice from the map
 		*infoURLs = (*infoURLs)[:0]
 		// Add this server client connect ULRs first...

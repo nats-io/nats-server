@@ -505,7 +505,7 @@ func (s *Server) copyLeafNodeInfo() *Info {
 // Returns a boolean indicating if the URL was added or not.
 // Server lock is held on entry
 func (s *Server) addLeafNodeURL(urlStr string) bool {
-	if addUrlToMap(s.leafURLsMap, urlStr) {
+	if s.leafURLsMap.addUrl(urlStr) {
 		s.generateLeafNodeInfoJSON()
 		return true
 	}
@@ -522,7 +522,7 @@ func (s *Server) removeLeafNodeURL(urlStr string) bool {
 	if s.shutdown {
 		return false
 	}
-	if removeUrlFromMap(s.leafURLsMap, urlStr) {
+	if s.leafURLsMap.removeUrl(urlStr) {
 		s.generateLeafNodeInfoJSON()
 		return true
 	}
@@ -531,7 +531,7 @@ func (s *Server) removeLeafNodeURL(urlStr string) bool {
 
 // Server lock is held on entry
 func (s *Server) generateLeafNodeInfoJSON() {
-	s.leafNodeInfo.LeafNodeURLs = getUrlsAsStringSlice(s.leafURLsMap)
+	s.leafNodeInfo.LeafNodeURLs = s.leafURLsMap.getAsStringSlice()
 	b, _ := json.Marshal(s.leafNodeInfo)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	s.leafNodeInfoJSON = bytes.Join(pcs, []byte(" "))

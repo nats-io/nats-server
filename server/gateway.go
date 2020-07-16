@@ -123,7 +123,7 @@ type srvGateway struct {
 	outo     []*client              // outbound gateways maintained in an order suitable for sending msgs (currently based on RTT)
 	in       map[uint64]*client     // inbound gateways
 	remotes  map[string]*gatewayCfg // Config of remote gateways
-	URLs     gossipURLs             // Set of all Gateway URLs in the cluster
+	URLs     refCountedUrlSet       // Set of all Gateway URLs in the cluster
 	URL      string                 // This server gateway URL (after possible random port is resolved)
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
@@ -298,7 +298,7 @@ func (s *Server) newGateway(opts *Options) error {
 		outo:     make([]*client, 0, 4),
 		in:       make(map[uint64]*client),
 		remotes:  make(map[string]*gatewayCfg),
-		URLs:     make(gossipURLs),
+		URLs:     make(refCountedUrlSet),
 		resolver: opts.Gateway.resolver,
 		runknown: opts.Gateway.RejectUnknown,
 		oldHash:  getOldHash(opts.Gateway.Name),
@@ -488,7 +488,7 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 	gw := s.gateway
 	gw.Lock()
 	defer gw.Unlock()
-	removeUrlFromMap(gw.URLs, gw.URL)
+	gw.URLs.removeUrl(gw.URL)
 	if o.Gateway.Advertise != "" {
 		advHost, advPort, err := parseHostPort(o.Gateway.Advertise, o.Gateway.Port)
 		if err != nil {
@@ -545,7 +545,7 @@ func (g *srvGateway) generateInfoJSON() {
 	if !g.enabled {
 		return
 	}
-	g.info.GatewayURLs = getUrlsAsStringSlice(g.URLs)
+	g.info.GatewayURLs = g.URLs.getAsStringSlice()
 	b, err := json.Marshal(g.info)
 	if err != nil {
 		panic(err)
@@ -1455,7 +1455,7 @@ func (g *gatewayCfg) addURLs(infoURLs []string) {
 // Server lock held on entry
 func (s *Server) addGatewayURL(urlStr string) bool {
 	s.gateway.Lock()
-	added := addUrlToMap(s.gateway.URLs, urlStr)
+	added := s.gateway.URLs.addUrl(urlStr)
 	if added {
 		s.gateway.generateInfoJSON()
 	}
@@ -1471,7 +1471,7 @@ func (s *Server) removeGatewayURL(urlStr string) bool {
 		return false
 	}
 	s.gateway.Lock()
-	removed := removeUrlFromMap(s.gateway.URLs, urlStr)
+	removed := s.gateway.URLs.removeUrl(urlStr)
 	if removed {
 		s.gateway.generateInfoJSON()
 	}
