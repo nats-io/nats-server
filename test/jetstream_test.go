@@ -5223,6 +5223,17 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	if usage.Memory > uint64(al.MaxMemory) {
 		t.Fatalf("Expected memory to not exceed limit of %d, got %d", al.MaxMemory, usage.Memory)
 	}
+
+	// make sure that unlimited accounts work
+	al.MaxMemory = -1
+
+	if err := gacc.UpdateJetStreamLimits(al); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+	}
+
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, "LIMITS", "Hello World!")
+	}
 }
 
 func TestJetStreamStreamFileStorageTrackingAndLimits(t *testing.T) {
