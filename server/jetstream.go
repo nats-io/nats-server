@@ -773,11 +773,11 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
 	var exceeded bool
 	jsa.mu.Lock()
 	if storeType == MemoryStorage {
-		if jsa.memUsed > jsa.limits.MaxMemory {
+		if jsa.limits.MaxMemory > 0 && jsa.memUsed > jsa.limits.MaxMemory {
 			exceeded = true
 		}
 	} else {
-		if jsa.storeUsed > jsa.limits.MaxStore {
+		if jsa.limits.MaxStore > 0 && jsa.storeUsed > jsa.limits.MaxStore {
 			exceeded = true
 		}
 	}
