@@ -3595,6 +3595,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
+	fs.StringVar(&opts.Cluster.Name, "cluster_name", "", "Cluster Name, if not set one will be dynamically generated.")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
