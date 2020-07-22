@@ -2589,6 +2589,34 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	}
 }
 
+func TestJetStreamDeleteStreamManyConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// This number needs to be higher than the internal sendq size to trigger what this test is testing.
+	for i := 0; i < 2000; i++ {
+		_, err := mset.AddConsumer(&server.ConsumerConfig{
+			Durable:        fmt.Sprintf("D-%d", i),
+			DeliverSubject: fmt.Sprintf("deliver.%d", i),
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+	}
+	// With bug this would not return and would hang.
+	mset.Delete()
+}
+
 func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
