@@ -488,8 +488,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 // Lock should be held on entry but will be released.
 func (o *Consumer) sendAdvisory(subj string, msg []byte) {
 	if o.mset != nil && o.mset.sendq != nil {
+		sendq := o.mset.sendq
 		o.mu.Unlock()
-		o.mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
+		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
 		o.mu.Lock()
 	}
 }
