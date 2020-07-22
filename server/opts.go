@@ -886,6 +886,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		return
 	case "no_system_account", "no_system", "no_sys_acc":
 		o.NoSystemAccount = v.(bool)
+	case "no_header_support":
+		o.NoHeaderSupport = v.(bool)
 	case "trusted", "trusted_keys":
 		switch v := v.(type) {
 		case string:
