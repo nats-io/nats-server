@@ -24,9 +24,10 @@ More specifically from [rfc822](https://www.ietf.org/rfc/rfc822.txt) Section 3.1
 
 The reference NATS Go client uses the `http.Header` infrastructure for serializing NATS headers. Other language clients may not be able to reuse header serialization infrastructure outside of the context of an HTTP request. Furthermore, the implementation of the native header library may diverge from the Go `http.Header` while still being standard.
 
-For example, the Go `http.Header` library, performs the following formatting which the while not part of the spec, as header field names are case insensitive, are a requirement in NATS header fields:
+For example, the Go `http.Header` library, performs the following formatting which while not part of the spec, as header field names are case-insensitive, become a requirement in NATS header fields:
 - First character in a header field is capitalized if in the range of [a-z]
 - First characters following a dash (`-`) are capitalized if in the range of [a-z]
+
 _If a client doesn't serialize field names as above, it is possible that the server may ignore them._
 
 NATS Headers:
