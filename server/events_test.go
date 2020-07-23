@@ -1814,3 +1814,38 @@ func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
 		return nil
 	})
 }
+
+func TestServerEventsReceivedByQSubs(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncs.Close()
+
+	// Listen for auth error events.
+	qsub, _ := ncs.QueueSubscribeSync("$SYS.SERVER.*.CLIENT.AUTH.ERR", "queue")
+	defer qsub.Unsubscribe()
+
+	ncs.Flush()
+
+	nats.Connect(url, nats.Name("TEST BAD LOGIN"))
+
+	m, err := qsub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Should have heard an auth error event")
+	}
+	dem := DisconnectEventMsg{}
+	if err := json.Unmarshal(m.Data, &dem); err != nil {
+		t.Fatalf("Error unmarshalling disconnect event message: %v", err)
+	}
+	if dem.Reason != "Authentication Failure" {
+		t.Fatalf("Expected auth error, got %q", dem.Reason)
+	}
+}
