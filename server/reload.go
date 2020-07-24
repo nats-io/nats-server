@@ -770,7 +770,7 @@ func imposeOrder(value interface{}) error {
 			return value.AllowedOrigins[i] < value.AllowedOrigins[j]
 		})
 	case string, bool, int, int32, int64, time.Duration, float64, nil,
-		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, Authentication:
+		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, *DirAccResolver, Authentication:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests

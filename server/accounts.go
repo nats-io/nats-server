@@ -14,8 +14,11 @@
 package server
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -2581,16 +2584,41 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acc *Account) *NkeyUser {
 	return nu
 }
 
+const fetchTimeout = 2 * time.Second
+
 // AccountResolver interface. This is to fetch Account JWTs by public nkeys
 type AccountResolver interface {
 	Fetch(name string) (string, error)
 	Store(name, jwt string) error
+	IsReadOnly() bool
+	Start(server *Server, systemAccPubKey string) func()
+	IsTrackingUpdate() bool
+}
+
+// Default implementations of IsReadOnly/Start so only need to be written when changed
+type resolverDefaultsOpsImpl struct{}
+
+func (*resolverDefaultsOpsImpl) IsReadOnly() bool {
+	return true
+}
+
+func (*resolverDefaultsOpsImpl) IsTrackingUpdate() bool {
+	return false
+}
+
+func (*resolverDefaultsOpsImpl) Start(*Server, string) func() {
+	return func() {}
+}
+
+func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
+	return fmt.Errorf("Store operation not supported for URL Resolver")
 }
 
 // MemAccResolver is a memory only resolver.
 // Mostly for testing.
 type MemAccResolver struct {
 	sm sync.Map
+	resolverDefaultsOpsImpl
 }
 
 // Fetch will fetch the account jwt claims from the internal sync.Map.
@@ -2607,10 +2635,15 @@ func (m *MemAccResolver) Store(name, jwt string) error {
 	return nil
 }
 
+func (ur *MemAccResolver) IsReadOnly() bool {
+	return false
+}
+
 // URLAccResolver implements an http fetcher.
 type URLAccResolver struct {
 	url string
 	c   *http.Client
+	resolverDefaultsOpsImpl
 }
 
 // NewURLAccResolver returns a new resolver for the given base URL.
@@ -2626,7 +2659,7 @@ func NewURLAccResolver(url string) (*URLAccResolver, error) {
 	}
 	ur := &URLAccResolver{
 		url: url,
-		c:   &http.Client{Timeout: 2 * time.Second, Transport: tr},
+		c:   &http.Client{Timeout: fetchTimeout, Transport: tr},
 	}
 	return ur, nil
 }
@@ -2651,7 +2684,329 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 	return string(body), nil
 }
 
-// Store is not implemented for URL Resolver.
-func (ur *URLAccResolver) Store(name, jwt string) error {
-	return fmt.Errorf("Store operation not supported for URL Resolver")
+// Resolver based on nats for synchronization and backing directory for storage.
+type DirAccResolver struct {
+	*DirJWTStore
+	syncInterval time.Duration
+}
+
+func (dr *DirAccResolver) IsTrackingUpdate() bool {
+	return true
+}
+
+func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
+	if err == nil {
+		s.Debugf("%s - %s", message, acc)
+	} else {
+		s.Errorf("%s - %s - %s", message, acc, err)
+	}
+	if respSubj == "" {
+		return
+	}
+	server := &ServerInfo{}
+	response := map[string]interface{}{"server": server}
+	if err == nil {
+		response["data"] = map[string]interface{}{
+			"code":    http.StatusOK,
+			"account": acc,
+			"message": message,
+		}
+	} else {
+		response["error"] = map[string]interface{}{
+			"code":        http.StatusInternalServerError,
+			"account":     acc,
+			"description": fmt.Sprintf("%s - %v", message, err),
+		}
+	}
+	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
+}
+
+func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
+	if dr == nil || dr.IsReadOnly() {
+		return func() {}
+	}
+	dr.Lock()
+	defer dr.Unlock()
+	dr.DirJWTStore.changed = func(pubKey string) {
+		if v, ok := s.accounts.Load(pubKey); !ok {
+		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
+			s.Errorf("update got error on load: %v", err)
+		} else if err := s.updateAccountWithClaimJWT(v.(*Account), jwt); err != nil {
+			s.Errorf("update resulted in error %v", err)
+		}
+	}
+	const accountPackRequest = "$SYS.ACCOUNT.CLAIMS.PACK"
+	const accountLookupRequest = "$SYS.ACCOUNT.*.CLAIMS.LOOKUP"
+	var (
+		subLookupReq, subPackResp, subPackReq, subUpdate *subscription
+		err                                              error
+	)
+	// subscribe to account jwt update requests
+	if subUpdate, err = s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+		tk := strings.Split(subj, tsep)
+		if len(tk) != accUpdateTokens {
+			return
+		}
+		pubKey := tk[accUpdateAccIndex]
+		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+		} else if claim.Subject != pubKey {
+			err := errors.New("subject does not match jwt content")
+			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+		} else if err := dr.save(pubKey, string(msg)); err != nil {
+			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+		} else {
+			respondToUpdate(s, resp, pubKey, "jwt updated", nil)
+		}
+	}); err != nil {
+		s.Errorf("Error setting up update handling: %v", err)
+	}
+	// respond to lookups with our version
+	if subLookupReq, err = s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+		if reply == "" {
+			return
+		}
+		tk := strings.Split(subj, tsep)
+		if len(tk) != accUpdateTokens {
+			return
+		}
+		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accUpdateAccIndex]); err != nil {
+			s.Errorf("Merging resulted in error: %v", err)
+		} else {
+			s.sendInternalMsgLocked(reply, "", nil, []byte(theJWT))
+		}
+	}); err != nil {
+		s.Errorf("Error setting up pack response handling: %v", err)
+	}
+	// respond to pack requests with one or more pack messages
+	// an empty message signifies the end of the response responder
+	if subPackReq, err = s.sysSubscribeQ(accountPackRequest, "responder",
+		func(_ *subscription, _ *client, _, reply string, theirHash []byte) {
+			if reply == "" {
+				return
+			}
+			ourHash := dr.DirJWTStore.Hash()
+			if bytes.Equal(theirHash, ourHash[:]) {
+				s.sendInternalMsgLocked(reply, "", nil, []byte{})
+				s.Debugf("pack request matches hash %x", ourHash[:])
+			} else if msg, err := dr.DirJWTStore.Pack(-1); err != nil {
+				// let them timeout
+				s.Errorf("pack request error: %v", err)
+			} else {
+				s.Debugf("pack request hash %x - respond with hash %x / %d bytes", theirHash, ourHash, len(msg))
+				s.sendInternalMsgLocked(reply, "", nil, []byte(msg))
+				s.sendInternalMsgLocked(reply, "", nil, []byte{})
+			}
+		}); err != nil {
+		s.Errorf("Error setting up pack request handling: %v", err)
+	}
+	// embed pack responses into store
+	packRespIb := s.newRespInbox()
+	if subPackResp, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
+		hash := dr.DirJWTStore.Hash()
+		if len(msg) == 0 { // end of response stream
+			s.Debugf("Merging Finished and resulting in: %x", dr.DirJWTStore.Hash())
+			return
+		} else if err := dr.DirJWTStore.Merge(string(msg)); err != nil {
+			s.Errorf("Merging resulted in error: %v", err)
+		} else {
+			s.Debugf("Merging succeeded and changed %x to %x", hash, dr.DirJWTStore.Hash())
+		}
+	}); err != nil {
+		s.Errorf("Error setting up pack response handling: %v", err)
+	}
+	// periodically send out pack message
+	quit := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(dr.syncInterval)
+		for {
+			select {
+			case <-quit:
+				ticker.Stop()
+				return
+			case <-ticker.C:
+			}
+			ourHash := dr.DirJWTStore.Hash()
+			s.Debugf("Checking store state: %x", ourHash)
+			s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
+		}
+	}()
+	closer := func() {
+		close(quit)
+		s.sysUnsubscribe(subUpdate)
+		s.sysUnsubscribe(subLookupReq)
+		s.sysUnsubscribe(subPackResp)
+		s.sysUnsubscribe(subPackReq)
+		dr.DirJWTStore.Close()
+	}
+	s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
+	return closer
+}
+
+func (dr *DirAccResolver) Fetch(name string) (string, error) {
+	return dr.LoadAcc(name)
+}
+
+func (dr *DirAccResolver) Store(name, jwt string) error {
+	if dr.IsReadOnly() {
+		return fmt.Errorf("Store operation not supported for read only DirResolver")
+	}
+	return dr.saveIfNewer(name, jwt)
+}
+
+func NewDirAccResolver(path string, limit int64, syncInterval time.Duration) (*DirAccResolver, error) {
+	if limit == 0 {
+		limit = math.MaxInt64
+	}
+	if syncInterval <= 0 {
+		syncInterval = time.Minute
+	}
+	store, err := NewExpiringDirJWTStore(path, false, true, 0, limit, false, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &DirAccResolver{store, syncInterval}, nil
+}
+
+// Caching resolver using nats for lookups and making use of a directory for storage
+type CacheDirAccResolver struct {
+	DirAccResolver
+	*Server
+	ttl time.Duration
+}
+
+func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
+	if theJWT, _ := dr.LoadAcc(name); theJWT != "" {
+		return theJWT, nil
+	}
+	// lookup from other server
+	s := dr.Server
+	if s == nil {
+		return "", ErrNoAccountResolver
+	}
+	respC := make(chan []byte, 1)
+	accountLookupRequest := fmt.Sprintf("$SYS.ACCOUNT.%s.CLAIMS.LOOKUP", name)
+	s.mu.Lock()
+	replySubj := s.newRespInbox()
+	// Store our handler.
+	s.sys.replies[replySubj] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
+		clone := make([]byte, len(msg))
+		copy(clone, msg)
+		s.mu.Lock()
+		if _, ok := s.sys.replies[replySubj]; ok {
+			respC <- clone // only send if there is still interest
+		}
+		s.mu.Unlock()
+	}
+	s.sendInternalMsg(accountLookupRequest, replySubj, nil, []byte{})
+	s.mu.Unlock()
+	var err error
+	theJWT := ""
+	select {
+	case <-time.After(fetchTimeout):
+		err = errors.New("fetching jwt timed out")
+	case m := <-respC:
+		theJWT = string(m)
+		if err = dr.Store(name, theJWT); err != nil {
+			theJWT = ""
+		}
+	}
+	s.mu.Lock()
+	delete(s.sys.replies, replySubj)
+	s.mu.Unlock()
+	close(respC)
+	return theJWT, err
+}
+
+func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*CacheDirAccResolver, error) {
+	if limit <= 0 {
+		limit = 1_000
+	}
+	store, err := NewExpiringDirJWTStore(path, false, true, 0, limit, true, ttl, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &CacheDirAccResolver{DirAccResolver{store, 0}, nil, ttl}, nil
+}
+
+func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) func() {
+	dr.Lock()
+	defer dr.Unlock()
+	dr.Server = s
+	dr.DirJWTStore.changed = func(pubKey string) {
+		if v, ok := s.accounts.Load(pubKey); !ok {
+		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
+			s.Errorf("update got error on load: %v", err)
+		} else if err := s.updateAccountWithClaimJWT(v.(*Account), jwt); err != nil {
+			s.Errorf("update resulted in error %v", err)
+		}
+	}
+	var subUpdate *subscription
+	var err error
+	// subscribe to account jwt update requests
+	if subUpdate, err = s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+		tk := strings.Split(subj, tsep)
+		if len(tk) != accUpdateTokens {
+			return
+		}
+		pubKey := tk[accUpdateAccIndex]
+		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+		} else if claim.Subject != pubKey {
+			err := errors.New("subject does not match jwt content")
+			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+		} else if _, ok := s.accounts.Load(pubKey); !ok {
+			respondToUpdate(s, resp, pubKey, "jwt update cache skipped", nil)
+		} else if err := dr.save(pubKey, string(msg)); err != nil {
+			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+		} else {
+			respondToUpdate(s, resp, pubKey, "jwt updated cache", nil)
+		}
+	}); err != nil {
+		s.Errorf("Error setting up update handling: %v", err)
+	}
+	return func() {
+		s.sysUnsubscribe(subUpdate)
+		dr.DirJWTStore.Close()
+	}
+}
+
+// Resolver for use with shared directories. Detects file changes
+type SharedDirAccResolver struct {
+	DirAccResolver
+}
+
+func NewSharedDirAccResolver(path string) (*SharedDirAccResolver, error) {
+	res := &SharedDirAccResolver{}
+	store, err := NewImmutableDirJWTStore(path, false, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	res.DirJWTStore = store
+	return res, nil
+}
+
+func (dr *SharedDirAccResolver) Start(s *Server, sysAcc string) func() {
+	dr.Lock()
+	dr.DirJWTStore.changed = func(pubKey string) {
+		if v, ok := s.accounts.Load(pubKey); !ok {
+			s.Debugf("jwt (unused) %s changed", pubKey)
+		} else if newJWT, err := dr.LoadAcc(pubKey); err != nil {
+			s.Errorf("error reading updated jwt: %v", err)
+		} else {
+			s.Debugf("jwt %s changed", pubKey)
+			s.updateAccountWithClaimJWT(v.(*Account), newJWT)
+		}
+	}
+	dr.DirJWTStore.errorOccurred = func(err error) {
+		s.Errorf("error in directory resolver", err)
+	}
+	dr.Unlock()
+	dr.DirJWTStore.startWatching()
+	s.Noticef("Monitoring shared directory %s for account jwt changes", dr.directory)
+	return func() { dr.DirJWTStore.Close() }
+}
+
+func (dr *SharedDirAccResolver) IsTrackingUpdate() bool {
+	return false
 }

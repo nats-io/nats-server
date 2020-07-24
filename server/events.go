@@ -80,6 +80,7 @@ type internal struct {
 	statsz   time.Duration
 	shash    string
 	inboxPre string
+	closeRes func()
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -584,9 +585,15 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 	// Listen for account claims updates.
-	subject = fmt.Sprintf(accUpdateEventSubj, "*")
-	if _, err := s.sysSubscribe(subject, s.accountClaimUpdate); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
+	subscribeToUpdate := true
+	if s.accResolver != nil {
+		subscribeToUpdate = !s.accResolver.IsTrackingUpdate()
+	}
+	if subscribeToUpdate {
+		subject = fmt.Sprintf(accUpdateEventSubj, "*")
+		if _, err := s.sysSubscribe(subject, s.accountClaimUpdate); err != nil {
+			s.Errorf("Error setting up internal tracking: %v", err)
+		}
 	}
 	// Listen for requests for our statsz.
 	subject = fmt.Sprintf(serverStatsReqSubj, s.info.ID)
@@ -647,7 +654,6 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(subject, s.remoteLatencyUpdate); err != nil {
 		s.Errorf("Error setting up internal latency tracking: %v", err)
 	}
-
 	// This is for simple debugging of number of subscribers that exist in the system.
 	if _, err := s.sysSubscribeInternal(accSubsSubj, s.debugSubscribers); err != nil {
 		s.Errorf("Error setting up internal debug service for subscribers: %v", err)
@@ -765,6 +771,10 @@ func (s *Server) shutdownEventing() {
 	clearTimer(&s.sys.sweeper)
 	clearTimer(&s.sys.stmr)
 	s.mu.Unlock()
+
+	if s.sys.closeRes != nil {
+		s.sys.closeRes()
+	}
 
 	// We will queue up a shutdown event and wait for the
 	// internal send loop to exit.
@@ -1203,17 +1213,22 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 // required to be copied.
 type msgHandler func(sub *subscription, client *client, subject, reply string, msg []byte)
 
-// Create an internal subscription. No support for queue groups atm.
+// Create an internal subscription. sysSubscribeQ for queue groups.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
-	return s.systemSubscribe(subject, false, cb)
+	return s.systemSubscribe(subject, "", false, cb)
+}
+
+// Create an internal subscription with queue
+func (s *Server) sysSubscribeQ(subject, queue string, cb msgHandler) (*subscription, error) {
+	return s.systemSubscribe(subject, queue, false, cb)
 }
 
 // Create an internal subscription but do not forward interest.
 func (s *Server) sysSubscribeInternal(subject string, cb msgHandler) (*subscription, error) {
-	return s.systemSubscribe(subject, true, cb)
+	return s.systemSubscribe(subject, "", true, cb)
 }
 
-func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandler) (*subscription, error) {
+func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, cb msgHandler) (*subscription, error) {
 	if !s.eventsEnabled() {
 		return nil, ErrNoSysAccount
 	}
@@ -1227,12 +1242,16 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	sid := strconv.Itoa(s.sys.sid)
 	s.mu.Unlock()
 
+	// Now create the subscription
 	if trace {
-		c.traceInOp("SUB", []byte(subject+" "+sid))
+		c.traceInOp("SUB", []byte(subject+" "+queue+" "+sid))
 	}
 
-	// Now create the subscription
-	return c.processSub([]byte(subject), nil, []byte(sid), cb, internalOnly)
+	var q []byte
+	if queue != "" {
+		q = []byte(queue)
+	}
+	return c.processSub([]byte(subject), q, []byte(sid), cb, internalOnly)
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {

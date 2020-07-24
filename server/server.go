@@ -360,20 +360,42 @@ func NewServer(opts *Options) (*Server, error) {
 	// waiting for complete shutdown.
 	s.shutdownComplete = make(chan struct{})
 
-	// For tracking accounts
-	if err := s.configureAccounts(); err != nil {
+	// Check for configured account resolvers.
+	if err := s.configureResolver(); err != nil {
 		return nil, err
 	}
-
 	// If there is an URL account resolver, do basic test to see if anyone is home.
-	// Do this after configureAccounts() which calls configureResolver(), which will
-	// set TLSConfig if specified.
 	if ar := opts.AccountResolver; ar != nil {
 		if ur, ok := ar.(*URLAccResolver); ok {
 			if _, err := ur.Fetch(""); err != nil {
 				return nil, err
 			}
 		}
+	}
+	// For other resolver:
+	// In operator mode, when the account resolver depends on an external system and
+	// the system account can't fetched, inject a temporary one.
+	if ar := s.accResolver; len(opts.TrustedOperators) == 1 && ar != nil &&
+		opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+		if _, ok := ar.(*MemAccResolver); !ok {
+			s.mu.Unlock()
+			var a *Account
+			// perform direct lookup to avoid warning trace
+			if _, err := ar.Fetch(s.opts.SystemAccount); err == nil {
+				a, _ = s.fetchAccount(s.opts.SystemAccount)
+			}
+			s.mu.Lock()
+			if a == nil {
+				sac := NewAccount(s.opts.SystemAccount)
+				sac.Issuer = opts.TrustedOperators[0].Issuer
+				s.registerAccountNoLock(sac)
+			}
+		}
+	}
+
+	// For tracking accounts
+	if err := s.configureAccounts(); err != nil {
+		return nil, err
 	}
 
 	// In local config mode, check that leafnode configuration
@@ -610,11 +632,6 @@ func (s *Server) configureAccounts() error {
 		return true
 	})
 
-	// Check for configured account resolvers.
-	if err := s.configureResolver(); err != nil {
-		return err
-	}
-
 	// Set the system account if it was configured.
 	// Otherwise create a default one.
 	if opts.SystemAccount != _EMPTY_ {
@@ -654,8 +671,8 @@ func (s *Server) configureResolver() error {
 			}
 		}
 		if len(opts.resolverPreloads) > 0 {
-			if _, ok := s.accResolver.(*MemAccResolver); !ok {
-				return fmt.Errorf("resolver preloads only available for resolver type MEM")
+			if s.accResolver.IsReadOnly() {
+				return fmt.Errorf("resolver preloads only available for writeable resolver types MEM/DIR/CACHE_DIR")
 			}
 			for k, v := range opts.resolverPreloads {
 				_, err := jwt.DecodeAccountClaims(v)
@@ -1017,6 +1034,11 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// Start up our general subscriptions
 	s.initEventTracking()
 
+	// start up resolver machinery
+	if s.accResolver != nil {
+		s.sys.closeRes = s.accResolver.Start(s, acc.Name)
+	}
+
 	// Track for dead remote servers.
 	s.wrapChk(s.startRemoteServerSweepTimer)()
 
@@ -1341,6 +1363,34 @@ func (s *Server) Start() {
 	// This allows them to be logged right away vs when they are accessed via a client.
 	if hasOperators && len(opts.resolverPreloads) > 0 {
 		s.checkResolvePreloads()
+	}
+
+	// In operator mode, when the account resolver depends on an external system and
+	// the system account is the bootstrapping account, start fetching it
+	if ar := s.accResolver; len(opts.TrustedOperators) == 1 && ar != nil &&
+		opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+		if _, ok := ar.(*MemAccResolver); !ok {
+			if v, ok := s.accounts.Load(s.opts.SystemAccount); ok && v.(*Account).claimJWT == "" {
+				s.Noticef("Using bootstrapping system account")
+				s.startGoRoutine(func() {
+					defer s.grWG.Done()
+					t := time.NewTicker(time.Second)
+					defer t.Stop()
+					for {
+						select {
+						case <-s.quitCh:
+							return
+						case <-t.C:
+							if _, err := ar.Fetch(s.opts.SystemAccount); err != nil {
+							} else if _, err := s.fetchAccount(s.opts.SystemAccount); err == nil {
+								s.Noticef("System account fetched and updated")
+								return
+							}
+						}
+					}
+				})
+			}
+		}
 	}
 
 	// Log the pid to a file

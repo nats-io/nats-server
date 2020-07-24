@@ -816,22 +816,16 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 		}
 	case "resolver", "account_resolver", "accounts_resolver":
-		// "resolver" takes precedence over value obtained from "operator".
-		// Clear so that parsing errors are not silently ignored.
-		o.AccountResolver = nil
-		var memResolverRe = regexp.MustCompile(`(MEM|MEMORY|mem|memory)\s*`)
-		var resolverRe = regexp.MustCompile(`(?:URL|url){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
-		str, ok := v.(string)
-		if !ok {
-			err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
-			*errors = append(*errors, err)
-			return
-		}
-		if memResolverRe.MatchString(str) {
-			o.AccountResolver = &MemAccResolver{}
-		} else {
-			items := resolverRe.FindStringSubmatch(str)
-			if len(items) == 2 {
+		switch v := v.(type) {
+		case string:
+			// "resolver" takes precedence over value obtained from "operator".
+			// Clear so that parsing errors are not silently ignored.
+			o.AccountResolver = nil
+			memResolverRe := regexp.MustCompile(`(?i)(MEM|MEMORY)\s*`)
+			resolverRe := regexp.MustCompile(`(?i)(?:URL){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
+			if memResolverRe.MatchString(v) {
+				o.AccountResolver = &MemAccResolver{}
+			} else if items := resolverRe.FindStringSubmatch(v); len(items) == 2 {
 				url := items[1]
 				_, err := parseURL(url, "account resolver")
 				if err != nil {
@@ -846,9 +840,76 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 					o.AccountResolver = ur
 				}
 			}
+		case map[string]interface{}:
+			dir := ""
+			dirType := ""
+			limit := int64(0)
+			ttl := time.Duration(0)
+			sync := time.Duration(0)
+			var err error
+			if v, ok := v["dir"]; ok {
+				_, v := unwrapValue(v, &lt)
+				dir = v.(string)
+			}
+			if v, ok := v["type"]; ok {
+				_, v := unwrapValue(v, &lt)
+				dirType = v.(string)
+			}
+			if v, ok := v["limit"]; ok {
+				_, v := unwrapValue(v, &lt)
+				limit = v.(int64)
+			}
+			if v, ok := v["ttl"]; ok {
+				_, v := unwrapValue(v, &lt)
+				ttl, err = time.ParseDuration(v.(string))
+			}
+			if v, ok := v["sync"]; err == nil && ok {
+				_, v := unwrapValue(v, &lt)
+				sync, err = time.ParseDuration(v.(string))
+			}
+			if err != nil {
+				*errors = append(*errors, &configErr{tk, err.Error()})
+				return
+			}
+			if dir == "" {
+				*errors = append(*errors, &configErr{tk, "dir needs to point to a directory"})
+				return
+			}
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0 {
+				info.IsDir()
+			}
+			var res AccountResolver
+			switch strings.ToUpper(dirType) {
+			case "SHARED":
+				if limit != 0 || ttl != 0 || sync != 0 {
+					*errors = append(*errors, &configErr{tk, "SHARED resolver only takes a directory"})
+					return
+				}
+				res, err = NewSharedDirAccResolver(dir)
+			case "CACHE":
+				if sync != 0 {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
+				}
+				res, err = NewCacheDirAccResolver(dir, limit, ttl)
+			case "EXCLUSIVE":
+				if ttl != 0 {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept ttl"})
+				}
+				res, err = NewDirAccResolver(dir, limit, sync)
+			}
+			if err != nil {
+				*errors = append(*errors, &configErr{tk, err.Error()})
+				return
+			}
+			o.AccountResolver = res
+		default:
+			err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
+			*errors = append(*errors, err)
+			return
 		}
 		if o.AccountResolver == nil {
-			err := &configErr{tk, "error parsing account resolver, should be MEM or URL(\"url\")"}
+			err := &configErr{tk, "error parsing account resolver, should be MEM or " +
+				" URL(\"url\") or SHARED_DIR(\"dir\") or CACHE_DIR(\"dir\"[,limit]) or EXCLUSIVE_DIR(\"dir\")"}
 			*errors = append(*errors, err)
 		}
 	case "resolver_tls":
