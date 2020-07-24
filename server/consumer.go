@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nuid"
+	"golang.org/x/time/rate"
 )
 
 type ConsumerInfo struct {
@@ -52,6 +53,7 @@ type ConsumerConfig struct {
 	MaxDeliver      int           `json:"max_deliver,omitempty"`
 	FilterSubject   string        `json:"filter_subject,omitempty"`
 	ReplayPolicy    ReplayPolicy  `json:"replay_policy"`
+	RateLimit       uint64        `json:"rate_limit_bps,omitempty"` // Bits per sec
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 }
 
@@ -166,6 +168,7 @@ type Consumer struct {
 	adflr             uint64
 	asflr             uint64
 	dsubj             string
+	rlimit            *rate.Limiter
 	reqSub            *subscription
 	ackSub            *subscription
 	ackReplyT         string
@@ -223,6 +226,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		// clean them up.
 		if config.Durable == _EMPTY_ {
 			return nil, fmt.Errorf("consumer in pull mode requires a durable name")
+		}
+		if config.RateLimit > 0 {
+			return nil, fmt.Errorf("consumer in pull mode can not have rate limit set")
 		}
 	}
 
@@ -372,6 +378,24 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 				break
 			}
 		}
+	}
+
+	// Check if we have a rate limit set.
+	if config.RateLimit != 0 {
+		// TODO(dlc) - Make sane values or error if not sane?
+		// We are configured in bits per sec so adjust to bytes.
+		rl := rate.Limit(config.RateLimit / 8)
+		// Burst should be set to maximum msg size for this account, etc.
+		var burst int
+		if mset.config.MaxMsgSize > 0 {
+			burst = int(mset.config.MaxMsgSize)
+		} else if mset.jsa.account.limits.mpay > 0 {
+			burst = int(mset.jsa.account.limits.mpay)
+		} else {
+			s := mset.jsa.account.srv
+			burst = int(s.getOpts().MaxPayload)
+		}
+		o.rlimit = rate.NewLimiter(rl, burst)
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
@@ -1218,8 +1242,26 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 				o.mu.Lock()
 			}
 		}
+
 		// Track this regardless.
 		lts = ts
+
+		// If we have a rate limit set make sure we check that here.
+		if o.rlimit != nil {
+			now := time.Now()
+			r := o.rlimit.ReserveN(now, len(msg)+len(hdr)+len(subj)+len(dsubj)+len(o.ackReplyT))
+			delay := r.DelayFrom(now)
+			if delay > 0 {
+				qch := o.qch
+				o.mu.Unlock()
+				select {
+				case <-qch:
+					return
+				case <-time.After(delay):
+				}
+				o.mu.Lock()
+			}
+		}
 
 		o.deliverMsg(dsubj, subj, hdr, msg, seq, dcnt, ts)
 
