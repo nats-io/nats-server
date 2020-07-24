@@ -37,6 +37,8 @@ import (
 var (
 	// This matches ./configs/nkeys_jwts/test.seed
 	oSeed = []byte("SOAFYNORQLQFJYBYNUGC5D7SH2MXMUX5BFEWWGHN3EK4VGG5TPT5DZP7QU")
+	// This matches ./configs/nkeys/op.jwt
+	ojwt = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJhdWQiOiJURVNUUyIsImV4cCI6MTg1OTEyMTI3NSwianRpIjoiWE5MWjZYWVBIVE1ESlFSTlFPSFVPSlFHV0NVN01JNVc1SlhDWk5YQllVS0VRVzY3STI1USIsImlhdCI6MTU0Mzc2MTI3NSwiaXNzIjoiT0NBVDMzTVRWVTJWVU9JTUdOR1VOWEo2NkFIMlJMU0RBRjNNVUJDWUFZNVFNSUw2NU5RTTZYUUciLCJuYW1lIjoiU3luYWRpYSBDb21tdW5pY2F0aW9ucyBJbmMuIiwibmJmIjoxNTQzNzYxMjc1LCJzdWIiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9EU0tSN01ZRlFaNU1NQUo2RlBNRUVUQ1RFM1JJSE9GTFRZUEpSTUFWVk40T0xWMllZQU1IQ0FDIiwiT0RTS0FDU1JCV1A1MzdEWkRSVko2NTdKT0lHT1BPUTZLRzdUNEhONk9LNEY2SUVDR1hEQUhOUDIiLCJPRFNLSTM2TFpCNDRPWTVJVkNSNlA1MkZaSlpZTVlXWlZXTlVEVExFWjVUSzJQTjNPRU1SVEFCUiJdfX0.hyfz6E39BMUh0GLzovFfk3wT4OfualftjdJ_eYkLfPvu5tZubYQ_Pn9oFYGCV_6yKy3KMGhWGUCyCdHaPhalBw"
 )
 
 func opTrustBasicSetup() *Server {
@@ -1558,13 +1560,14 @@ func TestAccountURLResolver(t *testing.T) {
 			defer ts.Close()
 
 			confTemplate := `
+				operator: %s
 				listen: -1
 				resolver: URL("%s/ngs/v1/accounts/jwt/")
 				resolver_tls {
 					insecure: true
 				}
 			`
-			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 			defer os.Remove(conf)
 
 			s, opts := RunServerWithConfig(conf)
@@ -1643,10 +1646,11 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 	defer ts.Close()
 
 	confTemplate := `
+		operator: %s
 		listen: -1
 		resolver: URL("%s/ngs/v1/accounts/jwt/")
     `
-	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 	defer os.Remove(conf)
 
 	s, _ := RunServerWithConfig(conf)
@@ -1668,7 +1672,7 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Error on reload: %v", err)
@@ -1845,6 +1849,65 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	// expect the message from B to flow to A
 	if _, err := subA.NextMsg(10 * time.Second); err != nil {
 		t.Fatalf("Expected to receive a message %v", err)
+	}
+}
+
+func TestAccountURLResolverReturnDifferentOperator(t *testing.T) {
+	// Create a valid chain of op/acc/usr using a different operator
+	// This is so we can test if the server rejects this chain.
+	// Create Operator
+	op, _ := nkeys.CreateOperator()
+	// Create Account, this account is the one returned by the resolver
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(op)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create User
+	nkp, _ := nkeys.CreateUser()
+	uSeed, _ := nkp.Seed()
+	upub, _ := nkp.PublicKey()
+	nuc := newJWTTestUserClaims()
+	nuc.Subject = upub
+	uJwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	creds := genCredsFile(t, uJwt, uSeed)
+	defer os.Remove(creds)
+	// Simulate an account server that was hijacked/mis configured
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(ajwt))
+	}))
+	defer ts.Close()
+	// Create Server
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: URL("%s/A/")
+    `, ojwt, ts.URL)))
+	defer os.Remove(confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+	// Create first client, directly connects to A
+	urlA := fmt.Sprintf("nats://%s:%d", sA.opts.Host, sA.opts.Port)
+	if _, err := nats.Connect(urlA, nats.UserCredentials(creds),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				t.Fatal("error not expected in this test", err)
+			}
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			t.Fatal("error not expected in this test", err)
+		}),
+	); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+	// Test if the server has the account in memory. (shouldn't)
+	if v, ok := sA.accounts.Load(apub); ok {
+		t.Fatalf("Expected account to NOT be in memory: %v", v.(*Account))
 	}
 }
 
