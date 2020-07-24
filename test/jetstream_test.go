@@ -699,6 +699,34 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{".>"}})
 }
 
+func TestJetStreamAddStreamMaxConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &server.StreamConfig{
+		Name:         "MAXC",
+		Subjects:     []string{"in.maxc.>"},
+		MaxConsumers: 1,
+	}
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStream(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	if mset.Config().MaxConsumers != 1 {
+		t.Fatalf("Expected 1 MaxConsumers, got %d", mset.Config().MaxConsumers)
+	}
+}
+
 func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	mconfig := &server.StreamConfig{
 		Name:     "ok",
