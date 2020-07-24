@@ -210,7 +210,7 @@ type client struct {
 	nonce      []byte
 	pubKey     string
 	nc         net.Conn
-	ncs        string
+	ncs        atomic.Value
 	out        outbound
 	user       *NkeyUser
 	host       string
@@ -362,7 +362,12 @@ type perAccountCache struct {
 }
 
 func (c *client) String() (id string) {
-	return c.ncs
+	loaded := c.ncs.Load()
+	if loaded != nil {
+		return loaded.(string)
+	}
+
+	return ""
 }
 
 // GetName returns the application supplied name for the connection.
@@ -505,19 +510,19 @@ func (c *client) initClient() {
 		if c.ws != nil {
 			name = "wid"
 		}
-		c.ncs = fmt.Sprintf("%s - %s:%d", conn, name, c.cid)
+		c.ncs.Store(fmt.Sprintf("%s - %s:%d", conn, name, c.cid))
 	case ROUTER:
-		c.ncs = fmt.Sprintf("%s - rid:%d", conn, c.cid)
+		c.ncs.Store(fmt.Sprintf("%s - rid:%d", conn, c.cid))
 	case GATEWAY:
-		c.ncs = fmt.Sprintf("%s - gid:%d", conn, c.cid)
+		c.ncs.Store(fmt.Sprintf("%s - gid:%d", conn, c.cid))
 	case LEAF:
-		c.ncs = fmt.Sprintf("%s - lid:%d", conn, c.cid)
+		c.ncs.Store(fmt.Sprintf("%s - lid:%d", conn, c.cid))
 	case SYSTEM:
-		c.ncs = "SYSTEM"
+		c.ncs.Store("SYSTEM")
 	case JETSTREAM:
-		c.ncs = "JETSTREAM"
+		c.ncs.Store("JETSTREAM")
 	case ACCOUNT:
-		c.ncs = "ACCOUNT"
+		c.ncs.Store("ACCOUNT")
 	}
 }
 
@@ -1500,6 +1505,18 @@ func (c *client) processConnect(arg []byte) error {
 	lang := c.opts.Lang
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
+
+	ncs := c.String()
+	if c.opts.Name != "" {
+		ncs = fmt.Sprintf("%s - name: %s", ncs, c.opts.Name)
+	}
+	if c.opts.Lang != "" {
+		ncs = fmt.Sprintf("%s - lang: %s", ncs, c.opts.Lang)
+	}
+	if c.opts.Version != "" {
+		ncs = fmt.Sprintf("%s - version: %s", ncs, c.opts.Version)
+	}
+	c.ncs.Store(ncs)
 
 	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
 	if ws := c.ws; ws != nil && c.opts.JWT == "" {
@@ -3567,11 +3584,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Declared here because of goto.
 	var queues [][]byte
 
-	// For all routes/leaf/gateway connections, we may still want to send messages to
+	// For all non-client connections, we may still want to send messages to
 	// leaf nodes or routes even if there are no queue filters since we collect
 	// them above and do not process inline like normal clients.
 	// However, do select queue subs if asked to ignore empty queue filter.
-	if (c.kind == LEAF || c.kind == ROUTER || c.kind == GATEWAY) && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
+	if (c.kind != CLIENT && c.kind != JETSTREAM && c.kind != ACCOUNT) && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
 		goto sendToRoutesOrLeafs
 	}
 

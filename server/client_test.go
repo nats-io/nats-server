@@ -2197,7 +2197,7 @@ func TestClientIPv6Address(t *testing.T) {
 	cid, _ := nc.GetClientID()
 	c := s.GetClient(cid)
 	c.mu.Lock()
-	ncs := c.ncs
+	ncs := c.String()
 	c.mu.Unlock()
 	if !strings.HasPrefix(ncs, "[::1]") {
 		t.Fatalf("Wrong string representation of an IPv6 address: %q", ncs)
