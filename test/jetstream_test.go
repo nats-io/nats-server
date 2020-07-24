@@ -2617,6 +2617,84 @@ func TestJetStreamDeleteStreamManyConsumers(t *testing.T) {
 	mset.Delete()
 }
 
+func TestJetStreamConsumerRateLimit(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "RATELIMIT"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	msgSize := 128 * 1024
+	msg := make([]byte, msgSize)
+	rand.Read(msg)
+
+	// 10MB
+	totalSize := 10 * 1024 * 1024
+	toSend := totalSize / msgSize
+	for i := 0; i < toSend; i++ {
+		nc.Publish(mname, msg)
+	}
+	nc.Flush()
+	state := mset.State()
+	if state.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
+	}
+
+	// 100Mbit
+	rateLimit := uint64(100 * 1024 * 1024)
+	// Make sure if you set a rate with a pull based consumer it errors.
+	_, err = mset.AddConsumer(&server.ConsumerConfig{Durable: "to", AckPolicy: server.AckExplicit, RateLimit: rateLimit})
+	if err == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+
+	// Now create one and measure the rate delivered.
+	o, err := mset.AddConsumer(&server.ConsumerConfig{
+		Durable:        "rate",
+		DeliverSubject: "to",
+		RateLimit:      rateLimit,
+		AckPolicy:      server.AckNone})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer o.Delete()
+
+	var received int
+	done := make(chan bool)
+
+	start := time.Now()
+
+	nc.Subscribe("to", func(m *nats.Msg) {
+		received++
+		if received >= toSend {
+			done <- true
+		}
+	})
+	nc.Flush()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive all the messages in time")
+	}
+
+	tt := time.Since(start)
+	rate := float64(8*toSend*msgSize) / tt.Seconds()
+	if rate > float64(rateLimit)*1.25 {
+		t.Fatalf("Exceeded desired rate of %d mbps, got %0.f mbps", rateLimit/(1024*1024), rate/(1024*1024))
+	}
+}
+
 func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
