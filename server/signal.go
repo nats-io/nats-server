@@ -19,11 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
+
+	"github.com/shirou/gopsutil/process"
 )
 
 var processName = "nats-server"
@@ -121,45 +121,35 @@ func ProcessSignal(command Command, pidStr string) error {
 
 // resolvePids returns the pids for all running nats-server processes.
 func resolvePids() ([]int, error) {
-	// If pgrep isn't available, this will just bail out and the user will be
-	// required to specify a pid.
-	output, err := pgrep()
+	// myPid
+	mp := int32(os.Getpid())
+	// nats Pids
+	np := []int{}
+	// every Pid on system
+	ep, err := process.Pids()
 	if err != nil {
-		switch err.(type) {
-		case *exec.ExitError:
-			// ExitError indicates non-zero exit code, meaning no processes
-			// found.
-			break
-		default:
-			return nil, errors.New("unable to resolve pid, try providing one")
-		}
+		return np, err
 	}
-	var (
-		myPid   = os.Getpid()
-		pidStrs = strings.Split(string(output), "\n")
-		pids    = make([]int, 0, len(pidStrs))
-	)
-	for _, pidStr := range pidStrs {
-		if pidStr == "" {
+	for _, pid := range ep {
+		prc, err := process.NewProcess(int32(pid))
+		if err == process.ErrorProcessNotRunning {
+			// process went away since we gathered pids, this is not a crisis.
 			continue
 		}
-		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
-			return nil, errors.New("unable to resolve pid, try providing one")
+			return np, err
 		}
-		// Ignore the current process.
-		if pid == myPid {
-			continue
+		name, err := prc.Name()
+		if err != nil {
+			return np, err
 		}
-		pids = append(pids, pid)
+		if name == processName && pid != mp {
+			np = append(np, int(pid))
+		}
 	}
-	return pids, nil
+	return np, nil
 }
 
 var kill = func(pid int, signal syscall.Signal) error {
 	return syscall.Kill(pid, signal)
-}
-
-var pgrep = func() ([]byte, error) {
-	return exec.Command("pgrep", processName).Output()
 }
