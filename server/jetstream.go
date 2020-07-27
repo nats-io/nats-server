@@ -799,6 +799,7 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 	if config.MaxConsumers > 0 && jsa.limits.MaxConsumers > 0 && config.MaxConsumers > jsa.limits.MaxConsumers {
 		return fmt.Errorf("maximum consumers exceeds account limit")
 	}
+
 	// Check storage, memory or disk.
 	if config.MaxBytes > 0 {
 		return jsa.checkBytesLimits(config.MaxBytes*int64(config.Replicas), config.Storage)
