@@ -1124,8 +1124,6 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	var acc *Account
 	if v, ok := s.accounts.Load(name); ok {
 		acc = v.(*Account)
-	} else if v, ok := s.tmpAccounts.Load(name); ok {
-		acc = v.(*Account)
 	}
 	if acc != nil {
 		// If we are expired and we have a resolver, then

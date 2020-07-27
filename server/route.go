@@ -1011,8 +1011,6 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		acc, _ = srv.LookupAccount(accountName)
 	} else if v, ok := srv.accounts.Load(accountName); ok {
 		acc = v.(*Account)
-	} else if v, ok := srv.tmpAccounts.Load(accountName); ok {
-		acc = v.(*Account)
 	}
 	if acc == nil {
 		expire := false
