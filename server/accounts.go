@@ -2353,7 +2353,14 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	for _, i := range ac.Imports {
-		acc, err := s.lookupAccount(i.Account)
+		// check tmpAccounts with priority
+		var acc *Account
+		var err error
+		if v, ok := s.tmpAccounts.Load(i.Account); ok {
+			acc = v.(*Account)
+		} else {
+			acc, err = s.lookupAccount(i.Account)
+		}
 		if acc == nil || err != nil {
 			s.Errorf("Can't locate account [%s] for import of [%v] %s (err=%v)", i.Account, i.Subject, i.Type, err)
 			continue

@@ -992,13 +992,43 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// Lookup the account
 	// FIXME(dlc) - This may start having lots of contention?
 	accountName := string(args[0+off])
-	acc, _ := srv.LookupAccount(accountName)
-	if acc == nil {
-		if !srv.NewAccountsAllowed() {
-			c.Debugf("Unknown account %q for subject %q", accountName, sub.subject)
-			return nil
+	// Lookup account while avoiding fetch.
+	// A slow fetch delays subsequent remote messages. It also avoids the expired check (see below).
+	// With all but memory resolver lookup can be delayed or fail.
+	// It is also possible that the account can't be resolved yet.
+	// This does not apply to the memory resolver.
+	// When used, perform the fetch.
+	staticResolver := true
+	if res := srv.AccountResolver(); res != nil {
+		if _, ok := res.(*MemAccResolver); !ok {
+			staticResolver = false
 		}
-		acc, _ = srv.LookupOrRegisterAccount(accountName)
+	}
+	var acc *Account
+	if staticResolver {
+		acc, _ = srv.LookupAccount(accountName)
+	} else if v, ok := srv.accounts.Load(accountName); ok {
+		acc = v.(*Account)
+	}
+	if acc == nil {
+		expire := false
+		isNew := false
+		if !srv.NewAccountsAllowed() {
+			// if the option of retrieving accounts later exists, create an expired one.
+			// When a client comes along, expiration will prevent it from being used,
+			// cause a fetch and update the account to what is should be.
+			if staticResolver {
+				c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
+				return
+			}
+			c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
+			expire = true
+		}
+		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew && expire {
+			acc.mu.Lock()
+			acc.expired = true
+			acc.mu.Unlock()
+		}
 	}
 
 	c.mu.Lock()

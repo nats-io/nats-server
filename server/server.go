@@ -1124,8 +1124,6 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	var acc *Account
 	if v, ok := s.accounts.Load(name); ok {
 		acc = v.(*Account)
-	} else if v, ok := s.tmpAccounts.Load(name); ok {
-		acc = v.(*Account)
 	}
 	if acc != nil {
 		// If we are expired and we have a resolver, then
@@ -1184,7 +1182,15 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	}
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
+		acc.mu.Lock()
+		if acc.Issuer == "" {
+			acc.Issuer = accClaims.Issuer
+		} else if acc.Issuer != accClaims.Issuer {
+			acc.mu.Unlock()
+			return ErrAccountValidation
+		}
 		acc.claimJWT = claimJWT
+		acc.mu.Unlock()
 		s.UpdateAccountClaims(acc, accClaims)
 		return nil
 	}
