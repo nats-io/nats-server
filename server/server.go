@@ -1184,7 +1184,15 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	}
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
+		acc.mu.Lock()
+		if acc.Issuer == "" {
+			acc.Issuer = accClaims.Issuer
+		} else if acc.Issuer != accClaims.Issuer {
+			acc.mu.Unlock()
+			return ErrAccountValidation
+		}
 		acc.claimJWT = claimJWT
+		acc.mu.Unlock()
 		s.UpdateAccountClaims(acc, accClaims)
 		return nil
 	}
