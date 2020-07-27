@@ -2354,8 +2354,8 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	}
 	for _, i := range ac.Imports {
 		// check tmpAccounts with priority
-		acc := (*Account)(nil)
-		err := error(nil)
+		var acc *Account
+		var err error
 		if v, ok := s.tmpAccounts.Load(i.Account); ok {
 			acc = v.(*Account)
 		} else {

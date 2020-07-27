@@ -1000,13 +1000,11 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// When used, perform the fetch.
 	staticResolver := true
 	if res := srv.AccountResolver(); res != nil {
-		if _, ok := res.(*MemAccResolver); ok {
-			staticResolver = true
-		} else {
+		if _, ok := res.(*MemAccResolver); !ok {
 			staticResolver = false
 		}
 	}
-	acc := (*Account)(nil)
+	var acc *Account
 	if staticResolver {
 		acc, _ = srv.LookupAccount(accountName)
 	} else if v, ok := srv.accounts.Load(accountName); ok {
