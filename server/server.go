@@ -1235,6 +1235,9 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 	if vr.IsBlocking(true) {
 		return nil, _EMPTY_, ErrAccountValidation
 	}
+	if !s.isTrustedIssuer(accClaims.Issuer) {
+		return nil, _EMPTY_, ErrAccountValidation
+	}
 	return accClaims, claimJWT, nil
 }
 
@@ -1242,32 +1245,32 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 // Lock is NOT held upon entry.
 func (s *Server) fetchAccount(name string) (*Account, error) {
 	accClaims, claimJWT, err := s.fetchAccountClaims(name)
-	if accClaims != nil {
-		acc := s.buildInternalAccount(accClaims)
-		acc.claimJWT = claimJWT
-		// Due to possible race, if registerAccount() returns a non
-		// nil account, it means the same account was already
-		// registered and we should use this one.
-		if racc := s.registerAccount(acc); racc != nil {
-			// Update with the new claims in case they are new.
-			// Following call will ignore ErrAccountResolverSameClaims
-			// if claims are the same.
-			err = s.updateAccountWithClaimJWT(racc, claimJWT)
-			if err != nil && err != ErrAccountResolverSameClaims {
-				return nil, err
-			}
-			return racc, nil
-		}
-		// The sub imports may have been setup but will not have had their
-		// subscriptions properly setup. Do that here.
-		if len(acc.imports.services) > 0 && acc.ic == nil {
-			acc.ic = s.createInternalAccountClient()
-			acc.ic.acc = acc
-			acc.addAllServiceImportSubs()
-		}
-		return acc, nil
+	if accClaims == nil {
+		return nil, err
 	}
-	return nil, err
+	acc := s.buildInternalAccount(accClaims)
+	acc.claimJWT = claimJWT
+	// Due to possible race, if registerAccount() returns a non
+	// nil account, it means the same account was already
+	// registered and we should use this one.
+	if racc := s.registerAccount(acc); racc != nil {
+		// Update with the new claims in case they are new.
+		// Following call will ignore ErrAccountResolverSameClaims
+		// if claims are the same.
+		err = s.updateAccountWithClaimJWT(racc, claimJWT)
+		if err != nil && err != ErrAccountResolverSameClaims {
+			return nil, err
+		}
+		return racc, nil
+	}
+	// The sub imports may have been setup but will not have had their
+	// subscriptions properly setup. Do that here.
+	if len(acc.imports.services) > 0 && acc.ic == nil {
+		acc.ic = s.createInternalAccountClient()
+		acc.ic.acc = acc
+		acc.addAllServiceImportSubs()
+	}
+	return acc, nil
 }
 
 // Start up the server, this will block.
