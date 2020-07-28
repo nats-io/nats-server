@@ -124,8 +124,8 @@ func (c *client) removeReplySub(sub *subscription) {
 	// Lookup the account based on sub.sid.
 	if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
 		// First part of SID for route is account name.
-		if acc, _ := c.srv.LookupAccount(string(sub.sid[:i])); acc != nil {
-			acc.sl.Remove(sub)
+		if v, ok := c.srv.accounts.Load(string(sub.sid[:i])); ok {
+			(v.(*Account)).sl.Remove(sub)
 		}
 		c.mu.Lock()
 		c.removeReplySubTimeout(sub)
@@ -868,11 +868,11 @@ func (c *client) removeRemoteSubs() {
 		accountName := strings.Fields(key)[0]
 		ase := as[accountName]
 		if ase == nil {
-			acc, _ := srv.LookupAccount(accountName)
-			if acc == nil {
+			if v, ok := srv.accounts.Load(accountName); ok {
+				as[accountName] = &asubs{acc: v.(*Account), subs: []*subscription{sub}}
+			} else {
 				continue
 			}
-			as[accountName] = &asubs{acc: acc, subs: []*subscription{sub}}
 		} else {
 			ase.subs = append(ase.subs, sub)
 		}
@@ -916,11 +916,11 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
 	// Lookup the account
-	acc, _ := c.srv.LookupAccount(accountName)
-	if acc == nil {
+	var acc *Account
+	if v, ok := srv.accounts.Load(accountName); ok {
+		acc = v.(*Account)
+	} else {
 		c.Debugf("Unknown account %q for subject %q", accountName, subject)
-		// Mark this account as not interested since we received a RS- and we
-		// do not have any record of it.
 		return nil
 	}
 
