@@ -82,9 +82,6 @@ var decompressorPool sync.Pool
 // From https://tools.ietf.org/html/rfc6455#section-1.3
 var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 
-// Can be set for tests
-var testWebsocketAllowNonTLS = false
-
 type websocket struct {
 	frames     net.Buffers
 	fs         int64
@@ -734,8 +731,8 @@ func validateWebsocketOptions(o *Options) error {
 	if wo.Port == 0 {
 		return nil
 	}
-	// Enforce TLS...
-	if !testWebsocketAllowNonTLS && wo.TLSConfig == nil {
+	// Enforce TLS... unless NoTLS is set to true.
+	if wo.TLSConfig == nil && !wo.NoTLS {
 		return errors.New("websocket requires TLS configuration")
 	}
 	// Make sure that allowed origins, if specified, can be parsed.
@@ -840,6 +837,10 @@ func (s *Server) startWebsocketServer() {
 		s.mu.Unlock()
 		return
 	}
+	// Do not check o.NoTLS here. If a TLS configuration is available, use it,
+	// regardless of NoTLS. If we don't have a TLS config, it means that the
+	// user has configured NoTLS because otherwise the server would have failed
+	// to start due to options validation.
 	if o.TLSConfig != nil {
 		proto = "wss"
 		config := o.TLSConfig.Clone()
@@ -854,6 +855,9 @@ func (s *Server) startWebsocketServer() {
 		return
 	}
 	s.Noticef("Listening for websocket clients on %s://%s:%d", proto, o.Host, port)
+	if proto == "ws" {
+		s.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
+	}
 
 	s.websocket.tls = proto == "wss"
 	if port == 0 {
