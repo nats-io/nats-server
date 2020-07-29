@@ -796,11 +796,10 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 		return fmt.Errorf("replicas setting of %d not allowed", config.Replicas)
 	}
 	// Check MaxConsumers
-	if config.MaxConsumers > 0 && config.MaxConsumers > jsa.limits.MaxConsumers {
+	if config.MaxConsumers > 0 && jsa.limits.MaxConsumers > 0 && config.MaxConsumers > jsa.limits.MaxConsumers {
 		return fmt.Errorf("maximum consumers exceeds account limit")
-	} else {
-		config.MaxConsumers = jsa.limits.MaxConsumers
 	}
+
 	// Check storage, memory or disk.
 	if config.MaxBytes > 0 {
 		return jsa.checkBytesLimits(config.MaxBytes*int64(config.Replicas), config.Storage)

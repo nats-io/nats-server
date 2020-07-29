@@ -699,6 +699,34 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 	expectAPIErr(server.StreamConfig{Name: "MyStream", Subjects: []string{".>"}})
 }
 
+func TestJetStreamAddStreamMaxConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &server.StreamConfig{
+		Name:         "MAXC",
+		Subjects:     []string{"in.maxc.>"},
+		MaxConsumers: 1,
+	}
+
+	acc := s.GlobalAccount()
+	mset, err := acc.AddStream(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	if mset.Config().MaxConsumers != 1 {
+		t.Fatalf("Expected 1 MaxConsumers, got %d", mset.Config().MaxConsumers)
+	}
+}
+
 func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	mconfig := &server.StreamConfig{
 		Name:     "ok",
@@ -5193,7 +5221,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		t.Fatalf("Expected error adding stream over limit")
 	}
 
-	// Test consumers limit
+	// Test consumers limit against account limit when the stream does not set a limit
 	mset, err := facc.AddStream(&server.StreamConfig{Name: "22", Subjects: []string{"foo.22"}})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
@@ -5211,6 +5239,53 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "O:22", AckPolicy: server.AckExplicit}); err == nil {
 		t.Fatalf("Expected error adding consumer over the limit")
 	}
+
+	// Test consumer limit against stream limit
+	mset.Delete()
+	mset, err = facc.AddStream(&server.StreamConfig{Name: "22", Subjects: []string{"foo.22"}, MaxConsumers: 5})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		oname := fmt.Sprintf("O:%d", i)
+		_, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, AckPolicy: server.AckExplicit})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// This one should fail.
+	if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "O:22", AckPolicy: server.AckExplicit}); err == nil {
+		t.Fatalf("Expected error adding consumer over the limit")
+	}
+
+	// Test the account having smaller limits than the stream
+	mset.Delete()
+
+	mset, err = facc.AddStream(&server.StreamConfig{Name: "22", Subjects: []string{"foo.22"}, MaxConsumers: 10})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	l.MaxConsumers = 5
+	if err := facc.UpdateJetStreamLimits(l); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		oname := fmt.Sprintf("O:%d", i)
+		_, err := mset.AddConsumer(&server.ConsumerConfig{Durable: oname, AckPolicy: server.AckExplicit})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// This one should fail.
+	if _, err := mset.AddConsumer(&server.ConsumerConfig{Durable: "O:22", AckPolicy: server.AckExplicit}); err == nil {
+		t.Fatalf("Expected error adding consumer over the limit")
+	}
+
 }
 
 func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
