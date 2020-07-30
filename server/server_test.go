@@ -1229,9 +1229,6 @@ func TestAcceptError(t *testing.T) {
 }
 
 func TestAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
-	testWebsocketAllowNonTLS = true
-	defer func() { testWebsocketAllowNonTLS = false }()
-
 	for _, test := range []struct {
 		name string
 		url  func(o *Options) (string, int)
@@ -1258,6 +1255,7 @@ func TestAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 			o.Websocket.Host = "127.0.0.1"
 			o.Websocket.Port = -1
 			o.Websocket.HandshakeTimeout = 1
+			o.Websocket.NoTLS = true
 			s := RunServer(o)
 			defer s.Shutdown()
 
@@ -1321,9 +1319,6 @@ func TestAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 }
 
 func TestServerShutdownDuringStart(t *testing.T) {
-	testWebsocketAllowNonTLS = true
-	defer func() { testWebsocketAllowNonTLS = false }()
-
 	o := DefaultOptions()
 	o.DisableShortFirstPing = true
 	o.Accounts = []*Account{NewAccount("$SYS")}
@@ -1339,6 +1334,7 @@ func TestServerShutdownDuringStart(t *testing.T) {
 	o.Websocket.Host = "127.0.0.1"
 	o.Websocket.Port = -1
 	o.Websocket.HandshakeTimeout = 1
+	o.Websocket.NoTLS = true
 
 	// We are going to test that if the server is shutdown
 	// while Start() runs (in this case, before), we don't

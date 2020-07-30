@@ -281,6 +281,15 @@ type WebsocketOpts struct {
 	// Timeout for the authentication process.
 	AuthTimeout float64
 
+	// By default the server will enforce the use of TLS. If no TLS configuration
+	// is provided, you need to explicitly set NoTLS to true to allow the server
+	// to start without TLS configuration. Note that if a TLS configuration is
+	// present, this boolean is ignored and the server will run the Websocket
+	// server with that TLS configuration.
+	// Running without TLS is less secure since Websocket clients that use bearer
+	// tokens will send them in clear. So this should not be used in production.
+	NoTLS bool
+
 	// TLS configuration is required.
 	TLSConfig *tls.Config
 	// If true, map certificate values for authentication purposes.
@@ -3070,6 +3079,8 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			o.Websocket.Host = mv.(string)
 		case "advertise":
 			o.Websocket.Advertise = mv.(string)
+		case "no_tls":
+			o.Websocket.NoTLS = mv.(bool)
 		case "tls":
 			tc, err := parseTLS(tk)
 			if err != nil {
