@@ -447,7 +447,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 }
 
 // Lock should be held entering here.
-func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) {
+func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 	var user, pass string
 	if userInfo := c.route.url.User; userInfo != nil {
 		user = userInfo.Username()
@@ -471,10 +471,10 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) {
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
-		c.closeConnection(ProtocolViolation)
-		return
+		return err
 	}
 	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
+	return nil
 }
 
 // Process the info message if we are a route.
@@ -1406,7 +1406,11 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	// Queue Connect proto if we solicited the connection.
 	if didSolicit {
 		c.Debugf("Route connect msg sent")
-		c.sendRouteConnect(clusterName, tlsRequired)
+		if err := c.sendRouteConnect(clusterName, tlsRequired); err != nil {
+			c.mu.Unlock()
+			c.closeConnection(ProtocolViolation)
+			return nil
+		}
 	}
 
 	// Send our info to the other side.
