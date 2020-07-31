@@ -3611,7 +3611,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			ql := _ql[:0]
 			for i := 0; i < len(qsubs); i++ {
 				sub = qsubs[i]
-				if sub.client.kind == LEAF || sub.client.kind == ROUTER || sub.client.kind == GATEWAY {
+				if sub.client.kind == LEAF || sub.client.kind == ROUTER {
 					if rsub == nil {
 						rsub = sub
 					}
