@@ -76,6 +76,7 @@ type Info struct {
 	ClientIP          string   `json:"client_ip,omitempty"`
 	Nonce             string   `json:"nonce,omitempty"`
 	Cluster           string   `json:"cluster,omitempty"`
+	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
@@ -435,8 +436,21 @@ func (s *Server) setClusterName(name string) {
 	}
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
-	s.updatedSolicitedLeafnodes()
+	// Regenerate the info byte array
+	s.generateRouteInfoJSON()
+	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
+	var leafs []*client
+	for _, c := range s.leafs {
+		c.mu.Lock()
+		if c.leaf != nil && c.leaf.remote != nil {
+			leafs = append(leafs, c)
+		}
+		c.mu.Unlock()
+	}
 	s.mu.Unlock()
+	for _, l := range leafs {
+		l.closeConnection(ClusterNameConflict)
+	}
 	if resetCh != nil {
 		resetCh <- struct{}{}
 	}

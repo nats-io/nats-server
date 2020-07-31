@@ -515,7 +515,8 @@ func (c *client) processRouteInfo(info *Info) {
 	if info.Cluster != "" && info.Cluster != clusterName {
 		c.mu.Unlock()
 		// If we are dynamic we may update our cluster name.
-		if s.isClusterNameDynamic() && strings.Compare(clusterName, info.Cluster) < 0 {
+		// Use other if remote is non dynamic or their name is "bigger"
+		if s.isClusterNameDynamic() && (!info.Dynamic || (strings.Compare(clusterName, info.Cluster) < 0)) {
 			s.setClusterName(info.Cluster)
 			s.removeAllRoutesExcept(c)
 			c.mu.Lock()
@@ -1705,6 +1706,7 @@ func (s *Server) startRouteAcceptLoop() {
 		GatewayURL:   s.getGatewayURL(),
 		Headers:      s.supportsHeaders(),
 		Cluster:      s.info.Cluster,
+		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
 	}
 	// Set this if only if advertise is not disabled

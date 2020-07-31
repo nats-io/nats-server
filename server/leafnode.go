@@ -1834,16 +1834,3 @@ func (c *client) setLeafConnectDelayIfSoliciting(delay time.Duration) (string, t
 	c.mu.Unlock()
 	return accName, delay
 }
-
-// updatedSolicitedLeafnodes will disconnect any solicited leafnodes such
-// that the reconnect will establish the proper origin cluster for the hub.
-func (s *Server) updatedSolicitedLeafnodes() {
-	for _, c := range s.leafs {
-		c.mu.Lock()
-		shouldClose := c.leaf != nil && c.leaf.remote != nil
-		c.mu.Unlock()
-		if shouldClose {
-			c.closeConnection(ClusterNameConflict)
-		}
-	}
-}

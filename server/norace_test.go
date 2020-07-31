@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/url"
 	"runtime"
 	"runtime/debug"
 	"sync/atomic"
@@ -865,4 +866,47 @@ func TestNoRaceWriteDeadline(t *testing.T) {
 		}
 	}
 	t.Fatal("Connection should have been closed")
+}
+
+func TestNoRaceLeafNodeClusterNameConflictDeadlock(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+
+	o1 := DefaultOptions()
+	o1.ServerName = "A1"
+	o1.Cluster.Name = "clusterA"
+	o1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	checkLeafNodeConnected(t, s1)
+
+	o2 := DefaultOptions()
+	o2.ServerName = "A2"
+	o2.Cluster.Name = "clusterA"
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+	checkClusterFormed(t, s1, s2)
+
+	o3 := DefaultOptions()
+	o3.ServerName = "A3"
+	o3.Cluster.Name = "" // intentionally not set
+	o3.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	o3.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	s3 := RunServer(o3)
+	defer s3.Shutdown()
+
+	checkLeafNodeConnected(t, s3)
+	checkClusterFormed(t, s1, s2, s3)
 }
