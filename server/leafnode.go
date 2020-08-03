@@ -429,7 +429,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))`)
 
 // Lock should be held entering here.
-func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) {
+func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
 		TLS:     tlsRequired,
@@ -444,13 +444,13 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) {
 		contents, err := ioutil.ReadFile(creds)
 		if err != nil {
 			c.Errorf("%v", err)
-			return
+			return err
 		}
 		defer wipeSlice(contents)
 		items := credsRe.FindAllSubmatch(contents, -1)
 		if len(items) < 2 {
 			c.Errorf("Credentials file malformed")
-			return
+			return err
 		}
 		// First result should be the user JWT.
 		// We copy here so that the file containing the seed will be wiped appropriately.
@@ -461,7 +461,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) {
 		kp, err := nkeys.FromSeed(items[1][1])
 		if err != nil {
 			c.Errorf("Credentials file has malformed seed")
-			return
+			return err
 		}
 		// Wipe our key on exit.
 		defer kp.Wipe()
@@ -480,13 +480,13 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired bool) {
 	b, err := json.Marshal(cinfo)
 	if err != nil {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
-		c.closeConnection(ProtocolViolation)
-		return
+		return err
 	}
 	// Although this call is made before the writeLoop is created,
 	// we don't really need to send in place. The protocol will be
 	// sent out by the writeLoop.
 	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
+	return nil
 }
 
 // Makes a deep copy of the LeafNode Info structure.
@@ -714,7 +714,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Lock()
 		}
 
-		c.sendLeafConnect(clusterName, tlsRequired)
+		if err := c.sendLeafConnect(clusterName, tlsRequired); err != nil {
+			c.mu.Unlock()
+			c.closeConnection(ProtocolViolation)
+			return nil
+		}
 		c.Debugf("Remote leafnode connect msg sent")
 
 	} else {

@@ -2129,13 +2129,13 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// The connection may have been closed
 	if c.isClosed() {
 		c.mu.Unlock()
-		// If it was due to TLS timeout, teardownConn() has already been called.
+		// If it was due to TLS timeout, closeConnection() has already been called.
 		// Otherwise, if connection was marked as closed while sending the INFO,
-		// we need to call teardownConn() directly here.
+		// we need to call closeConnection() directly here.
 		if !info.TLSRequired {
-			c.teardownConn()
+			c.closeConnection(WriteError)
 		}
-		return c
+		return nil
 	}
 
 	// Check for Auth. We schedule this timer after the TLS handshake to avoid

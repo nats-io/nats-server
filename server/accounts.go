@@ -264,7 +264,7 @@ func (a *Account) nextEventID() string {
 
 // Called to track a remote server and connections and leafnodes it
 // has for this account.
-func (a *Account) updateRemoteServer(m *AccountNumConns) {
+func (a *Account) updateRemoteServer(m *AccountNumConns) []*client {
 	a.mu.Lock()
 	if a.strack == nil {
 		a.strack = make(map[string]sconns)
@@ -308,9 +308,7 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) {
 	a.mu.Unlock()
 
 	// If we have exceeded our max clients this will be populated.
-	for _, c := range clients {
-		c.maxAccountConnExceeded()
-	}
+	return clients
 }
 
 // Removes tracking for a remote server that has shutdown.

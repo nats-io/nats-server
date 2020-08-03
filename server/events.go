@@ -942,20 +942,26 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, subject, reply 
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// check again here if we have been shutdown.
 	if !s.running || !s.eventsEnabled() {
+		s.mu.Unlock()
 		return
 	}
 	// Double check that this is not us, should never happen, so error if it does.
 	if m.Server.ID == s.info.ID {
 		s.sys.client.Errorf("Processing our own account connection event message: ignored")
+		s.mu.Unlock()
 		return
 	}
 	// If we are here we have interest in tracking this account. Update our accounting.
-	acc.updateRemoteServer(&m)
+	clients := acc.updateRemoteServer(&m)
 	s.updateRemoteServer(&m.Server)
+	s.mu.Unlock()
+	// Need to close clients outside of server lock
+	for _, c := range clients {
+		c.maxAccountConnExceeded()
+	}
 }
 
 // Setup tracking for this account. This allows us to track global account activity.
@@ -1140,9 +1146,10 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 		},
 		Reason: reason,
 	}
+	accName := c.acc.Name
 	c.mu.Unlock()
 
-	subj := fmt.Sprintf(disconnectEventSubj, c.acc.Name)
+	subj := fmt.Sprintf(disconnectEventSubj, accName)
 	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
