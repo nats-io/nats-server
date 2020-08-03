@@ -1129,6 +1129,7 @@ func (s *Server) reloadAuthorization() {
 		s.gacc = nil
 		s.configureAccounts()
 		s.configureAuthorization()
+		s.mu.Unlock()
 
 		s.accounts.Range(func(k, v interface{}) bool {
 			newAcc := v.(*Account)
@@ -1169,6 +1170,7 @@ func (s *Server) reloadAuthorization() {
 			}
 			return true
 		})
+		s.mu.Lock()
 		// Check if we had a default system account.
 		if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
 			s.accounts.Store(s.sys.account.Name, s.sys.account)

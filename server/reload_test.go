@@ -3100,10 +3100,22 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 		}
 	}
 	no_sys_acc: true
+	cluster {
+		name: "abc"
+		port: -1
+	}
 	`))
 	defer os.Remove(conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
+
+	opts2 := DefaultOptions()
+	opts2.Cluster.Name = "abc"
+	opts2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", opts.Cluster.Port))
+	s2 := RunServer(opts2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s, s2)
 
 	derek, err := nats.Connect(fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
 	if err != nil {
@@ -3148,6 +3160,9 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	// This subscription is just to make sure that we can update
+	// route map without locking issues during reload.
+	natsSubSync(t, ivan, "bar")
 
 	req := func(t *testing.T, nc *nats.Conn, subj string, reply string) {
 		t.Helper()
@@ -3199,6 +3214,10 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 		}
 	}
 	no_sys_acc: true
+	cluster {
+		name: "abc"
+		port: -1
+	}
 	`)
 	// This still should work
 	req(t, ivan, "foo", "reply1")
