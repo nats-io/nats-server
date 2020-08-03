@@ -104,7 +104,7 @@ type serviceImport struct {
 	acc      *Account
 	claim    *jwt.Import
 	se       *serviceExport
-	sub      *subscription
+	sid      []byte
 	from     string
 	to       string
 	exsub    string
@@ -1153,8 +1153,8 @@ func (a *Account) removeServiceImport(subject string) {
 	c := a.ic
 
 	if ok && si != nil {
-		if a.ic != nil && si.sub != nil && si.sub.sid != nil {
-			sid = si.sub.sid
+		if a.ic != nil && si.sid != nil {
+			sid = si.sid
 		}
 	}
 	a.mu.Unlock()
@@ -1355,46 +1355,33 @@ func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscriptio
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	sub, err := c.processSub([]byte(subject+" "+sid), false)
-	if err != nil {
-		return nil, err
-	}
-
-	sub.icb = cb
-	return sub, nil
+	return c.processSub([]byte(subject), nil, []byte(sid), cb, false)
 }
 
 // This will add an account subscription that matches the "from" from a service import entry.
 func (a *Account) addServiceImportSub(si *serviceImport) error {
 	a.mu.Lock()
 	c := a.internalClient()
-	sid := strconv.FormatUint(a.isid+1, 10)
-	a.mu.Unlock()
-
 	// This will happen in parsing when the account has not been properly setup.
 	if c == nil {
+		a.mu.Unlock()
 		return nil
 	}
-
-	if si.sub != nil {
+	if si.sid != nil {
+		a.mu.Unlock()
 		return fmt.Errorf("duplicate call to create subscription for service import")
 	}
-
-	sub, err := c.processSub([]byte(si.from+" "+sid), true)
-	if err != nil {
-		return err
-	}
-
-	sub.icb = func(sub *subscription, c *client, subject, reply string, msg []byte) {
-		c.processServiceImport(si, a, msg)
-	}
-
-	a.mu.Lock()
 	a.isid++
-	si.sub = sub
+	sid := strconv.FormatUint(a.isid, 10)
+	si.sid = []byte(sid)
+	subject := si.from
 	a.mu.Unlock()
 
-	return nil
+	cb := func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		c.processServiceImport(si, a, msg)
+	}
+	_, err := c.processSub([]byte(subject), nil, []byte(sid), cb, true)
+	return err
 }
 
 // Remove all the subscriptions associated with service imports.
@@ -1402,9 +1389,9 @@ func (a *Account) removeAllServiceImportSubs() {
 	a.mu.RLock()
 	var sids [][]byte
 	for _, si := range a.imports.services {
-		if si.sub != nil && si.sub.sid != nil {
-			sids = append(sids, si.sub.sid)
-			si.sub = nil
+		if si.sid != nil {
+			sids = append(sids, si.sid)
+			si.sid = nil
 		}
 	}
 	c := a.ic
@@ -1486,14 +1473,12 @@ func (a *Account) createRespWildcard() []byte {
 	pre := a.siReply
 	wcsub := append(a.siReply, '>')
 	c := a.internalClient()
-	a.isid += 1
+	a.isid++
 	sid := strconv.FormatUint(a.isid, 10)
 	a.mu.Unlock()
 
 	// Create subscription and internal callback for all the wildcard response subjects.
-	if sub, _ := c.processSub([]byte(string(wcsub)+" "+sid), false); sub != nil {
-		sub.icb = a.processServiceImportResponse
-	}
+	c.processSub(wcsub, nil, []byte(sid), a.processServiceImportResponse, false)
 
 	return pre
 }
@@ -2451,8 +2436,8 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 	a.mu.RLock()
 	c := a.ic
 	for _, si := range old.imports.services {
-		if c != nil && si.sub != nil && si.sub.sid != nil {
-			sids = append(sids, si.sub.sid)
+		if c != nil && si.sid != nil {
+			sids = append(sids, si.sid)
 		}
 	}
 	a.mu.RUnlock()

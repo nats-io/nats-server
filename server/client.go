@@ -2104,25 +2104,39 @@ func splitArg(arg []byte) [][]byte {
 	return args
 }
 
-func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) {
+func (c *client) parseSub(argo []byte, noForward bool) error {
 	// Copy so we do not reference a potentially large buffer
 	// FIXME(dlc) - make more efficient.
 	arg := make([]byte, len(argo))
 	copy(arg, argo)
 	args := splitArg(arg)
-	sub := &subscription{client: c}
+	var (
+		subject []byte
+		queue   []byte
+		sid     []byte
+	)
 	switch len(args) {
 	case 2:
-		sub.subject = args[0]
-		sub.queue = nil
-		sub.sid = args[1]
+		subject = args[0]
+		queue = nil
+		sid = args[1]
 	case 3:
-		sub.subject = args[0]
-		sub.queue = args[1]
-		sub.sid = args[2]
+		subject = args[0]
+		queue = args[1]
+		sid = args[2]
 	default:
-		return nil, fmt.Errorf("processSub Parse Error: '%s'", arg)
+		return fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
+	// If there was an error, it has been sent to the client. We don't return an
+	// error here to not close the connection as a parsing error.
+	c.processSub(subject, queue, sid, nil, noForward)
+	return nil
+}
+
+func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
+
+	// Create the subscription
+	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb}
 
 	c.mu.Lock()
 
@@ -2155,12 +2169,12 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 			if !c.canQueueSubscribe(string(sub.subject), string(sub.queue)) {
 				c.mu.Unlock()
 				c.subPermissionViolation(sub)
-				return nil, nil
+				return nil, ErrSubscribePermissionViolation
 			}
 		} else if !c.canSubscribe(string(sub.subject)) {
 			c.mu.Unlock()
 			c.subPermissionViolation(sub)
-			return nil, nil
+			return nil, ErrSubscribePermissionViolation
 		}
 	}
 
@@ -2168,7 +2182,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 	if c.subsAtLimit() {
 		c.mu.Unlock()
 		c.maxSubsExceeded()
-		return nil, nil
+		return nil, ErrTooManySubs
 	}
 
 	var updateGWs bool
@@ -2192,7 +2206,7 @@ func (c *client) processSub(argo []byte, noForward bool) (*subscription, error) 
 
 	if err != nil {
 		c.sendErr("Invalid Subject")
-		return nil, nil
+		return nil, ErrMalformedSubject
 	} else if c.opts.Verbose && kind != SYSTEM {
 		c.sendOK()
 	}

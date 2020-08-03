@@ -3558,6 +3558,8 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	})
 	nc2.Flush()
 
+	checkSubInterest(t, srvB, "INTERNAL", "foo", time.Second)
+
 	nc, err := nats.Connect(fmt.Sprintf("nats://good:pwd@%s:%d", optsB.Host, optsB.Port))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)

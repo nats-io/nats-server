@@ -910,3 +910,11 @@ func TestNoRaceLeafNodeClusterNameConflictDeadlock(t *testing.T) {
 	checkLeafNodeConnected(t, s3)
 	checkClusterFormed(t, s1, s2, s3)
 }
+
+// This test is same than TestAccountAddServiceImportRace but running
+// without the -race flag, it would capture more easily the possible
+// duplicate sid, resulting in less than expected number of subscriptions
+// in the account's internal subscriptions map.
+func TestNoRaceAccountAddServiceImportRace(t *testing.T) {
+	TestAccountAddServiceImportRace(t)
+}

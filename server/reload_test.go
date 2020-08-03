@@ -3845,7 +3845,7 @@ func TestConfigReloadLeafNodeWithRemotesNoChanges(t *testing.T) {
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
-	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", o1.LeafNode.Port))
+	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
 	if err != nil {
 		t.Fatalf("Error creating url: %v", err)
 	}

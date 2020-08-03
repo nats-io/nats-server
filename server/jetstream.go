@@ -1056,14 +1056,10 @@ func (t *StreamTemplate) createTemplateSubscriptions() error {
 	sid := 1
 	for _, subject := range t.Config.Subjects {
 		// Now create the subscription
-		sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(sid)), false)
-		if err != nil {
+		if _, err := c.processSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), t.processInboundTemplateMsg, false); err != nil {
 			c.acc.DeleteStreamTemplate(t.Name)
 			return err
 		}
-		c.mu.Lock()
-		sub.icb = t.processInboundTemplateMsg
-		c.mu.Unlock()
 		sid++
 	}
 	return nil

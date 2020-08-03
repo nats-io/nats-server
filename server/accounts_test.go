@@ -1193,6 +1193,46 @@ func TestServiceExportWithWildcards(t *testing.T) {
 	}
 }
 
+func TestAccountAddServiceImportRace(t *testing.T) {
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	defer s.Shutdown()
+
+	if err := fooAcc.AddServiceExport("foo.*", nil); err != nil {
+		t.Fatalf("Error adding account service export to client foo: %v", err)
+	}
+
+	total := 100
+	errCh := make(chan error, total)
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			err := barAcc.AddServiceImport(fooAcc, fmt.Sprintf("foo.%d", i), "")
+			errCh <- err // nil is a valid value.
+
+		}(i)
+	}
+
+	for i := 0; i < 100; i++ {
+		err := <-errCh
+		if err != nil {
+			t.Fatalf("Error adding account service import: %v", err)
+		}
+	}
+
+	barAcc.mu.Lock()
+	lens := len(barAcc.imports.services)
+	c := barAcc.internalClient()
+	barAcc.mu.Unlock()
+	if lens != total {
+		t.Fatalf("Expected %d imported services, got %d", total, lens)
+	}
+	c.mu.Lock()
+	lens = len(c.subs)
+	c.mu.Unlock()
+	if lens != total {
+		t.Fatalf("Expected %d subscriptions in internal client, got %d", total, lens)
+	}
+}
+
 func TestServiceImportWithWildcards(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
