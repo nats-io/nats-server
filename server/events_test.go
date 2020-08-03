@@ -563,6 +563,60 @@ func TestSystemAccountDisconnectBadLogin(t *testing.T) {
 	}
 }
 
+func TestSysSubscribeRace(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	done := make(chan struct{})
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			nc.Publish("foo", []byte("hello"))
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	received := make(chan struct{})
+	// Create message callback handler.
+	cb := func(sub *subscription, producer *client, subject, reply string, msg []byte) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	}
+	// Now create an internal subscription
+	sub, err := s.sysSubscribe("foo", cb)
+	if sub == nil || err != nil {
+		t.Fatalf("Expected to subscribe, got %v", err)
+	}
+	select {
+	case <-received:
+		close(done)
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive the message")
+	}
+	wg.Wait()
+}
+
 func TestSystemAccountInternalSubscriptions(t *testing.T) {
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()

@@ -154,6 +154,12 @@ var (
 
 	// ErrClusterNameRemoteConflict signals that a remote server has a different cluster name.
 	ErrClusterNameRemoteConflict = errors.New("cluster name from remote server conflicts")
+
+	// ErrMalformedSubject is returned when a subscription is made with a subject that does not conform to subject rules.
+	ErrMalformedSubject = errors.New("malformed subject")
+
+	// ErrSubscribePermissionViolation is returned when processing of a subscription fails due to permissions.
+	ErrSubscribePermissionViolation = errors.New("subscribe permission viloation")
 )
 
 // configErr is a configuration error.

@@ -576,16 +576,7 @@ func (mset *Stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	mset.sid++
 
 	// Now create the subscription
-	sub, err := c.processSub([]byte(subject+" "+strconv.Itoa(mset.sid)), false)
-	if err != nil {
-		return nil, err
-	} else if sub == nil {
-		return nil, fmt.Errorf("malformed subject")
-	}
-	c.mu.Lock()
-	sub.icb = cb
-	c.mu.Unlock()
-	return sub, nil
+	return c.processSub([]byte(subject), nil, []byte(strconv.Itoa(mset.sid)), cb, false)
 }
 
 // Helper for unlocked stream.

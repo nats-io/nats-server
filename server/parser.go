@@ -580,7 +580,7 @@ func (c *client) parse(buf []byte) error {
 					if trace {
 						c.traceInOp("SUB", arg)
 					}
-					_, err = c.processSub(arg, false)
+					err = c.parseSub(arg, false)
 				case ROUTER:
 					switch c.op {
 					case 'R', 'r':

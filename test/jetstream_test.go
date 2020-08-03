@@ -688,7 +688,7 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		e := scResp.Error
-		if e == nil || e.Code != 500 || e.Description != "malformed subject" {
+		if e == nil || e.Code != 500 || e.Description != server.ErrMalformedSubject.Error() {
 			t.Fatalf("Did not get proper error response: %+v", e)
 		}
 	}

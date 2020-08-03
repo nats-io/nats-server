@@ -1227,20 +1227,12 @@ func (s *Server) systemSubscribe(subject string, internalOnly bool, cb msgHandle
 	sid := strconv.Itoa(s.sys.sid)
 	s.mu.Unlock()
 
-	arg := []byte(subject + " " + sid)
 	if trace {
-		c.traceInOp("SUB", arg)
+		c.traceInOp("SUB", []byte(subject+" "+sid))
 	}
 
 	// Now create the subscription
-	sub, err := c.processSub(arg, internalOnly)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	sub.icb = cb
-	c.mu.Unlock()
-	return sub, nil
+	return c.processSub([]byte(subject), nil, []byte(sid), cb, internalOnly)
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {
