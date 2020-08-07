@@ -3050,9 +3050,9 @@ func TestAccountNatsResolverFetch(t *testing.T) {
 		operator: %s
 		system_account: %s
 		resolver: {
-			type: exclusive
+			type: full
 			dir: %s
-			sync: "1s"
+			interval: "1s"
 			limit: 4
 		}
 		resolver_preload: {
@@ -3076,9 +3076,9 @@ func TestAccountNatsResolverFetch(t *testing.T) {
 		operator: %s
 		system_account: %s
 		resolver: {
-			type: exclusive
+			type: full
 			dir: %s
-			sync: "1s"
+			interval: "1s"
 			limit: 4
 		}
 		cluster {

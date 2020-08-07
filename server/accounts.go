@@ -2593,6 +2593,7 @@ type AccountResolver interface {
 	IsReadOnly() bool
 	Start(server *Server, systemAccPubKey string) func()
 	IsTrackingUpdate() bool
+	Reload() error
 }
 
 // Default implementations of IsReadOnly/Start so only need to be written when changed
@@ -2608,6 +2609,10 @@ func (*resolverDefaultsOpsImpl) IsTrackingUpdate() bool {
 
 func (*resolverDefaultsOpsImpl) Start(*Server, string) func() {
 	return func() {}
+}
+
+func (*resolverDefaultsOpsImpl) Reload() error {
+	return nil
 }
 
 func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
@@ -2722,7 +2727,7 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 }
 
 func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
-	if dr == nil || dr.IsReadOnly() {
+	if dr == nil {
 		return func() {}
 	}
 	dr.Lock()
@@ -2789,12 +2794,13 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 			if bytes.Equal(theirHash, ourHash[:]) {
 				s.sendInternalMsgLocked(reply, "", nil, []byte{})
 				s.Debugf("pack request matches hash %x", ourHash[:])
-			} else if msg, err := dr.DirJWTStore.Pack(-1); err != nil {
+			} else if err := dr.DirJWTStore.PackWalk(1, func(partialPackMsg string) {
+				s.sendInternalMsgLocked(reply, "", nil, []byte(partialPackMsg))
+			}); err != nil {
 				// let them timeout
 				s.Errorf("pack request error: %v", err)
 			} else {
-				s.Debugf("pack request hash %x - respond with hash %x / %d bytes", theirHash, ourHash, len(msg))
-				s.sendInternalMsgLocked(reply, "", nil, []byte(msg))
+				s.Debugf("pack request hash %x - finished responding with hash %x")
 				s.sendInternalMsgLocked(reply, "", nil, []byte{})
 			}
 		}); err != nil {
@@ -2848,9 +2854,6 @@ func (dr *DirAccResolver) Fetch(name string) (string, error) {
 }
 
 func (dr *DirAccResolver) Store(name, jwt string) error {
-	if dr.IsReadOnly() {
-		return fmt.Errorf("Store operation not supported for read only DirResolver")
-	}
 	return dr.saveIfNewer(name, jwt)
 }
 
@@ -2971,42 +2974,6 @@ func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) func() {
 	}
 }
 
-// Resolver for use with shared directories. Detects file changes
-type SharedDirAccResolver struct {
-	DirAccResolver
-}
-
-func NewSharedDirAccResolver(path string) (*SharedDirAccResolver, error) {
-	res := &SharedDirAccResolver{}
-	store, err := NewImmutableDirJWTStore(path, false, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	res.DirJWTStore = store
-	return res, nil
-}
-
-func (dr *SharedDirAccResolver) Start(s *Server, sysAcc string) func() {
-	dr.Lock()
-	dr.DirJWTStore.changed = func(pubKey string) {
-		if v, ok := s.accounts.Load(pubKey); !ok {
-			s.Debugf("jwt (unused) %s changed", pubKey)
-		} else if newJWT, err := dr.LoadAcc(pubKey); err != nil {
-			s.Errorf("error reading updated jwt: %v", err)
-		} else {
-			s.Debugf("jwt %s changed", pubKey)
-			s.updateAccountWithClaimJWT(v.(*Account), newJWT)
-		}
-	}
-	dr.DirJWTStore.errorOccurred = func(err error) {
-		s.Errorf("error in directory resolver", err)
-	}
-	dr.Unlock()
-	dr.DirJWTStore.startWatching()
-	s.Noticef("Monitoring shared directory %s for account jwt changes", dr.directory)
-	return func() { dr.DirJWTStore.Close() }
-}
-
-func (dr *SharedDirAccResolver) IsTrackingUpdate() bool {
-	return false
+func (dr *CacheDirAccResolver) Reload() error {
+	return dr.DirAccResolver.Reload()
 }

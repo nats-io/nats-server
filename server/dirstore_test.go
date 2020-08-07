@@ -21,10 +21,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,7 +85,7 @@ func TestShardedDirStoreWriteAndReadonly(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	store, err := NewDirJWTStore(dir, true, false, nil, nil)
+	store, err := NewDirJWTStore(dir, true, false)
 	require_NoError(t, err)
 
 	expected := map[string]string{
@@ -94,8 +94,6 @@ func TestShardedDirStoreWriteAndReadonly(t *testing.T) {
 		"three": "gamma",
 		"four":  "delta",
 	}
-
-	require_False(t, store.IsReadOnly())
 
 	for k, v := range expected {
 		store.SaveAcc(k, v)
@@ -120,7 +118,7 @@ func TestShardedDirStoreWriteAndReadonly(t *testing.T) {
 	store.Close()
 
 	// re-use the folder for readonly mode
-	store, err = NewImmutableDirJWTStore(dir, true, func(pubKey string) {}, func(err error) {})
+	store, err = NewImmutableDirJWTStore(dir, true)
 	require_NoError(t, err)
 
 	require_True(t, store.IsReadOnly())
@@ -140,7 +138,7 @@ func TestUnshardedDirStoreWriteAndReadonly(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	store, err := NewDirJWTStore(dir, false, false, nil, nil)
+	store, err := NewDirJWTStore(dir, false, false)
 	require_NoError(t, err)
 
 	expected := map[string]string{
@@ -175,7 +173,7 @@ func TestUnshardedDirStoreWriteAndReadonly(t *testing.T) {
 	store.Close()
 
 	// re-use the folder for readonly mode
-	store, err = NewImmutableDirJWTStore(dir, false, func(pubKey string) {}, func(err error) {})
+	store, err = NewImmutableDirJWTStore(dir, false)
 	require_NoError(t, err)
 
 	require_True(t, store.IsReadOnly())
@@ -191,13 +189,8 @@ func TestUnshardedDirStoreWriteAndReadonly(t *testing.T) {
 	store.Close()
 }
 
-func TestReadonlyRequiresDir(t *testing.T) {
-	_, err := NewImmutableDirJWTStore("/a/b/c", true, func(pubKey string) {}, func(err error) {})
-	require_Error(t, err)
-}
-
 func TestNoCreateRequiresDir(t *testing.T) {
-	_, err := NewDirJWTStore("/a/b/c", true, false, func(pubKey string) {}, func(err error) {})
+	_, err := NewDirJWTStore("/a/b/c", true, false)
 	require_Error(t, err)
 }
 
@@ -211,143 +204,12 @@ func TestCreateMakesDir(t *testing.T) {
 	require_Error(t, err)
 	require_True(t, os.IsNotExist(err))
 
-	s, err := NewDirJWTStore(fullPath, false, true, func(pubKey string) {}, func(err error) {})
+	s, err := NewDirJWTStore(fullPath, false, true)
 	require_NoError(t, err)
 	s.Close()
 
 	_, err = os.Stat(fullPath)
 	require_NoError(t, err)
-}
-
-func TestDirStoreNotifications(t *testing.T) {
-
-	// Skip the file notification test on travis
-	if os.Getenv("TRAVIS_GO_VERSION") != "" {
-		return
-	}
-
-	for _, test := range []struct {
-		name    string
-		sharded bool
-	}{
-		{"sharded", true},
-		{"unsharded", false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
-			require_NoError(t, err)
-			defer os.RemoveAll(dir)
-
-			notified := make(chan bool, 1)
-			errors := make(chan error, 10)
-			wStoreState := int32(0)
-
-			store, err := NewDirJWTStore(dir, test.sharded, false, func(pubKey string) {
-				n := atomic.LoadInt32(&wStoreState)
-				switch n {
-				case 0:
-					return
-				case 1:
-					if pubKey == "one" {
-						notified <- true
-						atomic.StoreInt32(&wStoreState, 0)
-					}
-				case 2:
-					if pubKey == "two" {
-						notified <- true
-						atomic.StoreInt32(&wStoreState, 0)
-					}
-				}
-			}, func(err error) {
-				errors <- err
-			})
-			require_NoError(t, err)
-			defer store.Close()
-			require_True(t, store.IsReadOnly())
-
-			expected := map[string]string{
-				"one":   "alpha",
-				"two":   "beta",
-				"three": "gamma",
-				"four":  "delta",
-			}
-
-			for k, v := range expected {
-				require_Error(t, store.SaveAcc(k, v))
-				if test.sharded {
-					require_NoError(t, os.MkdirAll(fmt.Sprintf("%s/%s/", dir, k[len(k)-2:]), 0755))
-					require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/%s/%s.jwt", dir, k[len(k)-2:], k), []byte(v), 0644))
-				} else {
-					require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/%s.jwt", dir, k), []byte(v), 0644))
-				}
-			}
-
-			time.Sleep(time.Second)
-
-			for k, v := range expected {
-				got, err := store.LoadAcc(k)
-				require_NoError(t, err)
-				require_Equal(t, v, got)
-			}
-
-			atomic.StoreInt32(&wStoreState, 1)
-			require_Error(t, store.SaveAcc("one", "zip"))
-			if test.sharded {
-				require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/ne/%s.jwt", dir, "one"), []byte("zip"), 0644))
-			} else {
-				require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/%s.jwt", dir, "one"), []byte("zip"), 0644))
-			}
-
-			check := func() {
-				t.Helper()
-				select {
-				case <-notified:
-				case e := <-errors:
-					t.Fatal(e.Error())
-				case <-time.After(5 * time.Second):
-					t.Fatalf("Did not get notified")
-				}
-			}
-			check()
-
-			// re-use the folder for readonly mode
-			roStoreState := int32(0)
-			readOnlyStore, err := NewImmutableDirJWTStore(dir, test.sharded, func(pubKey string) {
-				n := atomic.LoadInt32(&roStoreState)
-				switch n {
-				case 0:
-					return
-				case 1:
-					if pubKey == "two" {
-						notified <- true
-						atomic.StoreInt32(&roStoreState, 0)
-					}
-				}
-			}, func(err error) {
-				errors <- err
-			})
-			require_NoError(t, err)
-			defer readOnlyStore.Close()
-			require_True(t, readOnlyStore.IsReadOnly())
-
-			got, err := readOnlyStore.LoadAcc("one")
-			require_NoError(t, err)
-			require_Equal(t, "zip", got)
-
-			atomic.StoreInt32(&roStoreState, 1)
-			atomic.StoreInt32(&wStoreState, 2)
-
-			if test.sharded {
-				require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/wo/%s.jwt", dir, "two"), []byte("zap"), 0644))
-			} else {
-				require_NoError(t, ioutil.WriteFile(fmt.Sprintf("%s/%s.jwt", dir, "two"), []byte("zap"), 0644))
-			}
-
-			for i := 0; i < 2; i++ {
-				check()
-			}
-		})
-	}
 }
 
 func TestShardedDirStorePackMerge(t *testing.T) {
@@ -358,7 +220,7 @@ func TestShardedDirStorePackMerge(t *testing.T) {
 	dir3, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	store, err := NewDirJWTStore(dir, true, false, nil, nil)
+	store, err := NewDirJWTStore(dir, true, false)
 	require_NoError(t, err)
 
 	expected := map[string]string{
@@ -387,7 +249,7 @@ func TestShardedDirStorePackMerge(t *testing.T) {
 	pack, err := store.Pack(-1)
 	require_NoError(t, err)
 
-	inc, err := NewDirJWTStore(dir2, true, false, nil, nil)
+	inc, err := NewDirJWTStore(dir2, true, false)
 	require_NoError(t, err)
 
 	inc.Merge(pack)
@@ -405,7 +267,7 @@ func TestShardedDirStorePackMerge(t *testing.T) {
 	limitedPack, err := inc.Pack(1)
 	require_NoError(t, err)
 
-	limited, err := NewDirJWTStore(dir3, true, false, nil, nil)
+	limited, err := NewDirJWTStore(dir3, true, false)
 
 	require_NoError(t, err)
 
@@ -433,7 +295,7 @@ func TestShardedToUnsharedDirStorePackMerge(t *testing.T) {
 	dir2, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	store, err := NewDirJWTStore(dir, true, false, nil, nil)
+	store, err := NewDirJWTStore(dir, true, false)
 	require_NoError(t, err)
 
 	expected := map[string]string{
@@ -462,7 +324,7 @@ func TestShardedToUnsharedDirStorePackMerge(t *testing.T) {
 	pack, err := store.Pack(-1)
 	require_NoError(t, err)
 
-	inc, err := NewDirJWTStore(dir2, false, false, nil, nil)
+	inc, err := NewDirJWTStore(dir2, false, false)
 	require_NoError(t, err)
 
 	inc.Merge(pack)
@@ -491,7 +353,7 @@ func TestMergeOnlyOnNewer(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	dirStore, err := NewDirJWTStore(dir, true, false, nil, nil)
+	dirStore, err := NewDirJWTStore(dir, true, false)
 	require_NoError(t, err)
 
 	accountKey, err := nkeys.CreateAccount()
@@ -695,7 +557,6 @@ func TestLimitNoEvict(t *testing.T) {
 func TestLruLoad(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
-
 	dirStore, err := NewExpiringDirJWTStore(dir, false, false, time.Millisecond*100, 2, true, 0, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
@@ -771,6 +632,67 @@ func TestLru(t *testing.T) {
 	// recreate key3 - no eviction
 	createTestAccount(t, dirStore, 10, accountKey3)
 	assertStoreSize(t, dirStore, 2)
+}
+
+func TestReload(t *testing.T) {
+	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
+	require_NoError(t, err)
+	notificationChan := make(chan struct{}, 5)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, time.Millisecond*100, 2, true, 0, func(publicKey string) {
+		notificationChan <- struct{}{}
+	})
+	require_NoError(t, err)
+	defer dirStore.Close()
+	newAccount := func() string {
+		t.Helper()
+		accKey, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		pKey, err := accKey.PublicKey()
+		require_NoError(t, err)
+		pubKey, err := accKey.PublicKey()
+		require_NoError(t, err)
+		account := jwt.NewAccountClaims(pubKey)
+		jwt, err := account.Encode(accKey)
+		require_NoError(t, err)
+		file := fmt.Sprintf("%s/%s.jwt", dir, pKey)
+		err = ioutil.WriteFile(file, []byte(jwt), 0644)
+		require_NoError(t, err)
+		return file
+	}
+	files := make(map[string]struct{})
+	assertStoreSize(t, dirStore, 0)
+	hash := dirStore.Hash()
+	emptyHash := [sha256.Size]byte{}
+	require_True(t, bytes.Equal(hash[:], emptyHash[:]))
+	for i := 0; i < 5; i++ {
+		files[newAccount()] = struct{}{}
+		err = dirStore.Reload()
+		require_NoError(t, err)
+		<-notificationChan
+		assertStoreSize(t, dirStore, i+1)
+		hash = dirStore.Hash()
+		require_False(t, bytes.Equal(hash[:], emptyHash[:]))
+		msg, err := dirStore.Pack(-1)
+		require_NoError(t, err)
+		require_Len(t, len(strings.Split(msg, "\n")), len(files))
+	}
+	for k := range files {
+		hash = dirStore.Hash()
+		require_False(t, bytes.Equal(hash[:], emptyHash[:]))
+		os.Remove(k)
+		err = dirStore.Reload()
+		require_NoError(t, err)
+		assertStoreSize(t, dirStore, len(files)-1)
+		delete(files, k)
+		msg, err := dirStore.Pack(-1)
+		require_NoError(t, err)
+		if len(files) != 0 { // when len is 0, we have an empty line
+			require_Len(t, len(strings.Split(msg, "\n")), len(files))
+		}
+	}
+	require_True(t, len(notificationChan) == 0)
+	hash = dirStore.Hash()
+	require_True(t, bytes.Equal(hash[:], emptyHash[:]))
 }
 
 func TestExpirationUpdate(t *testing.T) {
@@ -871,69 +793,106 @@ func TestTTL(t *testing.T) {
 	require_Len(t, len(f), 0)
 }
 
-func TestNFS(t *testing.T) {
-	emptyHash := [sha256.Size]byte{}
-	changeChan := make(chan struct{}, 1)
-	defer close(changeChan)
-	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
+const infDur = time.Duration(math.MaxInt64)
+
+func TestNotificationOnPack(t *testing.T) {
+	jwts := map[string]string{
+		"key1": "value",
+		"key2": "value",
+		"key3": "value",
+		"key4": "value",
+	}
+	notificationChan := make(chan struct{}, len(jwts)) // set to same len so all extra will block
+	notification := func(pubKey string) {
+		if _, ok := jwts[pubKey]; !ok {
+			t.Errorf("Key not found: %s", pubKey)
+		}
+		notificationChan <- struct{}{}
+	}
+	dirPack, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
-	s, err := NewImmutableDirJWTStore(dir, false, func(pubKey string) {
-		changeChan <- struct{}{}
-	}, func(err error) {})
+	packStore, err := NewExpiringDirJWTStore(dirPack, false, false, infDur, 0, true, 0, notification)
 	require_NoError(t, err)
-	defer s.Close()
-
-	createAccount := func() (string, string, [sha256.Size]byte, string) {
-		t.Helper()
-		key1, err := nkeys.CreateAccount()
-		require_NoError(t, err)
-		pKey1, err := key1.PublicKey()
-		require_NoError(t, err)
-		acc1 := jwt.NewAccountClaims(pKey1) // self signed is fine her
-		jwt1, err := acc1.Encode(key1)
-		require_NoError(t, err)
-		hash := sha256.Sum256([]byte(jwt1))
-		return pKey1, jwt1, hash, filepath.Join(dir, pKey1+".jwt")
+	// prefill the store with data
+	for k, v := range jwts {
+		require_NoError(t, packStore.SaveAcc(k, v))
 	}
-	writeAccount := func(file string, jwt string) {
-		err := ioutil.WriteFile(file, []byte(jwt), 0644)
-		require_NoError(t, err)
+	for i := 0; i < len(jwts); i++ {
+		<-notificationChan
 	}
-	removeAccount := func(file string) {
-		err = os.Remove(file)
+	msg, err := packStore.Pack(-1)
+	require_NoError(t, err)
+	packStore.Close()
+	hash := packStore.Hash()
+	for _, shard := range []bool{true, false, true, false} {
+		dirMerge, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 		require_NoError(t, err)
+		mergeStore, err := NewExpiringDirJWTStore(dirMerge, shard, false, infDur, 0, true, 0, notification)
+		require_NoError(t, err)
+		// set
+		err = mergeStore.Merge(msg)
+		require_NoError(t, err)
+		assertStoreSize(t, mergeStore, len(jwts))
+		hash1 := packStore.Hash()
+		require_True(t, bytes.Equal(hash[:], hash1[:]))
+		for i := 0; i < len(jwts); i++ {
+			<-notificationChan
+		}
+		// overwrite - assure
+		err = mergeStore.Merge(msg)
+		require_NoError(t, err)
+		assertStoreSize(t, mergeStore, len(jwts))
+		hash2 := packStore.Hash()
+		require_True(t, bytes.Equal(hash1[:], hash2[:]))
+
+		hash = hash1
+		msg, err = mergeStore.Pack(-1)
+		require_NoError(t, err)
+		mergeStore.Close()
+		require_True(t, len(notificationChan) == 0)
+
+		for k, v := range jwts {
+			j, err := packStore.LoadAcc(k)
+			require_NoError(t, err)
+			require_Equal(t, j, v)
+		}
 	}
+}
 
-	_, jwt1, hash, file1 := createAccount()
-	writeAccount(file1, jwt1)
-
-	<-changeChan
-	newHash := s.Hash()
-	require_True(t, bytes.Equal(hash[:], newHash[:]))
-	removeAccount(file1)
-	time.Sleep(4 * time.Second)
-	newHash = s.Hash()
-	require_True(t, bytes.Equal(emptyHash[:], newHash[:]))
-
-	writeAccount(file1, jwt1)
-	_, jwt2, _, file2 := createAccount()
-	writeAccount(file2, jwt2)
-	_, jwt3, _, file3 := createAccount()
-	writeAccount(file3, jwt3)
-
-	<-changeChan
-	<-changeChan
-	<-changeChan
-
-	removeAccount(file2)
-	time.Sleep(4 * time.Second)
-	removeAccount(file3)
-	time.Sleep(4 * time.Second)
-	newHash = s.Hash()
-	require_True(t, bytes.Equal(hash[:], newHash[:]))
-	removeAccount(file1)
-	time.Sleep(4 * time.Second)
-
-	newHash = s.Hash()
-	require_True(t, bytes.Equal(emptyHash[:], newHash[:]))
+func TestNotificationOnPackWalk(t *testing.T) {
+	const storeCnt = 5
+	const keyCnt = 50
+	const iterCnt = 8
+	store := [storeCnt]*DirJWTStore{}
+	for i := 0; i < storeCnt; i++ {
+		dirMerge, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
+		require_NoError(t, err)
+		mergeStore, err := NewExpiringDirJWTStore(dirMerge, true, false, infDur, 0, true, 0, nil)
+		require_NoError(t, err)
+		store[i] = mergeStore
+	}
+	for i := 0; i < iterCnt; i++ { //iterations
+		jwt := make(map[string]string)
+		for j := 0; j < keyCnt; j++ {
+			key := fmt.Sprintf("key%d-%d", i, j)
+			value := "value"
+			jwt[key] = value
+			store[0].SaveAcc(key, value)
+		}
+		for j := 0; j < storeCnt-1; j++ { // stores
+			err := store[j].PackWalk(3, func(partialPackMsg string) {
+				err := store[j+1].Merge(partialPackMsg)
+				require_NoError(t, err)
+			})
+			require_NoError(t, err)
+		}
+		for i := 0; i < storeCnt-1; i++ {
+			h1 := store[i].Hash()
+			h2 := store[i+1].Hash()
+			require_True(t, bytes.Equal(h1[:], h2[:]))
+		}
+	}
+	for i := 0; i < storeCnt; i++ {
+		store[i].Close()
+	}
 }

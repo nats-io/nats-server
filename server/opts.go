@@ -863,7 +863,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				_, v := unwrapValue(v, &lt)
 				ttl, err = time.ParseDuration(v.(string))
 			}
-			if v, ok := v["sync"]; err == nil && ok {
+			if v, ok := v["interval"]; err == nil && ok {
 				_, v := unwrapValue(v, &lt)
 				sync, err = time.ParseDuration(v.(string))
 			}
@@ -880,20 +880,14 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 			var res AccountResolver
 			switch strings.ToUpper(dirType) {
-			case "SHARED":
-				if limit != 0 || ttl != 0 || sync != 0 {
-					*errors = append(*errors, &configErr{tk, "SHARED resolver only takes a directory"})
-					return
-				}
-				res, err = NewSharedDirAccResolver(dir)
 			case "CACHE":
 				if sync != 0 {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
 				}
 				res, err = NewCacheDirAccResolver(dir, limit, ttl)
-			case "EXCLUSIVE":
+			case "FULL":
 				if ttl != 0 {
-					*errors = append(*errors, &configErr{tk, "CACHE does not accept ttl"})
+					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
 				}
 				res, err = NewDirAccResolver(dir, limit, sync)
 			}
@@ -909,7 +903,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 		if o.AccountResolver == nil {
 			err := &configErr{tk, "error parsing account resolver, should be MEM or " +
-				" URL(\"url\") or SHARED_DIR(\"dir\") or CACHE_DIR(\"dir\"[,limit]) or EXCLUSIVE_DIR(\"dir\")"}
+				" URL(\"url\") or a map containing dir and type state=[FULL|CACHE])"}
 			*errors = append(*errors, err)
 		}
 	case "resolver_tls":
