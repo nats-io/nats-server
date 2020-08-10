@@ -1138,12 +1138,12 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
   <body>
     <img src="http://nats.io/img/logo.png" alt="NATS">
     <br/>
-	<a href=%s>varz</a><br/>
-	<a href=%s>connz</a><br/>
-	<a href=%s>routez</a><br/>
-	<a href=%s>gatewayz</a><br/>
-	<a href=%s>leafz</a><br/>
-	<a href=%s>subsz</a><br/>
+	<a href=.%s>varz</a><br/>
+	<a href=.%s>connz</a><br/>
+	<a href=.%s>routez</a><br/>
+	<a href=.%s>gatewayz</a><br/>
+	<a href=.%s>leafz</a><br/>
+	<a href=.%s>subsz</a><br/>
     <br/>
     <a href=https://docs.nats.io/nats-server/configuration/monitoring.html>help</a>
   </body>
