@@ -5,7 +5,7 @@ Author: @ripienaar
 
 ## Status
 
-Proposed
+Approved
 
 ## Context
 
@@ -52,15 +52,14 @@ exports: [
 
 This enables sampling based `50%` of the service requests on this service.
 
-I propose we support additional sampling values `zipkin`, `jaeger`, `trace_context` which will configure the server to
+I propose we support the additional sampling value `headers` which will configure the server to
 interpret the headers as below to determine if a request should be sampled.
 
 ## Propagating headers
 
-The `io.nats.server.metric.v1.service_latency` advisory gets updated with additional `trace_format` and `headers` fields.
+The `io.nats.server.metric.v1.service_latency` advisory gets updated with an additional `headers` field.
 
-`headers` would just propagate all the headers unmodified. We might later add support for a whitelist here to avoid
-leaking sensitive information.
+`headers` contains only the headers used for the sampling decision.
 
 ```json
 {
@@ -68,9 +67,8 @@ leaking sensitive information.
   "id": "YBxAhpUFfs1rPGo323WcmQ",
   "timestamp": "2020-05-21T08:06:29.4981587Z",
   "status": 200,
-  "trace_format": "jaeger",
   "headers": {
-    "Uber-Trace-Id": "09931e3444de7c99:50ed16db42b98999:0:1"
+    "Uber-Trace-Id": ["09931e3444de7c99:50ed16db42b98999:0:1"]
   },
   "requestor": {
     "acc": "WEB",

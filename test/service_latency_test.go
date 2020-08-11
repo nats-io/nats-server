@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1422,4 +1424,279 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 	rmsg, _ = rsub.NextMsg(time.Second)
 	json.Unmarshal(rmsg.Data, &sl2)
 	noShareCheck(t, &sl2.Requestor)
+}
+
+func TestServiceLatencyLossTest(t *testing.T) {
+	// assure that behavior with respect to requests timing out (and samples being reordered) is as expected.
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+		    SVC: {
+		        users: [ {user: svc, password: pass} ]
+		        exports: [  {
+					service: "svc.echo"
+					threshold: "500ms"
+					accounts: [CLIENT]
+					latency: {
+						sampling: headers
+						subject: latency.svc
+					}
+				} ]
+		    },
+		    CLIENT: {
+		        users: [{user: client, password: pass} ]
+			    imports: [ {service: {account: SVC, subject: svc.echo}, to: SVC, share:true} ]
+		    },
+		    SYS: { users: [{user: admin, password: pass}] }
+		}
+		system_account: SYS
+	`))
+	defer os.Remove(conf)
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	// Responder connection
+	ncr, err := nats.Connect(fmt.Sprintf("nats://svc:pass@%s:%d", opts.Host, opts.Port), nats.Name("responder"))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncr.Close()
+
+	ncl, err := nats.Connect(fmt.Sprintf("nats://svc:pass@%s:%d", opts.Host, opts.Port), nats.Name("latency"))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncl.Close()
+	// Table of expected state for which message.
+	// This also codifies that the first message, in respsonse to second request is ok.
+	// Second message, in response to first request times out.
+	expectedState := map[int]int{1: http.StatusOK, 2: http.StatusGatewayTimeout}
+	msgCnt := 0
+	start := time.Now().Add(250 * time.Millisecond)
+
+	var latErr []error
+	// Listen for metrics
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	rsub, _ := ncl.Subscribe("latency.svc", func(rmsg *nats.Msg) {
+		defer wg.Done()
+		var sl server.ServiceLatency
+		json.Unmarshal(rmsg.Data, &sl)
+		msgCnt++
+		if want := expectedState[msgCnt]; want != sl.Status {
+			latErr = append(latErr, fmt.Errorf("Expected different status for msg #%d: %d != %d", msgCnt, want, sl.Status))
+		}
+		if msgCnt > 1 {
+			if start.Before(sl.RequestStart) {
+				latErr = append(latErr, fmt.Errorf("start times should indicate reordering %v : %v", start, sl.RequestStart))
+			}
+		}
+		start = sl.RequestStart
+		if strings.EqualFold(sl.RequestHeader.Get("Uber-Trace-Id"), fmt.Sprintf("msg-%d", msgCnt)) {
+			latErr = append(latErr, fmt.Errorf("no header present"))
+		}
+	})
+	defer rsub.Unsubscribe()
+	// Setup requestor
+	nc2, err := nats.Connect(fmt.Sprintf("nats://client:pass@%s:%d", opts.Host, opts.Port),
+		nats.UseOldRequestStyle(), nats.Name("requestor"))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	respCnt := int64(0)
+	reply := nc2.NewRespInbox()
+	repSub, _ := nc2.Subscribe(reply, func(msg *nats.Msg) {
+		atomic.AddInt64(&respCnt, 1)
+	})
+	defer repSub.Unsubscribe()
+	nc2.Flush()
+	// use dedicated send that publishes requests using same reply subject
+	send := func(msg string) {
+		if err := nc2.PublishMsg(&nats.Msg{Subject: "SVC", Data: []byte(msg), Reply: reply,
+			Header: http.Header{"X-B3-Sampled": []string{"1"}}}); err != nil {
+			t.Fatalf("Expected a response got: %v", err)
+		}
+	}
+	// Setup responder that skips responding and triggers next request OR responds
+	sub, _ := ncr.Subscribe("svc.echo", func(msg *nats.Msg) {
+		if string(msg.Data) != "msg2" {
+			msg.Respond([]byte("response"))
+		} else {
+			wg.Add(1)
+			go func() { // second request (use go routine to not block in responders callback)
+				defer wg.Done()
+				time.Sleep(250 * time.Millisecond)
+				send("msg1") // will cause the first latency measurement
+			}()
+		}
+	})
+	ncr.Flush()
+	ncl.Flush()
+	nc2.Flush()
+	defer sub.Unsubscribe()
+	// Send first request, which is expected to timeout
+	send("msg2")
+	// wait till we got enough responses
+	wg.Wait()
+	if len(latErr) > 0 {
+		t.Fatalf("Got errors %v", latErr)
+	}
+	if atomic.LoadInt64(&respCnt) != 1 {
+		t.Fatalf("Expected only one message")
+	}
+}
+
+func TestServiceLatencyHeaderTriggered(t *testing.T) {
+	receiveAndTest := func(t *testing.T, rsub *nats.Subscription, shared bool, header http.Header, status int, srvName string) server.ServiceLatency {
+		t.Helper()
+		var sl server.ServiceLatency
+		rmsg, _ := rsub.NextMsg(time.Second)
+		if rmsg == nil {
+			t.Fatal("Expected message")
+			return sl
+		}
+		json.Unmarshal(rmsg.Data, &sl)
+		if sl.Status != status {
+			t.Fatalf("Expected different status %d != %d", status, sl.Status)
+		}
+		if status == http.StatusOK {
+			extendedCheck(t, &sl.Responder, "svc", "", srvName)
+		}
+		if shared {
+			extendedCheck(t, &sl.Requestor, "client", "", srvName)
+		} else {
+			noShareCheck(t, &sl.Requestor)
+		}
+		// header are always included
+		if v := sl.RequestHeader.Get("Some-Other"); v != "" {
+			t.Fatalf("Expected header to be gone")
+		}
+		for k, value := range header {
+			if v := sl.RequestHeader.Get(k); v != value[0] {
+				t.Fatalf("Expected header set")
+			}
+		}
+		return sl
+	}
+	for _, v := range []struct {
+		shared bool
+		header http.Header
+	}{
+		{true, http.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{true, http.Header{"X-B3-Sampled": []string{"1"}}},
+		{true, http.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{true, http.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{true, http.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{false, http.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{false, http.Header{"X-B3-Sampled": []string{"1"}}},
+		{false, http.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{false, http.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{false, http.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{false, http.Header{
+			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
+			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
+			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
+			"X-B3-Sampled":      []string{"1"},
+		}},
+		{false, http.Header{
+			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
+			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
+			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
+		}},
+		{false, http.Header{
+			"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"},
+			"Uberctx-X":     []string{"foo"},
+		}},
+		{false, http.Header{
+			"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+			"Tracestate":  []string{"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"},
+		}},
+	} {
+		t.Run(fmt.Sprintf("%s_%t_%s", t.Name(), v.shared, v.header), func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				accounts: {
+					SVC: {
+						users: [ {user: svc, password: pass} ]
+						exports: [  {
+							service: "svc.echo"
+							accounts: [CLIENT]
+							latency: {
+								sampling: headers
+								subject: latency.svc
+							}
+						}]
+					},
+					CLIENT: {
+						users: [{user: client, password: pass} ]
+						imports: [ {service: {account: SVC, subject: svc.echo}, to: SVC, share:%t} ]
+					},
+					SYS: { users: [{user: admin, password: pass}] }
+				}
+		
+				system_account: SYS
+			`, v.shared)))
+			defer os.Remove(conf)
+			srv, opts := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+
+			// Responder
+			nc, err := nats.Connect(fmt.Sprintf("nats://svc:pass@%s:%d", opts.Host, opts.Port))
+			if err != nil {
+				t.Fatalf("Error on connect: %v", err)
+			}
+			defer nc.Close()
+
+			// Listen for metrics
+			rsub, _ := nc.SubscribeSync("latency.svc")
+			defer rsub.Unsubscribe()
+
+			// Setup responder
+			serviceTime := 25 * time.Millisecond
+			sub, _ := nc.Subscribe("svc.echo", func(msg *nats.Msg) {
+				time.Sleep(serviceTime)
+				msg.Respond([]byte("world"))
+			})
+			nc.Flush()
+			defer sub.Unsubscribe()
+
+			// Setup requestor
+			nc2, err := nats.Connect(fmt.Sprintf("nats://client:pass@%s:%d", opts.Host, opts.Port), nats.UseOldRequestStyle())
+			if err != nil {
+				t.Fatalf("Error on connect: %v", err)
+			}
+			defer nc2.Close()
+
+			// Send a request
+			start := time.Now()
+			msg := &nats.Msg{
+				Subject: "SVC",
+				Data:    []byte("1h"),
+				Header:  v.header.Clone(),
+			}
+			msg.Header.Add("Some-Other", "value")
+			if _, err := nc2.RequestMsg(msg, 50*time.Millisecond); err != nil {
+				t.Fatalf("Expected a response")
+			}
+			sl := receiveAndTest(t, rsub, v.shared, v.header, http.StatusOK, srv.Name())
+			checkServiceLatency(t, sl, start, serviceTime)
+			// shut down responder to test various error scenarios
+			sub.Unsubscribe()
+			nc.Flush()
+			// Send a request without responder
+			if _, err := nc2.RequestMsg(msg, 50*time.Millisecond); err == nil {
+				t.Fatalf("Expected no response")
+			}
+			receiveAndTest(t, rsub, v.shared, v.header, http.StatusServiceUnavailable, srv.Name())
+
+			// send a message without a response
+			msg.Reply = ""
+			if err := nc2.PublishMsg(msg); err != nil {
+				t.Fatalf("Expected no error got %v", err)
+			}
+			receiveAndTest(t, rsub, v.shared, v.header, http.StatusBadRequest, srv.Name())
+		})
+	}
 }
