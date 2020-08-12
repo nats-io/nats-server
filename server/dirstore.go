@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 The NATS Authors
+ * Copyright 2020 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -391,7 +391,7 @@ func (store *DirJWTStore) load(publicKey string) (string, error) {
 }
 
 // write that keeps hash of all jwt in sync
-// Assumes the lock is held
+// Assumes the lock is held. Does return true or an error never both.
 func (store *DirJWTStore) write(path string, publicKey string, theJWT string) (bool, error) {
 	var newHash *[sha256.Size]byte
 	if store.expiration != nil {

@@ -2591,9 +2591,10 @@ type AccountResolver interface {
 	Fetch(name string) (string, error)
 	Store(name, jwt string) error
 	IsReadOnly() bool
-	Start(server *Server, systemAccPubKey string) func()
+	Start(server *Server, systemAccPubKey string) (func(), error)
 	IsTrackingUpdate() bool
 	Reload() error
+	Close()
 }
 
 // Default implementations of IsReadOnly/Start so only need to be written when changed
@@ -2607,12 +2608,15 @@ func (*resolverDefaultsOpsImpl) IsTrackingUpdate() bool {
 	return false
 }
 
-func (*resolverDefaultsOpsImpl) Start(*Server, string) func() {
-	return func() {}
+func (*resolverDefaultsOpsImpl) Start(*Server, string) (func(), error) {
+	return func() {}, nil
 }
 
 func (*resolverDefaultsOpsImpl) Reload() error {
 	return nil
+}
+
+func (*resolverDefaultsOpsImpl) Close() {
 }
 
 func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
@@ -2726,9 +2730,9 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
 }
 
-func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
+func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 	if dr == nil {
-		return func() {}
+		return func() {}, nil
 	}
 	dr.Lock()
 	defer dr.Unlock()
@@ -2746,6 +2750,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 		subLookupReq, subPackResp, subPackReq, subUpdate *subscription
 		err                                              error
 	)
+	quit := make(chan struct{})
+	packRespIb := s.newRespInbox()
 	// subscribe to account jwt update requests
 	if subUpdate, err = s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
 		tk := strings.Split(subj, tsep)
@@ -2765,9 +2771,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 		}
 	}); err != nil {
 		s.Errorf("Error setting up update handling: %v", err)
-	}
-	// respond to lookups with our version
-	if subLookupReq, err = s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+	} else if subLookupReq, err = s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+		// respond to lookups with our version
 		if reply == "" {
 			return
 		}
@@ -2782,10 +2787,9 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 		}
 	}); err != nil {
 		s.Errorf("Error setting up pack response handling: %v", err)
-	}
-	// respond to pack requests with one or more pack messages
-	// an empty message signifies the end of the response responder
-	if subPackReq, err = s.sysSubscribeQ(accountPackRequest, "responder",
+	} else if subPackReq, err = s.sysSubscribeQ(accountPackRequest, "responder",
+		// respond to pack requests with one or more pack messages
+		// an empty message signifies the end of the response responder
 		func(_ *subscription, _ *client, _, reply string, theirHash []byte) {
 			if reply == "" {
 				return
@@ -2805,10 +2809,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 			}
 		}); err != nil {
 		s.Errorf("Error setting up pack request handling: %v", err)
-	}
-	// embed pack responses into store
-	packRespIb := s.newRespInbox()
-	if subPackResp, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
+	} else if subPackResp, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
+		// embed pack responses into store
 		hash := dr.DirJWTStore.Hash()
 		if len(msg) == 0 { // end of response stream
 			s.Debugf("Merging Finished and resulting in: %x", dr.DirJWTStore.Hash())
@@ -2820,33 +2822,36 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) func() {
 		}
 	}); err != nil {
 		s.Errorf("Error setting up pack response handling: %v", err)
-	}
-	// periodically send out pack message
-	quit := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(dr.syncInterval)
-		for {
-			select {
-			case <-quit:
-				ticker.Stop()
-				return
-			case <-ticker.C:
+	} else {
+		// periodically send out pack message
+		go func() {
+			ticker := time.NewTicker(dr.syncInterval)
+			for {
+				select {
+				case <-quit:
+					ticker.Stop()
+					return
+				case <-ticker.C:
+				}
+				ourHash := dr.DirJWTStore.Hash()
+				s.Debugf("Checking store state: %x", ourHash)
+				s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
 			}
-			ourHash := dr.DirJWTStore.Hash()
-			s.Debugf("Checking store state: %x", ourHash)
-			s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
-		}
-	}()
+		}()
+		s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
+	}
 	closer := func() {
 		close(quit)
 		s.sysUnsubscribe(subUpdate)
 		s.sysUnsubscribe(subLookupReq)
 		s.sysUnsubscribe(subPackResp)
 		s.sysUnsubscribe(subPackReq)
-		dr.DirJWTStore.Close()
 	}
-	s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
-	return closer
+	if err != nil {
+		closer()
+		return nil, err
+	}
+	return closer, err
 }
 
 func (dr *DirAccResolver) Fetch(name string) (string, error) {
@@ -2904,14 +2909,13 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 	s.sendInternalMsg(accountLookupRequest, replySubj, nil, []byte{})
 	s.mu.Unlock()
 	var err error
-	theJWT := ""
+	var theJWT string
 	select {
 	case <-time.After(fetchTimeout):
 		err = errors.New("fetching jwt timed out")
 	case m := <-respC:
-		theJWT = string(m)
-		if err = dr.Store(name, theJWT); err != nil {
-			theJWT = ""
+		if err = dr.Store(name, string(m)); err == nil {
+			theJWT = string(m)
 		}
 	}
 	s.mu.Lock()
@@ -2932,7 +2936,7 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*Cache
 	return &CacheDirAccResolver{DirAccResolver{store, 0}, nil, ttl}, nil
 }
 
-func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) func() {
+func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
@@ -2967,11 +2971,12 @@ func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) func() {
 		}
 	}); err != nil {
 		s.Errorf("Error setting up update handling: %v", err)
+		return nil, err
 	}
+	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
 	return func() {
 		s.sysUnsubscribe(subUpdate)
-		dr.DirJWTStore.Close()
-	}
+	}, nil
 }
 
 func (dr *CacheDirAccResolver) Reload() error {

@@ -1036,7 +1036,12 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	// start up resolver machinery
 	if s.accResolver != nil {
-		s.sys.closeRes = s.accResolver.Start(s, acc.Name)
+		if closer, err := s.accResolver.Start(s, acc.Name); err != nil {
+			s.mu.Unlock()
+			return err
+		} else {
+			s.sys.closeRes = closer
+		}
 	}
 
 	// Track for dead remote servers.
@@ -1532,6 +1537,10 @@ func (s *Server) Shutdown() {
 		return
 	}
 	s.Noticef("Initiating Shutdown...")
+
+	if s.accResolver != nil {
+		s.accResolver.Close()
+	}
 
 	opts := s.getOpts()
 

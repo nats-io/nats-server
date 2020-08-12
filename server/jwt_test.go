@@ -2873,7 +2873,7 @@ func TestExpiredUserCredentialsRenewal(t *testing.T) {
 	}
 }
 
-func TestAccountNatsResolverFetch(t *testing.T) {
+func TestAccountNATSResolverFetch(t *testing.T) {
 	require_NextMsg := func(sub *nats.Subscription) bool {
 		msg, err := sub.NextMsg(10 * time.Second)
 		require_NoError(t, err)
