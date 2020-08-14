@@ -290,7 +290,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 				ipStr = fmt.Sprintf(" (%s)", url)
 			}
 			s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
-			conn, err = net.DialTimeout("tcp", url, dialTimeout)
+			conn, err = natsDialTimeout("tcp", url, dialTimeout)
 		}
 		if err != nil {
 			attempts++
@@ -359,7 +359,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		return
 	}
 	hp := net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(port))
-	l, e := net.Listen("tcp", hp)
+	l, e := natsListen("tcp", hp)
 	if e != nil {
 		s.mu.Unlock()
 		s.Fatalf("Error listening on leafnode port: %d - %v", opts.LeafNode.Port, e)
