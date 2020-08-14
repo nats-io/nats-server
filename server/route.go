@@ -1675,7 +1675,7 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
-	l, e := net.Listen("tcp", hp)
+	l, e := natsListen("tcp", hp)
 	if e != nil {
 		s.mu.Unlock()
 		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)

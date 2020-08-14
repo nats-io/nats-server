@@ -92,7 +92,7 @@ func TestRouteConfig(t *testing.T) {
 }
 
 func TestClusterAdvertise(t *testing.T) {
-	lst, err := net.Listen("tcp", "127.0.0.1:0")
+	lst, err := natsListen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error starting listener: %v", err)
 	}

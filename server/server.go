@@ -1632,7 +1632,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		return
 	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	l, e := net.Listen("tcp", hp)
+	l, e := natsListen("tcp", hp)
 	if e != nil {
 		s.mu.Unlock()
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
@@ -1754,7 +1754,7 @@ func (s *Server) StartProfiler() {
 	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 
-	l, err := net.Listen("tcp", hp)
+	l, err := natsListen("tcp", hp)
 	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
 
 	if err != nil {

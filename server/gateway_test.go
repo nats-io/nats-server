@@ -5790,7 +5790,7 @@ func TestGatewayAccountInterestModeSwitchOnlyOncePerAccount(t *testing.T) {
 }
 
 func TestGatewaySingleOutbound(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := natsListen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error on listen: %v", err)
 	}
