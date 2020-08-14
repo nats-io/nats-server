@@ -290,7 +290,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 				ipStr = fmt.Sprintf(" (%s)", url)
 			}
 			s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
-			conn, err = net.DialTimeout("tcp", url, dialTimeout)
+			conn, err = natsDialTimeout("tcp", url, dialTimeout)
 		}
 		if err != nil {
 			attempts++

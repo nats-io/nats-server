@@ -211,3 +211,13 @@ var natsListenConfig = &net.ListenConfig{
 func natsListen(network, address string) (net.Listener, error) {
 	return natsListenConfig.Listen(context.Background(), network, address)
 }
+
+// natsDialTimeout is the same as net.DialTimeout() except the TCP keepalives
+// are disabled (to match Go's behavior before Go 1.13).
+func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: -1,
+	}
+	return d.Dial(network, address)
+}

@@ -1842,7 +1842,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
 			return
 		}
 		s.Debugf("Trying to connect to route on %s", rURL.Host)
-		conn, err := net.DialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
+		conn, err := natsDialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
 		if err != nil {
 			attempts++
 			if s.shouldReportConnectErr(firstConnect, attempts) {
