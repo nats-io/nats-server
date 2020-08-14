@@ -1754,7 +1754,7 @@ func (s *Server) StartProfiler() {
 	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 
-	l, err := natsListen("tcp", hp)
+	l, err := net.Listen("tcp", hp)
 	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
 
 	if err != nil {
