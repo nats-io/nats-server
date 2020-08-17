@@ -100,7 +100,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 	ts := now.UnixNano()
 
 	seq := ms.state.LastSeq + 1
-	if ms.state.FirstSeq == 0 {
+	if ms.state.Msgs == 0 {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = now.UTC()
 	}
@@ -240,7 +240,7 @@ func (ms *memStore) Purge() uint64 {
 	cb := ms.scb
 	bytes := int64(ms.state.Bytes)
 	ms.state.FirstSeq = ms.state.LastSeq + 1
-	ms.state.FirstTime = ms.state.LastTime
+	ms.state.FirstTime = time.Time{}
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)

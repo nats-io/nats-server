@@ -4547,8 +4547,28 @@ func TestJetStreamStreamPurge(t *testing.T) {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
 			mset.Purge()
-			if state := mset.State(); state.Msgs != 0 {
+			state := mset.State()
+			if state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
+			}
+			// Make sure first timestamp are reset.
+			if !state.FirstTime.IsZero() {
+				t.Fatalf("Expected the state's first time to be zero after purge")
+			}
+			time.Sleep(10 * time.Millisecond)
+			now := time.Now()
+			nc.Publish("DC", []byte("OK!"))
+			nc.Flush()
+
+			state = mset.State()
+			if state.Msgs != 1 {
+				t.Fatalf("Expected %d message, got %d", 1, state.Msgs)
+			}
+			if state.FirstTime.Before(now) {
+				t.Fatalf("First time is incorrect after adding messages back in")
+			}
+			if state.FirstTime != state.LastTime {
+				t.Fatalf("Expected first and last times to be the same for only message")
 			}
 		})
 	}
