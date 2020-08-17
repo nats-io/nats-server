@@ -833,7 +833,6 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 }
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
-// These options are
 type EventFilterOptions struct {
 	Name    string `json:"server_name,omitempty"` // filter by server name
 	Cluster string `json:"cluster,omitempty"`     // filter by cluster name
@@ -886,9 +885,6 @@ type LeafzEventOptions struct {
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
-	if fOpts == nil {
-		return false
-	}
 	if fOpts.Name != "" && !strings.Contains(s.info.Name, fOpts.Name) {
 		return true
 	}
@@ -912,18 +908,19 @@ func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, 
 		return
 	}
 	opts := StatszEventOptions{}
-	if len(msg) == 0 {
-	} else if err := json.Unmarshal(msg, &opts); err != nil {
-		server := &ServerInfo{}
-		response := map[string]interface{}{"server": server}
-		response["error"] = map[string]interface{}{
-			"code":        http.StatusBadRequest,
-			"description": err.Error(),
+	if len(msg) != 0 {
+		if err := json.Unmarshal(msg, &opts); err != nil {
+			server := &ServerInfo{}
+			response := map[string]interface{}{"server": server}
+			response["error"] = map[string]interface{}{
+				"code":        http.StatusBadRequest,
+				"description": err.Error(),
+			}
+			s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+			return
+		} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
+			return
 		}
-		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
-		return
-	} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
-		return
 	}
 	s.mu.Lock()
 	s.sendStatsz(reply)

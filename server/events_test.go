@@ -1564,8 +1564,8 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	strRequestTbl := []string{
 		`{"cluster":"TEST"}`,
 		`{"cluster":"CLUSTER"}`,
-		`{"server-name":"SRV"}`,
-		`{"server-name":"_"}`,
+		`{"server_name":"SRV"}`,
+		`{"server_name":"_"}`,
 		fmt.Sprintf(`{"host":"%s"}`, optsB.Host),
 		fmt.Sprintf(`{"host":"%s", "cluster":"CLUSTER", "name":"SRV"}`, optsB.Host),
 	}
