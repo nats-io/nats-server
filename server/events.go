@@ -600,28 +600,28 @@ func (s *Server) initEventTracking() {
 
 	monSrvc := map[string]msgHandler{
 		"VARZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &VarzOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Varz(optz) })
+			optz := &VarzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
 		},
 		"SUBSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &SubszOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Subsz(optz) })
+			optz := &SubszEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
 		},
 		"CONNZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &ConnzOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Connz(optz) })
+			optz := &ConnzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
 		},
 		"ROUTEZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &RoutezOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Routez(optz) })
+			optz := &RoutezEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
 		},
 		"GATEWAYZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &GatewayzOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Gatewayz(optz) })
+			optz := &GatewayzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
 		},
 		"LEAFZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
-			optz := &LeafzOptions{}
-			s.zReq(reply, msg, optz, func() (interface{}, error) { return s.Leafz(optz) })
+			optz := &LeafzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
 	}
 
@@ -833,63 +833,101 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 }
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
-type ZFilterOptions struct {
-	Name    string `json:"name"`
-	Cluster string `json:"cluster"`
-	Host    string `json:"host"`
+type EventFilterOptions struct {
+	Name    string `json:"server_name,omitempty"` // filter by server name
+	Cluster string `json:"cluster,omitempty"`     // filter by cluster name
+	Host    string `json:"host,omitempty"`        // filter by host name
+}
+
+// StatszEventOptions are options passed to Statsz
+type StatszEventOptions struct {
+	// No actual options yet
+
+	EventFilterOptions
+}
+
+// In the context of system events, ConnzEventOptions are options passed to Connz
+type ConnzEventOptions struct {
+	ConnzOptions
+	EventFilterOptions
+}
+
+// In the context of system events, RoutezEventOptions are options passed to Routez
+type RoutezEventOptions struct {
+	RoutezOptions
+	EventFilterOptions
+}
+
+// In the context of system events, SubzEventOptions are options passed to Subz
+type SubszEventOptions struct {
+	SubszOptions
+	EventFilterOptions
+}
+
+// In the context of system events, VarzEventOptions are options passed to Varz
+type VarzEventOptions struct {
+	VarzOptions
+	EventFilterOptions
+}
+
+// In the context of system events, GatewayzEventOptions are options passed to Gatewayz
+type GatewayzEventOptions struct {
+	GatewayzOptions
+	EventFilterOptions
+}
+
+// In the context of system events, LeafzEventOptions are options passed to Leafz
+type LeafzEventOptions struct {
+	LeafzOptions
+	EventFilterOptions
 }
 
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
-func (s *Server) filterRequest(msg []byte) (bool, error) {
-	if len(msg) == 0 {
-		return false, nil
-	}
-	var fOpts ZFilterOptions
-	err := json.Unmarshal(msg, &fOpts)
-	if err != nil {
-		return false, err
-	}
+func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 	if fOpts.Name != "" && !strings.Contains(s.info.Name, fOpts.Name) {
-		return true, nil
+		return true
 	}
 	if fOpts.Host != "" && !strings.Contains(s.info.Host, fOpts.Host) {
-		return true, nil
+		return true
 	}
 	if fOpts.Cluster != "" {
 		s.mu.Lock()
 		cluster := s.info.Cluster
 		s.mu.Unlock()
 		if !strings.Contains(cluster, fOpts.Cluster) {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
-// statszReq is a request for us to respond with current statz.
+// statszReq is a request for us to respond with current statsz.
 func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, msg []byte) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
-	if ignore, err := s.filterRequest(msg); err != nil {
-		server := &ServerInfo{}
-		response := map[string]interface{}{"server": server}
-		response["error"] = map[string]interface{}{
-			"code":        http.StatusBadRequest,
-			"description": err.Error(),
+	opts := StatszEventOptions{}
+	if len(msg) != 0 {
+		if err := json.Unmarshal(msg, &opts); err != nil {
+			server := &ServerInfo{}
+			response := map[string]interface{}{"server": server}
+			response["error"] = map[string]interface{}{
+				"code":        http.StatusBadRequest,
+				"description": err.Error(),
+			}
+			s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+			return
+		} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
+			return
 		}
-		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
-		return
-	} else if ignore {
-		return
 	}
 	s.mu.Lock()
 	s.sendStatsz(reply)
 	s.mu.Unlock()
 }
 
-func (s *Server) zReq(reply string, msg []byte, optz interface{}, respf func() (interface{}, error)) {
+func (s *Server) zReq(reply string, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
@@ -898,13 +936,11 @@ func (s *Server) zReq(reply string, msg []byte, optz interface{}, respf func() (
 	var err error
 	status := 0
 	if len(msg) != 0 {
-		filter := false
-		if filter, err = s.filterRequest(msg); filter {
+		if err = json.Unmarshal(msg, optz); err != nil {
+			status = http.StatusBadRequest // status is only included on error, so record how far execution got
+		} else if s.filterRequest(fOpts) {
 			return
-		} else if err == nil {
-			err = json.Unmarshal(msg, optz)
 		}
-		status = http.StatusBadRequest // status is only included on error, so record how far execution got
 	}
 	if err == nil {
 		response["data"], err = respf()
