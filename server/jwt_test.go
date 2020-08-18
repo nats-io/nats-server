@@ -1825,10 +1825,7 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 		}
     `, ojwt, ts.URL, sA.opts.Cluster.Port)))
 	defer os.Remove(confB)
-	c := LoadConfig(confB)
-	c.NoLog = false
-	c.Debug = true
-	sB := RunServer(c)
+	sB := RunServer(LoadConfig(confB))
 	defer sB.Shutdown()
 	// startup cluster
 	checkClusterFormed(t, sA, sB)
@@ -2875,15 +2872,11 @@ func TestExpiredUserCredentialsRenewal(t *testing.T) {
 
 func TestAccountNATSResolverFetch(t *testing.T) {
 	require_NextMsg := func(sub *nats.Subscription) bool {
-		msg, err := sub.NextMsg(10 * time.Second)
-		require_NoError(t, err)
-		require_True(t, msg != nil)
-		if msg != nil {
-			content := make(map[string]interface{})
-			json.Unmarshal(msg.Data, &content)
-			if _, ok := content["data"]; ok {
-				return true
-			}
+		msg := natsNexMsg(t, sub, 10*time.Second)
+		content := make(map[string]interface{})
+		json.Unmarshal(msg.Data, &content)
+		if _, ok := content["data"]; ok {
+			return true
 		}
 		return false
 	}
@@ -2907,30 +2900,25 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_1Connection := func(port int, creds string) {
 		t.Helper()
 		url := fmt.Sprintf("nats://localhost:%d", port)
-		if c, err := nats.Connect(url, nats.UserCredentials(creds)); err != nil {
-			t.Fatalf("Received unexpected error %v", err)
-		} else if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
+		c := natsConnect(t, url, nats.UserCredentials(creds))
+		defer c.Close()
+		if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
 			t.Fatal("Second connection was supposed to fail due to limits")
 		} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
 			t.Fatal("Second connection was supposed to fail with too many conns")
-		} else {
-			c.Close()
 		}
 	}
 	require_2Connection := func(port int, creds string) {
 		t.Helper()
 		url := fmt.Sprintf("nats://localhost:%d", port)
-		if c1, err := nats.Connect(url, nats.UserCredentials(creds)); err != nil {
-			t.Fatalf("Received unexpected error on first connection %v", err)
-		} else if c2, err := nats.Connect(url, nats.UserCredentials(creds)); err != nil {
-			t.Fatalf("Received unexpected error on second connection %v", err)
-		} else if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
+		c1 := natsConnect(t, url, nats.UserCredentials(creds))
+		defer c1.Close()
+		c2 := natsConnect(t, url, nats.UserCredentials(creds))
+		defer c2.Close()
+		if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
 			t.Fatal("Third connection was supposed to fail due to limits")
 		} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
 			t.Fatal("Third connection was supposed to fail with too many conns")
-		} else {
-			c1.Close()
-			c2.Close()
 		}
 	}
 	writeFile := func(dir string, pub string, jwt string) {
@@ -2944,26 +2932,10 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		require_NoError(t, err)
 		return dir
 	}
-	connect := func(port int, credsfile string, closeConnection bool) *nats.Conn {
+	connect := func(port int, credsfile string) {
 		t.Helper()
-		url := fmt.Sprintf("nats://localhost:%d", port)
-		if nc, err := nats.Connect(url, nats.UserCredentials(credsfile),
-			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-				if err != nil {
-					t.Fatal("error not expected in this test", err)
-				}
-			}),
-			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-				t.Fatal("error not expected in this test", err)
-			}),
-		); err != nil {
-			t.Fatalf("Expected to connect, got %v %s", err, url)
-		} else if !closeConnection {
-			return nc
-		} else {
-			nc.Close()
-		}
-		return nil
+		nc := natsConnect(t, fmt.Sprintf("nats://localhost:%d", port), nats.UserCredentials(credsfile))
+		nc.Close()
 	}
 	createAccountAndUser := func(pair nkeys.KeyPair, limit bool) (string, string, string, string) {
 		t.Helper()
@@ -2993,12 +2965,20 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	}
 	updateJwt := func(port int, creds string, pubKey string, jwt string) int {
 		t.Helper()
-		c := connect(port, creds, false)
+		c := natsConnect(t, fmt.Sprintf("nats://localhost:%d", port), nats.UserCredentials(creds),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				if err != nil {
+					t.Fatal("error not expected in this test", err)
+				}
+			}),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+				t.Fatal("error not expected in this test", err)
+			}),
+		)
 		defer c.Close()
 		resp := c.NewRespInbox()
-		sub, err := c.SubscribeSync(resp)
-		require_NoError(t, err)
-		err = sub.AutoUnsubscribe(3)
+		sub := natsSubSync(t, c, resp)
+		err := sub.AutoUnsubscribe(3)
 		require_NoError(t, err)
 		require_NoError(t, c.PublishRequest(fmt.Sprintf(accUpdateEventSubj, pubKey), resp, []byte(jwt)))
 		passCnt := 0
@@ -3134,9 +3114,9 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FileAbsent(dirB, syspub)
 	require_FileAbsent(dirC, syspub)
 	// system account client can connect to every server
-	connect(sA.opts.Port, sysCreds, true)
-	connect(sB.opts.Port, sysCreds, true)
-	connect(sC.opts.Port, sysCreds, true)
+	connect(sA.opts.Port, sysCreds)
+	connect(sB.opts.Port, sysCreds)
+	connect(sC.opts.Port, sysCreds)
 	checkClusterFormed(t, sA, sB, sC)
 	// upload system account and require a response from each server
 	passCnt := updateJwt(sA.opts.Port, sysCreds, syspub, sysjwt)
@@ -3145,8 +3125,8 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FilePresent(dirB, syspub) // was just received
 	require_FilePresent(dirC, syspub) // was just received
 	// Only files missing are in C, which is only caching
-	connect(sC.opts.Port, aCreds, true)
-	connect(sC.opts.Port, bCreds, true)
+	connect(sC.opts.Port, aCreds)
+	connect(sC.opts.Port, bCreds)
 	require_FilePresent(dirC, apub) // was looked up form A or B
 	require_FilePresent(dirC, bpub) // was looked up from A or B
 
@@ -3196,7 +3176,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	defer sC.Shutdown()
 	require_FileEqual(dirC, apub, ajwt1) // still contains old cached value
 	time.Sleep(time.Second * 12)         // Force next connect to do a lookup
-	connect(sC.opts.Port, aCreds, true)  // When lookup happens
+	connect(sC.opts.Port, aCreds)        // When lookup happens
 	require_FileEqual(dirC, apub, ajwt2) // was looked up form A or B
 	require_2Connection(sC.opts.Port, aCreds)
 

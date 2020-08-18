@@ -1020,6 +1020,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		chkOrph: 3 * eventsHBInterval,
 	}
 	s.sys.wg.Add(1)
+	resolver := s.accResolver
 	s.mu.Unlock()
 
 	// Register with the account.
@@ -1035,12 +1036,13 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	s.initEventTracking()
 
 	// start up resolver machinery
-	if s.accResolver != nil {
-		if closer, err := s.accResolver.Start(s, acc.Name); err != nil {
-			s.mu.Unlock()
+	if resolver != nil {
+		if closer, err := resolver.Start(s, acc.Name); err != nil {
 			return err
 		} else {
+			s.mu.Lock()
 			s.sys.closeRes = closer
+			s.mu.Unlock()
 		}
 	}
 

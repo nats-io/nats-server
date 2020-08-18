@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	extension = "jwt"
+	fileExtension = ".jwt"
 )
 
 // validatePathExists checks that the provided path exists and is a dir if requested
@@ -160,11 +160,11 @@ func NewExpiringDirJWTStore(dirPath string, shard bool, create bool, expireCheck
 	theStore.startExpiring(expireCheck, limit, evictOnLimit, ttl)
 	theStore.Lock()
 	err = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
-		if strings.HasSuffix(path, extension) {
+		if strings.HasSuffix(path, fileExtension) {
 			if theJwt, err := ioutil.ReadFile(path); err == nil {
 				hash := sha256.Sum256(theJwt)
 				_, file := filepath.Split(path)
-				theStore.expiration.track(strings.TrimSuffix(file, "."+extension), &hash, string(theJwt))
+				theStore.expiration.track(strings.TrimSuffix(file, fileExtension), &hash, string(theJwt))
 			}
 		}
 		return nil
@@ -197,7 +197,6 @@ func (store *DirJWTStore) SaveAct(hash string, theJWT string) error {
 	return store.save(hash, theJWT)
 }
 
-// Close is a no-op for a directory store
 func (store *DirJWTStore) Close() {
 	store.Lock()
 	defer store.Unlock()
@@ -218,12 +217,11 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 	}
 	store.Lock()
 	err := filepath.Walk(store.directory, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() && strings.HasSuffix(path, extension) { // this is a JWT
+		if !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
 			if count == maxJWTs { // won't match negative
 				return nil
 			}
-			pubKey := filepath.Base(path)
-			pubKey = pubKey[0:strings.Index(pubKey, ".")]
+			pubKey := strings.TrimSuffix(filepath.Base(path), fileExtension)
 			if store.expiration != nil {
 				if _, ok := store.expiration.idx[pubKey]; !ok {
 					return nil // only include indexed files
@@ -252,10 +250,10 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 	}
 }
 
-// Pack upt maxJWTs into a message and invoke callback with it
+// Pack up to maxJWTs into a message and invoke callback with it
 func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) error {
 	if maxJWTs <= 0 || cb == nil {
-		return errors.New("bad arguments to PackIter")
+		return errors.New("bad arguments to PackWalk")
 	}
 	var packMsg []string
 	store.Lock()
@@ -263,9 +261,8 @@ func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) 
 	exp := store.expiration
 	store.Unlock()
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() && strings.HasSuffix(path, extension) { // this is a JWT
-			pubKey := filepath.Base(path)
-			pubKey = pubKey[0:strings.Index(pubKey, ".")]
+		if !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
+			pubKey := strings.TrimSuffix(filepath.Base(path), fileExtension)
 			store.Lock()
 			if exp != nil {
 				if _, ok := store.expiration.idx[pubKey]; !ok {
@@ -336,11 +333,11 @@ func (store *DirJWTStore) Reload() error {
 	exp.hash = [sha256.Size]byte{}
 	store.Unlock()
 	return filepath.Walk(store.directory, func(path string, info os.FileInfo, err error) error {
-		if strings.HasSuffix(path, extension) {
+		if strings.HasSuffix(path, fileExtension) {
 			if theJwt, err := ioutil.ReadFile(path); err == nil {
 				hash := sha256.Sum256(theJwt)
 				_, file := filepath.Split(path)
-				pkey := strings.TrimSuffix(file, "."+extension)
+				pkey := strings.TrimSuffix(file, fileExtension)
 				notify := isCache // for cache, issue cb even when file not present (may have been evicted)
 				if i, ok := idx[pkey]; ok {
 					notify = !bytes.Equal(i.Value.(*jwtItem).hash[:], hash[:])
@@ -361,16 +358,13 @@ func (store *DirJWTStore) pathForKey(publicKey string) string {
 	if len(publicKey) < 2 {
 		return ""
 	}
-	var dirPath string
+	fileName := fmt.Sprintf("%s%s", publicKey, fileExtension)
 	if store.shard {
 		last := publicKey[len(publicKey)-2:]
-		fileName := fmt.Sprintf("%s.%s", publicKey, extension)
-		dirPath = filepath.Join(store.directory, last, fileName)
+		return filepath.Join(store.directory, last, fileName)
 	} else {
-		fileName := fmt.Sprintf("%s.%s", publicKey, extension)
-		dirPath = filepath.Join(store.directory, fileName)
+		return filepath.Join(store.directory, fileName)
 	}
-	return dirPath
 }
 
 // Load checks the memory store and returns the matching JWT or an error
