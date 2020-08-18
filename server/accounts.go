@@ -2889,11 +2889,12 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 		s.mu.Unlock()
 	}
 	s.sendInternalMsg(accountLookupRequest, replySubj, nil, []byte{})
+	quit := s.quitCh
 	s.mu.Unlock()
 	var err error
 	var theJWT string
 	select {
-	case <-s.quitCh:
+	case <-quit:
 		err = errors.New("fetching jwt failed due to shutdown")
 	case <-time.After(fetchTimeout):
 		err = errors.New("fetching jwt timed out")
