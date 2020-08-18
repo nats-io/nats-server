@@ -608,7 +608,7 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, erro
 	}
 	fs.kickFlusher()
 
-	if fs.state.FirstSeq == 0 {
+	if fs.state.Msgs == 0 {
 		fs.state.FirstSeq = seq
 		fs.state.FirstTime = time.Unix(0, ts).UTC()
 	}
