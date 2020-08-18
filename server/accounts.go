@@ -2878,12 +2878,17 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 	accountLookupRequest := fmt.Sprintf("$SYS.ACCOUNT.%s.CLAIMS.LOOKUP", name)
 	s.mu.Lock()
 	replySubj := s.newRespInbox()
+	if s.sys == nil || s.sys.replies == nil {
+		s.mu.Unlock()
+		return "", fmt.Errorf("eventing shut down")
+	}
+	replies := s.sys.replies
 	// Store our handler.
-	s.sys.replies[replySubj] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
+	replies[replySubj] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
 		clone := make([]byte, len(msg))
 		copy(clone, msg)
 		s.mu.Lock()
-		if _, ok := s.sys.replies[replySubj]; ok {
+		if _, ok := replies[replySubj]; ok {
 			respC <- clone // only send if there is still interest
 		}
 		s.mu.Unlock()
@@ -2904,7 +2909,7 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 		}
 	}
 	s.mu.Lock()
-	delete(s.sys.replies, replySubj)
+	delete(replies, replySubj)
 	s.mu.Unlock()
 	close(respC)
 	return theJWT, err
