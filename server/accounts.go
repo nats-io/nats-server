@@ -2893,6 +2893,8 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 	var err error
 	var theJWT string
 	select {
+	case <-s.quitCh:
+		err = errors.New("fetching jwt failed due to shutdown")
 	case <-time.After(fetchTimeout):
 		err = errors.New("fetching jwt timed out")
 	case m := <-respC:

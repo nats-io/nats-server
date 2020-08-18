@@ -1363,7 +1363,8 @@ func (s *Server) Start() {
 	// Log the pid to a file
 	if opts.PidFile != _EMPTY_ {
 		if err := s.logPid(); err != nil {
-			PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
+			s.Fatalf("Could not write pidfile: %v", err)
+			return
 		}
 	}
 
@@ -1381,13 +1382,14 @@ func (s *Server) Start() {
 	// start up resolver machinery
 	if ar := s.AccountResolver(); ar != nil {
 		if err := ar.Start(s); err != nil {
-			PrintAndDie(fmt.Sprintf("Could not start resolver: %v\n", err))
+			s.Fatalf("Could not start resolver: %v", err)
+			return
 		}
 		// In operator mode, when the account resolver depends on an external system and
 		// the system account is the bootstrapping account, start fetching it
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
-			if _, ok := ar.(*MemAccResolver); !ok {
-			} else if v, ok := s.accounts.Load(s.opts.SystemAccount); ok && v.(*Account).claimJWT == "" {
+			_, isMemResolver := ar.(*MemAccResolver)
+			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()
@@ -1399,10 +1401,13 @@ func (s *Server) Start() {
 							return
 						case <-t.C:
 							if _, err := ar.Fetch(s.opts.SystemAccount); err != nil {
-							} else if _, err := s.fetchAccount(s.opts.SystemAccount); err == nil {
-								s.Noticef("System account fetched and updated")
-								return
+								continue
 							}
+							if _, err := s.fetchAccount(s.opts.SystemAccount); err != nil {
+								continue
+							}
+							s.Noticef("System account fetched and updated")
+							return
 						}
 					}
 				})
