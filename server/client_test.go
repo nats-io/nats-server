@@ -2331,34 +2331,56 @@ func TestCloseConnectionLogsReason(t *testing.T) {
 }
 
 func TestCloseConnectionVeryEarly(t *testing.T) {
-	o := DefaultOptions()
-	s := RunServer(o)
-	defer s.Shutdown()
+	for _, test := range []struct {
+		name   string
+		useTLS bool
+	}{
+		{"no_tls", false},
+		{"tls", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			if test.useTLS {
+				tc := &TLSConfigOpts{
+					CertFile: "../test/configs/certs/server-cert.pem",
+					KeyFile:  "../test/configs/certs/server-key.pem",
+					CaFile:   "../test/configs/certs/ca.pem",
+				}
+				tlsConfig, err := GenTLSConfig(tc)
+				if err != nil {
+					t.Fatalf("Error generating tls config: %v", err)
+				}
+				o.TLSConfig = tlsConfig
+			}
+			s := RunServer(o)
+			defer s.Shutdown()
 
-	// The issue was with a connection that would break right when
-	// server was sending the INFO. Creating a bare TCP connection
-	// and closing it right away won't help reproduce the problem.
-	// So testing in 2 steps.
+			// The issue was with a connection that would break right when
+			// server was sending the INFO. Creating a bare TCP connection
+			// and closing it right away won't help reproduce the problem.
+			// So testing in 2 steps.
 
-	// Get a normal TCP connection to the server.
-	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
-	if err != nil {
-		s.mu.Unlock()
-		t.Fatalf("Unable to create tcp connection")
+			// Get a normal TCP connection to the server.
+			c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+			if err != nil {
+				s.mu.Unlock()
+				t.Fatalf("Unable to create tcp connection")
+			}
+			// Now close it.
+			c.Close()
+
+			// Wait that num clients falls to 0.
+			checkClientsCount(t, s, 0)
+
+			// Call again with this closed connection. Alternatively, we
+			// would have to call with a fake connection that implements
+			// net.Conn but returns an error on Write.
+			s.createClient(c, nil)
+
+			// This connection should not have been added to the server.
+			checkClientsCount(t, s, 0)
+		})
 	}
-	// Now close it.
-	c.Close()
-
-	// Wait that num clients falls to 0.
-	checkClientsCount(t, s, 0)
-
-	// Call again with this closed connection. Alternatively, we
-	// would have to call with a fake connection that implements
-	// net.Conn but returns an error on Write.
-	s.createClient(c, nil)
-
-	// This connection should not have been added to the server.
-	checkClientsCount(t, s, 0)
 }
 
 type connAddrString struct {

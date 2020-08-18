@@ -2074,11 +2074,14 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Re-Grab lock
 	c.mu.Lock()
 
+	// Connection could have been closed while sending the INFO proto.
+	isClosed := c.isClosed()
+
 	tlsRequired := ws == nil && info.TLSRequired
 	var pre []byte
 	// If we have both TLS and non-TLS allowed we need to see which
 	// one the client wants.
-	if opts.TLSConfig != nil && opts.AllowNonTLS {
+	if !isClosed && opts.TLSConfig != nil && opts.AllowNonTLS {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
@@ -2092,7 +2095,7 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	}
 
 	// Check for TLS
-	if tlsRequired {
+	if !isClosed && tlsRequired {
 		c.Debugf("Starting TLS client connection handshake")
 		// If we have a prebuffer create a multi-reader.
 		if len(pre) > 0 {
@@ -2124,17 +2127,18 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 
 		// Indicate that handshake is complete (used in monitoring)
 		c.flags.set(handshakeComplete)
+
+		// The connection may have been closed
+		isClosed = c.isClosed()
 	}
 
-	// The connection may have been closed
-	if c.isClosed() {
+	// If connection is marked as closed, bail out.
+	if isClosed {
 		c.mu.Unlock()
-		// If it was due to TLS timeout, closeConnection() has already been called.
-		// Otherwise, if connection was marked as closed while sending the INFO,
-		// we need to call closeConnection() directly here.
-		if !info.TLSRequired {
-			c.closeConnection(WriteError)
-		}
+		// Connection could have been closed due to TLS timeout or while trying
+		// to send the INFO protocol. We need to call closeConnection() to make
+		// sure that proper cleanup is done.
+		c.closeConnection(WriteError)
 		return nil
 	}
 
